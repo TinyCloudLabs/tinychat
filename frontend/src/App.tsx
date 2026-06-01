@@ -16,7 +16,9 @@ import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
 import { DEFAULT_MODEL } from "./lib/threadStore";
-import "./styles.css";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { Button } from "@/components/ui/button";
+import { ChevronDownIcon } from "lucide-react";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyChat";
@@ -177,26 +179,35 @@ export function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between border-b border-border px-4 py-2.5">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold tracking-tight">TinyChat</span>
+          <span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
+            <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
+              T
+            </span>
+            TinyChat
+          </span>
           {isReady && (
-            <select
-              value={model}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground"
-              aria-label="Model"
-            >
-              {models.length === 0 && <option value={model}>{model}</option>}
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.id}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <select
+                value={model}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="h-8 cursor-pointer appearance-none rounded-md border border-input bg-background pl-2.5 pr-7 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Model"
+              >
+                {models.length === 0 && <option value={model}>{model}</option>}
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.id}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            </div>
           )}
         </div>
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           <ConnectionDetails
             address={address}
             did={did}
@@ -205,20 +216,14 @@ export function App() {
             error={error}
           />
           {(state === "unauthenticated" || state === "recoverableError") && (
-            <button
-              onClick={signIn}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-            >
+            <Button size="sm" onClick={signIn}>
               {state === "recoverableError" ? "Try again" : "Sign in"}
-            </button>
+            </Button>
           )}
           {isReady && (
-            <button
-              onClick={signOut}
-              className="rounded-md border border-input px-3 py-1.5 text-xs font-medium text-foreground"
-            >
+            <Button variant="outline" size="sm" onClick={signOut}>
               Sign out
-            </button>
+            </Button>
           )}
         </div>
       </header>
@@ -261,7 +266,7 @@ function ChatWorkspace(props: {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="grid h-full grid-cols-[260px_1fr]">
-        <aside className="min-h-0 border-r border-border bg-muted/30">
+        <aside className="min-h-0 border-r border-border bg-muted/40">
           <ThreadList />
         </aside>
         <section className="min-h-0">
@@ -292,18 +297,22 @@ function BootSurface(props: {
 
   return (
     <div className="flex h-full items-center justify-center p-6">
-      <div className="flex max-w-sm flex-col items-center gap-4 text-center">
-        <h1 className="text-lg font-semibold">TinyChat</h1>
-        <p className="text-sm text-muted-foreground">{message}</p>
+      <div className="flex max-w-sm flex-col items-center gap-5 text-center">
+        <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
+          T
+        </span>
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">TinyChat</h1>
+          <p className="text-sm text-muted-foreground">{message}</p>
+        </div>
         {(props.state === "unauthenticated" || props.state === "recoverableError") && (
-          <button
-            onClick={props.onSignIn}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-          >
+          <Button onClick={props.onSignIn}>
             {props.state === "recoverableError" ? "Try again" : "Sign in"}
-          </button>
+          </Button>
         )}
-        {busy && <span className="text-xs text-muted-foreground">Working…</span>}
+        {busy && (
+          <span className="text-xs text-muted-foreground">Working…</span>
+        )}
       </div>
     </div>
   );
@@ -318,14 +327,25 @@ function ConnectionDetails(props: {
 }) {
   return (
     <details className="relative">
-      <summary className="cursor-pointer list-none rounded-md border border-input px-2 py-1.5 text-xs text-muted-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent [&::-webkit-details-marker]:hidden">
+        <span
+          className={`size-1.5 rounded-full ${
+            props.state === "ready"
+              ? "bg-green-500"
+              : props.state === "recoverableError"
+                ? "bg-destructive"
+                : "bg-muted-foreground"
+          }`}
+        />
         {stateLabel(props.state)}
       </summary>
-      <div className="absolute right-0 z-10 mt-1 w-72 rounded-md border border-border bg-background p-3 text-xs shadow-lg">
+      <div className="absolute right-0 z-20 mt-1.5 w-72 rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
         <Row label="Address" value={props.address ?? "none"} mono />
         <Row label="DID" value={props.did ?? "none"} mono />
         <Row label="Space" value={props.spaceId ?? "none"} mono />
-        {props.error && <p className="mt-2 text-red-600">{props.error}</p>}
+        {props.error && (
+          <p className="mt-2 text-destructive">{props.error}</p>
+        )}
       </div>
     </details>
   );
