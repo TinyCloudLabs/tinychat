@@ -2,10 +2,13 @@ import { type FC } from "react";
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
+  ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
+  AlertTriangleIcon,
   ArrowDownIcon,
   CheckIcon,
   CopyIcon,
@@ -23,18 +26,7 @@ export const Thread: FC = () => {
       <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
         <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
           <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
-            <ThreadWelcome />
-
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                AssistantMessage,
-              }}
-            />
-
-            <ThreadPrimitive.If empty={false}>
-              <div className="min-h-6 flex-shrink-0" />
-            </ThreadPrimitive.If>
+            <ThreadBody />
           </div>
 
           <Composer />
@@ -43,6 +35,69 @@ export const Thread: FC = () => {
     </TooltipProvider>
   );
 };
+
+// Decides what fills the viewport: a loading skeleton while the active thread's
+// history is being read from KV, the welcome screen for a fresh chat, or the
+// message list once messages exist.
+const ThreadBody: FC = () => {
+  const isLoading = useAuiState((s) => s.thread.isLoading);
+  const isEmpty = useAuiState((s) => s.thread.isEmpty);
+  const status = useAuiState((s) => s.threadListItem.status);
+
+  // A switched-to existing thread reports `status: "regular"` and `isEmpty`
+  // for ~1 frame before its history `load()` flips `isLoading` on. Treat that
+  // gap as loading too, so switching chats never flashes the welcome screen.
+  // (A persisted thread always has >=1 message, so "regular & empty" only ever
+  // means "not loaded yet", never a genuinely empty conversation.)
+  const showSkeleton = isLoading || (isEmpty && status === "regular");
+
+  if (showSkeleton) return <HistorySkeleton />;
+
+  return (
+    <>
+      <ThreadWelcome />
+
+      <ThreadPrimitive.Messages
+        components={{
+          UserMessage,
+          AssistantMessage,
+        }}
+      />
+
+      <ThreadPrimitive.If empty={false}>
+        <div className="min-h-6 flex-shrink-0" />
+      </ThreadPrimitive.If>
+    </>
+  );
+};
+
+// Shimmer placeholder shaped like a short conversation, shown while a thread's
+// history loads or while switching between chats.
+const HistorySkeleton: FC = () => (
+  <div className="flex w-full flex-col gap-6 py-4" aria-hidden>
+    <div className="flex w-full justify-end">
+      <div className="h-9 w-2/5 animate-pulse rounded-3xl bg-muted" />
+    </div>
+    <div className="flex w-full flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <div className="size-5 animate-pulse rounded-full bg-muted" />
+        <div className="h-3 w-16 animate-pulse rounded bg-muted" />
+      </div>
+      <div className="flex flex-col gap-2 pl-7">
+        <div className="h-3 w-full animate-pulse rounded bg-muted" />
+        <div className="h-3 w-11/12 animate-pulse rounded bg-muted" />
+        <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
+      </div>
+    </div>
+    <div className="flex w-full justify-end">
+      <div className="h-9 w-1/3 animate-pulse rounded-3xl bg-muted" />
+    </div>
+    <div className="flex flex-col gap-2 pl-7">
+      <div className="h-3 w-5/6 animate-pulse rounded bg-muted" />
+      <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+    </div>
+  </div>
+);
 
 const ThreadWelcome: FC = () => {
   return (
@@ -154,6 +209,12 @@ const AssistantMessage: FC = () => (
     <div className="pl-7 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
     </div>
+    <MessagePrimitive.Error>
+      <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+        <ErrorPrimitive.Message className="leading-relaxed" />
+      </ErrorPrimitive.Root>
+    </MessagePrimitive.Error>
     <AssistantActionBar />
   </MessagePrimitive.Root>
 );
