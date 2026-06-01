@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "app_id": "xyz.tinycloud.tinychat",
+  "name": "TinyChat",
+  "description": "TinyChat — a private AI chatbot. Conversations are stored in your TinyCloud space.",
+  "defaults": false,
+  "permissions": [
+    {
+      "service": "tinycloud.kv",
+      "path": "threads/",
+      "actions": [
+        "get",
+        "put",
+        "del",
+        "list"
+      ],
+      "description": "Read and write chat threads and messages."
+    }
+  ]
+}

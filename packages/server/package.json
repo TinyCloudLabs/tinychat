@@ -1,0 +1,32 @@
+{
+  "name": "@tinyboilerplate/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "bun test",
+    "generate-key": "bun run scripts/generate-key.ts",
+    "postinstall": "node scripts/fix-wasm-esm.mjs"
+  },
+  "dependencies": {
+    "@tinyboilerplate/core": "workspace:*",
+    "@tinycloud/node-sdk": "2.2.0-beta.12",
+    "jose": "^5.0.0",
+    "siwe": "^2.3.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.0",
+    "express": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}

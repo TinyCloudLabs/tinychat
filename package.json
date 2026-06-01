@@ -1,0 +1,48 @@
+{
+  "name": "xyz-tinycloud-tinychat",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.9",
+  "workspaces": [
+    "packages/*",
+    "frontend",
+    "backend",
+    "test"
+  ],
+  "overrides": {
+    "@tinycloud/sdk-core": "2.2.0-beta.12",
+    "@tinycloud/sdk-services": "2.2.0-beta.12",
+    "@tinycloud/web-sdk": "2.2.0-beta.12",
+    "@tinycloud/node-sdk": "2.2.0-beta.12",
+    "@tinycloud/web-core": "1.7.0",
+    "@tinycloud/node-sdk-wasm": "1.7.3-beta.1",
+    "@tinycloud/web-sdk-wasm": "1.7.3-beta.1",
+    "ethers": "6.16.0",
+    "ws": "8.20.1"
+  },
+  "scripts": {
+    "dev": "turbo run dev --filter=@tinychat/frontend --filter=@tinychat/backend",
+    "build:packages": "turbo run build --filter=@tinyboilerplate/core --filter=@tinyboilerplate/client --filter=@tinyboilerplate/server",
+    "build:backend": "bun run --cwd backend build",
+    "build:frontend": "bun run --cwd frontend build",
+    "test:backend": "bun run --cwd backend test",
+    "test:packages": "bun run --cwd packages/core test && bun run --cwd packages/client test && bun run --cwd packages/server test",
+    "build": "bun run build:packages && bun run build:backend && bun run build:frontend",
+    "test": "bun run test:backend && bun run test:packages",
+    "test:real-auth": "bun run --cwd test real-auth",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "generate-key": "bun run packages/server/scripts/generate-key.ts backend/.env",
+    "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tinycloud/node-sdk": "2.2.0-beta.12",
+    "eslint": "^10.1.0",
+    "husky": "^9.1.7",
+    "portless": "^0.13.0",
+    "prettier": "^3.8.1",
+    "turbo": "^2.0.0",
+    "typescript-eslint": "^8.57.1"
+  }
+}

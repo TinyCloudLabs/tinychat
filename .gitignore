@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.local
+*.tsbuildinfo
+.DS_Store
+*.pem
+.turbo/
+.claude/
+.auth/
+test-results/
+playwright-report/
+.playwright-mcp/
+blob-report/
+traces/
+videos/
+screenshots/
+test/.passkey.json
+test/.last-run.log
+
+# Real-auth browser profiles and artifacts
+.playwright/

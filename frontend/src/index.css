@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* assistant-ui chat surface — restrained, neutral, compact */
+.aui-root {
+  height: 100%;
+}
