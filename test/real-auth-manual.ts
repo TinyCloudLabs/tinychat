@@ -168,7 +168,7 @@ async function waitForSignIn(
 
 async function runChatExchange(page: Page): Promise<void> {
   const prompt = `Reply with exactly: ${replyToken} and nothing else. Marker ${marker}`;
-  const composer = page.getByPlaceholder(/Message TinyChat/);
+  const composer = page.getByPlaceholder(/Message TinyCloud Chat/);
   await composer.waitFor({ state: "visible", timeout: 30_000 });
   console.log("");
   console.log(`Sending test message (marker ${marker})...`);

@@ -104,7 +104,7 @@ const ThreadWelcome: FC = () => {
     <ThreadPrimitive.Empty>
       <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
         <div className="flex flex-col items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">TinyChat</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">TinyCloud Chat</h1>
           <p className="max-w-sm text-sm text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
@@ -159,7 +159,7 @@ const Composer: FC = () => {
         <ComposerPrimitive.Input
           autoFocus
           rows={1}
-          placeholder="Message TinyChat…"
+          placeholder="Message TinyCloud Chat…"
           className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
         />
         <ThreadPrimitive.If running={false}>
@@ -204,7 +204,7 @@ const AssistantMessage: FC = () => (
       <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
         T
       </span>
-      <span>TinyChat</span>
+      <span>TinyCloud Chat</span>
     </div>
     <div className="pl-7 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
