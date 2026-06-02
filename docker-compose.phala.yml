@@ -1,0 +1,40 @@
+services:
+  tinychat-backend:
+    image: ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}
+    platform: linux/amd64
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      BACKEND_PRIVATE_KEY: ${BACKEND_PRIVATE_KEY}
+      TINYCLOUD_HOST: ${TINYCLOUD_HOST:-https://tee.node.tinycloud.xyz}
+      FRONTEND_URL: ${FRONTEND_URL:-https://tinycloud.chat}
+      REDPILL_API_KEY: ${REDPILL_API_KEY:-}
+      REDPILL_BASE_URL: ${REDPILL_BASE_URL:-https://api.redpill.ai/v1}
+      REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-openai/gpt-5-mini}
+      TINYCHAT_BUILD_SHA: ${TINYCHAT_BUILD_SHA:-}
+      TINYCHAT_DEPLOY_RUN_URL: ${TINYCHAT_DEPLOY_RUN_URL:-}
+    restart: unless-stopped
+
+  dstack-ingress:
+    image: ${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}
+    ports:
+      - "443:443"
+    depends_on:
+      - tinychat-backend
+    environment:
+      DOMAIN: ${PHALA_INGRESS_DOMAIN:-api.tinycloud.chat}
+      TARGET_ENDPOINT: http://tinychat-backend:3001
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      GATEWAY_DOMAIN: ${PHALA_GATEWAY_CNAME}
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL}
+      SET_CAA: "true"
+      DNS_PROVIDER: cloudflare
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - cert-data:/etc/letsencrypt
+    restart: unless-stopped
+
+volumes:
+  cert-data:

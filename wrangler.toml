@@ -1,0 +1,13 @@
+name = "tinychat"
+pages_build_output_dir = "frontend/dist"
+compatibility_date = "2026-05-12"
+
+# Static frontend (no Pages Functions). These [vars] are RUNTIME bindings and
+# are NOT injected into `vite build`. Build-time VITE_* values are baked from
+# frontend/.env.production for manual `deploy:frontend` uploads, and for Pages
+# Git builds they MUST also be set as Production build environment variables in
+# the Cloudflare dashboard (Settings -> Environment variables). Kept here for
+# parity with listen and in case Pages Functions are added later.
+[vars]
+VITE_OPENKEY_HOST = "https://openkey.so"
+VITE_BACKEND_URL = "https://api.tinycloud.chat"
