@@ -15,6 +15,15 @@
         "list"
       ],
       "description": "Read and write chat threads and messages."
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "threads",
+      "actions": [
+        "read",
+        "write"
+      ],
+      "description": "Store chat threads and messages in your space's SQL database."
     }
   ]
 }

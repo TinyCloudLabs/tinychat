@@ -8,20 +8,48 @@ import { PlusIcon, Trash2Icon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 const ThreadListItem: FC = () => (
   <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-accent data-[active]:bg-accent">
     <ThreadListItemPrimitive.Trigger className="flex-1 truncate px-3 py-2 text-left text-sm text-foreground">
       <ThreadListItemPrimitive.Title fallback="New chat" />
     </ThreadListItemPrimitive.Trigger>
-    <ThreadListItemPrimitive.Delete asChild>
-      <TooltipIconButton
-        tooltip="Delete chat"
-        className="size-7 shrink-0 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 data-[active]:opacity-100"
-      >
-        <Trash2Icon className="size-4" />
-      </TooltipIconButton>
-    </ThreadListItemPrimitive.Delete>
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <TooltipIconButton
+          tooltip="Delete chat"
+          className="size-7 shrink-0 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 data-[active]:opacity-100"
+        >
+          <Trash2Icon className="size-4" />
+        </TooltipIconButton>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete thread?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This action cannot be undone. The chat and all of its messages will
+            be permanently removed from your TinyCloud space.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <ThreadListItemPrimitive.Delete asChild>
+            <AlertDialogAction>Delete</AlertDialogAction>
+          </ThreadListItemPrimitive.Delete>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </ThreadListItemPrimitive.Root>
 );
 

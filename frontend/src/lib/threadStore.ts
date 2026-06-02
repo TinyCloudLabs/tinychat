@@ -3,17 +3,59 @@ import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
-// One KV doc per thread, stored browser-direct in the user's TinyCloud space:
-//   xyz.tinycloud.tinychat/threads/<threadId>
+// Threads live in a per-space SQLite database, accessed browser-direct through
+// the TinyCloud SQL service. This is a single backend — pure SQL, no KV. Two
+// tables hold the data:
 //
-// The signed-in session already holds tinycloud.kv capability on its own space
-// (no backend delegation). All ops go through `tcw.kv`, which returns a Result
-// (never throws). Values come back as a string OR an already-parsed object.
+//   threads(id, title, model, created_at, updated_at)
+//   messages(thread_id, position, payload, created_at)   -- payload = JSON item
+//
+// DB HANDLE CONVENTION (critical): the SQL service sends the db name VERBATIM
+// as the invoke path — it does NOT app-prefix like KV does. The session
+// capability grants the SQL resource `xyz.tinycloud.tinychat/threads` (the
+// manifest path `threads` resolved with the app id). So the db name MUST be the
+// FULL resolved path `${APP_ID}/threads`; `db("threads")` 401s. The node derives
+// the SQLite FILE from the last path segment (`threads`) but authorizes against
+// the full resource string.
+//
+// The signed-in session already holds the tinycloud.sql capability on its own
+// space (no backend delegation). Every SQL op returns a Result (never throws);
+// auth failures surface as `error.code === "AUTH_UNAUTHORIZED"`.
 
 export const APP_ID = "xyz.tinycloud.tinychat";
-export const THREADS_PREFIX = `${APP_ID}/threads/`;
 export const DEFAULT_TITLE = "New chat";
 export const DEFAULT_MODEL = "openai/gpt-5-mini";
+
+/**
+ * Db handle name. MUST be the full resolved path so the SQL invoke resource
+ * equals the granted resource. See the DB HANDLE CONVENTION note above.
+ */
+const SQL_DB_NAME = `${APP_ID}/threads`;
+
+/** Schema creates, run before the first write per session (via ensureSchema). */
+const SCHEMA: string[] = [
+  `CREATE TABLE IF NOT EXISTS threads (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS messages (
+    thread_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, position)
+  )`,
+  // No explicit index: the node's SQLite authorizer denies CREATE INDEX, and the
+  // (thread_id, position) PRIMARY KEY already provides the index that covers
+  // `WHERE thread_id=? ORDER BY position`, so an explicit one would be redundant.
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
+];
 
 /** A persisted history item — stored verbatim from the ThreadHistoryAdapter. */
 export type StoredMessageItem = ExportedMessageRepositoryItem;
@@ -34,12 +76,177 @@ export interface ThreadSummary {
   model: string;
 }
 
-function threadKey(id: string): string {
-  return `${THREADS_PREFIX}${id}`;
+/** Minimal structural view of a SQL service error (Result.error). */
+type SqlError = { code: string; message: string };
+
+/** True when an error (or thrown value) is an AUTH_UNAUTHORIZED SQL failure. */
+function authUnauthorized(err: unknown): boolean {
+  if (err && typeof err === "object" && "code" in err) {
+    return (err as { code?: unknown }).code === "AUTH_UNAUTHORIZED";
+  }
+  return false;
 }
 
-/** Normalize the string-or-object value returned by kv.get into a ThreadDoc. */
-function coerceThreadDoc(raw: unknown): ThreadDoc | null {
+/** Wrap a SqlError in a throwable that preserves `.code` for authUnauthorized. */
+class SqlOpError extends Error {
+  readonly code: string;
+  constructor(error: SqlError, context: string) {
+    super(`${context}: [${error.code}] ${error.message}`);
+    this.name = "SqlOpError";
+    this.code = error.code;
+  }
+}
+
+/** A SQL database handle bound to the granted per-space resource. */
+function store(tcw: TinyCloudWeb) {
+  return tcw.sql.db(SQL_DB_NAME);
+}
+
+function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
+  return [...summaries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+// ── Schema bootstrap (memoized per space) ────────────────────────────
+
+const schemaReadySpaces = new Set<string>();
+
+/**
+ * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized by
+ * spaceId so it's a no-op after the first call per session.
+ *
+ * The CREATEs run as ordinary write statements in one `batch` transaction.
+ * NOTE: do NOT use `execute(..., { schema })` — the schema option is authorized
+ * differently and returns "400 Schema error: not authorized" under our
+ * read+write grant, whereas plain DDL statements (CREATE TABLE …) are allowed.
+ * On failure we do NOT memoize and we propagate so the caller can surface it.
+ */
+async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
+  const space = tcw.spaceId;
+  const memoKey = typeof space === "string" && space.length > 0 ? space : "";
+  if (memoKey && schemaReadySpaces.has(memoKey)) return;
+
+  const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
+  if (!result.ok) {
+    throw new SqlOpError(result.error, "ensureSchema");
+  }
+  if (memoKey) schemaReadySpaces.add(memoKey);
+}
+
+// ── Read helpers (rows are CELL-arrays, mapped by column order) ───────
+
+/** Extract a string cell, defaulting when null/missing. */
+function cellStr(row: unknown[], idx: number, fallback: string): string {
+  const v = row[idx];
+  return typeof v === "string" ? v : fallback;
+}
+
+/** Read a single thread row + its messages (ordered). Null if no thread. */
+export async function getThread(tcw: TinyCloudWeb, id: string): Promise<ThreadDoc | null> {
+  await ensureSchema(tcw);
+
+  const threadRes = await store(tcw).query(
+    "SELECT id, title, model, created_at, updated_at FROM threads WHERE id = ?",
+    [id],
+  );
+  if (!threadRes.ok) throw new SqlOpError(threadRes.error, "getThread(thread)");
+  const threadRows = threadRes.data.rows;
+  if (threadRows.length === 0) return null;
+  const tr = threadRows[0];
+
+  const msgRes = await store(tcw).query(
+    "SELECT payload FROM messages WHERE thread_id = ? ORDER BY position",
+    [id],
+  );
+  if (!msgRes.ok) throw new SqlOpError(msgRes.error, "getThread(messages)");
+
+  const messages: StoredMessageItem[] = [];
+  for (const mrow of msgRes.data.rows) {
+    const payload = mrow[0];
+    if (typeof payload !== "string") continue;
+    try {
+      messages.push(JSON.parse(payload) as StoredMessageItem);
+    } catch {
+      // Skip an unparseable payload rather than failing the whole load.
+    }
+  }
+
+  return {
+    id: cellStr(tr, 0, id),
+    title: cellStr(tr, 1, DEFAULT_TITLE),
+    model: cellStr(tr, 2, DEFAULT_MODEL),
+    createdAt: cellStr(tr, 3, new Date().toISOString()),
+    updatedAt: cellStr(tr, 4, new Date().toISOString()),
+    messages,
+  };
+}
+
+/** Read just a thread's model (cheap — avoids loading the whole message list). */
+export async function getThreadModel(tcw: TinyCloudWeb, id: string): Promise<string | null> {
+  await ensureSchema(tcw);
+  const res = await store(tcw).query("SELECT model FROM threads WHERE id = ?", [id]);
+  if (!res.ok) throw new SqlOpError(res.error, "getThreadModel");
+  const rows = res.data.rows;
+  if (rows.length === 0) return null;
+  const model = rows[0][0];
+  return typeof model === "string" ? model : null;
+}
+
+/** Read just a thread's title (cheap — for the live sidebar title update). */
+export async function getThreadTitle(tcw: TinyCloudWeb, id: string): Promise<string | null> {
+  await ensureSchema(tcw);
+  const res = await store(tcw).query("SELECT title FROM threads WHERE id = ?", [id]);
+  if (!res.ok) throw new SqlOpError(res.error, "getThreadTitle");
+  const rows = res.data.rows;
+  return rows.length > 0 ? cellStr(rows[0], 0, DEFAULT_TITLE) : null;
+}
+
+// ── Settings (cross-device key/value prefs, stored in the user's space) ──
+//
+// These live in the same per-space SQLite DB as threads, so they sync to ANY
+// device that signs in as this user (browser, iOS app, …) — unlike localStorage,
+// which is device-local. Callers use localStorage as an instant-paint cache and
+// reconcile against these (SQL is the source of truth).
+
+/** Read a cross-device setting value from the user's space. Null if unset. */
+export async function getSetting(tcw: TinyCloudWeb, key: string): Promise<string | null> {
+  await ensureSchema(tcw);
+  const res = await store(tcw).query("SELECT value FROM settings WHERE key = ?", [key]);
+  if (!res.ok) throw new SqlOpError(res.error, "getSetting");
+  const rows = res.data.rows;
+  return rows.length > 0 ? cellStr(rows[0], 0, "") : null;
+}
+
+/** Upsert a cross-device setting value into the user's space. */
+export async function setSetting(tcw: TinyCloudWeb, key: string, value: string): Promise<void> {
+  await ensureSchema(tcw);
+  const res = await store(tcw).execute(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    [key, value],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "setSetting");
+}
+
+// ── Local instant cache (stale-while-revalidate) ─────────────────────
+//
+// Each SQL op is a ~1.6–2.2s signed round-trip, so blocking the sidebar on even
+// one call is slow. We mirror the summary list in localStorage, keyed by spaceId
+// (the data boundary), render from it instantly, and revalidate in the
+// background. Cache writes only PATCH an already-full cache so we never render a
+// partial list.
+
+function cacheKey(tcw: TinyCloudWeb): string | null {
+  // Prefer the primary DID: it is present on BOTH fresh sign-in and a restored
+  // session, whereas tcw.spaceId is undefined after restore — which would
+  // silently disable the cache on every reload. did is a stable per-account id
+  // (did:pkh:eip155:<chain>:<address>), giving correct per-account isolation.
+  const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
+  const space = typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
+  const id = did ?? space;
+  return id ? `tinychat:index:${id}` : null;
+}
+
+/** Coerce a cached summaries blob (`{threads:[...]}` or bare `[...]`). */
+function coerceSummaries(raw: unknown): ThreadSummary[] | null {
   if (raw == null) return null;
   let value: unknown = raw;
   if (typeof raw === "string") {
@@ -49,67 +256,154 @@ function coerceThreadDoc(raw: unknown): ThreadDoc | null {
       return null;
     }
   }
-  if (typeof value !== "object" || value === null) return null;
-  const doc = value as Partial<ThreadDoc>;
-  if (typeof doc.id !== "string") return null;
-  return {
-    id: doc.id,
-    title: typeof doc.title === "string" ? doc.title : DEFAULT_TITLE,
-    model: typeof doc.model === "string" ? doc.model : DEFAULT_MODEL,
-    createdAt: typeof doc.createdAt === "string" ? doc.createdAt : new Date().toISOString(),
-    updatedAt: typeof doc.updatedAt === "string" ? doc.updatedAt : new Date().toISOString(),
-    messages: Array.isArray(doc.messages) ? (doc.messages as StoredMessageItem[]) : [],
-  };
+  const arr = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value !== null && Array.isArray((value as { threads?: unknown }).threads)
+      ? ((value as { threads: unknown[] }).threads)
+      : null;
+  if (!arr) return null;
+  return arr
+    .filter((s): s is Partial<ThreadSummary> => typeof s === "object" && s !== null)
+    .filter((s) => typeof s.id === "string")
+    .map((s) => ({
+      id: s.id as string,
+      title: typeof s.title === "string" ? s.title : DEFAULT_TITLE,
+      updatedAt: typeof s.updatedAt === "string" ? s.updatedAt : new Date().toISOString(),
+      model: typeof s.model === "string" ? s.model : DEFAULT_MODEL,
+    }));
 }
 
-/** Read a single thread doc; returns null if missing or unreadable. */
-export async function getThread(tcw: TinyCloudWeb, id: string): Promise<ThreadDoc | null> {
-  const result = await tcw.kv.get<unknown>(threadKey(id));
-  if (!result.ok) return null;
-  return coerceThreadDoc(result.data.data);
-}
+// Monotonically increasing counter bumped by every mutator before it touches
+// SQL or the cache. listThreads snapshots this before kicking off the background
+// revalidate and drops the writeCache if the counter advanced in the meantime —
+// preventing a stale SELECT (issued before a delete/rename) from clobbering
+// removeCacheEntry's correct post-mutation cache.
+let mutationGen = 0;
 
-async function putThread(tcw: TinyCloudWeb, doc: ThreadDoc): Promise<void> {
-  const result = await tcw.kv.put(threadKey(doc.id), doc);
-  if (!result.ok) {
-    throw new Error(`Failed to save thread: ${result.error.message}`);
+function readCache(tcw: TinyCloudWeb): ThreadSummary[] | null {
+  const key = cacheKey(tcw);
+  if (!key) return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return null; // absent → cold (distinct from an empty list)
+    return coerceSummaries(raw);
+  } catch {
+    return null;
   }
 }
 
-/** List thread summaries, newest first. */
+function writeCache(tcw: TinyCloudWeb, summaries: ThreadSummary[]): void {
+  const key = cacheKey(tcw);
+  if (!key) return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify({ threads: sortSummaries(summaries) }));
+  } catch {
+    // localStorage full/disabled — the cache is optional, ignore.
+  }
+}
+
+/** Patch an EXISTING cache. No-op if there's no cache yet (avoid partial lists). */
+function patchCacheEntry(tcw: TinyCloudWeb, summary: ThreadSummary): void {
+  const cached = readCache(tcw);
+  if (!cached) return;
+  writeCache(tcw, [...cached.filter((s) => s.id !== summary.id), summary]);
+}
+
+function removeCacheEntry(tcw: TinyCloudWeb, id: string): void {
+  const cached = readCache(tcw);
+  if (!cached) return;
+  writeCache(tcw, cached.filter((s) => s.id !== id));
+}
+
+// ── SQL fetch for the sidebar ────────────────────────────────────────
+
+/** Freshest summaries from SQL: one SELECT, rows mapped from cell-arrays. */
+async function fetchFromSql(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
+  await ensureSchema(tcw);
+  const res = await store(tcw).query(
+    "SELECT id, title, model, updated_at FROM threads ORDER BY updated_at DESC",
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "fetchFromSql");
+  return res.data.rows.map((row) => ({
+    id: cellStr(row, 0, ""),
+    title: cellStr(row, 1, DEFAULT_TITLE),
+    model: cellStr(row, 2, DEFAULT_MODEL),
+    updatedAt: cellStr(row, 3, new Date().toISOString()),
+  }));
+}
+
+/**
+ * List thread summaries, newest first.
+ *
+ * Stale-while-revalidate: if a local cache exists, return it IMMEDIATELY and
+ * refresh in the background. Cold (no cache): ensure the schema, read from SQL,
+ * then cache. Never throws — any error (including AUTH_UNAUTHORIZED) is logged
+ * and the cached value (or `[]`) is returned.
+ */
 export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
-  const result = await tcw.kv.list({ prefix: THREADS_PREFIX, removePrefix: true });
-  if (!result.ok) return [];
-
-  const ids = result.data.keys
-    .map((key) => key.replace(/^\/+/, ""))
-    .filter((key) => key.length > 0 && !key.includes("/"));
-
-  // Fetch sequentially: the KV transport drops some responses under high
-  // concurrency (a parallel `Promise.all` over many keys loses docs at random),
-  // which made the sidebar list unstable and sometimes empty after reload.
-  const summaries: ThreadSummary[] = [];
-  for (const id of ids) {
-    const doc = await getThread(tcw, id);
-    if (!doc) continue;
-    // Skip message-less docs. New threads are only persisted on their first
-    // message (appendMessage creates on demand), so an empty doc is either a
-    // legacy orphan or a never-used thread — keep it out of the sidebar.
-    if (doc.messages.length === 0) continue;
-    summaries.push({ id: doc.id, title: doc.title, updatedAt: doc.updatedAt, model: doc.model });
+  const cached = readCache(tcw);
+  // Only treat a NON-EMPTY cache as a valid instant paint. An empty cached array
+  // (e.g. written transiently before threads loaded, or after a failed read)
+  // falls through to the cold path so it self-heals instead of showing a blank
+  // sidebar indefinitely.
+  if (cached && cached.length > 0) {
+    const startGen = mutationGen;
+    void coldLoad(tcw)
+      .then((fresh) => {
+        // Drop a revalidate whose SELECT was in flight when a mutation happened
+        // — otherwise it would resurrect deleted/renamed rows by overwriting
+        // the cache mutators have already corrected.
+        if (mutationGen !== startGen) return;
+        writeCache(tcw, fresh);
+      })
+      .catch((err) => console.warn("[threadStore] background revalidation failed", err));
+    return cached;
   }
-  summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return summaries;
+  // Cold load — no usable local cache. Pay the network once, then cache.
+  const startGen = mutationGen;
+  const fresh = await coldLoad(tcw);
+  if (mutationGen === startGen) writeCache(tcw, fresh);
+  return fresh;
 }
 
-/** Create an empty thread doc. */
+/**
+ * The cold-path read used by both the first load and the background revalidate.
+ * Pure SQL: ensure the schema then read summaries. Never throws — logs and
+ * falls back to the cache (or `[]`).
+ */
+async function coldLoad(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
+  try {
+    await ensureSchema(tcw);
+    return await fetchFromSql(tcw);
+  } catch (err) {
+    if (authUnauthorized(err)) {
+      console.warn(
+        "[threadStore] SQL unauthorized — sign in again to get the tinycloud.sql capability",
+        err,
+      );
+    } else {
+      console.error("[threadStore] listThreads cold load failed:", err);
+    }
+    return readCache(tcw) ?? [];
+  }
+}
+
+// ── Mutations ────────────────────────────────────────────────────────
+
+/**
+ * Create an in-memory thread doc. Does NOT write — empty threads never hit
+ * storage. The row is created lazily by appendMessage on the first message
+ * (runtime.tsx only calls this as a fallback inside appendMessage).
+ */
 export async function createThread(
   tcw: TinyCloudWeb,
   id: string,
   model: string = DEFAULT_MODEL,
 ): Promise<ThreadDoc> {
+  mutationGen++;
+  void tcw;
   const now = new Date().toISOString();
-  const doc: ThreadDoc = {
+  return {
     id,
     title: DEFAULT_TITLE,
     model,
@@ -117,8 +411,6 @@ export async function createThread(
     updatedAt: now,
     messages: [],
   };
-  await putThread(tcw, doc);
-  return doc;
 }
 
 function firstTextOf(item: StoredMessageItem): string {
@@ -132,38 +424,79 @@ function firstTextOf(item: StoredMessageItem): string {
   return "";
 }
 
-/** Append one finalized message item (read-modify-write). */
+/**
+ * Append one finalized message item. Upserts the thread row and inserts the
+ * message at the next position — both in a single batch, with the position
+ * computed server-side via a subquery (no read round-trip, race-safe).
+ */
 export async function appendMessage(
   tcw: TinyCloudWeb,
   id: string,
   item: StoredMessageItem,
 ): Promise<void> {
-  const existing = (await getThread(tcw, id)) ?? (await createThread(tcw, id));
+  mutationGen++;
+  await ensureSchema(tcw);
 
-  const next: ThreadDoc = {
-    ...existing,
-    messages: [...existing.messages, item],
-    updatedAt: new Date().toISOString(),
-  };
+  // Read the current title (to know whether to derive one) and existing model.
+  const head = await store(tcw).query(
+    "SELECT title, model FROM threads WHERE id = ?",
+    [id],
+  );
+  if (!head.ok) throw new SqlOpError(head.error, "appendMessage(head)");
+  const exists = head.data.rows.length > 0;
+  const currentTitle = exists ? cellStr(head.data.rows[0], 0, DEFAULT_TITLE) : DEFAULT_TITLE;
+  const currentModel = exists ? cellStr(head.data.rows[0], 1, DEFAULT_MODEL) : DEFAULT_MODEL;
 
   // Derive a title from the first user message while still default.
-  if (next.title === DEFAULT_TITLE && item.message?.role === "user") {
+  let title = currentTitle;
+  if (title === DEFAULT_TITLE && item.message?.role === "user") {
     const text = firstTextOf(item);
-    if (text) next.title = text.slice(0, 60);
+    if (text) title = text.slice(0, 60);
   }
 
-  await putThread(tcw, next);
+  const now = new Date().toISOString();
+  const payload = JSON.stringify(item);
+
+  const res = await store(tcw).batch([
+    {
+      sql: `INSERT INTO threads (id, title, model, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              model = excluded.model,
+              updated_at = excluded.updated_at`,
+      params: [id, title, currentModel, now, now],
+    },
+    {
+      sql: `INSERT INTO messages (thread_id, position, payload, created_at)
+            VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE thread_id = ?), ?, ?)`,
+      params: [id, id, payload, now],
+    },
+  ]);
+  if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
+
+  patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
 }
 
-/** Set/rename a thread title. */
+/** Set/rename a thread title. No-op effect if the row doesn't exist (fine). */
 export async function setThreadTitle(
   tcw: TinyCloudWeb,
   id: string,
   title: string,
 ): Promise<void> {
-  const existing = await getThread(tcw, id);
-  if (!existing) return;
-  await putThread(tcw, { ...existing, title, updatedAt: new Date().toISOString() });
+  mutationGen++;
+  await ensureSchema(tcw);
+  const now = new Date().toISOString();
+  const res = await store(tcw).execute(
+    "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
+    [title, now, id],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "setThreadTitle");
+  const cached = readCache(tcw);
+  if (cached) {
+    const prior = cached.find((s) => s.id === id);
+    patchCacheEntry(tcw, { id, title, updatedAt: now, model: prior?.model ?? DEFAULT_MODEL });
+  }
 }
 
 export const renameThread = setThreadTitle;
@@ -174,12 +507,38 @@ export async function setThreadModel(
   id: string,
   model: string,
 ): Promise<void> {
-  const existing = await getThread(tcw, id);
-  if (!existing) return;
-  await putThread(tcw, { ...existing, model, updatedAt: new Date().toISOString() });
+  mutationGen++;
+  await ensureSchema(tcw);
+  const now = new Date().toISOString();
+  const res = await store(tcw).execute(
+    "UPDATE threads SET model = ?, updated_at = ? WHERE id = ?",
+    [model, now, id],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "setThreadModel");
+  // The summary cache doesn't carry the title here; patch only updatedAt+model
+  // against the existing cached entry if present.
+  const cached = readCache(tcw);
+  if (cached) {
+    const prior = cached.find((s) => s.id === id);
+    patchCacheEntry(tcw, {
+      id,
+      title: prior?.title ?? DEFAULT_TITLE,
+      updatedAt: now,
+      model,
+    });
+  }
 }
 
-/** Delete a thread doc. */
+/** Delete a thread and its messages. */
 export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void> {
-  await tcw.kv.delete(threadKey(id));
+  // Bump BEFORE SQL: any listThreads() revalidate already in flight will see
+  // a different mutationGen on completion and will not clobber the cache.
+  mutationGen++;
+  await ensureSchema(tcw);
+  const res = await store(tcw).batch([
+    { sql: "DELETE FROM messages WHERE thread_id = ?", params: [id] },
+    { sql: "DELETE FROM threads WHERE id = ?", params: [id] },
+  ]);
+  if (!res.ok) throw new SqlOpError(res.error, "deleteThread");
+  removeCacheEntry(tcw, id);
 }

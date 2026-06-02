@@ -15,7 +15,7 @@ import {
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
-import { DEFAULT_MODEL } from "./lib/threadStore";
+import { DEFAULT_MODEL, getSetting, setSetting } from "./lib/threadStore";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { ChevronDownIcon } from "lucide-react";
@@ -25,6 +25,16 @@ const APP_NAME = "TinyChat";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
+const MODEL_STORAGE_KEY = "xyz.tinycloud.tinychat:active-model";
+
+function getInitialModel(): string {
+  if (typeof window === "undefined") return DEFAULT_MODEL;
+  try {
+    return window.localStorage.getItem(MODEL_STORAGE_KEY) ?? DEFAULT_MODEL;
+  } catch {
+    return DEFAULT_MODEL;
+  }
+}
 
 type AppState =
   | "booting"
@@ -39,9 +49,10 @@ interface ModelOption {
 }
 
 export function App() {
+  const initialModel = getInitialModel();
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const restoredRef = useRef(false);
-  const modelRef = useRef<string>(DEFAULT_MODEL);
+  const modelRef = useRef<string>(initialModel);
 
   const [state, setState] = useState<AppState>("booting");
   const [address, setAddress] = useState<string | null>(null);
@@ -49,13 +60,63 @@ export function App() {
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [model, setModel] = useState<string>(DEFAULT_MODEL);
+  const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
 
   const setSelectedModel = useCallback((next: string) => {
     modelRef.current = next;
     setModel(next);
   }, []);
+
+  // localStorage is an instant-paint cache for the picker; the per-space SQL
+  // `settings` row (active_model) is the cross-device source of truth.
+  const writeLocalModel = useCallback((next: string) => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(MODEL_STORAGE_KEY, next);
+    } catch {
+      // localStorage full/disabled — the cache is optional.
+    }
+  }, []);
+
+  // Explicit dropdown pick: update state, cache locally (instant), and persist to
+  // the user's TinyCloud space (async, syncs across devices). The per-thread sync
+  // (onActiveThreadModel) uses setSelectedModel directly and does NOT overwrite
+  // this global default.
+  const pickModel = useCallback(
+    (next: string) => {
+      setSelectedModel(next);
+      writeLocalModel(next);
+      if (tcw) {
+        void setSetting(tcw, "active_model", next).catch((err) => {
+          console.warn("[App] failed to persist model selection to space", err);
+        });
+      }
+    },
+    [setSelectedModel, writeLocalModel, tcw],
+  );
+
+  // On sign-in, reconcile the picker with the cross-device default from the
+  // user's space (SQL is the source of truth). localStorage already painted the
+  // picker instantly; this updates it if another device changed the preference.
+  useEffect(() => {
+    if (state !== "ready" || !tcw) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await getSetting(tcw, "active_model");
+        if (cancelled || !saved || saved === modelRef.current) return;
+        setSelectedModel(saved);
+        writeLocalModel(saved);
+      } catch (err) {
+        // AUTH_UNAUTHORIZED or unset — keep the localStorage/default value.
+        console.warn("[App] failed to load model selection from space", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state, tcw, setSelectedModel, writeLocalModel]);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
   useEffect(() => {
@@ -166,14 +227,22 @@ export function App() {
     if (tcw) await tcw.signOut?.();
     else if (address) clearPersistedSession(address);
     sessionStoreRef.current.clear();
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.removeItem(MODEL_STORAGE_KEY);
+      } catch {
+        // localStorage disabled — nothing to clear.
+      }
+    }
+    modelRef.current = DEFAULT_MODEL;
+    setModel(DEFAULT_MODEL);
     setTcw(null);
     setAddress(null);
     setDid(null);
     setSpaceId(null);
     setModels([]);
-    setSelectedModel(DEFAULT_MODEL);
     setState("unauthenticated");
-  }, [address, tcw, setSelectedModel]);
+  }, [address, tcw]);
 
   const isReady = state === "ready" && tcw !== null;
 
@@ -191,7 +260,7 @@ export function App() {
             <div className="relative">
               <select
                 value={model}
-                onChange={(e) => setSelectedModel(e.target.value)}
+                onChange={(e) => pickModel(e.target.value)}
                 className="h-8 cursor-pointer appearance-none rounded-md border border-input bg-background pl-2.5 pr-7 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="Model"
               >

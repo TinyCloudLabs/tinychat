@@ -19,6 +19,8 @@ import {
   appendMessage,
   deleteThread,
   getThread,
+  getThreadModel,
+  getThreadTitle,
   listThreads,
   renameThread,
   setThreadModel,
@@ -135,8 +137,8 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
         if (!threadId || !onActiveThreadModel) return;
         let cancelled = false;
         (async () => {
-          const doc = await getThread(activeTcw, threadId);
-          if (!cancelled && doc) onActiveThreadModel(doc.model);
+          const model = await getThreadModel(activeTcw, threadId);
+          if (!cancelled && model) onActiveThreadModel(model);
         })();
         return () => {
           cancelled = true;
@@ -180,10 +182,19 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
       async delete(remoteId: string) {
         await deleteThread(tcw, remoteId);
       },
-      async generateTitle() {
-        // Titles are derived in the store from the first user message; emit an
-        // empty stream so the runtime's title pipeline resolves cleanly.
-        return createAssistantStream(() => {});
+      async generateTitle(remoteId: string) {
+        // Titles are derived & persisted in the store from the first user
+        // message. assistant-ui's RemoteThreadList calls this once after the
+        // first run and optimistically applies the emitted text as the sidebar
+        // title (instant, no list() refresh). So read the persisted title and
+        // emit it as one text chunk. Guard against the default so a non-text
+        // first message (no derived title) leaves the optimistic title as-is.
+        const title = await getThreadTitle(tcw, remoteId).catch(() => null);
+        return createAssistantStream((controller) => {
+          if (title && title !== DEFAULT_TITLE) {
+            controller.appendText(title);
+          }
+        });
       },
       async fetch(threadId: string) {
         const doc = await getThread(tcw, threadId);
@@ -215,7 +226,6 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   const chatModel = useMemo(
     () => createChatModelAdapter(depsRef.current),
     // The adapter reads everything off depsRef at call time, so it is stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
