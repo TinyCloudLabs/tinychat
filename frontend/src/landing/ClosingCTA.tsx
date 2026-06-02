@@ -15,7 +15,7 @@ export function ClosingCTA() {
           <span className="text-primary">Your space.</span>
         </h2>
         <p className="max-w-xl text-balance text-muted-foreground">
-          Sign in with your wallet and you're chatting in under a minute. Every
+          Sign in with Face ID or Touch ID and you're chatting in under a minute. Every
           conversation is saved to your own TinyCloud space — yours to keep,
           sync, or delete.
         </p>

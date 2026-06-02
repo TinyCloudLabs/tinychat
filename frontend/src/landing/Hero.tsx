@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 import {
   ArrowRightIcon,
+  CpuIcon,
   RefreshCwIcon,
+  ScanFaceIcon,
   ShieldCheckIcon,
-  WalletIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -31,7 +32,7 @@ export function Hero() {
           TinyCloud Chat is a fast, multi-model assistant where every
           conversation is saved to{" "}
           <span className="text-foreground">your own TinyCloud space</span> —
-          owned by your wallet, synced across your devices, and{" "}
+          yours to keep, synced across your devices, and{" "}
           <span className="text-foreground">never trapped in a provider's account</span>.
         </p>
 
@@ -49,8 +50,8 @@ export function Hero() {
 
         <div className="mt-2 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5">
-            <WalletIcon className="size-3.5" />
-            Sign in with your wallet
+            <ScanFaceIcon className="size-3.5" />
+            Face ID / Touch ID
           </span>
           <span className="inline-flex items-center gap-1.5">
             <ShieldCheckIcon className="size-3.5" />
@@ -59,6 +60,10 @@ export function Hero() {
           <span className="inline-flex items-center gap-1.5">
             <RefreshCwIcon className="size-3.5" />
             Synced across devices
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <CpuIcon className="size-3.5" />
+            Runs in secure enclaves
           </span>
         </div>
       </div>

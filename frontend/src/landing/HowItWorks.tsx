@@ -2,7 +2,7 @@ const LAYERS = [
   {
     number: "01",
     title: "Identity",
-    body: "Sign in with your wallet — no email, no password, no account form. A private TinyCloud space is provisioned the first time you connect.",
+    body: "Sign in with a passkey — Face ID or Touch ID, no passwords. OpenKey secures the key behind it in a hardware enclave.",
   },
   {
     number: "02",
@@ -12,7 +12,7 @@ const LAYERS = [
   {
     number: "03",
     title: "Models",
-    body: "Pick from a range of models and switch mid-thread. Requests stream through TinyCloud's gateway, so there are no keys for you to manage.",
+    body: "Pick from a range of models and switch mid-thread — each one runs in a confidential enclave (more below), with no keys for you to manage.",
   },
   {
     number: "04",

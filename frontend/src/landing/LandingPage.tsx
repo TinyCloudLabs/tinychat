@@ -2,6 +2,7 @@ import { LandingNav } from "./LandingNav";
 import { Hero } from "./Hero";
 import { Features } from "./Features";
 import { HowItWorks } from "./HowItWorks";
+import { Confidential } from "./Confidential";
 import { ClosingCTA } from "./ClosingCTA";
 import { Footer } from "./Footer";
 
@@ -13,6 +14,7 @@ export function LandingPage() {
         <Hero />
         <Features />
         <HowItWorks />
+        <Confidential />
         <ClosingCTA />
       </main>
       <Footer />
