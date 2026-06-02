@@ -1,0 +1,7 @@
+name = "tinychat-backend"
+profile = "tinycloudxyz"
+compose_file = "docker-compose.phala.yml"
+gateway_domain = "api.tinycloud.chat"
+gateway_port = 3001
+public_logs = false
+public_sysinfo = true

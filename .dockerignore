@@ -1,0 +1,15 @@
+.git
+.turbo
+.wrangler
+node_modules
+**/node_modules
+dist
+**/dist
+.env
+.env.*
+.env.local
+*.pem
+*.tsbuildinfo
+**/*.tsbuildinfo
+test/.passkey.json
+test/.last-run.log

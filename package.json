@@ -33,6 +33,10 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "generate-key": "bun run packages/server/scripts/generate-key.ts backend/.env",
+    "deploy:frontend": "bunx turbo run build --filter=@tinychat/frontend && CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-9959301f03d2db1a5fcf5e004278d467} bunx wrangler pages deploy",
+    "deploy:backend:phala": "phala deploy --cvm-id ${TINYCHAT_CVM_ID:?set TINYCHAT_CVM_ID} -c docker-compose.phala.yml -e .env.prod -e TINYCHAT_BACKEND_IMAGE=${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} -e TINYCHAT_INGRESS_IMAGE=${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest} -e TINYCLOUD_HOST=${TINYCLOUD_HOST:-https://tee.node.tinycloud.xyz} -e PORT=3001 -e PHALA_GATEWAY_CNAME=${PHALA_GATEWAY_CNAME:?set PHALA_GATEWAY_CNAME} --wait && curl -fsS https://api.tinycloud.chat/health && curl -fsS https://api.tinycloud.chat/api/server-info",
+    "docker:backend:build": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} .",
+    "docker:backend:push": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} --push .",
     "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs"
   },
   "devDependencies": {
