@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronDownIcon } from "lucide-react";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
-const APP_NAME = "TinyChat";
+const APP_NAME = "TinyCloud Chat";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
@@ -254,7 +254,7 @@ export function App() {
             <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
               T
             </span>
-            TinyChat
+            TinyCloud Chat
           </span>
           {isReady && (
             <div className="relative">
@@ -371,7 +371,7 @@ function BootSurface(props: {
           T
         </span>
         <div className="flex flex-col gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">TinyChat</h1>
+          <h1 className="text-xl font-semibold tracking-tight">TinyCloud Chat</h1>
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
         {(props.state === "unauthenticated" || props.state === "recoverableError") && (

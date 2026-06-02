@@ -14,7 +14,7 @@ describe("TinyChat manifest and backend policy", () => {
 
     expect(manifest.manifest_version).toBe(1);
     expect(manifest.app_id).toBe(APP_ID);
-    expect(manifest.name).toBe("TinyChat");
+    expect(manifest.name).toBe("TinyCloud Chat");
     expect(manifest.defaults).toBe(false);
     expect("backend" in manifest).toBe(false);
     expect("delegations" in manifest).toBe(false);
@@ -24,6 +24,12 @@ describe("TinyChat manifest and backend policy", () => {
         path: "threads/",
         actions: ["get", "put", "del", "list"],
         description: "Read and write chat threads and messages.",
+      },
+      {
+        service: "tinycloud.sql",
+        path: "threads",
+        actions: ["read", "write"],
+        description: "Store chat threads and messages in your space's SQL database.",
       },
     ]);
   });
