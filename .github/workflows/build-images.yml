@@ -1,0 +1,78 @@
+name: Build & Push Backend Images
+
+# Seeds GHCR with the backend + ingress images so a Phala CVM can be created
+# before the full deploy workflow (which requires PHALA_CVM_ID) can run.
+# Manual trigger only.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: tinychat-build-images
+  cancel-in-progress: false
+
+env:
+  DOCKER_IMAGE: ${{ vars.TINYCHAT_BACKEND_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
+  INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        id: backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=TinyChat backend
+
+      - name: Build and push ingress image
+        id: ingress
+        uses: docker/build-push-action@v5
+        with:
+          context: infra/phala-ingress
+          file: infra/phala-ingress/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.INGRESS_IMAGE }}:ingress-latest
+            ${{ env.INGRESS_IMAGE }}:ingress-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=TinyChat Phala ingress
+
+      - name: Summary
+        run: |
+          {
+            echo "## Images pushed to GHCR"
+            echo
+            echo "- \`${DOCKER_IMAGE}:latest\` (+ \`:${GITHUB_SHA}\`) — digest \`${{ steps.backend.outputs.digest }}\`"
+            echo "- \`${INGRESS_IMAGE}:ingress-latest\` (+ \`:ingress-${GITHUB_SHA}\`) — digest \`${{ steps.ingress.outputs.digest }}\`"
+            echo
+            echo "> If the GHCR packages are private, make them public (or add pull credentials) so the Phala CVM can pull them."
+          } >> "$GITHUB_STEP_SUMMARY"
