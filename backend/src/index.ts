@@ -59,7 +59,7 @@ async function main() {
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
   const authMiddleware = createAuthMiddleware(backendPrivateKey);
-  const delegationMiddleware = createDelegationMiddleware({
+  const _delegationMiddleware = createDelegationMiddleware({
     node,
     store: delegationStore,
     cache: delegationCache,
