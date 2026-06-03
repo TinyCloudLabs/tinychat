@@ -55,7 +55,28 @@ const SCHEMA: string[] = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+  // Memory: per-space "about me" doc, single row keyed by id='user_context'.
+  // No CREATE INDEX (authorizer denies it) — the PK already covers the lookup.
+  `CREATE TABLE IF NOT EXISTS memory (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
 ];
+
+/** Stable id of the single user_context row in the memory table. */
+const MEMORY_ROW_ID = "user_context";
+
+// Monotonically increasing counter bumped on every memory mutation (set/clear
+// and the runtime/panel write-back paths). Used by the MemoryPanel mount-time
+// reconcile to drop a stale SQL read that lost the race against a more recent
+// write — without this, a SELECT in flight when an extraction lands would
+// roll memoryRef back to the pre-extraction value on the next render.
+let _memoryWriteGen = 0;
+/** Snapshot the memory write counter — see _memoryWriteGen above. */
+export function memoryWriteGen(): number {
+  return _memoryWriteGen;
+}
 
 /** A persisted history item — stored verbatim from the ThreadHistoryAdapter. */
 export type StoredMessageItem = ExportedMessageRepositoryItem;
@@ -224,6 +245,106 @@ export async function setSetting(tcw: TinyCloudWeb, key: string, value: string):
     [key, value],
   );
   if (!res.ok) throw new SqlOpError(res.error, "setSetting");
+}
+
+// ── Memory (per-space user_context doc, single row) ───────────────────
+
+/** localStorage cache key for the per-space memory doc. */
+function memoryCacheKey(tcw: TinyCloudWeb): string | null {
+  const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
+  const space = typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
+  const id = did ?? space;
+  return id ? `tinychat:memory:${id}` : null;
+}
+
+/** Read the cached memory doc (instant paint). Returns null if absent. */
+export function readMemoryCache(tcw: TinyCloudWeb): string | null {
+  const key = memoryCacheKey(tcw);
+  if (!key) return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return typeof raw === "string" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMemoryCache(tcw: TinyCloudWeb, content: string): void {
+  const key = memoryCacheKey(tcw);
+  if (!key) return;
+  try {
+    window.localStorage.setItem(key, content);
+  } catch {
+    // localStorage full/disabled — cache is optional.
+  }
+}
+
+function removeMemoryCache(tcw: TinyCloudWeb): void {
+  const key = memoryCacheKey(tcw);
+  if (!key) return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Read the per-space user_context memory doc. Returns null if unset.
+ *
+ * On AUTH_UNAUTHORIZED or other SQL errors, falls back to the localStorage
+ * cache rather than throwing — memory is best-effort and must never block
+ * the chat path.
+ */
+export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
+  try {
+    await ensureSchema(tcw);
+    const res = await store(tcw).query(
+      "SELECT content FROM memory WHERE id = ?",
+      [MEMORY_ROW_ID],
+    );
+    if (!res.ok) throw new SqlOpError(res.error, "getMemory");
+    const rows = res.data.rows;
+    if (rows.length === 0) return null;
+    const content = cellStr(rows[0], 0, "");
+    writeMemoryCache(tcw, content);
+    return content;
+  } catch (err) {
+    if (authUnauthorized(err)) {
+      console.warn("[threadStore] getMemory unauthorized — falling back to cache", err);
+    } else {
+      console.warn("[threadStore] getMemory failed — falling back to cache", err);
+    }
+    return readMemoryCache(tcw);
+  }
+}
+
+/** Upsert the per-space user_context doc and refresh the localStorage cache. */
+export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<void> {
+  // Bump BEFORE SQL: any in-flight memory read will see a different counter
+  // on completion and skip its ref assignment (see memoryWriteGen above).
+  _memoryWriteGen++;
+  await ensureSchema(tcw);
+  const now = new Date().toISOString();
+  const res = await store(tcw).execute(
+    `INSERT INTO memory (id, content, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
+    [MEMORY_ROW_ID, content, now],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "setMemory");
+  writeMemoryCache(tcw, content);
+}
+
+/** Delete the per-space user_context doc and drop the localStorage cache. */
+export async function clearMemory(tcw: TinyCloudWeb): Promise<void> {
+  _memoryWriteGen++;
+  await ensureSchema(tcw);
+  const res = await store(tcw).execute(
+    "DELETE FROM memory WHERE id = ?",
+    [MEMORY_ROW_ID],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "clearMemory");
+  removeMemoryCache(tcw);
 }
 
 // ── Local instant cache (stale-while-revalidate) ─────────────────────

@@ -15,10 +15,11 @@ import {
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
-import { DEFAULT_MODEL, getSetting, setSetting } from "./lib/threadStore";
+import { DEFAULT_MODEL, getSetting, readMemoryCache, setSetting } from "./lib/threadStore";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { MemoryPanel } from "@/components/MemoryPanel";
 import { Button } from "@/components/ui/button";
-import { ChevronDownIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon } from "lucide-react";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -53,6 +54,11 @@ export function App() {
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const restoredRef = useRef(false);
   const modelRef = useRef<string>(initialModel);
+  // Live ref the runtime reads at model-context request time. Initialized to
+  // null and reconciled by useChatRuntime + MemoryPanel from the per-space
+  // memory row. Held at App level (above useChatRuntime) so the MemoryPanel
+  // and runtime share one source of truth.
+  const memoryRef = useRef<string | null>(null);
 
   const [state, setState] = useState<AppState>("booting");
   const [address, setAddress] = useState<string | null>(null);
@@ -62,6 +68,18 @@ export function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  // Bumped each time the runtime/panel writes back a new memory doc — lets
+  // the brain button re-render its "has memory" dot without making this
+  // component re-render on every keystroke in the editor.
+  const [memoryVersion, bumpMemoryVersion] = useState(0);
+  const onMemoryUpdated = useCallback((_doc: string | null) => {
+    bumpMemoryVersion((v) => v + 1);
+  }, []);
+  const hasMemory = useMemo(() => {
+    void memoryVersion;
+    return Boolean(memoryRef.current && memoryRef.current.trim().length > 0);
+  }, [memoryVersion]);
 
   const setSelectedModel = useCallback((next: string) => {
     modelRef.current = next;
@@ -117,6 +135,17 @@ export function App() {
       cancelled = true;
     };
   }, [state, tcw, setSelectedModel, writeLocalModel]);
+
+  // Seed memoryRef from the localStorage cache as soon as we have a tcw —
+  // before the first chat turn — so the very first injection paints from
+  // cache and the runtime's SQL reconcile updates it asynchronously.
+  useEffect(() => {
+    if (!tcw) return;
+    const cached = readMemoryCache(tcw);
+    if (cached !== null && memoryRef.current === null) {
+      memoryRef.current = cached;
+    }
+  }, [tcw]);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
   useEffect(() => {
@@ -235,6 +264,8 @@ export function App() {
       }
     }
     modelRef.current = DEFAULT_MODEL;
+    memoryRef.current = null;
+    setMemoryPanelOpen(false);
     setModel(DEFAULT_MODEL);
     setTcw(null);
     setAddress(null);
@@ -276,6 +307,16 @@ export function App() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {isReady && tcw && (
+            <MemoryPopover
+              tcw={tcw}
+              memoryRef={memoryRef}
+              open={memoryPanelOpen}
+              setOpen={setMemoryPanelOpen}
+              hasMemory={hasMemory}
+              onMemoryUpdated={onMemoryUpdated}
+            />
+          )}
           <ThemeToggle />
           <ConnectionDetails
             address={address}
@@ -303,7 +344,9 @@ export function App() {
             tcw={tcw}
             sessionStore={sessionStoreRef.current}
             modelRef={modelRef}
+            memoryRef={memoryRef}
             onActiveThreadModel={setSelectedModel}
+            onMemoryUpdated={onMemoryUpdated}
           />
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
@@ -313,11 +356,120 @@ export function App() {
   );
 }
 
+function MemoryPopover(props: {
+  tcw: TinyCloudWeb;
+  memoryRef: React.MutableRefObject<string | null>;
+  open: boolean;
+  setOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  hasMemory: boolean;
+  onMemoryUpdated: (doc: string | null) => void;
+}) {
+  const { tcw, memoryRef, open, setOpen, hasMemory, onMemoryUpdated } = props;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Live dirty flag bubbled by MemoryPanel. Read inside the document-level
+  // handlers below (not from React state) so a stale closure can't let a
+  // click-outside silently drop unsaved edits.
+  const dirtyRef = useRef(false);
+  const onDirtyChange = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty;
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      const root = containerRef.current;
+      if (!root) return;
+      // While the Clear-memory AlertDialog (or any modal) is open, leave
+      // dismissal to the dialog itself — its overlay swallows clicks and
+      // its own Escape handler closes it first.
+      if (document.querySelector('[role="alertdialog"][data-state="open"]')) return;
+      // Don't silently discard unsaved edits — the panel surfaces an
+      // "Unsaved changes" banner; require explicit Save/Revert/Close.
+      if (dirtyRef.current) return;
+      if (!root.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (document.querySelector('[role="alertdialog"][data-state="open"]')) return;
+      if (event.key === "Escape") {
+        if (dirtyRef.current) return; // keep the panel open while edits are unsaved
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      // Focus trap: when Tab leaves the panel, cycle back to the other end.
+      // Keeps a keyboard user inside the dialog while it's open — matches the
+      // ARIA dialog contract we now expose on the panel root.
+      if (event.key !== "Tab") return;
+      const panel = containerRef.current?.querySelector<HTMLElement>("#memory-panel");
+      if (!panel) return;
+      const focusables = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (event.shiftKey && (active === first || !panel.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, setOpen]);
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <Button
+        ref={triggerRef}
+        variant="outline"
+        size="sm"
+        aria-label={hasMemory ? "Memory (active)" : "Memory"}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls="memory-panel"
+        onClick={() => setOpen((o) => !o)}
+        className="relative h-8 gap-1.5 px-2.5 text-xs"
+      >
+        <BrainIcon className="size-3.5" />
+        Memory
+        {hasMemory && (
+          <span
+            aria-hidden
+            className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-primary"
+          />
+        )}
+      </Button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1.5">
+          <MemoryPanel
+            tcw={tcw}
+            memoryRef={memoryRef}
+            onMemoryUpdated={onMemoryUpdated}
+            onClose={() => setOpen(false)}
+            onDirtyChange={onDirtyChange}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChatWorkspace(props: {
   tcw: TinyCloudWeb;
   sessionStore: SessionStore;
   modelRef: React.MutableRefObject<string>;
+  memoryRef: React.MutableRefObject<string | null>;
   onActiveThreadModel: (model: string) => void;
+  onMemoryUpdated: (doc: string | null) => void;
 }) {
   const deps = useMemo(
     () => ({
@@ -325,9 +477,18 @@ function ChatWorkspace(props: {
       sessionStore: props.sessionStore,
       backendUrl: BACKEND_URL,
       modelRef: props.modelRef,
+      memoryRef: props.memoryRef,
       onActiveThreadModel: props.onActiveThreadModel,
+      onMemoryUpdated: props.onMemoryUpdated,
     }),
-    [props.tcw, props.sessionStore, props.modelRef, props.onActiveThreadModel],
+    [
+      props.tcw,
+      props.sessionStore,
+      props.modelRef,
+      props.memoryRef,
+      props.onActiveThreadModel,
+      props.onMemoryUpdated,
+    ],
   );
 
   const runtime = useChatRuntime(deps);

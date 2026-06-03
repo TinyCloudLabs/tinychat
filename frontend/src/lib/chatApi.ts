@@ -14,6 +14,8 @@ export interface StreamChatOptions {
   sessionStore: SessionStore;
   model: string;
   messages: ChatMessage[];
+  /** Optional API-level output cap (forwarded as max_tokens). */
+  maxTokens?: number;
   abortSignal?: AbortSignal;
 }
 
@@ -27,7 +29,7 @@ export interface StreamChatOptions {
  * ChatModelAdapter expects the full text-so-far on every yield.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, abortSignal } = options;
+  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -45,7 +47,11 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
       "Content-Type": "application/json",
       [DEFAULT_REQUEST_HEADER_NAME]: DEFAULT_REQUEST_HEADER_VALUE,
     },
-    body: JSON.stringify({ model, messages }),
+    body: JSON.stringify(
+      typeof maxTokens === "number" && maxTokens > 0
+        ? { model, messages, max_tokens: maxTokens }
+        : { model, messages },
+    ),
     signal: abortSignal,
   });
 
@@ -103,4 +109,22 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
   } finally {
     reader.releaseLock();
   }
+}
+
+/**
+ * Single-shot, non-streaming completion built on top of `streamChat`.
+ *
+ * The backend proxy only exposes the streaming endpoint; this helper
+ * accumulates the SSE deltas and returns the final assistant text. Used by
+ * the memory extraction pipeline (off the visible reply path), so a small
+ * model + tight max-output should be passed via `model`.
+ *
+ * No backend/route change: this reuses the existing `/api/chat` proxy.
+ */
+export async function completeChat(options: StreamChatOptions): Promise<string> {
+  let final = "";
+  for await (const text of streamChat(options)) {
+    final = text; // streamChat yields the cumulative text-so-far per delta
+  }
+  return final;
 }
