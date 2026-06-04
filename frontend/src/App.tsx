@@ -69,6 +69,15 @@ export function App() {
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  // Soft refresh after an import: bumping this key remounts the inner runtime
+  // tree so useChatRuntime re-runs listThreads() cold. The dialog already
+  // clears the index cache, so this avoids window.location.reload while still
+  // surfacing imported rows. Header state (model picker, memory popover) and
+  // the auth session survive the bump because they live above ChatWorkspace.
+  const [importRefreshKey, setImportRefreshKey] = useState(0);
+  const onImported = useCallback(() => {
+    setImportRefreshKey((k) => k + 1);
+  }, []);
   // Bumped each time the runtime/panel writes back a new memory doc — lets
   // the brain button re-render its "has memory" dot without making this
   // component re-render on every keystroke in the editor.
@@ -341,12 +350,14 @@ export function App() {
       <main className="min-h-0 flex-1">
         {isReady && tcw ? (
           <ChatWorkspace
+            key={importRefreshKey}
             tcw={tcw}
             sessionStore={sessionStoreRef.current}
             modelRef={modelRef}
             memoryRef={memoryRef}
             onActiveThreadModel={setSelectedModel}
             onMemoryUpdated={onMemoryUpdated}
+            onImported={onImported}
           />
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
@@ -470,6 +481,7 @@ function ChatWorkspace(props: {
   memoryRef: React.MutableRefObject<string | null>;
   onActiveThreadModel: (model: string) => void;
   onMemoryUpdated: (doc: string | null) => void;
+  onImported: () => void;
 }) {
   const deps = useMemo(
     () => ({
@@ -497,7 +509,7 @@ function ChatWorkspace(props: {
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="grid h-full grid-cols-[260px_1fr]">
         <aside className="min-h-0 border-r border-border bg-muted/40">
-          <ThreadList />
+          <ThreadList tcw={props.tcw} onImported={props.onImported} />
         </aside>
         <section className="min-h-0">
           <Thread />

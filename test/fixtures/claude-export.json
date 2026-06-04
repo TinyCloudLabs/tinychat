@@ -1,0 +1,95 @@
+[
+  {
+    "uuid": "fixture-conv-1",
+    "name": "Cover letter help",
+    "created_at": "2024-03-10T14:30:00.000000+00:00",
+    "updated_at": "2024-03-10T15:45:00.000000+00:00",
+    "chat_messages": [
+      {
+        "uuid": "fixture-msg-1a",
+        "sender": "human",
+        "text": "Can you help me write a cover letter for a frontend role?",
+        "created_at": "2024-03-10T14:30:01.000000+00:00",
+        "content": [],
+        "attachments": [],
+        "files": []
+      },
+      {
+        "uuid": "fixture-msg-1b",
+        "sender": "assistant",
+        "text": "",
+        "created_at": "2024-03-10T14:30:05.000000+00:00",
+        "content": [
+          { "type": "thinking", "thinking": "Let me draft something concise." },
+          { "type": "text", "text": "Sure! Here's a starting draft:" },
+          { "type": "text", "text": "\n\nDear hiring manager, …" }
+        ],
+        "attachments": [],
+        "files": []
+      },
+      {
+        "uuid": "fixture-msg-1c",
+        "sender": "human",
+        "text": "Thanks, can you make it more casual?",
+        "created_at": "2024-03-10T15:44:00.000000+00:00",
+        "content": [],
+        "attachments": [],
+        "files": []
+      }
+    ]
+  },
+  {
+    "uuid": "fixture-conv-2",
+    "name": "Resume review",
+    "created_at": "2024-04-01T09:00:00.000000+00:00",
+    "updated_at": "2024-04-01T09:05:00.000000+00:00",
+    "chat_messages": [
+      {
+        "uuid": "fixture-msg-2a",
+        "sender": "human",
+        "text": "Please review my resume.",
+        "created_at": "2024-04-01T09:00:01.000000+00:00",
+        "content": [],
+        "attachments": [
+          {
+            "file_name": "resume.pdf",
+            "extracted_content": "Jane Doe — Frontend Engineer\n5 years React, TypeScript, design systems."
+          }
+        ],
+        "files": [
+          { "file_name": "headshot.png" }
+        ]
+      },
+      {
+        "uuid": "fixture-msg-2b",
+        "sender": "assistant",
+        "text": "Strong start — three suggestions follow.",
+        "created_at": "2024-04-01T09:04:00.000000+00:00",
+        "content": [],
+        "attachments": [],
+        "files": []
+      }
+    ]
+  },
+  {
+    "uuid": "fixture-conv-3-tool-only",
+    "name": "Tool-only run",
+    "created_at": "2024-05-15T12:00:00.000000+00:00",
+    "updated_at": "2024-05-15T12:00:30.000000+00:00",
+    "chat_messages": [
+      {
+        "uuid": "fixture-msg-3a",
+        "sender": "assistant",
+        "text": "",
+        "created_at": "2024-05-15T12:00:10.000000+00:00",
+        "content": [
+          { "type": "thinking", "thinking": "Calling a tool…" },
+          { "type": "tool_use", "name": "search", "input": { "q": "weather" } },
+          { "type": "tool_result", "content": "sunny" }
+        ],
+        "attachments": [],
+        "files": []
+      }
+    ]
+  }
+]

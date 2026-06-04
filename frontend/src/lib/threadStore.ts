@@ -436,6 +436,24 @@ function removeCacheEntry(tcw: TinyCloudWeb, id: string): void {
   writeCache(tcw, cached.filter((s) => s.id !== id));
 }
 
+/**
+ * Drop the local thread-index cache so the next `listThreads` does a cold SQL
+ * read. Used after bulk operations (e.g. Claude import) that touch many rows
+ * at once — `patchCacheEntry` only knows how to add one summary at a time and
+ * we'd rather pay one network round-trip than leave a partial cache.
+ */
+export function clearThreadIndexCache(tcw: TinyCloudWeb): void {
+  // Bump the gen so any in-flight revalidate's writeCache is dropped.
+  mutationGen++;
+  const key = cacheKey(tcw);
+  if (!key) return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // localStorage disabled — nothing to clear.
+  }
+}
+
 // ── SQL fetch for the sidebar ────────────────────────────────────────
 
 /** Freshest summaries from SQL: one SELECT, rows mapped from cell-arrays. */
@@ -597,6 +615,74 @@ export async function appendMessage(
   if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
 
   patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
+}
+
+/** Default model for imported (non-native) conversations — see spec §8. */
+export const IMPORT_DEFAULT_MODEL = "phala/minimax-m2.5";
+
+/**
+ * Write one normalized Claude conversation as a thread row + ordered message
+ * rows in a single signed batch. Idempotent — re-importing the same id clean-
+ * replaces its messages and updates the row's title/model/timestamps (no
+ * `(thread_id, position)` PK collision). Preserves the conversation's
+ * original `createdAt`/`updatedAt` so the sidebar sorts by the original
+ * Claude date, not import time.
+ *
+ * The caller (the import dialog) is responsible for building the items via
+ * `claudeImport.toStoredItem`.
+ */
+export async function importThread(
+  tcw: TinyCloudWeb,
+  conv: {
+    id: string;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+    model?: string;
+    items: StoredMessageItem[];
+  },
+): Promise<void> {
+  mutationGen++;
+  await ensureSchema(tcw);
+
+  const model = conv.model ?? IMPORT_DEFAULT_MODEL;
+
+  const stmts: { sql: string; params: (string | number)[] }[] = [
+    { sql: "DELETE FROM messages WHERE thread_id = ?", params: [conv.id] },
+    {
+      sql: `INSERT INTO threads (id, title, model, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              model = excluded.model,
+              created_at = excluded.created_at,
+              updated_at = excluded.updated_at`,
+      params: [conv.id, conv.title, model, conv.createdAt, conv.updatedAt],
+    },
+  ];
+
+  conv.items.forEach((item, position) => {
+    const messageCreatedAt = (item.message as { createdAt?: unknown })?.createdAt;
+    const rowCreatedAt =
+      typeof messageCreatedAt === "string" && messageCreatedAt.length > 0
+        ? messageCreatedAt
+        : conv.createdAt;
+    stmts.push({
+      sql: `INSERT INTO messages (thread_id, position, payload, created_at)
+            VALUES (?, ?, ?, ?)`,
+      params: [conv.id, position, JSON.stringify(item), rowCreatedAt],
+    });
+  });
+
+  const res = await store(tcw).batch(stmts);
+  if (!res.ok) throw new SqlOpError(res.error, "importThread");
+
+  patchCacheEntry(tcw, {
+    id: conv.id,
+    title: conv.title,
+    updatedAt: conv.updatedAt,
+    model,
+  });
 }
 
 /** Set/rename a thread title. No-op effect if the row doesn't exist (fine). */
