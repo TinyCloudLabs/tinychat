@@ -4,6 +4,7 @@ import {
   ThreadListPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -19,6 +20,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { ImportDialog } from "./ImportDialog";
 
 const ThreadListItem: FC = () => (
   <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-accent data-[active]:bg-accent">
@@ -53,13 +55,19 @@ const ThreadListItem: FC = () => (
   </ThreadListItemPrimitive.Root>
 );
 
-export const ThreadList: FC = () => (
+interface ThreadListProps {
+  tcw: TinyCloudWeb;
+  onImported?: () => void;
+}
+
+export const ThreadList: FC<ThreadListProps> = ({ tcw, onImported }) => (
   <TooltipProvider delayDuration={300}>
     <div className="flex h-full flex-col gap-2 p-2">
       <ThreadListPrimitive.New className="flex items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent">
         <PlusIcon className="size-4" />
         New chat
       </ThreadListPrimitive.New>
+      <ImportDialog tcw={tcw} onImported={onImported} />
       <ThreadListPrimitive.Root className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
         <ThreadListContents />
       </ThreadListPrimitive.Root>
