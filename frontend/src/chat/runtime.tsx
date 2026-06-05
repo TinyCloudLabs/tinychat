@@ -35,9 +35,12 @@ import {
   renameThread,
   setMemory,
   setThreadModel,
+  subscribeThreadIndex,
   DEFAULT_MODEL,
   DEFAULT_TITLE,
+  type ThreadDoc,
 } from "../lib/threadStore";
+import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { renderMemoryBlock, runExtraction } from "../lib/memory";
 import {
   createBillingClient,
@@ -219,6 +222,42 @@ function isPersistedReceipt(v: unknown): v is PersistedReceipt {
 /** Max time we'll wait for the receipt computation before persisting WITHOUT it. */
 const RECEIPT_COMPUTE_TIMEOUT_MS = 1500;
 
+/**
+ * Build the assistant-ui repository from a stored ThreadDoc. Shared by the
+ * prefetch-cache-hit path and the on-demand fetch path so both rehydrate
+ * receipts and rebuild the parent chain identically.
+ *
+ * Chat is linear (no branching). Rebuild a valid parent chain from the stored
+ * order so MessageRepository.import never throws "parent not found" on
+ * partial/legacy data. Drop any item lacking a message id.
+ */
+function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
+  const valid = doc.messages.filter(
+    (it) => typeof (it.message as { id?: unknown })?.id === "string",
+  );
+  if (valid.length === 0) return { messages: [] };
+  // Rehydrate the in-session receipt store from any persisted receipts so the
+  // per-message footers reappear after a reload. Do NOT emitReceipt here — that
+  // would re-bump the usage meter for historical messages. The extra top-level
+  // `receipt` field is ignored by MessageRepository.import (it only destructures
+  // `message`/`parentId`), so we can leave it on the items handed back.
+  for (const item of valid) {
+    const receipt = (item as { receipt?: unknown }).receipt;
+    if (!isPersistedReceipt(receipt)) continue;
+    const assistantId = (item.message as { id: string }).id;
+    if (typeof receipt.userMessageId === "string") {
+      setReceipt(receipt.userMessageId, receipt.input, "input");
+    }
+    setReceipt(assistantId, receipt.output, "output");
+  }
+  const messages = valid.map((item, i) => ({
+    ...item,
+    parentId: i === 0 ? null : (valid[i - 1].message as { id: string }).id,
+  }));
+  const headId = (valid[valid.length - 1].message as { id: string }).id;
+  return { headId, messages };
+}
+
 function createHistoryAdapter(
   tcw: TinyCloudWeb,
   threadId: string,
@@ -251,37 +290,25 @@ function createHistoryAdapter(
       // which hides the welcome screen behind the in-flight SQL (~2-6s on
       // boot). A warm thread-index cache that does NOT contain this id proves
       // the thread was never persisted, so resolve instantly without I/O.
+      //
+      // PRECEDENCE: this membership short-circuit MUST stay FIRST — instant
+      // new-chat (requirement #1) outranks every freshness path below.
       if (isKnownThreadId(tcw, threadId) === false) return { messages: [] };
-      const doc = await getThread(tcw, threadId);
-      if (!doc) return { messages: [] };
-      // Chat is linear (no branching). Rebuild a valid parent chain from the
-      // stored order so MessageRepository.import never throws "parent not found"
-      // on partial/legacy data. Drop any item lacking a message id.
-      const valid = doc.messages.filter(
-        (it) => typeof (it.message as { id?: unknown })?.id === "string",
-      );
-      if (valid.length === 0) return { messages: [] };
-      // Rehydrate the in-session receipt store from any persisted receipts so
-      // the per-message footers reappear after a reload. Do NOT emitReceipt
-      // here — that would re-bump the usage meter for historical messages.
-      // The extra top-level `receipt` field is ignored by MessageRepository.import
-      // (it only destructures `message`/`parentId`), so we can leave it on the
-      // items handed back to assistant-ui.
-      for (const item of valid) {
-        const receipt = (item as { receipt?: unknown }).receipt;
-        if (!isPersistedReceipt(receipt)) continue;
-        const assistantId = (item.message as { id: string }).id;
-        if (typeof receipt.userMessageId === "string") {
-          setReceipt(receipt.userMessageId, receipt.input, "input");
-        }
-        setReceipt(assistantId, receipt.output, "output");
+      // Prefetched this session? Render from the in-memory cache instantly and
+      // kick a background refresh of just this thread (promote dedupes against
+      // any in-flight fetch — never double-fetches) so a re-open is fresh.
+      const cached = historyPrefetch.get(threadId);
+      if (cached) {
+        void historyPrefetch.promote(threadId);
+        return repositoryFromDoc(cached);
       }
-      const messages = valid.map((item, i) => ({
-        ...item,
-        parentId: i === 0 ? null : (valid[i - 1].message as { id: string }).id,
-      }));
-      const headId = (valid[valid.length - 1].message as { id: string }).id;
-      return { headId, messages };
+      // Miss: promote to the front of the queue and await its fetch (the
+      // HistorySkeleton shows meanwhile — acceptable and expected). The queue's
+      // fetcher is `getThread`, so this is equivalent to a direct read but goes
+      // through the single sequential pipe (concurrency-1 constraint).
+      const doc = await historyPrefetch.promote(threadId);
+      if (!doc) return { messages: [] };
+      return repositoryFromDoc(doc);
     },
     async append(item: ExportedMessageRepositoryItem): Promise<void> {
       const role = item.message?.role;
@@ -346,6 +373,16 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
   const { tcw } = deps;
   const depsRef = useRef(deps);
   depsRef.current = deps;
+
+  // Point the prefetch queue at this session's `getThread`. Bound during render
+  // (not in an effect) so the fetcher is in place before assistant-ui ever
+  // calls the history adapter's load() — otherwise a miss could fetch through a
+  // stale/default fetcher. Re-binds only when the account (tcw) changes.
+  const fetcherTcwRef = useRef<TinyCloudWeb | null>(null);
+  if (fetcherTcwRef.current !== tcw) {
+    fetcherTcwRef.current = tcw;
+    setPrefetchFetcher((id) => getThread(tcw, id));
+  }
 
   const onAssistantTurn = useCallback((exchange: ChatMessage[]) => {
     const d = depsRef.current;
@@ -555,6 +592,58 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     },
     adapter,
   });
+
+  // Sidebar freshness + background history prefetch.
+  //
+  // When the thread-list cache lands a list that differs from what's rendered
+  // (the boot revalidate, or a mutation), threadStore fires subscribeThreadIndex.
+  // We then (a) enqueue every known thread for newest-first background prefetch
+  // (excluding the active one — it loads via the normal path), and (b) refresh
+  // the assistant-ui thread list so the sidebar converges to server truth.
+  //
+  // Refresh mechanism: `runtime.threads.reload()` — the supported assistant-ui
+  // API that re-calls the list adapter WITHOUT remounting and preserves the
+  // active thread selection (guardrail C.3; C.2's remount concern is moot).
+  // Guardrails C.1/C.4: never reload while a stream is running — defer until it
+  // ends (the thread subscription flushes the pending refresh then).
+  useEffect(() => {
+    let pendingRefresh = false;
+
+    const flushIfSafe = () => {
+      if (!pendingRefresh) return;
+      // C.1: never refresh while an assistant message stream is running.
+      if (runtime.thread.getState().isRunning) return;
+      pendingRefresh = false;
+      void runtime.threads.reload();
+    };
+
+    const unsubIndex = subscribeThreadIndex((summaries, changed) => {
+      // Wait-for-boot-critical-reads is already satisfied: this fires only after
+      // listThreads' revalidate (or a mutation) has resolved. Enqueue newest-
+      // first, sequential (concurrency-1 is enforced inside the queue).
+      // NOT gated on `changed`: a typical boot revalidates to an UNCHANGED
+      // list, and the prefetch still has to warm it.
+      const activeId = runtime.thread.getState().threadId;
+      historyPrefetch.enqueueAll(
+        summaries.map((s) => s.id).filter((id) => id !== activeId),
+      );
+      // The sidebar reload IS gated on `changed` — identical lists never
+      // trigger a needless refetch (and never risk the C.1 defer path).
+      if (changed) {
+        pendingRefresh = true;
+        flushIfSafe();
+      }
+    });
+
+    // A stream ending (or any active-thread state change) is the safe moment to
+    // flush a refresh we deferred under guardrail C.1.
+    const unsubRun = runtime.thread.subscribe(flushIfSafe);
+
+    return () => {
+      unsubIndex();
+      unsubRun();
+    };
+  }, [runtime]);
 
   // Register the memory model-context provider on the top-level runtime.
   // The provider reads the live memoryRef at request time, so a freshly

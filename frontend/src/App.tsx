@@ -19,6 +19,7 @@ import { ThreadList } from "./chat/ThreadList";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import { DEFAULT_MODEL, getSetting, readMemoryCache, setSetting } from "./lib/threadStore";
+import { historyPrefetch } from "./lib/historyPrefetch";
 import {
   createBillingClient,
   formatCredits,
@@ -408,6 +409,9 @@ export function App() {
     if (tcw) await tcw.signOut?.();
     else if (address) clearPersistedSession(address);
     sessionStoreRef.current.clear();
+    // Drop the in-memory history prefetch cache and stop its queue — it holds
+    // the signed-out account's message docs.
+    historyPrefetch.clear();
     if (typeof window !== "undefined") {
       try {
         window.localStorage.removeItem(MODEL_STORAGE_KEY);

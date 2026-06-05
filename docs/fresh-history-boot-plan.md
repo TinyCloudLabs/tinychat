@@ -80,8 +80,12 @@ known ids newest-first, excluding the active thread.
 ### C. Sidebar freshness — `frontend/src/lib/threadStore.ts` + runtime
 
 - Add a subscription point to threadStore: `subscribeThreadIndex(cb)` invoked
-  with the fresh summaries whenever a revalidate or mutator lands a list that
-  differs (deep-compare by id+title+updatedAt) from the last delivered one.
+  with the fresh summaries whenever a revalidate or mutator SETTLES a list,
+  plus a `changed` flag (deep-compare by id+title+updatedAt vs the last
+  delivered one). The sidebar reload is gated on `changed`; the prefetch
+  enqueue is NOT — a typical boot revalidates to an unchanged list and the
+  prefetch must still warm it. (This was a real bug in the first build: with
+  enqueue inside a changed-only callback, prefetch never ran on a normal boot.)
 - The runtime/adapter layer uses the assistant-ui-supported mechanism to
   refresh its thread list from this callback. RESEARCH REQUIRED: inspect the
   bundled runtime core (`frontend/node_modules/.vite/deps/chunk-CA26RFFZ.js`,
