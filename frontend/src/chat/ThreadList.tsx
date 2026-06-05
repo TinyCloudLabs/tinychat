@@ -87,7 +87,11 @@ export const ThreadList: FC<ThreadListProps> = ({
           New chat
         </ThreadListPrimitive.New>
         <ImportDialog tcw={tcw} onImported={onImported} />
-        <ThreadListPrimitive.Root className="flex flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
+        {/* `relative` makes this scroll container the containing block for the
+            absolutely-positioned `sr-only` spans inside each row's tooltip
+            button — without it they escape the overflow clip and extend the
+            document below the viewport (phantom scrollable space). */}
+        <ThreadListPrimitive.Root className="relative flex flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
           <ThreadListContents />
         </ThreadListPrimitive.Root>
       </div>
