@@ -510,6 +510,42 @@ export function clearThreadIndexCache(tcw: TinyCloudWeb): void {
 // revalidates never trigger a needless refetch.
 
 type ThreadIndexListener = (summaries: ThreadSummary[], changed: boolean) => void;
+
+// ── Index sync visibility ────────────────────────────────────────────
+//
+// The warm-path revalidate is fire-and-forget, so assistant-ui's
+// `threads.isLoading` flips false the moment the CACHE paints (<1 frame) and
+// the sidebar gets no loading affordance while the real SQL read (~3-7s on
+// boot) is in flight. This tiny store tracks that revalidate so the sidebar
+// can show its sync shimmer for the duration (via useSyncExternalStore).
+
+let indexSyncing = false;
+const syncListeners = new Set<() => void>();
+
+function setIndexSyncing(v: boolean): void {
+  if (indexSyncing === v) return;
+  indexSyncing = v;
+  for (const cb of syncListeners) {
+    try {
+      cb();
+    } catch {
+      // listener errors must never break the revalidate path
+    }
+  }
+}
+
+/** Subscribe to index-sync transitions (useSyncExternalStore contract). */
+export function subscribeIndexSyncing(cb: () => void): () => void {
+  syncListeners.add(cb);
+  return () => {
+    syncListeners.delete(cb);
+  };
+}
+
+/** True while the warm-path list revalidate is in flight. */
+export function isIndexSyncing(): boolean {
+  return indexSyncing;
+}
 const indexListeners = new Set<ThreadIndexListener>();
 // The signature of the list currently rendered in the UI. `null` until the
 // first list() return marks one delivered.
@@ -596,6 +632,7 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
     // differing revalidate is compared against.
     markIndexDelivered(cached);
     const startGen = mutationGen;
+    setIndexSyncing(true);
     void coldLoad(tcw)
       .then((fresh) => {
         // Drop a revalidate whose SELECT was in flight when a mutation happened
@@ -607,7 +644,8 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
         // what's rendered (requirement #2). This is the boot-time refresh.
         notifyThreadIndex(fresh);
       })
-      .catch((err) => console.warn("[threadStore] background revalidation failed", err));
+      .catch((err) => console.warn("[threadStore] background revalidation failed", err))
+      .finally(() => setIndexSyncing(false));
     return cached;
   }
   // Cold load — no usable local cache. Pay the network once, then cache.

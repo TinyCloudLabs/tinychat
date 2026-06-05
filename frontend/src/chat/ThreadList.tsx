@@ -1,4 +1,4 @@
-import { createContext, useContext, type FC } from "react";
+import { createContext, useContext, useSyncExternalStore, type FC } from "react";
 import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
@@ -21,6 +21,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { ImportDialog } from "./ImportDialog";
+import { isIndexSyncing, subscribeIndexSyncing } from "../lib/threadStore";
 
 const ThreadListNavigateContext = createContext<(() => void) | undefined>(
   undefined,
@@ -105,6 +106,10 @@ export const ThreadList: FC<ThreadListProps> = ({
 const ThreadListContents: FC = () => {
   const isLoading = useAuiState((s) => s.threads.isLoading);
   const count = useAuiState((s) => s.threads.threadIds.length);
+  // assistant-ui's isLoading only covers the (instant, cache-served) list()
+  // call — the real network work is the background SQL revalidate, which only
+  // threadStore knows about. Track it so the shimmer shows while it runs.
+  const syncing = useSyncExternalStore(subscribeIndexSyncing, isIndexSyncing);
 
   if (isLoading && count === 0) return <ThreadListSkeleton />;
 
@@ -119,10 +124,10 @@ const ThreadListContents: FC = () => {
   return (
     <>
       <ThreadListPrimitive.Items components={{ ThreadListItem }} />
-      {/* The list is still syncing (e.g. cold SQL read landed partially, or a
-          revalidate is in flight) — show the loading state HERE, on the list
-          that is actually loading, rather than over the chat pane. */}
-      {isLoading && (
+      {/* The list is still syncing (the boot revalidate or a late list() is
+          in flight) — show the loading state HERE, on the list that is
+          actually loading, rather than over the chat pane. */}
+      {(isLoading || syncing) && (
         <div className="flex flex-col gap-1 pt-1" aria-hidden>
           <div className="h-9 animate-pulse rounded-lg bg-muted/70" />
           <div className="h-9 animate-pulse rounded-lg bg-muted/70" />
