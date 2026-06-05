@@ -158,7 +158,7 @@ const WELCOME_SUGGESTIONS = [
 
 const Composer: FC = () => {
   return (
-    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-4 pt-2">
+    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
       <div className="relative">
         <ScrollToBottom />
       </div>

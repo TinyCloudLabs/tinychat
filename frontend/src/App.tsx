@@ -30,7 +30,8 @@ import { onBillingEvent, onPaywallError } from "./lib/chatApi";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { Button } from "@/components/ui/button";
-import { BrainIcon, ChevronDownIcon, LockIcon } from "lucide-react";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { BrainIcon, ChevronDownIcon, LockIcon, LogOutIcon, PanelLeftIcon } from "lucide-react";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -89,6 +90,7 @@ export function App() {
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -121,6 +123,7 @@ export function App() {
   // the auth session survive the bump because they live above ChatWorkspace.
   const [importRefreshKey, setImportRefreshKey] = useState(0);
   const onImported = useCallback(() => {
+    setSidebarOpen(false);
     setImportRefreshKey((k) => k + 1);
   }, []);
   // Bumped each time the runtime/panel writes back a new memory doc — lets
@@ -200,6 +203,20 @@ export function App() {
       memoryRef.current = cached;
     }
   }, [tcw]);
+
+  // Close the mobile drawer when the viewport crosses into md+ so the Radix
+  // overlay (a portal sibling not covered by md:hidden on SheetContent) can't
+  // linger as a full-screen backdrop after a resize-while-open.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia("(min-width: 768px)");
+    const handler = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setSidebarOpen(false);
+    };
+    handler(mql);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
   useEffect(() => {
@@ -415,14 +432,25 @@ export function App() {
   const isReady = state === "ready" && tcw !== null;
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-        <div className="flex items-center gap-3">
+    <div className="flex h-dvh flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]">
+      <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
+        <div className="flex items-center gap-1.5 sm:gap-3">
+          {isReady && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Open chat list"
+              onClick={() => setSidebarOpen(true)}
+              className="h-8 w-8 p-0 md:hidden"
+            >
+              <PanelLeftIcon className="size-4" />
+            </Button>
+          )}
           <span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
             <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
               T
             </span>
-            TinyCloud Chat
+            <span className="hidden sm:inline">TinyCloud Chat</span>
           </span>
           {isReady && (
             <ModelPicker
@@ -435,7 +463,7 @@ export function App() {
             />
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
           {isReady && paywallEnabled && (
             <UsageIndicator
               status={billingStatus}
@@ -467,8 +495,15 @@ export function App() {
             </Button>
           )}
           {isReady && (
-            <Button variant="outline" size="sm" onClick={signOut}>
-              Sign out
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={signOut}
+              aria-label="Sign out"
+              className="w-8 p-0 sm:w-auto sm:px-3"
+            >
+              <LogOutIcon className="size-4 sm:hidden" />
+              <span className="hidden sm:inline">Sign out</span>
             </Button>
           )}
         </div>
@@ -485,6 +520,8 @@ export function App() {
             onActiveThreadModel={setSelectedModel}
             onMemoryUpdated={onMemoryUpdated}
             onImported={onImported}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
           />
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
@@ -607,10 +644,10 @@ function MemoryPopover(props: {
         aria-expanded={open}
         aria-controls="memory-panel"
         onClick={() => setOpen((o) => !o)}
-        className="relative h-8 gap-1.5 px-2.5 text-xs"
+        className="relative h-8 gap-1.5 px-2 text-xs sm:px-2.5"
       >
         <BrainIcon className="size-3.5" />
-        Memory
+        <span className="hidden sm:inline">Memory</span>
         {hasMemory && (
           <span
             aria-hidden
@@ -678,15 +715,15 @@ function UsageIndicator(props: {
         type="button"
         onClick={onClick}
         aria-label="View plans and usage"
-        className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2 sm:px-2.5"
       >
         <span className="font-medium">{tierLabel}</span>
         {compactUsage && (
-          <span className="tabular-nums text-muted-foreground">{compactUsage}</span>
+          <span className="hidden tabular-nums text-muted-foreground sm:inline">{compactUsage}</span>
         )}
         {usage && usage.limit > 0 && (
           <span
-            className="h-1.5 w-12 overflow-hidden rounded-full bg-muted"
+            className="hidden h-1.5 w-12 overflow-hidden rounded-full bg-muted sm:inline-flex"
             aria-hidden
           >
             <span
@@ -700,7 +737,7 @@ function UsageIndicator(props: {
         <div
           role="region"
           aria-label="Usage and plan details"
-          className="absolute right-0 top-full z-30 mt-1.5 w-64 rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg"
+          className="absolute right-0 top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg"
         >
           {usage && usage.limit > 0 && (
             <>
@@ -919,7 +956,7 @@ function ModelPicker(props: {
         aria-label="Model"
         className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span className="max-w-[12rem] truncate">{model}</span>
+        <span className="max-w-[7rem] truncate sm:max-w-[12rem]">{model}</span>
         <ChevronDownIcon className="size-3.5 text-muted-foreground" />
       </button>
       {open && (
@@ -929,7 +966,7 @@ function ModelPicker(props: {
           role="listbox"
           aria-label="Model"
           onKeyDown={onListKeyDown}
-          className="absolute left-0 z-30 mt-1.5 max-h-72 w-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg focus:outline-none"
+          className="absolute left-0 z-30 mt-1.5 max-h-72 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg focus:outline-none"
         >
           {models.length === 0 && (
             <div className="px-2 py-1.5 text-muted-foreground">{model}</div>
@@ -1078,6 +1115,8 @@ function ChatWorkspace(props: {
   onActiveThreadModel: (model: string) => void;
   onMemoryUpdated: (doc: string | null) => void;
   onImported: () => void;
+  sidebarOpen: boolean;
+  setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const deps = useMemo(
     () => ({
@@ -1100,17 +1139,34 @@ function ChatWorkspace(props: {
   );
 
   const runtime = useChatRuntime(deps);
+  const closeSidebar = useCallback(
+    () => props.setSidebarOpen(false),
+    [props.setSidebarOpen],
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="grid h-full grid-cols-[260px_1fr]">
-        <aside className="min-h-0 border-r border-border bg-muted/40">
+      <div className="grid h-full grid-cols-1 md:grid-cols-[260px_1fr]">
+        <aside className="hidden min-h-0 border-r border-border bg-muted/40 md:block">
           <ThreadList tcw={props.tcw} onImported={props.onImported} />
         </aside>
         <section className="min-h-0">
           <Thread />
         </section>
       </div>
+      <Sheet open={props.sidebarOpen} onOpenChange={props.setSidebarOpen}>
+        <SheetContent className="md:hidden bg-muted/40">
+          <SheetTitle className="sr-only">Chats</SheetTitle>
+          <SheetDescription className="sr-only">
+            List of your saved chats
+          </SheetDescription>
+          <ThreadList
+            tcw={props.tcw}
+            onImported={props.onImported}
+            onNavigate={closeSidebar}
+          />
+        </SheetContent>
+      </Sheet>
     </AssistantRuntimeProvider>
   );
 }
@@ -1165,8 +1221,9 @@ function ConnectionDetails(props: {
 }) {
   return (
     <details className="relative">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-8 min-w-8 cursor-pointer list-none items-center justify-center gap-1.5 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent sm:min-h-0 sm:min-w-0 sm:justify-start [&::-webkit-details-marker]:hidden">
         <span
+          aria-label={stateLabel(props.state)}
           className={`size-1.5 rounded-full ${
             props.state === "ready"
               ? "bg-green-500"
@@ -1175,9 +1232,9 @@ function ConnectionDetails(props: {
                 : "bg-muted-foreground"
           }`}
         />
-        {stateLabel(props.state)}
+        <span className="hidden sm:inline">{stateLabel(props.state)}</span>
       </summary>
-      <div className="absolute right-0 z-20 mt-1.5 w-72 rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
+      <div className="absolute right-0 z-20 mt-1.5 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
         <Row label="Address" value={props.address ?? "none"} mono />
         <Row label="DID" value={props.did ?? "none"} mono />
         <Row label="Space" value={props.spaceId ?? "none"} mono />
