@@ -28,6 +28,7 @@ import {
   getThread,
   getThreadModel,
   getThreadTitle,
+  isKnownThreadId,
   listThreads,
   memoryWriteGen,
   readMemoryCache,
@@ -245,6 +246,12 @@ function createHistoryAdapter(
   let lastUserMessageId: string | undefined;
   return {
     async load(): Promise<ExportedMessageRepository> {
+      // Brand-new threads have nothing persisted, but the runtime still fires
+      // load() for them and keeps `thread.isLoading` on until it resolves —
+      // which hides the welcome screen behind the in-flight SQL (~2-6s on
+      // boot). A warm thread-index cache that does NOT contain this id proves
+      // the thread was never persisted, so resolve instantly without I/O.
+      if (isKnownThreadId(tcw, threadId) === false) return { messages: [] };
       const doc = await getThread(tcw, threadId);
       if (!doc) return { messages: [] };
       // Chat is linear (no branching). Rebuild a valid parent chain from the

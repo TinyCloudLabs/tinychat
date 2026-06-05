@@ -116,7 +116,20 @@ const ThreadListContents: FC = () => {
     );
   }
 
-  return <ThreadListPrimitive.Items components={{ ThreadListItem }} />;
+  return (
+    <>
+      <ThreadListPrimitive.Items components={{ ThreadListItem }} />
+      {/* The list is still syncing (e.g. cold SQL read landed partially, or a
+          revalidate is in flight) — show the loading state HERE, on the list
+          that is actually loading, rather than over the chat pane. */}
+      {isLoading && (
+        <div className="flex flex-col gap-1 pt-1" aria-hidden>
+          <div className="h-9 animate-pulse rounded-lg bg-muted/70" />
+          <div className="h-9 animate-pulse rounded-lg bg-muted/70" />
+        </div>
+      )}
+    </>
+  );
 };
 
 const ThreadListSkeleton: FC = () => (

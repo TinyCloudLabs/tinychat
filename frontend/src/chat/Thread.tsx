@@ -56,7 +56,13 @@ const ThreadBody: FC = () => {
   // gap as loading too, so switching chats never flashes the welcome screen.
   // (A persisted thread always has >=1 message, so "regular & empty" only ever
   // means "not loaded yet", never a genuinely empty conversation.)
-  const showSkeleton = isLoading || (isEmpty && status === "regular");
+  //
+  // A brand-new chat (`status: "new"`) is exempt: it has no history to load,
+  // but the runtime still flips `isLoading` on for its (empty) history fetch —
+  // without the exemption the welcome screen hides behind a skeleton for the
+  // whole round-trip on every boot.
+  const showSkeleton =
+    status !== "new" && (isLoading || (isEmpty && status === "regular"));
 
   if (showSkeleton) return <HistorySkeleton />;
 

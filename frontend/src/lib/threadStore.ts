@@ -130,10 +130,20 @@ function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
 // ── Schema bootstrap (memoized per space) ────────────────────────────
 
 const schemaReadySpaces = new Set<string>();
+const schemaInFlight = new Map<string, Promise<void>>();
 
 /**
- * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized by
- * spaceId so it's a no-op after the first call per session.
+ * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized
+ * per account so it's a no-op after the first call per session.
+ *
+ * Memo key prefers `tcw.did` over `tcw.spaceId` for the same reason as
+ * `cacheKey` below: spaceId is undefined on a RESTORED session, and an empty
+ * key disabled the memo entirely — every SQL helper paid a schema batch
+ * (~2s round-trip) before its real query, doubling all boot traffic.
+ *
+ * Concurrent first-callers share one in-flight batch instead of each issuing
+ * their own (boot fires listThreads / getThread / getMemory / getThreadModel
+ * roughly simultaneously, and the node degrades badly under parallel invokes).
  *
  * The CREATEs run as ordinary write statements in one `batch` transaction.
  * NOTE: do NOT use `execute(..., { schema })` — the schema option is authorized
@@ -142,15 +152,27 @@ const schemaReadySpaces = new Set<string>();
  * On failure we do NOT memoize and we propagate so the caller can surface it.
  */
 async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
-  const space = tcw.spaceId;
-  const memoKey = typeof space === "string" && space.length > 0 ? space : "";
+  const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
+  const space = typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
+  const memoKey = did ?? space ?? "";
   if (memoKey && schemaReadySpaces.has(memoKey)) return;
 
-  const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
-  if (!result.ok) {
-    throw new SqlOpError(result.error, "ensureSchema");
+  const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
+  if (inFlight) return inFlight;
+
+  const run = (async () => {
+    const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
+    if (!result.ok) {
+      throw new SqlOpError(result.error, "ensureSchema");
+    }
+    if (memoKey) schemaReadySpaces.add(memoKey);
+  })();
+
+  if (memoKey) {
+    schemaInFlight.set(memoKey, run);
+    void run.catch(() => {}).finally(() => schemaInFlight.delete(memoKey));
   }
-  if (memoKey) schemaReadySpaces.add(memoKey);
+  return run;
 }
 
 // ── Read helpers (rows are CELL-arrays, mapped by column order) ───────
@@ -364,6 +386,25 @@ function cacheKey(tcw: TinyCloudWeb): string | null {
   const space = typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
   const id = did ?? space;
   return id ? `tinychat:index:${id}` : null;
+}
+
+/**
+ * Sync membership check against the local thread-index cache.
+ *  - `false`: cache is warm and the id is NOT in it → a never-persisted
+ *    (brand-new) thread; safe to skip the SQL history read entirely.
+ *  - `true`: id is in the cached index.
+ *  - `null`: no usable cache → unknown; caller must do the SQL read.
+ *
+ * Safety: any thread reachable in the UI came from `listThreads`, whose warm
+ * path returns exactly this cache — so a persisted, UI-visible thread can
+ * never be falsely reported absent. (Persisted ids keep their `__LOCALID_`
+ * prefix forever, so the prefix is NOT a usable "unsaved" signal — this
+ * membership check is the reliable alternative.)
+ */
+export function isKnownThreadId(tcw: TinyCloudWeb, id: string): boolean | null {
+  const cached = readCache(tcw);
+  if (!cached || cached.length === 0) return null;
+  return cached.some((s) => s.id === id);
 }
 
 /** Coerce a cached summaries blob (`{threads:[...]}` or bare `[...]`). */
