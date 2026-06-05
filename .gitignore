@@ -26,3 +26,4 @@ test/.last-run.log
 .memory-audit/
 .credits-audit/
 .weekly-audit/
+.responsive-audit/
