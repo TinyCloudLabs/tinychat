@@ -131,6 +131,17 @@ STRIPE_PRICE_PRO_MONTHLY=price_...
 STRIPE_PRICE_PRO_YEARLY=price_...
 ```
 
+### Production (GitHub Actions → Phala)
+
+The CD workflow (`deploy-backend-phala.yml`) passes these through to the CVM
+(`docker-compose.phala.yml` defaults keep everything off when unset). To go
+live, configure in the GitHub repo and re-run the deploy:
+
+- **Secrets**: `STRIPE_SECRET_KEY` (live-mode `sk_live_…`), `STRIPE_WEBHOOK_SECRET`
+- **Variables**: `PAYWALL_ENABLED=true`, `STRIPE_PRICE_PLUS_MONTHLY`,
+  `STRIPE_PRICE_PLUS_YEARLY`, `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY`
+  (+ optional `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY`)
+
 ### Safe rollout
 
 - `PAYWALL_ENABLED=false` (default): no gating at all. Every request behaves
