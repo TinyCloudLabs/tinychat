@@ -261,19 +261,19 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           REDPILL_API_KEY: ${{ secrets.REDPILL_API_KEY }}
-          # Paywall / billing (docs/stripe-setup.md). PAYWALL_ENABLED is a repo
-          # VARIABLE (defaults to false when unset); Stripe keys are secrets and
-          # price ids are variables — all optional until go-live.
-          PAYWALL_ENABLED: ${{ vars.PAYWALL_ENABLED || 'false' }}
+          # Paywall / billing (docs/stripe-setup.md). Each value may live as a
+          # repo SECRET or a repo VARIABLE (secrets win) — all optional until
+          # go-live; unset values deploy with the paywall off.
+          PAYWALL_ENABLED: ${{ secrets.PAYWALL_ENABLED || vars.PAYWALL_ENABLED || 'false' }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          STRIPE_PRICE_PLUS_MONTHLY: ${{ vars.STRIPE_PRICE_PLUS_MONTHLY }}
-          STRIPE_PRICE_PLUS_YEARLY: ${{ vars.STRIPE_PRICE_PLUS_YEARLY }}
-          STRIPE_PRICE_PRO_MONTHLY: ${{ vars.STRIPE_PRICE_PRO_MONTHLY }}
-          STRIPE_PRICE_PRO_YEARLY: ${{ vars.STRIPE_PRICE_PRO_YEARLY }}
-          CREDIT_BUDGET_FREE: ${{ vars.CREDIT_BUDGET_FREE }}
-          CREDIT_BUDGET_PLUS_WEEKLY: ${{ vars.CREDIT_BUDGET_PLUS_WEEKLY }}
-          CREDIT_BUDGET_PRO_WEEKLY: ${{ vars.CREDIT_BUDGET_PRO_WEEKLY }}
+          STRIPE_PRICE_PLUS_MONTHLY: ${{ secrets.STRIPE_PRICE_PLUS_MONTHLY || vars.STRIPE_PRICE_PLUS_MONTHLY }}
+          STRIPE_PRICE_PLUS_YEARLY: ${{ secrets.STRIPE_PRICE_PLUS_YEARLY || vars.STRIPE_PRICE_PLUS_YEARLY }}
+          STRIPE_PRICE_PRO_MONTHLY: ${{ secrets.STRIPE_PRICE_PRO_MONTHLY || vars.STRIPE_PRICE_PRO_MONTHLY }}
+          STRIPE_PRICE_PRO_YEARLY: ${{ secrets.STRIPE_PRICE_PRO_YEARLY || vars.STRIPE_PRICE_PRO_YEARLY }}
+          CREDIT_BUDGET_FREE: ${{ secrets.CREDIT_BUDGET_FREE || vars.CREDIT_BUDGET_FREE }}
+          CREDIT_BUDGET_PLUS_WEEKLY: ${{ secrets.CREDIT_BUDGET_PLUS_WEEKLY || vars.CREDIT_BUDGET_PLUS_WEEKLY }}
+          CREDIT_BUDGET_PRO_WEEKLY: ${{ secrets.CREDIT_BUDGET_PRO_WEEKLY || vars.CREDIT_BUDGET_PRO_WEEKLY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
