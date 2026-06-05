@@ -14,7 +14,13 @@ import {
 import { createAssistantStream } from "assistant-stream";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { completeChat, streamChat, type ChatMessage } from "../lib/chatApi";
+import {
+  completeChat,
+  emitReceipt,
+  streamChat,
+  type ChatMessage,
+  type UsageInfo,
+} from "../lib/chatApi";
 import {
   appendMessage,
   deleteThread,
@@ -32,6 +38,12 @@ import {
   DEFAULT_TITLE,
 } from "../lib/threadStore";
 import { renderMemoryBlock, runExtraction } from "../lib/memory";
+import {
+  createBillingClient,
+  setReceipt,
+  splitCredits,
+  type RatesResponse,
+} from "../lib/billingApi";
 
 /**
  * Model id used for memory extraction. Picked to be small and cheap — the
@@ -73,6 +85,31 @@ export interface ChatRuntimeDeps {
   onMemoryUpdated?: (doc: string | null) => void;
 }
 
+// ── Receipt plumbing (session-cached rates + pending-charge slot) ────
+//
+// The receipt re-derives the charge from public data (rates + the SSE usage
+// chunk) — see spec §5.3. Chat is sequential per runtime, so a single pending
+// slot is enough: `run()` writes when a stream finishes with a usage chunk, the
+// next assistant `append()` reads it and clears it.
+interface PendingReceipt {
+  usage: UsageInfo;
+  modelId: string;
+}
+let pendingReceipt: PendingReceipt | null = null;
+
+let cachedRatesPromise: Promise<RatesResponse> | null = null;
+function getCachedRates(deps: ChatRuntimeDeps): Promise<RatesResponse> {
+  if (!cachedRatesPromise) {
+    const billing = createBillingClient(deps.backendUrl, deps.sessionStore);
+    cachedRatesPromise = billing.getRates().catch((err) => {
+      // Allow a retry on the next stream — receipts are UI sugar, never block chat.
+      cachedRatesPromise = null;
+      throw err;
+    });
+  }
+  return cachedRatesPromise;
+}
+
 /** Flatten an assistant-ui ThreadMessage's content parts into plain text. */
 function messageText(message: { content: readonly unknown[] }): string {
   return message.content
@@ -107,14 +144,27 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
         payload.push({ role: m.role, content });
       }
 
+      const modelId = deps.modelRef.current || DEFAULT_MODEL;
+      let lastUsage: UsageInfo | null = null;
+
       for await (const text of streamChat({
         backendUrl: deps.backendUrl,
         sessionStore: deps.sessionStore,
-        model: deps.modelRef.current || DEFAULT_MODEL,
+        model: modelId,
         messages: payload,
         abortSignal,
+        onUsage: (u) => {
+          lastUsage = u;
+        },
       })) {
         yield { content: [{ type: "text", text }] };
+      }
+
+      // Stream completed cleanly. Stash the usage so the next assistant
+      // `append()` (called by assistant-ui once the message id exists) can
+      // emit the receipt. Cleared on read.
+      if (lastUsage) {
+        pendingReceipt = { usage: lastUsage, modelId };
       }
     },
   };
@@ -138,16 +188,61 @@ function storedItemText(item: ExportedMessageRepositoryItem): string {
     .join("");
 }
 
+/**
+ * Persisted-receipt shape stored at the TOP LEVEL of an assistant message item
+ * (sibling of `message`, never inside it — assistant-ui's MessageRepository.import
+ * only reads `message`/`parentId` and ignores extra item fields, so this rides
+ * along harmlessly). On reload, `load()` rehydrates the in-session store from it.
+ */
+interface PersistedReceipt {
+  input: number;
+  output: number;
+  total: number;
+  /** Id of the user message that opened the exchange (carries the input share). */
+  userMessageId?: string;
+  modelId: string;
+}
+
+/** True when `v` is a structurally valid PersistedReceipt. */
+function isPersistedReceipt(v: unknown): v is PersistedReceipt {
+  if (!v || typeof v !== "object") return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r.input === "number" &&
+    typeof r.output === "number" &&
+    typeof r.total === "number" &&
+    typeof r.modelId === "string"
+  );
+}
+
+/** Max time we'll wait for the receipt computation before persisting WITHOUT it. */
+const RECEIPT_COMPUTE_TIMEOUT_MS = 1500;
+
 function createHistoryAdapter(
   tcw: TinyCloudWeb,
   threadId: string,
   /** Triggered fire-and-forget after every assistant-turn append. */
   onAssistantTurn: (exchange: ChatMessage[]) => void,
+  /**
+   * Computes the input/output split receipt for an assistant turn, applies it
+   * to the in-session store (setReceipt both sides + emitReceipt once), and
+   * resolves with the persistable receipt shape — or null when there's nothing
+   * to record (no pending usage, unknown model, rates failure). Resolves fast
+   * once rates are session-cached (the first call primes the cache). Called
+   * BEFORE persistence so the result can be embedded in the stored item.
+   */
+  computeReceipt?: (
+    messageId: string,
+    userMessageId?: string,
+  ) => Promise<PersistedReceipt | null>,
 ): ThreadHistoryAdapter {
   // Per-thread rolling 2-item ring of the most recent user/assistant exchange.
   // Owned by the adapter (one ring per active thread instance) so a thread
   // switch can never feed extraction a stale exchange from a prior thread.
   const lastExchange: ChatMessage[] = [];
+  // Id of the most recently appended user message — paired with the assistant
+  // message id below to register the split receipt (input vs. output share).
+  let lastUserMessageId: string | undefined;
   return {
     async load(): Promise<ExportedMessageRepository> {
       const doc = await getThread(tcw, threadId);
@@ -159,6 +254,21 @@ function createHistoryAdapter(
         (it) => typeof (it.message as { id?: unknown })?.id === "string",
       );
       if (valid.length === 0) return { messages: [] };
+      // Rehydrate the in-session receipt store from any persisted receipts so
+      // the per-message footers reappear after a reload. Do NOT emitReceipt
+      // here — that would re-bump the usage meter for historical messages.
+      // The extra top-level `receipt` field is ignored by MessageRepository.import
+      // (it only destructures `message`/`parentId`), so we can leave it on the
+      // items handed back to assistant-ui.
+      for (const item of valid) {
+        const receipt = (item as { receipt?: unknown }).receipt;
+        if (!isPersistedReceipt(receipt)) continue;
+        const assistantId = (item.message as { id: string }).id;
+        if (typeof receipt.userMessageId === "string") {
+          setReceipt(receipt.userMessageId, receipt.input, "input");
+        }
+        setReceipt(assistantId, receipt.output, "output");
+      }
       const messages = valid.map((item, i) => ({
         ...item,
         parentId: i === 0 ? null : (valid[i - 1].message as { id: string }).id,
@@ -167,12 +277,44 @@ function createHistoryAdapter(
       return { headId, messages };
     },
     async append(item: ExportedMessageRepositoryItem): Promise<void> {
+      const role = item.message?.role;
+      const id = (item.message as { id?: unknown })?.id;
+
+      // Receipt hooks run at ENTRY, before persistence. The receipt only needs
+      // the message ids — and `await appendMessage` is the wrong thing to gate
+      // on: TinyCloud SQL calls are ~2s each and are known to DROP responses
+      // under concurrency (same infra bug as the thread-list flashing fix), so
+      // code below the await can run many seconds late or never. Verified live:
+      // the post-await path never ran while the stream + ids were all ready.
+      if (role === "user") {
+        lastUserMessageId = typeof id === "string" ? id : undefined;
+      }
+      if (role === "assistant" && typeof id === "string" && computeReceipt) {
+        // Compute the receipt (which also applies the live in-session store
+        // footers + the single usage-bump emit) BEFORE persisting, so we can
+        // embed it in the stored item. Race against a short timeout so a slow
+        // rates fetch never blocks persistence: on timeout we persist WITHOUT
+        // the receipt (the in-session footers still appear live this session;
+        // they just won't survive reload — acceptable). Rates are session-cached
+        // after the first call, so this normally resolves in microseconds.
+        const receipt = await Promise.race([
+          computeReceipt(id, lastUserMessageId).catch(() => null),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), RECEIPT_COMPUTE_TIMEOUT_MS),
+          ),
+        ]);
+        if (receipt) {
+          // Attach to the TOP-LEVEL item (sibling of `message`) — NOT inside
+          // item.message, which assistant-ui's repository import inspects.
+          (item as { receipt?: PersistedReceipt }).receipt = receipt;
+        }
+      }
+
       await appendMessage(tcw, threadId, item);
 
       // Maintain a rolling 2-item ring of the most recent user/assistant
       // exchange. Extraction only ever needs the last turn pair, NOT the full
       // history — that's the cost optimization the plan calls for.
-      const role = item.message?.role;
       const text = storedItemText(item);
       if ((role === "user" || role === "assistant") && text) {
         lastExchange.push({ role, content: text });
@@ -226,6 +368,54 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
     });
   }, []);
 
+  const computeReceipt = useCallback(
+    async (
+      messageId: string,
+      userMessageId?: string,
+    ): Promise<PersistedReceipt | null> => {
+      const d = depsRef.current;
+      const pending = pendingReceipt;
+      pendingReceipt = null;
+      if (!pending) return null;
+      // On any failure (rates fetch, unknown model in catalog) we silently skip
+      // the receipt; it's UI sugar, not the accounting source of truth. This is
+      // awaited by append() (raced against a timeout), so it must never throw.
+      try {
+        const rates = await getCachedRates(d);
+        const m = rates.models.find((r) => r.id === pending.modelId);
+        if (!m) return null;
+        // Split the charged total into input/output shares. The two footers
+        // always sum to `total` (see splitCredits). Store the input share on
+        // the user message and the output share on the assistant message.
+        const { total, inputCredits, outputCredits } = splitCredits(
+          m,
+          pending.usage.promptTokens,
+          pending.usage.completionTokens,
+        );
+        if (userMessageId) setReceipt(userMessageId, inputCredits, "input");
+        setReceipt(messageId, outputCredits, "output");
+        // Emit ONE receipt event carrying the TOTAL so App.tsx's optimistic
+        // usage bump counts the charge exactly once (never per-side). The
+        // store already holds both per-message footers; this event is only
+        // the meter bump, keyed on the assistant message id.
+        emitReceipt(messageId, total, pending.modelId);
+        // Return the persistable shape so append() can embed it in the stored
+        // item (survives reload). load() rehydrates the store from it but does
+        // NOT re-emit (no historical usage-bump).
+        return {
+          input: inputCredits,
+          output: outputCredits,
+          total,
+          userMessageId,
+          modelId: pending.modelId,
+        };
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
+
   const Provider = useCallback(
     function ThreadAdapterProvider({ children }: { children?: React.ReactNode }) {
       // A new thread has a stable local `id` (e.g. __LOCALID_…) but no
@@ -243,8 +433,14 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
       const onActiveThreadModel = depsRef.current.onActiveThreadModel;
 
       const history = useMemo<ThreadHistoryAdapter>(
-        () => createHistoryAdapter(activeTcw, threadId, onAssistantTurn),
-        [activeTcw, threadId, onAssistantTurn],
+        () =>
+          createHistoryAdapter(
+            activeTcw,
+            threadId,
+            onAssistantTurn,
+            computeReceipt,
+          ),
+        [activeTcw, threadId, onAssistantTurn, computeReceipt],
       );
 
       // Sync the model picker with the active thread's stored model.

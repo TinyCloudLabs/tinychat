@@ -214,6 +214,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
         "500":
           $ref: "#/components/responses/InternalError"
         "502":
@@ -223,6 +225,10 @@ paths:
     get:
       operationId: getChatModels
       summary: List available LLM models from RedPill
+      description: >-
+        Each model is annotated with `allowed` and (when not allowed) the
+        `requiredTier` for the calling user's subscription tier. When the
+        paywall is disabled every model is returned with `allowed: true`.
       security:
         - bearerAuth: []
       responses:
@@ -238,6 +244,138 @@ paths:
           $ref: "#/components/responses/InternalError"
         "502":
           $ref: "#/components/responses/UpstreamError"
+
+  /api/billing/config:
+    get:
+      operationId: getBillingConfig
+      summary: Public pricing and tier configuration
+      description: >-
+        Public (unauthenticated) pricing payload. Display prices are integer
+        cents; the frontend divides by 100 to render dollars.
+      security: []
+      responses:
+        "200":
+          description: Paywall flag and tier list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingConfig"
+
+  /api/billing/rates:
+    get:
+      operationId: getBillingRates
+      summary: Public per-model credit rates
+      description: >-
+        Public (unauthenticated) credit-rate table. Denominated in credits only —
+        no dollar/USD fields appear in this payload. Served from the shared
+        RedPill catalog and mirrors `/api/chat/models`' 500/502 error contract.
+      security: []
+      responses:
+        "200":
+          description: Baseline model id and per-model rates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RatesResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+
+  /api/billing/status:
+    get:
+      operationId: getBillingStatus
+      summary: Caller's tier, usage, and subscription
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Billing status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/billing/checkout:
+    post:
+      operationId: createCheckout
+      summary: Create a Stripe Checkout session for a paid tier
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckoutRequest"
+      responses:
+        "200":
+          description: Checkout URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckoutResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/BillingNotConfigured"
+
+  /api/billing/portal:
+    post:
+      operationId: createBillingPortal
+      summary: Create a Stripe billing portal session
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Portal URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckoutResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/BillingNotConfigured"
+
+  /api/billing/webhook:
+    post:
+      operationId: stripeWebhook
+      summary: Stripe webhook receiver (subscription change events)
+      description: >-
+        Receives Stripe events with a raw body and a `Stripe-Signature` header.
+        Verified with STRIPE_WEBHOOK_SECRET. On customer.subscription.* events
+        the in-memory tier cache for the affected address is invalidated.
+        Stateless — no data is persisted.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Event acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [received]
+                properties:
+                  received:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/BillingNotConfigured"
 
 components:
   securitySchemes:
@@ -256,6 +394,25 @@ components:
           type: string
         message:
           type: string
+
+    PaywallError:
+      type: object
+      required: [error, message, tier]
+      properties:
+        error:
+          type: string
+          enum: [model_not_allowed, credit_budget_exceeded]
+        message:
+          type: string
+        tier:
+          type: string
+          enum: [free, plus, pro]
+        requiredTier:
+          type: string
+          enum: [plus, pro]
+          description: Present for model_not_allowed — the tier needed for the model.
+        usage:
+          $ref: "#/components/schemas/UsageInfo"
 
     Manifest:
       type: object
@@ -359,10 +516,26 @@ components:
 
     ModelInfo:
       type: object
-      required: [id]
+      required: [id, allowed, creditsPerKInput, creditsPerKOutput, multiplier]
       properties:
         id:
           type: string
+        allowed:
+          type: boolean
+          description: Whether the calling user's tier may call this model.
+        requiredTier:
+          type: string
+          enum: [plus, pro]
+          description: Lowest tier that can call this model, present only when not allowed.
+        creditsPerKInput:
+          type: number
+          description: Credits charged per 1,000 input tokens (ladder-snapped; spec §2.2).
+        creditsPerKOutput:
+          type: number
+          description: Credits charged per 1,000 output tokens (ladder-snapped; spec §2.2).
+        multiplier:
+          type: number
+          description: Picker-badge multiplier relative to REDPILL_DEFAULT_MODEL's output rate (spec §2.4).
 
     ModelsResponse:
       type: object
@@ -372,6 +545,152 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ModelInfo"
+
+    TierInfo:
+      type: object
+      required: [id, name, priceMonthly, priceYearly, creditBudget, budgetWindow, modelPatterns]
+      properties:
+        id:
+          type: string
+          enum: [free, plus, pro]
+        name:
+          type: string
+        priceMonthly:
+          type:
+            - integer
+            - "null"
+          description: Display price in integer cents (divide by 100 for dollars). Null for free.
+        priceYearly:
+          type:
+            - integer
+            - "null"
+          description: Display price in integer cents (divide by 100 for dollars). Null for free.
+        creditBudget:
+          type: integer
+          description: >-
+            Credit allowance per budget window. Free is per UTC day; paid tiers
+            are per anchored week (7 days from the subscriber's billing-cycle
+            anchor). Resolved with CREDIT_BUDGET_FREE / CREDIT_BUDGET_PLUS_WEEKLY
+            / CREDIT_BUDGET_PRO_WEEKLY env overrides.
+        budgetWindow:
+          type: string
+          enum: [day, week]
+        modelPatterns:
+          type: array
+          items:
+            type: string
+
+    RateInfo:
+      type: object
+      required: [id, creditsPerKInput, creditsPerKOutput, multiplier]
+      properties:
+        id:
+          type: string
+        creditsPerKInput:
+          type: number
+        creditsPerKOutput:
+          type: number
+        multiplier:
+          type: number
+          description: Picker-badge multiplier relative to the baseline model's output rate.
+
+    RatesResponse:
+      type: object
+      required: [baseline, models]
+      properties:
+        baseline:
+          type: string
+          description: Model id used as the multiplier baseline (REDPILL_DEFAULT_MODEL).
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/RateInfo"
+
+    BillingConfig:
+      type: object
+      required: [paywallEnabled, tiers]
+      properties:
+        paywallEnabled:
+          type: boolean
+        tiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/TierInfo"
+
+    UsageInfo:
+      type: object
+      required: [used, limit, resetsAt]
+      properties:
+        used:
+          type: integer
+        limit:
+          type: integer
+        resetsAt:
+          type: string
+          format: date-time
+          description: >-
+            Next budget-window boundary. Free: the next UTC day boundary. Paid:
+            the next anchored-week boundary (subscriber's billing-cycle anchor
+            plus an integer number of 7-day periods).
+
+    SubscriptionInfo:
+      type: object
+      required: [status, interval, currentPeriodEnd, anchor]
+      properties:
+        status:
+          type: string
+        interval:
+          type:
+            - string
+            - "null"
+          enum: [monthly, yearly, null]
+        currentPeriodEnd:
+          type:
+            - string
+            - "null"
+          format: date-time
+        anchor:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: >-
+            Stripe billing-cycle anchor (subscription-stable across renewals).
+            Paid tiers' weekly windows are measured as 7-day periods from this
+            instant. Null for free tier.
+
+    BillingStatus:
+      type: object
+      required: [tier, usage, subscription]
+      properties:
+        tier:
+          type: string
+          enum: [free, plus, pro]
+        usage:
+          $ref: "#/components/schemas/UsageInfo"
+        subscription:
+          oneOf:
+            - $ref: "#/components/schemas/SubscriptionInfo"
+            - type: "null"
+
+    CheckoutRequest:
+      type: object
+      required: [tier, interval]
+      properties:
+        tier:
+          type: string
+          enum: [plus, pro]
+        interval:
+          type: string
+          enum: [monthly, yearly]
+
+    CheckoutResponse:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
 
   responses:
     BadRequest:
@@ -410,3 +729,15 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ApiError"
+    BillingNotConfigured:
+      description: Billing/Stripe is not configured on this server
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    PaymentRequired:
+      description: Subscription required — model not allowed or credit budget exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PaywallError"

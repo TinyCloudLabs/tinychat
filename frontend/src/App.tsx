@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -15,11 +16,21 @@ import {
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
+import { PricingDialog } from "./chat/PricingDialog";
+import { RatesDialog } from "./chat/RatesDialog";
 import { DEFAULT_MODEL, getSetting, readMemoryCache, setSetting } from "./lib/threadStore";
+import {
+  createBillingClient,
+  formatCredits,
+  type BillingClient,
+  type BillingConfig,
+  type BillingStatus,
+} from "./lib/billingApi";
+import { onBillingEvent, onPaywallError } from "./lib/chatApi";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { Button } from "@/components/ui/button";
-import { BrainIcon, ChevronDownIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon, LockIcon } from "lucide-react";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -27,6 +38,8 @@ const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
 const MODEL_STORAGE_KEY = "xyz.tinycloud.tinychat:active-model";
+const HIGH_BURN_ACK_KEY = "xyz.tinycloud.tinychat:high-burn-ack";
+const HIGH_BURN_THRESHOLD = 10;
 
 function getInitialModel(): string {
   if (typeof window === "undefined") return DEFAULT_MODEL;
@@ -47,6 +60,13 @@ type AppState =
 
 interface ModelOption {
   id: string;
+  /** When the paywall is on, whether the current tier may use this model. */
+  allowed?: boolean;
+  requiredTier?: "plus" | "pro";
+  /** Per-model credit rates (spec §5.4 — always present from /api/chat/models). */
+  creditsPerKInput: number;
+  creditsPerKOutput: number;
+  multiplier: number;
 }
 
 export function App() {
@@ -69,6 +89,31 @@ export function App() {
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+
+  // ── Billing / paywall state ──────────────────────────────────────
+  // config is fetched once on load (public, cached); status is fetched after
+  // sign-in and refreshed on dialog-open + after a successful checkout. All
+  // paywall UI is gated on `billingConfig?.paywallEnabled` — when the backend
+  // reports the paywall off (or before config loads) nothing renders.
+  const billingRef = useRef<BillingClient>(
+    createBillingClient(BACKEND_URL, sessionStoreRef.current),
+  );
+  const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null);
+  const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [ratesOpen, setRatesOpen] = useState(false);
+  const [billingNotice, setBillingNotice] = useState<string | null>(null);
+  const paywallEnabled = billingConfig?.paywallEnabled === true;
+  const openRates = useCallback(() => setRatesOpen(true), []);
+
+  const refreshBillingStatus = useCallback(async () => {
+    try {
+      const status = await billingRef.current.getStatus();
+      setBillingStatus(status);
+    } catch {
+      // status is optional UI; a failure just leaves the indicator unpopulated.
+    }
+  }, []);
   // Soft refresh after an import: bumping this key remounts the inner runtime
   // tree so useChatRuntime re-runs listThreads() cold. The dialog already
   // clears the index cache, so this avoids window.location.reload while still
@@ -197,6 +242,87 @@ export function App() {
     })();
   }, []);
 
+  // Fetch the billing config once on load (public, no auth). Cached for the
+  // session. The result decides whether ANY paywall UI renders.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await billingRef.current.getConfig();
+        if (!cancelled) setBillingConfig(cfg);
+      } catch {
+        // No config → treat the paywall as off (no UI).
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fetch billing status after sign-in (only when the paywall is on).
+  useEffect(() => {
+    if (state !== "ready" || !paywallEnabled) return;
+    void refreshBillingStatus();
+  }, [state, paywallEnabled, refreshBillingStatus]);
+
+  // Optimistically bump the usage chip when a receipt event fires — avoids
+  // a per-message status refetch. Real reconciliation happens on dialog-open,
+  // ?billing=success, and 402. Skips silently before status loads.
+  useEffect(() => {
+    return onBillingEvent((event) => {
+      if (event.type !== "receipt") return;
+      setBillingStatus((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          usage: { ...prev.usage, used: prev.usage.used + event.credits },
+        };
+      });
+    });
+  }, []);
+
+  // Listen for paywall (402) errors thrown from the chat stream. The human
+  // message still renders in-chat via ErrorPrimitive; here we additionally
+  // refresh status and auto-open the pricing dialog so there's a clear upgrade
+  // path. Active regardless of `paywallEnabled` — a 402 only fires when the
+  // backend is enforcing the paywall.
+  useEffect(() => {
+    return onPaywallError(() => {
+      void refreshBillingStatus();
+      setPricingOpen(true);
+    });
+  }, [refreshBillingStatus]);
+
+  // Handle Stripe Checkout redirect-back: ?billing=success | ?billing=cancelled.
+  // Success → refetch status + show a brief notice; cancelled → silent. Either
+  // way, strip the param so a refresh doesn't re-trigger.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const billing = params.get("billing");
+    if (billing !== "success" && billing !== "cancelled") return;
+    if (billing === "success") {
+      void refreshBillingStatus();
+      setBillingNotice("Subscription updated. Thanks for upgrading!");
+    }
+    params.delete("billing");
+    const query = params.toString();
+    const next = window.location.pathname + (query ? `?${query}` : "") + window.location.hash;
+    window.history.replaceState(null, "", next);
+  }, [refreshBillingStatus]);
+
+  // Auto-dismiss the success notice.
+  useEffect(() => {
+    if (!billingNotice) return;
+    const t = window.setTimeout(() => setBillingNotice(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [billingNotice]);
+
+  const openPricing = useCallback(() => {
+    void refreshBillingStatus();
+    setPricingOpen(true);
+  }, [refreshBillingStatus]);
+
   // Load the model list once we have a backend token.
   useEffect(() => {
     if (state !== "ready") return;
@@ -281,6 +407,8 @@ export function App() {
     setDid(null);
     setSpaceId(null);
     setModels([]);
+    setBillingStatus(null);
+    setPricingOpen(false);
     setState("unauthenticated");
   }, [address, tcw]);
 
@@ -297,25 +425,24 @@ export function App() {
             TinyCloud Chat
           </span>
           {isReady && (
-            <div className="relative">
-              <select
-                value={model}
-                onChange={(e) => pickModel(e.target.value)}
-                className="h-8 cursor-pointer appearance-none rounded-md border border-input bg-background pl-2.5 pr-7 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label="Model"
-              >
-                {models.length === 0 && <option value={model}>{model}</option>}
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.id}
-                  </option>
-                ))}
-              </select>
-              <ChevronDownIcon className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            </div>
+            <ModelPicker
+              model={model}
+              models={models}
+              paywallEnabled={paywallEnabled}
+              onPick={pickModel}
+              onLockedPick={openPricing}
+              onOpenRates={openRates}
+            />
           )}
         </div>
         <div className="flex items-center gap-2">
+          {isReady && paywallEnabled && (
+            <UsageIndicator
+              status={billingStatus}
+              onClick={openPricing}
+              onOpenRates={openRates}
+            />
+          )}
           {isReady && tcw && (
             <MemoryPopover
               tcw={tcw}
@@ -363,6 +490,38 @@ export function App() {
           <BootSurface state={state} error={error} onSignIn={signIn} />
         )}
       </main>
+
+      {paywallEnabled && billingConfig && (
+        <PricingDialog
+          open={pricingOpen}
+          onOpenChange={setPricingOpen}
+          config={billingConfig}
+          status={billingStatus}
+          billing={billingRef.current}
+          onOpenRates={openRates}
+        />
+      )}
+
+      <RatesDialog
+        open={ratesOpen}
+        onOpenChange={setRatesOpen}
+        billing={billingRef.current}
+      />
+
+
+      {billingNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2"
+        >
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
+            <span className="size-1.5 rounded-full bg-green-500" />
+            {billingNotice}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -472,6 +631,443 @@ function MemoryPopover(props: {
       )}
     </div>
   );
+}
+
+// Compact, clickable usage chip in the header. Shows the current tier and a
+// thin progress bar of credit-budget consumption. Opens the pricing dialog on
+// click. On hover/focus, an expanded popover surfaces exact numbers + reset
+// date + a "How credits work" link to the rates table (spec §5.5). Renders
+// even before status loads (shows "Plans") so the entry point is always
+// present once the paywall is on.
+function UsageIndicator(props: {
+  status: BillingStatus | null;
+  onClick: () => void;
+  onOpenRates: () => void;
+}) {
+  const { status, onClick, onOpenRates } = props;
+  const [open, setOpen] = useState(false);
+  const usage = status?.usage;
+  const pct =
+    usage && usage.limit > 0
+      ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
+      : 0;
+  const tierLabel = status ? capitalize(status.tier) : "Plans";
+  const near = pct >= 90;
+  const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
+  // Compact "12K / 50K" rendered in the visible chip so touch users (who can't
+  // hover) still see live usage at a glance (spec §5.5 transparency).
+  const compactUsage =
+    usage && usage.limit > 0
+      ? `${formatCompact(usage.used)} / ${formatCompact(usage.limit)}`
+      : null;
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocusCapture={() => setOpen(true)}
+      onBlurCapture={(e) => {
+        // Close only when focus leaves the whole popover subtree.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label="View plans and usage"
+        className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="font-medium">{tierLabel}</span>
+        {compactUsage && (
+          <span className="tabular-nums text-muted-foreground">{compactUsage}</span>
+        )}
+        {usage && usage.limit > 0 && (
+          <span
+            className="h-1.5 w-12 overflow-hidden rounded-full bg-muted"
+            aria-hidden
+          >
+            <span
+              className={`block h-full rounded-full ${near ? "bg-destructive" : "bg-primary"}`}
+              style={{ width: `${pct}%` }}
+            />
+          </span>
+        )}
+      </button>
+      {open && (
+        <div
+          role="region"
+          aria-label="Usage and plan details"
+          className="absolute right-0 top-full z-30 mt-1.5 w-64 rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg"
+        >
+          {usage && usage.limit > 0 && (
+            <>
+              <div className="tabular-nums text-foreground">
+                {usage.used.toLocaleString()} / {formatCredits(usage.limit)}
+              </div>
+              {resetsLabel && (
+                <div className="mt-0.5 text-muted-foreground">
+                  Resets {resetsLabel}
+                </div>
+              )}
+            </>
+          )}
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            onClick={() => {
+              setOpen(false);
+              onOpenRates();
+            }}
+            className={`${usage && usage.limit > 0 ? "mt-2" : ""} text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+          >
+            How credits work →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Short numeric label for the always-visible chip (e.g. 12_400 → "12K").
+function formatCompact(n: number): string {
+  if (!Number.isFinite(n)) return String(n);
+  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`.replace(/\.0M$/, "M");
+  if (n >= 1_000) return `${Math.round(n / 100) / 10}K`.replace(/\.0K$/, "K");
+  return n.toString();
+}
+
+function formatResetsAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return d.toDateString();
+  }
+}
+
+// Model picker. Custom dropdown in both paywall on/off — paywall-off variant
+// drops the lock affordance but still surfaces the multiplier badge so users
+// can see per-model burn rates (spec §5.4). On a first-time pick of a
+// high-burn model (multiplier ≥ 10), surfaces a one-time inline confirm with
+// the "[View rates] [OK]" affordance and persists the ack to localStorage.
+function ModelPicker(props: {
+  model: string;
+  models: ModelOption[];
+  paywallEnabled: boolean;
+  onPick: (id: string) => void;
+  onLockedPick: () => void;
+  onOpenRates: () => void;
+}) {
+  const { model, models, paywallEnabled, onPick, onLockedPick, onOpenRates } = props;
+  const [open, setOpen] = useState(false);
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [nudge, setNudge] = useState<{ id: string; multiplier: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const nudgeRef = useRef<HTMLDivElement>(null);
+  const nudgeOkRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      const root = containerRef.current;
+      if (root && !root.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // When the listbox opens, move focus to the currently selected option (or
+  // the first) so arrow-key navigation has a starting point — WAI-ARIA listbox
+  // contract (spec §5.4 model picker accessibility).
+  useEffect(() => {
+    if (!open || models.length === 0) return;
+    const activeIdx = models.findIndex((m) => m.id === model);
+    const startIdx = activeIdx >= 0 ? activeIdx : 0;
+    setFocusedIndex(startIdx);
+    // Focus on the next tick so the rendered option ref is populated.
+    queueMicrotask(() => optionRefs.current[startIdx]?.focus());
+  }, [open, models, model]);
+
+  // Baseline = the model whose multiplier is 1 (snap-up means there can only
+  // be one "1×" — usually the configured REDPILL_DEFAULT_MODEL). Fall back to
+  // a generic label when the catalog hasn't loaded yet.
+  const baseline = useMemo(
+    () => models.find((m) => m.multiplier === 1)?.id ?? "baseline",
+    [models],
+  );
+
+  const select = (m: ModelOption) => {
+    if (paywallEnabled && m.allowed === false) {
+      setOpen(false);
+      onLockedPick();
+      return;
+    }
+    onPick(m.id);
+    setOpen(false);
+    // Return focus to the trigger when the listbox closes. If a high-burn nudge
+    // opens, its own auto-focus effect runs after this commit and moves focus to
+    // the nudge's OK button, so it wins; otherwise focus lands back on the
+    // trigger instead of falling through to <body>.
+    triggerRef.current?.focus();
+    if (
+      typeof m.multiplier === "number" &&
+      m.multiplier >= HIGH_BURN_THRESHOLD &&
+      !hasHighBurnAck()
+    ) {
+      setNudge({ id: m.id, multiplier: m.multiplier });
+    }
+  };
+
+  const ackNudge = useCallback(() => {
+    setHighBurnAck();
+    setNudge(null);
+  }, []);
+
+  // WAI-ARIA dialog: when the nudge opens, move focus into it and trap Tab
+  // inside until it closes. Mirrors the MemoryPanel pattern above.
+  useEffect(() => {
+    if (!nudge) return;
+    nudgeOkRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        ackNudge();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const panel = nudgeRef.current;
+      if (!panel) return;
+      const focusables = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (event.shiftKey && (active === first || !panel.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [nudge, ackNudge]);
+
+  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (models.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const next = (focusedIndex + 1) % models.length;
+      setFocusedIndex(next);
+      optionRefs.current[next]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = (focusedIndex - 1 + models.length) % models.length;
+      setFocusedIndex(next);
+      optionRefs.current[next]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setFocusedIndex(0);
+      optionRefs.current[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      const last = models.length - 1;
+      setFocusedIndex(last);
+      optionRefs.current[last]?.focus();
+    } else if (event.key === "Enter" || event.key === " ") {
+      const m = models[focusedIndex];
+      if (m) {
+        event.preventDefault();
+        select(m);
+      }
+    }
+  };
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls="model-picker-popup"
+        aria-label="Model"
+        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="max-w-[12rem] truncate">{model}</span>
+        <ChevronDownIcon className="size-3.5 text-muted-foreground" />
+      </button>
+      {open && (
+        <div
+          id="model-picker-popup"
+          ref={listRef}
+          role="listbox"
+          aria-label="Model"
+          onKeyDown={onListKeyDown}
+          className="absolute left-0 z-30 mt-1.5 max-h-72 w-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg focus:outline-none"
+        >
+          {models.length === 0 && (
+            <div className="px-2 py-1.5 text-muted-foreground">{model}</div>
+          )}
+          {models.map((m, i) => {
+            const locked = paywallEnabled && m.allowed === false;
+            const active = m.id === model;
+            const badge =
+              typeof m.multiplier === "number" && m.multiplier > 1
+                ? `${formatMultiplier(m.multiplier)}×`
+                : null;
+            return (
+              <button
+                key={m.id}
+                id={`model-option-${i}`}
+                ref={(el) => {
+                  optionRefs.current[i] = el;
+                }}
+                type="button"
+                role="option"
+                aria-selected={active}
+                aria-disabled={locked || undefined}
+                aria-label={
+                  locked
+                    ? `${m.id} (locked, requires ${m.requiredTier} plan)`
+                    : undefined
+                }
+                tabIndex={focusedIndex === i ? 0 : -1}
+                onClick={() => select(m)}
+                onFocus={() => setFocusedIndex(i)}
+                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent focus:bg-accent focus:outline-none ${
+                  active ? "bg-accent/60" : ""
+                }`}
+              >
+                {paywallEnabled ? (
+                  locked ? (
+                    <LockIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <span className="size-3.5 shrink-0" />
+                  )
+                ) : null}
+                <span
+                  className={`flex-1 truncate ${locked ? "text-muted-foreground" : "text-foreground"}`}
+                >
+                  {m.id}
+                </span>
+                {badge && (
+                  <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary tabular-nums">
+                    {badge}
+                  </span>
+                )}
+                {locked && m.requiredTier && (
+                  <span className="shrink-0 rounded-full border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    {capitalize(m.requiredTier)}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {nudge &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center bg-background/60 p-4 sm:items-center"
+            onMouseDown={(e) => {
+              // Click on the backdrop dismisses; clicks inside the dialog bubble
+              // up but are stopped by the inner mousedown handler.
+              if (e.target === e.currentTarget) ackNudge();
+            }}
+          >
+            <div
+              ref={nudgeRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="High-burn model notice"
+              onMouseDown={(e) => e.stopPropagation()}
+              className="w-full max-w-sm rounded-lg border border-border bg-popover p-3 text-xs shadow-lg"
+            >
+              <p className="text-foreground">
+                This model uses credits ~{formatMultiplier(nudge.multiplier)}× faster than{" "}
+                <span className="font-mono">{baseline}</span>.
+              </p>
+              <div className="mt-2.5 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    ackNudge();
+                    onOpenRates();
+                  }}
+                  className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  View rates
+                </button>
+                <button
+                  ref={nudgeOkRef}
+                  type="button"
+                  onClick={ackNudge}
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
+function formatMultiplier(n: number): string {
+  if (!Number.isFinite(n)) return "?";
+  return Number.isInteger(n) ? n.toString() : Number.parseFloat(n.toFixed(1)).toString();
+}
+
+function hasHighBurnAck(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(HIGH_BURN_ACK_KEY) === "1";
+  } catch {
+    // localStorage disabled — assume ack so we don't nag forever.
+    return true;
+  }
+}
+
+function setHighBurnAck(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HIGH_BURN_ACK_KEY, "1");
+  } catch {
+    // localStorage full/disabled — best-effort; the nudge will just re-fire.
+  }
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }
 
 function ChatWorkspace(props: {

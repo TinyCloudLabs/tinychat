@@ -1,12 +1,31 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import {
+  TIERS,
+  isModelAllowed,
+  requiredTierForModel,
+  type TierId,
+} from "../billing/tiers.js";
+import { paywallEnabled, resolveTier } from "../billing/stripe.js";
+import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
+import { CatalogFetchError, getCatalog, type CatalogModel } from "../billing/catalog.js";
+import {
+  creditsFor,
+  estimateCredits,
+  multiplierFor,
+  ratesForModel,
+  type ModelRates,
+} from "../billing/credits.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
 // so the server boots cleanly even without a key configured.
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
-const REDPILL_DEFAULT_MODEL = process.env.REDPILL_DEFAULT_MODEL ?? "openai/gpt-5-mini";
+const DEFAULT_BASELINE_MODEL = "openai/gpt-5-mini";
+function defaultModel(): string {
+  return process.env.REDPILL_DEFAULT_MODEL ?? DEFAULT_BASELINE_MODEL;
+}
 
 if (!process.env.REDPILL_API_KEY) {
   console.warn(
@@ -14,21 +33,83 @@ if (!process.env.REDPILL_API_KEY) {
   );
 }
 
-// ── In-memory model cache ────────────────────────────────────────────────────
-
-interface ModelsCacheEntry {
-  models: Array<{ id: string }>;
-  fetchedAt: number;
-}
-
-let modelsCache: ModelsCacheEntry | null = null;
-const MODELS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function handleRouteError(res: Response, error: unknown, operation: string): void {
   console.error(`[chat] failed to ${operation}:`, error);
   res.status(500).json({ error: "internal_error", message: `Failed to ${operation}` });
+}
+
+const decoder = new TextDecoder();
+
+/**
+ * Scan an SSE buffer for the final usage chunk RedPill emits when
+ * stream_options.include_usage is set. That chunk carries
+ * `usage.prompt_tokens` and `usage.completion_tokens` with an empty `choices`
+ * array. We also accumulate streamed completion text so we can fall back to
+ * an estimate if no usage chunk arrives.
+ *
+ * IMPORTANT: this only reads — the raw bytes are forwarded to the client
+ * untouched. We re-decode here purely to extract the token counts.
+ */
+class UsageScanner {
+  private buffer = "";
+  promptTokens: number | null = null;
+  completionTokens: number | null = null;
+  completionText = "";
+
+  get hasUsage(): boolean {
+    return this.promptTokens !== null || this.completionTokens !== null;
+  }
+
+  push(chunk: Uint8Array): void {
+    this.buffer += decoder.decode(chunk, { stream: true });
+    let newlineIndex: number;
+    while ((newlineIndex = this.buffer.indexOf("\n")) !== -1) {
+      const line = this.buffer.slice(0, newlineIndex).trim();
+      this.buffer = this.buffer.slice(newlineIndex + 1);
+      this.consumeLine(line);
+    }
+  }
+
+  private consumeLine(line: string): void {
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (payload === "" || payload === "[DONE]") return;
+    let parsed: {
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      choices?: Array<{ delta?: { content?: unknown } }>;
+    };
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    if (parsed.usage) {
+      if (typeof parsed.usage.prompt_tokens === "number") {
+        this.promptTokens = parsed.usage.prompt_tokens;
+      }
+      if (typeof parsed.usage.completion_tokens === "number") {
+        this.completionTokens = parsed.usage.completion_tokens;
+      }
+    }
+    const delta = parsed.choices?.[0]?.delta?.content;
+    if (typeof delta === "string") this.completionText += delta;
+  }
+}
+
+/** Conservative default rates for the post-stream recording fallback (spec §7). */
+const FALLBACK_RECORDING_RATES: ModelRates = {
+  creditsPerKInput: 200,
+  creditsPerKOutput: 1000,
+  fallback: true,
+};
+
+/** Look up a model in the catalog and resolve its rates. Missing entries get
+ *  the §2.5 fallback (via ratesForModel on a synthetic null-pricing model). */
+function resolveRates(catalog: CatalogModel[], modelId: string): ModelRates {
+  const entry = catalog.find((m) => m.id === modelId);
+  return ratesForModel(entry ?? { id: modelId, pricing: null });
 }
 
 // ── Router factory ───────────────────────────────────────────────────────────
@@ -41,6 +122,10 @@ export function createChatRouter() {
    * Auth-protected streaming proxy to RedPill chat/completions.
    * Body: { model?: string, messages: Array<{role, content}> }
    * Response: text/event-stream SSE forwarded straight from RedPill.
+   *
+   * When PAYWALL_ENABLED, the request is gated by the caller's subscription
+   * tier: the model must be allowed for the tier and the tier's credit budget
+   * must not be exhausted. Actual credit usage is recorded after the stream.
    */
   router.post("/", async (req: Request, res: Response) => {
     const apiKey = process.env.REDPILL_API_KEY;
@@ -65,7 +150,61 @@ export function createChatRouter() {
       return;
     }
 
-    const resolvedModel = typeof model === "string" && model.trim() ? model : REDPILL_DEFAULT_MODEL;
+    const resolvedModel = typeof model === "string" && model.trim() ? model : defaultModel();
+
+    // ── Gating (only when the paywall is enabled) ─────────────────────────────
+    const address = req.user?.address ?? "";
+    let gatedTier: TierId = "free";
+    let anchor: number | null = null;
+    let rates: ModelRates | null = null;
+    if (paywallEnabled()) {
+      let resolution;
+      try {
+        resolution = await resolveTier(address);
+      } catch (error) {
+        handleRouteError(res, error, "resolve subscription tier");
+        return;
+      }
+      const tier = resolution.tier;
+      gatedTier = tier;
+      anchor = resolution.subscription?.anchor
+        ? Date.parse(resolution.subscription.anchor)
+        : null;
+      const tierConfig = TIERS[tier];
+
+      if (!isModelAllowed(tier, resolvedModel)) {
+        const requiredTier = requiredTierForModel(resolvedModel);
+        res.status(402).json({
+          error: "model_not_allowed",
+          message: `Model ${resolvedModel} is not available on the ${tierConfig.name} tier.`,
+          tier,
+          ...(requiredTier && requiredTier !== tier ? { requiredTier } : {}),
+        });
+        return;
+      }
+
+      if (isOverBudget(address, tierConfig, anchor)) {
+        const usage = getUsage(address, tierConfig, anchor);
+        res.status(402).json({
+          error: "credit_budget_exceeded",
+          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+          tier,
+          usage,
+        });
+        return;
+      }
+
+      // Resolve the requested model's rates once per request, before any bytes
+      // are sent. Catalog failures here surface as 500 (spec §7); post-stream
+      // failures are handled separately and must never throw after bytes flow.
+      try {
+        const catalog = await getCatalog();
+        rates = resolveRates(catalog, resolvedModel);
+      } catch (error) {
+        handleRouteError(res, error, "resolve model rates");
+        return;
+      }
+    }
 
     // AbortController so we can cancel the upstream fetch if the client disconnects
     const controller = new AbortController();
@@ -79,7 +218,12 @@ export function createChatRouter() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ model: resolvedModel, messages, stream: true }),
+        body: JSON.stringify({
+          model: resolvedModel,
+          messages,
+          stream: true,
+          stream_options: { include_usage: true },
+        }),
         signal: controller.signal,
       });
     } catch (error: unknown) {
@@ -112,10 +256,13 @@ export function createChatRouter() {
       return;
     }
 
+    const scanner = new UsageScanner();
     try {
-      // Bun's fetch body is async-iterable
+      // Bun's fetch body is async-iterable. Forward every chunk byte-for-byte
+      // while tee-ing a copy through the usage scanner.
       for await (const chunk of upstreamRes.body as unknown as AsyncIterable<Uint8Array>) {
         if (controller.signal.aborted) break;
+        scanner.push(chunk);
         res.write(chunk);
       }
     } catch (error: unknown) {
@@ -127,14 +274,54 @@ export function createChatRouter() {
     } finally {
       res.end();
     }
+
+    // ── Record usage (best effort; only when gating is active) ────────────────
+    // NEVER throw after bytes were served. On any rates/catalog failure here,
+    // fall back to conservative default rates and console.error (spec §7).
+    if (paywallEnabled() && address) {
+      try {
+        const effectiveRates = rates ?? FALLBACK_RECORDING_RATES;
+        const credits = scanner.hasUsage
+          ? creditsFor(
+              effectiveRates,
+              scanner.promptTokens ?? 0,
+              scanner.completionTokens ?? 0,
+            )
+          : estimateCredits(
+              effectiveRates,
+              messages as Array<{ content?: unknown }>,
+              scanner.completionText,
+            );
+        recordUsage(address, TIERS[gatedTier], credits, anchor);
+      } catch (error) {
+        console.error("[chat] failed to record post-stream usage:", error);
+        try {
+          const credits = scanner.hasUsage
+            ? creditsFor(
+                FALLBACK_RECORDING_RATES,
+                scanner.promptTokens ?? 0,
+                scanner.completionTokens ?? 0,
+              )
+            : estimateCredits(
+                FALLBACK_RECORDING_RATES,
+                messages as Array<{ content?: unknown }>,
+                scanner.completionText,
+              );
+          recordUsage(address, TIERS[gatedTier], credits, anchor);
+        } catch (fallbackError) {
+          console.error("[chat] fallback usage recording also failed:", fallbackError);
+        }
+      }
+    }
   });
 
   /**
    * GET /models
-   * Auth-protected. Returns { models: Array<{ id: string }> }.
-   * Cached in-memory for 5 minutes.
+   * Auth-protected. Returns { models: Array<{ id, allowed, requiredTier? }> }.
+   * Cached in-memory for 5 minutes. Each model is annotated for the caller's
+   * tier: when the paywall is disabled every model is allowed:true.
    */
-  router.get("/models", async (_req: Request, res: Response) => {
+  router.get("/models", async (req: Request, res: Response) => {
     const apiKey = process.env.REDPILL_API_KEY;
     if (!apiKey) {
       res
@@ -143,44 +330,65 @@ export function createChatRouter() {
       return;
     }
 
-    // Return cache if fresh
-    if (modelsCache && Date.now() - modelsCache.fetchedAt < MODELS_CACHE_TTL_MS) {
-      res.json({ models: modelsCache.models });
-      return;
-    }
-
-    let upstreamRes: globalThis.Response;
+    let catalog: CatalogModel[];
     try {
-      upstreamRes = await fetch(`${REDPILL_BASE_URL}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-    } catch (error) {
+      catalog = await getCatalog();
+    } catch (error: unknown) {
+      if (error instanceof CatalogFetchError) {
+        const detail = error.detail;
+        if (detail.kind === "upstream_not_ok") {
+          res.status(502).json({
+            error: "upstream_error",
+            message: `RedPill models endpoint returned ${detail.statusCode}: ${detail.body}`,
+          });
+          return;
+        }
+        if (detail.kind === "parse_failed") {
+          handleRouteError(res, detail.cause, "parse models response");
+          return;
+        }
+        handleRouteError(res, detail.cause, "fetch models");
+        return;
+      }
       handleRouteError(res, error, "fetch models");
       return;
     }
 
-    if (!upstreamRes.ok) {
-      const errBody = await upstreamRes.text().catch(() => "");
-      res.status(502).json({
-        error: "upstream_error",
-        message: `RedPill models endpoint returned ${upstreamRes.status}: ${errBody || upstreamRes.statusText}`,
-      });
-      return;
+    // Annotate each model for the caller's tier.
+    let tier: TierId = "free";
+    const gating = paywallEnabled();
+    if (gating) {
+      try {
+        tier = (await resolveTier(req.user?.address ?? "")).tier;
+      } catch (error) {
+        handleRouteError(res, error, "resolve subscription tier");
+        return;
+      }
     }
 
-    let data: unknown;
-    try {
-      data = await upstreamRes.json();
-    } catch (error) {
-      handleRouteError(res, error, "parse models response");
-      return;
-    }
+    // Baseline rates = REDPILL_DEFAULT_MODEL's rates (spec §2.4); fallback if
+    // the default model is absent from the catalog.
+    const baselineRates = resolveRates(catalog, defaultModel());
 
-    const raw = (data as { data?: Array<{ id: string }> }).data ?? [];
-    const models = raw.map((m) => ({ id: m.id }));
+    const annotated = catalog.map((m) => {
+      const modelRates = ratesForModel(m);
+      const rateFields = {
+        creditsPerKInput: modelRates.creditsPerKInput,
+        creditsPerKOutput: modelRates.creditsPerKOutput,
+        multiplier: multiplierFor(modelRates, baselineRates),
+      };
+      if (!gating) return { id: m.id, allowed: true, ...rateFields };
+      const allowed = isModelAllowed(tier, m.id);
+      const requiredTier = allowed ? undefined : requiredTierForModel(m.id) ?? undefined;
+      return {
+        id: m.id,
+        allowed,
+        ...(requiredTier && requiredTier !== "free" ? { requiredTier } : {}),
+        ...rateFields,
+      };
+    });
 
-    modelsCache = { models, fetchedAt: Date.now() };
-    res.json({ models });
+    res.json({ models: annotated });
   });
 
   return router;
