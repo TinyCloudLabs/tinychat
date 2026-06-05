@@ -235,10 +235,11 @@ const AssistantMessage: FC = () => (
 
 const AssistantActionBar: FC = () => (
   <div className="flex items-center gap-2 pl-6">
+    {/* Always visible (no hover-reveal) — hover felt finicky; hideWhenRunning
+        still keeps it out of the way while a reply is streaming. */}
     <ActionBarPrimitive.Root
       hideWhenRunning
-      autohide="not-last"
-      className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 data-[floating]:opacity-100"
+      className="flex items-center gap-1"
     >
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton tooltip="Copy">
