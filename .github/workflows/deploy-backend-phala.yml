@@ -261,6 +261,19 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           REDPILL_API_KEY: ${{ secrets.REDPILL_API_KEY }}
+          # Paywall / billing (docs/stripe-setup.md). PAYWALL_ENABLED is a repo
+          # VARIABLE (defaults to false when unset); Stripe keys are secrets and
+          # price ids are variables — all optional until go-live.
+          PAYWALL_ENABLED: ${{ vars.PAYWALL_ENABLED || 'false' }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_PRICE_PLUS_MONTHLY: ${{ vars.STRIPE_PRICE_PLUS_MONTHLY }}
+          STRIPE_PRICE_PLUS_YEARLY: ${{ vars.STRIPE_PRICE_PLUS_YEARLY }}
+          STRIPE_PRICE_PRO_MONTHLY: ${{ vars.STRIPE_PRICE_PRO_MONTHLY }}
+          STRIPE_PRICE_PRO_YEARLY: ${{ vars.STRIPE_PRICE_PRO_YEARLY }}
+          CREDIT_BUDGET_FREE: ${{ vars.CREDIT_BUDGET_FREE }}
+          CREDIT_BUDGET_PLUS_WEEKLY: ${{ vars.CREDIT_BUDGET_PLUS_WEEKLY }}
+          CREDIT_BUDGET_PRO_WEEKLY: ${{ vars.CREDIT_BUDGET_PRO_WEEKLY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -280,6 +293,16 @@ jobs:
             printf '%s\n' "PORT=3001"
             printf '%s\n' "PHALA_INGRESS_DOMAIN=$PHALA_INGRESS_DOMAIN"
             printf '%s\n' "PHALA_GATEWAY_CNAME=$PHALA_GATEWAY_CNAME"
+            printf '%s\n' "PAYWALL_ENABLED=${PAYWALL_ENABLED:-false}"
+            printf '%s\n' "STRIPE_SECRET_KEY=$STRIPE_SECRET_KEY"
+            printf '%s\n' "STRIPE_WEBHOOK_SECRET=$STRIPE_WEBHOOK_SECRET"
+            printf '%s\n' "STRIPE_PRICE_PLUS_MONTHLY=$STRIPE_PRICE_PLUS_MONTHLY"
+            printf '%s\n' "STRIPE_PRICE_PLUS_YEARLY=$STRIPE_PRICE_PLUS_YEARLY"
+            printf '%s\n' "STRIPE_PRICE_PRO_MONTHLY=$STRIPE_PRICE_PRO_MONTHLY"
+            printf '%s\n' "STRIPE_PRICE_PRO_YEARLY=$STRIPE_PRICE_PRO_YEARLY"
+            printf '%s\n' "CREDIT_BUDGET_FREE=$CREDIT_BUDGET_FREE"
+            printf '%s\n' "CREDIT_BUDGET_PLUS_WEEKLY=$CREDIT_BUDGET_PLUS_WEEKLY"
+            printf '%s\n' "CREDIT_BUDGET_PRO_WEEKLY=$CREDIT_BUDGET_PRO_WEEKLY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

@@ -15,6 +15,18 @@ services:
       REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-openai/gpt-5-mini}
       TINYCHAT_BUILD_SHA: ${TINYCHAT_BUILD_SHA:-}
       TINYCHAT_DEPLOY_RUN_URL: ${TINYCHAT_DEPLOY_RUN_URL:-}
+      # Paywall / billing (see docs/stripe-setup.md). Defaults keep the paywall
+      # OFF and Stripe unconfigured — safe until go-live values are provided.
+      PAYWALL_ENABLED: ${PAYWALL_ENABLED:-false}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PLUS_MONTHLY: ${STRIPE_PRICE_PLUS_MONTHLY:-}
+      STRIPE_PRICE_PLUS_YEARLY: ${STRIPE_PRICE_PLUS_YEARLY:-}
+      STRIPE_PRICE_PRO_MONTHLY: ${STRIPE_PRICE_PRO_MONTHLY:-}
+      STRIPE_PRICE_PRO_YEARLY: ${STRIPE_PRICE_PRO_YEARLY:-}
+      CREDIT_BUDGET_FREE: ${CREDIT_BUDGET_FREE:-}
+      CREDIT_BUDGET_PLUS_WEEKLY: ${CREDIT_BUDGET_PLUS_WEEKLY:-}
+      CREDIT_BUDGET_PRO_WEEKLY: ${CREDIT_BUDGET_PRO_WEEKLY:-}
     restart: unless-stopped
 
   dstack-ingress:
