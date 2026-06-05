@@ -56,7 +56,13 @@ const ThreadBody: FC = () => {
   // gap as loading too, so switching chats never flashes the welcome screen.
   // (A persisted thread always has >=1 message, so "regular & empty" only ever
   // means "not loaded yet", never a genuinely empty conversation.)
-  const showSkeleton = isLoading || (isEmpty && status === "regular");
+  //
+  // A brand-new chat (`status: "new"`) is exempt: it has no history to load,
+  // but the runtime still flips `isLoading` on for its (empty) history fetch —
+  // without the exemption the welcome screen hides behind a skeleton for the
+  // whole round-trip on every boot.
+  const showSkeleton =
+    status !== "new" && (isLoading || (isEmpty && status === "regular"));
 
   if (showSkeleton) return <HistorySkeleton />;
 
@@ -216,6 +222,8 @@ const AssistantMessage: FC = () => (
     </div>
     <div className="pl-7 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+      <ThinkingIndicator />
+      <StreamingCursor />
     </div>
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -227,12 +235,68 @@ const AssistantMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
+// Three-way phase for the running assistant message — exactly one of the two
+// indicators below matches each phase, so the handoff is mutually exclusive.
+function useAssistantStreamPhase(): "idle" | "thinking" | "writing" {
+  return useMessage((m) => {
+    if (m.role !== "assistant" || m.status?.type !== "running") return "idle";
+    const hasText = m.content.some((part) => {
+      const p = part as { type?: string; text?: unknown };
+      return (
+        p.type === "text" && typeof p.text === "string" && p.text.length > 0
+      );
+    });
+    return hasText ? "writing" : "thinking";
+  });
+}
+
+// Pre-first-token placeholder. Derived from message state — NOT
+// MessagePartPrimitive.InProgress, which crashes as a direct bubble child
+// outside part scope. h-[1.625em] matches the first text line to avoid jump.
+const ThinkingIndicator: FC = () => {
+  const phase = useAssistantStreamPhase();
+  if (phase !== "thinking") return null;
+  return (
+    <div role="status" className="flex h-[1.625em] items-center gap-1">
+      <span className="sr-only">Generating response…</span>
+      <span
+        aria-hidden
+        className="size-1.5 rounded-full bg-muted-foreground/60 motion-safe:animate-bounce"
+      />
+      <span
+        aria-hidden
+        className="size-1.5 rounded-full bg-muted-foreground/60 motion-safe:animate-bounce"
+        style={{ animationDelay: "150ms" }}
+      />
+      <span
+        aria-hidden
+        className="size-1.5 rounded-full bg-muted-foreground/60 motion-safe:animate-bounce"
+        style={{ animationDelay: "300ms" }}
+      />
+    </div>
+  );
+};
+
+// Streaming caret. Sits on its own line beneath the markdown column — the last
+// node is usually a block, so true inline-at-end placement is unpredictable.
+// Decorative because ThinkingIndicator's role=status already announced the run.
+const StreamingCursor: FC = () => {
+  const phase = useAssistantStreamPhase();
+  if (phase !== "writing") return null;
+  return (
+    <div aria-hidden className="flex h-4 items-center">
+      <span className="block h-3.5 w-[2px] rounded-sm bg-foreground/70 motion-safe:animate-pulse" />
+    </div>
+  );
+};
+
 const AssistantActionBar: FC = () => (
   <div className="flex items-center gap-2 pl-6">
+    {/* Always visible (no hover-reveal) — hover felt finicky; hideWhenRunning
+        still keeps it out of the way while a reply is streaming. */}
     <ActionBarPrimitive.Root
       hideWhenRunning
-      autohide="not-last"
-      className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 data-[floating]:opacity-100"
+      className="flex items-center gap-1"
     >
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton tooltip="Copy">

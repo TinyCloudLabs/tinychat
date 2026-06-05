@@ -27,3 +27,5 @@ test/.last-run.log
 .credits-audit/
 .weekly-audit/
 .responsive-audit/
+.fresh-history-audit/
+.stream-audit/

@@ -1,5 +1,6 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
+import { historyPrefetch } from "./historyPrefetch";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -130,10 +131,20 @@ function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
 // ── Schema bootstrap (memoized per space) ────────────────────────────
 
 const schemaReadySpaces = new Set<string>();
+const schemaInFlight = new Map<string, Promise<void>>();
 
 /**
- * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized by
- * spaceId so it's a no-op after the first call per session.
+ * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized
+ * per account so it's a no-op after the first call per session.
+ *
+ * Memo key prefers `tcw.did` over `tcw.spaceId` for the same reason as
+ * `cacheKey` below: spaceId is undefined on a RESTORED session, and an empty
+ * key disabled the memo entirely — every SQL helper paid a schema batch
+ * (~2s round-trip) before its real query, doubling all boot traffic.
+ *
+ * Concurrent first-callers share one in-flight batch instead of each issuing
+ * their own (boot fires listThreads / getThread / getMemory / getThreadModel
+ * roughly simultaneously, and the node degrades badly under parallel invokes).
  *
  * The CREATEs run as ordinary write statements in one `batch` transaction.
  * NOTE: do NOT use `execute(..., { schema })` — the schema option is authorized
@@ -142,15 +153,27 @@ const schemaReadySpaces = new Set<string>();
  * On failure we do NOT memoize and we propagate so the caller can surface it.
  */
 async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
-  const space = tcw.spaceId;
-  const memoKey = typeof space === "string" && space.length > 0 ? space : "";
+  const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
+  const space = typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
+  const memoKey = did ?? space ?? "";
   if (memoKey && schemaReadySpaces.has(memoKey)) return;
 
-  const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
-  if (!result.ok) {
-    throw new SqlOpError(result.error, "ensureSchema");
+  const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
+  if (inFlight) return inFlight;
+
+  const run = (async () => {
+    const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
+    if (!result.ok) {
+      throw new SqlOpError(result.error, "ensureSchema");
+    }
+    if (memoKey) schemaReadySpaces.add(memoKey);
+  })();
+
+  if (memoKey) {
+    schemaInFlight.set(memoKey, run);
+    void run.catch(() => {}).finally(() => schemaInFlight.delete(memoKey));
   }
-  if (memoKey) schemaReadySpaces.add(memoKey);
+  return run;
 }
 
 // ── Read helpers (rows are CELL-arrays, mapped by column order) ───────
@@ -366,6 +389,25 @@ function cacheKey(tcw: TinyCloudWeb): string | null {
   return id ? `tinychat:index:${id}` : null;
 }
 
+/**
+ * Sync membership check against the local thread-index cache.
+ *  - `false`: cache is warm and the id is NOT in it → a never-persisted
+ *    (brand-new) thread; safe to skip the SQL history read entirely.
+ *  - `true`: id is in the cached index.
+ *  - `null`: no usable cache → unknown; caller must do the SQL read.
+ *
+ * Safety: any thread reachable in the UI came from `listThreads`, whose warm
+ * path returns exactly this cache — so a persisted, UI-visible thread can
+ * never be falsely reported absent. (Persisted ids keep their `__LOCALID_`
+ * prefix forever, so the prefix is NOT a usable "unsaved" signal — this
+ * membership check is the reliable alternative.)
+ */
+export function isKnownThreadId(tcw: TinyCloudWeb, id: string): boolean | null {
+  const cached = readCache(tcw);
+  if (!cached || cached.length === 0) return null;
+  return cached.some((s) => s.id === id);
+}
+
 /** Coerce a cached summaries blob (`{threads:[...]}` or bare `[...]`). */
 function coerceSummaries(raw: unknown): ThreadSummary[] | null {
   if (raw == null) return null;
@@ -445,12 +487,112 @@ function removeCacheEntry(tcw: TinyCloudWeb, id: string): void {
 export function clearThreadIndexCache(tcw: TinyCloudWeb): void {
   // Bump the gen so any in-flight revalidate's writeCache is dropped.
   mutationGen++;
+  // A bulk change touched many rows — drop every prefetched doc and force the
+  // next list() to re-deliver a fresh baseline.
+  historyPrefetch.clear();
+  lastDeliveredSig = null;
   const key = cacheKey(tcw);
   if (!key) return;
   try {
     window.localStorage.removeItem(key);
   } catch {
     // localStorage disabled — nothing to clear.
+  }
+}
+
+// ── Thread-index change subscription (sidebar freshness) ─────────────
+//
+// The SWR revalidate (and the mutators) update the localStorage cache but the
+// rendered sidebar stays stale until the next mount. Subscribers — the runtime
+// layer — re-fetch the assistant-ui thread list when a list that DIFFERS from
+// what was last delivered to the UI lands. We deep-compare by id+title+
+// updatedAt (the only fields the sidebar renders / sorts on) so identical
+// revalidates never trigger a needless refetch.
+
+type ThreadIndexListener = (summaries: ThreadSummary[], changed: boolean) => void;
+
+// ── Index sync visibility ────────────────────────────────────────────
+//
+// The warm-path revalidate is fire-and-forget, so assistant-ui's
+// `threads.isLoading` flips false the moment the CACHE paints (<1 frame) and
+// the sidebar gets no loading affordance while the real SQL read (~3-7s on
+// boot) is in flight. This tiny store tracks that revalidate so the sidebar
+// can show its sync shimmer for the duration (via useSyncExternalStore).
+
+let indexSyncing = false;
+const syncListeners = new Set<() => void>();
+
+function setIndexSyncing(v: boolean): void {
+  if (indexSyncing === v) return;
+  indexSyncing = v;
+  for (const cb of syncListeners) {
+    try {
+      cb();
+    } catch {
+      // listener errors must never break the revalidate path
+    }
+  }
+}
+
+/** Subscribe to index-sync transitions (useSyncExternalStore contract). */
+export function subscribeIndexSyncing(cb: () => void): () => void {
+  syncListeners.add(cb);
+  return () => {
+    syncListeners.delete(cb);
+  };
+}
+
+/** True while the warm-path list revalidate is in flight. */
+export function isIndexSyncing(): boolean {
+  return indexSyncing;
+}
+const indexListeners = new Set<ThreadIndexListener>();
+// The signature of the list currently rendered in the UI. `null` until the
+// first list() return marks one delivered.
+let lastDeliveredSig: string | null = null;
+
+function indexSignature(summaries: ThreadSummary[]): string {
+  return sortSummaries(summaries)
+    .map((s) => `${s.id} ${s.title} ${s.updatedAt}`)
+    .join("");
+}
+
+/**
+ * Subscribe to thread-index settles. The callback fires with the fresh,
+ * newest-first summaries whenever a revalidate or mutator lands a list —
+ * `changed` says whether it differs from the one last delivered to the UI.
+ * (The sidebar reload should be gated on `changed`; the history prefetch must
+ * NOT be — on a typical boot the revalidate returns an unchanged list, and
+ * prefetch still has to warm it.) Returns an unsubscribe fn.
+ */
+export function subscribeThreadIndex(cb: ThreadIndexListener): () => void {
+  indexListeners.add(cb);
+  return () => {
+    indexListeners.delete(cb);
+  };
+}
+
+/**
+ * Record the list just handed to the UI (by `listThreads`) as the delivered
+ * baseline WITHOUT notifying — there's nothing to refresh, it's already
+ * rendered. A later differing revalidate/mutation is what fires listeners.
+ */
+function markIndexDelivered(summaries: ThreadSummary[]): void {
+  lastDeliveredSig = indexSignature(summaries);
+}
+
+/** Notify subscribers that a list settled; `changed` = differs from delivered. */
+function notifyThreadIndex(summaries: ThreadSummary[]): void {
+  const sig = indexSignature(summaries);
+  const changed = sig !== lastDeliveredSig;
+  lastDeliveredSig = sig;
+  const sorted = sortSummaries(summaries);
+  for (const cb of indexListeners) {
+    try {
+      cb(sorted, changed);
+    } catch (err) {
+      console.warn("[threadStore] thread-index listener failed", err);
+    }
   }
 }
 
@@ -486,7 +628,11 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
   // falls through to the cold path so it self-heals instead of showing a blank
   // sidebar indefinitely.
   if (cached && cached.length > 0) {
+    // The cached list is what the UI renders right now — it's the baseline a
+    // differing revalidate is compared against.
+    markIndexDelivered(cached);
     const startGen = mutationGen;
+    setIndexSyncing(true);
     void coldLoad(tcw)
       .then((fresh) => {
         // Drop a revalidate whose SELECT was in flight when a mutation happened
@@ -494,14 +640,23 @@ export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
         // the cache mutators have already corrected.
         if (mutationGen !== startGen) return;
         writeCache(tcw, fresh);
+        // Converge the sidebar: notify only if the fresh list differs from
+        // what's rendered (requirement #2). This is the boot-time refresh.
+        notifyThreadIndex(fresh);
       })
-      .catch((err) => console.warn("[threadStore] background revalidation failed", err));
+      .catch((err) => console.warn("[threadStore] background revalidation failed", err))
+      .finally(() => setIndexSyncing(false));
     return cached;
   }
   // Cold load — no usable local cache. Pay the network once, then cache.
   const startGen = mutationGen;
   const fresh = await coldLoad(tcw);
   if (mutationGen === startGen) writeCache(tcw, fresh);
+  // The cold result IS what the UI renders — mark it delivered FIRST so the
+  // notify carries changed=false (no sidebar reload), then notify so the
+  // prefetch queue still warms the cold-loaded list.
+  markIndexDelivered(fresh);
+  notifyThreadIndex(fresh);
   return fresh;
 }
 
@@ -615,6 +770,11 @@ export async function appendMessage(
   if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
 
   patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
+  // The thread's stored messages changed — drop any prefetched doc so a later
+  // open re-reads. And the list ordering/title may have changed: converge the
+  // sidebar (the runtime gates this behind "no stream running").
+  historyPrefetch.invalidate(id);
+  notifyThreadIndex(readCache(tcw) ?? []);
 }
 
 /** Default model for imported (non-native) conversations — see spec §8. */
@@ -683,6 +843,8 @@ export async function importThread(
     updatedAt: conv.updatedAt,
     model,
   });
+  historyPrefetch.invalidate(conv.id);
+  notifyThreadIndex(readCache(tcw) ?? []);
 }
 
 /** Set/rename a thread title. No-op effect if the row doesn't exist (fine). */
@@ -704,6 +866,9 @@ export async function setThreadTitle(
     const prior = cached.find((s) => s.id === id);
     patchCacheEntry(tcw, { id, title, updatedAt: now, model: prior?.model ?? DEFAULT_MODEL });
   }
+  // The prefetched doc carries the old title — evict it. Converge the sidebar.
+  historyPrefetch.invalidate(id);
+  notifyThreadIndex(readCache(tcw) ?? []);
 }
 
 export const renameThread = setThreadTitle;
@@ -734,6 +899,8 @@ export async function setThreadModel(
       model,
     });
   }
+  historyPrefetch.invalidate(id);
+  notifyThreadIndex(readCache(tcw) ?? []);
 }
 
 /** Delete a thread and its messages. */
@@ -748,4 +915,8 @@ export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void>
   ]);
   if (!res.ok) throw new SqlOpError(res.error, "deleteThread");
   removeCacheEntry(tcw, id);
+  // Evict from the cache AND drop it from the prefetch queue (no point fetching
+  // a deleted thread). Converge the sidebar.
+  historyPrefetch.invalidate(id);
+  notifyThreadIndex(readCache(tcw) ?? []);
 }
