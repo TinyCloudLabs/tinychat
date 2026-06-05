@@ -23,6 +23,8 @@ import { createDelegationRouter } from "./routes/delegations.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter } from "./routes/chat.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
+import { createBillingRouter } from "./routes/billing.js";
+import { createBillingWebhookHandler } from "./routes/billing-webhook.js";
 import { APP_ID } from "./manifest.js";
 import { createTinychatBackendIdentity } from "./startup.js";
 
@@ -69,6 +71,16 @@ async function main() {
   const app = express();
   applySecurityDefaults(app);
   app.use(cors({ origin: FRONTEND_URL }));
+
+  // Stripe webhook MUST be mounted before the JSON body parser and CSRF
+  // middleware: it needs the raw request bytes for signature verification, and
+  // Stripe's servers do not send the X-Requested-With CSRF header.
+  app.post(
+    "/api/billing/webhook",
+    express.raw({ type: "application/json" }),
+    createBillingWebhookHandler(),
+  );
+
   app.use(express.json({ limit: "64kb" }));
   app.use(createCsrfMiddleware());
   app.use(
@@ -103,6 +115,7 @@ async function main() {
     }),
   );
   app.use("/api/chat", authMiddleware, createChatRouter());
+  app.use("/api/billing", createBillingRouter({ authMiddleware }));
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const spec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;

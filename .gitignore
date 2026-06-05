@@ -24,3 +24,5 @@ test/.last-run.log
 
 # Smithers memory-feature audit artifacts (transient)
 .memory-audit/
+.credits-audit/
+.weekly-audit/

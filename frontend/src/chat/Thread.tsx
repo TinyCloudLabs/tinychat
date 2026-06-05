@@ -1,4 +1,4 @@
-import { type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
@@ -6,6 +6,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useAuiState,
+  useMessage,
 } from "@assistant-ui/react";
 import {
   AlertTriangleIcon,
@@ -19,6 +20,12 @@ import {
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  formatCredits,
+  getReceipt,
+  onReceipt,
+  type ReceiptEntry,
+} from "@/lib/billingApi";
 
 export const Thread: FC = () => {
   return (
@@ -191,10 +198,11 @@ const Composer: FC = () => {
 };
 
 const UserMessage: FC = () => (
-  <MessagePrimitive.Root className="flex w-full justify-end">
+  <MessagePrimitive.Root className="flex w-full flex-col items-end gap-1">
     <div className="max-w-[80%] rounded-3xl bg-muted px-5 py-2.5 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts />
     </div>
+    <ReceiptFooter />
   </MessagePrimitive.Root>
 );
 
@@ -220,23 +228,62 @@ const AssistantMessage: FC = () => (
 );
 
 const AssistantActionBar: FC = () => (
-  <ActionBarPrimitive.Root
-    hideWhenRunning
-    autohide="not-last"
-    className="flex items-center gap-1 pl-6 opacity-0 transition-opacity group-hover:opacity-100 data-[floating]:opacity-100"
-  >
-    <ActionBarPrimitive.Copy asChild>
-      <TooltipIconButton tooltip="Copy">
-        <MessagePrimitive.If copied>
-          <CheckIcon />
-        </MessagePrimitive.If>
-        <MessagePrimitive.If copied={false}>
-          <CopyIcon />
-        </MessagePrimitive.If>
-      </TooltipIconButton>
-    </ActionBarPrimitive.Copy>
-  </ActionBarPrimitive.Root>
+  <div className="flex items-center gap-2 pl-6">
+    <ActionBarPrimitive.Root
+      hideWhenRunning
+      autohide="not-last"
+      className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 data-[floating]:opacity-100"
+    >
+      <ActionBarPrimitive.Copy asChild>
+        <TooltipIconButton tooltip="Copy">
+          <MessagePrimitive.If copied>
+            <CheckIcon />
+          </MessagePrimitive.If>
+          <MessagePrimitive.If copied={false}>
+            <CopyIcon />
+          </MessagePrimitive.If>
+        </TooltipIconButton>
+      </ActionBarPrimitive.Copy>
+    </ActionBarPrimitive.Root>
+    <ReceiptFooter />
+  </div>
 );
+
+// Always-on per-message receipt (spec §5.3). One exchange registers two
+// entries: the input (prompt) share on the user message and the output
+// (completion) share on the assistant message; the two always sum to the
+// charged total. Renders only when the session receipt store has THIS message
+// id — historical messages from before a reload have none (persisting receipts
+// is a v2 follow-up). Subscribes to the store so the line appears the moment
+// the stream completes without re-mounting the message; a non-interactive,
+// screen-reader-safe span that does not shift layout during streaming.
+const ReceiptFooter: FC = () => {
+  const messageId = useMessage((m) => m.id);
+  const [entry, setEntry] = useState<ReceiptEntry | undefined>(() =>
+    getReceipt(messageId),
+  );
+  useEffect(() => {
+    // Re-check on mount in case the receipt landed between render + effect.
+    setEntry(getReceipt(messageId));
+    return onReceipt((id, e) => {
+      if (id === messageId) setEntry(e);
+    });
+  }, [messageId]);
+  if (entry === undefined) return null;
+  const label =
+    entry.side === "input"
+      ? "Input cost — includes conversation context"
+      : `Cost: ${formatCredits(entry.credits)}`;
+  return (
+    <span
+      className="text-[11px] leading-none text-muted-foreground/70 tabular-nums"
+      aria-label={label}
+      title={entry.side === "input" ? label : undefined}
+    >
+      {formatCredits(entry.credits)}
+    </span>
+  );
+};
 
 export const ScrollToBottom: FC = () => (
   <ThreadPrimitive.ScrollToBottom asChild>

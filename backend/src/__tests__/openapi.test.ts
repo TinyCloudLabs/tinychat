@@ -31,8 +31,69 @@ describe("TinyChat OpenAPI spec", () => {
         "/api/delegations/status",
         "/api/chat",
         "/api/chat/models",
+        "/api/billing/config",
+        "/api/billing/rates",
+        "/api/billing/status",
+        "/api/billing/checkout",
+        "/api/billing/portal",
+        "/api/billing/webhook",
       ]),
     );
+  });
+
+  test("documents billing routes, paywall errors, and cents-based pricing", () => {
+    // Public pricing + rates + webhook are unauthenticated; status/checkout/portal need auth.
+    expect(paths()["/api/billing/config"].get.security).toEqual([]);
+    expect(paths()["/api/billing/rates"].get.security).toEqual([]);
+    expect(paths()["/api/billing/webhook"].post.security).toEqual([]);
+    expect(paths()["/api/billing/status"].get.security).toEqual([{ bearerAuth: [] }]);
+    expect(paths()["/api/billing/checkout"].post.security).toEqual([{ bearerAuth: [] }]);
+
+    // 402 paywall response on chat.
+    expect(paths()["/api/chat"].post.responses["402"]).toEqual({
+      $ref: "#/components/responses/PaymentRequired",
+    });
+
+    const schemas = components().schemas as Record<string, Record<string, any>>;
+    // Paywall error contract used by the frontend.
+    expect(schemas.PaywallError.properties.error.enum).toEqual([
+      "model_not_allowed",
+      "credit_budget_exceeded",
+    ]);
+    // Model annotation contract — rate fields are always present (spec §6).
+    expect(schemas.ModelInfo.required).toEqual([
+      "id",
+      "allowed",
+      "creditsPerKInput",
+      "creditsPerKOutput",
+      "multiplier",
+    ]);
+    expect(schemas.ModelInfo.properties.requiredTier.enum).toEqual(["plus", "pro"]);
+    // TierInfo carries credit budget (renamed from tokenBudget).
+    expect(schemas.TierInfo.required).toContain("creditBudget");
+    expect(schemas.TierInfo.properties).not.toHaveProperty("tokenBudget");
+    // Weekly-windows: budgetWindow enum must stay [day, week] (never revert to month).
+    expect(schemas.TierInfo.properties.budgetWindow.enum).toEqual(["day", "week"]);
+    // SubscriptionInfo must carry the billing anchor for weekly-window math.
+    expect(schemas.SubscriptionInfo.required).toContain("anchor");
+    expect(schemas.SubscriptionInfo.properties.anchor).toBeTruthy();
+    // Rates response contract.
+    expect(schemas.RatesResponse.required).toEqual(["baseline", "models"]);
+    expect(schemas.RateInfo.required).toEqual([
+      "id",
+      "creditsPerKInput",
+      "creditsPerKOutput",
+      "multiplier",
+    ]);
+    // /api/billing/rates mirrors /models' error contract (500 + 502).
+    expect(paths()["/api/billing/rates"].get.responses["502"]).toEqual({
+      $ref: "#/components/responses/UpstreamError",
+    });
+    expect(paths()["/api/billing/rates"].get.responses["500"]).toEqual({
+      $ref: "#/components/responses/InternalError",
+    });
+    // Display prices documented as integer cents.
+    expect(schemas.TierInfo.properties.priceMonthly.description).toContain("cents");
   });
 
   test("does not expose the removed probe route", () => {

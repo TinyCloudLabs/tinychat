@@ -9,6 +9,80 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Shape of the 402 body the backend returns when a request is paywalled. */
+export interface PaywallErrorPayload {
+  error: "model_not_allowed" | "credit_budget_exceeded";
+  message: string;
+  tier: string;
+  requiredTier?: "plus" | "pro";
+  usage?: { used: number; limit: number; resetsAt: string };
+}
+
+/** SSE usage chunk surfaced to the caller when the stream completes. */
+export interface UsageInfo {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/**
+ * Thrown when the chat endpoint returns 402 (model not allowed for the current
+ * tier, or credit budget exhausted). Carries the parsed body so the UI can both
+ * surface `message` in-chat (via assistant-ui ErrorPrimitive) AND open the
+ * pricing dialog. Errors thrown from `streamChat` bubble up through the
+ * ChatModelAdapter, so we ALSO emit on a small global emitter (below) at throw
+ * time — the runtime doesn't give us a place to inspect the thrown error before
+ * assistant-ui renders it.
+ */
+export class PaywallError extends Error {
+  readonly payload: PaywallErrorPayload;
+  constructor(payload: PaywallErrorPayload) {
+    super(payload.message || "This action requires an upgrade.");
+    this.name = "PaywallError";
+    this.payload = payload;
+  }
+}
+
+// ── Billing-event emitter (paywall + receipt) ───────────────────────
+
+export type BillingEvent =
+  | { type: "paywall"; payload: PaywallErrorPayload }
+  | { type: "receipt"; messageId: string; credits: number; modelId: string };
+
+type BillingListener = (event: BillingEvent) => void;
+const billingListeners = new Set<BillingListener>();
+
+/** Subscribe to billing events (paywall 402s and per-message receipts). */
+export function onBillingEvent(listener: BillingListener): () => void {
+  billingListeners.add(listener);
+  return () => {
+    billingListeners.delete(listener);
+  };
+}
+
+function emitBilling(event: BillingEvent): void {
+  for (const listener of billingListeners) {
+    try {
+      listener(event);
+    } catch {
+      // a listener throwing must not break the chat error / receipt path
+    }
+  }
+}
+
+/** Subscribe only to paywall (402) events. Returns an unsubscribe fn. */
+export function onPaywallError(
+  listener: (payload: PaywallErrorPayload) => void,
+): () => void {
+  return onBillingEvent((event) => {
+    if (event.type === "paywall") listener(event.payload);
+  });
+}
+
+/** Emit a receipt event (called from runtime.tsx after a stream completes). */
+export function emitReceipt(messageId: string, credits: number, modelId: string): void {
+  emitBilling({ type: "receipt", messageId, credits, modelId });
+}
+
 export interface StreamChatOptions {
   backendUrl: string;
   sessionStore: SessionStore;
@@ -17,6 +91,13 @@ export interface StreamChatOptions {
   /** Optional API-level output cap (forwarded as max_tokens). */
   maxTokens?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Called once when the SSE usage chunk (final frame with empty `choices` and
+   * `usage: { prompt_tokens, completion_tokens, ... }`) is observed. The
+   * cumulative-text yield contract is unaffected — runtime.tsx still receives
+   * text deltas via the generator.
+   */
+  onUsage?: (usage: UsageInfo) => void;
 }
 
 /**
@@ -26,10 +107,11 @@ export interface StreamChatOptions {
  * SSE response. This helper mirrors its auth/CSRF headers but streams the body.
  *
  * Yields the CUMULATIVE assistant text after each delta — assistant-ui's
- * ChatModelAdapter expects the full text-so-far on every yield.
+ * ChatModelAdapter expects the full text-so-far on every yield. Token usage is
+ * surfaced via the `onUsage` option, not the yield stream.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal } = options;
+  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal, onUsage } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -58,6 +140,23 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
   if (res.status === 401) {
     sessionStore.clear();
     throw new Error("Session expired. Please sign in again.");
+  }
+  if (res.status === 402) {
+    // Paywalled: parse the typed body, broadcast so the UI can open the
+    // pricing dialog, and throw PaywallError so the human message still renders
+    // in-chat via ErrorPrimitive.
+    let payload: PaywallErrorPayload;
+    try {
+      payload = (await res.json()) as PaywallErrorPayload;
+    } catch {
+      payload = {
+        error: "credit_budget_exceeded",
+        message: "You've reached your plan's limit. Upgrade to continue.",
+        tier: "free",
+      };
+    }
+    emitBilling({ type: "paywall", payload });
+    throw new PaywallError(payload);
   }
   if (!res.ok || !res.body) {
     let detail = res.statusText;
@@ -99,6 +198,25 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
             if (chunk) {
               text += chunk;
               yield text;
+              continue;
+            }
+            // Final usage frame: empty `choices`, populated `usage`. Surface
+            // to the caller without disturbing the cumulative-text contract.
+            const usage = json?.usage;
+            if (
+              onUsage &&
+              usage &&
+              typeof usage.prompt_tokens === "number" &&
+              typeof usage.completion_tokens === "number"
+            ) {
+              try {
+                onUsage({
+                  promptTokens: usage.prompt_tokens,
+                  completionTokens: usage.completion_tokens,
+                });
+              } catch {
+                // caller throwing must not break the stream
+              }
             }
           } catch {
             // ignore malformed frame
