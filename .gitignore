@@ -28,3 +28,4 @@ test/.last-run.log
 .weekly-audit/
 .responsive-audit/
 .fresh-history-audit/
+.stream-audit/
