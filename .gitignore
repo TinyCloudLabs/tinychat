@@ -29,3 +29,4 @@ test/.last-run.log
 .responsive-audit/
 .fresh-history-audit/
 .stream-audit/
+.settings-audit/
