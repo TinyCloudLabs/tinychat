@@ -41,6 +41,14 @@ interface MemoryPanelProps {
    * silently lose in-progress edits.
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Layout variant. `"popover"` (default) keeps the floating popover chrome
+   * and modal dialog semantics — what the header brain button used to render.
+   * `"inline"` drops the floating chrome (no bg-popover/border/shadow, no
+   * fixed width) so it fills its host card; modal ARIA is dropped too since
+   * an always-visible inline editor isn't a modal.
+   */
+  variant?: "popover" | "inline";
 }
 
 /**
@@ -57,7 +65,9 @@ export function MemoryPanel({
   onMemoryUpdated,
   onClose,
   onDirtyChange,
+  variant = "popover",
 }: MemoryPanelProps) {
+  const inline = variant === "inline";
   const [doc, setDoc] = useState<string | null>(() => memoryRef.current ?? readMemoryCache(tcw));
   const [draft, setDraft] = useState<string>(() => doc ?? "");
   const [loading, setLoading] = useState<boolean>(doc === null);
@@ -73,14 +83,16 @@ export function MemoryPanel({
 
   // Move focus into the panel on mount so screen-reader users hear the
   // dialog appear. Prefer the textarea (primary action surface) once loaded;
-  // fall back to the Close button while loading.
+  // fall back to the Close button while loading. Skip in inline variant —
+  // an always-visible inline editor isn't a modal and shouldn't steal focus.
   useEffect(() => {
+    if (inline) return;
     if (loading) {
       closeButtonRef.current?.focus();
     } else {
       textareaRef.current?.focus();
     }
-  }, [loading]);
+  }, [loading, inline]);
 
   // Reconcile from SQL on mount — the cache may be stale if another device
   // edited the doc. Updates the ref + draft only if the SQL row differs.
@@ -223,10 +235,14 @@ export function MemoryPanel({
     <div
       ref={rootRef}
       id="memory-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="memory-panel-title"
-      className="flex max-h-[min(36rem,90vh)] w-[min(420px,90vw)] flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
+      role={inline ? undefined : "dialog"}
+      aria-modal={inline ? undefined : true}
+      aria-labelledby={inline ? undefined : "memory-panel-title"}
+      className={
+        inline
+          ? "flex w-full flex-col gap-3 text-foreground"
+          : "flex max-h-[min(36rem,90vh)] w-[min(420px,90vw)] flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
+      }
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-col">

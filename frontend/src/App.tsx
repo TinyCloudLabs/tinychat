@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -29,10 +30,15 @@ import {
 } from "./lib/billingApi";
 import { onBillingEvent, onPaywallError } from "./lib/chatApi";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { MemoryPanel } from "@/components/MemoryPanel";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
-import { BrainIcon, ChevronDownIcon, LockIcon, LogOutIcon, PanelLeftIcon } from "lucide-react";
+import { SettingsPage } from "./chat/SettingsPage";
+import {
+  ChevronDownIcon,
+  LockIcon,
+  PanelLeftIcon,
+  SettingsIcon,
+} from "lucide-react";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -52,7 +58,7 @@ function getInitialModel(): string {
   }
 }
 
-type AppState =
+export type AppState =
   | "booting"
   | "unauthenticated"
   | "connecting"
@@ -90,7 +96,6 @@ export function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
-  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
@@ -127,17 +132,7 @@ export function App() {
     setSidebarOpen(false);
     setImportRefreshKey((k) => k + 1);
   }, []);
-  // Bumped each time the runtime/panel writes back a new memory doc — lets
-  // the brain button re-render its "has memory" dot without making this
-  // component re-render on every keystroke in the editor.
-  const [memoryVersion, bumpMemoryVersion] = useState(0);
-  const onMemoryUpdated = useCallback((_doc: string | null) => {
-    bumpMemoryVersion((v) => v + 1);
-  }, []);
-  const hasMemory = useMemo(() => {
-    void memoryVersion;
-    return Boolean(memoryRef.current && memoryRef.current.trim().length > 0);
-  }, [memoryVersion]);
+  const onMemoryUpdated = useCallback((_doc: string | null) => {}, []);
 
   const setSelectedModel = useCallback((next: string) => {
     modelRef.current = next;
@@ -421,7 +416,6 @@ export function App() {
     }
     modelRef.current = DEFAULT_MODEL;
     memoryRef.current = null;
-    setMemoryPanelOpen(false);
     setModel(DEFAULT_MODEL);
     setTcw(null);
     setAddress(null);
@@ -434,6 +428,32 @@ export function App() {
   }, [address, tcw]);
 
   const isReady = state === "ready" && tcw !== null;
+
+  const navigate = useNavigate();
+  const location = useLocation();
+  const showSettings = location.pathname.endsWith("/chat/settings");
+
+  // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings
+  // while signed out (post-signOut flip, deep link, etc.), kick them to /chat.
+  // SettingsPage only renders inside the isReady branch below, so this is the
+  // sole place the URL gets normalized.
+  useEffect(() => {
+    if (!isReady && showSettings) {
+      navigate("/chat", { replace: true });
+    }
+  }, [isReady, showSettings, navigate]);
+
+  // Prefer history-back so the previous chat scroll/composer focus restores
+  // naturally; fall back to /chat when there's no in-app history (deep link or
+  // refresh on /chat/settings). react-router v7 stamps `idx` on history state.
+  const onBack = useCallback(() => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx;
+    if (typeof idx === "number" && idx > 0) {
+      navigate(-1);
+    } else {
+      navigate("/chat");
+    }
+  }, [navigate]);
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]">
@@ -469,45 +489,32 @@ export function App() {
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
           {isReady && paywallEnabled && (
-            <UsageIndicator
-              status={billingStatus}
-              onClick={openPricing}
-              onOpenRates={openRates}
-            />
+            <div className="hidden sm:block">
+              <UsageIndicator
+                status={billingStatus}
+                onClick={openPricing}
+                onOpenRates={openRates}
+              />
+            </div>
           )}
-          {isReady && tcw && (
-            <MemoryPopover
-              tcw={tcw}
-              memoryRef={memoryRef}
-              open={memoryPanelOpen}
-              setOpen={setMemoryPanelOpen}
-              hasMemory={hasMemory}
-              onMemoryUpdated={onMemoryUpdated}
-            />
-          )}
-          <ThemeToggle />
-          <ConnectionDetails
-            address={address}
-            did={did}
-            spaceId={spaceId}
-            state={state}
-            error={error}
-          />
-          {(state === "unauthenticated" || state === "recoverableError") && (
-            <Button size="sm" onClick={signIn}>
-              {state === "recoverableError" ? "Try again" : "Sign in"}
-            </Button>
-          )}
+          <span className="hidden sm:inline-flex">
+            <ThemeToggle />
+          </span>
           {isReady && (
             <Button
               variant="outline"
               size="sm"
-              onClick={signOut}
-              aria-label="Sign out"
-              className="w-8 p-0 sm:w-auto sm:px-3"
+              aria-label={showSettings ? "Close settings" : "Settings"}
+              aria-pressed={showSettings}
+              onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
+              className="h-8 w-8 p-0"
             >
-              <LogOutIcon className="size-4 sm:hidden" />
-              <span className="hidden sm:inline">Sign out</span>
+              <SettingsIcon className="size-4" />
+            </Button>
+          )}
+          {(state === "unauthenticated" || state === "recoverableError") && (
+            <Button size="sm" onClick={signIn}>
+              {state === "recoverableError" ? "Try again" : "Sign in"}
             </Button>
           )}
         </div>
@@ -515,18 +522,43 @@ export function App() {
 
       <main className="min-h-0 flex-1">
         {isReady && tcw ? (
-          <ChatWorkspace
-            key={importRefreshKey}
-            tcw={tcw}
-            sessionStore={sessionStoreRef.current}
-            modelRef={modelRef}
-            memoryRef={memoryRef}
-            onActiveThreadModel={setSelectedModel}
-            onMemoryUpdated={onMemoryUpdated}
-            onImported={onImported}
-            sidebarOpen={sidebarOpen}
-            setSidebarOpen={setSidebarOpen}
-          />
+          <>
+            {/* ChatWorkspace stays mounted while the settings route is active —
+                visibility toggle (not a <Routes> swap) preserves the assistant
+                runtime, the active thread, and composer state across nav. */}
+            <div className={showSettings ? "hidden" : "contents"}>
+              <ChatWorkspace
+                key={importRefreshKey}
+                tcw={tcw}
+                sessionStore={sessionStoreRef.current}
+                modelRef={modelRef}
+                memoryRef={memoryRef}
+                onActiveThreadModel={setSelectedModel}
+                onMemoryUpdated={onMemoryUpdated}
+                sidebarOpen={sidebarOpen}
+                setSidebarOpen={setSidebarOpen}
+              />
+            </div>
+            {showSettings && (
+              <SettingsPage
+                address={address}
+                did={did}
+                spaceId={spaceId}
+                state={state}
+                error={error}
+                onSignOut={signOut}
+                paywallEnabled={paywallEnabled}
+                onBack={onBack}
+                tcw={tcw}
+                memoryRef={memoryRef}
+                onMemoryUpdated={onMemoryUpdated}
+                onImported={onImported}
+                billingStatus={billingStatus}
+                onManagePlan={openPricing}
+                onOpenRates={openRates}
+              />
+            )}
+          </>
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
         )}
@@ -561,113 +593,6 @@ export function App() {
             <span className="size-1.5 rounded-full bg-green-500" />
             {billingNotice}
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MemoryPopover(props: {
-  tcw: TinyCloudWeb;
-  memoryRef: React.MutableRefObject<string | null>;
-  open: boolean;
-  setOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  hasMemory: boolean;
-  onMemoryUpdated: (doc: string | null) => void;
-}) {
-  const { tcw, memoryRef, open, setOpen, hasMemory, onMemoryUpdated } = props;
-  const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  // Live dirty flag bubbled by MemoryPanel. Read inside the document-level
-  // handlers below (not from React state) so a stale closure can't let a
-  // click-outside silently drop unsaved edits.
-  const dirtyRef = useRef(false);
-  const onDirtyChange = useCallback((dirty: boolean) => {
-    dirtyRef.current = dirty;
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      const root = containerRef.current;
-      if (!root) return;
-      // While the Clear-memory AlertDialog (or any modal) is open, leave
-      // dismissal to the dialog itself — its overlay swallows clicks and
-      // its own Escape handler closes it first.
-      if (document.querySelector('[role="alertdialog"][data-state="open"]')) return;
-      // Don't silently discard unsaved edits — the panel surfaces an
-      // "Unsaved changes" banner; require explicit Save/Revert/Close.
-      if (dirtyRef.current) return;
-      if (!root.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (document.querySelector('[role="alertdialog"][data-state="open"]')) return;
-      if (event.key === "Escape") {
-        if (dirtyRef.current) return; // keep the panel open while edits are unsaved
-        setOpen(false);
-        triggerRef.current?.focus();
-        return;
-      }
-      // Focus trap: when Tab leaves the panel, cycle back to the other end.
-      // Keeps a keyboard user inside the dialog while it's open — matches the
-      // ARIA dialog contract we now expose on the panel root.
-      if (event.key !== "Tab") return;
-      const panel = containerRef.current?.querySelector<HTMLElement>("#memory-panel");
-      if (!panel) return;
-      const focusables = panel.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement as HTMLElement | null;
-      if (event.shiftKey && (active === first || !panel.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open, setOpen]);
-
-  return (
-    <div className="relative" ref={containerRef}>
-      <Button
-        ref={triggerRef}
-        variant="outline"
-        size="sm"
-        aria-label={hasMemory ? "Memory (active)" : "Memory"}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls="memory-panel"
-        onClick={() => setOpen((o) => !o)}
-        className="relative h-8 gap-1.5 px-2 text-xs sm:px-2.5"
-      >
-        <BrainIcon className="size-3.5" />
-        <span className="hidden sm:inline">Memory</span>
-        {hasMemory && (
-          <span
-            aria-hidden
-            className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-primary"
-          />
-        )}
-      </Button>
-      {open && (
-        <div className="absolute right-0 z-30 mt-1.5">
-          <MemoryPanel
-            tcw={tcw}
-            memoryRef={memoryRef}
-            onMemoryUpdated={onMemoryUpdated}
-            onClose={() => setOpen(false)}
-            onDirtyChange={onDirtyChange}
-          />
         </div>
       )}
     </div>
@@ -885,7 +810,7 @@ function ModelPicker(props: {
   }, []);
 
   // WAI-ARIA dialog: when the nudge opens, move focus into it and trap Tab
-  // inside until it closes. Mirrors the MemoryPanel pattern above.
+  // inside until it closes.
   useEffect(() => {
     if (!nudge) return;
     nudgeOkRef.current?.focus();
@@ -1118,7 +1043,6 @@ function ChatWorkspace(props: {
   memoryRef: React.MutableRefObject<string | null>;
   onActiveThreadModel: (model: string) => void;
   onMemoryUpdated: (doc: string | null) => void;
-  onImported: () => void;
   sidebarOpen: boolean;
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
@@ -1152,7 +1076,7 @@ function ChatWorkspace(props: {
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="grid h-full grid-cols-1 md:grid-cols-[260px_1fr]">
         <aside className="hidden min-h-0 border-r border-border bg-muted/40 md:block">
-          <ThreadList tcw={props.tcw} onImported={props.onImported} />
+          <ThreadList />
         </aside>
         <section className="min-h-0">
           <Thread />
@@ -1164,11 +1088,7 @@ function ChatWorkspace(props: {
           <SheetDescription className="sr-only">
             List of your saved chats
           </SheetDescription>
-          <ThreadList
-            tcw={props.tcw}
-            onImported={props.onImported}
-            onNavigate={closeSidebar}
-          />
+          <ThreadList onNavigate={closeSidebar} />
         </SheetContent>
       </Sheet>
     </AssistantRuntimeProvider>
@@ -1216,52 +1136,7 @@ function BootSurface(props: {
   );
 }
 
-function ConnectionDetails(props: {
-  address: string | null;
-  did: string | null;
-  spaceId: string | null;
-  state: AppState;
-  error: string | null;
-}) {
-  return (
-    <details className="relative">
-      <summary className="flex min-h-8 min-w-8 cursor-pointer list-none items-center justify-center gap-1.5 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent sm:min-h-0 sm:min-w-0 sm:justify-start [&::-webkit-details-marker]:hidden">
-        <span
-          aria-label={stateLabel(props.state)}
-          className={`size-1.5 rounded-full ${
-            props.state === "ready"
-              ? "bg-green-500"
-              : props.state === "recoverableError"
-                ? "bg-destructive"
-                : "bg-muted-foreground"
-          }`}
-        />
-        <span className="hidden sm:inline">{stateLabel(props.state)}</span>
-      </summary>
-      <div className="absolute right-0 z-20 mt-1.5 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg">
-        <Row label="Address" value={props.address ?? "none"} mono />
-        <Row label="DID" value={props.did ?? "none"} mono />
-        <Row label="Space" value={props.spaceId ?? "none"} mono />
-        {props.error && (
-          <p className="mt-2 text-destructive">{props.error}</p>
-        )}
-      </div>
-    </details>
-  );
-}
-
-function Row(props: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex items-start justify-between gap-2 py-0.5">
-      <span className="text-muted-foreground">{props.label}</span>
-      <span className={`max-w-[10rem] truncate text-right ${props.mono ? "font-mono" : ""}`}>
-        {props.value}
-      </span>
-    </div>
-  );
-}
-
-function stateLabel(state: AppState): string {
+export function stateLabel(state: AppState): string {
   const labels: Record<AppState, string> = {
     booting: "Starting",
     unauthenticated: "Signed out",

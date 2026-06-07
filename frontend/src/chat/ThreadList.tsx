@@ -4,7 +4,6 @@ import {
   ThreadListPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -20,7 +19,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { ImportDialog } from "./ImportDialog";
 import { isIndexSyncing, subscribeIndexSyncing } from "../lib/threadStore";
 
 const ThreadListNavigateContext = createContext<(() => void) | undefined>(
@@ -67,14 +65,10 @@ const ThreadListItem: FC = () => {
 };
 
 interface ThreadListProps {
-  tcw: TinyCloudWeb;
-  onImported?: () => void;
   onNavigate?: () => void;
 }
 
 export const ThreadList: FC<ThreadListProps> = ({
-  tcw,
-  onImported,
   onNavigate,
 }) => (
   <ThreadListNavigateContext.Provider value={onNavigate}>
@@ -87,7 +81,6 @@ export const ThreadList: FC<ThreadListProps> = ({
           <PlusIcon className="size-4" />
           New chat
         </ThreadListPrimitive.New>
-        <ImportDialog tcw={tcw} onImported={onImported} />
         {/* `relative` makes this scroll container the containing block for the
             absolutely-positioned `sr-only` spans inside each row's tooltip
             button — without it they escape the overflow clip and extend the
