@@ -98,6 +98,14 @@ export interface StreamChatOptions {
    * text deltas via the generator.
    */
   onUsage?: (usage: UsageInfo) => void;
+  /**
+   * Called once with the streamed completion's `id` (the OpenAI
+   * `chat.completion.chunk` `id`, surfaced verbatim by the backend proxy) as
+   * soon as the first frame carrying it is seen. Used to wire RedPill
+   * verification to the rendered turn. Non-blocking: fired off the delta path
+   * and a throwing listener never breaks the stream.
+   */
+  onCompletionId?: (id: string) => void;
 }
 
 /**
@@ -111,7 +119,7 @@ export interface StreamChatOptions {
  * surfaced via the `onUsage` option, not the yield stream.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal, onUsage } = options;
+  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal, onUsage, onCompletionId } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -173,6 +181,7 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
+  let idReported = false;
 
   try {
     while (true) {
@@ -194,6 +203,18 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
           if (!data) continue;
           try {
             const json = JSON.parse(data);
+            // Surface the completion id from the first frame that carries one.
+            // Fired before the delta yield so the badge can wire up early; kept
+            // strictly off the reply path (a throwing listener is swallowed).
+            const completionId = json?.id;
+            if (onCompletionId && !idReported && typeof completionId === "string" && completionId) {
+              idReported = true;
+              try {
+                onCompletionId(completionId);
+              } catch {
+                // caller throwing must not break the stream
+              }
+            }
             const chunk: string = json?.choices?.[0]?.delta?.content ?? "";
             if (chunk) {
               text += chunk;

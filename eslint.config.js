@@ -5,7 +5,15 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ["**/dist/", "**/node_modules/", "**/*.js", "**/*.mjs"],
+    ignores: [
+      "**/dist/",
+      "**/node_modules/",
+      "**/*.js",
+      "**/*.mjs",
+      // Vendored verbatim from redpill-ai/redpill-verifier (see VENDOR.md); kept
+      // byte-identical to upstream except the two forked fetch URLs, so it is not linted.
+      "frontend/src/lib/vendor/",
+    ],
   },
   {
     rules: {

@@ -367,10 +367,17 @@ export function createChatRouter() {
     }
 
     // Baseline rates = REDPILL_DEFAULT_MODEL's rates (spec §2.4); fallback if
-    // the default model is absent from the catalog.
+    // the default model is absent from the catalog. Computed from the FULL catalog
+    // so the multiplier anchor (a non-TEE baseline model) is still resolvable.
     const baselineRates = resolveRates(catalog, defaultModel());
 
-    const annotated = catalog.map((m) => {
+    // This is a confidential-inference product: only offer models that can be
+    // attested in a TEE (the `phala/*` namespace). Non-TEE (tier-0) models can't be
+    // verified at all, so they're not listed. (Billing still uses the full catalog
+    // above; the mislabeled-model blocklist already pruned getCatalog.)
+    const visible = catalog.filter((m) => m.id.startsWith("phala/"));
+
+    const annotated = visible.map((m) => {
       const modelRates = ratesForModel(m);
       const rateFields = {
         creditsPerKInput: modelRates.creditsPerKInput,

@@ -48,6 +48,7 @@ import {
   splitCredits,
   type RatesResponse,
 } from "../lib/billingApi";
+import { setCompletion } from "../lib/completionStore";
 
 /**
  * Model id used for memory extraction. Picked to be small and cheap — the
@@ -101,6 +102,19 @@ interface PendingReceipt {
 }
 let pendingReceipt: PendingReceipt | null = null;
 
+// ── Pending completion id (RedPill verification) ─────────────────────
+//
+// The streamed completion's `id` is captured in `run()` (off the reply path) but
+// the assistant message id only exists once assistant-ui calls `append()`, so —
+// exactly like `pendingReceipt` — we stash it here and the next assistant
+// `append()` keys it to the message id for the verification badge. Single slot:
+// chat is sequential per runtime.
+interface PendingCompletion {
+  completionId: string;
+  model: string;
+}
+let pendingCompletion: PendingCompletion | null = null;
+
 let cachedRatesPromise: Promise<RatesResponse> | null = null;
 function getCachedRates(deps: ChatRuntimeDeps): Promise<RatesResponse> {
   if (!cachedRatesPromise) {
@@ -150,6 +164,7 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
 
       const modelId = deps.modelRef.current || DEFAULT_MODEL;
       let lastUsage: UsageInfo | null = null;
+      let completionId: string | null = null;
 
       for await (const text of streamChat({
         backendUrl: deps.backendUrl,
@@ -160,6 +175,9 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
         onUsage: (u) => {
           lastUsage = u;
         },
+        onCompletionId: (id) => {
+          completionId = id;
+        },
       })) {
         yield { content: [{ type: "text", text }] };
       }
@@ -169,6 +187,12 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
       // emit the receipt. Cleared on read.
       if (lastUsage) {
         pendingReceipt = { usage: lastUsage, modelId };
+      }
+      // Same hand-off for the completion id: the badge keys verification to the
+      // assistant message id, which only exists in `append()`. Off the reply
+      // path; absence just means no badge for this turn.
+      if (completionId) {
+        pendingCompletion = { completionId, model: modelId };
       }
     },
   };
@@ -341,6 +365,20 @@ function createHistoryAdapter(
           // Attach to the TOP-LEVEL item (sibling of `message`) — NOT inside
           // item.message, which assistant-ui's repository import inspects.
           (item as { receipt?: PersistedReceipt }).receipt = receipt;
+        }
+      }
+
+      // Key the streamed completion id to this assistant message so the
+      // verification badge can call verify(completionId, { model }). Read-and-
+      // clear the single pending slot; never blocks persistence.
+      if (role === "assistant" && typeof id === "string") {
+        const pending = pendingCompletion;
+        pendingCompletion = null;
+        if (pending) {
+          setCompletion(id, {
+            completionId: pending.completionId,
+            model: pending.model,
+          });
         }
       }
 

@@ -23,6 +23,22 @@ interface CacheEntry {
 
 let cache: CacheEntry | null = null;
 
+/**
+ * Mislabeled models — dropped from the catalog entirely.
+ *
+ * Their `phala/` TEE alias serves a DIFFERENTLY-named model than the id claims
+ * (confirmed 2026-06-09 via a served-model probe: each completion's attested
+ * `model` name belongs to a different model family/size). We don't offer a model
+ * whose label lies about what it is. The non-`phala/` versions (routed to the
+ * real provider) are unaffected.
+ */
+const MISLABELED_BLOCKLIST: ReadonlySet<string> = new Set([
+  "phala/deepseek-chat-v3.1", // serves Qwen/Qwen3.5-122B-A10B
+  "phala/qwen3-30b-a3b-instruct-2507", // serves Qwen/Qwen3.6-35B-A3B
+  "phala/qwen2.5-vl-72b-instruct", // serves Qwen3-VL-30B-A3B
+  "phala/glm-4.7", // serves zai-org/GLM-5.1-FP8
+]);
+
 /** Clear the in-memory catalog cache. Exposed for tests. */
 export function _resetCatalogCache(): void {
   cache = null;
@@ -115,6 +131,7 @@ export async function getCatalog(): Promise<CatalogModel[]> {
   const raw = (data as { data?: Array<{ id?: unknown; pricing?: unknown }> }).data ?? [];
   const models: CatalogModel[] = raw
     .filter((m) => typeof m.id === "string" && m.id)
+    .filter((m) => !MISLABELED_BLOCKLIST.has(m.id as string))
     .map((m) => ({ id: m.id as string, pricing: parsePricing(m.pricing) }));
 
   cache = { models, fetchedAt: Date.now() };

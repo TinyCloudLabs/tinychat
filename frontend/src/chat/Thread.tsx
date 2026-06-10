@@ -26,6 +26,7 @@ import {
   onReceipt,
   type ReceiptEntry,
 } from "@/lib/billingApi";
+import { ModelVerificationBadge } from "./ModelVerificationBadge";
 
 export const Thread: FC = () => {
   return (
@@ -232,6 +233,9 @@ const AssistantMessage: FC = () => (
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
     <AssistantActionBar />
+    <div className="pl-7">
+      <ModelVerificationBadge />
+    </div>
   </MessagePrimitive.Root>
 );
 

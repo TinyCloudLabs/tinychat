@@ -1,0 +1,263 @@
+import type { FC, ReactNode } from "react";
+import { ExternalLinkIcon } from "lucide-react";
+
+import type { VerifyModelResult } from "@/lib/vendor/redpill-verifier";
+
+/**
+ * Shared per-leg attestation breakdown — the single source of leg-rendering,
+ * trust labels, and "only when present" gating, used by BOTH the per-message
+ * badge and the model-level enclave indicator.
+ *
+ * The two surfaces differ only in whether a per-message signature exists:
+ *  - `signature` provided + valid → the tier-1 case: render the signature/signer
+ *    leg, the NVIDIA GPU leg, and the response-bound honesty line.
+ *  - `signature` null → the model-level / tier-2 case: omit the signature leg,
+ *    render the provider-policy legs, and the enclave-only honesty line.
+ *
+ * Every other leg (Phala-TDX, on-chain DCAP, measurements, report-data,
+ * manifest) is shown ONLY when its data is present in `mr` — never fabricated.
+ */
+export const AttestationDetails: FC<{
+  mr: VerifyModelResult;
+  signature: { valid: boolean; signer: string | null } | null;
+  /**
+   * Which surface is rendering this. Only affects the tier-2 honesty line:
+   * `"message"` (default) sits under a sent reply, so it can say "the reply
+   * above"; `"model-level"` is the pre-send header panel where no reply exists
+   * yet, so it phrases the claim about the endpoint instead.
+   */
+  context?: "message" | "model-level";
+}> = ({ mr, signature, context = "message" }) => {
+  // tier-1 (response-verified) iff a valid per-message signature is present;
+  // otherwise the model-level / tier-2 (enclave-attested) case.
+  const responseVerified = signature != null && signature.valid;
+  const signer = signature?.signer ?? null;
+
+  const { onchain } = mr;
+  const gpu = mr.light.gpu;
+  const gpuPass = gpu?.verdict === "true" || gpu?.verdict === "PASS";
+  const hasGpu = mr.hardware.includes("NVIDIA_CC") || gpuPass;
+  const network = onchain?.network ?? "Automata";
+
+  // Real Phala light-mode legs — surfaced ONLY when their data is present in
+  // `mr` (never fabricated). The Phala-verifier verdict is relayed through our
+  // backend (trusts Phala + our relay); the on-chain DCAP leg is the trustless
+  // anchor and is always kept alongside it.
+  const tdx = mr.light?.tdx;
+  const phalaTdxVerified = tdx?.verified === true;
+  const body = tdx?.quote?.body;
+  const mrtdShort = body?.mrtd ? `${body.mrtd.slice(0, 10)}…` : null;
+  const reportData = mr.light?.reportData;
+  const compose = mr.light?.compose;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-[11px] leading-relaxed text-foreground">
+      {/* Signature leg — present→show (with ok reflecting validity), null→omit.
+          A found-but-invalid signature still renders so the mismatch is visible
+          rather than silently dropped. */}
+      {signature != null && (
+        <Leg
+          ok={signature.valid}
+          label={
+            <>
+              {signature.valid ? "Signature valid" : "Signature invalid"} —
+              signer:{" "}
+              <code className="break-all font-mono text-[10px] text-muted-foreground">
+                {signer}
+              </code>
+            </>
+          }
+        />
+      )}
+
+      {/* Identity — model, provider, hardware. */}
+      <div className="flex flex-col gap-0.5 text-muted-foreground">
+        <Field name="Model" value={mr.model} />
+        <Field name="Provider" value={mr.provider} />
+        <Field
+          name="Hardware"
+          value={mr.hardware.length ? mr.hardware.join(", ") : "—"}
+        />
+      </div>
+
+      {/* Intel TDX legs — the trustless on-chain DCAP check (Automata) and/or
+          Phala's attestation verifier, each shown only when present. Both anchor
+          the TDX verdict; the on-chain leg is never dropped in favour of Phala. */}
+      <div className="flex flex-col gap-1 border-t border-border/60 pt-2">
+        {/* Phala's attestation-service verdict — relayed through our backend. */}
+        {phalaTdxVerified && (
+          <Leg
+            ok
+            label={
+              <>
+                Intel TDX quote — verified by Phala attestation service{" "}
+                <TrustTag>via Phala — relayed</TrustTag>
+              </>
+            }
+          />
+        )}
+
+        {/* On-chain DCAP — the trustless anchor; kept whenever present. */}
+        {onchain && (
+          <Leg
+            ok
+            label={
+              <span className="inline-flex items-center gap-1">
+                Intel TDX quote — verified on-chain (Automata DCAP, {network}){" "}
+                <TrustTag>trustless — on-chain</TrustTag>
+                {onchain.explorer && (
+                  <a
+                    href={onchain.explorer}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center text-muted-foreground hover:text-foreground"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ExternalLinkIcon className="size-3" />
+                  </a>
+                )}
+              </span>
+            }
+          />
+        )}
+
+        {/* Parsed measurements from the Phala-verified quote body. */}
+        {body && (
+          <Leg
+            ok
+            label={
+              <>
+                Measurements —{" "}
+                {mrtdShort ? (
+                  <>
+                    MRTD{" "}
+                    <code className="break-all font-mono text-[10px] text-muted-foreground">
+                      {mrtdShort}
+                    </code>{" "}
+                    ·{" "}
+                  </>
+                ) : null}
+                RTMR0..3 present
+              </>
+            }
+          />
+        )}
+
+        {/* Report-data binding — only when the verifier produced one. */}
+        {reportData && (
+          <Leg ok={reportData.bindsAddress} label="Report-data binding" />
+        )}
+
+        {/* Manifest hash matches measured config — absent for e.g. glm-5.1. */}
+        {compose && (
+          <Leg
+            ok={compose.hashMatches}
+            label="Manifest hash matches measured config"
+          />
+        )}
+
+        {/* NVIDIA GPU — an additional attestation, shown ONLY when present (in
+            both the per-message and model-level surfaces), consistent with the
+            report-data / manifest legs. */}
+        {hasGpu && (
+          <Leg
+            ok={gpuPass}
+            label={
+              gpu
+                ? `NVIDIA GPU attested — verdict: ${gpu.verdict}${gpu.nonceMatches ? ", nonce bound" : ""}`
+                : "NVIDIA GPU attested"
+            }
+          />
+        )}
+
+        {/* Provider policy — shown ONLY when the verifier actually produced one;
+            never fabricated (manifest repo / e2e data may be absent client-side). */}
+        {!responseVerified && mr.tinfoil && (
+          <Leg
+            ok={mr.tinfoil.hwPolicyValid}
+            label={
+              <>
+                Tinfoil hardware policy{" "}
+                {mr.tinfoil.hwPolicyValid ? "verified" : "not verified"}
+                {mr.tinfoil.manifestValid !== null
+                  ? ` · manifest ${mr.tinfoil.manifestValid ? "matched" : "mismatch"}`
+                  : ""}
+              </>
+            }
+          />
+        )}
+        {!responseVerified && mr.chutes && (
+          <Leg
+            ok={mr.chutes.e2eBindingVerified || mr.chutes.debugModeDisabled}
+            label={
+              <>
+                Chutes policy
+                {mr.chutes.debugModeDisabled ? " · debug mode disabled" : ""}
+                {mr.chutes.e2eBindingVerified ? " · E2E binding verified" : ""}
+              </>
+            }
+          />
+        )}
+      </div>
+
+      {responseVerified && (
+        /* Honest claim — names exactly the legs that pass, nothing more. */
+        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+          Intel TDX quote verified on-chain (Automata DCAP) · response signature
+          valid{hasGpu ? " · NVIDIA GPU attested" : ""}.
+        </p>
+      )}
+
+      {!responseVerified && context === "model-level" && (
+        /* REQUIRED honesty line, pre-send: no reply exists yet, so the claim is
+           about the ENDPOINT, not "the reply above". */
+        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+          Enclave attestation confirms this endpoint is a genuine Intel TDX
+          enclave. Individual responses are{" "}
+          <span className="font-semibold">not</span> yet signed — see each
+          message badge for per-reply proof.
+        </p>
+      )}
+
+      {!responseVerified && context === "message" && (
+        /* REQUIRED honesty line — tier 2 does not bind the reply to the enclave. */
+        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+          This model does not sign individual responses, so the reply above is{" "}
+          <span className="font-semibold">not</span> cryptographically bound to
+          the enclave. The attestation proves a genuine Intel TDX enclave
+          produced it.
+        </p>
+      )}
+    </div>
+  );
+};
+
+const Leg: FC<{ ok: boolean; label: ReactNode; muted?: boolean }> = ({
+  ok,
+  label,
+  muted,
+}) => (
+  <div className="flex items-start gap-1.5">
+    <span
+      aria-hidden
+      className={`mt-1 size-1.5 shrink-0 rounded-full ${
+        muted ? "bg-muted-foreground/40" : ok ? "bg-emerald-500" : "bg-destructive"
+      }`}
+    />
+    <span className={muted ? "text-muted-foreground" : undefined}>{label}</span>
+  </div>
+);
+
+/** Small inline tag noting WHO a leg's verdict trusts (relayed vs trustless). */
+const TrustTag: FC<{ children: ReactNode }> = ({ children }) => (
+  <span className="rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+    {children}
+  </span>
+);
+
+const Field: FC<{ name: string; value: string }> = ({ name, value }) => (
+  <div className="flex gap-1.5">
+    <span className="shrink-0">{name}:</span>
+    <span className="break-all text-foreground">{value}</span>
+  </div>
+);

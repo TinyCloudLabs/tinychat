@@ -22,6 +22,9 @@ import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter } from "./routes/chat.js";
+import { createSignatureRouter } from "./routes/signature.js";
+import { createNrasProxyRouter } from "./routes/nras-proxy.js";
+import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { createBillingRouter } from "./routes/billing.js";
 import { createBillingWebhookHandler } from "./routes/billing-webhook.js";
@@ -81,6 +84,16 @@ async function main() {
     createBillingWebhookHandler(),
   );
 
+  // GPU attestation evidence forwarded to NRAS is large, so the nras-proxy
+  // route needs a roomier body limit than the global 64 KB. Registered here,
+  // before the global parser, so it applies to that mount specifically.
+  app.use("/api/nras-proxy", express.json({ limit: "4mb" }));
+
+  // The Phala TDX-verify passthrough carries a hex quote (a few KB); give it
+  // headroom over the global 64 KB parser. Registered before the global parser
+  // so it applies to that mount specifically (like the nras-proxy mount above).
+  app.use("/api/phala-verify", express.json({ limit: "256kb" }));
+
   app.use(express.json({ limit: "64kb" }));
   app.use(createCsrfMiddleware());
   app.use(
@@ -115,6 +128,9 @@ async function main() {
     }),
   );
   app.use("/api/chat", authMiddleware, createChatRouter());
+  app.use("/api/signature", authMiddleware, createSignatureRouter());
+  app.use("/api/nras-proxy", authMiddleware, createNrasProxyRouter());
+  app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());
   app.use("/api/billing", createBillingRouter({ authMiddleware }));
 
   const __dirname = dirname(fileURLToPath(import.meta.url));

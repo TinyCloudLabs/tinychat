@@ -33,12 +33,16 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { SettingsPage } from "./chat/SettingsPage";
+import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import {
   ChevronDownIcon,
   LockIcon,
   PanelLeftIcon,
   SettingsIcon,
+  ShieldCheckIcon,
+  ShieldIcon,
 } from "lucide-react";
+import { isTeeCapableModel, isVerifiableModel } from "./lib/completionStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -486,6 +490,14 @@ export function App() {
               onOpenRates={openRates}
             />
           )}
+          {isReady && (
+            // Intentionally hidden below the `sm` breakpoint: the header is
+            // space-constrained on mobile and the per-message badge still
+            // surfaces verification there. Desktop shows the model-level pill.
+            <span className="hidden sm:inline-flex">
+              <ModelVerificationIndicator model={model} />
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
           {isReady && paywallEnabled && (
@@ -885,6 +897,12 @@ function ModelPicker(props: {
         aria-label="Model"
         className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
+        {isVerifiableModel(model) && (
+          <ShieldCheckIcon
+            className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+            aria-hidden
+          />
+        )}
         <span className="max-w-[7rem] truncate sm:max-w-[12rem]">{model}</span>
         <ChevronDownIcon className="size-3.5 text-muted-foreground" />
       </button>
@@ -942,6 +960,23 @@ function ModelPicker(props: {
                 >
                   {m.id}
                 </span>
+                {isVerifiableModel(m.id) ? (
+                  <span
+                    className="inline-flex shrink-0 text-emerald-600 dark:text-emerald-400"
+                    title="Verifiable in-browser — Intel TDX (on-chain) + signed response"
+                    aria-label="Verifiable in-browser"
+                  >
+                    <ShieldCheckIcon className="size-3.5" aria-hidden />
+                  </span>
+                ) : isTeeCapableModel(m.id) ? (
+                  <span
+                    className="inline-flex shrink-0 text-muted-foreground"
+                    title="Confidential (TEE) — enclave attestable on-chain"
+                    aria-label="Confidential (TEE) — enclave attestable"
+                  >
+                    <ShieldIcon className="size-3.5" aria-hidden />
+                  </span>
+                ) : null}
                 {badge && (
                   <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary tabular-nums">
                     {badge}
