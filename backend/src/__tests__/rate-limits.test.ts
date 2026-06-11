@@ -30,6 +30,12 @@ async function withServer<T>(
 }
 
 describe("rate limiters (ST5)", () => {
+  it("configures one-hop proxy trust before registering IP-based limiters", () => {
+    const app = express();
+    applyRateLimiters(app);
+    expect(app.get("trust proxy")).toBe(1);
+  });
+
   it("verification traffic does NOT exhaust the /api/chat bucket", async () => {
     const app = buildApp();
     await withServer(app, async (port) => {
@@ -54,6 +60,21 @@ describe("rate limiters (ST5)", () => {
         expect(r.status).toBe(200);
       }
       const over = await realFetch(`http://localhost:${port}/api/chat`, { method: "POST" });
+      expect(over.status).toBe(429);
+    });
+  });
+
+  it("does not exempt verification-prefix lookalike paths from the global limiter", async () => {
+    const app = express();
+    applyRateLimiters(app);
+    app.get("/api/signature-anything", (_req, res) => res.json({ ok: true }));
+
+    await withServer(app, async (port) => {
+      for (let i = 0; i < GLOBAL_LIMIT; i++) {
+        const r = await realFetch(`http://localhost:${port}/api/signature-anything`);
+        expect(r.status).toBe(200);
+      }
+      const over = await realFetch(`http://localhost:${port}/api/signature-anything`);
       expect(over.status).toBe(429);
     });
   });

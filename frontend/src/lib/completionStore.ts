@@ -82,10 +82,20 @@ export const VERIFIABLE_MODELS = [
 ] as const;
 
 const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);
+const MISLABELED_BLOCKLIST: ReadonlySet<string> = new Set([
+  "phala/deepseek-chat-v3.1",
+  "phala/qwen3-30b-a3b-instruct-2507",
+  "phala/qwen2.5-vl-72b-instruct",
+  "phala/glm-4.7",
+]);
 
 /** True iff `model` is an exact member of the tier-1 (green) allowlist. */
 export function isVerifiableModel(model: string): boolean {
   return VERIFIABLE_MODEL_SET.has(model);
+}
+
+export function isBlocklistedModel(model: string): boolean {
+  return MISLABELED_BLOCKLIST.has(model);
 }
 
 /**
@@ -107,5 +117,5 @@ export function isResponseVerifiableModel(model: string): boolean {
  * short-circuit to tier 0 and never attempt verification.
  */
 export function isTeeCapableModel(model: string): boolean {
-  return model.startsWith("phala/");
+  return model.startsWith("phala/") && !isBlocklistedModel(model);
 }

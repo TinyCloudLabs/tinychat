@@ -25,26 +25,30 @@ passthroughs. Every other line of verification logic is byte-identical to upstre
 compute no verdict.
 
 `BACKEND_ORIGIN` and the auth (`Authorization: Bearer <session>`) + CSRF
-(`X-Requested-With: XMLHttpRequest`) headers are sourced the same way the rest of
-the frontend addresses the backend (`import.meta.env.VITE_BACKEND_URL` +
-`SessionStore`, mirroring `frontend/src/lib/chatApi.ts`) — no hardcoded literal.
+(`X-Requested-With: XMLHttpRequest`) headers are sourced from the same backend
+origin and session-storage contract used by `frontend/src/lib/chatApi.ts`
+(`import.meta.env.VITE_BACKEND_URL` plus the app session token) — no hardcoded
+literal and no heavy TinyCloud SDK import inside the vendored browser helpers.
 
 1. **`verify.ts` → `fetchSignature`** — URL changed from
    `${API_BASE}/v1/signature/{id}?model=...` to
    `${BACKEND_ORIGIN}/api/signature/{id}?model=...`, and the
    `Authorization: Bearer ${apiKey}` header dropped (the backend injects
    `REDPILL_API_KEY`). The `apiKey` param is now unused and kept only for
-   signature compatibility. A module-level `BACKEND_ORIGIN` + `tinychatBackendHeaders`
-   helper was added near the imports to support this.
+   signature compatibility. A module-level `BACKEND_ORIGIN` +
+   `tinychatSessionToken` + `tinychatBackendHeaders` helper was added near the
+   imports to support this.
 2. **`verifiers/cloud-api.ts` → `checkGpu`** — NRAS `POST` URL changed from
    `NVIDIA_NRAS_URL` to `${BACKEND_ORIGIN}/api/nras-proxy` (CORS-blocked direct);
-   `NVIDIA_NRAS_URL` dropped from the import and the same `BACKEND_ORIGIN` +
-   `tinychatBackendHeaders` helper added near the imports.
+   the now-unused `NVIDIA_NRAS_URL` constant is removed, and the same
+   `BACKEND_ORIGIN` + `tinychatSessionToken` + `tinychatBackendHeaders` helper is
+   added near the imports.
 3. **`verifiers/cloud-api.ts` → `checkTdxQuote`** — Phala TDX-verify `POST` URL
    changed from `PHALA_TDX_VERIFIER_URL` to `${BACKEND_ORIGIN}/api/phala-verify`
-   (CORS-blocked direct); `PHALA_TDX_VERIFIER_URL` dropped from the import and the
-   `...tinychatBackendHeaders(true)` (session bearer + CSRF) headers added, reusing
-   the same `BACKEND_ORIGIN` + `tinychatBackendHeaders` helper.
+   (CORS-blocked direct); the now-unused `PHALA_TDX_VERIFIER_URL` constant is
+   removed and the `...tinychatBackendHeaders(true)` (session bearer + CSRF)
+   headers added, reusing the same `BACKEND_ORIGIN` + `tinychatSessionToken` +
+   `tinychatBackendHeaders` helper.
 
 4. **`verifiers/cloud-api.ts` → `checkGpu`** (ST5 GPU-JWT verification, deviation
    **(b)** per Hard Constraint 1; added in commit `fa4861c` — do NOT revert) — beyond

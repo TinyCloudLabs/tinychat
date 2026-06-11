@@ -15,15 +15,29 @@ import { verifyNrasJwt, type NrasJwk } from '@/lib/nrasJwt'
 // ── TinyChat deviation (see VENDOR.md) ─────────────────────────────────────
 // NVIDIA NRAS is CORS-blocked from the browser, so the GPU-attestation POST is
 // routed through our forge-proof backend passthrough. BACKEND_ORIGIN and the
-// auth/CSRF headers reuse the same mechanism as frontend/src/lib/chatApi.ts.
-import { SessionStore, DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE } from '@tinyboilerplate/client'
+// auth/CSRF headers reuse the same storage/header contract as frontend/src/lib/chatApi.ts.
 
 const BACKEND_ORIGIN =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? 'http:'}//localhost:3014`
+const SESSION_STORAGE_KEY = 'xyz.tinycloud.tinychat:session'
+const DEFAULT_REQUEST_HEADER_NAME = 'X-Requested-With'
+const DEFAULT_REQUEST_HEADER_VALUE = 'XMLHttpRequest'
+
+function tinychatSessionToken(): string | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(SESSION_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { token?: unknown; expiresAt?: unknown }
+    if (typeof parsed.expiresAt === 'number' && Date.now() >= parsed.expiresAt - 30_000) return null
+    return typeof parsed.token === 'string' ? parsed.token : null
+  } catch {
+    return null
+  }
+}
 
 function tinychatBackendHeaders(includeCsrf: boolean): Record<string, string> {
-  const token = new SessionStore('xyz.tinycloud.tinychat:session').getToken()
+  const token = tinychatSessionToken()
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
   if (includeCsrf) headers[DEFAULT_REQUEST_HEADER_NAME] = DEFAULT_REQUEST_HEADER_VALUE
@@ -113,7 +127,17 @@ export async function checkGpu(nvidiaPayload: unknown, nonce: string): Promise<G
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(30_000),
   })
-  const body = await res.json() as [unknown, string][]
+  if (!res.ok) {
+    return { nonceMatches, verdict: 'nras_relay_error', signatureVerified: false }
+  }
+  const body = await res.json() as unknown
+  if (
+    !Array.isArray(body) ||
+    !Array.isArray(body[0]) ||
+    typeof body[0][1] !== 'string'
+  ) {
+    return { nonceMatches, verdict: 'nras_relay_error', signatureVerified: false }
+  }
   const jwt = body[0][1]
 
   // Cryptographically verify NVIDIA's ES384 signature on the token against their

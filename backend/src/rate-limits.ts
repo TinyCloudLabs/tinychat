@@ -23,9 +23,14 @@ export const VERIFICATION_PATHS = [
   "/api/phala-verify",
 ] as const;
 
+function matchesMountPath(path: string, mount: string): boolean {
+  return path === mount || path.startsWith(`${mount}/`);
+}
+
 /** Mount the global limiter (exempting the verification paths) and the larger
  *  verification-only limiter on those three paths. */
 export function applyRateLimiters(app: Express): void {
+  app.set("trust proxy", 1);
   const verificationLimiter = rateLimit({
     windowMs: WINDOW_MS,
     limit: VERIFICATION_LIMIT,
@@ -37,7 +42,7 @@ export function applyRateLimiters(app: Express): void {
     limit: GLOBAL_LIMIT,
     standardHeaders: "draft-7",
     legacyHeaders: false,
-    skip: (req) => VERIFICATION_PATHS.some((p) => req.path.startsWith(p)),
+    skip: (req) => VERIFICATION_PATHS.some((p) => matchesMountPath(req.path, p)),
   });
   app.use(globalLimiter);
   for (const p of VERIFICATION_PATHS) app.use(p, verificationLimiter);

@@ -155,7 +155,7 @@ const VerificationBadge: FC<{
       // Reuse the model-level indicator's cached verdict when it already holds a
       // fresh enclave-verified `mr` for this model (design point 5: avoids a
       // redundant probe per message). Falls back to a fresh probe on a miss.
-      const mr = getCachedModelVerification(model) ?? (await verifyModel({ model }));
+      const mr = getCachedModelVerification(model) ?? (await verifyModel({ model, deep: false }));
 
       // 2. Per-message signature — only flat/NearAI models carry one. The proxy
       // returns null (never throws) for Tinfoil/Chutes, leaving them tier ≤ 2.

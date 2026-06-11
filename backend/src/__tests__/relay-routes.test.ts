@@ -66,4 +66,21 @@ describe("relayUpstream (ST12a)", () => {
     expect(res.state.statusCode).toBe(502);
     expect((res.state.body as { error: string }).error).toBe("upstream_error");
   });
+
+  it("returns 502 when reading the upstream body rejects", async () => {
+    globalThis.fetch = (async () =>
+      ({
+        status: 200,
+        headers: new Headers({ "content-type": "text/plain" }),
+        text: async () => {
+          throw new Error("body stream aborted");
+        },
+      }) as Response) as typeof fetch;
+
+    const res = fakeRes();
+    await relayUpstream(res as never, "https://example.test", { method: "GET" }, "test");
+
+    expect(res.state.statusCode).toBe(502);
+    expect((res.state.body as { error: string }).error).toBe("upstream_error");
+  });
 });

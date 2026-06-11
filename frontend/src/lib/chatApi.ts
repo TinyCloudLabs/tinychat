@@ -1,8 +1,9 @@
 import {
-  DEFAULT_REQUEST_HEADER_NAME,
-  DEFAULT_REQUEST_HEADER_VALUE,
   type SessionStore,
 } from "@tinyboilerplate/client";
+
+const DEFAULT_REQUEST_HEADER_NAME = "X-Requested-With";
+const DEFAULT_REQUEST_HEADER_VALUE = "XMLHttpRequest";
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -16,6 +17,11 @@ export interface PaywallErrorPayload {
   tier: string;
   requiredTier?: "plus" | "pro";
   usage?: { used: number; limit: number; resetsAt: string };
+}
+
+export interface ModelSelectionErrorPayload {
+  error: "model_not_offered" | "model_blocklisted";
+  message: string;
 }
 
 /** SSE usage chunk surfaced to the caller when the stream completes. */
@@ -38,6 +44,15 @@ export class PaywallError extends Error {
   constructor(payload: PaywallErrorPayload) {
     super(payload.message || "This action requires an upgrade.");
     this.name = "PaywallError";
+    this.payload = payload;
+  }
+}
+
+export class ModelSelectionError extends Error {
+  readonly payload: ModelSelectionErrorPayload;
+  constructor(payload: ModelSelectionErrorPayload) {
+    super(payload.message || "This model is not available.");
+    this.name = "ModelSelectionError";
     this.payload = payload;
   }
 }
@@ -65,6 +80,26 @@ function emitBilling(event: BillingEvent): void {
       listener(event);
     } catch {
       // a listener throwing must not break the chat error / receipt path
+    }
+  }
+}
+
+type ModelSelectionListener = (payload: ModelSelectionErrorPayload) => void;
+const modelSelectionListeners = new Set<ModelSelectionListener>();
+
+export function onModelSelectionError(listener: ModelSelectionListener): () => void {
+  modelSelectionListeners.add(listener);
+  return () => {
+    modelSelectionListeners.delete(listener);
+  };
+}
+
+function emitModelSelectionError(payload: ModelSelectionErrorPayload): void {
+  for (const listener of modelSelectionListeners) {
+    try {
+      listener(payload);
+    } catch {
+      // a listener throwing must not break the chat error path
     }
   }
 }
@@ -165,6 +200,24 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
     }
     emitBilling({ type: "paywall", payload });
     throw new PaywallError(payload);
+  }
+  if (res.status === 403) {
+    let payload: ModelSelectionErrorPayload | null = null;
+    try {
+      const body = (await res.json()) as Partial<ModelSelectionErrorPayload>;
+      if (body.error === "model_not_offered" || body.error === "model_blocklisted") {
+        payload = {
+          error: body.error,
+          message: typeof body.message === "string" ? body.message : "This model is not available.",
+        };
+      }
+    } catch {
+      // non-JSON 403 body; fall through to the generic error path
+    }
+    if (payload) {
+      emitModelSelectionError(payload);
+      throw new ModelSelectionError(payload);
+    }
   }
   if (!res.ok || !res.body) {
     let detail = res.statusText;

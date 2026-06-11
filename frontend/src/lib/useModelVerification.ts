@@ -96,7 +96,7 @@ function runVerification(model: string): Promise<CachedVerification> {
 
   const run = (async (): Promise<CachedVerification> => {
     try {
-      const mr = await verifyModel({ model });
+      const mr = await verifyModel({ model, deep: false });
       return {
         // "verified" = enclave-attested. A returned-but-unattested result is
         // "unverified" (distinct from a thrown call's "error"); both render the

@@ -38,6 +38,15 @@ describe("sanitizeModel (ST1)", () => {
     expect(sanitizeModel("phala/anything", EMPTY)).toBe("phala/anything");
   });
 
+  test("before the offered list loads, still heals known blocklisted phala ids", () => {
+    const EMPTY = new Set<string>();
+    expect(sanitizeModel("phala/glm-4.7", EMPTY)).toBe(DEFAULT_MODEL);
+    expect(healPersistedModel("phala/glm-4.7", EMPTY)).toEqual({
+      model: DEFAULT_MODEL,
+      healed: true,
+    });
+  });
+
   test("accepts an array as the offered collection", () => {
     expect(sanitizeModel("phala/gpt-oss-120b", ["phala/gpt-oss-120b"])).toBe(
       "phala/gpt-oss-120b",

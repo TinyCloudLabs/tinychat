@@ -36,8 +36,13 @@ export async function relayUpstream(
     return;
   }
 
-  const body = await upstream.text();
-  const contentType = upstream.headers.get("content-type");
-  if (contentType) res.type(contentType);
-  res.status(upstream.status).send(body);
+  try {
+    const body = await upstream.text();
+    const contentType = upstream.headers.get("content-type");
+    if (contentType) res.type(contentType);
+    res.status(upstream.status).send(body);
+  } catch (error) {
+    console.error(`[relay] failed to read ${label} response:`, error);
+    res.status(502).json({ error: "upstream_error", message: `Failed to reach ${label}` });
+  }
 }

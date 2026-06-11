@@ -72,6 +72,7 @@ async function main() {
   });
 
   const app = express();
+  app.set("trust proxy", 1);
   applySecurityDefaults(app);
   app.use(cors({ origin: FRONTEND_URL }));
 
@@ -84,17 +85,19 @@ async function main() {
     createBillingWebhookHandler(),
   );
 
-  // GPU attestation evidence forwarded to NRAS is large, so the nras-proxy
-  // route needs a roomier body limit than the global 64 KB. Registered here,
-  // before the global parser, so it applies to that mount specifically.
-  app.use("/api/nras-proxy", express.json({ limit: "4mb" }));
-
   // The Phala TDX-verify passthrough carries a hex quote (a few KB); give it
   // headroom over the global 64 KB parser. Registered before the global parser
   // so it applies to that mount specifically (like the nras-proxy mount above).
   app.use("/api/phala-verify", express.json({ limit: "256kb" }));
 
-  app.use(express.json({ limit: "64kb" }));
+  const globalJsonParser = express.json({ limit: "64kb" });
+  app.use((req, res, next) => {
+    if (req.path === "/api/nras-proxy" || req.path.startsWith("/api/nras-proxy/")) {
+      next();
+      return;
+    }
+    globalJsonParser(req, res, next);
+  });
   app.use(createCsrfMiddleware());
   // ST5 — global 120/15min limiter plus a separate, larger bucket for the
   // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
@@ -124,7 +127,7 @@ async function main() {
   );
   app.use("/api/chat", authMiddleware, createChatRouter());
   app.use("/api/signature", authMiddleware, createSignatureRouter());
-  app.use("/api/nras-proxy", authMiddleware, createNrasProxyRouter());
+  app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
   app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());
   app.use("/api/billing", createBillingRouter({ authMiddleware }));
 

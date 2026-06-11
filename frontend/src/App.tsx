@@ -28,7 +28,7 @@ import {
   type BillingConfig,
   type BillingStatus,
 } from "./lib/billingApi";
-import { onBillingEvent, onPaywallError } from "./lib/chatApi";
+import { onBillingEvent, onModelSelectionError, onPaywallError } from "./lib/chatApi";
 import { isPaywallActionable } from "./lib/paywall";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -108,6 +108,8 @@ export function App() {
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const offeredModelsRef = useRef<ModelOption[]>([]);
+  const restoredActiveModelForTcwRef = useRef<TinyCloudWeb | null>(null);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -178,11 +180,29 @@ export function App() {
     [setSelectedModel, writeLocalModel, tcw],
   );
 
+  useEffect(() => {
+    offeredModelsRef.current = models;
+  }, [models]);
+
+  const remediateUnavailableModel = useCallback(() => {
+    const offered = new Set(offeredModelsRef.current.map((m) => m.id));
+    const before = modelRef.current;
+    const corrected = sanitizeModel(before, offered);
+    if (corrected !== before) {
+      pickModel(corrected);
+      setBillingNotice("Switched to a verifiable model.");
+      return;
+    }
+    setBillingNotice("That model is not available.");
+  }, [pickModel]);
+
   // On sign-in, reconcile the picker with the cross-device default from the
   // user's space (SQL is the source of truth). localStorage already painted the
   // picker instantly; this updates it if another device changed the preference.
   useEffect(() => {
     if (state !== "ready" || !tcw) return;
+    if (restoredActiveModelForTcwRef.current === tcw) return;
+    restoredActiveModelForTcwRef.current = tcw;
     let cancelled = false;
     (async () => {
       try {
@@ -192,7 +212,7 @@ export function App() {
         // non-offered id heals to DEFAULT_MODEL and the correction is persisted
         // back (SQL + localStorage) via pickModel so it does NOT recur next
         // sign-in — even when the corrected value already matches the picker.
-        const offered = new Set(models.map((m) => m.id));
+        const offered = new Set(offeredModelsRef.current.map((m) => m.id));
         const { model: corrected, healed } = healPersistedModel(saved, offered);
         if (healed) {
           pickModel(corrected);
@@ -208,7 +228,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [state, tcw, models, pickModel, setSelectedModel, writeLocalModel]);
+  }, [state, tcw, pickModel, setSelectedModel, writeLocalModel]);
 
   // Seed memoryRef from the localStorage cache as soon as we have a tcw —
   // before the first chat turn — so the very first injection paints from
@@ -334,12 +354,15 @@ export function App() {
       // A `model_not_allowed` with no actionable requiredTier cannot be fixed by
       // upgrading (every tier shares the phala/* namespace). Reset to a
       // verifiable model and surface a brief notice instead of an un-fixable dialog.
-      const offered = new Set(models.map((m) => m.id));
-      const corrected = sanitizeModel(modelRef.current, offered);
-      if (corrected !== modelRef.current) pickModel(corrected);
-      setBillingNotice("Switched to a verifiable model.");
+      remediateUnavailableModel();
     });
-  }, [refreshBillingStatus, models, pickModel]);
+  }, [refreshBillingStatus, remediateUnavailableModel]);
+
+  useEffect(() => {
+    return onModelSelectionError(() => {
+      remediateUnavailableModel();
+    });
+  }, [remediateUnavailableModel]);
 
   // Handle Stripe Checkout redirect-back: ?billing=success | ?billing=cancelled.
   // Success → refetch status + show a brief notice; cancelled → silent. Either
@@ -457,6 +480,7 @@ export function App() {
       }
     }
     modelRef.current = DEFAULT_MODEL;
+    restoredActiveModelForTcwRef.current = null;
     memoryRef.current = null;
     setModel(DEFAULT_MODEL);
     setTcw(null);

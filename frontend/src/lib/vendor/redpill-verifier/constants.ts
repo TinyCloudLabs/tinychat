@@ -2,8 +2,6 @@ import type { Abi } from 'viem'
 import type { NetworkConfig, NetworkKey } from './types.js'
 
 export const API_BASE = 'https://api.redpill.ai'
-export const NVIDIA_NRAS_URL = 'https://nras.attestation.nvidia.com/v3/attest/gpu'
-export const PHALA_TDX_VERIFIER_URL = 'https://cloud-api.phala.network/api/v1/attestations/verify'
 export const SIGSTORE_SEARCH_BASE = 'https://search.sigstore.dev/?hash='
 export const DEFAULT_MODEL = 'phala/gpt-oss-120b'
 

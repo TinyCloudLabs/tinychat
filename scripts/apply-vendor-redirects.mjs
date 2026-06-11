@@ -34,6 +34,7 @@ const RULES = [
   {
     file: "verify.ts",
     marker: "${BACKEND_ORIGIN}/api/signature",
+    scaffold: ["const BACKEND_ORIGIN =", "function tinychatBackendHeaders"],
     replacements: [
       // signature GET reverted to a direct RedPill call.
       [/https:\/\/api\.redpill\.ai\/v1\/signature/g, "${BACKEND_ORIGIN}/api/signature"],
@@ -43,6 +44,7 @@ const RULES = [
   {
     file: "verifiers/cloud-api.ts",
     marker: "${BACKEND_ORIGIN}/api/phala-verify",
+    scaffold: ["const BACKEND_ORIGIN =", "function tinychatBackendHeaders"],
     replacements: [
       [/fetch\(\s*PHALA_TDX_VERIFIER_URL/g, "fetch(`${BACKEND_ORIGIN}/api/phala-verify`"],
       [
@@ -54,6 +56,13 @@ const RULES = [
         /https:\/\/nras\.attestation\.nvidia\.com\/v3\/attest\/gpu/g,
         "${BACKEND_ORIGIN}/api/nras-proxy",
       ],
+    ],
+  },
+  {
+    file: "constants.ts",
+    replacements: [
+      [/export const NVIDIA_NRAS_URL = .*?\n/g, ""],
+      [/export const PHALA_TDX_VERIFIER_URL = .*?\n/g, ""],
     ],
   },
 ];
@@ -77,10 +86,11 @@ for (const rule of RULES) {
     changed = true;
     console.log(`✔ re-applied redirect(s) in ${rule.file}`);
   }
-  if (!next.includes("BACKEND_ORIGIN")) {
+  const missingScaffold = rule.scaffold?.filter((snippet) => !next.includes(snippet)) ?? [];
+  if (missingScaffold.length > 0) {
     scaffoldMissing = true;
     console.error(
-      `✗ ${rule.file}: BACKEND_ORIGIN scaffold missing — re-add the const + ` +
+      `✗ ${rule.file}: backend redirect scaffold missing (${missingScaffold.join(", ")}) — re-add the const + ` +
         `tinychatBackendHeaders helper per VENDOR.md before the redirects can work.`,
     );
   }

@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL } from "./threadStore";
-import { isTeeCapableModel } from "./completionStore";
+import { isBlocklistedModel, isTeeCapableModel } from "./completionStore";
 
 /**
  * ST1 — the single sanitize choke point for persisted model ids.
@@ -24,6 +24,7 @@ export function sanitizeModel(
   fallback: string = DEFAULT_MODEL,
 ): string {
   if (!model) return fallback;
+  if (isBlocklistedModel(model)) return fallback;
   const set = offered instanceof Set ? offered : new Set(offered);
   if (set.size > 0) {
     return set.has(model) ? model : fallback;
