@@ -2,12 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import type Stripe from "stripe";
-import { _resetCatalogCache } from "../billing/catalog.js";
+import { _resetCatalogCache, isBlocklistedModel } from "../billing/catalog.js";
 import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
-import { TIERS } from "../billing/tiers.js";
+import { isModelAllowed, TIERS } from "../billing/tiers.js";
 import { _resetUsage, getUsage } from "../billing/usage.js";
-import { createChatRouter } from "../routes/chat.js";
+import { createChatRouter, defaultModel } from "../routes/chat.js";
+
+// Mirror of the frontend memory-extraction model id (frontend/src/chat/runtime.tsx
+// MEMORY_EXTRACTION_MODEL). Kept in sync here so ST3 regresses if either drifts
+// off the phala/-only tier gate.
+const MEMORY_EXTRACTION_MODEL = "phala/gpt-oss-20b";
 
 const ORIGINAL_ENV = { ...process.env };
 const ADDR = "0xabc";
@@ -366,8 +371,9 @@ describe("GET /api/chat/models annotation", () => {
     _setStripeClient(mockStripe(null)); // free
     const restore = stubRedPillFetch({
       models: [
-        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (filtered out)
+        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // legacy non-TEE (filtered out)
         { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
+        { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // baseline anchor (default model)
         { id: "phala/glm-5", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
         { id: "phala/opus-tee", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],
@@ -401,5 +407,122 @@ describe("GET /api/chat/models annotation", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("POST /api/chat default + memory-extraction models (ST3, ST6)", () => {
+  test("ST3: memory-extraction model is tier-allowed under the paywall (no 402)", async () => {
+    // The id is a verifiable phala/* model: phala-prefixed (tier-allowed) and
+    // not blocklisted, so the extraction POST passes the gate instead of 402'ing
+    // and silently leaving memory un-updated.
+    expect(MEMORY_EXTRACTION_MODEL.startsWith("phala/")).toBe(true);
+    expect(isModelAllowed("free", MEMORY_EXTRACTION_MODEL)).toBe(true);
+    expect(isBlocklistedModel(MEMORY_EXTRACTION_MODEL)).toBe(false);
+
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: MEMORY_EXTRACTION_MODEL, pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody(MEMORY_EXTRACTION_MODEL),
+      });
+      expect(res.status).not.toBe(402);
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+
+  test("ST6: defaultModel() is phala/-prefixed and tier-allowed; a model-less POST is not 402", async () => {
+    // Test the built-in default, independent of any REDPILL_DEFAULT_MODEL override
+    // a local .env may carry.
+    delete process.env.REDPILL_DEFAULT_MODEL;
+    expect(defaultModel().startsWith("phala/")).toBe(true);
+    expect(isModelAllowed("free", defaultModel())).toBe(true);
+    expect(isBlocklistedModel(defaultModel())).toBe(false);
+
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: defaultModel(), pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      // No `model` field → resolves to defaultModel() server-side.
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(res.status).not.toBe(402);
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("POST /api/chat blocklist enforcement (ST7)", () => {
+  const BLOCKED = "phala/glm-4.7";
+
+  test("isBlocklistedModel flags the mislabeled id, not a legitimate one", () => {
+    expect(isBlocklistedModel(BLOCKED)).toBe(true);
+    expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
+  });
+
+  /** Run a blocklisted POST under a fetch spy; assert rejected + no upstream. */
+  async function expectBlocked() {
+    let upstreamCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.redpill.ai")) upstreamCalled = true;
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody(BLOCKED),
+      });
+      expect(res.status).not.toBe(200);
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("model_blocklisted");
+      assertNoDollarLeak(body);
+      expect(upstreamCalled).toBe(false);
+      expect(getUsage(ADDR, TIERS.free).used).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  test("rejects a blocklisted model with the paywall enabled (no upstream, no usage)", async () => {
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    await expectBlocked();
+  });
+
+  test("rejects a blocklisted model even with the paywall disabled", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    await expectBlocked();
   });
 });

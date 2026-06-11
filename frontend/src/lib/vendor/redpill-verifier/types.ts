@@ -83,6 +83,12 @@ export interface ReportDataResult {
 export interface GpuResult {
   nonceMatches: boolean
   verdict: string
+  /**
+   * Whether NVIDIA's ES384 signature on the NRAS token was cryptographically
+   * verified in-browser against NVIDIA's JWKS. When false the `verdict` is
+   * forced non-passing — an unverifiable signature must never read as attested.
+   */
+  signatureVerified?: boolean
 }
 
 export interface ComposeResult {

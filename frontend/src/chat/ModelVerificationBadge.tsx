@@ -8,10 +8,18 @@ import {
   ShieldQuestionIcon,
 } from "lucide-react";
 
-import { verifyModel, type VerifyModelResult } from "@/lib/vendor/redpill-verifier";
+import { sha256, verifyModel, type VerifyModelResult } from "@/lib/vendor/redpill-verifier";
 import { fetchSignatureProxy } from "@/lib/signatureClient";
 import { getCachedModelVerification } from "@/lib/useModelVerification";
 import { AttestationDetails } from "@/chat/AttestationDetails";
+import {
+  computeTier,
+  isEnclaveBound,
+  isFresh,
+  isQuoteVerified,
+  parseResponseHash,
+  type Tier,
+} from "@/chat/verification-predicates";
 import {
   getCompletion,
   isResponseVerifiableModel,
@@ -52,6 +60,14 @@ import {
  */
 export const ModelVerificationBadge: FC = () => {
   const messageId = useMessage((m) => m.id);
+  // The text rendered on screen for THIS assistant message — hashed and compared
+  // to the signed response hash so green proves the signature binds the reply we
+  // actually show (ST2). Mirrors `messageText` in runtime.tsx.
+  const renderedText = useMessage((m) =>
+    m.content
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join(""),
+  );
   const [ref, setRef] = useState<CompletionRef | undefined>(() =>
     getCompletion(messageId),
   );
@@ -64,25 +80,32 @@ export const ModelVerificationBadge: FC = () => {
   }, [messageId]);
 
   if (!ref) return null;
-  return <VerificationBadge completionId={ref.completionId} model={ref.model} />;
+  return (
+    <VerificationBadge
+      completionId={ref.completionId}
+      model={ref.model}
+      renderedText={renderedText}
+    />
+  );
 };
 
 type Phase = "idle" | "pending" | "done" | "error";
-type Tier = "response-verified" | "enclave-attested" | "not-verifiable";
 
 /** What the badge resolved after a verifyModel + signature run. */
 interface Verdict {
   tier: Tier;
   mr: VerifyModelResult;
+  /** True only when the reply is fully bound to the enclave (green tier). */
   signatureValid: boolean;
   signer: string | null;
   signingAddress: string | null;
 }
 
-const VerificationBadge: FC<{ completionId: string; model: string }> = ({
-  completionId,
-  model,
-}) => {
+const VerificationBadge: FC<{
+  completionId: string;
+  model: string;
+  renderedText: string;
+}> = ({ completionId, model, renderedText }) => {
   const signable = isResponseVerifiableModel(model);
   const teeCapable = isTeeCapableModel(model);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -127,33 +150,40 @@ const VerificationBadge: FC<{ completionId: string; model: string }> = ({
       // 2. Per-message signature — only flat/NearAI models carry one. The proxy
       // returns null (never throws) for Tinfoil/Chutes, leaving them tier ≤ 2.
       const sig = await fetchSignatureProxy(completionId, model);
-      let signatureValid = false;
       let signer: string | null = null;
+      let replyBound = false;
       if (sig) {
         signer = await recoverMessageAddress({
           message: sig.text,
           signature: sig.signature as Hex,
         });
-        signatureValid =
-          signer.toLowerCase() === sig.signing_address.toLowerCase();
+        // ST2 — the signed response hash must equal the hash of the text we
+        // actually render. Same algorithm/encoding as the vendored sha256 so a
+        // genuine match is never falsely rejected.
+        const respHashServer = parseResponseHash(sig.text);
+        const renderedHash = await sha256(renderedText);
+        replyBound = respHashServer != null && renderedHash === respHashServer;
       }
+      const signingAddress = sig?.signing_address ?? null;
 
-      // 3. Tier from results — tier 2 REQUIRES a verified TDX quote, proven by
-      // the trustless on-chain DCAP path AND/OR Phala's attestation verifier.
-      const quoteVerified =
-        mr.onchain?.verified === true || mr.light?.tdx?.verified === true;
-      const tier: Tier = quoteVerified
-        ? signatureValid
-          ? "response-verified"
-          : "enclave-attested"
-        : "not-verifiable";
+      // 3. Compose the honest tier. Green requires a verified TDX quote AND the
+      // signing key bound to the enclave (ST1) AND the reply bound to the
+      // signature (ST2) AND a fresh, non-replayed quote (ST4). Anything less is
+      // sky/grey — never a silent upgrade.
+      const quoteVerified = isQuoteVerified(mr);
+      const enclaveBound = isEnclaveBound(mr, signer, signingAddress);
+      const fresh = isFresh(mr);
+      const tier = computeTier({ quoteVerified, enclaveBound, replyBound, fresh });
 
       setVerdict({
         tier,
         mr,
-        signatureValid,
+        // signatureValid (passed to AttestationDetails) means the reply is fully
+        // bound to the enclave — i.e. exactly the green tier, not mere
+        // signature self-consistency.
+        signatureValid: tier === "response-verified",
         signer,
-        signingAddress: sig?.signing_address ?? null,
+        signingAddress,
       });
       setPhase("done");
       setOpen(true);

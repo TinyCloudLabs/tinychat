@@ -52,12 +52,14 @@ import { setCompletion } from "../lib/completionStore";
 
 /**
  * Model id used for memory extraction. Picked to be small and cheap — the
- * extraction runs once per assistant turn off the visible reply path. The
- * RedPill proxy resolves this exactly as for chat; if the id is unavailable
- * the extraction call will fail and the in-flight guard releases (memory
- * silently stays at the prior doc).
+ * extraction runs once per assistant turn off the visible reply path. It MUST be
+ * a verifiable phala/* model (in VERIFIABLE_MODELS, not blocklisted) so the
+ * extraction POST passes the phala/-only tier gate under the paywall; a non-phala
+ * id is rejected with 402 and memory silently never updates (ST3). The RedPill
+ * proxy resolves this exactly as for chat; if the id is unavailable the
+ * extraction call fails and the in-flight guard releases (memory stays put).
  */
-const MEMORY_EXTRACTION_MODEL = "openai/gpt-5-mini";
+const MEMORY_EXTRACTION_MODEL = "phala/gpt-oss-20b";
 
 /**
  * Per-call output cap on extraction. cl100k averages ~4 chars/token for

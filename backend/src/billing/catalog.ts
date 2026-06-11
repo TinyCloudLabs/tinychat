@@ -39,6 +39,16 @@ const MISLABELED_BLOCKLIST: ReadonlySet<string> = new Set([
   "phala/glm-4.7", // serves zai-org/GLM-5.1-FP8
 ]);
 
+/**
+ * True when the model id is on the mislabeled blocklist — a `phala/` alias that
+ * serves a differently-named model than its id claims. Exported so the chat
+ * gating path can refuse it directly (the `getCatalog()` prune only hides it
+ * from the display catalog; a direct POST must still be rejected — see ST7).
+ */
+export function isBlocklistedModel(id: string): boolean {
+  return MISLABELED_BLOCKLIST.has(id);
+}
+
 /** Clear the in-memory catalog cache. Exposed for tests. */
 export function _resetCatalogCache(): void {
   cache = null;

@@ -8,7 +8,12 @@ import {
 } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
-import { CatalogFetchError, getCatalog, type CatalogModel } from "../billing/catalog.js";
+import {
+  CatalogFetchError,
+  getCatalog,
+  isBlocklistedModel,
+  type CatalogModel,
+} from "../billing/catalog.js";
 import {
   creditsFor,
   estimateCredits,
@@ -22,8 +27,12 @@ import {
 // so the server boots cleanly even without a key configured.
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
-const DEFAULT_BASELINE_MODEL = "openai/gpt-5-mini";
-function defaultModel(): string {
+// Default to a VERIFIABLE phala/* model so a model-less POST is allowed on every
+// (phala/-only) tier instead of self-denying with a 402 (ST6). Overridable via
+// REDPILL_DEFAULT_MODEL. Must stay a phala/* id present in VERIFIABLE_MODELS and
+// absent from the mislabeled blocklist.
+const DEFAULT_BASELINE_MODEL = "phala/gpt-oss-120b";
+export function defaultModel(): string {
   return process.env.REDPILL_DEFAULT_MODEL ?? DEFAULT_BASELINE_MODEL;
 }
 
@@ -151,6 +160,18 @@ export function createChatRouter() {
     }
 
     const resolvedModel = typeof model === "string" && model.trim() ? model : defaultModel();
+
+    // ── Blocklist (authoritative; enforced regardless of the paywall) ─────────
+    // A mislabeled `phala/` alias serves a differently-named model than its id
+    // claims (ST7). The display catalog already hides these, but a direct POST
+    // bypasses that view — reject here, before any upstream fetch or billing.
+    if (isBlocklistedModel(resolvedModel)) {
+      res.status(403).json({
+        error: "model_blocklisted",
+        message: `Model ${resolvedModel} is not available.`,
+      });
+      return;
+    }
 
     // ── Gating (only when the paywall is enabled) ─────────────────────────────
     const address = req.user?.address ?? "";
@@ -366,9 +387,9 @@ export function createChatRouter() {
       }
     }
 
-    // Baseline rates = REDPILL_DEFAULT_MODEL's rates (spec §2.4); fallback if
-    // the default model is absent from the catalog. Computed from the FULL catalog
-    // so the multiplier anchor (a non-TEE baseline model) is still resolvable.
+    // Baseline rates = the default model's rates (spec §2.4); fallback if the
+    // default model is absent from the catalog. Computed from the FULL catalog so
+    // the multiplier anchor is resolvable even when the default is a phala/* model.
     const baselineRates = resolveRates(catalog, defaultModel());
 
     // This is a confidential-inference product: only offer models that can be

@@ -7,6 +7,11 @@
 import { decodeJwtPayload, sha256 } from '../utils.js'
 import type { RawAttestation, TdxResult, GpuResult, ReportDataResult, ComposeResult, SigstoreLink, TcbInfo } from '../types.js'
 import { SIGSTORE_SEARCH_BASE } from '../constants.js'
+// ── TinyChat deviation (see VENDOR.md, ST5) ────────────────────────────────
+// The NRAS GPU verdict must be forge-proof: verify NVIDIA's ES384 signature on
+// the token against their JWKS in-browser before trusting any claim. The pure
+// crypto lives in a Vite-free sibling module so it is unit-testable.
+import { verifyNrasJwt, type NrasJwk } from '@/lib/nrasJwt'
 // ── TinyChat deviation (see VENDOR.md) ─────────────────────────────────────
 // NVIDIA NRAS is CORS-blocked from the browser, so the GPU-attestation POST is
 // routed through our forge-proof backend passthrough. BACKEND_ORIGIN and the
@@ -82,6 +87,20 @@ export function checkReportData(
   return { bindsAddress, embedsNonce, signingAlgo: signingAlgo.toLowerCase() }
 }
 
+/**
+ * Fetch NVIDIA's public JWKS through the backend proxy (CORS-blocked direct,
+ * exactly like the NRAS POST). The key material is NVIDIA's public material, so
+ * relaying it is forge-proof: the browser checks the signature against it itself.
+ */
+async function fetchNrasJwks(): Promise<NrasJwk[]> {
+  const res = await fetch(`${BACKEND_ORIGIN}/api/nras-proxy/jwks`, {
+    headers: tinychatBackendHeaders(true),
+    signal: AbortSignal.timeout(30_000),
+  })
+  const data = (await res.json()) as { keys?: NrasJwk[] }
+  return data.keys ?? []
+}
+
 export async function checkGpu(nvidiaPayload: unknown, nonce: string): Promise<GpuResult> {
   const payload = typeof nvidiaPayload === 'string' ? JSON.parse(nvidiaPayload) : nvidiaPayload
   const nonceMatches = ((payload as Record<string, string>).nonce ?? '').toLowerCase() === nonce.toLowerCase()
@@ -96,10 +115,18 @@ export async function checkGpu(nvidiaPayload: unknown, nonce: string): Promise<G
   })
   const body = await res.json() as [unknown, string][]
   const jwt = body[0][1]
-  const claims = decodeJwtPayload(jwt)
-  const verdict = String(claims['x-nvidia-overall-att-result'] ?? 'unknown')
 
-  return { nonceMatches, verdict }
+  // Cryptographically verify NVIDIA's ES384 signature on the token against their
+  // JWKS BEFORE trusting any claim — otherwise the GPU leg is trust-the-backend.
+  const keys = await fetchNrasJwks().catch(() => [] as NrasJwk[])
+  const signatureVerified = await verifyNrasJwt(jwt, keys)
+
+  const claims = decodeJwtPayload(jwt)
+  const claimedVerdict = String(claims['x-nvidia-overall-att-result'] ?? 'unknown')
+  // An unverifiable signature forces a non-passing verdict (honest degradation).
+  const verdict = signatureVerified ? claimedVerdict : 'unverified-signature'
+
+  return { nonceMatches, verdict, signatureVerified }
 }
 
 export async function checkCompose(appCompose: string, mrConfig: string): Promise<ComposeResult> {

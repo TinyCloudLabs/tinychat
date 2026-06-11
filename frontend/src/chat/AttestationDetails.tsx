@@ -148,6 +148,15 @@ export const AttestationDetails: FC<{
           <Leg ok={reportData.bindsAddress} label="Report-data binding" />
         )}
 
+        {/* Freshness — the quote embeds OUR nonce, so it isn't a replayed
+            historical quote. Required for the green tier (ST4). */}
+        {reportData && (
+          <Leg
+            ok={reportData.embedsNonce}
+            label="Response nonce fresh (not replayed)"
+          />
+        )}
+
         {/* Manifest hash matches measured config — absent for e.g. glm-5.1. */}
         {compose && (
           <Leg
@@ -204,7 +213,8 @@ export const AttestationDetails: FC<{
         /* Honest claim — names exactly the legs that pass, nothing more. */
         <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
           Intel TDX quote verified on-chain (Automata DCAP) · response signature
-          valid{hasGpu ? " · NVIDIA GPU attested" : ""}.
+          valid · reply bound to the enclave · quote fresh
+          {hasGpu ? " · NVIDIA GPU attested" : ""}.
         </p>
       )}
 
