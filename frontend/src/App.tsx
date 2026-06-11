@@ -29,6 +29,7 @@ import {
   type BillingStatus,
 } from "./lib/billingApi";
 import { onBillingEvent, onPaywallError } from "./lib/chatApi";
+import { isPaywallActionable } from "./lib/paywall";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
@@ -43,6 +44,7 @@ import {
   ShieldIcon,
 } from "lucide-react";
 import { isTeeCapableModel, isVerifiableModel } from "./lib/completionStore";
+import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -50,13 +52,18 @@ const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
 const MODEL_STORAGE_KEY = "xyz.tinycloud.tinychat:active-model";
+// Empty offered-set sentinel for the pre-/models-load sanitize path (ST1).
+const EMPTY_OFFERED: ReadonlySet<string> = new Set();
 const HIGH_BURN_ACK_KEY = "xyz.tinycloud.tinychat:high-burn-ack";
 const HIGH_BURN_THRESHOLD = 10;
 
 function getInitialModel(): string {
   if (typeof window === "undefined") return DEFAULT_MODEL;
   try {
-    return window.localStorage.getItem(MODEL_STORAGE_KEY) ?? DEFAULT_MODEL;
+    // ST1 — heal a stale persisted id on first paint. The /models list isn't
+    // loaded yet, so sanitizeModel falls back to the phala/ prefix gate (a
+    // non-phala legacy id is rejected; a phala id is kept for instant paint).
+    return sanitizeModel(window.localStorage.getItem(MODEL_STORAGE_KEY), EMPTY_OFFERED);
   } catch {
     return DEFAULT_MODEL;
   }
@@ -180,9 +187,19 @@ export function App() {
     (async () => {
       try {
         const saved = await getSetting(tcw, "active_model");
-        if (cancelled || !saved || saved === modelRef.current) return;
-        setSelectedModel(saved);
-        writeLocalModel(saved);
+        if (cancelled || !saved) return;
+        // ST1 — validate the restored value against the offered catalog. A stale
+        // non-offered id heals to DEFAULT_MODEL and the correction is persisted
+        // back (SQL + localStorage) via pickModel so it does NOT recur next
+        // sign-in — even when the corrected value already matches the picker.
+        const offered = new Set(models.map((m) => m.id));
+        const { model: corrected, healed } = healPersistedModel(saved, offered);
+        if (healed) {
+          pickModel(corrected);
+        } else if (saved !== modelRef.current) {
+          setSelectedModel(saved);
+          writeLocalModel(saved);
+        }
       } catch (err) {
         // AUTH_UNAUTHORIZED or unset — keep the localStorage/default value.
         console.warn("[App] failed to load model selection from space", err);
@@ -191,7 +208,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [state, tcw, setSelectedModel, writeLocalModel]);
+  }, [state, tcw, models, pickModel, setSelectedModel, writeLocalModel]);
 
   // Seed memoryRef from the localStorage cache as soon as we have a tcw —
   // before the first chat turn — so the very first injection paints from
@@ -304,11 +321,25 @@ export function App() {
   // path. Active regardless of `paywallEnabled` — a 402 only fires when the
   // backend is enforcing the paywall.
   useEffect(() => {
-    return onPaywallError(() => {
-      void refreshBillingStatus();
-      setPricingOpen(true);
+    return onPaywallError((payload) => {
+      // ST3 — branch on the error so we only open the pricing dialog when an
+      // upgrade can actually resolve the 402. `credit_budget_exceeded` and a
+      // `model_not_allowed` carrying a higher `requiredTier` are upgrade-fixable.
+      const actionable = isPaywallActionable(payload);
+      if (actionable) {
+        void refreshBillingStatus();
+        setPricingOpen(true);
+        return;
+      }
+      // A `model_not_allowed` with no actionable requiredTier cannot be fixed by
+      // upgrading (every tier shares the phala/* namespace). Reset to a
+      // verifiable model and surface a brief notice instead of an un-fixable dialog.
+      const offered = new Set(models.map((m) => m.id));
+      const corrected = sanitizeModel(modelRef.current, offered);
+      if (corrected !== modelRef.current) pickModel(corrected);
+      setBillingNotice("Switched to a verifiable model.");
     });
-  }, [refreshBillingStatus]);
+  }, [refreshBillingStatus, models, pickModel]);
 
   // Handle Stripe Checkout redirect-back: ?billing=success | ?billing=cancelled.
   // Success → refetch status + show a brief notice; cancelled → silent. Either
@@ -351,10 +382,17 @@ export function App() {
         if (cancelled) return;
         const list = result.models ?? [];
         setModels(list);
-        if (!list.some((m) => m.id === modelRef.current) && list.length > 0) {
-          // Keep default if present, otherwise fall back to first available.
+        if (list.length > 0) {
+          // ST1 — validate the active id against the freshly-loaded offered list
+          // and heal a stale value, persisting the correction back (SQL +
+          // localStorage) via pickModel so it does not recur. Keep DEFAULT_MODEL
+          // when present, otherwise the first available model.
+          const offered = new Set(list.map((m) => m.id));
           const fallback = list.find((m) => m.id === DEFAULT_MODEL)?.id ?? list[0]!.id;
-          setSelectedModel(fallback);
+          const corrected = sanitizeModel(modelRef.current, offered, fallback);
+          if (corrected !== modelRef.current) {
+            pickModel(corrected);
+          }
         }
       } catch {
         // Models endpoint optional for chatting; default model still works.
@@ -363,7 +401,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [state, setSelectedModel]);
+  }, [state, pickModel]);
 
   const signIn = useCallback(async () => {
     setError(null);

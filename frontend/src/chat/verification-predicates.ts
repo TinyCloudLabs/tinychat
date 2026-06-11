@@ -16,7 +16,7 @@
  * no verified quote is grey ("not-verifiable"). Stricter only — never relaxed.
  */
 
-import type { VerifyModelResult } from "@/lib/vendor/redpill-verifier";
+import type { GpuResult, VerifyModelResult } from "@/lib/vendor/redpill-verifier";
 
 export type Tier = "response-verified" | "enclave-attested" | "not-verifiable";
 
@@ -66,9 +66,13 @@ export function isFresh(mr: VerifyModelResult): boolean {
  */
 export function parseResponseHash(sigText: string): string | undefined {
   const parts = sigText.split(":");
-  const [, respHashServer] =
-    parts.length === 3 ? [parts[1], parts[2]] : [parts[0], parts[1]];
-  return respHashServer;
+  // Only the documented shapes carry a response hash: `reqHash:respHash` (2) and
+  // `model:reqHash:respHash` (3). Any other colon-part count is unexpected — fail
+  // SAFE by returning undefined (→ replyBound=false, never green) instead of a
+  // model-name/hash fragment masquerading as the response hash (ST12c).
+  if (parts.length === 2) return parts[1];
+  if (parts.length === 3) return parts[2];
+  return undefined;
 }
 
 /**
@@ -87,4 +91,64 @@ export function computeTier(opts: {
     return "response-verified";
   }
   return "enclave-attested";
+}
+
+/** Signature-leg sub-state for `AttestationDetails`; `null` ⇒ omit the leg. */
+export interface SignatureLegState {
+  valid: boolean;
+  signer: string | null;
+  /** Set when the signature is self-consistent + reply-bound but only freshness
+   *  failed — labeled "Signature valid — nonce not fresh", NOT "invalid" (ST8). */
+  reason?: "nonce_not_fresh";
+}
+
+/**
+ * ST8 — assemble the signature leg state the badge hands to `AttestationDetails`.
+ * Pure so the three honest outcomes are unit-tested rather than browser-checked:
+ *  - no signature fetched → `null` (the leg is omitted entirely, never rendered
+ *    as "Signature invalid — signer: null");
+ *  - the full green tier → `{ valid: true }`;
+ *  - a cryptographically valid, reply-bound signature that ONLY fails freshness →
+ *    `{ valid: false, reason: "nonce_not_fresh" }` (honest "valid — nonce not
+ *    fresh", not "invalid");
+ *  - anything else (incl. a malformed/throwing signature, ST7) → `{ valid: false }`.
+ * The tier is computed elsewhere from `mr`; this only labels the signature leg and
+ * NEVER changes which tier renders (ST-constraint 2).
+ */
+export function assembleSignatureState(opts: {
+  hasSignature: boolean;
+  signer: string | null;
+  tier: Tier;
+  signatureMalformed: boolean;
+  enclaveBound: boolean;
+  replyBound: boolean;
+  fresh: boolean;
+}): SignatureLegState | null {
+  if (!opts.hasSignature) return null;
+  if (opts.tier === "response-verified") return { valid: true, signer: opts.signer };
+  if (!opts.signatureMalformed && opts.enclaveBound && opts.replyBound && !opts.fresh) {
+    return { valid: false, signer: opts.signer, reason: "nonce_not_fresh" };
+  }
+  return { valid: false, signer: opts.signer };
+}
+
+/** ST8 — the honest signature-leg label, distinguishing a stale-but-valid
+ *  signature ("valid — nonce not fresh") from a genuinely invalid one. */
+export function signatureLegLabel(sig: {
+  valid: boolean;
+  reason?: "nonce_not_fresh";
+}): string {
+  if (sig.valid) return "Signature valid";
+  if (sig.reason === "nonce_not_fresh") return "Signature valid — nonce not fresh";
+  return "Signature invalid";
+}
+
+/**
+ * ST9 — a GPU leg renders green ONLY when the NRAS verdict passes AND the nonce
+ * is fresh (not replayed evidence), mirroring the TDX leg's freshness gate. A
+ * PASS with `nonceMatches=false` is replayed and must render non-green.
+ */
+export function isGpuLegFresh(gpu: GpuResult | null | undefined): boolean {
+  const verdictPass = gpu?.verdict === "true" || gpu?.verdict === "PASS";
+  return verdictPass && gpu?.nonceMatches === true;
 }

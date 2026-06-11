@@ -49,6 +49,16 @@ import {
   type RatesResponse,
 } from "../lib/billingApi";
 import { setCompletion } from "../lib/completionStore";
+import { healPersistedModel } from "../lib/sanitizeModel";
+import {
+  setPendingCompletion,
+  setPendingReceipt,
+  takePendingCompletion,
+  takePendingReceipt,
+} from "./pendingHandoff";
+
+/** Empty offered-set sentinel for the pre-/models-load sanitize path (ST1). */
+const EMPTY_OFFERED: ReadonlySet<string> = new Set();
 
 /**
  * Model id used for memory extraction. Picked to be small and cheap — the
@@ -92,30 +102,13 @@ export interface ChatRuntimeDeps {
   onMemoryUpdated?: (doc: string | null) => void;
 }
 
-// ── Receipt plumbing (session-cached rates + pending-charge slot) ────
+// ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──
 //
 // The receipt re-derives the charge from public data (rates + the SSE usage
-// chunk) — see spec §5.3. Chat is sequential per runtime, so a single pending
-// slot is enough: `run()` writes when a stream finishes with a usage chunk, the
-// next assistant `append()` reads it and clears it.
-interface PendingReceipt {
-  usage: UsageInfo;
-  modelId: string;
-}
-let pendingReceipt: PendingReceipt | null = null;
-
-// ── Pending completion id (RedPill verification) ─────────────────────
-//
-// The streamed completion's `id` is captured in `run()` (off the reply path) but
-// the assistant message id only exists once assistant-ui calls `append()`, so —
-// exactly like `pendingReceipt` — we stash it here and the next assistant
-// `append()` keys it to the message id for the verification badge. Single slot:
-// chat is sequential per runtime.
-interface PendingCompletion {
-  completionId: string;
-  model: string;
-}
-let pendingCompletion: PendingCompletion | null = null;
+// chunk) — see spec §5.3 — and the completion id wires the verification badge.
+// Both are captured in `run()` and consumed in the next assistant `append()`.
+// They are keyed PER THREAD (ST4) so two threads' interleaved stream finishes
+// can never cross-contaminate each other's message metadata.
 
 let cachedRatesPromise: Promise<RatesResponse> | null = null;
 function getCachedRates(deps: ChatRuntimeDeps): Promise<RatesResponse> {
@@ -144,7 +137,7 @@ function messageText(message: { content: readonly unknown[] }): string {
 
 function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
   return {
-    async *run({ messages, abortSignal, context }) {
+    async *run({ messages, abortSignal, context, unstable_assistantMessageId }) {
       const payload: ChatMessage[] = [];
 
       // Prepend the merged model-context system prompt FIRST so memory (and
@@ -184,17 +177,20 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
         yield { content: [{ type: "text", text }] };
       }
 
-      // Stream completed cleanly. Stash the usage so the next assistant
-      // `append()` (called by assistant-ui once the message id exists) can
-      // emit the receipt. Cleared on read.
-      if (lastUsage) {
-        pendingReceipt = { usage: lastUsage, modelId };
-      }
-      // Same hand-off for the completion id: the badge keys verification to the
-      // assistant message id, which only exists in `append()`. Off the reply
-      // path; absence just means no badge for this turn.
-      if (completionId) {
-        pendingCompletion = { completionId, model: modelId };
+      // Stream completed cleanly. Stash the usage + completion id keyed by THIS
+      // assistant message id (ST4) so its `append()`/receipt hook consumes
+      // exactly its own handoff. Message ids are globally unique, so an
+      // interleaved finish on another thread can never overwrite ours (the
+      // module-slot race). `unstable_assistantMessageId` equals the id append()
+      // sees as `item.message.id`. If it is absent the handoff simply no-ops (no
+      // badge/receipt) — never a wrong one.
+      if (unstable_assistantMessageId) {
+        if (lastUsage) {
+          setPendingReceipt(unstable_assistantMessageId, { usage: lastUsage, modelId });
+        }
+        if (completionId) {
+          setPendingCompletion(unstable_assistantMessageId, { completionId, model: modelId });
+        }
       }
     },
   };
@@ -374,8 +370,7 @@ function createHistoryAdapter(
       // verification badge can call verify(completionId, { model }). Read-and-
       // clear the single pending slot; never blocks persistence.
       if (role === "assistant" && typeof id === "string") {
-        const pending = pendingCompletion;
-        pendingCompletion = null;
+        const pending = takePendingCompletion(id);
         if (pending) {
           setCompletion(id, {
             completionId: pending.completionId,
@@ -458,8 +453,7 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
       userMessageId?: string,
     ): Promise<PersistedReceipt | null> => {
       const d = depsRef.current;
-      const pending = pendingReceipt;
-      pendingReceipt = null;
+      const pending = takePendingReceipt(messageId);
       if (!pending) return null;
       // On any failure (rates fetch, unknown model in catalog) we silently skip
       // the receipt; it's UI sugar, not the accounting source of truth. This is
@@ -533,7 +527,18 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
         let cancelled = false;
         (async () => {
           const model = await getThreadModel(activeTcw, threadId);
-          if (!cancelled && model) onActiveThreadModel(model);
+          if (cancelled || !model) return;
+          // ST1 — a pre-PR thread row can carry a stale non-offered model id.
+          // Sanitize (phala/ prefix gate; the offered list lives in App, not
+          // here) and, when it was non-offered, heal the thread row so it does
+          // not recur on the next open.
+          const { model: corrected, healed } = healPersistedModel(model, EMPTY_OFFERED);
+          if (healed) {
+            void setThreadModel(activeTcw, threadId, corrected).catch(() => {
+              // Best-effort heal; the picker still shows the corrected value.
+            });
+          }
+          if (!cancelled) onActiveThreadModel(corrected);
         })();
         return () => {
           cancelled = true;

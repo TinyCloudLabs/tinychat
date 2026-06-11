@@ -13,6 +13,7 @@ import { fetchSignatureProxy } from "@/lib/signatureClient";
 import { getCachedModelVerification } from "@/lib/useModelVerification";
 import { AttestationDetails } from "@/chat/AttestationDetails";
 import {
+  assembleSignatureState,
   computeTier,
   isEnclaveBound,
   isFresh,
@@ -91,13 +92,22 @@ export const ModelVerificationBadge: FC = () => {
 
 type Phase = "idle" | "pending" | "done" | "error";
 
+/** Signature leg sub-state passed to AttestationDetails (ST8). `null` means no
+ *  signature was fetched (omit the leg entirely). */
+export type SignatureState = {
+  valid: boolean;
+  signer: string | null;
+  /** Set when the signature is self-consistent + reply-bound but only freshness
+   *  failed — labeled "Signature valid — nonce not fresh", NOT "invalid". */
+  reason?: "nonce_not_fresh";
+} | null;
+
 /** What the badge resolved after a verifyModel + signature run. */
 interface Verdict {
   tier: Tier;
   mr: VerifyModelResult;
-  /** True only when the reply is fully bound to the enclave (green tier). */
-  signatureValid: boolean;
-  signer: string | null;
+  /** Signature leg state, or null when no signature was fetched. */
+  signature: SignatureState;
   signingAddress: string | null;
 }
 
@@ -152,17 +162,31 @@ const VerificationBadge: FC<{
       const sig = await fetchSignatureProxy(completionId, model);
       let signer: string | null = null;
       let replyBound = false;
+      let signatureMalformed = false;
       if (sig) {
-        signer = await recoverMessageAddress({
-          message: sig.text,
-          signature: sig.signature as Hex,
-        });
-        // ST2 — the signed response hash must equal the hash of the text we
-        // actually render. Same algorithm/encoding as the vendored sha256 so a
-        // genuine match is never falsely rejected.
-        const respHashServer = parseResponseHash(sig.text);
-        const renderedHash = await sha256(renderedText);
-        replyBound = respHashServer != null && renderedHash === respHashServer;
+        // ST7 — a present-but-malformed signature (truncated / format change)
+        // throws in viem's recoverMessageAddress. That MUST NOT discard the
+        // already-proven enclave attestation: wrap only the signature leg, and
+        // on a throw treat the signature as invalid (signer null, replyBound
+        // false) while still computing the tier from the resolved `mr` (which
+        // still yields enclave-attested / sky). The OUTER catch then fires only
+        // for a thrown verifyModel/attestation failure (true tier-0).
+        try {
+          signer = await recoverMessageAddress({
+            message: sig.text,
+            signature: sig.signature as Hex,
+          });
+          // ST2 — the signed response hash must equal the hash of the text we
+          // actually render. Same algorithm/encoding as the vendored sha256 so a
+          // genuine match is never falsely rejected.
+          const respHashServer = parseResponseHash(sig.text);
+          const renderedHash = await sha256(renderedText);
+          replyBound = respHashServer != null && renderedHash === respHashServer;
+        } catch {
+          signer = null;
+          replyBound = false;
+          signatureMalformed = true;
+        }
       }
       const signingAddress = sig?.signing_address ?? null;
 
@@ -175,16 +199,21 @@ const VerificationBadge: FC<{
       const fresh = isFresh(mr);
       const tier = computeTier({ quoteVerified, enclaveBound, replyBound, fresh });
 
-      setVerdict({
-        tier,
-        mr,
-        // signatureValid (passed to AttestationDetails) means the reply is fully
-        // bound to the enclave — i.e. exactly the green tier, not mere
-        // signature self-consistency.
-        signatureValid: tier === "response-verified",
+      // ST8 — only attach a signature leg when a signature was actually fetched
+      // (sig != null). Distinguish a fully-bound (green) signature from one that
+      // is self-consistent + reply-bound but only fails freshness, from a
+      // genuinely invalid one — instead of conflating the latter two as "invalid".
+      const signature: SignatureState = assembleSignatureState({
+        hasSignature: sig != null,
         signer,
-        signingAddress,
+        tier,
+        signatureMalformed,
+        enclaveBound,
+        replyBound,
+        fresh,
       });
+
+      setVerdict({ tier, mr, signature, signingAddress });
       setPhase("done");
       setOpen(true);
     } catch {
@@ -239,10 +268,7 @@ const VerificationBadge: FC<{
       )}
 
       {open && hasDetails && verdict && (
-        <AttestationDetails
-          mr={verdict.mr}
-          signature={{ valid: verdict.signatureValid, signer: verdict.signer }}
-        />
+        <AttestationDetails mr={verdict.mr} signature={verdict.signature} />
       )}
     </div>
   );

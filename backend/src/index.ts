@@ -6,7 +6,6 @@ import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
 import express from "express";
-import rateLimit from "express-rate-limit";
 import { apiReference } from "@scalar/express-api-reference";
 import { load as loadYaml } from "js-yaml";
 import {
@@ -16,6 +15,7 @@ import {
   createNonceStore,
 } from "@tinyboilerplate/server";
 import { applySecurityDefaults } from "./security.js";
+import { applyRateLimiters } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createDelegationMiddleware } from "./middleware/delegation.js";
 import { createAuthRouter } from "./routes/auth.js";
@@ -96,14 +96,9 @@ async function main() {
 
   app.use(express.json({ limit: "64kb" }));
   app.use(createCsrfMiddleware());
-  app.use(
-    rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: 120,
-      standardHeaders: "draft-7",
-      legacyHeaders: false,
-    }),
-  );
+  // ST5 — global 120/15min limiter plus a separate, larger bucket for the
+  // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
+  applyRateLimiters(app);
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true, app: APP_ID });

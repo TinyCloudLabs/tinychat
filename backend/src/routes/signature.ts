@@ -16,6 +16,7 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { relayUpstream } from "./relay.js";
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
 
@@ -43,21 +44,12 @@ export function createSignatureRouter() {
       `${REDPILL_BASE_URL}/signature/${encodeURIComponent(id)}` +
       `?model=${encodeURIComponent(model)}&signing_algo=ecdsa`;
 
-    let upstream: globalThis.Response;
-    try {
-      upstream = await fetch(url, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-    } catch (error) {
-      console.error("[signature] failed to reach RedPill:", error);
-      res.status(502).json({ error: "upstream_error", message: "Failed to reach signature service" });
-      return;
-    }
-
-    const body = await upstream.text();
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.type(contentType);
-    res.status(upstream.status).send(body);
+    await relayUpstream(
+      res,
+      url,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+      "signature service",
+    );
   });
 
   return router;

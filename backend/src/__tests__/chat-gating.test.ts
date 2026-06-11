@@ -154,9 +154,10 @@ afterEach(() => {
 });
 
 describe("POST /api/chat gating", () => {
-  test("402 model_not_allowed for a non-phala model (no requiredTier — no tier allows it)", async () => {
-    // Verifiable-inference product: non-phala/* models aren't offered on ANY
-    // tier, so requiredTierForModel returns null → the response omits requiredTier.
+  test("ST2: 403 model_not_offered for a non-phala model (authoritative gate, paywall on)", async () => {
+    // Verifiable-inference product: non-phala/* models aren't offered at all.
+    // The ST2 offered-model gate runs BEFORE the paywall block and returns 403
+    // model_not_offered (not the redundant 402 model_not_allowed).
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe(null)); // free tier
@@ -165,18 +166,16 @@ describe("POST /api/chat gating", () => {
       headers: { "content-type": "application/json" },
       body: chatBody("anthropic/claude-opus-4.8"),
     });
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(403);
     const body = (await res.json()) as any;
-    expect(body.error).toBe("model_not_allowed");
+    expect(body.error).toBe("model_not_offered");
     expect(typeof body.message).toBe("string");
-    expect(body.tier).toBe("free");
-    expect("requiredTier" in body).toBe(false);
     assertNoDollarLeak(body);
   });
 
-  test("402 model_not_allowed even for the highest (pro) tier requesting a non-phala model", async () => {
-    // There are no tier-gated models anymore; a non-phala/* model is disallowed
-    // for every tier, including pro.
+  test("ST2: 403 model_not_offered even for the highest (pro) tier requesting a non-phala model", async () => {
+    // A non-phala/* model is not offered on ANY tier, including pro — the
+    // offered-model gate is paywall- and tier-independent.
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe("price_pro_m")); // pro tier
@@ -185,11 +184,9 @@ describe("POST /api/chat gating", () => {
       headers: { "content-type": "application/json" },
       body: chatBody("openai/gpt-5"),
     });
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(403);
     const body = (await res.json()) as any;
-    expect(body.error).toBe("model_not_allowed");
-    expect(body.tier).toBe("pro");
-    expect("requiredTier" in body).toBe(false);
+    expect(body.error).toBe("model_not_offered");
     assertNoDollarLeak(body);
   });
 
@@ -243,6 +240,95 @@ describe("POST /api/chat gating", () => {
     expect(body.usage).toMatchObject({ used: 12_000, limit: 12_000 });
     expect(body.usage.resetsAt).toBe(expectedReset);
     assertNoDollarLeak(body);
+  });
+});
+
+describe("POST /api/chat offered-model gate, paywall OFF (ST2)", () => {
+  test("non-phala model is rejected 403 model_not_offered with NO upstream fetch", async () => {
+    // The default deployment has PAYWALL_ENABLED unset. The offered-model gate
+    // must STILL reject a non-phala model before any upstream proxy.
+    delete process.env.PAYWALL_ENABLED;
+    let upstreamCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.redpill.ai")) upstreamCalled = true;
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("openai/gpt-4o"),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("model_not_offered");
+      expect(upstreamCalled).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a phala/* model still streams 200 with the paywall off", async () => {
+    delete process.env.PAYWALL_ENABLED;
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: "phala/gpt-oss-120b", pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("phala/gpt-oss-120b"),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("defaultModel() override validation (ST11)", () => {
+  test("a non-phala REDPILL_DEFAULT_MODEL override falls back to the baseline and warns", () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(" "));
+    };
+    try {
+      process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
+      const value = defaultModel();
+      expect(value.startsWith("phala/")).toBe(true);
+      expect(value).toBe("phala/gpt-oss-120b");
+      expect(isBlocklistedModel(value)).toBe(false);
+      expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("a blocklisted phala override also falls back to the baseline", () => {
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
+      process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
+      expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
+      expect(defaultModel()).toBe("phala/gpt-oss-120b");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("a valid phala/* override is returned unchanged", () => {
+    process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-20b";
+    expect(defaultModel()).toBe("phala/gpt-oss-20b");
   });
 });
 

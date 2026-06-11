@@ -2,6 +2,7 @@ import type { FC, ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 
 import type { VerifyModelResult } from "@/lib/vendor/redpill-verifier";
+import { isGpuLegFresh, signatureLegLabel } from "@/chat/verification-predicates";
 
 /**
  * Shared per-leg attestation breakdown — the single source of leg-rendering,
@@ -19,7 +20,13 @@ import type { VerifyModelResult } from "@/lib/vendor/redpill-verifier";
  */
 export const AttestationDetails: FC<{
   mr: VerifyModelResult;
-  signature: { valid: boolean; signer: string | null } | null;
+  signature: {
+    valid: boolean;
+    signer: string | null;
+    /** Set when the signature is self-consistent + reply-bound but only
+     *  freshness failed — labeled "valid — nonce not fresh", not "invalid" (ST8). */
+    reason?: "nonce_not_fresh";
+  } | null;
   /**
    * Which surface is rendering this. Only affects the tier-2 honesty line:
    * `"message"` (default) sits under a sent reply, so it can say "the reply
@@ -35,8 +42,12 @@ export const AttestationDetails: FC<{
 
   const { onchain } = mr;
   const gpu = mr.light.gpu;
-  const gpuPass = gpu?.verdict === "true" || gpu?.verdict === "PASS";
-  const hasGpu = mr.hardware.includes("NVIDIA_CC") || gpuPass;
+  // ST9 — a green GPU leg requires BOTH a PASS verdict AND a matching nonce
+  // (not replayed evidence), mirroring the TDX leg's freshness gate. A PASS
+  // with nonceMatches=false is replayed evidence and must render non-green.
+  const gpuVerdictPass = gpu?.verdict === "true" || gpu?.verdict === "PASS";
+  const gpuPass = isGpuLegFresh(gpu);
+  const hasGpu = mr.hardware.includes("NVIDIA_CC") || gpuVerdictPass;
   const network = onchain?.network ?? "Automata";
 
   // Real Phala light-mode legs — surfaced ONLY when their data is present in
@@ -57,13 +68,16 @@ export const AttestationDetails: FC<{
           rather than silently dropped. */}
       {signature != null && (
         <Leg
-          ok={signature.valid}
+          // A signature that recovers + binds the reply but only fails freshness
+          // is honestly "valid — nonce not fresh" (the separate freshness leg
+          // below carries the failure), so its dot is not destructive (ST8).
+          ok={signature.valid || signature.reason === "nonce_not_fresh"}
           label={
             <>
-              {signature.valid ? "Signature valid" : "Signature invalid"} —
-              signer:{" "}
+              {signatureLegLabel(signature)}{" "}
+              — signer:{" "}
               <code className="break-all font-mono text-[10px] text-muted-foreground">
-                {signer}
+                {signer ?? "—"}
               </code>
             </>
           }
@@ -173,7 +187,7 @@ export const AttestationDetails: FC<{
             ok={gpuPass}
             label={
               gpu
-                ? `NVIDIA GPU attested — verdict: ${gpu.verdict}${gpu.nonceMatches ? ", nonce bound" : ""}`
+                ? `NVIDIA GPU attested — verdict: ${gpu.verdict}${gpu.nonceMatches ? ", nonce bound" : ", nonce not fresh"}`
                 : "NVIDIA GPU attested"
             }
           />
@@ -214,7 +228,7 @@ export const AttestationDetails: FC<{
         <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
           Intel TDX quote verified on-chain (Automata DCAP) · response signature
           valid · reply bound to the enclave · quote fresh
-          {hasGpu ? " · NVIDIA GPU attested" : ""}.
+          {gpuPass ? " · NVIDIA GPU attested" : ""}.
         </p>
       )}
 

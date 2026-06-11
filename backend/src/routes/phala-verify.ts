@@ -15,6 +15,7 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { relayUpstream } from "./relay.js";
 
 const PHALA_TDX_VERIFIER_URL =
   process.env.PHALA_TDX_VERIFIER_URL ??
@@ -29,23 +30,16 @@ export function createPhalaVerifyRouter() {
    * upstream response (status + bytes) verbatim. No server-side verdict.
    */
   router.post("/", async (req: Request, res: Response) => {
-    let upstream: globalThis.Response;
-    try {
-      upstream = await fetch(PHALA_TDX_VERIFIER_URL, {
+    await relayUpstream(
+      res,
+      PHALA_TDX_VERIFIER_URL,
+      {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req.body ?? {}),
-      });
-    } catch (error) {
-      console.error("[phala-verify] failed to reach Phala verifier:", error);
-      res.status(502).json({ error: "upstream_error", message: "Failed to reach Phala verifier" });
-      return;
-    }
-
-    const body = await upstream.text();
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.type(contentType);
-    res.status(upstream.status).send(body);
+      },
+      "Phala verifier",
+    );
   });
 
   return router;

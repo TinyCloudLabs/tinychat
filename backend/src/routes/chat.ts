@@ -32,8 +32,29 @@ const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai
 // REDPILL_DEFAULT_MODEL. Must stay a phala/* id present in VERIFIABLE_MODELS and
 // absent from the mislabeled blocklist.
 const DEFAULT_BASELINE_MODEL = "phala/gpt-oss-120b";
+
+// ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale non-phala/* or
+// blocklisted value (e.g. a pre-PR `openai/gpt-5-mini`) would make every
+// model-less POST self-deny against the ST2 offered-model gate, so we warn
+// loudly and fall back to the verifiable baseline. Memoized per resolved env
+// value so the warning fires once (not per request) and stays deterministic.
+let validatedDefault: { raw: string | undefined; value: string } | null = null;
 export function defaultModel(): string {
-  return process.env.REDPILL_DEFAULT_MODEL ?? DEFAULT_BASELINE_MODEL;
+  const raw = process.env.REDPILL_DEFAULT_MODEL;
+  if (validatedDefault && validatedDefault.raw === raw) return validatedDefault.value;
+  let value = DEFAULT_BASELINE_MODEL;
+  if (raw) {
+    if (raw.startsWith("phala/") && !isBlocklistedModel(raw)) {
+      value = raw;
+    } else {
+      console.warn(
+        `[chat] REDPILL_DEFAULT_MODEL="${raw}" is not a verifiable phala/* model; ` +
+          `falling back to ${DEFAULT_BASELINE_MODEL}.`,
+      );
+    }
+  }
+  validatedDefault = { raw, value };
+  return value;
 }
 
 if (!process.env.REDPILL_API_KEY) {
@@ -169,6 +190,21 @@ export function createChatRouter() {
       res.status(403).json({
         error: "model_blocklisted",
         message: `Model ${resolvedModel} is not available.`,
+      });
+      return;
+    }
+
+    // ── Offered-model gate (authoritative; enforced regardless of the paywall) ─
+    // This is a confidential-inference product: only `phala/*` (TEE-attestable)
+    // models are offered. GET /models filters to `phala/*` unconditionally, but a
+    // direct POST bypasses that view — so mirror the filter here, BEFORE any
+    // upstream fetch or billing, so a non-offered model can never be proxied even
+    // when the paywall is off (the default deployment). Tier/credit gating stays
+    // inside the paywall block below (ST2).
+    if (!resolvedModel.startsWith("phala/")) {
+      res.status(403).json({
+        error: "model_not_offered",
+        message: `Model ${resolvedModel} is not offered. Only verifiable phala/* models are available.`,
       });
       return;
     }

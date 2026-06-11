@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { verifyModel, type VerifyModelResult } from "@/lib/vendor/redpill-verifier";
 import { isTeeCapableModel } from "@/lib/completionStore";
+import {
+  isForcedProbe,
+  shouldCacheVerdict,
+  type ModelVerificationStatus,
+} from "@/lib/modelVerificationState";
+
+export {
+  isForcedProbe,
+  isRetryableStatus,
+  shouldCacheVerdict,
+} from "@/lib/modelVerificationState";
+export type { ModelVerificationStatus } from "@/lib/modelVerificationState";
 
 /**
  * Model-level (pre-send) attestation hook — see docs/general-verification-plan.md.
@@ -22,14 +34,6 @@ import { isTeeCapableModel } from "@/lib/completionStore";
  *    captures the model it was launched for and ignores its own result if the
  *    active model changed before it resolved.
  */
-export type ModelVerificationStatus =
-  | "idle"
-  | "verifying"
-  | "verified"
-  | "unverifiable"
-  | "unverified"
-  | "error";
-
 export interface ModelVerification {
   status: ModelVerificationStatus;
   mr: VerifyModelResult | null;
@@ -110,7 +114,16 @@ function runVerification(model: string): Promise<CachedVerification> {
     // Drop the result if a newer run for this model has since started — its
     // verdict, not ours, owns the cache.
     if (generation.get(model) === gen) {
-      cache.set(model, result);
+      // ST6 — only POSITIVE (enclave-"verified") verdicts are cached for the
+      // session. Negative verdicts (error/unverified) are transient (a network
+      // blip, a provider hiccup), so they must NOT stick: leave the cache empty
+      // so a re-select or reverify() re-probes instead of serving the stale
+      // negative forever.
+      if (shouldCacheVerdict(result.status)) {
+        cache.set(model, result);
+      } else {
+        cache.delete(model);
+      }
       inflight.delete(model);
     }
     return result;
@@ -137,6 +150,12 @@ export function useModelVerification(model: string): ModelVerification {
   // model. Tying the force to a specific model means a later model switch
   // still hits the cache — only the re-verified model bypasses it.
   const [force, setForce] = useState<{ model: string; n: number } | null>(null);
+  // ST10 — records the force token (model + counter) already consumed by a
+  // probe. Once a reverify()'s token has fired its single fresh probe, a later
+  // A→B→A switch back to the forced model must NOT re-probe; only a NEW
+  // reverify() (which bumps the counter) re-arms a forced probe. A ref so
+  // consuming the token never re-triggers this effect.
+  const consumedForce = useRef<{ model: string; n: number } | null>(null);
 
   useEffect(() => {
     // Race-safety: this run is owned by `model`; if the active model changes
@@ -151,11 +170,13 @@ export function useModelVerification(model: string): ModelVerification {
       return;
     }
 
-    const forced = force?.model === model;
+    const forced = isForcedProbe(force, consumedForce.current, model);
     if (forced) {
-      // A forced re-verify must skip the cache and probe afresh.
+      // A forced re-verify must skip the cache and probe afresh. Consume the
+      // token so switching away and back doesn't re-trigger another probe.
       cache.delete(model);
       inflight.delete(model);
+      consumedForce.current = { model: force!.model, n: force!.n };
     } else {
       const hit = cache.get(model);
       if (hit) {

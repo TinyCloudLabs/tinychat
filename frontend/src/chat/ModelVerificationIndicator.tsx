@@ -10,6 +10,7 @@ import {
 import { AttestationDetails } from "@/chat/AttestationDetails";
 import { isResponseVerifiableModel } from "@/lib/completionStore";
 import { useModelVerification } from "@/lib/useModelVerification";
+import { isRetryableStatus } from "@/lib/modelVerificationState";
 
 /**
  * Header, model-level (PRE-SEND) attestation indicator for the ACTIVE model —
@@ -34,10 +35,16 @@ export const ModelVerificationIndicator: FC<{ model: string }> = ({ model }) => 
   const [open, setOpen] = useState(false);
 
   const expandable = status === "verified" && mr != null;
+  // ST6 — a negative verdict (error/unverified) is transient; the pill must be
+  // clickable to RETRY exactly when it failed, not disabled. Verified expands;
+  // a negative reverifies.
+  const retryable = isRetryableStatus(status);
+  const interactive = expandable || retryable;
   const signable = isResponseVerifiableModel(model);
 
   const onClick = () => {
     if (expandable) setOpen((v) => !v);
+    else if (retryable) reverify();
   };
 
   return (
@@ -45,10 +52,11 @@ export const ModelVerificationIndicator: FC<{ model: string }> = ({ model }) => 
       <button
         type="button"
         onClick={onClick}
-        disabled={!expandable}
+        disabled={!interactive}
         aria-expanded={expandable ? open : undefined}
-        aria-label="Model verification"
-        className={pillClass(status, expandable)}
+        aria-label={retryable ? "Retry model verification" : "Model verification"}
+        title={retryable ? "Verification failed — click to retry" : undefined}
+        className={pillClass(status, interactive)}
       >
         {status === "verifying" ? (
           <Loader2Icon className="size-3.5 animate-spin" aria-hidden />

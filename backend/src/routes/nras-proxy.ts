@@ -14,6 +14,7 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { relayUpstream } from "./relay.js";
 
 const NRAS_URL =
   process.env.NRAS_URL ?? "https://nras.attestation.nvidia.com/v3/attest/gpu";
@@ -34,23 +35,16 @@ export function createNrasProxyRouter() {
    * (status + bytes) verbatim. No server-side verdict.
    */
   router.post("/", async (req: Request, res: Response) => {
-    let upstream: globalThis.Response;
-    try {
-      upstream = await fetch(NRAS_URL, {
+    await relayUpstream(
+      res,
+      NRAS_URL,
+      {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req.body ?? {}),
-      });
-    } catch (error) {
-      console.error("[nras-proxy] failed to reach NRAS:", error);
-      res.status(502).json({ error: "upstream_error", message: "Failed to reach NRAS" });
-      return;
-    }
-
-    const body = await upstream.text();
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.type(contentType);
-    res.status(upstream.status).send(body);
+      },
+      "NRAS",
+    );
   });
 
   /**
@@ -60,19 +54,7 @@ export function createNrasProxyRouter() {
    * public material; the browser checks the signature against it itself.
    */
   router.get("/jwks", async (_req: Request, res: Response) => {
-    let upstream: globalThis.Response;
-    try {
-      upstream = await fetch(NRAS_JWKS_URL, { method: "GET" });
-    } catch (error) {
-      console.error("[nras-proxy] failed to reach NRAS JWKS:", error);
-      res.status(502).json({ error: "upstream_error", message: "Failed to reach NRAS JWKS" });
-      return;
-    }
-
-    const body = await upstream.text();
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) res.type(contentType);
-    res.status(upstream.status).send(body);
+    await relayUpstream(res, NRAS_JWKS_URL, { method: "GET" }, "NRAS JWKS");
   });
 
   return router;
