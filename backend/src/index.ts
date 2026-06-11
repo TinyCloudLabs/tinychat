@@ -25,6 +25,7 @@ import { createChatRouter } from "./routes/chat.js";
 import { createSignatureRouter } from "./routes/signature.js";
 import { createNrasProxyRouter } from "./routes/nras-proxy.js";
 import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
+import { createAttestationSelfRouter } from "./routes/attestation-self.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { createBillingRouter } from "./routes/billing.js";
 import { createBillingWebhookHandler } from "./routes/billing-webhook.js";
@@ -129,6 +130,14 @@ async function main() {
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
   app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());
+  app.use(
+    "/api/attestation/self",
+    authMiddleware,
+    createAttestationSelfRouter({
+      privateKey: backendPrivateKey,
+      did,
+    }),
+  );
   app.use("/api/billing", createBillingRouter({ authMiddleware }));
 
   const __dirname = dirname(fileURLToPath(import.meta.url));

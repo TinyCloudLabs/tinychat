@@ -28,6 +28,7 @@
         "helmet": "^8.1.0",
         "js-yaml": "^4.1.0",
         "stripe": "^22.0.0",
+        "viem": "^2.52.0",
       },
       "devDependencies": {
         "@types/cors": "^2.8.17",

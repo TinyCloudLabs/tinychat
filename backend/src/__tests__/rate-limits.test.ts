@@ -8,6 +8,7 @@ function buildApp() {
   const app = express();
   applyRateLimiters(app);
   app.get("/api/signature/:id", (_req, res) => res.json({ ok: true }));
+  app.get("/api/attestation/self", (_req, res) => res.json({ ok: true }));
   app.post("/api/chat", (_req, res) => res.json({ ok: true }));
   return app;
 }
@@ -42,7 +43,8 @@ describe("rate limiters (ST5)", () => {
       // 130 verification hits — over the global 120 limit, but the verification
       // bucket (600) is separate and the global limiter skips these paths.
       for (let i = 0; i < 130; i++) {
-        const r = await realFetch(`http://localhost:${port}/api/signature/x${i}`);
+        const path = i % 2 === 0 ? `/api/signature/x${i}` : "/api/attestation/self";
+        const r = await realFetch(`http://localhost:${port}${path}`);
         expect(r.status).toBe(200);
       }
       // A subsequent /api/chat must NOT be 429'd by the verification traffic.

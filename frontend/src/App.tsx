@@ -630,6 +630,8 @@ export function App() {
                 billingStatus={billingStatus}
                 onManagePlan={openPricing}
                 onOpenRates={openRates}
+                backendUrl={BACKEND_URL}
+                sessionStore={sessionStoreRef.current}
               />
             )}
           </>
