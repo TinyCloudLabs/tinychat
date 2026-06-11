@@ -46,13 +46,35 @@ the frontend addresses the backend (`import.meta.env.VITE_BACKEND_URL` +
    `...tinychatBackendHeaders(true)` (session bearer + CSRF) headers added, reusing
    the same `BACKEND_ORIGIN` + `tinychatBackendHeaders` helper.
 
-Note: this vendored version's `checkGpu` decodes the NRAS JWT payload without
-fetching NVIDIA's JWKS, so there is **no JWKS GET to redirect** in the source.
-The backend still exposes `GET /api/nras-proxy/jwks` for a future upstream bump
-that verifies the NRAS signature.
+4. **`verifiers/cloud-api.ts` → `checkGpu`** (ST5 GPU-JWT verification, deviation
+   **(b)** per Hard Constraint 1; added in commit `fa4861c` — do NOT revert) — beyond
+   the NRAS `POST` redirect above, `checkGpu` now verifies NVIDIA's ES384 signature on
+   the NRAS token in-browser before trusting any claim. `fetchNrasJwks()` was added: it
+   GETs `${BACKEND_ORIGIN}/api/nras-proxy/jwks` through the backend passthrough (the
+   JWKS read is CORS-blocked from the browser, like the NRAS `POST`), and `verifyNrasJwt`
+   (from `@/lib/nrasJwt`) checks the token's signature against those keys. The GPU
+   verdict is forced to `'unverified-signature'` when the signature cannot be verified
+   (`verdict = signatureVerified ? claimedVerdict : 'unverified-signature'`) — honest
+   degradation, never a false PASS. Upstream's `checkGpu` decoded the JWT payload without
+   signature verification; this deviation strengthens that trust check and must not be
+   reverted (reverting violates constraint 2).
 
 `API_BASE` is intentionally **not** rewritten: `fetchAttestation` and
 `detectProvider` are public and continue to call `api.redpill.ai` directly.
+Likewise `verify.ts`'s `fetchPhalaSystemInfo` intentionally calls
+`cloud-api.phala.network/api/v1/apps/{appId}/attestations` **directly** (a public,
+non-CORS-blocked read); only the Phala `.../attestations/verify` POST is proxied.
+
+### Keeping the redirects across upstream bumps (ST12b)
+
+Re-vendoring (copying upstream over this directory) silently reverts the three
+redirects above. Two safety nets guard against that:
+
+- **`scripts/apply-vendor-redirects.mjs`** — re-applies the three fetch-URL
+  redirects idempotently. Run it after every re-vendor:
+  `node scripts/apply-vendor-redirects.mjs`.
+- **`frontend/src/lib/vendorRedirects.test.ts`** — fails loudly if any redirected
+  fetch site reverts to a direct upstream URL.
 
 ## Consumer note (no package change)
 
