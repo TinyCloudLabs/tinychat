@@ -28,6 +28,29 @@ export type BackendAttestationClientResult =
   | { status: "unauthenticated"; message: string }
   | { status: "error"; message: string };
 
+/**
+ * Fetch the backend's published DID from the public /api/server-info endpoint.
+ * Fetched independently of the signed attestation so the binding leg can
+ * cross-check the attested signing key against the DID the backend advertises
+ * (not the caller's own session DID). Best-effort: returns null on any failure,
+ * leaving the DID sub-check fail-honest.
+ */
+export async function fetchServerInfoDid(
+  backendUrl: string,
+): Promise<string | null> {
+  try {
+    const response = await fetch(`${backendUrl}/api/server-info`, {
+      method: "GET",
+      headers: { [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { did?: unknown };
+    return typeof body?.did === "string" ? body.did : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createBackendAttestationNonce(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
