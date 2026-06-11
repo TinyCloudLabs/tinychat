@@ -1,11 +1,11 @@
 /**
  * Rate-limiter wiring (ST5).
  *
- * The verification proxies (signature / NRAS / Phala TDX) fan out to ~3-4
+ * The verification proxies (signature / NRAS / Phala TDX / backend attestation) fan out to ~3-4
  * backend hits PER badge click and ~3 per model probe, so sharing the
  * 120-request global bucket with `/api/chat` lets a handful of verifications
  * 429 the next chat send (which `streamChat` treats as a fatal error). These
- * three mounts get their OWN, far larger bucket and are exempted from the
+ * verification mounts get their OWN, far larger bucket and are exempted from the
  * global one so verification traffic can never exhaust the chat allowance.
  *
  * Extracted from index.ts so the wiring is unit-testable without booting the
@@ -21,6 +21,7 @@ export const VERIFICATION_PATHS = [
   "/api/signature",
   "/api/nras-proxy",
   "/api/phala-verify",
+  "/api/attestation/self",
 ] as const;
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -28,7 +29,7 @@ function matchesMountPath(path: string, mount: string): boolean {
 }
 
 /** Mount the global limiter (exempting the verification paths) and the larger
- *  verification-only limiter on those three paths. */
+ *  verification-only limiter on those paths. */
 export function applyRateLimiters(app: Express): void {
   app.set("trust proxy", 1);
   const verificationLimiter = rateLimit({

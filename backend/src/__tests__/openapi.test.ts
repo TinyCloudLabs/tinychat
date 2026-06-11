@@ -31,6 +31,7 @@ describe("TinyChat OpenAPI spec", () => {
         "/api/delegations/status",
         "/api/chat",
         "/api/chat/models",
+        "/api/attestation/self",
         "/api/billing/config",
         "/api/billing/rates",
         "/api/billing/status",
@@ -109,6 +110,7 @@ describe("TinyChat OpenAPI spec", () => {
     expect(paths()["/api/auth/verify"].post.security).toEqual([]);
     expect(paths()["/api/chat"].post.security).toEqual([{ bearerAuth: [] }]);
     expect(paths()["/api/chat/models"].get.security).toEqual([{ bearerAuth: [] }]);
+    expect(paths()["/api/attestation/self"].get.security).toEqual([{ bearerAuth: [] }]);
   });
 
   test("documents delegation status including stale", () => {

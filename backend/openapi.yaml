@@ -245,6 +245,41 @@ paths:
         "502":
           $ref: "#/components/responses/UpstreamError"
 
+  /api/attestation/self:
+    get:
+      operationId: getBackendSelfAttestation
+      summary: Create a fresh backend TDX quote
+      description: >-
+        Returns a dstack TDX quote whose report_data is bound to the backend
+        identity and caller-provided nonce. Local development environments
+        without the dstack socket return attestation_unavailable.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: nonce
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Fresh backend attestation quote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackendSelfAttestation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: dstack attestation is unavailable in this environment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
   /api/billing/config:
     get:
       operationId: getBillingConfig
@@ -545,6 +580,50 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ModelInfo"
+
+    BackendSelfAttestation:
+      type: object
+      required: [quote, event_log, report_data, identity, info]
+      properties:
+        quote:
+          type: string
+          description: TDX quote returned by the dstack guest agent.
+        event_log:
+          type: string
+          description: Verbatim dstack event log used for RTMR replay.
+        report_data:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+          description: SHA-256(prefix || backend address || nonce), before dstack zero-padding.
+        identity:
+          type: object
+          required: [did, address, nonce, nonce_signature]
+          properties:
+            did:
+              type: string
+            address:
+              type: string
+              pattern: "^0x[0-9a-fA-F]{40}$"
+            nonce:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+            nonce_signature:
+              type: string
+              description: EIP-191 signature over tinychat-backend-attest-v1:<nonce>.
+        info:
+          type: object
+          required: []
+          properties:
+            app_id:
+              type: string
+            instance_id:
+              type: string
+            compose_hash:
+              type: string
+            app_compose:
+              type: string
+            os_image_hash:
+              type: string
 
     TierInfo:
       type: object

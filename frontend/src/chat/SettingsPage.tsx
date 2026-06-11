@@ -1,13 +1,17 @@
+import { useCallback, useEffect, useState } from "react";
 import {
   ArrowLeftIcon,
   BrainIcon,
   CreditCardIcon,
   DatabaseIcon,
   LogOutIcon,
+  RefreshCwIcon,
+  ShieldCheckIcon,
   SunIcon,
   UserIcon,
   type LucideIcon,
 } from "lucide-react";
+import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import { MemoryPanel } from "@/components/MemoryPanel";
@@ -15,6 +19,10 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ImportDialog } from "./ImportDialog";
 import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
+import {
+  fetchBackendSelfAttestation,
+  type BackendAttestationClientResult,
+} from "../lib/backendAttestation";
 
 interface SettingsPageProps {
   address: string | null;
@@ -32,6 +40,8 @@ interface SettingsPageProps {
   billingStatus: BillingStatus | null;
   onManagePlan: () => void;
   onOpenRates: () => void;
+  backendUrl: string;
+  sessionStore: SessionStore;
 }
 
 export function SettingsPage({
@@ -50,6 +60,8 @@ export function SettingsPage({
   billingStatus,
   onManagePlan,
   onOpenRates,
+  backendUrl,
+  sessionStore,
 }: SettingsPageProps) {
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
@@ -119,6 +131,9 @@ export function SettingsPage({
               onMemoryUpdated={onMemoryUpdated}
             />
           </SectionCard>
+          <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
+            <BackendAttestationPanel backendUrl={backendUrl} sessionStore={sessionStore} />
+          </SectionCard>
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
               Bring your Claude conversation history into this space.
@@ -187,6 +202,92 @@ export function SettingsPage({
           </SectionCard>
         </div>
       </div>
+    </div>
+  );
+}
+
+function BackendAttestationPanel(props: {
+  backendUrl: string;
+  sessionStore: SessionStore;
+}) {
+  const [result, setResult] = useState<BackendAttestationClientResult | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const check = useCallback(async () => {
+    setChecking(true);
+    try {
+      setResult(
+        await fetchBackendSelfAttestation({
+          backendUrl: props.backendUrl,
+          sessionStore: props.sessionStore,
+        }),
+      );
+    } finally {
+      setChecking(false);
+    }
+  }, [props.backendUrl, props.sessionStore]);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  const label =
+    checking && !result
+      ? "Checking"
+      : result?.status === "available"
+        ? "Quote issued"
+        : result?.status === "unavailable"
+          ? "Not attestable here"
+          : result?.status === "unauthenticated"
+            ? "Sign in required"
+            : result?.status === "error"
+              ? "Check failed"
+              : "Unchecked";
+  const tone =
+    result?.status === "available"
+      ? "bg-amber-500"
+      : result?.status === "error" || result?.status === "unauthenticated"
+        ? "bg-destructive"
+        : "bg-muted-foreground";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs">
+          <span role="img" aria-label={label} className={`size-1.5 rounded-full ${tone}`} />
+          <span className="text-muted-foreground">{label}</span>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={check}
+          disabled={checking}
+          aria-label="Recheck backend attestation"
+          className="h-8 gap-1.5 px-2"
+        >
+          <RefreshCwIcon className={`size-4 ${checking ? "animate-spin" : ""}`} />
+          <span>{checking ? "Checking" : "Recheck"}</span>
+        </Button>
+      </div>
+      {result?.status === "available" ? (
+        <div className="space-y-1 text-xs">
+          <AccountRow label="Backend DID" value={result.attestation.identity.did} />
+          <AccountRow label="Report data" value={result.attestation.report_data} />
+          <AccountRow label="App" value={result.attestation.info.app_id ?? "unknown"} />
+        </div>
+      ) : result ? (
+        <p className="text-xs text-muted-foreground">{result.message}</p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Waiting for the backend quote check.
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        When available, the quote binds the backend identity to a fresh nonce.
+        Full browser-side TDX, identity, and compose verification is the next
+        attestation step.
+      </p>
     </div>
   );
 }
