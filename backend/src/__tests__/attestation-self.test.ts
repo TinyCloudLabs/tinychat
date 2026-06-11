@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { privateKeyToAccount } from "viem/accounts";
 import { recoverMessageAddress } from "viem";
@@ -9,6 +9,7 @@ import {
   selfAttest,
   type DstackClient,
 } from "../attestation/selfAttest.js";
+import { DstackUnixClient } from "../attestation/dstackClient.js";
 import { createAttestationSelfRouter } from "../routes/attestation-self.js";
 
 const PRIVATE_KEY =
@@ -162,5 +163,77 @@ describe("backend self-attestation", () => {
     expect(response.status).toBe(401);
     expect(calls.getQuote).toBe(0);
     expect(calls.info).toBe(0);
+  });
+});
+
+describe("DstackUnixClient.info app_compose extraction", () => {
+  const realFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  function stubInfoResponse(body: Record<string, unknown>) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    // import.meta.path is a real existing file, so the socket existsSync gate passes.
+    return new DstackUnixClient(import.meta.path);
+  }
+
+  test("uses the top-level app_compose when present (it wins over tcb_info)", async () => {
+    const client = stubInfoResponse({
+      app_id: "app_123",
+      app_compose: '{"services":{"top":true}}',
+      tcb_info: JSON.stringify({ app_compose: '{"services":{"nested":true}}' }),
+    });
+
+    const info = await client.info();
+    expect(info.app_compose).toBe('{"services":{"top":true}}');
+  });
+
+  test("extracts app_compose nested inside the tcb_info JSON string when top-level is absent", async () => {
+    const client = stubInfoResponse({
+      app_id: "app_123",
+      tcb_info: JSON.stringify({ app_compose: '{"services":{"nested":true}}' }),
+    });
+
+    const info = await client.info();
+    expect(info.app_compose).toBe('{"services":{"nested":true}}');
+  });
+
+  test("extracts app_compose nested inside a tcb_info object when top-level is absent", async () => {
+    const client = stubInfoResponse({
+      app_id: "app_123",
+      tcb_info: { app_compose: '{"services":{"nested":true}}' },
+    });
+
+    const info = await client.info();
+    expect(info.app_compose).toBe('{"services":{"nested":true}}');
+  });
+
+  test("leaves app_compose undefined when absent everywhere (no throw, no fabrication)", async () => {
+    const client = stubInfoResponse({
+      app_id: "app_123",
+      instance_id: "instance_123",
+      compose_hash: "0xabc",
+      os_image_hash: "0xos",
+    });
+
+    const info = await client.info();
+    expect(info.app_compose).toBeUndefined();
+    expect(info.app_id).toBe("app_123");
+  });
+
+  test("leaves app_compose undefined when tcb_info is unparseable (no throw)", async () => {
+    const client = stubInfoResponse({
+      app_id: "app_123",
+      tcb_info: "not json {",
+    });
+
+    const info = await client.info();
+    expect(info.app_compose).toBeUndefined();
   });
 });

@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useState } from "react";
 import {
   ArrowLeftIcon,
   BrainIcon,
@@ -19,10 +18,8 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ImportDialog } from "./ImportDialog";
 import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
-import {
-  fetchBackendSelfAttestation,
-  type BackendAttestationClientResult,
-} from "../lib/backendAttestation";
+import { useBackendAttestation } from "../lib/useBackendAttestation";
+import { BackendAttestationDetails } from "./BackendAttestationDetails";
 
 interface SettingsPageProps {
   address: string | null;
@@ -132,7 +129,10 @@ export function SettingsPage({
             />
           </SectionCard>
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
-            <BackendAttestationPanel backendUrl={backendUrl} sessionStore={sessionStore} />
+            <BackendAttestationPanel
+              backendUrl={backendUrl}
+              sessionStore={sessionStore}
+            />
           </SectionCard>
           <SectionCard icon={DatabaseIcon} title="Data">
             <p className="text-xs text-muted-foreground">
@@ -210,45 +210,39 @@ function BackendAttestationPanel(props: {
   backendUrl: string;
   sessionStore: SessionStore;
 }) {
-  const [result, setResult] = useState<BackendAttestationClientResult | null>(null);
-  const [checking, setChecking] = useState(false);
+  // serverInfoDid is intentionally NOT passed: the hook fetches the backend's
+  // published DID from /api/server-info itself, so the binding leg cross-checks
+  // the attested signing key — never the caller's own session DID.
+  const { status, verdict, attestation, message, reverify } =
+    useBackendAttestation({
+      backendUrl: props.backendUrl,
+      sessionStore: props.sessionStore,
+    });
 
-  const check = useCallback(async () => {
-    setChecking(true);
-    try {
-      setResult(
-        await fetchBackendSelfAttestation({
-          backendUrl: props.backendUrl,
-          sessionStore: props.sessionStore,
-        }),
-      );
-    } finally {
-      setChecking(false);
-    }
-  }, [props.backendUrl, props.sessionStore]);
-
-  useEffect(() => {
-    void check();
-  }, [check]);
-
+  const busy = status === "idle" || status === "verifying";
+  // Honest status pill: green/teal "Backend attested" ONLY when all three legs
+  // pass; amber "Quote issued" once a quote was fetched but verification is
+  // incomplete; destructive for auth/error; grey otherwise.
   const label =
-    checking && !result
-      ? "Checking"
-      : result?.status === "available"
-        ? "Quote issued"
-        : result?.status === "unavailable"
+    status === "attested"
+      ? "Backend attested"
+      : status === "unattested"
+        ? "Quote issued — verification incomplete"
+        : status === "unavailable"
           ? "Not attestable here"
-          : result?.status === "unauthenticated"
+          : status === "unauthenticated"
             ? "Sign in required"
-            : result?.status === "error"
+            : status === "error"
               ? "Check failed"
-              : "Unchecked";
+              : "Checking";
   const tone =
-    result?.status === "available"
-      ? "bg-amber-500"
-      : result?.status === "error" || result?.status === "unauthenticated"
-        ? "bg-destructive"
-        : "bg-muted-foreground";
+    status === "attested"
+      ? "bg-emerald-500"
+      : status === "unattested"
+        ? "bg-amber-500"
+        : status === "error" || status === "unauthenticated"
+          ? "bg-destructive"
+          : "bg-muted-foreground";
 
   return (
     <div className="space-y-3">
@@ -261,32 +255,32 @@ function BackendAttestationPanel(props: {
           type="button"
           variant="outline"
           size="sm"
-          onClick={check}
-          disabled={checking}
+          onClick={reverify}
+          disabled={busy}
           aria-label="Recheck backend attestation"
           className="h-8 gap-1.5 px-2"
         >
-          <RefreshCwIcon className={`size-4 ${checking ? "animate-spin" : ""}`} />
-          <span>{checking ? "Checking" : "Recheck"}</span>
+          <RefreshCwIcon className={`size-4 ${busy ? "animate-spin" : ""}`} />
+          <span>{busy ? "Checking" : "Recheck"}</span>
         </Button>
       </div>
-      {result?.status === "available" ? (
-        <div className="space-y-1 text-xs">
-          <AccountRow label="Backend DID" value={result.attestation.identity.did} />
-          <AccountRow label="Report data" value={result.attestation.report_data} />
-          <AccountRow label="App" value={result.attestation.info.app_id ?? "unknown"} />
-        </div>
-      ) : result ? (
-        <p className="text-xs text-muted-foreground">{result.message}</p>
+      {verdict ? (
+        <BackendAttestationDetails verdict={verdict} attestation={attestation} />
+      ) : message ? (
+        <p className="text-xs text-muted-foreground">{message}</p>
       ) : (
         <p className="text-xs text-muted-foreground">
           Waiting for the backend quote check.
         </p>
       )}
       <p className="text-xs text-muted-foreground">
-        When available, the quote binds the backend identity to a fresh nonce.
-        Full browser-side TDX, identity, and compose verification is the next
-        attestation step.
+        Browser-side verification checks the TDX quote (relayed via Phala and
+        anchored trustlessly on-chain), binds the backend identity to a fresh
+        nonce, and replays the served code measurement. The pill turns{" "}
+        <span className="font-medium">Backend attested</span> only when all three
+        legs pass. Today the compose leg can't fully bind — the backend doesn't
+        serve the app-compose file yet — so it stays at{" "}
+        <span className="font-medium">Quote issued</span> until that deploy lands.
       </p>
     </div>
   );

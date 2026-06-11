@@ -252,6 +252,12 @@ export const AttestationDetails: FC<{
           produced it.
         </p>
       )}
+
+      {/* Cross-link — this leg attests the model endpoint; the relay backend that
+          brokers the request is attested separately under Settings. */}
+      <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+        Relay: backend attestation → Settings
+      </p>
     </div>
   );
 };

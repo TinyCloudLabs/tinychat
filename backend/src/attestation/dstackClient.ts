@@ -16,6 +16,7 @@ interface RawDstackInfo {
   compose_hash?: unknown;
   app_compose?: unknown;
   os_image_hash?: unknown;
+  tcb_info?: unknown;
 }
 
 interface RawDstackQuote {
@@ -49,12 +50,7 @@ export class DstackUnixClient implements DstackClient {
       app_id: optionalString(raw.app_id),
       instance_id: optionalString(raw.instance_id),
       compose_hash: optionalString(raw.compose_hash),
-      app_compose:
-        typeof raw.app_compose === "string"
-          ? raw.app_compose
-          : raw.app_compose === undefined
-            ? undefined
-            : JSON.stringify(raw.app_compose),
+      app_compose: extractAppCompose(raw),
       os_image_hash: optionalString(raw.os_image_hash),
     };
   }
@@ -93,6 +89,36 @@ export function createDstackClient(): DstackClient {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+// app_compose may arrive top-level (preferred — it wins) or nested inside the
+// dstack guest agent's tcb_info, which is often itself a JSON string. We never
+// fabricate a value: if it is absent everywhere the field stays undefined.
+function extractAppCompose(raw: RawDstackInfo): string | undefined {
+  const topLevel = normalizeAppCompose(raw.app_compose);
+  if (topLevel !== undefined) return topLevel;
+  return normalizeAppCompose(readNestedAppCompose(raw.tcb_info));
+}
+
+function normalizeAppCompose(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return undefined;
+  return JSON.stringify(value);
+}
+
+function readNestedAppCompose(tcbInfo: unknown): unknown {
+  let parsed: unknown = tcbInfo;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (parsed && typeof parsed === "object" && "app_compose" in parsed) {
+    return (parsed as { app_compose?: unknown }).app_compose;
+  }
+  return undefined;
 }
 
 function stringField(value: unknown, field: string): string {
