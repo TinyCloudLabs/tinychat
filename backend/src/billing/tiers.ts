@@ -71,6 +71,8 @@ export function getPriceIds(): Record<PaidTierId, PaidPriceIds> {
 // ── Tier definitions ──────────────────────────────────────────────────────────
 
 export const TIERS: Record<TierId, TierConfig> = {
+  // Verifiable-inference product: every tier can use ALL verifiable (TEE / `phala/*`)
+  // models — non-TEE models aren't offered at all. Tiers differ ONLY by credit budget.
   free: {
     id: "free",
     name: "Free",
@@ -78,8 +80,8 @@ export const TIERS: Record<TierId, TierConfig> = {
     priceYearly: null,
     creditBudget: 500,
     budgetWindow: "day",
-    // Small/cheap models only: one OpenAI mini + one Anthropic haiku-class model.
-    modelPatterns: ["openai/gpt-5-mini", "anthropic/claude-3.5-haiku"],
+    // All verifiable (TEE) models; differs from paid tiers only by credit budget.
+    modelPatterns: ["phala/"],
   },
   plus: {
     id: "plus",
@@ -88,8 +90,7 @@ export const TIERS: Record<TierId, TierConfig> = {
     priceYearly: 9600, // $96.00/yr, in cents
     creditBudget: 12_000,
     budgetWindow: "week",
-    // All OpenAI and Anthropic models.
-    modelPatterns: ["openai/", "anthropic/"],
+    modelPatterns: ["phala/"],
   },
   pro: {
     id: "pro",
@@ -98,8 +99,7 @@ export const TIERS: Record<TierId, TierConfig> = {
     priceYearly: 19200, // $192.00/yr, in cents
     creditBudget: 28_000,
     budgetWindow: "week",
-    // Everything, including phala/* (TEE) and every other provider.
-    modelPatterns: [""],
+    modelPatterns: ["phala/"],
   },
 };
 

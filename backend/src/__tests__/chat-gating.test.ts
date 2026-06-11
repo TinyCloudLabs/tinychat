@@ -2,12 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import type Stripe from "stripe";
-import { _resetCatalogCache } from "../billing/catalog.js";
+import { _resetCatalogCache, isBlocklistedModel } from "../billing/catalog.js";
 import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
-import { TIERS } from "../billing/tiers.js";
+import { isModelAllowed, TIERS } from "../billing/tiers.js";
 import { _resetUsage, getUsage } from "../billing/usage.js";
-import { createChatRouter } from "../routes/chat.js";
+import { createChatRouter, defaultModel } from "../routes/chat.js";
+
+// Mirror of the frontend memory-extraction model id (frontend/src/chat/runtime.tsx
+// MEMORY_EXTRACTION_MODEL). Kept in sync here so ST3 regresses if either drifts
+// off the phala/-only tier gate.
+const MEMORY_EXTRACTION_MODEL = "phala/gpt-oss-20b";
 
 const ORIGINAL_ENV = { ...process.env };
 const ADDR = "0xabc";
@@ -149,37 +154,39 @@ afterEach(() => {
 });
 
 describe("POST /api/chat gating", () => {
-  test("402 model_not_allowed with tier + requiredTier", async () => {
+  test("ST2: 403 model_not_offered for a non-phala model (authoritative gate, paywall on)", async () => {
+    // Verifiable-inference product: non-phala/* models aren't offered at all.
+    // The ST2 offered-model gate runs BEFORE the paywall block and returns 403
+    // model_not_offered (not the redundant 402 model_not_allowed).
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe(null)); // free tier
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("phala/glm-5"),
+      body: chatBody("anthropic/claude-opus-4.8"),
     });
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(403);
     const body = (await res.json()) as any;
-    expect(body.error).toBe("model_not_allowed");
+    expect(body.error).toBe("model_not_offered");
     expect(typeof body.message).toBe("string");
-    expect(body.tier).toBe("free");
-    expect(body.requiredTier).toBe("pro");
     assertNoDollarLeak(body);
   });
 
-  test("402 model_not_allowed when free requests a plus model", async () => {
+  test("ST2: 403 model_not_offered even for the highest (pro) tier requesting a non-phala model", async () => {
+    // A non-phala/* model is not offered on ANY tier, including pro — the
+    // offered-model gate is paywall- and tier-independent.
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
-    _setStripeClient(mockStripe(null));
+    _setStripeClient(mockStripe("price_pro_m")); // pro tier
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: chatBody("openai/gpt-5"),
     });
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(403);
     const body = (await res.json()) as any;
-    expect(body.error).toBe("model_not_allowed");
-    expect(body.requiredTier).toBe("plus");
+    expect(body.error).toBe("model_not_offered");
     assertNoDollarLeak(body);
   });
 
@@ -191,10 +198,12 @@ describe("POST /api/chat gating", () => {
     // Exhaust the free budget before issuing the request.
     const { recordUsage } = await import("../billing/usage.js");
     recordUsage(ADDR, TIERS.free, 10);
+    // Use a phala/* model so the request passes the model-allowance gate and
+    // reaches the credit-budget check.
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("openai/gpt-5-mini"),
+      body: chatBody("phala/gpt-oss-120b"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -218,10 +227,11 @@ describe("POST /api/chat gating", () => {
     const expectedReset = new Date(
       startOfNextAnchoredWeek(anchorMs, Date.now()),
     ).toISOString();
+    // Use a phala/* model so the request reaches the credit-budget check.
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("openai/gpt-5"),
+      body: chatBody("phala/gpt-oss-120b"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -230,6 +240,95 @@ describe("POST /api/chat gating", () => {
     expect(body.usage).toMatchObject({ used: 12_000, limit: 12_000 });
     expect(body.usage.resetsAt).toBe(expectedReset);
     assertNoDollarLeak(body);
+  });
+});
+
+describe("POST /api/chat offered-model gate, paywall OFF (ST2)", () => {
+  test("non-phala model is rejected 403 model_not_offered with NO upstream fetch", async () => {
+    // The default deployment has PAYWALL_ENABLED unset. The offered-model gate
+    // must STILL reject a non-phala model before any upstream proxy.
+    delete process.env.PAYWALL_ENABLED;
+    let upstreamCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.redpill.ai")) upstreamCalled = true;
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("openai/gpt-4o"),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("model_not_offered");
+      expect(upstreamCalled).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a phala/* model still streams 200 with the paywall off", async () => {
+    delete process.env.PAYWALL_ENABLED;
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: "phala/gpt-oss-120b", pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("phala/gpt-oss-120b"),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("defaultModel() override validation (ST11)", () => {
+  test("a non-phala REDPILL_DEFAULT_MODEL override falls back to the baseline and warns", () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(" "));
+    };
+    try {
+      process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
+      const value = defaultModel();
+      expect(value.startsWith("phala/")).toBe(true);
+      expect(value).toBe("phala/gpt-oss-120b");
+      expect(isBlocklistedModel(value)).toBe(false);
+      expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("a blocklisted phala override also falls back to the baseline", () => {
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
+      process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
+      expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
+      expect(defaultModel()).toBe("phala/gpt-oss-120b");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("a valid phala/* override is returned unchanged", () => {
+    process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-20b";
+    expect(defaultModel()).toBe("phala/gpt-oss-20b");
   });
 });
 
@@ -250,17 +349,18 @@ describe("POST /api/chat recording", () => {
     ];
     const restore = stubRedPillFetch({
       models: [
-        { id: "openai/gpt-5-mini", pricing: MINI_PRICING },
+        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (not requestable)
+        { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // requested verifiable model
         { id: "anthropic/claude-opus-4.1", pricing: OPUS_PRICING },
       ],
       sseChunks,
     });
     try {
-      // mini rates: 2.5 in / 20 out per 1K. 1000/1000*2.5 + 500/1000*20 = 12.5 → ceil = 13.
+      // phala model priced at mini rates: 2.5 in / 20 out per 1K. 1000/1000*2.5 + 500/1000*20 = 12.5 → ceil = 13.
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("openai/gpt-5-mini"),
+        body: chatBody("phala/gpt-oss-120b"),
       });
       expect(res.status).toBe(200);
       await res.text(); // drain
@@ -284,15 +384,18 @@ describe("POST /api/chat recording", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "openai/gpt-5-mini", pricing: MINI_PRICING }],
+      models: [
+        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (not requestable)
+        { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // requested verifiable model
+      ],
       sseChunks,
     });
     try {
-      // mini rates: 1000/1000*2.5 + 1000/1000*20 = 22.5 → ceil = 23.
+      // phala model priced at mini rates: 1000/1000*2.5 + 1000/1000*20 = 22.5 → ceil = 23.
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("openai/gpt-5-mini", promptContent),
+        body: chatBody("phala/gpt-oss-120b", promptContent),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -305,17 +408,26 @@ describe("POST /api/chat recording", () => {
 });
 
 describe("GET /api/chat/models annotation", () => {
-  test("all allowed:true when paywall disabled; rates always present", async () => {
+  test("only phala/* models are listed (non-TEE filtered out); allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
+    // Keep the non-TEE baseline (gpt-5-mini @ MINI_PRICING) in the upstream
+    // catalog so the multiplier anchor still resolves, but it must be filtered
+    // OUT of the /models output. Phala models are the only ones offered.
     const restore = stubRedPillFetch({
       models: [
-        { id: "openai/gpt-5-mini", pricing: MINI_PRICING },
-        { id: "anthropic/claude-opus-4.1", pricing: OPUS_PRICING },
+        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (filtered out)
+        { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
+        { id: "phala/opus-tee", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],
     });
     try {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
+      const byId = Object.fromEntries(body.models.map((m: any) => [m.id, m]));
+      // Non-TEE baseline is the hidden rate anchor — present in the catalog but
+      // absent from the output.
+      expect("openai/gpt-5-mini" in byId).toBe(false);
+      expect(body.models.every((m: any) => m.id.startsWith("phala/"))).toBe(true);
       expect(body.models.every((m: any) => m.allowed === true)).toBe(true);
       expect(body.models.some((m: any) => "requiredTier" in m)).toBe(false);
       // Rates always present, even with paywall off (spec §4.5).
@@ -324,15 +436,14 @@ describe("GET /api/chat/models annotation", () => {
         expect(typeof m.creditsPerKOutput).toBe("number");
         expect(typeof m.multiplier).toBe("number");
       }
-      const byId = Object.fromEntries(body.models.map((m: any) => [m.id, m]));
-      // gpt-5-mini is the baseline (REDPILL_DEFAULT_MODEL) → multiplier 1.
-      expect(byId["openai/gpt-5-mini"].creditsPerKInput).toBe(2.5);
-      expect(byId["openai/gpt-5-mini"].creditsPerKOutput).toBe(20);
-      expect(byId["openai/gpt-5-mini"].multiplier).toBe(1);
-      // opus snaps to 150/800 with 800/20 = 40 → multiplier 50.
-      expect(byId["anthropic/claude-opus-4.1"].creditsPerKInput).toBe(150);
-      expect(byId["anthropic/claude-opus-4.1"].creditsPerKOutput).toBe(800);
-      expect(byId["anthropic/claude-opus-4.1"].multiplier).toBe(50);
+      // phala model priced at the baseline (gpt-5-mini) rates → multiplier 1.
+      expect(byId["phala/gpt-oss-120b"].creditsPerKInput).toBe(2.5);
+      expect(byId["phala/gpt-oss-120b"].creditsPerKOutput).toBe(20);
+      expect(byId["phala/gpt-oss-120b"].multiplier).toBe(1);
+      // opus pricing snaps to 150/800 with 800/20 = 40 → multiplier 50.
+      expect(byId["phala/opus-tee"].creditsPerKInput).toBe(150);
+      expect(byId["phala/opus-tee"].creditsPerKOutput).toBe(800);
+      expect(byId["phala/opus-tee"].multiplier).toBe(50);
       // Spec §2.1 invariant — no dollar fields ever leak from /models either.
       assertNoDollarLeak(body);
     } finally {
@@ -340,46 +451,164 @@ describe("GET /api/chat/models annotation", () => {
     }
   });
 
-  test("annotates allowed + requiredTier + rates for free tier when paywall enabled", async () => {
+  test("annotates phala/* models as allowed (no requiredTier) and filters out non-phala for free tier when paywall enabled", async () => {
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe(null)); // free
     const restore = stubRedPillFetch({
       models: [
-        { id: "openai/gpt-5-mini", pricing: MINI_PRICING },
-        { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } },
-        { id: "phala/glm-5", pricing: MINI_PRICING },
+        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // legacy non-TEE (filtered out)
+        { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
+        { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // baseline anchor (default model)
+        { id: "phala/glm-5", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
+        { id: "phala/opus-tee", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],
     });
     try {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
       const byId = Object.fromEntries(body.models.map((m: any) => [m.id, m]));
-      expect(byId["openai/gpt-5-mini"]).toMatchObject({
-        id: "openai/gpt-5-mini",
+      // Non-phala models (including the hidden baseline anchor) are filtered out.
+      expect("openai/gpt-5-mini" in byId).toBe(false);
+      expect("openai/gpt-5" in byId).toBe(false);
+      expect(body.models.every((m: any) => m.id.startsWith("phala/"))).toBe(true);
+      // Free tier allows all phala/* models → allowed:true with no requiredTier.
+      expect(byId["phala/glm-5"]).toMatchObject({
+        id: "phala/glm-5",
         allowed: true,
         creditsPerKInput: 2.5,
         creditsPerKOutput: 20,
         multiplier: 1,
       });
-      expect("requiredTier" in byId["openai/gpt-5-mini"]).toBe(false);
-      expect(byId["openai/gpt-5"]).toMatchObject({
-        id: "openai/gpt-5",
-        allowed: false,
-        requiredTier: "plus",
+      expect("requiredTier" in byId["phala/glm-5"]).toBe(false);
+      expect(byId["phala/opus-tee"]).toMatchObject({
+        id: "phala/opus-tee",
+        allowed: true,
+        creditsPerKInput: 150,
+        creditsPerKOutput: 800,
+        multiplier: 50,
       });
-      // Rates always present even on disallowed models.
-      expect(typeof byId["openai/gpt-5"].creditsPerKInput).toBe("number");
-      expect(typeof byId["openai/gpt-5"].multiplier).toBe("number");
-      expect(byId["phala/glm-5"]).toMatchObject({
-        id: "phala/glm-5",
-        allowed: false,
-        requiredTier: "pro",
-      });
-      expect(typeof byId["phala/glm-5"].multiplier).toBe("number");
+      expect("requiredTier" in byId["phala/opus-tee"]).toBe(false);
       assertNoDollarLeak(body);
     } finally {
       restore();
     }
+  });
+});
+
+describe("POST /api/chat default + memory-extraction models (ST3, ST6)", () => {
+  test("ST3: memory-extraction model is tier-allowed under the paywall (no 402)", async () => {
+    // The id is a verifiable phala/* model: phala-prefixed (tier-allowed) and
+    // not blocklisted, so the extraction POST passes the gate instead of 402'ing
+    // and silently leaving memory un-updated.
+    expect(MEMORY_EXTRACTION_MODEL.startsWith("phala/")).toBe(true);
+    expect(isModelAllowed("free", MEMORY_EXTRACTION_MODEL)).toBe(true);
+    expect(isBlocklistedModel(MEMORY_EXTRACTION_MODEL)).toBe(false);
+
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: MEMORY_EXTRACTION_MODEL, pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody(MEMORY_EXTRACTION_MODEL),
+      });
+      expect(res.status).not.toBe(402);
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+
+  test("ST6: defaultModel() is phala/-prefixed and tier-allowed; a model-less POST is not 402", async () => {
+    // Test the built-in default, independent of any REDPILL_DEFAULT_MODEL override
+    // a local .env may carry.
+    delete process.env.REDPILL_DEFAULT_MODEL;
+    expect(defaultModel().startsWith("phala/")).toBe(true);
+    expect(isModelAllowed("free", defaultModel())).toBe(true);
+    expect(isBlocklistedModel(defaultModel())).toBe(false);
+
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: defaultModel(), pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      // No `model` field → resolves to defaultModel() server-side.
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(res.status).not.toBe(402);
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("POST /api/chat blocklist enforcement (ST7)", () => {
+  const BLOCKED = "phala/glm-4.7";
+
+  test("isBlocklistedModel flags the mislabeled id, not a legitimate one", () => {
+    expect(isBlocklistedModel(BLOCKED)).toBe(true);
+    expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
+  });
+
+  /** Run a blocklisted POST under a fetch spy; assert rejected + no upstream. */
+  async function expectBlocked() {
+    let upstreamCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.redpill.ai")) upstreamCalled = true;
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody(BLOCKED),
+      });
+      expect(res.status).not.toBe(200);
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("model_blocklisted");
+      assertNoDollarLeak(body);
+      expect(upstreamCalled).toBe(false);
+      expect(getUsage(ADDR, TIERS.free).used).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  test("rejects a blocklisted model with the paywall enabled (no upstream, no usage)", async () => {
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    await expectBlocked();
+  });
+
+  test("rejects a blocklisted model even with the paywall disabled", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    await expectBlocked();
   });
 });

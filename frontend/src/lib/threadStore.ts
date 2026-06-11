@@ -25,7 +25,10 @@ import { historyPrefetch } from "./historyPrefetch";
 
 export const APP_ID = "xyz.tinycloud.tinychat";
 export const DEFAULT_TITLE = "New chat";
-export const DEFAULT_MODEL = "openai/gpt-5-mini";
+// New-chat default — a confirmed tier-1 (signed + on-chain-verifiable) model, so a
+// new user lands on a fully verifiable endpoint (green "Response verified"). Must be
+// kept in sync with VERIFIABLE_MODELS in lib/completionStore.ts.
+export const DEFAULT_MODEL = "phala/gpt-oss-120b";
 
 /**
  * Db handle name. MUST be the full resolved path so the SQL invoke resource

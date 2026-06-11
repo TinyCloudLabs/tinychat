@@ -6,7 +6,6 @@ import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
 import express from "express";
-import rateLimit from "express-rate-limit";
 import { apiReference } from "@scalar/express-api-reference";
 import { load as loadYaml } from "js-yaml";
 import {
@@ -16,12 +15,16 @@ import {
   createNonceStore,
 } from "@tinyboilerplate/server";
 import { applySecurityDefaults } from "./security.js";
+import { applyRateLimiters } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createDelegationMiddleware } from "./middleware/delegation.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter } from "./routes/chat.js";
+import { createSignatureRouter } from "./routes/signature.js";
+import { createNrasProxyRouter } from "./routes/nras-proxy.js";
+import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
 import { createBillingRouter } from "./routes/billing.js";
 import { createBillingWebhookHandler } from "./routes/billing-webhook.js";
@@ -69,6 +72,7 @@ async function main() {
   });
 
   const app = express();
+  app.set("trust proxy", 1);
   applySecurityDefaults(app);
   app.use(cors({ origin: FRONTEND_URL }));
 
@@ -81,16 +85,23 @@ async function main() {
     createBillingWebhookHandler(),
   );
 
-  app.use(express.json({ limit: "64kb" }));
+  // The Phala TDX-verify passthrough carries a hex quote (a few KB); give it
+  // headroom over the global 64 KB parser. Registered before the global parser
+  // so it applies to that mount specifically (like the nras-proxy mount above).
+  app.use("/api/phala-verify", express.json({ limit: "256kb" }));
+
+  const globalJsonParser = express.json({ limit: "64kb" });
+  app.use((req, res, next) => {
+    if (req.path === "/api/nras-proxy" || req.path.startsWith("/api/nras-proxy/")) {
+      next();
+      return;
+    }
+    globalJsonParser(req, res, next);
+  });
   app.use(createCsrfMiddleware());
-  app.use(
-    rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: 120,
-      standardHeaders: "draft-7",
-      legacyHeaders: false,
-    }),
-  );
+  // ST5 — global 120/15min limiter plus a separate, larger bucket for the
+  // verification proxies so badge traffic can't 429 /api/chat (see rate-limits.ts).
+  applyRateLimiters(app);
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true, app: APP_ID });
@@ -115,6 +126,9 @@ async function main() {
     }),
   );
   app.use("/api/chat", authMiddleware, createChatRouter());
+  app.use("/api/signature", authMiddleware, createSignatureRouter());
+  app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
+  app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());
   app.use("/api/billing", createBillingRouter({ authMiddleware }));
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
