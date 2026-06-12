@@ -48,7 +48,7 @@ import {
   splitCredits,
   type RatesResponse,
 } from "../lib/billingApi";
-import { setCompletion, type RelaySignature } from "../lib/completionStore";
+import { setCompletion } from "../lib/completionStore";
 import { healPersistedModel } from "../lib/sanitizeModel";
 import {
   setPendingCompletion,
@@ -160,7 +160,6 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
       const modelId = deps.modelRef.current || DEFAULT_MODEL;
       let lastUsage: UsageInfo | null = null;
       let completionId: string | null = null;
-      let relaySignature: RelaySignature | null = null;
 
       for await (const text of streamChat({
         backendUrl: deps.backendUrl,
@@ -173,17 +172,6 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
         },
         onCompletionId: (id) => {
           completionId = id;
-        },
-        onRelaySignature: (frame) => {
-          // Map the wire frame to the verifier-side (camelCase) shape. The
-          // model/completion-id binding is re-derived from the completion ref,
-          // so we keep only the signature payload here.
-          relaySignature = {
-            v: frame.v,
-            contentSha256: frame.content_sha256,
-            signature: frame.signature,
-            address: frame.address,
-          };
         },
       })) {
         yield { content: [{ type: "text", text }] };
@@ -201,11 +189,7 @@ function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
           setPendingReceipt(unstable_assistantMessageId, { usage: lastUsage, modelId });
         }
         if (completionId) {
-          setPendingCompletion(unstable_assistantMessageId, {
-            completionId,
-            model: modelId,
-            relaySignature: relaySignature ?? undefined,
-          });
+          setPendingCompletion(unstable_assistantMessageId, { completionId, model: modelId });
         }
       }
     },
@@ -391,7 +375,6 @@ function createHistoryAdapter(
           setCompletion(id, {
             completionId: pending.completionId,
             model: pending.model,
-            relaySignature: pending.relaySignature,
           });
         }
       }

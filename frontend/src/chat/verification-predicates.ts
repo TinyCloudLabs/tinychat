@@ -16,13 +16,7 @@
  * no verified quote is grey ("not-verifiable"). Stricter only — never relaxed.
  */
 
-import { recoverMessageAddress } from "viem";
-
 import type { GpuResult, VerifyModelResult } from "@/lib/vendor/redpill-verifier";
-import {
-  relaySignMessage,
-  type RelaySignatureFrame,
-} from "@/lib/relayFrame";
 
 export type Tier = "response-verified" | "enclave-attested" | "not-verifiable";
 
@@ -103,18 +97,9 @@ export function computeTier(opts: {
 export interface SignatureLegState {
   valid: boolean;
   signer: string | null;
-  /**
-   * Distinguishes the two HONEST non-green outcomes of a cryptographically valid
-   * signature from a genuinely invalid one (which carries no reason):
-   *  - `"nonce_not_fresh"` — self-consistent + reply-bound but only freshness
-   *    failed ("Signature valid — nonce not fresh");
-   *  - `"binding_unverifiable"` — enclave-bound + fresh but the reply binding
-   *    (ST2) can't be reproduced (the RedPill gateway-rewrite case): labeled
-   *    "Signature valid — reply binding not independently verifiable", NOT
-   *    "invalid". "Signature invalid" stays reserved for cryptographic failure
-   *    (hard constraint 5).
-   */
-  reason?: "nonce_not_fresh" | "binding_unverifiable";
+  /** Set when the signature is self-consistent + reply-bound but only freshness
+   *  failed — labeled "Signature valid — nonce not fresh", NOT "invalid" (ST8). */
+  reason?: "nonce_not_fresh";
 }
 
 /**
@@ -144,13 +129,6 @@ export function assembleSignatureState(opts: {
   if (!opts.signatureMalformed && opts.enclaveBound && opts.replyBound && !opts.fresh) {
     return { valid: false, signer: opts.signer, reason: "nonce_not_fresh" };
   }
-  // The RedPill gateway-rewrite case: the signature recovers to the enclave-
-  // attested signer and the quote is fresh, but the signed body-hash can't be
-  // reproduced from the rendered reply (ST2 fails). This is valid-but-unbindable,
-  // NOT cryptographically invalid (hard constraint 5).
-  if (!opts.signatureMalformed && opts.enclaveBound && opts.fresh && !opts.replyBound) {
-    return { valid: false, signer: opts.signer, reason: "binding_unverifiable" };
-  }
   return { valid: false, signer: opts.signer };
 }
 
@@ -158,13 +136,10 @@ export function assembleSignatureState(opts: {
  *  signature ("valid — nonce not fresh") from a genuinely invalid one. */
 export function signatureLegLabel(sig: {
   valid: boolean;
-  reason?: "nonce_not_fresh" | "binding_unverifiable";
+  reason?: "nonce_not_fresh";
 }): string {
   if (sig.valid) return "Signature valid";
   if (sig.reason === "nonce_not_fresh") return "Signature valid — nonce not fresh";
-  if (sig.reason === "binding_unverifiable") {
-    return "Signature valid — reply binding not independently verifiable";
-  }
   return "Signature invalid";
 }
 
@@ -176,46 +151,4 @@ export function signatureLegLabel(sig: {
 export function isGpuLegFresh(gpu: GpuResult | null | undefined): boolean {
   const verdictPass = gpu?.verdict === "true" || gpu?.verdict === "PASS";
   return verdictPass && gpu?.nonceMatches === true;
-}
-
-/**
- * Relay-binding leg — true iff the bytes on screen are exactly the bytes the
- * ATTESTED relay backend forwarded and signed (plan Phase 3.1). All three legs
- * must hold, all case-insensitive:
- *  1. hash equality — `renderedHash === frame.content_sha256` (the displayed
- *     reply hashes to what the relay signed);
- *  2. signer recovery — `recoverMessageAddress(relaySignMessage(frame))`
- *     (the EIP-191 message the backend signed) `=== frame.address`;
- *  3. attested custody — `frame.address === attestedRelayAddress`, the address
- *     from the CACHED teal backend-attestation verdict.
- * `attestedRelayAddress` is null whenever the backend isn't attested or no cache
- * exists, in which case the leg fails closed (never green) — hard constraint 2.
- * Never throws: a malformed signature (recovery throws) resolves to false. This
- * leg is purely additive; it NEVER changes the tier (hard constraint 4).
- */
-export async function isRelayBound(opts: {
-  renderedHash: string;
-  frame: RelaySignatureFrame;
-  attestedRelayAddress: string | null;
-}): Promise<boolean> {
-  const { renderedHash, frame, attestedRelayAddress } = opts;
-  // Fail-honest: no attested relay address (backend unattested / no cache) ⇒
-  // the leg cannot be green, full stop.
-  if (!attestedRelayAddress) return false;
-  if (renderedHash.toLowerCase() !== frame.content_sha256.toLowerCase()) {
-    return false;
-  }
-  if (frame.address.toLowerCase() !== attestedRelayAddress.toLowerCase()) {
-    return false;
-  }
-  let recovered: string;
-  try {
-    recovered = await recoverMessageAddress({
-      message: relaySignMessage(frame),
-      signature: frame.signature,
-    });
-  } catch {
-    return false;
-  }
-  return recovered.toLowerCase() === frame.address.toLowerCase();
 }

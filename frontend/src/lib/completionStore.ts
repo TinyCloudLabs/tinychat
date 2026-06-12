@@ -8,28 +8,12 @@
 // appear for them. Capturing the id is strictly non-blocking; it never gates
 // the reply.
 
-/**
- * The relay-signature captured for one assistant turn, when the attested relay
- * backend emitted one (the `tinychat_relay_signature` frame, surfaced via
- * chatApi). Field names are the verifier-side (camelCase) view of the wire
- * frame; `contentSha256` is the wire `content_sha256`. Absent on old backends or
- * aborted streams — the relay leg then simply doesn't render (hard constraint 7).
- */
-export interface RelaySignature {
-  v: number;
-  contentSha256: string;
-  signature: `0x${string}`;
-  address: string;
-}
-
 /** The id + model needed to call verify() for one assistant turn. */
 export interface CompletionRef {
   /** The streamed completion `id` (the RedPill chat-completion id). */
   completionId: string;
   /** Model id used for the turn — handed to verify() for provider detection. */
   model: string;
-  /** In-band attested-relay signature for this turn, when present. */
-  relaySignature?: RelaySignature;
 }
 
 const completionMap = new Map<string, CompletionRef>();

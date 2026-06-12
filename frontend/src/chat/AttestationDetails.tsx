@@ -23,19 +23,10 @@ export const AttestationDetails: FC<{
   signature: {
     valid: boolean;
     signer: string | null;
-    /** Set when the signature is cryptographically valid but only freshness or
-     *  reply-binding failed — labeled "valid — …", not "invalid" (ST8). */
-    reason?: "nonce_not_fresh" | "binding_unverifiable";
+    /** Set when the signature is self-consistent + reply-bound but only
+     *  freshness failed — labeled "valid — nonce not fresh", not "invalid" (ST8). */
+    reason?: "nonce_not_fresh";
   } | null;
-  /**
-   * Relay-binding leg state (plan Phase 3.4). `null` ⇒ no relay frame was
-   * captured for this turn (old backend / aborted stream), so the leg is OMITTED
-   * — hard constraint 7. When present, `ok` is the `isRelayBound` verdict: the
-   * displayed bytes are exactly what the ATTESTED relay forwarded and signed.
-   * Purely additive — it never changes the tier (hard constraint 4) and renders
-   * on BOTH tiers (teal models get it too — it's model-agnostic).
-   */
-  relay?: { ok: boolean } | null;
   /**
    * Which surface is rendering this. Only affects the tier-2 honesty line:
    * `"message"` (default) sits under a sent reply, so it can say "the reply
@@ -43,7 +34,7 @@ export const AttestationDetails: FC<{
    * yet, so it phrases the claim about the endpoint instead.
    */
   context?: "message" | "model-level";
-}> = ({ mr, signature, relay = null, context = "message" }) => {
+}> = ({ mr, signature, context = "message" }) => {
   // tier-1 (response-verified) iff a valid per-message signature is present;
   // otherwise the model-level / tier-2 (enclave-attested) case.
   const responseVerified = signature != null && signature.valid;
@@ -77,15 +68,10 @@ export const AttestationDetails: FC<{
           rather than silently dropped. */}
       {signature != null && (
         <Leg
-          // A cryptographically valid signature that only fails freshness or
-          // reply-binding is honestly "valid — …" (the dedicated leg/footer
-          // carries the limitation), so its dot is not destructive (ST8). Only a
-          // genuine cryptographic failure (no reason) renders the destructive dot.
-          ok={
-            signature.valid ||
-            signature.reason === "nonce_not_fresh" ||
-            signature.reason === "binding_unverifiable"
-          }
+          // A signature that recovers + binds the reply but only fails freshness
+          // is honestly "valid — nonce not fresh" (the separate freshness leg
+          // below carries the failure), so its dot is not destructive (ST8).
+          ok={signature.valid || signature.reason === "nonce_not_fresh"}
           label={
             <>
               {signatureLegLabel(signature)}{" "}
@@ -235,22 +221,6 @@ export const AttestationDetails: FC<{
             }
           />
         )}
-
-        {/* Relay-binding leg — present whenever a relay frame was captured, on
-            BOTH tiers (model-agnostic). `ok` is the isRelayBound verdict: the
-            displayed bytes are exactly what the ATTESTED relay forwarded + signed
-            with the key its backend quote binds. Additive — never a tier change. */}
-        {relay != null && (
-          <Leg
-            ok={relay.ok}
-            label={
-              <>
-                Relay signed — reply bound to attested TinyCloud relay{" "}
-                <TrustTag>relayed — TEE</TrustTag>
-              </>
-            }
-          />
-        )}
       </div>
 
       {responseVerified && (
@@ -273,25 +243,8 @@ export const AttestationDetails: FC<{
         </p>
       )}
 
-      {!responseVerified && context === "message" && signature != null && (
-        /* Tier-2 with a signature PRESENT (the RedPill gateway-rewrite case): the
-           model DID sign, so the old "does not sign individual responses" copy
-           would be a contradiction. Explain the actual limitation instead — the
-           gateway rewrites the bodies before the enclave signs them, so the
-           signed hash can't be reproduced from the reply we render. */
-        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
-          The model enclave signed this exchange, but the gateway rewrites the
-          request/response bodies before signing, so the signed hash can&apos;t be
-          reproduced from the reply above — it is{" "}
-          <span className="font-semibold">not</span> independently bound to the
-          model enclave. The attestation still proves a genuine Intel TDX enclave
-          produced it{relay != null ? "; the relay leg above binds the bytes on screen to the attested TinyCloud relay" : ""}.
-        </p>
-      )}
-
-      {!responseVerified && context === "message" && signature == null && (
-        /* Truly-unsigned case — keep the original copy: this model emits no
-           per-reply signature at all. */
+      {!responseVerified && context === "message" && (
+        /* REQUIRED honesty line — tier 2 does not bind the reply to the enclave. */
         <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
           This model does not sign individual responses, so the reply above is{" "}
           <span className="font-semibold">not</span> cryptographically bound to
