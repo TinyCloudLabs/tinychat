@@ -1,5 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import type { Hex } from "viem";
+import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import {
   TIERS,
   isModelAllowed,
@@ -87,6 +89,9 @@ class UsageScanner {
   promptTokens: number | null = null;
   completionTokens: number | null = null;
   completionText = "";
+  /** The RedPill completion `id` (first chunk carries it). Used to bind the
+   *  relay signature frame to this exact completion. */
+  completionId: string | null = null;
 
   get hasUsage(): boolean {
     return this.promptTokens !== null || this.completionTokens !== null;
@@ -107,6 +112,7 @@ class UsageScanner {
     const payload = line.slice(5).trim();
     if (payload === "" || payload === "[DONE]") return;
     let parsed: {
+      id?: unknown;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
       choices?: Array<{ delta?: { content?: unknown } }>;
     };
@@ -114,6 +120,9 @@ class UsageScanner {
       parsed = JSON.parse(payload);
     } catch {
       return;
+    }
+    if (this.completionId === null && typeof parsed.id === "string" && parsed.id) {
+      this.completionId = parsed.id;
     }
     if (parsed.usage) {
       if (typeof parsed.usage.prompt_tokens === "number") {
@@ -142,10 +151,151 @@ function resolveRates(catalog: CatalogModel[], modelId: string): ModelRates {
   return ratesForModel(entry ?? { id: modelId, pricing: null });
 }
 
+// ── Relay signature frame ─────────────────────────────────────────────────────
+// The relay signs the bytes it forwarded so the browser can prove custody: every
+// machine that touched this reply is an attested TEE and the rendered text is
+// exactly what the attested relay received. NORMATIVE message format (plan
+// "Hash preimage" / precedence rule 3 — do not deviate):
+//
+//   preimage  = concatenated choices[0].delta.content strings (UsageScanner.completionText)
+//   hash      = sha256(preimage), lowercase hex
+//   message   = `tinychat-relay-sign-v1:${completionId}:${model}:${hash}`
+//   signature = account.signMessage(message)   // EIP-191, same key as the attestation
+//
+// reasoning_content deltas are NOT in the preimage (they are never rendered).
+
+const RELAY_SIGN_PREFIX = "tinychat-relay-sign-v1";
+const DONE_BYTES = new TextEncoder().encode("data: [DONE]");
+const EMPTY_BYTES = new Uint8Array(0);
+
+export interface RelaySignaturePayload {
+  v: 1;
+  completion_id: string;
+  model: string;
+  content_sha256: string;
+  signature: Hex;
+  address: string;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** sha256 of `text` as lowercase hex (the relay-signature preimage hash). */
+export async function relayContentSha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return bytesToHex(new Uint8Array(digest));
+}
+
+/** The exact EIP-191 message the relay signs (normative format). */
+export function relaySignMessage(completionId: string, model: string, contentSha256: string): string {
+  return `${RELAY_SIGN_PREFIX}:${completionId}:${model}:${contentSha256}`;
+}
+
+/**
+ * Build the `data: {"tinychat_relay_signature":…}\n\n` SSE frame over the
+ * forwarded completion text. Returns null when there is nothing to bind (no
+ * completion id captured); signing errors propagate to the caller, which logs
+ * and still terminates the stream (reply path is never gated on signing).
+ */
+export async function buildRelaySignatureFrame(opts: {
+  account: PrivateKeyAccount;
+  completionId: string | null;
+  model: string;
+  completionText: string;
+}): Promise<string | null> {
+  if (!opts.completionId) return null;
+  const contentSha256 = await relayContentSha256(opts.completionText);
+  const message = relaySignMessage(opts.completionId, opts.model, contentSha256);
+  const signature = await opts.account.signMessage({ message });
+  const payload: RelaySignaturePayload = {
+    v: 1,
+    completion_id: opts.completionId,
+    model: opts.model,
+    content_sha256: contentSha256,
+    signature,
+    address: opts.account.address,
+  };
+  return `data: ${JSON.stringify({ tinychat_relay_signature: payload })}\n\n`;
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  if (a.length === 0) return b;
+  if (b.length === 0) return a;
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
+  outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+/** Length of the longest suffix of `buf` that is a proper prefix of `marker`. */
+function suffixPrefixLen(buf: Uint8Array, marker: Uint8Array): number {
+  const max = Math.min(buf.length, marker.length - 1);
+  for (let k = max; k > 0; k--) {
+    let match = true;
+    for (let j = 0; j < k; j++) {
+      if (buf[buf.length - k + j] !== marker[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return k;
+  }
+  return 0;
+}
+
+/**
+ * Byte-level splitter that forwards the upstream stream UNCHANGED except for
+ * holding back the final `data: [DONE]` terminator line (hard constraint 6: the
+ * only permitted mutation of the relayed bytes). It never forwards a partial
+ * terminator prefix, so the terminator can straddle chunk boundaries safely.
+ */
+class DoneTerminator {
+  private pending: Uint8Array = EMPTY_BYTES;
+  sawDone = false;
+
+  /** Feed an upstream chunk; return the bytes safe to forward to the client now. */
+  push(chunk: Uint8Array): Uint8Array {
+    if (this.sawDone) return EMPTY_BYTES; // nothing legitimate follows [DONE]
+    const buf = concatBytes(this.pending, chunk);
+    const idx = indexOfBytes(buf, DONE_BYTES);
+    if (idx !== -1) {
+      this.sawDone = true;
+      this.pending = EMPTY_BYTES;
+      return buf.subarray(0, idx);
+    }
+    const keep = suffixPrefixLen(buf, DONE_BYTES);
+    this.pending = keep > 0 ? buf.subarray(buf.length - keep) : EMPTY_BYTES;
+    return buf.subarray(0, buf.length - keep);
+  }
+
+  /** On clean end, flush any held-back bytes that turned out NOT to be the
+   *  terminator (e.g. upstream ended without [DONE]). */
+  flush(): Uint8Array {
+    if (this.sawDone) return EMPTY_BYTES;
+    const out = this.pending;
+    this.pending = EMPTY_BYTES;
+    return out;
+  }
+}
+
 // ── Router factory ───────────────────────────────────────────────────────────
 
-export function createChatRouter() {
+export function createChatRouter(config: { privateKey: string }) {
   const router = Router();
+  // Memoized once per factory: the secp256k1 account whose address is bound into
+  // the backend attestation quote (selfAttest.ts). Same key signs relay frames.
+  const relayAccount = privateKeyToAccount(config.privateKey as Hex);
 
   /**
    * POST /
@@ -314,14 +464,20 @@ export function createChatRouter() {
     }
 
     const scanner = new UsageScanner();
+    const terminator = new DoneTerminator();
+    let cleanEnd = false;
     try {
       // Bun's fetch body is async-iterable. Forward every chunk byte-for-byte
-      // while tee-ing a copy through the usage scanner.
+      // (minus the held-back [DONE] terminator) while tee-ing a copy through the
+      // usage scanner. NO awaits between an upstream chunk and its res.write —
+      // the reply path is never gated on signing (hard constraint 1).
       for await (const chunk of upstreamRes.body as unknown as AsyncIterable<Uint8Array>) {
         if (controller.signal.aborted) break;
         scanner.push(chunk);
-        res.write(chunk);
+        const forward = terminator.push(chunk);
+        if (forward.length > 0) res.write(forward);
       }
+      cleanEnd = !controller.signal.aborted;
     } catch (error: unknown) {
       if (error instanceof Error && error.name === "AbortError") {
         // Client disconnected — clean exit
@@ -329,6 +485,26 @@ export function createChatRouter() {
         console.error("[chat] stream error:", error);
       }
     } finally {
+      // On a CLEAN end: flush any non-terminator tail, emit the relay signature
+      // frame, then the held-back [DONE]. On abort/error: end with NO frame so
+      // the client treats the reply as unsigned (fail-honest, never a fabricated
+      // signature). Signing failure is non-fatal — log and still forward [DONE].
+      if (cleanEnd) {
+        const tail = terminator.flush();
+        if (tail.length > 0) res.write(tail);
+        try {
+          const frame = await buildRelaySignatureFrame({
+            account: relayAccount,
+            completionId: scanner.completionId,
+            model: resolvedModel,
+            completionText: scanner.completionText,
+          });
+          if (frame) res.write(frame);
+        } catch (error) {
+          console.error("[chat] relay signing failed:", error);
+        }
+        res.write("data: [DONE]\n\n");
+      }
       res.end();
     }
 

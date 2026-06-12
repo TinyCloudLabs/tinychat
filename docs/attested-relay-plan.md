@@ -172,6 +172,53 @@ for everyone and green becomes reachable again. File against
 | **Core total** | **~4 days** |
 | 6. Gateway leg (optional) | +0.5–1 day |
 
+## Hard constraints (grading rubric — violating any is a blocker)
+
+1. **Reply path is never gated on signing.** Any failure in hashing/signing
+   (missing key, scanner error) must still forward the stream and `[DONE]`.
+   No new awaits between upstream chunks and `res.write(chunk)`.
+2. **Fail-honest, never false-green.** A missing frame, hash mismatch, signer
+   mismatch, or missing/cached-unattested backend attestation renders the relay
+   leg failed or absent — never green. No fallbacks that fabricate validity.
+3. **Preimage parity is tested, not assumed.** Backend `completionText` and
+   frontend `renderedText` must be proven byte-equal for the SAME fixture
+   stream (shared fixture file, read by both tests). This is the RedPill
+   post-mortem lesson; a build without this test is incomplete.
+4. **Tier gates unchanged.** `computeTier` keeps its existing inputs/outputs;
+   relayBound must NOT upgrade any tier. Green stays unreachable.
+5. **"Signature invalid" only for cryptographic failure** (recovery throws,
+   recovered ≠ claimed, claimed ≠ attested). Valid-but-unbindable gets
+   `binding_unverifiable`, valid-but-stale keeps `nonce_not_fresh`.
+6. **Forwarded bytes stay byte-identical except the terminator handling**: the
+   only permitted change to the relayed stream is holding back the final
+   `data: [DONE]` line and emitting the signature frame before it.
+7. **Old client / old server compatibility.** New frontend with old backend
+   (no frame) shows no relay leg and no error; old frontend with new backend
+   ignores the frame (it carries no `choices`, so parsers must skip it — and
+   the existing UsageScanner-style parsers already do).
+8. **No localStorage of signatures, no backend verdict endpoints.** The
+   browser computes the verdict; the backend only signs what it forwarded.
+
+## Precedence rules (for audit/fix loops)
+
+1. These Hard constraints beat any specific code suggestion elsewhere in this
+   document. If a snippet conflicts with a constraint, the constraint wins.
+2. The existing shipped behavior (teal backend attestation flow, billing
+   scanner, tier composition, vendored verifier byte-identity) beats this
+   feature: when in doubt, leave shipped code paths unchanged and add beside
+   them.
+3. Exact message format is normative: `tinychat-relay-sign-v1:${completionId}:${model}:${contentSha256}`
+   signed via viem `signMessage` (EIP-191). Auditors flag deviations as
+   blockers; fixers change the deviating side to match THIS string, never
+   invent a new format.
+4. If a finding asks for scope beyond this plan (new tiers, persistence,
+   gateway leg), record it as a `nit` recommendation — do not implement.
+5. Phase 4's live-browser Playwright pass and Phase 5 deployment run OUTSIDE
+   the automated audit/fix loop (they need a real backend + real attestation,
+   unavailable in-loop). In audit rounds their absence is a `nit` (tracked,
+   never fixed in-loop); fixers must not create Playwright tests or deploy
+   scripts in response to such findings.
+
 ## Risks / edge cases
 
 - `renderedText` vs `completionText` drift (assistant-ui normalization,
