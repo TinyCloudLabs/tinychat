@@ -413,9 +413,21 @@ export function createChatRouter(config: { privateKey: string }) {
       }
     }
 
-    // AbortController so we can cancel the upstream fetch if the client disconnects
+    // AbortController so we can cancel the upstream fetch if the client
+    // disconnects. MUST NOT listen on the REQUEST "close" event: Bun's
+    // node:http compat fires it as soon as the request body is consumed (not
+    // on client disconnect), which aborted the upstream fetch mid-stream and
+    // truncated every prod reply (no usage chunk, no relay frame, no [DONE]).
+    // The response "close" with writableEnded=false is the correct signal on
+    // Node; on Bun it may never fire for a mid-stream disconnect (probed:
+    // req.destroyed is true while the client is still connected, res.destroyed
+    // is undefined, socket.destroyed stays false), in which case a dropped
+    // client just streams to a dead socket until the generation ends —
+    // bounded waste, never a truncated reply.
     const controller = new AbortController();
-    req.on("close", () => controller.abort());
+    res.on("close", () => {
+      if (!res.writableEnded) controller.abort();
+    });
 
     let upstreamRes: globalThis.Response;
     try {

@@ -299,6 +299,49 @@ describe("relay signature frame (abort/error)", () => {
   });
 });
 
+describe("relay stream survives premature request-close (Bun)", () => {
+  test("delayed upstream chunks are still forwarded in full, with frame + [DONE]", async () => {
+    // Companion to the 2026-06-12 prod truncation fix: Bun's node:http compat
+    // fires the REQUEST "close" event once the request body is consumed (not
+    // on client disconnect). The route used to abort the upstream fetch on
+    // that event, truncating every reply mid-stream (no usage chunk, no relay
+    // frame, no [DONE]). NOTE the bogus close only fires for real socket
+    // clients (curl/browsers) — bun:test's in-process fetch never triggers it,
+    // so this test CANNOT go red on the old wiring; the close semantics are
+    // live-verified (see the abort-wiring comment in chat.ts). What this test
+    // pins is forwarding correctness under slow, multi-chunk upstreams: every
+    // delayed chunk forwarded, frame emitted, [DONE] last.
+    const chunks = chunkify(FIXTURE, 4);
+    const delayed = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const c of chunks) {
+          await new Promise((r) => setTimeout(r, 40));
+          controller.enqueue(c);
+        }
+        controller.close();
+      },
+    });
+    const restore = stubChatFetch(
+      () => new Response(delayed, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    );
+    try {
+      const res = await request(createApp(), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody(),
+      });
+      const text = await res.text();
+      expect(text).toContain('"content":"Hello"');
+      expect(text).toContain("tinychat_relay_signature");
+      expect(text).toContain(DONE_EVENT);
+      // [DONE] is the FINAL event — the frame precedes it.
+      expect(text.indexOf("tinychat_relay_signature")).toBeLessThan(text.indexOf(DONE_EVENT));
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("buildRelaySignatureFrame helper", () => {
   test("uses the normative message format and returns null without a completion id", async () => {
     const frameText = await buildRelaySignatureFrame({
