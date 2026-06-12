@@ -126,7 +126,7 @@ async function main() {
       authMiddleware,
     }),
   );
-  app.use("/api/chat", authMiddleware, createChatRouter({ privateKey: backendPrivateKey }));
+  app.use("/api/chat", authMiddleware, createChatRouter());
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
   app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());

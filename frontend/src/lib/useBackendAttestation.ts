@@ -109,35 +109,6 @@ function shouldCacheVerdict(status: CachedAttestation["status"]): boolean {
 }
 
 /**
- * Synchronous, non-hook read of the module-level cache for callers OUTSIDE the
- * hook's render path (the per-message badge's relay leg). Mirrors
- * `getCachedModelVerification`: returns the attested relay address ONLY from a
- * cached verdict whose status is `"attested"`, else `null`.
- *
- * The attested address is the secp256k1 key the backend quote binds (the same
- * key it signs relay frames with). Anything other than a cached `"attested"`
- * verdict — no cache, an unattested/error/unavailable verdict (never cached
- * anyway), or a missing attestation payload — fails the relay leg CLOSED by
- * returning null (hard constraint 2: fail-honest, never false-green). With a
- * `backendUrl` it reads that key; without one it returns the first attested
- * entry (there is a single relay backend per session).
- */
-export function getCachedBackendAttestation(backendUrl?: string): string | null {
-  const entries = backendUrl
-    ? (() => {
-        const hit = cache.get(backendUrl);
-        return hit ? [hit] : [];
-      })()
-    : [...cache.values()];
-  for (const entry of entries) {
-    if (entry.status === "attested" && entry.attestation) {
-      return entry.attestation.identity.address;
-    }
-  }
-  return null;
-}
-
-/**
  * Decide whether the effect should force a fresh probe (skip the cache). True
  * only when a `reverify()` token targets THIS backend AND that exact token (key +
  * counter) has not already been consumed by a prior probe — so a single

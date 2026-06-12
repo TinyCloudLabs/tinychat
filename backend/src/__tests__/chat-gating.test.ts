@@ -16,9 +16,6 @@ const MEMORY_EXTRACTION_MODEL = "phala/gpt-oss-20b";
 
 const ORIGINAL_ENV = { ...process.env };
 const ADDR = "0xabc";
-// A throwaway secp256k1 key so the chat router factory can build its relay
-// account; gating tests never exercise the signing path.
-const TEST_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 function authStub(req: Request, _res: Response, next: NextFunction) {
   req.user = { address: ADDR };
@@ -28,7 +25,7 @@ function authStub(req: Request, _res: Response, next: NextFunction) {
 function createApp() {
   const app = express();
   app.use(express.json());
-  app.use("/api/chat", authStub, createChatRouter({ privateKey: TEST_PRIVATE_KEY }));
+  app.use("/api/chat", authStub, createChatRouter());
   return app;
 }
 

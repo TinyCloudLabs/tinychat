@@ -11,7 +11,6 @@ import {
 import { sha256, verifyModel, type VerifyModelResult } from "@/lib/vendor/redpill-verifier";
 import { fetchSignatureProxy } from "@/lib/signatureClient";
 import { getCachedModelVerification } from "@/lib/useModelVerification";
-import { getCachedBackendAttestation } from "@/lib/useBackendAttestation";
 import { AttestationDetails } from "@/chat/AttestationDetails";
 import {
   assembleSignatureState,
@@ -19,7 +18,6 @@ import {
   isEnclaveBound,
   isFresh,
   isQuoteVerified,
-  isRelayBound,
   parseResponseHash,
   type Tier,
 } from "@/chat/verification-predicates";
@@ -29,7 +27,6 @@ import {
   isTeeCapableModel,
   onCompletion,
   type CompletionRef,
-  type RelaySignature,
 } from "@/lib/completionStore";
 
 /**
@@ -89,7 +86,6 @@ export const ModelVerificationBadge: FC = () => {
       completionId={ref.completionId}
       model={ref.model}
       renderedText={renderedText}
-      relaySignature={ref.relaySignature}
     />
   );
 };
@@ -101,10 +97,9 @@ type Phase = "idle" | "pending" | "done" | "error";
 export type SignatureState = {
   valid: boolean;
   signer: string | null;
-  /** Set when the signature is cryptographically valid but only freshness
-   *  ("nonce_not_fresh") or reply-binding ("binding_unverifiable") failed —
-   *  labeled "Signature valid — …", NOT "invalid". */
-  reason?: "nonce_not_fresh" | "binding_unverifiable";
+  /** Set when the signature is self-consistent + reply-bound but only freshness
+   *  failed — labeled "Signature valid — nonce not fresh", NOT "invalid". */
+  reason?: "nonce_not_fresh";
 } | null;
 
 /** What the badge resolved after a verifyModel + signature run. */
@@ -114,16 +109,13 @@ interface Verdict {
   /** Signature leg state, or null when no signature was fetched. */
   signature: SignatureState;
   signingAddress: string | null;
-  /** Relay-binding leg, or null when no relay frame was captured this turn. */
-  relay: { ok: boolean } | null;
 }
 
 const VerificationBadge: FC<{
   completionId: string;
   model: string;
   renderedText: string;
-  relaySignature?: RelaySignature;
-}> = ({ completionId, model, renderedText, relaySignature }) => {
+}> = ({ completionId, model, renderedText }) => {
   const signable = isResponseVerifiableModel(model);
   const teeCapable = isTeeCapableModel(model);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -135,18 +127,10 @@ const VerificationBadge: FC<{
   // every other model the guarantee is model-level, not per-reply, and lives in the
   // header "Enclave verified" / "Not verifiable" indicator; stamping it under every
   // bubble is redundant and over-implies a per-reply binding that isn't there.
-  // A non-signable model normally has no per-MESSAGE proof, so it gets no badge —
-  // its enclave attestation is model-level and lives in the header indicator. The
-  // one exception is the attested-relay frame (plan Phase 3.4): it binds THIS
-  // turn's rendered bytes to the attested relay, a genuine per-message proof. So
-  // when a frame was captured, a non-signable TEE model falls through to the
-  // verify flow too, surfacing the relay leg (model-agnostic, renders on BOTH
-  // tiers). Without a frame, shipped behavior is unchanged.
-  if (!signable && !(teeCapable && relaySignature)) {
-    // Tier 2 — a genuine TEE model that does NOT sign individual replies and has
-    // no relay frame to bind this turn. Point to the model-level indicator rather
-    // than attesting each message (the attestation is identical for every reply
-    // and bound to none of them).
+  if (!signable) {
+    // Tier 2 — a genuine TEE model that does NOT sign individual replies. Point to
+    // the model-level indicator rather than attesting each message (the attestation
+    // is identical for every reply and bound to none of them).
     if (teeCapable) {
       return (
         <span
@@ -173,11 +157,9 @@ const VerificationBadge: FC<{
       // redundant probe per message). Falls back to a fresh probe on a miss.
       const mr = getCachedModelVerification(model) ?? (await verifyModel({ model, deep: false }));
 
-      // 2. Per-message signature — only flat/NearAI (signable) models carry one.
-      // The proxy returns null (never throws) for Tinfoil/Chutes; skip the call
-      // entirely for non-signable models (reached here only for the relay-leg
-      // case), leaving them tier ≤ 2 with the signature leg omitted.
-      const sig = signable ? await fetchSignatureProxy(completionId, model) : null;
+      // 2. Per-message signature — only flat/NearAI models carry one. The proxy
+      // returns null (never throws) for Tinfoil/Chutes, leaving them tier ≤ 2.
+      const sig = await fetchSignatureProxy(completionId, model);
       let signer: string | null = null;
       let replyBound = false;
       let signatureMalformed = false;
@@ -231,31 +213,7 @@ const VerificationBadge: FC<{
         fresh,
       });
 
-      // Relay-binding leg — independent of the tier (hard constraint 4). When the
-      // attested relay emitted a frame for this turn, verify that the bytes on
-      // screen are exactly what it forwarded + signed with its attested key.
-      // The attested relay address comes ONLY from a cached "attested" backend
-      // verdict; absent it the leg fails closed (never green, hard constraint 2).
-      let relay: { ok: boolean } | null = null;
-      if (relaySignature) {
-        const renderedHash = await sha256(renderedText);
-        const attestedRelayAddress = getCachedBackendAttestation();
-        const ok = await isRelayBound({
-          renderedHash,
-          frame: {
-            v: relaySignature.v,
-            completion_id: completionId,
-            model,
-            content_sha256: relaySignature.contentSha256,
-            signature: relaySignature.signature,
-            address: relaySignature.address,
-          },
-          attestedRelayAddress,
-        });
-        relay = { ok };
-      }
-
-      setVerdict({ tier, mr, signature, signingAddress, relay });
+      setVerdict({ tier, mr, signature, signingAddress });
       setPhase("done");
       setOpen(true);
     } catch {
@@ -310,11 +268,7 @@ const VerificationBadge: FC<{
       )}
 
       {open && hasDetails && verdict && (
-        <AttestationDetails
-          mr={verdict.mr}
-          signature={verdict.signature}
-          relay={verdict.relay}
-        />
+        <AttestationDetails mr={verdict.mr} signature={verdict.signature} />
       )}
     </div>
   );

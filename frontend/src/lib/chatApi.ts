@@ -1,7 +1,6 @@
 import {
   type SessionStore,
 } from "@tinyboilerplate/client";
-import { parseRelayFrame, type RelaySignatureFrame } from "./relayFrame";
 
 const DEFAULT_REQUEST_HEADER_NAME = "X-Requested-With";
 const DEFAULT_REQUEST_HEADER_VALUE = "XMLHttpRequest";
@@ -142,15 +141,6 @@ export interface StreamChatOptions {
    * and a throwing listener never breaks the stream.
    */
   onCompletionId?: (id: string) => void;
-  /**
-   * Called once with the relay-signature frame the attested relay backend emits
-   * just before `[DONE]` (the `tinychat_relay_signature` envelope). The frame
-   * carries no `choices`, so it NEVER contributes to the rendered text — it is
-   * surfaced here only. Absent on old backends / aborted streams (graceful
-   * degrade, hard constraint 7): the listener simply never fires. Non-blocking;
-   * a throwing listener never breaks the stream.
-   */
-  onRelaySignature?: (frame: RelaySignatureFrame) => void;
 }
 
 /**
@@ -164,7 +154,7 @@ export interface StreamChatOptions {
  * surfaced via the `onUsage` option, not the yield stream.
  */
 export async function* streamChat(options: StreamChatOptions): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal, onUsage, onCompletionId, onRelaySignature } = options;
+  const { backendUrl, sessionStore, model, messages, maxTokens, abortSignal, onUsage, onCompletionId } = options;
 
   const token = sessionStore.getToken();
   if (!token) {
@@ -266,21 +256,6 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
           if (!data) continue;
           try {
             const json = JSON.parse(data);
-            // Relay-signature frame (`tinychat_relay_signature`): carries no
-            // `choices`/`usage`, so it must NOT contribute to rendered text.
-            // Surface it to the caller and skip to the next line (hard
-            // constraint 7). A throwing listener never breaks the stream.
-            const relayFrame = parseRelayFrame(json);
-            if (relayFrame) {
-              if (onRelaySignature) {
-                try {
-                  onRelaySignature(relayFrame);
-                } catch {
-                  // caller throwing must not break the stream
-                }
-              }
-              continue;
-            }
             // Surface the completion id from the first frame that carries one.
             // Fired before the delta yield so the badge can wire up early; kept
             // strictly off the reply path (a throwing listener is swallowed).

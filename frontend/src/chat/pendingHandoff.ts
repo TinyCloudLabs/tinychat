@@ -13,7 +13,6 @@
 // to the new-thread `remoteId`-not-yet-resolved window.
 
 import type { UsageInfo } from "../lib/chatApi";
-import type { RelaySignature } from "../lib/completionStore";
 
 export interface PendingReceipt {
   usage: UsageInfo;
@@ -23,8 +22,6 @@ export interface PendingReceipt {
 export interface PendingCompletion {
   completionId: string;
   model: string;
-  /** Attested-relay signature for this turn, when the backend emitted a frame. */
-  relaySignature?: RelaySignature;
 }
 
 const pendingReceipts = new Map<string, PendingReceipt>();
