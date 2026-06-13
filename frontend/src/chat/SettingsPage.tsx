@@ -69,14 +69,14 @@ export function SettingsPage({
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6">
+      <div className="mx-auto w-full max-w-2xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <Button
             variant="outline"
             size="sm"
             aria-label="Back to chat"
             onClick={onBack}
-            className="h-8 gap-1.5 px-2 sm:px-3"
+            className="h-11 gap-1.5 px-2 md:h-8 sm:px-3"
           >
             <ArrowLeftIcon className="size-4" />
             <span className="hidden sm:inline">Back to chat</span>

@@ -78,7 +78,7 @@ export function RatesDialog({ open, onOpenChange, billing }: RatesDialogProps) {
         )}
 
         {rates && rows.length > 0 && !loading && (
-          <div className="max-h-[60vh] overflow-y-auto rounded-lg border border-border">
+          <div className="max-h-[60vh] overflow-x-auto overflow-y-auto rounded-lg border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10 bg-muted/60 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <tr>
@@ -100,9 +100,9 @@ export function RatesDialog({ open, onOpenChange, billing }: RatesDialogProps) {
                       key={m.id}
                       className="border-t border-border first:border-t-0 hover:bg-accent/40"
                     >
-                      <td className="px-3 py-2 align-middle font-mono text-foreground">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate">{m.id}</span>
+                      <td className="max-w-[8rem] px-3 py-2 align-middle font-mono text-foreground md:max-w-none">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 truncate">{m.id}</span>
                           {isBaseline && (
                             <span className="shrink-0 rounded-full border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                               Baseline

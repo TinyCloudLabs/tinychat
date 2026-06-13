@@ -280,7 +280,7 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
       <DialogTrigger asChild>
         <button
           type="button"
-          className="flex items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          className="flex min-h-[2.75rem] items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent md:min-h-0"
         >
           <UploadIcon className="size-4" />
           Import
@@ -446,7 +446,7 @@ const PickList: FC<{
             type="checkbox"
             checked={allSelected}
             onChange={onToggleAll}
-            className="size-4 cursor-pointer accent-primary"
+            className="size-5 cursor-pointer accent-primary md:size-4"
           />
           {allSelected ? "Deselect all" : "Select all"}
         </label>
@@ -466,7 +466,7 @@ const PickList: FC<{
                 type="checkbox"
                 checked={selected.has(row.threadId)}
                 onChange={() => onToggleRow(row.threadId)}
-                className="size-4 shrink-0 cursor-pointer accent-primary"
+                className="size-5 shrink-0 cursor-pointer accent-primary md:size-4"
               />
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-foreground">{row.conv.title}</span>

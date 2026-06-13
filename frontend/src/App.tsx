@@ -14,6 +14,7 @@ import {
   restoreTinyCloudWebSession,
   verifySession,
 } from "@tinyboilerplate/client";
+import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
@@ -89,6 +90,9 @@ interface ModelOption {
 }
 
 export function App() {
+  // Track the visible viewport so the shell shrinks above the soft keyboard
+  // instead of letting it cover the composer (iOS Safari `100dvh` does not).
+  useVisualViewportFit();
   const initialModel = getInitialModel();
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const restoredRef = useRef(false);
@@ -522,7 +526,10 @@ export function App() {
   }, [navigate]);
 
   return (
-    <div className="flex h-dvh flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]">
+    <div
+      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]"
+      style={{ height: "var(--tc-app-height, 100dvh)" }}
+    >
       <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
         <div className="flex items-center gap-1.5 sm:gap-3">
           {isReady && (
@@ -531,7 +538,7 @@ export function App() {
               size="sm"
               aria-label="Open chat list"
               onClick={() => setSidebarOpen(true)}
-              className="h-8 w-8 p-0 md:hidden"
+              className="h-11 w-11 p-0 md:hidden"
             >
               <PanelLeftIcon className="size-4" />
             </Button>
@@ -581,13 +588,13 @@ export function App() {
               aria-label={showSettings ? "Close settings" : "Settings"}
               aria-pressed={showSettings}
               onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
-              className="h-8 w-8 p-0"
+              className="h-11 w-11 p-0 md:h-8 md:w-8"
             >
               <SettingsIcon className="size-4" />
             </Button>
           )}
           {(state === "unauthenticated" || state === "recoverableError") && (
-            <Button size="sm" onClick={signIn}>
+            <Button size="sm" onClick={signIn} className="h-11 md:h-8">
               {state === "recoverableError" ? "Try again" : "Sign in"}
             </Button>
           )}
@@ -663,7 +670,7 @@ export function App() {
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2"
+          className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-[60] -translate-x-1/2"
         >
           <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
             <span className="size-1.5 rounded-full bg-green-500" />
@@ -959,7 +966,7 @@ function ModelPicker(props: {
         aria-expanded={open}
         aria-controls="model-picker-popup"
         aria-label="Model"
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex h-11 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:h-8"
       >
         {isVerifiableModel(model) && (
           <ShieldCheckIcon
@@ -977,7 +984,7 @@ function ModelPicker(props: {
           role="listbox"
           aria-label="Model"
           onKeyDown={onListKeyDown}
-          className="absolute left-0 z-30 mt-1.5 max-h-72 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg focus:outline-none"
+          className="absolute left-0 z-30 mt-1.5 max-h-72 w-72 max-w-[calc(100vw-6.5rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg focus:outline-none"
         >
           {models.length === 0 && (
             <div className="px-2 py-1.5 text-muted-foreground">{model}</div>
@@ -1223,7 +1230,7 @@ function BootSurface(props: {
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
         {(props.state === "unauthenticated" || props.state === "recoverableError") && (
-          <Button onClick={props.onSignIn}>
+          <Button onClick={props.onSignIn} className="h-11 px-6 md:h-9 md:px-4">
             {props.state === "recoverableError" ? "Try again" : "Sign in"}
           </Button>
         )}
