@@ -174,7 +174,9 @@ const Composer: FC = () => {
           autoFocus
           rows={1}
           placeholder="Message TinyCloud Chat…"
-          className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
+          // text-base (16px) on mobile prevents iOS Safari from auto-zooming
+          // the page when the field gains focus; desktop keeps the compact 14px.
+          className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
         />
         <ThreadPrimitive.If running={false}>
           <ComposerPrimitive.Send asChild>
@@ -182,7 +184,7 @@ const Composer: FC = () => {
               tooltip="Send"
               side="top"
               type="submit"
-              className="size-9 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="size-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 md:size-9"
             >
               <SendHorizontalIcon className="size-4" />
             </TooltipIconButton>
@@ -193,7 +195,7 @@ const Composer: FC = () => {
             <TooltipIconButton
               tooltip="Stop"
               side="top"
-              className="size-9 rounded-full border border-input text-foreground hover:bg-accent"
+              className="size-11 rounded-full border border-input text-foreground hover:bg-accent md:size-9"
             >
               <Square className="size-4 fill-current" />
             </TooltipIconButton>
@@ -206,7 +208,7 @@ const Composer: FC = () => {
 
 const UserMessage: FC = () => (
   <MessagePrimitive.Root className="flex w-full flex-col items-end gap-1">
-    <div className="max-w-[80%] rounded-3xl bg-muted px-5 py-2.5 text-sm leading-relaxed text-foreground">
+    <div className="max-w-[80%] overflow-hidden break-words rounded-3xl bg-muted px-5 py-2.5 text-sm leading-relaxed text-foreground">
       <MessagePrimitive.Parts />
     </div>
     <ReceiptFooter />
@@ -303,7 +305,7 @@ const AssistantActionBar: FC = () => (
       className="flex items-center gap-1"
     >
       <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="Copy">
+        <TooltipIconButton tooltip="Copy" className="size-11 md:size-7">
           <MessagePrimitive.If copied>
             <CheckIcon />
           </MessagePrimitive.If>
@@ -357,7 +359,7 @@ export const ScrollToBottom: FC = () => (
   <ThreadPrimitive.ScrollToBottom asChild>
     <TooltipIconButton
       tooltip="Scroll to bottom"
-      className="absolute -top-10 left-1/2 z-10 size-8 -translate-x-1/2 rounded-full border border-border bg-background shadow-sm disabled:invisible"
+      className="absolute -top-10 left-1/2 z-10 size-11 -translate-x-1/2 rounded-full border border-border bg-background shadow-sm disabled:invisible md:size-8"
     >
       <ArrowDownIcon />
     </TooltipIconButton>

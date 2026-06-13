@@ -263,7 +263,7 @@ export function MemoryPanel({
             variant="ghost"
             size="sm"
             onClick={requestClose}
-            className="-mr-1 -mt-1 h-7 px-2 text-xs"
+            className="-mr-1 -mt-1 h-11 px-3 text-xs md:h-7 md:px-2"
           >
             Close
           </Button>
@@ -301,7 +301,9 @@ export function MemoryPanel({
             placeholder={
               "# About the user\n## Identity & background\n- (the assistant will fill this in over time)"
             }
-            className="min-h-40 max-h-[min(16rem,40vh)] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            // text-base (16px) on mobile prevents iOS Safari focus-zoom; the
+            // compact font-mono text-xs is restored from sm up.
+            className="min-h-40 max-h-[min(16rem,40vh)] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-base leading-relaxed text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
           />
           <div className="flex items-center justify-between text-[10px] text-muted-foreground">
             <span>
@@ -334,7 +336,7 @@ export function MemoryPanel({
               variant="ghost"
               size="sm"
               disabled={isEmpty || saving}
-              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              className="h-11 text-destructive hover:bg-destructive/10 hover:text-destructive md:h-8"
             >
               Clear memory
             </Button>
@@ -366,6 +368,7 @@ export function MemoryPanel({
               size="sm"
               disabled={saving}
               onClick={() => setDraft(doc ?? "")}
+              className="h-11 md:h-8"
             >
               Revert
             </Button>
@@ -388,6 +391,7 @@ export function MemoryPanel({
             size="sm"
             disabled={!dirty || saving}
             onClick={save}
+            className="h-11 md:h-8"
             title="Save (⌘/Ctrl + Enter)"
             aria-keyshortcuts="Meta+Enter Control+Enter"
           >

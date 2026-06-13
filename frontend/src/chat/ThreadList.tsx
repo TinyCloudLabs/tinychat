@@ -31,7 +31,7 @@ const ThreadListItem: FC = () => {
     <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-accent data-[active]:bg-accent">
       <ThreadListItemPrimitive.Trigger
         onClick={onNavigate}
-        className="flex-1 truncate px-3 py-2 text-left text-sm text-foreground"
+        className="flex min-h-11 flex-1 items-center truncate px-3 py-2 text-left text-sm text-foreground md:min-h-0"
       >
         <ThreadListItemPrimitive.Title fallback="New chat" />
       </ThreadListItemPrimitive.Trigger>
@@ -39,7 +39,7 @@ const ThreadListItem: FC = () => {
         <AlertDialogTrigger asChild>
           <TooltipIconButton
             tooltip="Delete chat"
-            className="size-7 shrink-0 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 data-[active]:opacity-100"
+            className="size-11 shrink-0 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 data-[active]:opacity-100 md:size-7 [@media(hover:none)]:opacity-60"
           >
             <Trash2Icon className="size-4" />
           </TooltipIconButton>
@@ -76,7 +76,7 @@ export const ThreadList: FC<ThreadListProps> = ({
       <div className="flex h-full flex-col gap-2 p-2">
         <ThreadListPrimitive.New
           onClick={onNavigate}
-          className="flex items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          className="flex min-h-11 items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent md:min-h-0"
         >
           <PlusIcon className="size-4" />
           New chat

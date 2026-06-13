@@ -37,7 +37,7 @@ const SheetContent = React.forwardRef<
       ref={ref}
       aria-describedby={ariaDescribedBy}
       className={cn(
-        "fixed inset-y-0 left-0 z-50 h-full w-[280px] max-w-[85vw] border-r border-border bg-background pt-10 shadow-lg outline-none",
+        "fixed inset-y-0 left-0 z-50 h-full w-[280px] max-w-[85vw] border-r border-border bg-background pt-[max(2.5rem,env(safe-area-inset-top))] pl-[env(safe-area-inset-left)] pb-[env(safe-area-inset-bottom)] shadow-lg outline-none",
         "duration-300 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-200 data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left",
         "focus-visible:ring-2 focus-visible:ring-ring/50",
         className,
@@ -47,7 +47,7 @@ const SheetContent = React.forwardRef<
       {children}
       <DialogPrimitive.Close
         aria-label="Close"
-        className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="absolute right-3 top-[max(1rem,env(safe-area-inset-top))] rounded-md p-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <XIcon className="size-4" />
       </DialogPrimitive.Close>
