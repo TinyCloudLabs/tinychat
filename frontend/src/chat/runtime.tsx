@@ -5,7 +5,6 @@ import {
   useLocalRuntime,
   useRemoteThreadListRuntime,
   type AssistantRuntime,
-  type ChatModelAdapter,
   type ExportedMessageRepository,
   type ExportedMessageRepositoryItem,
   type RemoteThreadListAdapter,
@@ -17,10 +16,9 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import {
   completeChat,
   emitReceipt,
-  streamChat,
   type ChatMessage,
-  type UsageInfo,
 } from "../lib/chatApi";
+import { createChatModelAdapter } from "./chatModelAdapter";
 import {
   appendMessage,
   deleteThread,
@@ -51,8 +49,6 @@ import {
 import { setCompletion } from "../lib/completionStore";
 import { healPersistedModel } from "../lib/sanitizeModel";
 import {
-  setPendingCompletion,
-  setPendingReceipt,
   takePendingCompletion,
   takePendingReceipt,
 } from "./pendingHandoff";
@@ -100,6 +96,17 @@ export interface ChatRuntimeDeps {
    * `null` represents a cleared doc; a string carries the latest content.
    */
   onMemoryUpdated?: (doc: string | null) => void;
+  /**
+   * Written by the per-thread Provider during render so the adapter's run()
+   * can read the active thread id as roomId without prop-drilling.
+   */
+  activeThreadIdRef: React.MutableRefObject<string | null>;
+  /**
+   * True when the agent (tool-calling) path is enabled for this session.
+   * Written by useAgentEnablement (C3) after a successful ensureAgentSession.
+   * Read by the adapter at request time to branch streamAgentChat vs streamChat.
+   */
+  agentEnabledRef: React.MutableRefObject<boolean>;
 }
 
 // ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──
@@ -123,78 +130,14 @@ function getCachedRates(deps: ChatRuntimeDeps): Promise<RatesResponse> {
   return cachedRatesPromise;
 }
 
-/** Flatten an assistant-ui ThreadMessage's content parts into plain text. */
-function messageText(message: { content: readonly unknown[] }): string {
-  return message.content
-    .map((part) => {
-      const p = part as { type?: string; text?: string };
-      return p.type === "text" && typeof p.text === "string" ? p.text : "";
-    })
-    .join("");
-}
-
 // ── ChatModelAdapter (transport to the backend SSE proxy) ────────────
-
-function createChatModelAdapter(deps: ChatRuntimeDeps): ChatModelAdapter {
-  return {
-    async *run({ messages, abortSignal, context, unstable_assistantMessageId }) {
-      const payload: ChatMessage[] = [];
-
-      // Prepend the merged model-context system prompt FIRST so memory (and
-      // any other registered context provider) lands at the start of the
-      // system content — the position least affected by context rot. The
-      // existing payload filter at the for-loop below already accepts the
-      // "system" role, so this matches the on-wire schema.
-      const systemContent = context?.system;
-      if (typeof systemContent === "string" && systemContent.length > 0) {
-        payload.push({ role: "system", content: systemContent });
-      }
-
-      for (const m of messages) {
-        if (m.role !== "user" && m.role !== "assistant" && m.role !== "system") continue;
-        const content = messageText(m);
-        if (!content) continue;
-        payload.push({ role: m.role, content });
-      }
-
-      const modelId = deps.modelRef.current || DEFAULT_MODEL;
-      let lastUsage: UsageInfo | null = null;
-      let completionId: string | null = null;
-
-      for await (const text of streamChat({
-        backendUrl: deps.backendUrl,
-        sessionStore: deps.sessionStore,
-        model: modelId,
-        messages: payload,
-        abortSignal,
-        onUsage: (u) => {
-          lastUsage = u;
-        },
-        onCompletionId: (id) => {
-          completionId = id;
-        },
-      })) {
-        yield { content: [{ type: "text", text }] };
-      }
-
-      // Stream completed cleanly. Stash the usage + completion id keyed by THIS
-      // assistant message id (ST4) so its `append()`/receipt hook consumes
-      // exactly its own handoff. Message ids are globally unique, so an
-      // interleaved finish on another thread can never overwrite ours (the
-      // module-slot race). `unstable_assistantMessageId` equals the id append()
-      // sees as `item.message.id`. If it is absent the handoff simply no-ops (no
-      // badge/receipt) — never a wrong one.
-      if (unstable_assistantMessageId) {
-        if (lastUsage) {
-          setPendingReceipt(unstable_assistantMessageId, { usage: lastUsage, modelId });
-        }
-        if (completionId) {
-          setPendingCompletion(unstable_assistantMessageId, { completionId, model: modelId });
-        }
-      }
-    },
-  };
-}
+//
+// Imported from chatModelAdapter.ts (extracted so it can be unit-tested
+// without @assistant-ui/react's DOM dependency). The adapter reads all live
+// values off refs at call time; the memo below stays stable for the lifetime.
+// C1: branches between plain streamChat and agent streamAgentChat.
+// C2: passes activeThreadIdRef.current as roomId on the agent path.
+// C4: wires onToolActivity → toolActivityStore (cleared at turn end).
 
 // ── Per-thread ThreadHistoryAdapter (TinyCloud KV) ───────────────────
 
@@ -507,6 +450,13 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
       const threadId = useAuiState(
         (s) => s.threadListItem.remoteId ?? s.threadListItem.id,
       ) as string;
+
+      // C2: write the active thread id into the shared ref so the adapter's
+      // run() can read it as roomId. Mirror the fetcherTcwRef pattern: update
+      // during render, no effect needed (the ref assignment is synchronous and
+      // safe in render — not state, not a DOM side-effect).
+      depsRef.current.activeThreadIdRef.current = threadId;
+
       const activeTcw = depsRef.current.tcw;
       const onActiveThreadModel = depsRef.current.onActiveThreadModel;
 

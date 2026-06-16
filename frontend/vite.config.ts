@@ -18,6 +18,15 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      // Redirect @tinycloud/node-sdk/core → @tinycloud/web-sdk in the browser
+      // bundle. agentDelegation.ts imports serializeDelegation from node-sdk/core
+      // (to avoid web-sdk's HTMLElement at test load time), but node-sdk/core
+      // bundles Node.js file-system code (existsSync, path.join) that can't work
+      // in a Vite browser build. web-sdk re-exports serializeDelegation without
+      // the Node.js deps, so it's the right target for the browser build.
+      // In bun test (where HTMLElement is absent) this alias does NOT apply, so
+      // tests continue using node-sdk/core as intended.
+      "@tinycloud/node-sdk/core": "@tinycloud/web-sdk",
       "@": path.resolve(rootDir, "./src"),
     },
   },
