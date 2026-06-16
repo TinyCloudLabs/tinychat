@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "TinyChat",
+    "slug": "tinychat-mobile",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "scheme": "tinychat",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "xyz.tinycloud.tinychat"
+    },
+    "android": {
+      "package": "xyz.tinycloud.tinychat"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-dev-client"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

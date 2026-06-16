@@ -1,0 +1,29 @@
+{
+  "name": "@tinychat/mobile",
+  "version": "0.0.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "bundle:ios": "expo export --platform ios",
+    "bundle:android": "expo export --platform android"
+  },
+  "dependencies": {
+    "@assistant-ui/react-native": "^0.1.23",
+    "expo": "^56.0.0",
+    "expo-dev-client": "~56.0.20",
+    "expo-router": "~56.2.10",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "4.25.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "typescript": "~5.9.2"
+  }
+}

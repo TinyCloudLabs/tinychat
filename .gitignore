@@ -24,3 +24,15 @@ test/.last-run.log
 
 # Smithers workflow audit artifacts (transient — one dir per feature workflow)
 .*-audit/
+
+# Mobile spike (throwaway risk-retirement)
+.mobile-spike/
+
+# Expo / mobile workspace build artifacts
+mobile/.expo/
+mobile/dist/
+mobile/node_modules/
+mobile/expo-env.d.ts
+mobile/web-build/
+mobile/ios/
+mobile/android/
