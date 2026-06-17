@@ -7,8 +7,10 @@ import { TIERS, type TierId } from "../billing/tiers.js";
 import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import {
   accumulateToolCalls,
+  buildCleanSynthesisMessages,
   createAgentChatHandler,
   orchestrateToolCalling,
+  parseInlineToolCalls,
   parseSseJson,
   type AgentChatConfig,
 } from "../routes/agent-chat.js";
@@ -30,6 +32,19 @@ function sseStream(frames: string[]): AsyncIterable<Uint8Array> {
 
 function dataFrame(obj: unknown): string {
   return `data: ${JSON.stringify(obj)}\n\n`;
+}
+
+/** Concatenate every forwarded delta.content across frames. */
+function forwardedContent(frames: string[]): string {
+  return frames
+    .map((f) => {
+      try {
+        return JSON.parse(f.replace(/^data: /, "").trim())?.choices?.[0]?.delta?.content ?? "";
+      } catch {
+        return "";
+      }
+    })
+    .join("");
 }
 
 function baseConfig(fetchImpl: typeof fetch): AgentChatConfig {
@@ -149,6 +164,48 @@ describe("accumulateToolCalls", () => {
     accumulateToolCalls(acc, [{ index: 0, function: { arguments: '{"que' } }]);
     accumulateToolCalls(acc, [{ index: 0, function: { arguments: 'ry":"x"}' } }]);
     expect(acc.get(0)).toEqual({ id: "call_1", name: "web_search", args: '{"query":"x"}' });
+  });
+});
+
+describe("parseInlineToolCalls", () => {
+  it("parses a single leaked tool_call block into name + JSON args", () => {
+    const markup =
+      "<tool_call>web_search<arg_key>query</arg_key><arg_value>Portugal match today</arg_value></tool_call>";
+    expect(parseInlineToolCalls(markup)).toEqual([
+      { name: "web_search", args: '{"query":"Portugal match today"}' },
+    ]);
+  });
+
+  it("parses two concatenated blocks", () => {
+    const markup =
+      "<tool_call>web_search<arg_key>query</arg_key><arg_value>a</arg_value></tool_call>" +
+      "<tool_call>web_search<arg_key>query</arg_key><arg_value>b</arg_value></tool_call>";
+    expect(parseInlineToolCalls(markup)).toEqual([
+      { name: "web_search", args: '{"query":"a"}' },
+      { name: "web_search", args: '{"query":"b"}' },
+    ]);
+  });
+
+  it("tolerates whitespace around name and args", () => {
+    const markup =
+      "  <tool_call> web_search <arg_key> query </arg_key>\n  <arg_value>spaced value</arg_value> </tool_call>";
+    expect(parseInlineToolCalls(markup)).toEqual([
+      { name: "web_search", args: '{"query":"spaced value"}' },
+    ]);
+  });
+
+  it("JSON-stringifies raw (unescaped) values and supports multiple arg pairs", () => {
+    const markup =
+      '<tool_call>some_tool<arg_key>query</arg_key><arg_value>he said "hi"</arg_value>' +
+      "<arg_key>limit</arg_key><arg_value>5</arg_value></tool_call>";
+    const out = parseInlineToolCalls(markup);
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe("some_tool");
+    expect(JSON.parse(out[0].args)).toEqual({ query: 'he said "hi"', limit: "5" });
+  });
+
+  it("returns [] for content with no markup", () => {
+    expect(parseInlineToolCalls("Just a normal answer mentioning nothing.")).toEqual([]);
   });
 });
 
@@ -277,6 +334,152 @@ describe("orchestrateToolCalling", () => {
     expect(frames.at(-1)).toBe("data: [DONE]\n\n");
   });
 
+  // Leaked-markup guard: a single GLM-style inline tool_call in delta.content
+  // (finish "stop") is never forwarded, gets parsed + dispatched, and the synthesis
+  // round's answer streams through.
+  it("detects a single leaked inline tool_call, never forwards it, dispatches + synthesizes", async () => {
+    const elizaCalls: Array<{ url: string; body: unknown }> = [];
+    let round = 0;
+    const leak =
+      "<tool_call>web_search<arg_key>query</arg_key><arg_value>Portugal match today June 11 2026</arg_value></tool_call>";
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        elizaCalls.push({ url: String(url), body: JSON.parse(init!.body as string) });
+        return new Response(
+          JSON.stringify({ ok: true, result: { text: "Portugal won 2-0." } }),
+          { status: 200 },
+        );
+      }
+      round += 1;
+      if (round === 1) {
+        // Leaks the native tool-call template as PLAIN TEXT with finish "stop".
+        return {
+          ok: true,
+          status: 200,
+          body: sseStream([
+            dataFrame({ choices: [{ delta: { content: leak }, finish_reason: "stop" }] }),
+          ]),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream([
+          dataFrame({ choices: [{ delta: { content: "Portugal won 2-0 today." }, finish_reason: "stop" }] }),
+        ]),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/glm-5.1",
+      messages: [{ role: "user", content: "did Portugal play today?" }],
+      entityId: "entity-9",
+      write: (f) => frames.push(f),
+    });
+
+    // (a) NO forwarded frame contains the raw markup.
+    expect(frames.some((f) => f.includes("<tool_call") || f.includes("<arg_key"))).toBe(false);
+    // (b) web_search was dispatched with the parsed query + a running/done activity.
+    expect(elizaCalls).toHaveLength(1);
+    expect(elizaCalls[0].url).toBe("https://eliza.test/tools/web_search");
+    expect(elizaCalls[0].body).toMatchObject({
+      args: { query: "Portugal match today June 11 2026" },
+      entityId: "entity-9",
+    });
+    expect(frames.some((f) => f.includes("tool_activity") && f.includes("running"))).toBe(true);
+    expect(frames.some((f) => f.includes("tool_activity") && f.includes("done"))).toBe(true);
+    // (c) the synthesized answer IS forwarded.
+    const text = forwardedContent(frames);
+    expect(text).toBe("Portugal won 2-0 today.");
+    // (d) usage/[DONE] frames still present.
+    expect(frames.some((f) => f.includes('"usage"'))).toBe(true);
+    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
+  // Leaked-markup guard: two concatenated inline tool_calls are both dispatched.
+  it("detects two concatenated leaked inline tool_calls and dispatches both", async () => {
+    const elizaCalls: Array<{ body: unknown }> = [];
+    let round = 0;
+    const leak =
+      "<tool_call>web_search<arg_key>query</arg_key><arg_value>q1</arg_value></tool_call>" +
+      "<tool_call>web_search<arg_key>query</arg_key><arg_value>q2</arg_value></tool_call>";
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        elizaCalls.push({ body: JSON.parse(init!.body as string) });
+        return new Response(JSON.stringify({ ok: true, result: { text: "r" } }), { status: 200 });
+      }
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true,
+          status: 200,
+          body: sseStream([
+            dataFrame({ choices: [{ delta: { content: leak }, finish_reason: "stop" }] }),
+          ]),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream([
+          dataFrame({ choices: [{ delta: { content: "Both done." }, finish_reason: "stop" }] }),
+        ]),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/glm-5.1",
+      messages: [{ role: "user", content: "two searches" }],
+      entityId: "e",
+      write: (f) => frames.push(f),
+    });
+
+    expect(frames.some((f) => f.includes("<tool_call") || f.includes("<arg_key"))).toBe(false);
+    expect(elizaCalls).toHaveLength(2);
+    expect((elizaCalls[0].body as { args: { query: string } }).args.query).toBe("q1");
+    expect((elizaCalls[1].body as { args: { query: string } }).args.query).toBe("q2");
+    expect(forwardedContent(frames)).toBe("Both done.");
+    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
+  // Regression: a plain answer that does NOT lead with markup streams through with
+  // no false leak detection and no spurious dispatch — even if it mentions tools.
+  it("does not false-trigger leak mode on a normal answer", async () => {
+    let elizaHit = false;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes("/tools/")) {
+        elizaHit = true;
+        return new Response(JSON.stringify({ ok: true, result: { text: "x" } }), { status: 200 });
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream([
+          dataFrame({ choices: [{ delta: { content: "You can use a " } }] }),
+          dataFrame({ choices: [{ delta: { content: "<tool_call> if you want." }, finish_reason: "stop" }] }),
+        ]),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "explain tool calls" }],
+      entityId: "e",
+      write: (f) => frames.push(f),
+    });
+
+    // The answer (incl. a non-leading mention of <tool_call>) is forwarded verbatim.
+    expect(forwardedContent(frames)).toBe("You can use a <tool_call> if you want.");
+    expect(elizaHit).toBe(false);
+    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
   it("stops after maxRounds even if the model keeps requesting tools", async () => {
     let redpillRounds = 0;
     const fetchImpl = (async (url: string) => {
@@ -311,6 +514,135 @@ describe("orchestrateToolCalling", () => {
 
     expect(redpillRounds).toBe(2);
     expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
+  // Issue B: on the forced final round with gathered tool results, issue a CLEAN
+  // SYNTHESIS request (no tools / no tool_choice, results inlined as user text) so
+  // gpt-oss-* — which ignores tool_choice:"none" and keeps re-calling — must answer.
+  it("forced round issues a clean-synthesis request (no tools) when tool results exist", async () => {
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    let elizaDispatches = 0;
+    let redpillRound = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        elizaDispatches += 1;
+        return new Response(
+          JSON.stringify({ ok: true, result: { text: "Lisbon is the capital. https://example.com/pt" } }),
+          { status: 200 },
+        );
+      }
+      upstreamBodies.push(JSON.parse(init!.body as string) as Record<string, unknown>);
+      redpillRound += 1;
+      if (redpillRound <= 2) {
+        // Rounds 0 and 1: keep emitting structured tool_calls (the gpt-oss behavior).
+        return {
+          ok: true,
+          status: 200,
+          body: sseStream([
+            dataFrame({
+              choices: [
+                {
+                  delta: { tool_calls: [{ index: 0, id: `c${redpillRound}`, function: { name: "web_search", arguments: '{"query":"capital of Portugal"}' } }] },
+                  finish_reason: "tool_calls",
+                },
+              ],
+            }),
+          ]),
+        } as unknown as Response;
+      }
+      // Forced round (round 2, maxRounds 3): clean synthesis → a real answer.
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream([
+          dataFrame({ id: "cmpl-synth", choices: [{ delta: { content: "Lisbon (https://example.com/pt)." }, finish_reason: "stop" }] }),
+          dataFrame({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 8 } }),
+        ]),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What is the capital of Portugal?" }],
+      entityId: "e",
+      write: (f) => frames.push(f),
+    });
+
+    // (c) web_search was dispatched on the earlier rounds.
+    expect(elizaDispatches).toBe(2);
+    expect(upstreamBodies).toHaveLength(3);
+
+    // Earlier rounds carried tools + tool_choice.
+    expect(upstreamBodies[0].tools).toBeDefined();
+    expect(upstreamBodies[0].tool_choice).toBe("auto");
+
+    // (a) the FINAL request has NO tools and NO tool_choice, and inlines the result + question.
+    const finalBody = upstreamBodies[2];
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
+    expect(finalBody.reasoning_effort).toBe("low");
+    const finalMessages = finalBody.messages as ChatMsg[];
+    expect(finalMessages[0].role).toBe("system");
+    expect(finalMessages[1].role).toBe("user");
+    expect(finalMessages[1].content).toContain("What is the capital of Portugal?");
+    expect(finalMessages[1].content).toContain("Lisbon is the capital. https://example.com/pt");
+    // The final request must NOT carry any role:"tool" message (reshaped, not continued).
+    expect(finalMessages.some((m) => m.role === "tool")).toBe(false);
+
+    // (b) the synthesized content is forwarded; (d) usage + [DONE] present.
+    expect(forwardedContent(frames)).toBe("Lisbon (https://example.com/pt).");
+    expect(frames.some((f) => f.includes('"usage"'))).toBe(true);
+    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
+  // Issue B regression: forced round reached with NO tool results (model answered
+  // directly) keeps the normal tool-enabled request and never reshapes.
+  it("does not reshape when the forced round has no tool results", async () => {
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        return new Response(JSON.stringify({ ok: true, result: { text: "x" } }), { status: 200 });
+      }
+      upstreamBodies.push(JSON.parse(init!.body as string) as Record<string, unknown>);
+      // Answer directly on round 0 — no tool call.
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream([
+          dataFrame({ choices: [{ delta: { content: "Direct answer." }, finish_reason: "stop" }] }),
+        ]),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "say hi" }],
+      entityId: "e",
+      write: (f) => frames.push(f),
+    });
+
+    // Only one upstream round, and it kept tools (no reshape).
+    expect(upstreamBodies).toHaveLength(1);
+    expect(upstreamBodies[0].tools).toBeDefined();
+    expect(forwardedContent(frames)).toBe("Direct answer.");
+    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
+  describe("buildCleanSynthesisMessages", () => {
+    it("inlines question + results into a system/user pair with no tool messages", () => {
+      const msgs = buildCleanSynthesisMessages("Q?", "result A\n\nresult B");
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0].role).toBe("system");
+      expect(msgs[1].role).toBe("user");
+      expect(msgs[1].content).toContain("Q?");
+      expect(msgs[1].content).toContain("result A");
+      expect(msgs[1].content).toContain("result B");
+      expect(msgs.some((m) => m.role === "tool")).toBe(false);
+    });
   });
 
   // A1: the final answer round's completion id is forwarded via idFrame

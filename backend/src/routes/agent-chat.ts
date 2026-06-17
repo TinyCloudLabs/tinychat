@@ -102,6 +102,46 @@ export function accumulateToolCalls(
   }
 }
 
+/**
+ * Parse leaked native tool-call markup out of `delta.content`.
+ *
+ * Some RedPill backends (e.g. the GLM Chutes/Tinfoil backend behind
+ * `phala/glm-5.1`) intermittently leak the model's native tool-call template into
+ * `delta.content` as PLAIN TEXT instead of structured `delta.tool_calls`, e.g.:
+ *
+ *   <tool_call>web_search<arg_key>query</arg_key><arg_value>news today</arg_value></tool_call>
+ *
+ * When that happens our loop never sees `delta.tool_calls`, finishes `stop`, and
+ * would stream the raw markup to the user as the "answer". This extracts every
+ * `<tool_call>…</tool_call>` block so we can dispatch the real tool instead.
+ *
+ * For each block we capture the tool NAME (text right after `<tool_call>` up to the
+ * first `<arg_key>`) and build a JSON args object from the (arg_key, arg_value)
+ * pairs in order. Values are NOT JSON-escaped in the markup, so we JSON.stringify
+ * the captured raw strings. `args` is returned as a JSON string to match the shape
+ * `dispatchTool`/`accumulateToolCalls` already feed downstream.
+ */
+export function parseInlineToolCalls(content: string): Array<{ name: string; args: string }> {
+  const calls: Array<{ name: string; args: string }> = [];
+  const blockRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  const argRe = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/g;
+  let block: RegExpExecArray | null;
+  while ((block = blockRe.exec(content)) !== null) {
+    const inner = block[1];
+    const firstArgKey = inner.indexOf("<arg_key>");
+    const name = (firstArgKey === -1 ? inner : inner.slice(0, firstArgKey)).trim();
+    if (!name) continue;
+    const args: Record<string, string> = {};
+    argRe.lastIndex = 0;
+    let pair: RegExpExecArray | null;
+    while ((pair = argRe.exec(inner)) !== null) {
+      args[pair[1].trim()] = pair[2];
+    }
+    calls.push({ name, args: JSON.stringify(args) });
+  }
+  return calls;
+}
+
 /** Parse an SSE byte stream into successive JSON `data:` payloads ([DONE] ends it). */
 export async function* parseSseJson(
   body: AsyncIterable<Uint8Array>,
@@ -145,6 +185,31 @@ export function idFrame(id: string): string {
 /** Emit a summed usage frame covering all rounds in the tool-calling loop. */
 export function usageFrame(promptTokens: number, completionTokens: number): string {
   return `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens } })}\n\n`;
+}
+
+/**
+ * Build the messages for a CLEAN SYNTHESIS request used on the forced final round.
+ *
+ * gpt-oss-* IGNORES `tool_choice:"none"` and keeps emitting structured `tool_calls`
+ * every round, never synthesizing — so on the forced round we abandon the tool
+ * conversation entirely and RESHAPE the gathered results into a plain user message
+ * with NO `tools` array (see buildCleanSynthesisRequest), making it literally
+ * impossible to re-call the tool. Dropping `tools[]` while keeping the `role:"tool"`
+ * messages does NOT work (still empty) — the results must be inlined as user text.
+ */
+export function buildCleanSynthesisMessages(question: string, results: string): ChatMsg[] {
+  return [
+    {
+      role: "system",
+      content:
+        "You are a helpful assistant. Answer the user's question using the web search results " +
+        "provided below. Cite the source URLs. Do not ask to search again.",
+    },
+    {
+      role: "user",
+      content: `Question: ${question}\n\nWeb search results:\n${results}\n\nAnswer concisely, citing sources.`,
+    },
+  ];
 }
 
 /**
@@ -209,6 +274,8 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = config.maxRounds ?? 3;
   const convo: ChatMsg[] = [...params.messages];
+  // The original question, for the clean-synthesis forced round (last user message).
+  const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
@@ -231,21 +298,44 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     // blank reply. "low" forces an immediate transition to the final/content channel.
     const isSynthesisRound = round > 0;
 
+    // On the forced final round, if tool results were already gathered, abandon the
+    // tool conversation and issue a CLEAN SYNTHESIS request: gpt-oss-* ignores
+    // tool_choice:"none" and keeps re-calling the tool, so we reshape the results
+    // into a plain user message with NO tools[] — the model then cannot re-call and
+    // produces a real cited answer. Only reshape when results exist; if the model
+    // never searched, fall through to the normal (tool-enabled) request.
+    const toolResults = convo.filter((m) => m.role === "tool");
+    const cleanSynthesis = forceAnswer && toolResults.length > 0;
+
     const upstream = await fetchImpl(`${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.redpillApiKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages: convo,
-        tools: [WEB_SEARCH_TOOL],
-        tool_choice: forceAnswer ? "none" : "auto",
-        ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
-        stream: true,
-        stream_options: { include_usage: true },
-      }),
+      body: JSON.stringify(
+        cleanSynthesis
+          ? {
+              model,
+              messages: buildCleanSynthesisMessages(
+                lastUserQuestion,
+                toolResults.map((m) => m.content).join("\n\n"),
+              ),
+              // NO tools / tool_choice — the model literally cannot emit a tool call.
+              reasoning_effort: "low",
+              stream: true,
+              stream_options: { include_usage: true },
+            }
+          : {
+              model,
+              messages: convo,
+              tools: [WEB_SEARCH_TOOL],
+              tool_choice: forceAnswer ? "none" : "auto",
+              ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
+              stream: true,
+              stream_options: { include_usage: true },
+            },
+      ),
     });
 
     if (!upstream.ok || !upstream.body) {
@@ -258,6 +348,26 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     let currentRoundId = "";
     let roundPromptTokens = 0;
     let roundCompletionTokens = 0;
+
+    // Prefix-sniffing buffer for the leaked-markup guard. Leaked native tool-call
+    // markup LEADS the content with `<tool_call` (possibly after whitespace), so we
+    // hold the first content until we can decide leak-vs-normal: once the trimmed
+    // run is long enough (or a `<`-led prefix is ruled out) we either flush it
+    // (normal answer → stream normally thereafter) or swallow it (leak → never
+    // forward, parse + dispatch on round end). A normal answer that merely MENTIONS
+    // `<tool_call` later still streams fine — only a LEADING marker trips leakMode.
+    const LEAK_PREFIX = "<tool_call";
+    let roundContent = "";
+    let pendingBuffer = "";
+    let decided = false;
+    let leakMode = false;
+
+    const flushPending = () => {
+      if (pendingBuffer) {
+        write(contentFrame(pendingBuffer));
+        pendingBuffer = "";
+      }
+    };
 
     for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>)) {
       if (typeof obj.id === "string" && obj.id) currentRoundId = obj.id;
@@ -272,7 +382,29 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         | { content?: string; tool_calls?: Array<Record<string, unknown>> }
         | undefined;
       if (typeof delta?.content === "string" && delta.content) {
-        write(contentFrame(delta.content));
+        roundContent += delta.content;
+        if (leakMode) {
+          // Already in leak mode: keep accumulating, forward nothing.
+        } else if (decided) {
+          write(contentFrame(delta.content));
+        } else {
+          pendingBuffer += delta.content;
+          const trimmed = pendingBuffer.trimStart();
+          if (trimmed.startsWith(LEAK_PREFIX)) {
+            leakMode = true;
+            decided = true;
+            pendingBuffer = ""; // swallow — never forward leaked markup
+          } else if (
+            // Can rule out a leading marker once the trimmed prefix is long enough
+            // to compare, or the first non-whitespace char clearly isn't `<`.
+            trimmed.length >= LEAK_PREFIX.length ||
+            (trimmed.length > 0 && !LEAK_PREFIX.startsWith(trimmed))
+          ) {
+            decided = true;
+            flushPending();
+          }
+          // else: still ambiguous (e.g. just "<too") — keep buffering.
+        }
       }
       if (Array.isArray(delta?.tool_calls)) {
         accumulateToolCalls(toolCalls, delta.tool_calls as Parameters<typeof accumulateToolCalls>[1]);
@@ -283,6 +415,27 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 
     totalPromptTokens += roundPromptTokens;
     totalCompletionTokens += roundCompletionTokens;
+
+    // Leaked-markup guard: if the round leaked native tool-call markup into content
+    // (leakMode, or a `stop` finish whose content still contains a `<tool_call>`),
+    // parse it and treat the result EXACTLY like structured tool calls so the
+    // existing dispatch block below runs. We never forward the raw markup.
+    if (toolCalls.size === 0 && (leakMode || (finish === "stop" && roundContent.includes("<tool_call>")))) {
+      const inlineCalls = parseInlineToolCalls(roundContent);
+      if (inlineCalls.length > 0) {
+        inlineCalls.forEach((c, i) => {
+          toolCalls.set(i, { id: `inline_${i}`, name: c.name, args: c.args });
+        });
+        finish = "tool_calls"; // run the existing structured-dispatch path below
+      } else {
+        // False alarm (markup-led but unparseable): don't silently drop the answer.
+        flushPending();
+      }
+    } else if (!leakMode) {
+      // Stream ended while still buffering an ambiguous-but-short prefix (e.g. the
+      // entire answer was "<3"): not a leak, so flush what we held.
+      flushPending();
+    }
 
     if (finish === "tool_calls" && toolCalls.size > 0) {
       const calls = [...toolCalls.values()];
