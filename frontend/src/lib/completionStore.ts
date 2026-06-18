@@ -74,7 +74,7 @@ export function onCompletion(listener: CompletionListener): () => void {
 // in-browser verify before merge.
 export const VERIFIABLE_MODELS = [
   "phala/qwen-2.5-7b-instruct",
-  "phala/gpt-oss-20b",
+  "phala/qwen3.5-27b",
   "phala/glm-5.2",
 ] as const;
 

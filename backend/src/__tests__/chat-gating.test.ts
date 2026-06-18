@@ -12,7 +12,7 @@ import { createChatRouter, defaultModel } from "../routes/chat.js";
 // Mirror of the frontend memory-extraction model id (frontend/src/chat/runtime.tsx
 // MEMORY_EXTRACTION_MODEL). Kept in sync here so ST3 regresses if either drifts
 // off the phala/-only tier gate.
-const MEMORY_EXTRACTION_MODEL = "phala/gpt-oss-20b";
+const MEMORY_EXTRACTION_MODEL = "phala/qwen-2.5-7b-instruct";
 
 const ORIGINAL_ENV = { ...process.env };
 const ADDR = "0xabc";
@@ -203,7 +203,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("phala/gpt-oss-20b"),
+      body: chatBody("phala/qwen3.5-27b"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -231,7 +231,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("phala/gpt-oss-20b"),
+      body: chatBody("phala/qwen3.5-27b"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -277,14 +277,14 @@ describe("POST /api/chat offered-model gate, paywall OFF (ST2)", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "phala/gpt-oss-20b", pricing: MINI_PRICING }],
+      models: [{ id: "phala/qwen3.5-27b", pricing: MINI_PRICING }],
       sseChunks,
     });
     try {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("phala/gpt-oss-20b"),
+        body: chatBody("phala/qwen3.5-27b"),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -305,7 +305,7 @@ describe("defaultModel() override validation (ST11)", () => {
       process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
       const value = defaultModel();
       expect(value.startsWith("phala/")).toBe(true);
-      expect(value).toBe("phala/gpt-oss-20b");
+      expect(value).toBe("phala/qwen3.5-27b");
       expect(isBlocklistedModel(value)).toBe(false);
       expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
     } finally {
@@ -320,7 +320,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
       process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
       expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
-      expect(defaultModel()).toBe("phala/gpt-oss-20b");
+      expect(defaultModel()).toBe("phala/qwen3.5-27b");
     } finally {
       console.warn = originalWarn;
     }
@@ -334,7 +334,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // so it is no longer offered — the default must not resolve to it.
       process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-120b";
       expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
-      expect(defaultModel()).toBe("phala/gpt-oss-20b");
+      expect(defaultModel()).toBe("phala/qwen3.5-27b");
     } finally {
       console.warn = originalWarn;
     }
@@ -364,7 +364,7 @@ describe("POST /api/chat recording", () => {
     const restore = stubRedPillFetch({
       models: [
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (not requestable)
-        { id: "phala/gpt-oss-20b", pricing: MINI_PRICING }, // requested verifiable model
+        { id: "phala/qwen3.5-27b", pricing: MINI_PRICING }, // requested verifiable model
         { id: "anthropic/claude-opus-4.1", pricing: OPUS_PRICING },
       ],
       sseChunks,
@@ -374,7 +374,7 @@ describe("POST /api/chat recording", () => {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("phala/gpt-oss-20b"),
+        body: chatBody("phala/qwen3.5-27b"),
       });
       expect(res.status).toBe(200);
       await res.text(); // drain
@@ -400,7 +400,7 @@ describe("POST /api/chat recording", () => {
     const restore = stubRedPillFetch({
       models: [
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (not requestable)
-        { id: "phala/gpt-oss-20b", pricing: MINI_PRICING }, // requested verifiable model
+        { id: "phala/qwen3.5-27b", pricing: MINI_PRICING }, // requested verifiable model
       ],
       sseChunks,
     });
@@ -409,7 +409,7 @@ describe("POST /api/chat recording", () => {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("phala/gpt-oss-20b", promptContent),
+        body: chatBody("phala/qwen3.5-27b", promptContent),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -432,7 +432,7 @@ describe("GET /api/chat/models annotation", () => {
       models: [
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // phala but NOT allowlisted (filtered out)
-        { id: "phala/gpt-oss-20b", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
+        { id: "phala/qwen3.5-27b", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
         { id: "phala/glm-5.2", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],
     });
@@ -454,9 +454,9 @@ describe("GET /api/chat/models annotation", () => {
         expect(typeof m.multiplier).toBe("number");
       }
       // phala model priced at the baseline (gpt-5-mini) rates → multiplier 1.
-      expect(byId["phala/gpt-oss-20b"].creditsPerKInput).toBe(2.5);
-      expect(byId["phala/gpt-oss-20b"].creditsPerKOutput).toBe(20);
-      expect(byId["phala/gpt-oss-20b"].multiplier).toBe(1);
+      expect(byId["phala/qwen3.5-27b"].creditsPerKInput).toBe(2.5);
+      expect(byId["phala/qwen3.5-27b"].creditsPerKOutput).toBe(20);
+      expect(byId["phala/qwen3.5-27b"].multiplier).toBe(1);
       // opus pricing snaps to 150/800 with 800/20 = 40 → multiplier 50.
       expect(byId["phala/glm-5.2"].creditsPerKInput).toBe(150);
       expect(byId["phala/glm-5.2"].creditsPerKOutput).toBe(800);
@@ -478,7 +478,7 @@ describe("GET /api/chat/models annotation", () => {
       models: [
         { id: "phala/kimi-k2.6", pricing: MINI_PRICING },
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // non-TEE extra
-        { id: "phala/gpt-oss-20b", pricing: MINI_PRICING },
+        { id: "phala/qwen3.5-27b", pricing: MINI_PRICING },
         { id: "phala/gemma-3-27b-it", pricing: MINI_PRICING },
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // phala but non-allowlisted extra
         { id: "phala/qwen-2.5-7b-instruct", pricing: MINI_PRICING },
@@ -493,7 +493,7 @@ describe("GET /api/chat/models annotation", () => {
       expect(ids).toEqual([
         // GREEN tier (fast → smart)
         "phala/qwen-2.5-7b-instruct",
-        "phala/gpt-oss-20b",
+        "phala/qwen3.5-27b",
         "phala/glm-5.2",
         // TEAL tier (fast → smart)
         "phala/qwen3-vl-30b-a3b-instruct",
@@ -514,7 +514,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // legacy non-TEE (filtered out)
         { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // phala but non-allowlisted (filtered out)
-        { id: "phala/gpt-oss-20b", pricing: MINI_PRICING }, // baseline anchor (default model)
+        { id: "phala/qwen3.5-27b", pricing: MINI_PRICING }, // baseline anchor (default model)
         { id: "phala/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
         { id: "phala/glm-5.2", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],

@@ -32,7 +32,7 @@ const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai
 // Default to a VERIFIABLE (GREEN tier) offered model so a model-less POST is
 // allowed on every tier instead of self-denying with a 402 (ST6). Overridable
 // via REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
-const DEFAULT_BASELINE_MODEL = "phala/gpt-oss-20b";
+const DEFAULT_BASELINE_MODEL = "phala/qwen3.5-27b";
 
 // ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale value that isn't
 // in the offered allowlist (e.g. a pre-PR `openai/gpt-5-mini`, or a now-unoffered

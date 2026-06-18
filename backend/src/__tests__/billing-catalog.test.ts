@@ -186,7 +186,7 @@ describe("PICKER_MODELS allowlist + isOfferedModel", () => {
   test("the allowlist is exactly the curated six, in canonical fast→smart green-then-teal order", () => {
     expect([...PICKER_MODELS]).toEqual([
       "phala/qwen-2.5-7b-instruct",
-      "phala/gpt-oss-20b",
+      "phala/qwen3.5-27b",
       "phala/glm-5.2",
       "phala/qwen3-vl-30b-a3b-instruct",
       "phala/gemma-3-27b-it",

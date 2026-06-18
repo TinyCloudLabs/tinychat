@@ -65,7 +65,7 @@ const EMPTY_OFFERED: ReadonlySet<string> = new Set();
  * proxy resolves this exactly as for chat; if the id is unavailable the
  * extraction call fails and the in-flight guard releases (memory stays put).
  */
-const MEMORY_EXTRACTION_MODEL = "phala/gpt-oss-20b";
+const MEMORY_EXTRACTION_MODEL = "phala/qwen-2.5-7b-instruct";
 
 /**
  * Per-call output cap on extraction. cl100k averages ~4 chars/token for

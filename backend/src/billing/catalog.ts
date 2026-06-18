@@ -60,12 +60,12 @@ export function isBlocklistedModel(id: string): boolean {
  *   GREEN ("Response verified"): a flat per-message signature path → tier 1.
  *   TEAL  ("Enclave attested"):  TEE-attestable but no flat signature → tier 2.
  *
- * Order matters: the picker preserves this order. Default = phala/gpt-oss-20b.
+ * Order matters: the picker preserves this order. Default = phala/qwen3.5-27b.
  */
 export const PICKER_MODELS = [
   // GREEN tier (tier-1 "Response verified" / verifiable)
   "phala/qwen-2.5-7b-instruct", // fast
-  "phala/gpt-oss-20b", // moderate ← DEFAULT
+  "phala/qwen3.5-27b", // moderate ← DEFAULT
   "phala/glm-5.2", // smart
   // TEAL tier (tier-2 "Enclave attested" / TEE-capable, not flat-signed)
   "phala/qwen3-vl-30b-a3b-instruct", // fast
