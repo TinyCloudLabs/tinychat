@@ -238,13 +238,31 @@ async function dispatchTool(
     body: JSON.stringify({ args, entityId, ...(roomId ? { roomId } : {}) }),
   });
   const body = (await res.json().catch(() => ({}))) as {
-    result?: { text?: string };
+    result?: {
+      text?: string;
+      data?: { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+    };
     error?: string;
   };
   if (!res.ok) {
     return `(tool ${call.name} failed: ${body.error ?? res.status})`;
   }
-  return body.result?.text ?? "";
+  // Forward the one-line summary AND the structured results (title/url/snippet)
+  // so the synthesis model can cite real source URLs. Returning only
+  // `result.text` left every model without a URL — they then hallucinated
+  // citations or honestly declined to cite (P4 failure, all models).
+  const summary = body.result?.text ?? "";
+  const results = body.result?.data?.results ?? [];
+  if (results.length === 0) return summary;
+  const sources = results
+    .map((r, i) => {
+      const parts = [`[${i + 1}] ${r.title ?? "(untitled)"}`];
+      if (r.url) parts.push(`    URL: ${r.url}`);
+      if (r.snippet) parts.push(`    ${r.snippet}`);
+      return parts.join("\n");
+    })
+    .join("\n");
+  return summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}`;
 }
 
 export interface OrchestrateParams {
