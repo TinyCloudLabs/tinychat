@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { CatalogFetchError, _resetCatalogCache, getCatalog } from "../billing/catalog.js";
+import {
+  CatalogFetchError,
+  PICKER_MODELS,
+  _resetCatalogCache,
+  getCatalog,
+  isBlocklistedModel,
+  isOfferedModel,
+} from "../billing/catalog.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -172,5 +179,37 @@ describe("getCatalog error handling", () => {
     }
     expect(thrown).toBeInstanceOf(CatalogFetchError);
     expect((thrown as CatalogFetchError).detail.kind).toBe("parse_failed");
+  });
+});
+
+describe("PICKER_MODELS allowlist + isOfferedModel", () => {
+  test("the allowlist is exactly the curated six, in canonical fast→smart green-then-teal order", () => {
+    expect([...PICKER_MODELS]).toEqual([
+      "phala/qwen-2.5-7b-instruct",
+      "phala/gpt-oss-20b",
+      "phala/glm-5.2",
+      "phala/qwen3-vl-30b-a3b-instruct",
+      "phala/gemma-3-27b-it",
+      "phala/kimi-k2.6",
+    ]);
+  });
+
+  test("isOfferedModel accepts each of the six and nothing else", () => {
+    for (const id of PICKER_MODELS) {
+      expect(isOfferedModel(id)).toBe(true);
+    }
+    // A valid TEE model that is NOT on the allowlist must be rejected (closes the
+    // non-verifiable-model-reaching-agent-path gap).
+    expect(isOfferedModel("phala/gpt-oss-120b")).toBe(false);
+    // A blocklisted phala/* alias is also not offered.
+    expect(isOfferedModel("phala/glm-4.7")).toBe(false);
+    // A non-phala model is never offered.
+    expect(isOfferedModel("openai/gpt-5-mini")).toBe(false);
+  });
+
+  test("no allowlisted model is on the mislabeled blocklist", () => {
+    for (const id of PICKER_MODELS) {
+      expect(isBlocklistedModel(id)).toBe(false);
+    }
   });
 });

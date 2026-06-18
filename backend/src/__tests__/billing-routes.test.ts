@@ -209,6 +209,9 @@ describe("POST /api/billing/checkout", () => {
 describe("GET /api/billing/rates (public)", () => {
   test("returns baseline and per-model credit rates without auth", async () => {
     process.env.REDPILL_API_KEY = "sk-rp-test";
+    // Pin the baseline to the route's built-in fallback so the assertion is
+    // independent of the local .env's REDPILL_DEFAULT_MODEL.
+    delete process.env.REDPILL_DEFAULT_MODEL;
     stubRedPillModels([
       { id: "openai/gpt-5-mini", pricing: { prompt: "0.00000025", completion: "0.000002" } },
       { id: "anthropic/claude-opus-4.1", pricing: { prompt: "0.000015", completion: "0.000075" } },

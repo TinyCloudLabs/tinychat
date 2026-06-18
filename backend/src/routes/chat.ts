@@ -12,6 +12,8 @@ import {
   CatalogFetchError,
   getCatalog,
   isBlocklistedModel,
+  isOfferedModel,
+  PICKER_MODELS,
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
@@ -27,28 +29,28 @@ import {
 // so the server boots cleanly even without a key configured.
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
-// Default to a VERIFIABLE phala/* model so a model-less POST is allowed on every
-// (phala/-only) tier instead of self-denying with a 402 (ST6). Overridable via
-// REDPILL_DEFAULT_MODEL. Must stay a phala/* id present in VERIFIABLE_MODELS and
-// absent from the mislabeled blocklist.
-const DEFAULT_BASELINE_MODEL = "phala/gpt-oss-120b";
+// Default to a VERIFIABLE (GREEN tier) offered model so a model-less POST is
+// allowed on every tier instead of self-denying with a 402 (ST6). Overridable
+// via REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
+const DEFAULT_BASELINE_MODEL = "phala/gpt-oss-20b";
 
-// ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale non-phala/* or
-// blocklisted value (e.g. a pre-PR `openai/gpt-5-mini`) would make every
-// model-less POST self-deny against the ST2 offered-model gate, so we warn
-// loudly and fall back to the verifiable baseline. Memoized per resolved env
-// value so the warning fires once (not per request) and stays deterministic.
+// ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale value that isn't
+// in the offered allowlist (e.g. a pre-PR `openai/gpt-5-mini`, or a now-unoffered
+// phala/* id) would make every model-less POST self-deny against the offered-
+// model gate, so we warn loudly and fall back to the curated baseline. Memoized
+// per resolved env value so the warning fires once (not per request) and stays
+// deterministic.
 let validatedDefault: { raw: string | undefined; value: string } | null = null;
 export function defaultModel(): string {
   const raw = process.env.REDPILL_DEFAULT_MODEL;
   if (validatedDefault && validatedDefault.raw === raw) return validatedDefault.value;
   let value = DEFAULT_BASELINE_MODEL;
   if (raw) {
-    if (raw.startsWith("phala/") && !isBlocklistedModel(raw)) {
+    if (isOfferedModel(raw)) {
       value = raw;
     } else {
       console.warn(
-        `[chat] REDPILL_DEFAULT_MODEL="${raw}" is not a verifiable phala/* model; ` +
+        `[chat] REDPILL_DEFAULT_MODEL="${raw}" is not an offered model; ` +
           `falling back to ${DEFAULT_BASELINE_MODEL}.`,
       );
     }
@@ -195,16 +197,16 @@ export function createChatRouter() {
     }
 
     // ── Offered-model gate (authoritative; enforced regardless of the paywall) ─
-    // This is a confidential-inference product: only `phala/*` (TEE-attestable)
-    // models are offered. GET /models filters to `phala/*` unconditionally, but a
-    // direct POST bypasses that view — so mirror the filter here, BEFORE any
+    // This is a confidential-inference product: only the curated picker allowlist
+    // (PICKER_MODELS) is offered. GET /models filters to that same allowlist, but
+    // a direct POST bypasses that view — so mirror the filter here, BEFORE any
     // upstream fetch or billing, so a non-offered model can never be proxied even
     // when the paywall is off (the default deployment). Tier/credit gating stays
     // inside the paywall block below (ST2).
-    if (!resolvedModel.startsWith("phala/")) {
+    if (!isOfferedModel(resolvedModel)) {
       res.status(403).json({
         error: "model_not_offered",
-        message: `Model ${resolvedModel} is not offered. Only verifiable phala/* models are available.`,
+        message: `Model ${resolvedModel} is not offered. Only the curated set of verifiable models is available.`,
       });
       return;
     }
@@ -428,11 +430,16 @@ export function createChatRouter() {
     // the multiplier anchor is resolvable even when the default is a phala/* model.
     const baselineRates = resolveRates(catalog, defaultModel());
 
-    // This is a confidential-inference product: only offer models that can be
-    // attested in a TEE (the `phala/*` namespace). Non-TEE (tier-0) models can't be
-    // verified at all, so they're not listed. (Billing still uses the full catalog
-    // above; the mislabeled-model blocklist already pruned getCatalog.)
-    const visible = catalog.filter((m) => m.id.startsWith("phala/"));
+    // This is a confidential-inference product: only the curated picker allowlist
+    // (PICKER_MODELS) is offered. We iterate the allowlist (not the catalog) so the
+    // picker preserves the canonical fast→smart, green-then-teal display order;
+    // any allowlist model absent from the upstream catalog is simply skipped.
+    // (Billing still uses the full catalog above; the mislabeled-model blocklist
+    // already pruned getCatalog.)
+    const byCatalogId = new Map(catalog.map((m) => [m.id, m]));
+    const visible: CatalogModel[] = PICKER_MODELS.map((id) => byCatalogId.get(id)).filter(
+      (m): m is CatalogModel => m !== undefined,
+    );
 
     const annotated = visible.map((m) => {
       const modelRates = ratesForModel(m);

@@ -23,7 +23,7 @@ import { createDelegationRouter } from "./routes/delegations.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
-import { isBlocklistedModel } from "./billing/catalog.js";
+import { isOfferedModel } from "./billing/catalog.js";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "./entity-id.js";
 import { createSignatureRouter } from "./routes/signature.js";
 import { createNrasProxyRouter } from "./routes/nras-proxy.js";
@@ -147,7 +147,8 @@ async function main() {
         elizaServiceSecret: ELIZA_SERVICE_SECRET,
         authMiddleware,
         // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
-        // is configured; reuse chat.ts's offered-model gate (phala/* + blocklist).
+        // is configured; reuse the canonical offered-model allowlist so the agent
+        // tool path accepts only the curated picker models (same gate as the relay).
         ...(redpillApiKey
           ? {
               chat: {
@@ -158,7 +159,7 @@ async function main() {
                 redpillApiKey,
                 redpillBaseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,
-                isModelOffered: (m: string) => m.startsWith("phala/") && !isBlocklistedModel(m),
+                isModelOffered: (m: string) => isOfferedModel(m),
               },
             }
           : {}),

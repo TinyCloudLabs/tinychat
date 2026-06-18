@@ -49,6 +49,43 @@ export function isBlocklistedModel(id: string): boolean {
   return MISLABELED_BLOCKLIST.has(id);
 }
 
+/**
+ * Canonical picker allowlist — the ONLY models tinychat offers, in display
+ * order (fast → smart, green tier then teal tier). This is the single source of
+ * truth for both the picker contents (GET /api/chat/models) and the offered-
+ * model gate on every relay/agent POST. A model NOT in this list is never
+ * listed, never proxied, and never reachable by the agent tool path.
+ *
+ * Two badge tiers (see frontend completionStore.ts):
+ *   GREEN ("Response verified"): a flat per-message signature path → tier 1.
+ *   TEAL  ("Enclave attested"):  TEE-attestable but no flat signature → tier 2.
+ *
+ * Order matters: the picker preserves this order. Default = phala/gpt-oss-20b.
+ */
+export const PICKER_MODELS = [
+  // GREEN tier (tier-1 "Response verified" / verifiable)
+  "phala/qwen-2.5-7b-instruct", // fast
+  "phala/gpt-oss-20b", // moderate ← DEFAULT
+  "phala/glm-5.2", // smart
+  // TEAL tier (tier-2 "Enclave attested" / TEE-capable, not flat-signed)
+  "phala/qwen3-vl-30b-a3b-instruct", // fast
+  "phala/gemma-3-27b-it", // moderate
+  "phala/kimi-k2.6", // smart
+] as const;
+
+const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
+
+/**
+ * True when the model id is an offered model — an exact member of the picker
+ * allowlist. Used by the offered-model gate on every relay/agent POST and to
+ * filter the display catalog (see chat.ts). Replaces the older
+ * `startsWith("phala/") && !isBlocklistedModel()` heuristic so only the curated
+ * six are reachable.
+ */
+export function isOfferedModel(id: string): boolean {
+  return PICKER_MODEL_SET.has(id);
+}
+
 /** Clear the in-memory catalog cache. Exposed for tests. */
 export function _resetCatalogCache(): void {
   cache = null;
