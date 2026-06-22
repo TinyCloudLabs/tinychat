@@ -182,6 +182,88 @@ describe("getCatalog error handling", () => {
   });
 });
 
+describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
+  test("retries ONCE on a transient fetch failure, then succeeds", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("network blip");
+      return new Response(JSON.stringify({ data: [{ id: "phala/qwen3.5-27b" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const catalog = await getCatalog();
+    expect(calls).toBe(2);
+    expect(catalog.map((m) => m.id)).toEqual(["phala/qwen3.5-27b"]);
+  });
+
+  test("does NOT retry an upstream_not_ok response (single fetch, throws cold)", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response("rate limited", { status: 429, statusText: "Too Many Requests" });
+    }) as typeof fetch;
+    let thrown: unknown;
+    try {
+      await getCatalog();
+    } catch (e) {
+      thrown = e;
+    }
+    // No prior cache → still throws; upstream_not_ok is definitive, not retried.
+    expect(calls).toBe(1);
+    expect(thrown).toBeInstanceOf(CatalogFetchError);
+    expect((thrown as CatalogFetchError).detail.kind).toBe("upstream_not_ok");
+  });
+
+  test("serves the stale cache when a post-cache refresh fetch fails", async () => {
+    // First fetch succeeds and populates the cache.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "phala/qwen3.5-27b" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const first = await getCatalog();
+    expect(first.map((m) => m.id)).toEqual(["phala/qwen3.5-27b"]);
+
+    // Force the cache to be considered expired so the next call refetches.
+    // (CACHE_TTL_MS is 5min; fast-forward Date.now past it.)
+    const realNow = Date.now;
+    Date.now = () => realNow() + 6 * 60 * 1000;
+
+    // Now make every subsequent fetch fail (network down — also exhausts the retry).
+    let refreshCalls = 0;
+    globalThis.fetch = (async () => {
+      refreshCalls += 1;
+      throw new Error("network down");
+    }) as typeof fetch;
+
+    try {
+      const stale = await getCatalog();
+      // The last-good list is returned silently instead of throwing.
+      expect(stale.map((m) => m.id)).toEqual(["phala/qwen3.5-27b"]);
+      // fetch_failed is retried up to CATALOG_FETCH_ATTEMPTS (3) before serving stale.
+      expect(refreshCalls).toBe(3);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("throws CatalogFetchError when there is NO cache at all (cold start)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    let thrown: unknown;
+    try {
+      await getCatalog();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(CatalogFetchError);
+    expect((thrown as CatalogFetchError).detail.kind).toBe("fetch_failed");
+  });
+});
+
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
   test("the allowlist is exactly the curated six, in canonical fast→smart green-then-teal order", () => {
     expect([...PICKER_MODELS]).toEqual([

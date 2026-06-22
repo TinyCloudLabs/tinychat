@@ -144,6 +144,27 @@ function resolveRates(catalog: CatalogModel[], modelId: string): ModelRates {
   return ratesForModel(entry ?? { id: modelId, pricing: null });
 }
 
+/** Per-model tier-gating annotation shared by the full (with-rates) and degraded
+ *  (no-rates) /models paths. Tier gating is static (no catalog needed): when the
+ *  paywall is off every model is allowed; otherwise allowance is checked against
+ *  the resolved tier and a `requiredTier` is added for denied models. The rate
+ *  fields are layered on by the caller (omitted entirely in the degraded path
+ *  since pricing is unavailable). */
+function gateAnnotation(
+  id: string,
+  gating: boolean,
+  tier: TierId,
+): { id: string; allowed: boolean; requiredTier?: TierId } {
+  if (!gating) return { id, allowed: true };
+  const allowed = isModelAllowed(tier, id);
+  const requiredTier = allowed ? undefined : requiredTierForModel(id) ?? undefined;
+  return {
+    id,
+    allowed,
+    ...(requiredTier && requiredTier !== "free" ? { requiredTier } : {}),
+  };
+}
+
 // ── Router factory ───────────────────────────────────────────────────────────
 
 export function createChatRouter() {
@@ -393,20 +414,43 @@ export function createChatRouter() {
     try {
       catalog = await getCatalog();
     } catch (error: unknown) {
+      // Catalog flakiness (RedPill /models latency-spikes while inference is fine)
+      // must never strand the picker empty. getCatalog already serves a stale
+      // cache when one exists, so reaching here means a COLD upstream failure with
+      // no last-good list. Degrade to a usable 200: the curated six (PICKER_MODELS)
+      // with tier gating still applied but rate fields omitted (pricing unknown).
+      // The frontend tolerates missing rates (the multiplier badge only shows when
+      // multiplier>1), so degraded entries render and are selectable.
       if (error instanceof CatalogFetchError) {
-        const detail = error.detail;
-        if (detail.kind === "upstream_not_ok") {
-          res.status(502).json({
-            error: "upstream_error",
-            message: `RedPill models endpoint returned ${detail.statusCode}: ${detail.body}`,
-          });
-          return;
+        console.warn(
+          "[chat] /models degraded to PICKER_MODELS (catalog unavailable):",
+          error.detail.kind,
+          error.detail.kind === "upstream_not_ok"
+            ? `${error.detail.statusCode}: ${error.detail.body}`
+            : (error.detail.cause ?? error),
+        );
+
+        // Tier gating is static and needs no catalog. If even resolveTier throws
+        // in this degraded path, default to allowed:true rather than 500 — keeping
+        // the picker usable is the whole point of degrading.
+        let degradedTier: TierId = "free";
+        let degradedGating = paywallEnabled();
+        if (degradedGating) {
+          try {
+            degradedTier = (await resolveTier(req.user?.address ?? "")).tier;
+          } catch (tierError) {
+            console.warn(
+              "[chat] /models degraded: tier resolution also failed; allowing all:",
+              tierError,
+            );
+            degradedGating = false;
+          }
         }
-        if (detail.kind === "parse_failed") {
-          handleRouteError(res, detail.cause, "parse models response");
-          return;
-        }
-        handleRouteError(res, detail.cause, "fetch models");
+
+        const degraded = PICKER_MODELS.map((id) =>
+          gateAnnotation(id, degradedGating, degradedTier),
+        );
+        res.json({ models: degraded });
         return;
       }
       handleRouteError(res, error, "fetch models");
@@ -448,15 +492,7 @@ export function createChatRouter() {
         creditsPerKOutput: modelRates.creditsPerKOutput,
         multiplier: multiplierFor(modelRates, baselineRates),
       };
-      if (!gating) return { id: m.id, allowed: true, ...rateFields };
-      const allowed = isModelAllowed(tier, m.id);
-      const requiredTier = allowed ? undefined : requiredTierForModel(m.id) ?? undefined;
-      return {
-        id: m.id,
-        allowed,
-        ...(requiredTier && requiredTier !== "free" ? { requiredTier } : {}),
-        ...rateFields,
-      };
+      return { ...gateAnnotation(m.id, gating, tier), ...rateFields };
     });
 
     res.json({ models: annotated });

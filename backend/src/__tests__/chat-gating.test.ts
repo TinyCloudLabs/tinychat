@@ -552,6 +552,91 @@ describe("GET /api/chat/models annotation", () => {
   });
 });
 
+describe("GET /api/chat/models graceful degradation (catalog unavailable)", () => {
+  /**
+   * Stub that fails every RedPill /models fetch (simulating the latency-spike /
+   * hang that trips the timeout) while passing localhost through. getCatalog has
+   * no prior cache here (reset each test) → it throws CatalogFetchError after its
+   * single retry, and the handler degrades to the curated six.
+   */
+  function stubModelsFetchFailing(): () => void {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.redpill.ai") && url.endsWith("/models")) {
+        throw new Error("simulated catalog hang/network failure");
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    return () => {
+      globalThis.fetch = originalFetch;
+    };
+  }
+
+  const CURATED_SIX = [
+    "phala/qwen-2.5-7b-instruct",
+    "phala/qwen3.5-27b",
+    "phala/glm-5.2",
+    "phala/qwen3-vl-30b-a3b-instruct",
+    "phala/gemma-3-27b-it",
+    "phala/kimi-k2.6",
+  ];
+
+  test("returns the curated six (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const restore = stubModelsFetchFailing();
+    try {
+      const res = await request(createApp(), "/api/chat/models");
+      // Degraded but USABLE — not a 502/500 error.
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      const ids = body.models.map((m: any) => m.id);
+      expect(ids).toEqual(CURATED_SIX);
+      // Paywall off → all allowed; rate fields OMITTED (pricing unavailable).
+      for (const m of body.models) {
+        expect(m.allowed).toBe(true);
+        expect("multiplier" in m).toBe(false);
+        expect("creditsPerKInput" in m).toBe(false);
+        expect("creditsPerKOutput" in m).toBe(false);
+        expect("requiredTier" in m).toBe(false);
+      }
+      assertNoDollarLeak(body);
+    } finally {
+      restore();
+    }
+  });
+
+  test("degraded list still applies tier gating when the paywall is on", async () => {
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    const restore = stubModelsFetchFailing();
+    try {
+      const res = await request(createApp(), "/api/chat/models");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      const ids = body.models.map((m: any) => m.id);
+      expect(ids).toEqual(CURATED_SIX);
+      // Every entry carries an `allowed` boolean and no rate fields.
+      for (const m of body.models) {
+        expect(typeof m.allowed).toBe("boolean");
+        expect("multiplier" in m).toBe(false);
+      }
+      assertNoDollarLeak(body);
+    } finally {
+      restore();
+    }
+  });
+
+  test("missing REDPILL_API_KEY is still a 500 no_api_key (real misconfig, not flakiness)", async () => {
+    delete process.env.REDPILL_API_KEY;
+    const res = await request(createApp(), "/api/chat/models");
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("no_api_key");
+  });
+});
+
 describe("POST /api/chat default + memory-extraction models (ST3, ST6)", () => {
   test("ST3: memory-extraction model is tier-allowed under the paywall (no 402)", async () => {
     // The id is a verifiable phala/* model: phala-prefixed (tier-allowed) and

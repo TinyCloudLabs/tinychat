@@ -10,6 +10,17 @@
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
 const CACHE_TTL_MS = 5 * 60 * 1000;
+// Hard ceiling on a single catalog fetch. RedPill's /models is "up" but its
+// gateway has flaky TLS termination — ~30% of handshakes stall, and successful
+// ones can take up to ~12s — while inference is fine. Measured 200s arrive in
+// 1–12s, so 30s comfortably catches a slow-but-good response while still
+// tripping the retry/serve-stale path on a true hang.
+const CATALOG_FETCH_TIMEOUT_MS = 30_000;
+// Total attempts per refresh (1 initial + retries). Per-attempt failure runs
+// ~30% right now, so 3 attempts ≈ 97% success per refresh — enough to populate
+// the cache, after which serve-stale shields callers for the rest of an outage.
+const CATALOG_FETCH_ATTEMPTS = 3;
+const CATALOG_RETRY_BACKOFF_MS = 300;
 
 export interface CatalogModel {
   id: string;
@@ -133,29 +144,24 @@ function parsePricing(raw: unknown): CatalogModel["pricing"] {
 }
 
 /**
- * Return the cached catalog, fetching from RedPill if the cache is empty or
- * expired. Throws CatalogFetchError on any failure so callers can map to the
- * appropriate 500/502 response.
+ * One upstream fetch + parse attempt. Throws a typed CatalogFetchError on any
+ * failure (fetch_failed for network/timeout/missing-key, upstream_not_ok for a
+ * definitive HTTP error, parse_failed for a malformed body). Does NOT touch the
+ * cache — the caller decides whether to commit the result or serve stale.
  */
-export async function getCatalog(): Promise<CatalogModel[]> {
-  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-    return cache.models;
-  }
-
-  const apiKey = process.env.REDPILL_API_KEY;
-  if (!apiKey) {
-    throw new CatalogFetchError({
-      kind: "fetch_failed",
-      cause: new Error("REDPILL_API_KEY is not configured"),
-    });
-  }
-
+async function fetchCatalogOnce(apiKey: string): Promise<CatalogModel[]> {
   let upstreamRes: globalThis.Response;
   try {
     upstreamRes = await fetch(`${REDPILL_BASE_URL}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS),
+      // Reuse the connection across the 5-min polls so we don't pay (and gamble
+      // on) a fresh TLS handshake every time — the gateway's flakiness is in the
+      // handshake, so a warm connection sidesteps most of it.
+      keepalive: true,
     });
   } catch (cause) {
+    // Network error OR the AbortSignal.timeout firing both surface here.
     throw new CatalogFetchError({ kind: "fetch_failed", cause });
   }
 
@@ -176,11 +182,71 @@ export async function getCatalog(): Promise<CatalogModel[]> {
   }
 
   const raw = (data as { data?: Array<{ id?: unknown; pricing?: unknown }> }).data ?? [];
-  const models: CatalogModel[] = raw
+  return raw
     .filter((m) => typeof m.id === "string" && m.id)
     .filter((m) => !MISLABELED_BLOCKLIST.has(m.id as string))
     .map((m) => ({ id: m.id as string, pricing: parsePricing(m.pricing) }));
+}
 
-  cache = { models, fetchedAt: Date.now() };
-  return models;
+/**
+ * Return the cached catalog, refreshing from RedPill when the cache is empty or
+ * expired.
+ *
+ * Resilience contract (RedPill /models gateway has flaky TLS while inference is fine):
+ *   - Each attempt is bounded by CATALOG_FETCH_TIMEOUT_MS.
+ *   - A transient failure (fetch_failed network/timeout, or parse_failed from a
+ *     body truncated by the timeout) is retried up to CATALOG_FETCH_ATTEMPTS
+ *     total with a short backoff. A definitive HTTP error (upstream_not_ok) is
+ *     NOT retried — retrying a real 4xx/5xx would only stall callers.
+ *   - SERVE-STALE: if a refresh fails for ANY reason and a previous cache exists,
+ *     the last-good list is returned silently instead of throwing. Once the
+ *     catalog has ever loaded, later flakiness can never strand the picker.
+ *   - CatalogFetchError is thrown ONLY when there is no cache at all (cold start
+ *     with a broken upstream) so callers can degrade to PICKER_MODELS.
+ */
+export async function getCatalog(): Promise<CatalogModel[]> {
+  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
+    return cache.models;
+  }
+
+  const apiKey = process.env.REDPILL_API_KEY;
+  if (!apiKey) {
+    // Missing key is a hard misconfiguration; preserve the fetch_failed throw.
+    // A pre-existing cache shouldn't paper over a key that has gone away.
+    throw new CatalogFetchError({
+      kind: "fetch_failed",
+      cause: new Error("REDPILL_API_KEY is not configured"),
+    });
+  }
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= CATALOG_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const models = await fetchCatalogOnce(apiKey);
+      cache = { models, fetchedAt: Date.now() };
+      return models;
+    } catch (error) {
+      lastError = error;
+      // Only transient failures are worth retrying; a definitive HTTP error is not.
+      const retryable =
+        error instanceof CatalogFetchError &&
+        (error.detail.kind === "fetch_failed" || error.detail.kind === "parse_failed");
+      if (!retryable || attempt === CATALOG_FETCH_ATTEMPTS) break;
+      await new Promise((r) => setTimeout(r, CATALOG_RETRY_BACKOFF_MS));
+    }
+  }
+  // Exhausted attempts (or hit a non-retryable error): serve stale or throw.
+  return serveStaleOrThrow(lastError);
+}
+
+/**
+ * On a failed refresh, return the last-good cache if one exists; otherwise
+ * rethrow so cold-start callers can degrade. The cache age is left untouched so
+ * a later successful refresh still happens once TTL has elapsed.
+ */
+function serveStaleOrThrow(error: unknown): CatalogModel[] {
+  if (cache) {
+    return cache.models;
+  }
+  throw error;
 }
