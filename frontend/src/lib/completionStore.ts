@@ -61,24 +61,21 @@ export function onCompletion(listener: CompletionListener): () => void {
  * TO EXTEND: confirm the model verifies GREEN in a REAL browser first (on-chain
  * DCAP + signature both pass), then add its exact id here. Never guess.
  */
-// The confirmed tier-1 set — each verified live (2026-06-09) to return a real
-// per-message signature that ECDSA-recovers to its attested signing_address.
-// Models whose phala/ alias serves a DIFFERENTLY-named model (deepseek-chat-v3.1,
-// qwen3-30b-a3b-instruct-2507) are deliberately EXCLUDED and dropped from the
-// catalog (backend/src/billing/catalog.ts) — we don't hand a green "verified"
-// badge to a deceptively-labeled model.
+// The confirmed tier-1 (GREEN, "Response verified") set — the curated picker's
+// green tier. Each publishes the FLAT attestation shape so the per-message
+// signature can ECDSA-recover to its attested signing_address in-browser. These
+// three are exactly the GREEN tier of the picker allowlist (backend
+// PICKER_MODELS); the other three offered models (qwen3-vl-30b-a3b-instruct,
+// gemma-3-27b-it, kimi-k2.6) are TEAL ("Enclave attested") — TEE-attestable but
+// not flat-signed, so they reach tier 2 via isTeeCapableModel below.
+//
+// NOTE: the green flat-attestation shape was confirmed at the attestation-report
+// level only; each green badge (especially glm-5.2) still needs one live
+// in-browser verify before merge.
 export const VERIFIABLE_MODELS = [
-  "phala/gpt-oss-120b",
-  "phala/gpt-oss-20b",
-  "phala/deepseek-v4-flash",
-  "phala/gemma-3-27b-it",
   "phala/qwen-2.5-7b-instruct",
-  "phala/glm-4.7-flash",
   "phala/qwen3.5-27b",
-  "phala/qwen3.6-35b-a3b",
-  "phala/uncensored-24b",
-  "phala/gemma-4-26b-a4b-uncensored",
-  "phala/qwen3.6-35b-a3b-uncensored",
+  "phala/glm-5.2",
 ] as const;
 
 const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);

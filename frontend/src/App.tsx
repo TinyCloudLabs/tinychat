@@ -18,6 +18,8 @@ import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
+import { useAgentEnablement } from "./chat/useAgentEnablement";
+import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import { DEFAULT_MODEL, getSetting, readMemoryCache, setSetting } from "./lib/threadStore";
@@ -46,6 +48,8 @@ import {
 } from "lucide-react";
 import { isTeeCapableModel, isVerifiableModel } from "./lib/completionStore";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
+import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -368,6 +372,26 @@ export function App() {
     });
   }, [remediateUnavailableModel]);
 
+  // Mirror the paywall + model-selection subscriptions for the agent path.
+  // agentChatApi.ts emits these because chatApi.ts's emitters are module-private.
+  useEffect(() => {
+    return onAgentPaywallError((payload) => {
+      const actionable = isPaywallActionable(payload);
+      if (actionable) {
+        void refreshBillingStatus();
+        setPricingOpen(true);
+        return;
+      }
+      remediateUnavailableModel();
+    });
+  }, [refreshBillingStatus, remediateUnavailableModel]);
+
+  useEffect(() => {
+    return onAgentModelSelectionError(() => {
+      remediateUnavailableModel();
+    });
+  }, [remediateUnavailableModel]);
+
   // Handle Stripe Checkout redirect-back: ?billing=success | ?billing=cancelled.
   // Success → refetch status + show a brief notice; cancelled → silent. Either
   // way, strip the param so a refresh doesn't re-trigger.
@@ -476,6 +500,8 @@ export function App() {
     // Drop the in-memory history prefetch cache and stop its queue — it holds
     // the signed-out account's message docs.
     historyPrefetch.clear();
+    // Clear the agent session cache so the next sign-in re-probes.
+    clearAgentSessionCache();
     if (typeof window !== "undefined") {
       try {
         window.localStorage.removeItem(MODEL_STORAGE_KEY);
@@ -1152,6 +1178,11 @@ function ChatWorkspace(props: {
   sidebarOpen: boolean;
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
+  // C2: stable ref written by the per-thread Provider so the adapter knows roomId.
+  const activeThreadIdRef = useRef<string | null>(null);
+  // C3: stable ref read by the adapter at request time to branch agent vs plain relay.
+  const agentEnabledRef = useRef(false);
+
   const deps = useMemo(
     () => ({
       tcw: props.tcw,
@@ -1161,6 +1192,8 @@ function ChatWorkspace(props: {
       memoryRef: props.memoryRef,
       onActiveThreadModel: props.onActiveThreadModel,
       onMemoryUpdated: props.onMemoryUpdated,
+      activeThreadIdRef,
+      agentEnabledRef,
     }),
     [
       props.tcw,
@@ -1169,6 +1202,7 @@ function ChatWorkspace(props: {
       props.memoryRef,
       props.onActiveThreadModel,
       props.onMemoryUpdated,
+      // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
     ],
   );
 
@@ -1177,6 +1211,18 @@ function ChatWorkspace(props: {
     () => props.setSidebarOpen(false),
     [props.setSidebarOpen],
   );
+
+  // C3: capability probe + affordance state.
+  const { capability, enableError, enabling, onEnable, silentlyEnabled } = useAgentEnablement({
+    backendUrl: BACKEND_URL,
+    sessionStore: props.sessionStore,
+    tcw: props.tcw,
+    agentEnabledRef,
+    activeThreadIdRef,
+    appName: APP_NAME,
+    openkeyHost: OPENKEY_HOST,
+    tinycloudHosts: props.tcw.hosts,
+  });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -1197,6 +1243,14 @@ function ChatWorkspace(props: {
           <ThreadList onNavigate={closeSidebar} />
         </SheetContent>
       </Sheet>
+      {/* C3: one-time "Enable agent memory & tools" affordance (hidden when unavailable). */}
+      <AgentEnablementBanner
+        capability={capability}
+        enableError={enableError}
+        enabling={enabling}
+        onEnable={onEnable}
+        silentlyEnabled={silentlyEnabled}
+      />
     </AssistantRuntimeProvider>
   );
 }

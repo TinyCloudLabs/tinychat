@@ -12,6 +12,8 @@ import {
   CatalogFetchError,
   getCatalog,
   isBlocklistedModel,
+  isOfferedModel,
+  PICKER_MODELS,
   type CatalogModel,
 } from "../billing/catalog.js";
 import {
@@ -27,28 +29,28 @@ import {
 // so the server boots cleanly even without a key configured.
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
-// Default to a VERIFIABLE phala/* model so a model-less POST is allowed on every
-// (phala/-only) tier instead of self-denying with a 402 (ST6). Overridable via
-// REDPILL_DEFAULT_MODEL. Must stay a phala/* id present in VERIFIABLE_MODELS and
-// absent from the mislabeled blocklist.
-const DEFAULT_BASELINE_MODEL = "phala/gpt-oss-120b";
+// Default to a VERIFIABLE (GREEN tier) offered model so a model-less POST is
+// allowed on every tier instead of self-denying with a 402 (ST6). Overridable
+// via REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
+const DEFAULT_BASELINE_MODEL = "phala/qwen3.5-27b";
 
-// ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale non-phala/* or
-// blocklisted value (e.g. a pre-PR `openai/gpt-5-mini`) would make every
-// model-less POST self-deny against the ST2 offered-model gate, so we warn
-// loudly and fall back to the verifiable baseline. Memoized per resolved env
-// value so the warning fires once (not per request) and stays deterministic.
+// ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale value that isn't
+// in the offered allowlist (e.g. a pre-PR `openai/gpt-5-mini`, or a now-unoffered
+// phala/* id) would make every model-less POST self-deny against the offered-
+// model gate, so we warn loudly and fall back to the curated baseline. Memoized
+// per resolved env value so the warning fires once (not per request) and stays
+// deterministic.
 let validatedDefault: { raw: string | undefined; value: string } | null = null;
 export function defaultModel(): string {
   const raw = process.env.REDPILL_DEFAULT_MODEL;
   if (validatedDefault && validatedDefault.raw === raw) return validatedDefault.value;
   let value = DEFAULT_BASELINE_MODEL;
   if (raw) {
-    if (raw.startsWith("phala/") && !isBlocklistedModel(raw)) {
+    if (isOfferedModel(raw)) {
       value = raw;
     } else {
       console.warn(
-        `[chat] REDPILL_DEFAULT_MODEL="${raw}" is not a verifiable phala/* model; ` +
+        `[chat] REDPILL_DEFAULT_MODEL="${raw}" is not an offered model; ` +
           `falling back to ${DEFAULT_BASELINE_MODEL}.`,
       );
     }
@@ -142,6 +144,27 @@ function resolveRates(catalog: CatalogModel[], modelId: string): ModelRates {
   return ratesForModel(entry ?? { id: modelId, pricing: null });
 }
 
+/** Per-model tier-gating annotation shared by the full (with-rates) and degraded
+ *  (no-rates) /models paths. Tier gating is static (no catalog needed): when the
+ *  paywall is off every model is allowed; otherwise allowance is checked against
+ *  the resolved tier and a `requiredTier` is added for denied models. The rate
+ *  fields are layered on by the caller (omitted entirely in the degraded path
+ *  since pricing is unavailable). */
+function gateAnnotation(
+  id: string,
+  gating: boolean,
+  tier: TierId,
+): { id: string; allowed: boolean; requiredTier?: TierId } {
+  if (!gating) return { id, allowed: true };
+  const allowed = isModelAllowed(tier, id);
+  const requiredTier = allowed ? undefined : requiredTierForModel(id) ?? undefined;
+  return {
+    id,
+    allowed,
+    ...(requiredTier && requiredTier !== "free" ? { requiredTier } : {}),
+  };
+}
+
 // ── Router factory ───────────────────────────────────────────────────────────
 
 export function createChatRouter() {
@@ -195,16 +218,16 @@ export function createChatRouter() {
     }
 
     // ── Offered-model gate (authoritative; enforced regardless of the paywall) ─
-    // This is a confidential-inference product: only `phala/*` (TEE-attestable)
-    // models are offered. GET /models filters to `phala/*` unconditionally, but a
-    // direct POST bypasses that view — so mirror the filter here, BEFORE any
+    // This is a confidential-inference product: only the curated picker allowlist
+    // (PICKER_MODELS) is offered. GET /models filters to that same allowlist, but
+    // a direct POST bypasses that view — so mirror the filter here, BEFORE any
     // upstream fetch or billing, so a non-offered model can never be proxied even
     // when the paywall is off (the default deployment). Tier/credit gating stays
     // inside the paywall block below (ST2).
-    if (!resolvedModel.startsWith("phala/")) {
+    if (!isOfferedModel(resolvedModel)) {
       res.status(403).json({
         error: "model_not_offered",
-        message: `Model ${resolvedModel} is not offered. Only verifiable phala/* models are available.`,
+        message: `Model ${resolvedModel} is not offered. Only the curated set of verifiable models is available.`,
       });
       return;
     }
@@ -391,20 +414,43 @@ export function createChatRouter() {
     try {
       catalog = await getCatalog();
     } catch (error: unknown) {
+      // Catalog flakiness (RedPill /models latency-spikes while inference is fine)
+      // must never strand the picker empty. getCatalog already serves a stale
+      // cache when one exists, so reaching here means a COLD upstream failure with
+      // no last-good list. Degrade to a usable 200: the curated six (PICKER_MODELS)
+      // with tier gating still applied but rate fields omitted (pricing unknown).
+      // The frontend tolerates missing rates (the multiplier badge only shows when
+      // multiplier>1), so degraded entries render and are selectable.
       if (error instanceof CatalogFetchError) {
-        const detail = error.detail;
-        if (detail.kind === "upstream_not_ok") {
-          res.status(502).json({
-            error: "upstream_error",
-            message: `RedPill models endpoint returned ${detail.statusCode}: ${detail.body}`,
-          });
-          return;
+        console.warn(
+          "[chat] /models degraded to PICKER_MODELS (catalog unavailable):",
+          error.detail.kind,
+          error.detail.kind === "upstream_not_ok"
+            ? `${error.detail.statusCode}: ${error.detail.body}`
+            : (error.detail.cause ?? error),
+        );
+
+        // Tier gating is static and needs no catalog. If even resolveTier throws
+        // in this degraded path, default to allowed:true rather than 500 — keeping
+        // the picker usable is the whole point of degrading.
+        let degradedTier: TierId = "free";
+        let degradedGating = paywallEnabled();
+        if (degradedGating) {
+          try {
+            degradedTier = (await resolveTier(req.user?.address ?? "")).tier;
+          } catch (tierError) {
+            console.warn(
+              "[chat] /models degraded: tier resolution also failed; allowing all:",
+              tierError,
+            );
+            degradedGating = false;
+          }
         }
-        if (detail.kind === "parse_failed") {
-          handleRouteError(res, detail.cause, "parse models response");
-          return;
-        }
-        handleRouteError(res, detail.cause, "fetch models");
+
+        const degraded = PICKER_MODELS.map((id) =>
+          gateAnnotation(id, degradedGating, degradedTier),
+        );
+        res.json({ models: degraded });
         return;
       }
       handleRouteError(res, error, "fetch models");
@@ -428,11 +474,16 @@ export function createChatRouter() {
     // the multiplier anchor is resolvable even when the default is a phala/* model.
     const baselineRates = resolveRates(catalog, defaultModel());
 
-    // This is a confidential-inference product: only offer models that can be
-    // attested in a TEE (the `phala/*` namespace). Non-TEE (tier-0) models can't be
-    // verified at all, so they're not listed. (Billing still uses the full catalog
-    // above; the mislabeled-model blocklist already pruned getCatalog.)
-    const visible = catalog.filter((m) => m.id.startsWith("phala/"));
+    // This is a confidential-inference product: only the curated picker allowlist
+    // (PICKER_MODELS) is offered. We iterate the allowlist (not the catalog) so the
+    // picker preserves the canonical fast→smart, green-then-teal display order;
+    // any allowlist model absent from the upstream catalog is simply skipped.
+    // (Billing still uses the full catalog above; the mislabeled-model blocklist
+    // already pruned getCatalog.)
+    const byCatalogId = new Map(catalog.map((m) => [m.id, m]));
+    const visible: CatalogModel[] = PICKER_MODELS.map((id) => byCatalogId.get(id)).filter(
+      (m): m is CatalogModel => m !== undefined,
+    );
 
     const annotated = visible.map((m) => {
       const modelRates = ratesForModel(m);
@@ -441,15 +492,7 @@ export function createChatRouter() {
         creditsPerKOutput: modelRates.creditsPerKOutput,
         multiplier: multiplierFor(modelRates, baselineRates),
       };
-      if (!gating) return { id: m.id, allowed: true, ...rateFields };
-      const allowed = isModelAllowed(tier, m.id);
-      const requiredTier = allowed ? undefined : requiredTierForModel(m.id) ?? undefined;
-      return {
-        id: m.id,
-        allowed,
-        ...(requiredTier && requiredTier !== "free" ? { requiredTier } : {}),
-        ...rateFields,
-      };
+      return { ...gateAnnotation(m.id, gating, tier), ...rateFields };
     });
 
     res.json({ models: annotated });

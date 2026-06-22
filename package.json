@@ -7,17 +7,20 @@
     "packages/*",
     "frontend",
     "backend",
-    "test"
+    "test",
+    "mobile"
   ],
   "overrides": {
-    "@tinycloud/sdk-core": "2.2.0-beta.12",
-    "@tinycloud/sdk-services": "2.2.0-beta.12",
-    "@tinycloud/web-sdk": "2.2.0-beta.12",
-    "@tinycloud/node-sdk": "2.2.0-beta.12",
+    "@tinycloud/sdk-core": "2.3.0",
+    "@tinycloud/sdk-services": "2.3.0",
+    "@tinycloud/web-sdk": "2.3.0",
+    "@tinycloud/node-sdk": "2.3.0",
     "@tinycloud/web-core": "1.7.0",
-    "@tinycloud/node-sdk-wasm": "1.7.3-beta.1",
-    "@tinycloud/web-sdk-wasm": "1.7.3-beta.1",
+    "@tinycloud/node-sdk-wasm": "1.7.4",
+    "@tinycloud/web-sdk-wasm": "1.7.4",
     "ethers": "6.16.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "ws": "8.20.1"
   },
   "scripts": {

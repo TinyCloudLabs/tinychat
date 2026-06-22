@@ -27,8 +27,9 @@ export const APP_ID = "xyz.tinycloud.tinychat";
 export const DEFAULT_TITLE = "New chat";
 // New-chat default — a confirmed tier-1 (signed + on-chain-verifiable) model, so a
 // new user lands on a fully verifiable endpoint (green "Response verified"). Must be
-// kept in sync with VERIFIABLE_MODELS in lib/completionStore.ts.
-export const DEFAULT_MODEL = "phala/gpt-oss-120b";
+// kept in sync with VERIFIABLE_MODELS in lib/completionStore.ts and the backend
+// PICKER_MODELS default (REDPILL_DEFAULT_MODEL).
+export const DEFAULT_MODEL = "phala/gpt-oss-20b";
 
 /**
  * Db handle name. MUST be the full resolved path so the SQL invoke resource
@@ -780,8 +781,9 @@ export async function appendMessage(
   notifyThreadIndex(readCache(tcw) ?? []);
 }
 
-/** Default model for imported (non-native) conversations — see spec §8. */
-export const IMPORT_DEFAULT_MODEL = "phala/minimax-m2.5";
+/** Default model for imported (non-native) conversations — see spec §8. Must be
+ * an offered picker model (backend PICKER_MODELS). */
+export const IMPORT_DEFAULT_MODEL = "phala/gpt-oss-20b";
 
 /**
  * Write one normalized Claude conversation as a thread row + ordered message

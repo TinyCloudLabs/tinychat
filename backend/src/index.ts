@@ -20,8 +20,11 @@ import { createAuthMiddleware } from "./middleware/auth.js";
 import { createDelegationMiddleware } from "./middleware/delegation.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
+import { createAgentRouter } from "./routes/agent.js";
 import { createManifestRouter } from "./routes/manifest.js";
-import { createChatRouter } from "./routes/chat.js";
+import { createChatRouter, defaultModel } from "./routes/chat.js";
+import { isOfferedModel } from "./billing/catalog.js";
+import { addressToEntityId, TINYCHAT_AGENT_ID } from "./entity-id.js";
 import { createSignatureRouter } from "./routes/signature.js";
 import { createNrasProxyRouter } from "./routes/nras-proxy.js";
 import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
@@ -47,6 +50,13 @@ const HTTPS_KEY_FILE =
 const FRONTEND_URL =
   process.env.FRONTEND_URL ??
   (HTTPS_CERT_FILE && HTTPS_KEY_FILE ? "https://localhost:5186" : "http://localhost:5186");
+
+// Milestone E — direct-to-agent delegation courier to eliza-service.
+// AGENT_DID: the did:pkh all users delegate to (eliza-service's stable identity).
+// ELIZA_SERVICE_URL / ELIZA_SERVICE_SECRET: where to courier + the Layer-1 credential.
+const AGENT_DID = process.env.AGENT_DID;
+const ELIZA_SERVICE_URL = process.env.ELIZA_SERVICE_URL;
+const ELIZA_SERVICE_SECRET = process.env.ELIZA_SERVICE_SECRET;
 
 if (!BACKEND_PRIVATE_KEY) {
   console.error(
@@ -126,6 +136,41 @@ async function main() {
       authMiddleware,
     }),
   );
+  if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
+    const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
+    const redpillApiKey = process.env.REDPILL_API_KEY;
+    app.use(
+      "/api/agent",
+      createAgentRouter({
+        agentDid: AGENT_DID,
+        elizaServiceUrl,
+        elizaServiceSecret: ELIZA_SERVICE_SECRET,
+        authMiddleware,
+        // Mount POST /api/agent/chat (tool-calling orchestration) only when RedPill
+        // is configured; reuse the canonical offered-model allowlist so the agent
+        // tool path accepts only the curated picker models (same gate as the relay).
+        ...(redpillApiKey
+          ? {
+              chat: {
+                agentId: TINYCHAT_AGENT_ID,
+                entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
+                elizaServiceUrl,
+                elizaServiceSecret: ELIZA_SERVICE_SECRET,
+                redpillApiKey,
+                redpillBaseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
+                defaultModel,
+                isModelOffered: (m: string) => isOfferedModel(m),
+              },
+            }
+          : {}),
+      }),
+    );
+  } else {
+    console.warn(
+      "[startup] AGENT_DID / ELIZA_SERVICE_URL / ELIZA_SERVICE_SECRET not all set — " +
+        "/api/agent (eliza delegation courier) is disabled.",
+    );
+  }
   app.use("/api/chat", authMiddleware, createChatRouter());
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());

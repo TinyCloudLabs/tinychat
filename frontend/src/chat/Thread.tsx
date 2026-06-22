@@ -27,6 +27,7 @@ import {
   type ReceiptEntry,
 } from "@/lib/billingApi";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
+import { ToolActivityChip } from "./ToolActivityChip";
 
 export const Thread: FC = () => {
   return (
@@ -227,6 +228,7 @@ const AssistantMessage: FC = () => (
       <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
       <ThinkingIndicator />
       <StreamingCursor />
+      <ToolActivityChip />
     </div>
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="ml-7 mt-1 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
