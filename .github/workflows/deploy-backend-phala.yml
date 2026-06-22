@@ -261,6 +261,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           REDPILL_API_KEY: ${{ secrets.REDPILL_API_KEY }}
+          # Per-user delegated agent tools (Milestone E). All three must be set
+          # for the agent/tool-calling path to turn on; unset = plain chat only.
+          # AGENT_DID + ELIZA_SERVICE_URL are public (repo vars); the secret is a secret.
+          AGENT_DID: ${{ vars.AGENT_DID }}
+          ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
+          ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
           # Paywall / billing (docs/stripe-setup.md). Each value may live as a
           # repo SECRET or a repo VARIABLE (secrets win) — all optional until
           # go-live; unset values deploy with the paywall off.
@@ -284,6 +290,9 @@ jobs:
             printf '%s\n' "REDPILL_API_KEY=$REDPILL_API_KEY"
             printf '%s\n' "REDPILL_BASE_URL=$REDPILL_BASE_URL"
             printf '%s\n' "REDPILL_DEFAULT_MODEL=$REDPILL_DEFAULT_MODEL"
+            printf '%s\n' "AGENT_DID=$AGENT_DID"
+            printf '%s\n' "ELIZA_SERVICE_URL=$ELIZA_SERVICE_URL"
+            printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
             printf '%s\n' "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"
             printf '%s\n' "CERTBOT_EMAIL=$CERTBOT_EMAIL"
             printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${GITHUB_SHA}"
