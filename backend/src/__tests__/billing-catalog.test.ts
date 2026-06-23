@@ -268,7 +268,7 @@ describe("PICKER_MODELS allowlist + isOfferedModel", () => {
   test("the allowlist is exactly the curated six, in canonical fast→smart green-then-teal order", () => {
     expect([...PICKER_MODELS]).toEqual([
       "qwen/qwen-2.5-7b-instruct",
-      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
       "qwen/qwen3.5-27b",
       "qwen/qwen3-vl-30b-a3b-instruct",
       "google/gemma-3-27b-it",

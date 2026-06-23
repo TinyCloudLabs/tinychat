@@ -71,11 +71,11 @@ export function onCompletion(listener: CompletionListener): () => void {
 // isTeeCapableModel below.
 //
 // NOTE: the green flat-attestation shape was confirmed at the attestation-report
-// level only; each green badge (especially z-ai/glm-5.2) still needs one live
+// level only; each green badge (especially deepseek/deepseek-v4-pro) still needs one live
 // in-browser verify before merge.
 export const VERIFIABLE_MODELS = [
   "qwen/qwen-2.5-7b-instruct",
-  "z-ai/glm-5.2",
+  "deepseek/deepseek-v4-pro",
 ] as const;
 
 const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);

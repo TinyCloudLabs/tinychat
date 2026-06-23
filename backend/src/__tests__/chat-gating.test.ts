@@ -306,7 +306,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // is unoffered — the default must heal to the curated baseline.
       process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
       const value = defaultModel();
-      expect(value).toBe("z-ai/glm-5.2");
+      expect(value).toBe("deepseek/deepseek-v4-pro");
       expect(isBlocklistedModel(value)).toBe(false);
       expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
     } finally {
@@ -321,7 +321,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
       process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
       expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
-      expect(defaultModel()).toBe("z-ai/glm-5.2");
+      expect(defaultModel()).toBe("deepseek/deepseek-v4-pro");
     } finally {
       console.warn = originalWarn;
     }
@@ -335,15 +335,15 @@ describe("defaultModel() override validation (ST11)", () => {
       // so it is no longer offered — the default must not resolve to it.
       process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-120b";
       expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
-      expect(defaultModel()).toBe("z-ai/glm-5.2");
+      expect(defaultModel()).toBe("deepseek/deepseek-v4-pro");
     } finally {
       console.warn = originalWarn;
     }
   });
 
   test("a valid (allowlisted) override is returned unchanged", () => {
-    process.env.REDPILL_DEFAULT_MODEL = "z-ai/glm-5.2";
-    expect(defaultModel()).toBe("z-ai/glm-5.2");
+    process.env.REDPILL_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
+    expect(defaultModel()).toBe("deepseek/deepseek-v4-pro");
   });
 });
 
@@ -425,7 +425,7 @@ describe("POST /api/chat recording", () => {
 describe("GET /api/chat/models annotation", () => {
   test("only allowlisted models are listed (non-offered filtered out); allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
-    // The multiplier anchor is the default model (z-ai/glm-5.2). Price it at the
+    // The multiplier anchor is the default model (deepseek/deepseek-v4-pro). Price it at the
     // MINI baseline so it anchors multiplier 1, and price a teal model
     // (moonshotai/kimi-k2.6) at OPUS to land on multiplier 50. The non-TEE
     // openai/gpt-5-mini and the unoffered phala/gpt-oss-120b must be filtered OUT
@@ -434,7 +434,7 @@ describe("GET /api/chat/models annotation", () => {
       models: [
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
-        { id: "z-ai/glm-5.2", pricing: MINI_PRICING }, // default → baseline anchor (multiplier 1)
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor (multiplier 1)
         { id: "qwen/qwen3.5-27b", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
         { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],
@@ -485,7 +485,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered extra
         { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING },
         { id: "qwen/qwen3-vl-30b-a3b-instruct", pricing: MINI_PRICING },
-        { id: "z-ai/glm-5.2", pricing: MINI_PRICING },
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING },
       ],
     });
     try {
@@ -495,7 +495,7 @@ describe("GET /api/chat/models annotation", () => {
       expect(ids).toEqual([
         // GREEN tier (fast → smart)
         "qwen/qwen-2.5-7b-instruct",
-        "z-ai/glm-5.2",
+        "deepseek/deepseek-v4-pro",
         // TEAL tier (fast → smart)
         "qwen/qwen3.5-27b",
         "qwen/qwen3-vl-30b-a3b-instruct",
@@ -516,7 +516,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // legacy non-TEE (filtered out)
         { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
-        { id: "z-ai/glm-5.2", pricing: MINI_PRICING }, // default → baseline anchor (multiplier 1)
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor (multiplier 1)
         { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
         { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
       ],
@@ -577,7 +577,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
 
   const CURATED_SIX = [
     "qwen/qwen-2.5-7b-instruct",
-    "z-ai/glm-5.2",
+    "deepseek/deepseek-v4-pro",
     "qwen/qwen3.5-27b",
     "qwen/qwen3-vl-30b-a3b-instruct",
     "google/gemma-3-27b-it",

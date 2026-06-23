@@ -71,12 +71,12 @@ export function isBlocklistedModel(id: string): boolean {
  *   GREEN ("Response verified"): a flat per-message signature path → tier 1.
  *   TEAL  ("Enclave attested"):  TEE-attestable but no flat signature → tier 2.
  *
- * Order matters: the picker preserves this order. Default = z-ai/glm-5.2.
+ * Order matters: the picker preserves this order. Default = deepseek/deepseek-v4-pro.
  */
 export const PICKER_MODELS = [
   // GREEN tier (tier-1 "Response verified" / flat-signed)
   "qwen/qwen-2.5-7b-instruct", // fast
-  "z-ai/glm-5.2", // smart ← DEFAULT
+  "deepseek/deepseek-v4-pro", // smart ← DEFAULT
   // TEAL tier (tier-2 "Enclave attested" / TEE-capable, not flat-signed)
   "qwen/qwen3.5-27b", // moderate
   "qwen/qwen3-vl-30b-a3b-instruct", // fast (vision)
