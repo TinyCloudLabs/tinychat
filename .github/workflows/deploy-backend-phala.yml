@@ -319,15 +319,12 @@ jobs:
           echo "::endgroup::"
 
           echo "Submitting Phala deploy for CVM ${PHALA_CVM_ID}..."
-          # TEMPORARY: public logs enabled to debug the prod-only SSE/HTTP2 stream
-          # failure. REVERT to --no-public-logs once diagnosed (TEE container logs
-          # are publicly readable while this is on).
           phala deploy \
             --cvm-id "$PHALA_CVM_ID" \
             -c docker-compose.phala.yml \
             -e "$ENV_FILE" \
             --wait \
-            --public-logs
+            --no-public-logs
 
       - name: Wait for CVM to report running
         env:
