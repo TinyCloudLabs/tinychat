@@ -265,18 +265,11 @@ describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
 });
 
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
-  test("the allowlist is exactly the curated six, in canonical fast→smart green-then-teal order", () => {
-    expect([...PICKER_MODELS]).toEqual([
-      "qwen/qwen-2.5-7b-instruct",
-      "deepseek/deepseek-v4-pro",
-      "qwen/qwen3.5-27b",
-      "qwen/qwen3-vl-30b-a3b-instruct",
-      "google/gemma-3-27b-it",
-      "moonshotai/kimi-k2.6",
-    ]);
+  test("the allowlist is exactly the single offered model", () => {
+    expect([...PICKER_MODELS]).toEqual(["deepseek/deepseek-v4-pro"]);
   });
 
-  test("isOfferedModel accepts each of the six and nothing else", () => {
+  test("isOfferedModel accepts the single offered model and nothing else", () => {
     for (const id of PICKER_MODELS) {
       expect(isOfferedModel(id)).toBe(true);
     }
@@ -287,6 +280,8 @@ describe("PICKER_MODELS allowlist + isOfferedModel", () => {
     expect(isOfferedModel("phala/glm-4.7")).toBe(false);
     // An unoffered id (not in the curated lineup) is never offered.
     expect(isOfferedModel("openai/gpt-5-mini")).toBe(false);
+    // A previously-offered model is no longer offered (single-model lockdown).
+    expect(isOfferedModel("qwen/qwen-2.5-7b-instruct")).toBe(false);
   });
 
   test("no allowlisted model is on the mislabeled blocklist", () => {

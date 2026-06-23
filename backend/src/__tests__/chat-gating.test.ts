@@ -11,8 +11,9 @@ import { createChatRouter, defaultModel } from "../routes/chat.js";
 
 // Mirror of the frontend memory-extraction model id (frontend/src/chat/runtime.tsx
 // MEMORY_EXTRACTION_MODEL). Kept in sync here so ST3 regresses if either drifts
-// off the offered-model tier gate.
-const MEMORY_EXTRACTION_MODEL = "qwen/qwen-2.5-7b-instruct";
+// off the offered-model tier gate. The product is single-model, so this is the
+// single offered model.
+const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-pro";
 
 const ORIGINAL_ENV = { ...process.env };
 const ADDR = "0xabc";
@@ -203,7 +204,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("qwen/qwen3.5-27b"),
+      body: chatBody("deepseek/deepseek-v4-pro"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -231,7 +232,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("qwen/qwen3.5-27b"),
+      body: chatBody("deepseek/deepseek-v4-pro"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -277,14 +278,14 @@ describe("POST /api/chat offered-model gate, paywall OFF (ST2)", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "qwen/qwen3.5-27b", pricing: MINI_PRICING }],
+      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
       sseChunks,
     });
     try {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("qwen/qwen3.5-27b"),
+        body: chatBody("deepseek/deepseek-v4-pro"),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -364,8 +365,7 @@ describe("POST /api/chat recording", () => {
     ];
     const restore = stubRedPillFetch({
       models: [
-        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (not requestable)
-        { id: "qwen/qwen3.5-27b", pricing: MINI_PRICING }, // requested offered model
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor + requested offered model
         { id: "anthropic/claude-opus-4.1", pricing: OPUS_PRICING },
       ],
       sseChunks,
@@ -375,7 +375,7 @@ describe("POST /api/chat recording", () => {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("qwen/qwen3.5-27b"),
+        body: chatBody("deepseek/deepseek-v4-pro"),
       });
       expect(res.status).toBe(200);
       await res.text(); // drain
@@ -400,8 +400,7 @@ describe("POST /api/chat recording", () => {
     ];
     const restore = stubRedPillFetch({
       models: [
-        { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // baseline anchor (not requestable)
-        { id: "qwen/qwen3.5-27b", pricing: MINI_PRICING }, // requested offered model
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor + requested offered model
       ],
       sseChunks,
     });
@@ -410,7 +409,7 @@ describe("POST /api/chat recording", () => {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("qwen/qwen3.5-27b", promptContent),
+        body: chatBody("deepseek/deepseek-v4-pro", promptContent),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -423,29 +422,28 @@ describe("POST /api/chat recording", () => {
 });
 
 describe("GET /api/chat/models annotation", () => {
-  test("only allowlisted models are listed (non-offered filtered out); allowed:true when paywall disabled; rates always present", async () => {
+  test("only the single offered model is listed (non-offered filtered out); allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
-    // The multiplier anchor is the default model (deepseek/deepseek-v4-pro). Price it at the
-    // MINI baseline so it anchors multiplier 1, and price a teal model
-    // (moonshotai/kimi-k2.6) at OPUS to land on multiplier 50. The non-TEE
+    // The multiplier anchor is the default model (deepseek/deepseek-v4-pro). Price
+    // it at the MINI baseline so it anchors multiplier 1. The non-TEE
     // openai/gpt-5-mini and the unoffered phala/gpt-oss-120b must be filtered OUT
-    // of the /models output (only the curated allowlist is offered).
+    // of the /models output (only the single offered model is listed).
     const restore = stubRedPillFetch({
       models: [
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor (multiplier 1)
-        { id: "qwen/qwen3.5-27b", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
-        { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
+        { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // formerly offered, now unoffered (filtered out)
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
       ],
     });
     try {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
       const byId = Object.fromEntries(body.models.map((m: any) => [m.id, m]));
-      // Non-TEE and unoffered phala/* models are filtered out of the output.
+      // Non-TEE, unoffered phala/*, and formerly-offered models are filtered out.
       expect("openai/gpt-5-mini" in byId).toBe(false);
       expect("phala/gpt-oss-120b" in byId).toBe(false);
+      expect("moonshotai/kimi-k2.6" in byId).toBe(false);
       expect(body.models.every((m: any) => isOfferedModel(m.id))).toBe(true);
       expect(body.models.every((m: any) => m.allowed === true)).toBe(true);
       expect(body.models.some((m: any) => "requiredTier" in m)).toBe(false);
@@ -455,14 +453,10 @@ describe("GET /api/chat/models annotation", () => {
         expect(typeof m.creditsPerKOutput).toBe("number");
         expect(typeof m.multiplier).toBe("number");
       }
-      // offered model priced at the baseline (default-model) rates → multiplier 1.
-      expect(byId["qwen/qwen3.5-27b"].creditsPerKInput).toBe(2.5);
-      expect(byId["qwen/qwen3.5-27b"].creditsPerKOutput).toBe(20);
-      expect(byId["qwen/qwen3.5-27b"].multiplier).toBe(1);
-      // opus pricing snaps to 150/800 with 800/20 = 40 → multiplier 50.
-      expect(byId["moonshotai/kimi-k2.6"].creditsPerKInput).toBe(150);
-      expect(byId["moonshotai/kimi-k2.6"].creditsPerKOutput).toBe(800);
-      expect(byId["moonshotai/kimi-k2.6"].multiplier).toBe(50);
+      // The single offered model is the default → baseline rates → multiplier 1.
+      expect(byId["deepseek/deepseek-v4-pro"].creditsPerKInput).toBe(2.5);
+      expect(byId["deepseek/deepseek-v4-pro"].creditsPerKOutput).toBe(20);
+      expect(byId["deepseek/deepseek-v4-pro"].multiplier).toBe(1);
       // Spec §2.1 invariant — no dollar fields ever leak from /models either.
       assertNoDollarLeak(body);
     } finally {
@@ -470,44 +464,34 @@ describe("GET /api/chat/models annotation", () => {
     }
   });
 
-  test("the picker returns EXACTLY the six allowlisted models in canonical order (extras filtered out)", async () => {
+  test("the model list returns EXACTLY the single offered model (extras filtered out)", async () => {
     process.env.PAYWALL_ENABLED = "false";
-    // Upstream catalog: all six allowlist ids (deliberately shuffled) plus extras
-    // (a non-TEE model and a non-allowlisted phala/* model). The picker must
-    // return exactly the six, in the canonical fast→smart green-then-teal order
-    // regardless of upstream ordering.
+    // Upstream catalog: the single offered id plus a bunch of extras (non-TEE,
+    // non-allowlisted phala/*, and formerly-offered models). The list must return
+    // exactly the one offered model regardless of upstream ordering.
     const restore = stubRedPillFetch({
       models: [
-        { id: "moonshotai/kimi-k2.6", pricing: MINI_PRICING },
+        { id: "moonshotai/kimi-k2.6", pricing: MINI_PRICING }, // formerly offered
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // non-TEE extra
-        { id: "qwen/qwen3.5-27b", pricing: MINI_PRICING },
-        { id: "google/gemma-3-27b-it", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.5-27b", pricing: MINI_PRICING }, // formerly offered
+        { id: "google/gemma-3-27b-it", pricing: MINI_PRICING }, // formerly offered
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered extra
-        { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING },
-        { id: "qwen/qwen3-vl-30b-a3b-instruct", pricing: MINI_PRICING },
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING },
+        { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // formerly offered
+        { id: "qwen/qwen3-vl-30b-a3b-instruct", pricing: MINI_PRICING }, // formerly offered
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // the single offered model
       ],
     });
     try {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
       const ids = body.models.map((m: any) => m.id);
-      expect(ids).toEqual([
-        // GREEN tier (fast → smart)
-        "qwen/qwen-2.5-7b-instruct",
-        "deepseek/deepseek-v4-pro",
-        // TEAL tier (fast → smart)
-        "qwen/qwen3.5-27b",
-        "qwen/qwen3-vl-30b-a3b-instruct",
-        "google/gemma-3-27b-it",
-        "moonshotai/kimi-k2.6",
-      ]);
+      expect(ids).toEqual(["deepseek/deepseek-v4-pro"]);
     } finally {
       restore();
     }
   });
 
-  test("annotates allowlisted models as allowed (no requiredTier) and filters out non-offered for free tier when paywall enabled", async () => {
+  test("annotates the offered model as allowed (no requiredTier) and filters out non-offered for free tier when paywall enabled", async () => {
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe(null)); // free
@@ -516,37 +500,29 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // legacy non-TEE (filtered out)
         { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor (multiplier 1)
-        { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // baseline-priced → multiplier 1
-        { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // opus-priced → multiplier 50
+        { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // formerly offered (filtered out)
+        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
       ],
     });
     try {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
       const byId = Object.fromEntries(body.models.map((m: any) => [m.id, m]));
-      // Non-offered models (non-TEE and unoffered phala) are filtered out.
+      // Non-offered models (non-TEE, unoffered phala, formerly offered) are filtered out.
       expect("openai/gpt-5-mini" in byId).toBe(false);
       expect("openai/gpt-5" in byId).toBe(false);
       expect("phala/gpt-oss-120b" in byId).toBe(false);
+      expect("qwen/qwen-2.5-7b-instruct" in byId).toBe(false);
       expect(body.models.every((m: any) => isOfferedModel(m.id))).toBe(true);
-      // Free tier allows all offered models → allowed:true with no requiredTier.
-      expect(byId["qwen/qwen-2.5-7b-instruct"]).toMatchObject({
-        id: "qwen/qwen-2.5-7b-instruct",
+      // Free tier allows the offered model → allowed:true with no requiredTier.
+      expect(byId["deepseek/deepseek-v4-pro"]).toMatchObject({
+        id: "deepseek/deepseek-v4-pro",
         allowed: true,
         creditsPerKInput: 2.5,
         creditsPerKOutput: 20,
         multiplier: 1,
       });
-      expect("requiredTier" in byId["qwen/qwen-2.5-7b-instruct"]).toBe(false);
-      expect(byId["moonshotai/kimi-k2.6"]).toMatchObject({
-        id: "moonshotai/kimi-k2.6",
-        allowed: true,
-        creditsPerKInput: 150,
-        creditsPerKOutput: 800,
-        multiplier: 50,
-      });
-      expect("requiredTier" in byId["moonshotai/kimi-k2.6"]).toBe(false);
+      expect("requiredTier" in byId["deepseek/deepseek-v4-pro"]).toBe(false);
       assertNoDollarLeak(body);
     } finally {
       restore();
@@ -559,7 +535,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
    * Stub that fails every RedPill /models fetch (simulating the latency-spike /
    * hang that trips the timeout) while passing localhost through. getCatalog has
    * no prior cache here (reset each test) → it throws CatalogFetchError after its
-   * single retry, and the handler degrades to the curated six.
+   * single retry, and the handler degrades to the curated allowlist (PICKER_MODELS).
    */
   function stubModelsFetchFailing(): () => void {
     const originalFetch = globalThis.fetch;
@@ -575,16 +551,9 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
     };
   }
 
-  const CURATED_SIX = [
-    "qwen/qwen-2.5-7b-instruct",
-    "deepseek/deepseek-v4-pro",
-    "qwen/qwen3.5-27b",
-    "qwen/qwen3-vl-30b-a3b-instruct",
-    "google/gemma-3-27b-it",
-    "moonshotai/kimi-k2.6",
-  ];
+  const CURATED_MODELS = ["deepseek/deepseek-v4-pro"];
 
-  test("returns the curated six (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
+  test("returns the curated allowlist (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
     process.env.PAYWALL_ENABLED = "false";
     const restore = stubModelsFetchFailing();
     try {
@@ -593,7 +562,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
       expect(res.status).toBe(200);
       const body = (await res.json()) as any;
       const ids = body.models.map((m: any) => m.id);
-      expect(ids).toEqual(CURATED_SIX);
+      expect(ids).toEqual(CURATED_MODELS);
       // Paywall off → all allowed; rate fields OMITTED (pricing unavailable).
       for (const m of body.models) {
         expect(m.allowed).toBe(true);
@@ -618,7 +587,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
       expect(res.status).toBe(200);
       const body = (await res.json()) as any;
       const ids = body.models.map((m: any) => m.id);
-      expect(ids).toEqual(CURATED_SIX);
+      expect(ids).toEqual(CURATED_MODELS);
       // Every entry carries an `allowed` boolean and no rate fields.
       for (const m of body.models) {
         expect(typeof m.allowed).toBe("boolean");

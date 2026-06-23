@@ -138,8 +138,9 @@ describe("createChatModelAdapter — C2 roomId threading", () => {
 describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
   // A stale persisted id that was dropped from the lineup (not in the offered
   // membership set) must be sanitized to DEFAULT_MODEL before the request fires —
-  // otherwise the backend 403s model_not_offered.
-  const OFFERED = new Set([DEFAULT_MODEL, "qwen/qwen3.5-27b", "qwen/qwen-2.5-7b-instruct"]);
+  // otherwise the backend 403s model_not_offered. The product is single-model, so
+  // the offered set is exactly DEFAULT_MODEL.
+  const OFFERED = new Set([DEFAULT_MODEL]);
 
   function staleDeps(agentEnabled: boolean): AdapterDeps {
     const deps = makeDeps(agentEnabled, "thread-x");
@@ -172,10 +173,10 @@ describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
 
   it("leaves an offered model unchanged", async () => {
     const deps = makeDeps(true, "thread-x");
-    deps.modelRef = { current: "qwen/qwen3.5-27b" };
+    deps.modelRef = { current: DEFAULT_MODEL };
     deps.offeredModelIdsRef = { current: OFFERED };
     const body = await captureBody(deps, true);
-    expect(body.model).toBe("qwen/qwen3.5-27b");
+    expect(body.model).toBe(DEFAULT_MODEL);
   });
 });
 

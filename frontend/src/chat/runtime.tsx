@@ -54,15 +54,16 @@ import {
 } from "./pendingHandoff";
 
 /**
- * Model id used for memory extraction. Picked to be small and cheap — the
- * extraction runs once per assistant turn off the visible reply path. It MUST be
- * a verifiable, offered model (in VERIFIABLE_MODELS) so the extraction POST
- * passes the offered-model tier gate under the paywall; an unoffered id is
- * rejected with 402 and memory silently never updates (ST3). The RedPill proxy
- * resolves this exactly as for chat; if the id is unavailable the extraction
- * call fails and the in-flight guard releases (memory stays put).
+ * Model id used for memory extraction. The extraction runs once per assistant
+ * turn off the visible reply path. It MUST be an offered model (in
+ * VERIFIABLE_MODELS) so the extraction POST passes the offered-model gate; an
+ * unoffered id is rejected with 403 model_not_offered and memory silently never
+ * updates (ST3). The product is single-model, so this is the single offered
+ * model. The RedPill proxy resolves this exactly as for chat; if the id is
+ * unavailable the extraction call fails and the in-flight guard releases (memory
+ * stays put).
  */
-const MEMORY_EXTRACTION_MODEL = "qwen/qwen-2.5-7b-instruct";
+const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-pro";
 
 /**
  * Per-call output cap on extraction. cl100k averages ~4 chars/token for

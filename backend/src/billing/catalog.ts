@@ -61,27 +61,19 @@ export function isBlocklistedModel(id: string): boolean {
 }
 
 /**
- * Canonical picker allowlist — the ONLY models tinychat offers, in display
- * order (fast → smart, green tier then teal tier). This is the single source of
- * truth for both the picker contents (GET /api/chat/models) and the offered-
- * model gate on every relay/agent POST. A model NOT in this list is never
- * listed, never proxied, and never reachable by the agent tool path.
+ * Canonical offered-model allowlist — the SINGLE model tinychat offers. The
+ * product is single-model: there is no picker, so this list holds exactly one
+ * id. It remains the single source of truth for both the model list
+ * (GET /api/chat/models) and the offered-model gate on every relay/agent POST.
+ * A model NOT in this list is never listed, never proxied, and never reachable
+ * by the agent tool path.
  *
- * Two badge tiers (see frontend completionStore.ts):
- *   GREEN ("Response verified"): a flat per-message signature path → tier 1.
- *   TEAL  ("Enclave attested"):  TEE-attestable but no flat signature → tier 2.
- *
- * Order matters: the picker preserves this order. Default = deepseek/deepseek-v4-pro.
+ * The single offered model is GREEN ("Response verified", flat-signed; see
+ * frontend completionStore.ts): it publishes the flat per-message signature
+ * path so it reaches tier 1.
  */
 export const PICKER_MODELS = [
-  // GREEN tier (tier-1 "Response verified" / flat-signed)
-  "qwen/qwen-2.5-7b-instruct", // fast
-  "deepseek/deepseek-v4-pro", // smart ← DEFAULT
-  // TEAL tier (tier-2 "Enclave attested" / TEE-capable, not flat-signed)
-  "qwen/qwen3.5-27b", // moderate
-  "qwen/qwen3-vl-30b-a3b-instruct", // fast (vision)
-  "google/gemma-3-27b-it", // moderate
-  "moonshotai/kimi-k2.6", // smart
+  "deepseek/deepseek-v4-pro", // the single offered/green model
 ] as const;
 
 const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);

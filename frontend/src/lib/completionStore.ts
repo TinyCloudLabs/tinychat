@@ -61,40 +61,25 @@ export function onCompletion(listener: CompletionListener): () => void {
  * TO EXTEND: confirm the model verifies GREEN in a REAL browser first (on-chain
  * DCAP + signature both pass), then add its exact id here. Never guess.
  */
-// The confirmed tier-1 (GREEN, "Response verified") set — the curated picker's
-// green tier. Each publishes the FLAT attestation shape so the per-message
-// signature can ECDSA-recover to its attested signing_address in-browser. These
-// two are exactly the GREEN tier of the picker allowlist (backend
-// PICKER_MODELS); the other four offered models (qwen3.5-27b,
-// qwen3-vl-30b-a3b-instruct, gemma-3-27b-it, kimi-k2.6) are TEAL ("Enclave
-// attested") — TEE-attestable but not flat-signed, so they reach tier 2 via
-// isTeeCapableModel below.
+// The confirmed tier-1 (GREEN, "Response verified") set — the single offered
+// model. It publishes the FLAT attestation shape so the per-message signature
+// can ECDSA-recover to its attested signing_address in-browser. The product is
+// single-model, so this is exactly the backend PICKER_MODELS (one id).
 //
 // NOTE: the green flat-attestation shape was confirmed at the attestation-report
-// level only; each green badge (especially deepseek/deepseek-v4-pro) still needs one live
+// level only; the green badge (deepseek/deepseek-v4-pro) still needs one live
 // in-browser verify before merge.
-export const VERIFIABLE_MODELS = [
-  "qwen/qwen-2.5-7b-instruct",
-  "deepseek/deepseek-v4-pro",
-] as const;
+export const VERIFIABLE_MODELS = ["deepseek/deepseek-v4-pro"] as const;
 
 const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);
 
 /**
- * The full set of TEE-capable OFFERED models — the 2 green (VERIFIABLE_MODELS)
- * plus the 4 teal models. These six are exactly the backend PICKER_MODELS and
- * are the only ids worth ATTEMPTING verification on. Membership-based because
- * ids are now vendor-prefixed (qwen/…, z-ai/…, google/…, moonshotai/…) and no
- * longer share a single `phala/` prefix.
+ * The full set of TEE-capable OFFERED models. The product is single-model, so
+ * this is the single offered/verifiable model — exactly the backend
+ * PICKER_MODELS — and the only id worth ATTEMPTING verification on.
+ * Membership-based because ids are vendor-prefixed (deepseek/…).
  */
-const TEE_CAPABLE_MODELS: ReadonlySet<string> = new Set([
-  ...VERIFIABLE_MODELS,
-  // TEAL tier ("Enclave attested" / TEE-capable, not flat-signed).
-  "qwen/qwen3.5-27b",
-  "qwen/qwen3-vl-30b-a3b-instruct",
-  "google/gemma-3-27b-it",
-  "moonshotai/kimi-k2.6",
-]);
+const TEE_CAPABLE_MODELS: ReadonlySet<string> = new Set([...VERIFIABLE_MODELS]);
 
 const MISLABELED_BLOCKLIST: ReadonlySet<string> = new Set([
   "phala/deepseek-chat-v3.1",
@@ -123,8 +108,8 @@ export function isResponseVerifiableModel(model: string): boolean {
 
 /**
  * True when `model` is a confidential (TEE) model worth ATTEMPTING verification
- * on — i.e. an exact member of the offered TEE set (TEE_CAPABLE_MODELS: the 2
- * green + 4 teal). The badge orchestrates the result into a tier: flat models
+ * on — i.e. an exact member of the offered TEE set (TEE_CAPABLE_MODELS: the
+ * single pinned model). The badge orchestrates the result into a tier: flat models
  * reach tier 1 ("Response verified"), non-flat TEE models reach tier 2 ("Enclave
  * attested"), and anything that errors falls back to tier 0 ("Not verifiable").
  * Membership-based gating because ids are now vendor-prefixed and no longer share
