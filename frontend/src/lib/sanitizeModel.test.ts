@@ -30,12 +30,14 @@ describe("sanitizeModel (ST1)", () => {
     );
   });
 
-  test("before the offered list loads (empty set), falls back to the phala/ prefix gate", () => {
+  test("before the offered list loads (empty set), falls back to the TEE-capable membership gate", () => {
     const EMPTY = new Set<string>();
-    // A non-phala legacy id is still rejected for instant paint.
+    // A non-offered legacy id is rejected for instant paint.
     expect(sanitizeModel("openai/gpt-5-mini", EMPTY)).toBe(DEFAULT_MODEL);
-    // A phala id is kept (instant-paint constraint — don't block first paint).
-    expect(sanitizeModel("phala/anything", EMPTY)).toBe("phala/anything");
+    // A stale phala/ id (no longer in the offered membership set) is also rejected.
+    expect(sanitizeModel("phala/anything", EMPTY)).toBe(DEFAULT_MODEL);
+    // An offered (TEE-capable) id is kept (instant-paint constraint).
+    expect(sanitizeModel("qwen/qwen-2.5-7b-instruct", EMPTY)).toBe("qwen/qwen-2.5-7b-instruct");
   });
 
   test("before the offered list loads, still heals known blocklisted phala ids", () => {
@@ -100,7 +102,7 @@ describe("healPersistedModel — ST1 write-back decision", () => {
 
   test("runtime restore: setThreadModel heals a stale pre-PR thread row", () => {
     // The runtime sync runs before /models loads, so the offered set is empty and
-    // the phala/ prefix gate applies (a non-phala legacy id is rejected).
+    // the TEE-capable membership gate applies (a non-offered legacy id is rejected).
     const EMPTY = new Set<string>();
     const setThreadModel = mock((_threadId: string, _value: string) => {});
     const threadId = "thread-1";
@@ -113,12 +115,12 @@ describe("healPersistedModel — ST1 write-back decision", () => {
     expect(setThreadModel).toHaveBeenCalledWith(threadId, DEFAULT_MODEL);
   });
 
-  test("runtime restore: a phala/ thread row is kept and not rewritten pre-load", () => {
+  test("runtime restore: an offered thread row is kept and not rewritten pre-load", () => {
     const EMPTY = new Set<string>();
     const setThreadModel = mock((_threadId: string, _value: string) => {});
-    const { model: corrected, healed } = healPersistedModel("phala/gpt-oss-20b", EMPTY);
+    const { model: corrected, healed } = healPersistedModel("qwen/qwen-2.5-7b-instruct", EMPTY);
     if (healed) setThreadModel("thread-1", corrected);
-    expect(corrected).toBe("phala/gpt-oss-20b");
+    expect(corrected).toBe("qwen/qwen-2.5-7b-instruct");
     expect(setThreadModel).not.toHaveBeenCalled();
   });
 });

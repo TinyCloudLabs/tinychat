@@ -46,7 +46,7 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): 
       isExpired: () => false,
       hasSession: () => true,
     } as AdapterDeps["sessionStore"],
-    modelRef: { current: "phala/gpt-oss-120b" },
+    modelRef: { current: DEFAULT_MODEL },
     offeredModelIdsRef: { current: new Set() },
     agentEnabledRef: { current: agentEnabled },
     activeThreadIdRef: { current: activeThreadId },
@@ -136,10 +136,10 @@ describe("createChatModelAdapter — C2 roomId threading", () => {
 });
 
 describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
-  // A stale persisted id that was dropped from the lineup (passes the phala/
-  // prefix gate but is no longer offered) must be sanitized to DEFAULT_MODEL
-  // before the request fires — otherwise the backend 403s model_not_offered.
-  const OFFERED = new Set([DEFAULT_MODEL, "phala/qwen3.5-27b", "phala/glm-5.2"]);
+  // A stale persisted id that was dropped from the lineup (not in the offered
+  // membership set) must be sanitized to DEFAULT_MODEL before the request fires —
+  // otherwise the backend 403s model_not_offered.
+  const OFFERED = new Set([DEFAULT_MODEL, "qwen/qwen3.5-27b", "qwen/qwen-2.5-7b-instruct"]);
 
   function staleDeps(agentEnabled: boolean): AdapterDeps {
     const deps = makeDeps(agentEnabled, "thread-x");
@@ -172,10 +172,10 @@ describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
 
   it("leaves an offered model unchanged", async () => {
     const deps = makeDeps(true, "thread-x");
-    deps.modelRef = { current: "phala/qwen3.5-27b" };
+    deps.modelRef = { current: "qwen/qwen3.5-27b" };
     deps.offeredModelIdsRef = { current: OFFERED };
     const body = await captureBody(deps, true);
-    expect(body.model).toBe("phala/qwen3.5-27b");
+    expect(body.model).toBe("qwen/qwen3.5-27b");
   });
 });
 
@@ -187,7 +187,7 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
     const receipt = takePendingReceipt(msgId);
     expect(receipt).not.toBeNull();
     expect(receipt?.usage).toEqual({ promptTokens: 1, completionTokens: 1 });
-    expect(receipt?.modelId).toBe("phala/gpt-oss-120b");
+    expect(receipt?.modelId).toBe(DEFAULT_MODEL);
   });
 
   it("stashes completionId via setPendingCompletion on the agent path after stream completes", async () => {
@@ -197,7 +197,7 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
     const completion = takePendingCompletion(msgId);
     expect(completion).not.toBeNull();
     expect(completion?.completionId).toBe("cmpl-1");
-    expect(completion?.model).toBe("phala/gpt-oss-120b");
+    expect(completion?.model).toBe(DEFAULT_MODEL);
   });
 
   it("stashes usage + completionId on the plain relay path via the shared post-branch block (no regression)", async () => {

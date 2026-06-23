@@ -267,12 +267,12 @@ describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
   test("the allowlist is exactly the curated six, in canonical fast→smart green-then-teal order", () => {
     expect([...PICKER_MODELS]).toEqual([
-      "phala/qwen-2.5-7b-instruct",
-      "phala/qwen3.5-27b",
-      "phala/glm-5.2",
-      "phala/qwen3-vl-30b-a3b-instruct",
-      "phala/gemma-3-27b-it",
-      "phala/kimi-k2.6",
+      "qwen/qwen-2.5-7b-instruct",
+      "z-ai/glm-5.2",
+      "qwen/qwen3.5-27b",
+      "qwen/qwen3-vl-30b-a3b-instruct",
+      "google/gemma-3-27b-it",
+      "moonshotai/kimi-k2.6",
     ]);
   });
 
@@ -285,7 +285,7 @@ describe("PICKER_MODELS allowlist + isOfferedModel", () => {
     expect(isOfferedModel("phala/gpt-oss-120b")).toBe(false);
     // A blocklisted phala/* alias is also not offered.
     expect(isOfferedModel("phala/glm-4.7")).toBe(false);
-    // A non-phala model is never offered.
+    // An unoffered id (not in the curated lineup) is never offered.
     expect(isOfferedModel("openai/gpt-5-mini")).toBe(false);
   });
 

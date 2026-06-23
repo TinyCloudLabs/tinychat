@@ -56,13 +56,13 @@ import {
 /**
  * Model id used for memory extraction. Picked to be small and cheap — the
  * extraction runs once per assistant turn off the visible reply path. It MUST be
- * a verifiable phala/* model (in VERIFIABLE_MODELS, not blocklisted) so the
- * extraction POST passes the phala/-only tier gate under the paywall; a non-phala
- * id is rejected with 402 and memory silently never updates (ST3). The RedPill
- * proxy resolves this exactly as for chat; if the id is unavailable the
- * extraction call fails and the in-flight guard releases (memory stays put).
+ * a verifiable, offered model (in VERIFIABLE_MODELS) so the extraction POST
+ * passes the offered-model tier gate under the paywall; an unoffered id is
+ * rejected with 402 and memory silently never updates (ST3). The RedPill proxy
+ * resolves this exactly as for chat; if the id is unavailable the extraction
+ * call fails and the in-flight guard releases (memory stays put).
  */
-const MEMORY_EXTRACTION_MODEL = "phala/qwen-2.5-7b-instruct";
+const MEMORY_EXTRACTION_MODEL = "qwen/qwen-2.5-7b-instruct";
 
 /**
  * Per-call output cap on extraction. cl100k averages ~4 chars/token for

@@ -117,23 +117,28 @@ describe("creditBudgetFor (env overrides)", () => {
 });
 
 describe("model allowance (prefix matching)", () => {
-  // Verifiable-inference product: every tier may call ALL verifiable (phala/*)
-  // models and NO non-phala/* model. Tiers differ only by credit budget.
-  test("every tier allows phala/* models", () => {
+  // Verifiable-inference product: the model-allowance gate no longer restricts
+  // models — every tier matches all model ids (modelPatterns: [""]). The actual
+  // restriction to the curated lineup lives in the offered-model gate
+  // (PICKER_MODELS / isOfferedModel). Tiers differ ONLY by credit budget.
+  test("every tier allows offered models", () => {
     for (const tier of ["free", "plus", "pro"] as const) {
-      expect(isModelAllowed(tier, "phala/glm-5")).toBe(true);
-      expect(isModelAllowed(tier, "phala/gpt-oss-120b")).toBe(true);
-      expect(isModelAllowed(tier, "phala/anything-at-all")).toBe(true);
+      expect(isModelAllowed(tier, "z-ai/glm-5.2")).toBe(true);
+      expect(isModelAllowed(tier, "qwen/qwen-2.5-7b-instruct")).toBe(true);
+      expect(isModelAllowed(tier, "qwen/qwen3.5-27b")).toBe(true);
     }
   });
 
-  test("no tier allows non-phala/* models", () => {
+  test("every tier matches all model ids (offered gate does the restriction)", () => {
+    // The allowance gate is now permissive — any id matches because the offered-
+    // model gate (PICKER_MODELS) is the layer that restricts which ids are
+    // reachable. This keeps tiers purely budget-differentiated.
     for (const tier of ["free", "plus", "pro"] as const) {
-      expect(isModelAllowed(tier, "openai/gpt-5-mini")).toBe(false);
-      expect(isModelAllowed(tier, "openai/gpt-5")).toBe(false);
-      expect(isModelAllowed(tier, "anthropic/claude-opus-4.8")).toBe(false);
-      expect(isModelAllowed(tier, "anthropic/claude-3.5-haiku")).toBe(false);
-      expect(isModelAllowed(tier, "google/gemini-2.5-pro")).toBe(false);
+      expect(isModelAllowed(tier, "openai/gpt-5-mini")).toBe(true);
+      expect(isModelAllowed(tier, "openai/gpt-5")).toBe(true);
+      expect(isModelAllowed(tier, "anthropic/claude-opus-4.8")).toBe(true);
+      expect(isModelAllowed(tier, "anthropic/claude-3.5-haiku")).toBe(true);
+      expect(isModelAllowed(tier, "google/gemini-2.5-pro")).toBe(true);
     }
   });
 
@@ -142,8 +147,8 @@ describe("model allowance (prefix matching)", () => {
     // any given model. This is the invariant that replaces the old per-tier
     // whitelists; only credit budgets differ between tiers.
     for (const modelId of [
-      "phala/glm-5",
-      "phala/gpt-oss-120b",
+      "z-ai/glm-5.2",
+      "qwen/qwen-2.5-7b-instruct",
       "openai/gpt-5",
       "openai/gpt-5-mini",
       "anthropic/claude-opus-4.8",
@@ -152,20 +157,20 @@ describe("model allowance (prefix matching)", () => {
       const free = isModelAllowed("free", modelId);
       expect(isModelAllowed("plus", modelId)).toBe(free);
       expect(isModelAllowed("pro", modelId)).toBe(free);
-      // And the verdict is exactly "is it phala/?".
-      expect(free).toBe(modelId.startsWith("phala/"));
+      // The allowance gate is permissive: every id is allowed.
+      expect(free).toBe(true);
     }
   });
 
-  test("requiredTierForModel is 'free' for phala/* and null for everything else", () => {
-    // The lowest tier that allows any phala/* model is free (all tiers allow it).
-    expect(requiredTierForModel("phala/glm-5")).toBe("free");
-    expect(requiredTierForModel("phala/gpt-oss-120b")).toBe("free");
-    // No tier can call a non-phala/* model, so there is no required tier.
-    expect(requiredTierForModel("openai/gpt-5-mini")).toBeNull();
-    expect(requiredTierForModel("openai/gpt-5")).toBeNull();
-    expect(requiredTierForModel("anthropic/claude-opus-4.8")).toBeNull();
-    expect(requiredTierForModel("google/gemini-2.5-pro")).toBeNull();
+  test("requiredTierForModel is 'free' for every model (allowance gate is permissive)", () => {
+    // The lowest tier that allows any model is free (all tiers allow everything);
+    // the offered-model gate, not the tier, is what refuses unoffered ids.
+    expect(requiredTierForModel("z-ai/glm-5.2")).toBe("free");
+    expect(requiredTierForModel("qwen/qwen-2.5-7b-instruct")).toBe("free");
+    expect(requiredTierForModel("openai/gpt-5-mini")).toBe("free");
+    expect(requiredTierForModel("openai/gpt-5")).toBe("free");
+    expect(requiredTierForModel("anthropic/claude-opus-4.8")).toBe("free");
+    expect(requiredTierForModel("google/gemini-2.5-pro")).toBe("free");
   });
 });
 

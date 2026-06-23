@@ -71,8 +71,10 @@ export function getPriceIds(): Record<PaidTierId, PaidPriceIds> {
 // ── Tier definitions ──────────────────────────────────────────────────────────
 
 export const TIERS: Record<TierId, TierConfig> = {
-  // Verifiable-inference product: every tier can use ALL verifiable (TEE / `phala/*`)
-  // models — non-TEE models aren't offered at all. Tiers differ ONLY by credit budget.
+  // Verifiable-inference product: every tier can use ALL offered (TEE) models —
+  // non-TEE models aren't offered at all. The offered-model gate (PICKER_MODELS)
+  // already restricts which ids are reachable, so each tier matches all offered
+  // models and differs ONLY by credit budget.
   free: {
     id: "free",
     name: "Free",
@@ -80,8 +82,8 @@ export const TIERS: Record<TierId, TierConfig> = {
     priceYearly: null,
     creditBudget: 500,
     budgetWindow: "day",
-    // All verifiable (TEE) models; differs from paid tiers only by credit budget.
-    modelPatterns: ["phala/"],
+    // All offered models; differs from paid tiers only by credit budget.
+    modelPatterns: [""],
   },
   plus: {
     id: "plus",
@@ -90,7 +92,7 @@ export const TIERS: Record<TierId, TierConfig> = {
     priceYearly: 9600, // $96.00/yr, in cents
     creditBudget: 12_000,
     budgetWindow: "week",
-    modelPatterns: ["phala/"],
+    modelPatterns: [""],
   },
   pro: {
     id: "pro",
@@ -99,7 +101,7 @@ export const TIERS: Record<TierId, TierConfig> = {
     priceYearly: 19200, // $192.00/yr, in cents
     creditBudget: 28_000,
     budgetWindow: "week",
-    modelPatterns: ["phala/"],
+    modelPatterns: [""],
   },
 };
 

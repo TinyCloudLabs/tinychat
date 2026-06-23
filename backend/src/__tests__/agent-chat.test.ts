@@ -874,35 +874,29 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
     process.env.STRIPE_SECRET_KEY = "sk_test";
     _setStripeClient(mockStripe(null)); // free tier
 
-    // isModelOffered allows all phala/* but for this test we need isModelAllowed to fail.
-    // Since TIERS.free allows "phala/" prefix, we override isModelAllowed by using a
-    // config where the model bypasses isModelOffered but would fail isModelAllowed.
-    // Instead, test by injecting a model that isModelAllowed returns false for.
-    // The billing gate checks isModelAllowed(tier, resolvedModel). For free tier,
-    // all phala/* models ARE allowed (same patterns). So we need to test with a model
-    // that is offered (phala/*) but not allowed by the tier. Since the current tier
-    // config allows all phala/*, we need a model pattern that a tier does NOT allow.
-    // Use a custom tier definition by temporarily adjusting — but TIERS is a const.
-    // Instead, mock the billing modules: set up a tier that doesn't allow the model.
-    // Easiest: make the model not a phala/* so it passes isModelOffered but fails isModelAllowed.
-    // But isModelOffered is in the config... let's use a config with broader isModelOffered.
+    // The tier model-allowance gate is now permissive by default (modelPatterns:
+    // [""] — the offered-model gate does the real restriction). To still exercise
+    // the model_not_allowed branch, temporarily restrict the free tier so the
+    // requested model fails isModelAllowed, then restore it. We inject
+    // isModelOffered: () => true so the request clears the offered gate and reaches
+    // the billing isModelAllowed gate.
+    const originalFreePatterns = TIERS.free.modelPatterns;
+    TIERS.free.modelPatterns = ["z-ai/"]; // free disallows non-z-ai/ models
+    try {
+      const { req, res } = makeReqRes({ body: { model: "openai/gpt-5", messages: [{ role: "user", content: "hi" }] } });
+      const config: AgentChatConfig = {
+        ...baseConfig(makeCompletionFetch()),
+        isModelOffered: () => true, // passes the offered gate
+      };
+      const handler = createAgentChatHandler(config);
+      await handler(req, res);
 
-    // Use a config that offers any model (bypassing the phala gate), so we can test
-    // a model that passes offered gate but fails the billing isModelAllowed gate.
-    // The billing gate uses the tier's modelPatterns. Free tier patterns: ["phala/"].
-    // So any non-phala model will fail isModelAllowed(free, model).
-
-    const { req, res } = makeReqRes({ body: { model: "openai/gpt-5", messages: [{ role: "user", content: "hi" }] } });
-    const config: AgentChatConfig = {
-      ...baseConfig(makeCompletionFetch()),
-      isModelOffered: () => true, // passes the offered gate
-    };
-    const handler = createAgentChatHandler(config);
-    await handler(req, res);
-
-    expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
-    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
-    expect(body?.error).toBe("model_not_allowed");
+      expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
+      const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
+      expect(body?.error).toBe("model_not_allowed");
+    } finally {
+      TIERS.free.modelPatterns = originalFreePatterns;
+    }
   });
 
   it("A5d: 402 credit_budget_exceeded when paywall on and budget exhausted", async () => {

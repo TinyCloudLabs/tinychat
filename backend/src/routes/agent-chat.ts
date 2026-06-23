@@ -525,7 +525,7 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
     if (!config.isModelOffered(resolvedModel)) {
       res.status(403).json({
         error: "model_not_offered",
-        message: `Model ${resolvedModel} is not offered. Only verifiable phala/* models are available.`,
+        message: `Model ${resolvedModel} is not offered. Only the curated verifiable models are available.`,
       });
       return;
     }
