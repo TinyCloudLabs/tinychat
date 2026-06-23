@@ -589,9 +589,16 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
       if (!res.writableEnded) controller.abort();
     });
 
+    // X-Accel-Buffering:no makes the dstack-ingress nginx stream frames straight
+    // to the HTTP/2 client instead of buffering the long response (a buffered SSE
+    // stream over HTTP/2 surfaces as ERR_HTTP2_PROTOCOL_ERROR / "network error"
+    // through the custom-domain ingress; the direct HTTP/1.1 gateway is unaffected,
+    // and localhost has no nginx — which is why this only reproduces on prod).
+    // No `Connection` header: it is a hop-by-hop header forbidden under HTTP/2 and
+    // managed by nginx on the app↔nginx hop, not something the app should assert.
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
 
     let orchestrateResult: OrchestrateResult | null = null;
