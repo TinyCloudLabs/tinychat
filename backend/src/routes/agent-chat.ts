@@ -581,8 +581,13 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
       }
     }
 
+    // Abort on the RESPONSE close with writableEnded=false. The REQUEST "close"
+    // event fires on Bun as soon as the request body is consumed (not on client
+    // disconnect), which aborts the upstream mid-stream and truncates the reply.
     const controller = new AbortController();
-    req.on("close", () => controller.abort());
+    res.on("close", () => {
+      if (!res.writableEnded) controller.abort();
+    });
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");

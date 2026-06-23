@@ -26,6 +26,7 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import type React from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { DEFAULT_MODEL } from "../lib/threadStore";
+import { sanitizeModel } from "../lib/sanitizeModel";
 
 /** Subset of ChatRuntimeDeps consumed by the adapter factory. */
 export interface AdapterDeps {
@@ -34,6 +35,13 @@ export interface AdapterDeps {
   modelRef: React.MutableRefObject<string>;
   activeThreadIdRef: React.MutableRefObject<string | null>;
   agentEnabledRef: React.MutableRefObject<boolean>;
+  /**
+   * Live ref to the currently-offered model ids (from the loaded /models list).
+   * Read at request time so the outgoing model is sanitized against the offered
+   * catalog — a stale persisted id (e.g. a model dropped from the lineup) can
+   * never fire a request and 403, regardless of which restore path set it.
+   */
+  offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
 }
 
 /** Flatten an assistant-ui ThreadMessage's content parts into plain text. */
@@ -73,7 +81,14 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         payload.push({ role: m.role, content });
       }
 
-      const modelId = deps.modelRef.current || DEFAULT_MODEL;
+      // Request-path heal (Bug #1): sanitize the selected id against the offered
+      // catalog before it can hit the wire. Any restore path (localStorage, space
+      // SQL active_model, per-thread row) can seed a stale non-offered id; this is
+      // the single choke point that guarantees no request fires with one.
+      const modelId = sanitizeModel(
+        deps.modelRef.current || DEFAULT_MODEL,
+        deps.offeredModelIdsRef.current,
+      );
       let lastUsage: UsageInfo | null = null;
       let completionId: string | null = null;
 

@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
 import { takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
+import { DEFAULT_MODEL } from "../lib/threadStore.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -46,6 +47,7 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): 
       hasSession: () => true,
     } as AdapterDeps["sessionStore"],
     modelRef: { current: "phala/gpt-oss-120b" },
+    offeredModelIdsRef: { current: new Set() },
     agentEnabledRef: { current: agentEnabled },
     activeThreadIdRef: { current: activeThreadId },
   };
@@ -130,6 +132,50 @@ describe("createChatModelAdapter — C2 roomId threading", () => {
 
     await drainAdapter(makeDeps(true, null));
     expect(body.roomId).toBeUndefined();
+  });
+});
+
+describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
+  // A stale persisted id that was dropped from the lineup (passes the phala/
+  // prefix gate but is no longer offered) must be sanitized to DEFAULT_MODEL
+  // before the request fires — otherwise the backend 403s model_not_offered.
+  const OFFERED = new Set([DEFAULT_MODEL, "phala/qwen3.5-27b", "phala/glm-5.2"]);
+
+  function staleDeps(agentEnabled: boolean): AdapterDeps {
+    const deps = makeDeps(agentEnabled, "thread-x");
+    deps.modelRef = { current: "phala/gpt-oss-20b" };
+    deps.offeredModelIdsRef = { current: OFFERED };
+    return deps;
+  }
+
+  async function captureBody(deps: AdapterDeps, agentPath: boolean): Promise<Record<string, unknown>> {
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const match = agentPath ? String(url).includes("agent") : !String(url).includes("agent");
+      if (match) body = JSON.parse((init?.body as string) ?? "{}");
+      return sseResponse(String(url));
+    }) as typeof fetch;
+    await drainAdapter(deps);
+    return body;
+  }
+
+  it("heals a stale unoffered model to DEFAULT_MODEL on the agent path", async () => {
+    const body = await captureBody(staleDeps(true), true);
+    expect(body.model).toBe(DEFAULT_MODEL);
+    expect(body.model).not.toBe("phala/gpt-oss-20b");
+  });
+
+  it("heals a stale unoffered model to DEFAULT_MODEL on the plain relay path", async () => {
+    const body = await captureBody(staleDeps(false), false);
+    expect(body.model).toBe(DEFAULT_MODEL);
+  });
+
+  it("leaves an offered model unchanged", async () => {
+    const deps = makeDeps(true, "thread-x");
+    deps.modelRef = { current: "phala/qwen3.5-27b" };
+    deps.offeredModelIdsRef = { current: OFFERED };
+    const body = await captureBody(deps, true);
+    expect(body.model).toBe("phala/qwen3.5-27b");
   });
 });
 

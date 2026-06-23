@@ -122,6 +122,8 @@ function makeReqRes(opts?: { body?: object; address?: string }) {
     flushHeaders() {},
     write(chunk: string) { writtenChunks.push(chunk); return true; },
     end() { ended = true; },
+    on(_evt: string, _fn: unknown) { return res; },
+    get writableEnded() { return ended; },
     // test helpers
     get lastJson() { return jsonResponses[jsonResponses.length - 1]; },
     get chunks() { return writtenChunks; },

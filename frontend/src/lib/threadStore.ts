@@ -29,7 +29,7 @@ export const DEFAULT_TITLE = "New chat";
 // new user lands on a fully verifiable endpoint (green "Response verified"). Must be
 // kept in sync with VERIFIABLE_MODELS in lib/completionStore.ts and the backend
 // PICKER_MODELS default (REDPILL_DEFAULT_MODEL).
-export const DEFAULT_MODEL = "phala/gpt-oss-20b";
+export const DEFAULT_MODEL = "phala/qwen3.5-27b";
 
 /**
  * Db handle name. MUST be the full resolved path so the SQL invoke resource

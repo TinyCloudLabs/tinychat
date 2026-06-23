@@ -53,9 +53,6 @@ import {
   takePendingReceipt,
 } from "./pendingHandoff";
 
-/** Empty offered-set sentinel for the pre-/models-load sanitize path (ST1). */
-const EMPTY_OFFERED: ReadonlySet<string> = new Set();
-
 /**
  * Model id used for memory extraction. Picked to be small and cheap — the
  * extraction runs once per assistant turn off the visible reply path. It MUST be
@@ -84,6 +81,13 @@ export interface ChatRuntimeDeps {
   modelRef: React.MutableRefObject<string>;
   /** Called when the active thread changes so the picker can sync its model. */
   onActiveThreadModel?: (model: string) => void;
+  /**
+   * Live ref to the currently-offered model ids (from the loaded /models list).
+   * Read by the per-thread sync (to heal a stale thread-row model against the
+   * real catalog, not just the phala/ prefix gate) and by the adapter at request
+   * time. Empty before /models loads — sanitizeModel then uses the prefix gate.
+   */
+  offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
   /**
    * Live ref to the latest known memory doc for the active space. Read at
    * model-context request time so freshly-extracted memory shows up on the
@@ -479,10 +483,14 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
           const model = await getThreadModel(activeTcw, threadId);
           if (cancelled || !model) return;
           // ST1 — a pre-PR thread row can carry a stale non-offered model id.
-          // Sanitize (phala/ prefix gate; the offered list lives in App, not
-          // here) and, when it was non-offered, heal the thread row so it does
-          // not recur on the next open.
-          const { model: corrected, healed } = healPersistedModel(model, EMPTY_OFFERED);
+          // Heal against the real offered catalog (Bug #1: the phala/ prefix gate
+          // alone passes a phala/ id that was later dropped from the lineup, e.g.
+          // gpt-oss-20b, which then overrides the picker and 403s). When the id
+          // was non-offered, heal the thread row so it does not recur next open.
+          const { model: corrected, healed } = healPersistedModel(
+            model,
+            depsRef.current.offeredModelIdsRef.current,
+          );
           if (healed) {
             void setThreadModel(activeTcw, threadId, corrected).catch(() => {
               // Best-effort heal; the picker still shows the corrected value.

@@ -117,6 +117,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const offeredModelsRef = useRef<ModelOption[]>([]);
+  // Live set of offered model ids — the request-path/per-thread heal source of
+  // truth (Bug #1). Kept in sync with `models` alongside offeredModelsRef.
+  const offeredModelIdsRef = useRef<ReadonlySet<string>>(EMPTY_OFFERED);
   const restoredActiveModelForTcwRef = useRef<TinyCloudWeb | null>(null);
 
   // ── Billing / paywall state ──────────────────────────────────────
@@ -190,6 +193,7 @@ export function App() {
 
   useEffect(() => {
     offeredModelsRef.current = models;
+    offeredModelIdsRef.current = new Set(models.map((m) => m.id));
   }, [models]);
 
   const remediateUnavailableModel = useCallback(() => {
@@ -639,6 +643,7 @@ export function App() {
                 tcw={tcw}
                 sessionStore={sessionStoreRef.current}
                 modelRef={modelRef}
+                offeredModelIdsRef={offeredModelIdsRef}
                 memoryRef={memoryRef}
                 onActiveThreadModel={setSelectedModel}
                 onMemoryUpdated={onMemoryUpdated}
@@ -1172,6 +1177,7 @@ function ChatWorkspace(props: {
   tcw: TinyCloudWeb;
   sessionStore: SessionStore;
   modelRef: React.MutableRefObject<string>;
+  offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
   memoryRef: React.MutableRefObject<string | null>;
   onActiveThreadModel: (model: string) => void;
   onMemoryUpdated: (doc: string | null) => void;
@@ -1189,6 +1195,7 @@ function ChatWorkspace(props: {
       sessionStore: props.sessionStore,
       backendUrl: BACKEND_URL,
       modelRef: props.modelRef,
+      offeredModelIdsRef: props.offeredModelIdsRef,
       memoryRef: props.memoryRef,
       onActiveThreadModel: props.onActiveThreadModel,
       onMemoryUpdated: props.onMemoryUpdated,
@@ -1199,6 +1206,7 @@ function ChatWorkspace(props: {
       props.tcw,
       props.sessionStore,
       props.modelRef,
+      props.offeredModelIdsRef,
       props.memoryRef,
       props.onActiveThreadModel,
       props.onMemoryUpdated,
