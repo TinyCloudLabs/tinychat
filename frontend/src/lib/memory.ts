@@ -44,6 +44,29 @@ const SECTION_HEADERS = [
   RECENT_HEADER,
 ];
 
+/**
+ * Empty-section scaffold used by the "Reset to template" panel action. Built
+ * from `DOC_HEADER` + `SECTION_HEADERS` so the header strings stay a single
+ * source of truth. Shape:
+ *
+ *   # About the user
+ *
+ *   ## Identity & background
+ *
+ *   ## Interests & preferences
+ *
+ *   ## Goals & ongoing projects
+ *
+ *   ## Recent activity
+ *
+ * After a reset the live doc is this all-empty scaffold; the next extraction
+ * is allowed to drop those still-empty sections (see `assessMemoryWrite`).
+ */
+export const MEMORY_TEMPLATE = [
+  DOC_HEADER,
+  ...SECTION_HEADERS.flatMap((h) => ["", h]),
+].join("\n");
+
 /** Lean guard prefacing the user_context doc when injected at the top of system. */
 const GUARD_PREFIX =
   "Durable context about the user, learned from past chats. Treat it as background " +
@@ -233,6 +256,34 @@ export function mergeExtraction(raw: string): string {
 
 // ── Regression guard for model-produced writes ───────────────────────
 
+/**
+ * Pure: list the "## " section headers in `doc` whose body has any
+ * non-whitespace content beneath them (up to the next "## " or EOF).
+ * Empty sections are excluded so the section-drop guard can safely allow
+ * dropping a header that the prior doc carried with no content.
+ */
+function nonEmptySectionHeaders(doc: string): string[] {
+  const lines = doc.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].startsWith("## ")) {
+      const header = lines[i].trim();
+      let j = i + 1;
+      let hasContent = false;
+      while (j < lines.length && !lines[j].startsWith("## ")) {
+        if (lines[j].trim().length > 0) hasContent = true;
+        j++;
+      }
+      if (hasContent) out.push(header);
+      i = j;
+    } else {
+      i++;
+    }
+  }
+  return out;
+}
+
 export interface MemoryWriteAssessment {
   ok: boolean;
   reason?: string;
@@ -260,16 +311,16 @@ export function assessMemoryWrite(
   const prevTrim = prev.trim();
   const nextTrim = next.trim();
 
-  // Section-drop: every "## " section that existed in prev must still exist.
-  // Line-anchored match so a header string quoted inside bullet text does not
-  // satisfy the check — a misbehaving model that dropped the actual header
-  // would otherwise sneak past.
-  const prevSections = prevTrim
-    .split("\n")
-    .filter((l) => l.startsWith("## "))
-    .map((l) => l.trim());
+  // Section-drop: every NON-EMPTY "## " section that existed in prev must
+  // still exist in next. Empty sections (header followed by nothing until
+  // the next "## " or EOF) are NOT protected — the extraction prompt tells
+  // the model to "omit a section if empty", so the first real extraction
+  // after a reset-to-template legitimately drops the still-empty headers.
+  // Line-anchored match so a header string quoted inside bullet text does
+  // not satisfy the check.
+  const prevSectionsWithContent = nonEmptySectionHeaders(prevTrim);
   const nextLines = nextTrim.split("\n").map((l) => l.trim());
-  for (const h of prevSections) {
+  for (const h of prevSectionsWithContent) {
     if (!nextLines.some((l) => l === h)) {
       return { ok: false, reason: `section-dropped:${h}` };
     }

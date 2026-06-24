@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { clearMemory, getMemory, setMemory } from "./threadStore";
+import {
+  clearMemory,
+  getMemory,
+  memoryWriteGen,
+  resetMemoryToTemplate,
+  setMemory,
+} from "./threadStore";
+import { MEMORY_TEMPLATE } from "./memory";
 
 /** Capture console.warn output for the duration of `fn` (restores after). */
 async function captureWarn(fn: () => Promise<void>): Promise<string> {
@@ -149,5 +156,79 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
 
     expect(db.rows.has(LIVE)).toBe(false);
     expect(db.rows.has(BACKUP)).toBe(false);
+  });
+
+  it("resetMemoryToTemplate writes the scaffold to the live row and returns it", async () => {
+    const db = new FakeSqlDb();
+    const written = await resetMemoryToTemplate(makeTcw(db));
+
+    expect(written).toBe(MEMORY_TEMPLATE);
+    expect(db.rows.get(LIVE)).toBe(MEMORY_TEMPLATE);
+  });
+
+  it("resetMemoryToTemplate snapshots the prior live doc into the backup row", async () => {
+    const db = new FakeSqlDb();
+    db.rows.set(LIVE, "PRIOR USER NOTES");
+
+    await resetMemoryToTemplate(makeTcw(db));
+
+    expect(db.rows.get(LIVE)).toBe(MEMORY_TEMPLATE);
+    // Prior doc is preserved as last-known-good so the user can still surface
+    // it (via getMemory's auto-restore) if the reset turns out to be a mistake.
+    expect(db.rows.get(BACKUP)).toBe("PRIOR USER NOTES");
+  });
+
+  it("resetMemoryToTemplate bumps memoryWriteGen (so in-flight reads can drop their stale ref writes)", async () => {
+    const db = new FakeSqlDb();
+    const before = memoryWriteGen();
+
+    await resetMemoryToTemplate(makeTcw(db));
+
+    expect(memoryWriteGen()).toBeGreaterThan(before);
+  });
+
+  it("resetMemoryToTemplate refreshes the localStorage cache to the scaffold", async () => {
+    // Stand up a minimal localStorage shim and bind a tcw with a did so the
+    // memoryCacheKey path is exercised (and we can read back what was cached).
+    const storage = new Map<string, string>();
+    const originalLocalStorage = (globalThis as { localStorage?: Storage }).localStorage;
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (k: string) => (storage.has(k) ? storage.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        storage.set(k, v);
+      },
+      removeItem: (k: string) => {
+        storage.delete(k);
+      },
+      clear: () => {
+        storage.clear();
+      },
+      key: () => null,
+      length: 0,
+    } as Storage;
+    (globalThis as { window?: { localStorage: Storage } }).window = {
+      localStorage: (globalThis as { localStorage: Storage }).localStorage,
+    };
+
+    try {
+      const db = new FakeSqlDb();
+      db.rows.set(LIVE, "OLD DOC");
+      const tcw = {
+        did: "did:pkh:test:reset",
+        spaceId: undefined,
+        sql: { db: () => db },
+      } as unknown as TinyCloudWeb;
+
+      await resetMemoryToTemplate(tcw);
+
+      expect(storage.get("tinychat:memory:did:pkh:test:reset")).toBe(MEMORY_TEMPLATE);
+    } finally {
+      if (originalLocalStorage) {
+        (globalThis as { localStorage?: Storage }).localStorage = originalLocalStorage;
+      } else {
+        delete (globalThis as { localStorage?: Storage }).localStorage;
+      }
+      delete (globalThis as { window?: unknown }).window;
+    }
   });
 });
