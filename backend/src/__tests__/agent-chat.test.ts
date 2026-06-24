@@ -3,7 +3,7 @@ import type Stripe from "stripe";
 import { _resetCatalogCache } from "../billing/catalog.js";
 import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
-import { TIERS, type TierId } from "../billing/tiers.js";
+import { TIERS } from "../billing/tiers.js";
 import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import {
   accumulateToolCalls,
@@ -223,15 +223,14 @@ describe("parseSseJson", () => {
 
 describe("orchestrateToolCalling", () => {
   it("streams a plain answer through when the model emits no tool calls", async () => {
-    const fetchImpl = (async () =>
-      new Response(null, { status: 200 }) && {
+    const fetchImpl = (async () => ({
         ok: true,
         status: 200,
         body: sseStream([
           dataFrame({ choices: [{ delta: { content: "Hello" } }] }),
           dataFrame({ choices: [{ delta: { content: " world" }, finish_reason: "stop" }] }),
         ]),
-      }) as unknown as typeof fetch;
+      })) as unknown as typeof fetch;
 
     const frames: string[] = [];
     await orchestrateToolCalling({
@@ -690,7 +689,7 @@ describe("orchestrateToolCalling", () => {
   // A1: tool-only rounds must NOT emit an id frame (only the answer round does)
   it("A1: does not emit idFrame for tool-only round, only for the answer round", async () => {
     let round = 0;
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
+    const fetchImpl = (async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
         return new Response(JSON.stringify({ ok: true, result: { text: "Paris." } }), { status: 200 });
       }
@@ -741,7 +740,7 @@ describe("orchestrateToolCalling", () => {
   // A2: a summed usage frame is emitted covering all rounds
   it("A2: emits a usageFrame with summed tokens across all rounds", async () => {
     let round = 0;
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
+    const fetchImpl = (async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
         return new Response(JSON.stringify({ ok: true, result: { text: "result" } }), { status: 200 });
       }

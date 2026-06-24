@@ -27,6 +27,12 @@ export const MEMORY_BUDGET_CHARS = 4000;
  * `mergeExtraction` can reliably anchor on it. */
 const DOC_HEADER = "# About the user";
 
+/** Minimum prior-doc length (chars) before the shrink check applies — below
+ *  this the doc is still bootstrapping and large relative shrink is normal. */
+const GUARD_MIN_PRIOR_CHARS = 200;
+/** Reject a write that drops below this fraction of the prior doc length. */
+const GUARD_SHRINK_FLOOR = 0.6;
+
 /** Header line for the doc's Recent activity section. */
 const RECENT_HEADER = "## Recent activity";
 
@@ -225,6 +231,60 @@ export function mergeExtraction(raw: string): string {
   return clampDocToBudget(out);
 }
 
+// ── Regression guard for model-produced writes ───────────────────────
+
+export interface MemoryWriteAssessment {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Pure: decide whether `next` is a safe replacement for `prev`. Used by
+ * `runExtraction` ONLY (model-produced writes). User panel edits via
+ * `setMemory`/`clearMemory` are authoritative and bypass this — the user may
+ * legitimately delete sections or clear the doc.
+ *
+ * Rejects (in order): empty next, missing top-level header, section drop, and
+ * a substantial prior doc shrinking past `GUARD_SHRINK_FLOOR` of its length.
+ */
+export function assessMemoryWrite(
+  prev: string | null | undefined,
+  next: string,
+): MemoryWriteAssessment {
+  if (!hasContent(next)) return { ok: false, reason: "empty" };
+  // A well-formed doc always carries the top-level header; its absence means
+  // the model truncated or returned garbage.
+  if (!next.includes(DOC_HEADER)) return { ok: false, reason: "missing-header" };
+
+  if (!hasContent(prev)) return { ok: true };
+  const prevTrim = prev.trim();
+  const nextTrim = next.trim();
+
+  // Section-drop: every "## " section that existed in prev must still exist.
+  // Line-anchored match so a header string quoted inside bullet text does not
+  // satisfy the check — a misbehaving model that dropped the actual header
+  // would otherwise sneak past.
+  const prevSections = prevTrim
+    .split("\n")
+    .filter((l) => l.startsWith("## "))
+    .map((l) => l.trim());
+  const nextLines = nextTrim.split("\n").map((l) => l.trim());
+  for (const h of prevSections) {
+    if (!nextLines.some((l) => l === h)) {
+      return { ok: false, reason: `section-dropped:${h}` };
+    }
+  }
+
+  // Shrink: a substantial prior doc must not collapse past the floor.
+  if (
+    prevTrim.length >= GUARD_MIN_PRIOR_CHARS &&
+    nextTrim.length < prevTrim.length * GUARD_SHRINK_FLOOR
+  ) {
+    return { ok: false, reason: "shrink" };
+  }
+  return { ok: true };
+}
+
 // ── Side-effecting orchestration (kept thin) ─────────────────────────
 
 /**
@@ -288,6 +348,14 @@ export async function runExtraction(
     // counter; skip the write so the older extracted doc can't roll back the
     // newer user action.
     if (startGen !== undefined && deps.writeGen?.() !== startGen) return;
+    // Final regression guard: reject empty / header-missing / section-dropped /
+    // shrink-past-floor docs from the model. User panel edits go through
+    // setMemory/clearMemory directly and are NOT routed through this guard.
+    const assessment = assessMemoryWrite(currentDoc, next);
+    if (!assessment.ok) {
+      console.warn(`[memory] rejected regressive extraction (${assessment.reason})`);
+      return; // keep the prior doc; never overwrite with a regression
+    }
     await deps.setDoc(next);
   } catch (err) {
     console.warn("[memory] runExtraction failed (best-effort)", err);

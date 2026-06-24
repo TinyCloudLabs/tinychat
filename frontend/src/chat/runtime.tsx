@@ -40,6 +40,7 @@ import {
 } from "../lib/threadStore";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { renderMemoryBlock, runExtraction } from "../lib/memory";
+import { pickExtractionModel as chooseExtractionModel } from "../lib/extractionModel";
 import {
   createBillingClient,
   setReceipt,
@@ -54,16 +55,42 @@ import {
 } from "./pendingHandoff";
 
 /**
- * Model id used for memory extraction. The extraction runs once per assistant
- * turn off the visible reply path. It MUST be an offered model (in
- * VERIFIABLE_MODELS) so the extraction POST passes the offered-model gate; an
- * unoffered id is rejected with 403 model_not_offered and memory silently never
- * updates (ST3). The product is single-model, so this is the single offered
- * model. The RedPill proxy resolves this exactly as for chat; if the id is
- * unavailable the extraction call fails and the in-flight guard releases (memory
- * stays put).
+ * PREFERRED model id used for memory extraction. The extraction runs once per
+ * assistant turn off the visible reply path. The id MUST be in the offered set
+ * for the POST to pass the model gate; an unoffered id 403s with
+ * `model_not_offered` and memory silently never updates (ST3). To survive
+ * picker churn (the lineup has changed several times: gpt-5-mini → gpt-oss-20b
+ * → qwen-2.5-7b → deepseek-v4-pro), this is now the *preferred* id only —
+ * `pickExtractionModel` falls back to the current chat model, then the first
+ * offered id, so extraction keeps working even if this preferred id drifts out
+ * of the catalog.
  */
 const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-pro";
+
+/**
+ * Choose an extraction model that is guaranteed to be offered, so the
+ * extraction POST can never 403 with `model_not_offered` (silent memory stop).
+ * Preference order: configured preferred → current chat model → first offered.
+ */
+function pickExtractionModel(d: ChatRuntimeDeps): string {
+  const choice = chooseExtractionModel(
+    MEMORY_EXTRACTION_MODEL,
+    d.offeredModelIdsRef.current,
+    d.modelRef.current,
+  );
+  if (choice.source === "chat") {
+    console.warn(
+      `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered; ` +
+        `falling back to current chat model ${choice.model}`,
+    );
+  } else if (choice.source === "first") {
+    console.warn(
+      `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered and chat ` +
+        `model unavailable; falling back to ${choice.model}`,
+    );
+  }
+  return choice.model;
+}
 
 /**
  * Per-call output cap on extraction. cl100k averages ~4 chars/token for
@@ -374,7 +401,7 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
         completeChat({
           backendUrl: d.backendUrl,
           sessionStore: d.sessionStore,
-          model: MEMORY_EXTRACTION_MODEL,
+          model: pickExtractionModel(d),
           messages,
           maxTokens: MEMORY_EXTRACTION_MAX_TOKENS,
           abortSignal: opts?.abortSignal,
@@ -581,6 +608,26 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   const adapter = useThreadListAdapter(deps);
   const depsRef = useRef(deps);
   depsRef.current = deps;
+
+  // One-shot boot warning if the preferred extraction model is not in the
+  // offered catalog once it loads — makes the drift visible in dev instead of
+  // failing silently. Guarded by a ref so it never spams across renders.
+  const extractionDriftWarnedRef = useRef(false);
+  const offeredCatalogSize = deps.offeredModelIdsRef.current?.size ?? 0;
+  useEffect(() => {
+    if (extractionDriftWarnedRef.current) return;
+    const offered = depsRef.current.offeredModelIdsRef.current;
+    if (!offered || offered.size === 0) return;
+    if (!offered.has(MEMORY_EXTRACTION_MODEL)) {
+      extractionDriftWarnedRef.current = true;
+      console.warn(
+        `[memory] preferred extraction model ${MEMORY_EXTRACTION_MODEL} is NOT ` +
+          `in the offered catalog — pickExtractionModel will fall back at runtime.`,
+      );
+    } else {
+      extractionDriftWarnedRef.current = true;
+    }
+  }, [offeredCatalogSize]);
 
   const chatModel = useMemo(
     () => createChatModelAdapter(depsRef.current),

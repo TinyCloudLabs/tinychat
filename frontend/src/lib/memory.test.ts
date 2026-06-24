@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   MEMORY_BUDGET_CHARS,
+  assessMemoryWrite,
   buildExtractionMessages,
   clampDocToBudget,
   mergeExtraction,
@@ -216,5 +217,130 @@ describe("mergeExtraction", () => {
     const merged = mergeExtraction(oversized);
     expect(merged.length).toBeLessThanOrEqual(MEMORY_BUDGET_CHARS);
     expect(merged).toContain("## Recent activity");
+  });
+});
+
+describe("assessMemoryWrite", () => {
+  // A substantial well-formed prior doc (>= GUARD_MIN_PRIOR_CHARS so the shrink
+  // floor applies) used by several cases below.
+  const prevDoc = [
+    "# About the user",
+    "## Identity & background",
+    "- Software engineer based in Berlin",
+    "- Works on developer tooling",
+    "## Interests & preferences",
+    "- Prefers Rust and PostgreSQL",
+    "- Reads philosophy on weekends",
+    "## Goals & ongoing projects",
+    "- Shipping a per-space memory feature in tinychat",
+    "- Hardening the extraction path against silent loss",
+    "## Recent activity",
+    "- 2026-06-22: Debugged the model picker drift",
+    "- 2026-06-23: Wrote regression guard tests",
+  ].join("\n");
+
+  it("rejects an empty next doc", () => {
+    expect(assessMemoryWrite(prevDoc, "")).toEqual({ ok: false, reason: "empty" });
+    expect(assessMemoryWrite(prevDoc, "   \n  ")).toEqual({ ok: false, reason: "empty" });
+  });
+
+  it("rejects a next doc missing the top-level header", () => {
+    const noHeader = [
+      "## Identity & background",
+      "- Software engineer",
+      "## Interests & preferences",
+      "- Rust",
+      "## Goals & ongoing projects",
+      "- Memory hardening",
+      "## Recent activity",
+      "- 2026-06-23: edits",
+    ].join("\n");
+    const assessment = assessMemoryWrite(prevDoc, noHeader);
+    expect(assessment.ok).toBe(false);
+    expect(assessment.reason).toBe("missing-header");
+  });
+
+  it("rejects when a `## ` section present in prev is dropped in next", () => {
+    const withoutGoals = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+      "- Works on developer tooling",
+      "## Interests & preferences",
+      "- Prefers Rust and PostgreSQL",
+      "- Reads philosophy on weekends",
+      // "## Goals & ongoing projects" intentionally dropped
+      "## Recent activity",
+      "- 2026-06-22: Debugged the model picker drift",
+      "- 2026-06-23: Wrote regression guard tests",
+    ].join("\n");
+    const assessment = assessMemoryWrite(prevDoc, withoutGoals);
+    expect(assessment.ok).toBe(false);
+    expect(assessment.reason).toMatch(/^section-dropped:## Goals & ongoing projects/);
+  });
+
+  it("rejects a substantial prev that collapses below the shrink floor", () => {
+    // prevDoc is well above GUARD_MIN_PRIOR_CHARS; produce a header-bearing next
+    // whose body is far smaller than 60% of prev so the shrink floor trips.
+    expect(prevDoc.length).toBeGreaterThanOrEqual(200);
+    const tiny = "# About the user\n## Identity & background\n- hi";
+    expect(tiny.length).toBeLessThan(prevDoc.length * 0.6);
+    // tiny also drops sections, so to isolate the shrink reason we need to keep
+    // all section headers but compress their bodies aggressively. Build a doc
+    // that keeps every "## " section header from prev (so section-drop passes)
+    // but is still short enough to trip the shrink floor.
+    const shrunk = [
+      "# About the user",
+      "## Identity & background",
+      "## Interests & preferences",
+      "## Goals & ongoing projects",
+      "## Recent activity",
+    ].join("\n");
+    expect(shrunk.length).toBeLessThan(prevDoc.length * 0.6);
+    const assessment = assessMemoryWrite(prevDoc, shrunk);
+    expect(assessment.ok).toBe(false);
+    expect(assessment.reason).toBe("shrink");
+  });
+
+  it("accepts a legit additive update that grows and keeps every section", () => {
+    const grown = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+      "- Works on developer tooling",
+      "- Recently moved teams to platform infra",
+      "## Interests & preferences",
+      "- Prefers Rust and PostgreSQL",
+      "- Reads philosophy on weekends",
+      "- Interested in cryptography and TEEs",
+      "## Goals & ongoing projects",
+      "- Shipping a per-space memory feature in tinychat",
+      "- Hardening the extraction path against silent loss",
+      "- Writing a deterministic regression build for memory",
+      "## Recent activity",
+      "- 2026-06-22: Debugged the model picker drift",
+      "- 2026-06-23: Wrote regression guard tests",
+      "- 2026-06-23: Landed the threadStore backup row",
+    ].join("\n");
+    expect(grown.length).toBeGreaterThan(prevDoc.length);
+    expect(assessMemoryWrite(prevDoc, grown)).toEqual({ ok: true });
+  });
+
+  it("accepts a valid first doc when prev is null", () => {
+    const firstDoc = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer",
+    ].join("\n");
+    expect(assessMemoryWrite(null, firstDoc)).toEqual({ ok: true });
+    expect(assessMemoryWrite(undefined, firstDoc)).toEqual({ ok: true });
+    expect(assessMemoryWrite("", firstDoc)).toEqual({ ok: true });
+  });
+
+  it("rejects a malformed first doc (no header) even when prev is null", () => {
+    const noHeader = "## Identity & background\n- Software engineer";
+    const assessment = assessMemoryWrite(null, noHeader);
+    expect(assessment.ok).toBe(false);
+    expect(assessment.reason).toBe("missing-header");
   });
 });

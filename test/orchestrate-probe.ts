@@ -24,7 +24,7 @@ const config = {
 };
 
 let contentText = "";
-let toolActivity: string[] = [];
+const toolActivity: string[] = [];
 let usage = "";
 let idSeen = "";
 

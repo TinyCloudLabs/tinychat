@@ -223,7 +223,7 @@ async function dispatchTool(
   entityId: string,
   roomId: string | undefined,
 ): Promise<string> {
-  let args: Record<string, unknown> = {};
+  let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
   } catch {
