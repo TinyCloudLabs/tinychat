@@ -40,6 +40,7 @@ import {
 } from "../lib/threadStore";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { renderMemoryBlock, runExtraction } from "../lib/memory";
+import { pickExtractionModel as chooseExtractionModel } from "../lib/extractionModel";
 import {
   createBillingClient,
   setReceipt,
@@ -72,24 +73,23 @@ const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-pro";
  * Preference order: configured preferred → current chat model → first offered.
  */
 function pickExtractionModel(d: ChatRuntimeDeps): string {
-  const offered = d.offeredModelIdsRef.current;
-  // Catalog not loaded yet — best effort with the preferred id.
-  if (!offered || offered.size === 0) return MEMORY_EXTRACTION_MODEL;
-  if (offered.has(MEMORY_EXTRACTION_MODEL)) return MEMORY_EXTRACTION_MODEL;
-  const chat = d.modelRef.current;
-  if (chat && offered.has(chat)) {
+  const choice = chooseExtractionModel(
+    MEMORY_EXTRACTION_MODEL,
+    d.offeredModelIdsRef.current,
+    d.modelRef.current,
+  );
+  if (choice.source === "chat") {
     console.warn(
       `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered; ` +
-        `falling back to current chat model ${chat}`,
+        `falling back to current chat model ${choice.model}`,
     );
-    return chat;
+  } else if (choice.source === "first") {
+    console.warn(
+      `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered and chat ` +
+        `model unavailable; falling back to ${choice.model}`,
+    );
   }
-  const first = offered.values().next().value as string | undefined;
-  console.warn(
-    `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered and chat ` +
-      `model unavailable; falling back to ${first ?? MEMORY_EXTRACTION_MODEL}`,
-  );
-  return first ?? MEMORY_EXTRACTION_MODEL;
+  return choice.model;
 }
 
 /**
