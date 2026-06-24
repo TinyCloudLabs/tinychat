@@ -72,6 +72,15 @@ const SCHEMA: string[] = [
 /** Stable id of the single user_context row in the memory table. */
 const MEMORY_ROW_ID = "user_context";
 
+/**
+ * Stable id of the last-known-good backup row, stored in the SAME `memory`
+ * table (no schema change). `setMemory` snapshots the prior live doc here
+ * before writing the new one; `getMemory` auto-restores from it if the live
+ * row is ever found missing/empty; `clearMemory` deletes both rows so an
+ * explicit "Clear memory" is not silently resurrected.
+ */
+const MEMORY_BACKUP_ROW_ID = "user_context_backup";
+
 // Monotonically increasing counter bumped on every memory mutation (set/clear
 // and the runtime/panel write-back paths). Used by the MemoryPanel mount-time
 // reconcile to drop a stale SQL read that lost the race against a more recent
@@ -332,10 +341,41 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
     );
     if (!res.ok) throw new SqlOpError(res.error, "getMemory");
     const rows = res.data.rows;
-    if (rows.length === 0) return null;
-    const content = cellStr(rows[0], 0, "");
-    writeMemoryCache(tcw, content);
-    return content;
+    const liveContent = rows.length > 0 ? cellStr(rows[0], 0, "") : "";
+    if (liveContent.trim().length > 0) {
+      writeMemoryCache(tcw, liveContent);
+      return liveContent;
+    }
+    // Live row empty/missing — try the last-known-good backup. If present,
+    // restore it into the live row so subsequent reads short-circuit on the
+    // happy path without paying the second query each time.
+    const bk = await store(tcw).query(
+      "SELECT content FROM memory WHERE id = ?",
+      [MEMORY_BACKUP_ROW_ID],
+    );
+    if (bk.ok && bk.data.rows.length > 0) {
+      const bkContent = cellStr(bk.data.rows[0], 0, "");
+      if (bkContent.trim().length > 0) {
+        const now = new Date().toISOString();
+        const restoreRes = await store(tcw).execute(
+          `INSERT INTO memory (id, content, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
+          [MEMORY_ROW_ID, bkContent, now],
+        );
+        if (!restoreRes.ok) {
+          // Data is still safe — bkContent is returned to the caller — but
+          // subsequent reads will pay the extra backup query until the live
+          // row is repopulated. Log so the failure is observable.
+          console.warn(
+            "[threadStore] getMemory: failed to restore backup row into live",
+            restoreRes.error,
+          );
+        }
+        writeMemoryCache(tcw, bkContent);
+        return bkContent;
+      }
+    }
+    return null;
   } catch (err) {
     if (authUnauthorized(err)) {
       console.warn("[threadStore] getMemory unauthorized — falling back to cache", err);
@@ -353,23 +393,46 @@ export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<voi
   _memoryWriteGen++;
   await ensureSchema(tcw);
   const now = new Date().toISOString();
-  const res = await store(tcw).execute(
+  const UPSERT =
     `INSERT INTO memory (id, content, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
-    [MEMORY_ROW_ID, content, now],
+     ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`;
+
+  // Snapshot the prior live doc as last-known-good before overwriting. Best
+  // effort: if the read fails or the prior doc is empty, we just skip the
+  // backup write and move on — never block or fail the primary write.
+  const stmts: { sql: string; params: string[] }[] = [];
+  const prior = await store(tcw).query(
+    "SELECT content FROM memory WHERE id = ?",
+    [MEMORY_ROW_ID],
   );
+  if (prior.ok && prior.data.rows.length > 0) {
+    const priorContent = cellStr(prior.data.rows[0], 0, "");
+    if (priorContent.trim().length > 0) {
+      stmts.push({ sql: UPSERT, params: [MEMORY_BACKUP_ROW_ID, priorContent, now] });
+    }
+  } else if (!prior.ok) {
+    console.warn(
+      "[threadStore] setMemory: prior-doc read failed, backup skipped",
+      prior.error,
+    );
+  }
+  stmts.push({ sql: UPSERT, params: [MEMORY_ROW_ID, content, now] });
+
+  const res = await store(tcw).batch(stmts);
   if (!res.ok) throw new SqlOpError(res.error, "setMemory");
   writeMemoryCache(tcw, content);
 }
 
-/** Delete the per-space user_context doc and drop the localStorage cache. */
+/** Delete the per-space user_context doc and drop the localStorage cache.
+ *  Also drops the last-known-good backup row so an explicit "Clear memory" is
+ *  not resurrected by `getMemory`'s auto-restore. */
 export async function clearMemory(tcw: TinyCloudWeb): Promise<void> {
   _memoryWriteGen++;
   await ensureSchema(tcw);
-  const res = await store(tcw).execute(
-    "DELETE FROM memory WHERE id = ?",
-    [MEMORY_ROW_ID],
-  );
+  const res = await store(tcw).batch([
+    { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_ROW_ID] },
+    { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_BACKUP_ROW_ID] },
+  ]);
   if (!res.ok) throw new SqlOpError(res.error, "clearMemory");
   removeMemoryCache(tcw);
 }
