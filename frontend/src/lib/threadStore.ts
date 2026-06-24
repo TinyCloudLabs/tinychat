@@ -1,6 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
 import { historyPrefetch } from "./historyPrefetch";
+import { MEMORY_TEMPLATE } from "./memory";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -421,6 +422,19 @@ export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<voi
   const res = await store(tcw).batch(stmts);
   if (!res.ok) throw new SqlOpError(res.error, "setMemory");
   writeMemoryCache(tcw, content);
+}
+
+/**
+ * Replace the per-space user_context doc with the empty-section scaffold
+ * (`MEMORY_TEMPLATE`). Non-destructive vs. `clearMemory`: the section
+ * headers stay so the next extraction has a stable structure to fill in,
+ * and the prior live doc is snapshotted into the backup row by reusing
+ * `setMemory` — so writeGen bump, backup snapshot, and cache refresh all
+ * come for free. Returns the template that was written.
+ */
+export async function resetMemoryToTemplate(tcw: TinyCloudWeb): Promise<string> {
+  await setMemory(tcw, MEMORY_TEMPLATE);
+  return MEMORY_TEMPLATE;
 }
 
 /** Delete the per-space user_context doc and drop the localStorage cache.

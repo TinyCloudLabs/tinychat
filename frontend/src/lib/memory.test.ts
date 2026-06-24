@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   MEMORY_BUDGET_CHARS,
+  MEMORY_TEMPLATE,
   assessMemoryWrite,
   buildExtractionMessages,
   clampDocToBudget,
@@ -342,5 +343,117 @@ describe("assessMemoryWrite", () => {
     const assessment = assessMemoryWrite(null, noHeader);
     expect(assessment.ok).toBe(false);
     expect(assessment.reason).toBe("missing-header");
+  });
+
+  it("ALLOWS dropping a prior section that was empty (header only, no body)", () => {
+    // prev keeps every section header but the "Goals" section carries no body,
+    // so the extraction is allowed to omit it on the next pass.
+    const prev = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+      "## Interests & preferences",
+      "- Prefers Rust and PostgreSQL",
+      "## Goals & ongoing projects",
+      "## Recent activity",
+      "- 2026-06-23: Wrote tests",
+    ].join("\n");
+    const next = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+      "## Interests & preferences",
+      "- Prefers Rust and PostgreSQL",
+      // "## Goals & ongoing projects" intentionally dropped (was empty in prev)
+      "## Recent activity",
+      "- 2026-06-23: Wrote tests",
+    ].join("\n");
+    expect(assessMemoryWrite(prev, next)).toEqual({ ok: true });
+  });
+
+  it("still REJECTS dropping a non-empty prior section", () => {
+    const prev = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+      "## Interests & preferences",
+      "- Prefers Rust and PostgreSQL",
+      "## Goals & ongoing projects",
+      "- Shipping memory feature",
+      "## Recent activity",
+      "- 2026-06-23: Wrote tests",
+    ].join("\n");
+    const next = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+      "## Interests & preferences",
+      "- Prefers Rust and PostgreSQL",
+      // "## Goals & ongoing projects" intentionally dropped (had content in prev)
+      "## Recent activity",
+      "- 2026-06-23: Wrote tests",
+    ].join("\n");
+    const assessment = assessMemoryWrite(prev, next);
+    expect(assessment.ok).toBe(false);
+    expect(assessment.reason).toBe("section-dropped:## Goals & ongoing projects");
+  });
+
+  it("accepts the first extraction against the empty scaffold (post-reset)", () => {
+    // After a Reset to template, prev is MEMORY_TEMPLATE: every section header
+    // is still present but every body is blank. The first extraction is told
+    // to "omit a section if empty", so it legitimately returns only the
+    // populated sections — that must not be rejected.
+    const firstExtraction = [
+      "# About the user",
+      "## Identity & background",
+      "- Software engineer based in Berlin",
+    ].join("\n");
+    expect(assessMemoryWrite(MEMORY_TEMPLATE, firstExtraction)).toEqual({ ok: true });
+  });
+});
+
+describe("MEMORY_TEMPLATE", () => {
+  it("starts with the top-level header and contains every section header", () => {
+    expect(MEMORY_TEMPLATE.startsWith("# About the user")).toBe(true);
+    for (const h of [
+      "## Identity & background",
+      "## Interests & preferences",
+      "## Goals & ongoing projects",
+      "## Recent activity",
+    ]) {
+      expect(MEMORY_TEMPLATE).toContain(h);
+    }
+  });
+
+  it("renders the section headers in the documented order, each preceded by a blank line", () => {
+    const expected = [
+      "# About the user",
+      "",
+      "## Identity & background",
+      "",
+      "## Interests & preferences",
+      "",
+      "## Goals & ongoing projects",
+      "",
+      "## Recent activity",
+    ].join("\n");
+    expect(MEMORY_TEMPLATE).toBe(expected);
+  });
+
+  it("has empty bodies under every section (no notes carried over)", () => {
+    // Every `## ` section header should be followed by a blank line (or EOF),
+    // matching the "blank scaffold" contract the reset button promises.
+    const lines = MEMORY_TEMPLATE.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith("## ")) {
+        const next = lines[i + 1];
+        // EOF or a blank line — anything else means the section carries content.
+        expect(next === undefined || next.trim().length === 0).toBe(true);
+      }
+    }
+  });
+
+  it("passes assessMemoryWrite as a fresh first write (well-formed, has header)", () => {
+    expect(assessMemoryWrite(null, MEMORY_TEMPLATE)).toEqual({ ok: true });
   });
 });

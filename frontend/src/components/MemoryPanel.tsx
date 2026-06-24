@@ -19,6 +19,7 @@ import {
   getMemory,
   memoryWriteGen,
   readMemoryCache,
+  resetMemoryToTemplate,
   setMemory,
 } from "@/lib/threadStore";
 import { MEMORY_BUDGET_CHARS, clampDocToBudget } from "@/lib/memory";
@@ -231,6 +232,27 @@ export function MemoryPanel({
     }
   }, [tcw, memoryRef, onMemoryUpdated]);
 
+  const reset = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const template = await resetMemoryToTemplate(tcw);
+      memoryRef.current = template;
+      setDoc(template);
+      setDraft(template);
+      onMemoryUpdated?.(template);
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "AUTH_UNAUTHORIZED") {
+        setError("Session expired — please sign in again to reset memory.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to reset memory");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [tcw, memoryRef, onMemoryUpdated]);
+
   return (
     <div
       ref={rootRef}
@@ -330,36 +352,64 @@ export function MemoryPanel({
       )}
 
       <div className="flex items-center justify-between gap-2">
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={isEmpty || saving}
-              className="h-11 text-destructive hover:bg-destructive/10 hover:text-destructive md:h-8"
-            >
-              Clear memory
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Clear memory?</AlertDialogTitle>
-              <AlertDialogDescription>
-                The assistant will forget everything it has learned about you in this space. This
-                cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={clear}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+        <div className="flex items-center gap-1">
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isEmpty || saving}
+                className="h-11 text-destructive hover:bg-destructive/10 hover:text-destructive md:h-8"
               >
-                Clear
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+                Clear memory
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear memory?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  The assistant will forget everything it has learned about you in this space. This
+                  cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={clear}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Clear
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={saving}
+                className="h-11 md:h-8"
+              >
+                Reset to template
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Reset memory to a blank template?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Your current notes will be replaced with empty sections. This can&rsquo;t be
+                  undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={reset}>Reset</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
 
         <div className="flex items-center gap-2">
           {dirty && (
