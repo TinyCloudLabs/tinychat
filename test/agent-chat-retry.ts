@@ -4,7 +4,7 @@
 // tool-calling turn: RedPill tool_calls → eliza /tools/web_search → streamed answer
 // + receipt + verification badge. Run after the RedPill rate limit (429) clears.
 
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext } from "playwright";
 import {
   extractStoredSession,
   resolveRealAuthCommandEnv,

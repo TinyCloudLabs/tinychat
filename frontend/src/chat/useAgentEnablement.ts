@@ -122,7 +122,6 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
     };
   // Re-probe when the backend or session changes (e.g. sign-out/sign-in cycle).
   // agentEnabledRef is a stable ref — omitting from deps is intentional.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backendUrl, sessionStore]);
 
   const onEnable = useCallback(async () => {

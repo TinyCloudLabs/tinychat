@@ -79,7 +79,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
       },
       ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
     });
-    let body: Record<string, unknown> = {};
+    let body: Record<string, unknown>;
     try {
       body = (await res.json()) as Record<string, unknown>;
     } catch {
