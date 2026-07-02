@@ -36,7 +36,8 @@ export const DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
  * Db handle name. MUST be the full resolved path so the SQL invoke resource
  * equals the granted resource. See the DB HANDLE CONVENTION note above.
  */
-const SQL_DB_NAME = `${APP_ID}/threads`;
+export const THREADS_SQL_DB_NAME = `${APP_ID}/threads`;
+const SQL_DB_NAME = THREADS_SQL_DB_NAME;
 
 /** Schema creates, run before the first write per session (via ensureSchema). */
 const SCHEMA: string[] = [

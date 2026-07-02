@@ -19,6 +19,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tinyboilerplate/client": "workspace:*",
     "@tinyboilerplate/core": "workspace:*",
+    "@tinycloud/sdk-core": "2.3.0",
     "@tinycloud/web-sdk": "2.3.0",
     "assistant-stream": "0.3.19",
     "class-variance-authority": "^0.7.1",

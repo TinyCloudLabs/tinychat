@@ -3,6 +3,7 @@ import {
   ArrowLeftRightIcon,
   PenLineIcon,
   DatabaseIcon,
+  Share2Icon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -33,6 +34,11 @@ const FEATURES: Feature[] = [
     title: "Remember",
     body: "Every thread is saved to your own per-space database and synced across devices. Your history stays yours and stays portable.",
   },
+  {
+    icon: Share2Icon,
+    title: "Share",
+    body: "Create read-only chat links that use a temporary TinyCloud session key and delegation instead of copying your history into another account.",
+  },
 ];
 
 export function Features() {
@@ -53,7 +59,7 @@ export function Features() {
           </p>
         </div>
 
-        <div className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-[repeat(auto-fit,minmax(12rem,1fr))]">
           {FEATURES.map(({ icon: Icon, title, body }) => (
             <div
               key={title}
