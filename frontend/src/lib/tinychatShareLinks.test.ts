@@ -69,7 +69,8 @@ describe("tinychat share links", () => {
   });
 
   it("stores non-expired shares newest first and de-dupes by id", async () => {
-    const { listStoredTinychatShares, saveTinychatShareToken } = await loadShareModule();
+    const { findStoredTinychatShareForThread, listStoredTinychatShares, saveTinychatShareToken } =
+      await loadShareModule();
     installStorage();
 
     const first = saveTinychatShareToken(token("2999-01-01T00:00:00.000Z", "same"));
@@ -80,6 +81,7 @@ describe("tinychat share links", () => {
     expect(second.id).toBe("same");
     expect(shares).toHaveLength(1);
     expect(shares[0].token).toBe(second.token);
+    expect(findStoredTinychatShareForThread("thread-1")?.token).toBe(second.token);
   });
 
   it("rejects expired shares", async () => {
@@ -89,5 +91,22 @@ describe("tinychat share links", () => {
     expect(() => saveTinychatShareToken(token("2000-01-01T00:00:00.000Z"))).toThrow(
       "expired",
     );
+  });
+
+  it("stores created shares at their createdAt timestamp", async () => {
+    const { findStoredTinychatShareForThread, saveCreatedTinychatShare } =
+      await loadShareModule();
+    installStorage();
+    const expiresAt = "2999-01-01T00:00:00.000Z";
+    const shareToken = token(expiresAt, "created-share");
+    const payload = {
+      ...JSON.parse(atob(shareToken.slice("tcchat1:".length))),
+      expiresAt,
+    };
+
+    const stored = saveCreatedTinychatShare(shareToken, payload);
+
+    expect(stored.acceptedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(findStoredTinychatShareForThread("thread-1")?.id).toBe("created-share");
   });
 });
