@@ -1,4 +1,12 @@
-import { useEffect, useState, type FC } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type FC,
+} from "react";
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
@@ -37,7 +45,11 @@ import {
   onReceipt,
   type ReceiptEntry,
 } from "@/lib/billingApi";
-import { createTinychatShareLink } from "@/lib/tinychatShareLinks";
+import {
+  createTinychatShareLink,
+  findStoredTinychatShareForThread,
+  type StoredTinychatShare,
+} from "@/lib/tinychatShareLinks";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
 
@@ -48,37 +60,75 @@ interface ThreadProps {
 export const Thread: FC<ThreadProps> = ({ tcw }) => {
   return (
     <TooltipProvider delayDuration={300}>
-      <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
-        <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
-          <ShareThreadButton tcw={tcw} />
-          <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
-            <ThreadBody />
-          </div>
+      <ShareThreadProvider tcw={tcw}>
+        <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
+          <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+            <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
+              <ThreadBody />
+            </div>
 
-          <Composer />
-        </ThreadPrimitive.Viewport>
-      </ThreadPrimitive.Root>
+            <Composer />
+          </ThreadPrimitive.Viewport>
+        </ThreadPrimitive.Root>
+      </ShareThreadProvider>
     </TooltipProvider>
   );
 };
 
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+interface ShareThreadContextValue {
+  canShare: boolean;
+  openShareDialog: () => void;
+}
+
+const ShareThreadContext = createContext<ShareThreadContextValue | null>(null);
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall back to the textarea path below. Browser clipboard writes can fail
+    // when the document is not focused.
   }
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.style.position = "fixed";
   textarea.style.opacity = "0";
+  textarea.setAttribute("readonly", "");
   document.body.appendChild(textarea);
+  textarea.focus();
   textarea.select();
-  document.execCommand("copy");
+  const copied = document.execCommand("copy");
   textarea.remove();
+  return copied;
 }
 
-const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
+function shareLinkForStoredShare(share: StoredTinychatShare): string {
+  const url = new URL(window.location.href);
+  url.pathname = "/chat";
+  url.search = "";
+  url.hash = `share=${encodeURIComponent(share.token)}`;
+  return url.toString();
+}
+
+function formatShareDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> = ({
+  tcw,
+  children,
+}) => {
   const threadId = useAuiState(
     (s) => s.threadListItem.remoteId ?? s.threadListItem.id,
   ) as string;
@@ -87,19 +137,28 @@ const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [durationDays, setDurationDays] = useState(7);
-  const [link, setLink] = useState<string | null>(null);
+  const [share, setShare] = useState<StoredTinychatShare | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
 
   const canShare = Boolean(threadId && !isEmpty && !isLoading && !creating);
+
+  const openShareDialog = useCallback(() => {
+    setShare(threadId ? findStoredTinychatShareForThread(threadId) : null);
+    setCopyState("idle");
+    setError(null);
+    setOpen(true);
+  }, [threadId]);
 
   const createShare = async () => {
     if (!canShare) return;
     setCreating(true);
     setError(null);
+    setCopyState("idle");
     try {
       const result = await createTinychatShareLink(tcw, threadId, { durationDays });
-      setLink(result.link);
-      await copyText(result.link);
+      const stored = findStoredTinychatShareForThread(threadId);
+      setShare(stored ?? { ...result.payload, acceptedAt: result.payload.createdAt, token: result.token });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -107,43 +166,52 @@ const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
     }
   };
 
-  return (
-    <>
-      <TooltipIconButton
-        tooltip={canShare ? "Share chat" : "Send a message before sharing"}
-        side="left"
-        disabled={!canShare}
-        onClick={() => {
-          setLink(null);
-          setError(null);
-          setOpen(true);
-        }}
-        className="absolute right-3 top-3 z-20 size-11 border border-border bg-background/95 shadow-sm md:size-8"
-      >
-        <Share2Icon className="size-4" />
-      </TooltipIconButton>
+  const copyShareLink = async () => {
+    if (!share) return;
+    setError(null);
+    const copied = await copyText(shareLinkForStoredShare(share));
+    setCopyState(copied ? "copied" : "failed");
+    if (!copied) setError("Could not copy the link. Select it below and copy manually.");
+  };
 
+  const value = useMemo(
+    () => ({
+      canShare,
+      openShareDialog,
+    }),
+    [canShare, openShareDialog],
+  );
+
+  const link = share ? shareLinkForStoredShare(share) : null;
+
+  return (
+    <ShareThreadContext.Provider value={value}>
+      {children}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Share chat</DialogTitle>
+            <DialogTitle>{share ? "Share link ready" : "Share chat"}</DialogTitle>
             <DialogDescription>
-              Create a read-only link that expires automatically.
+              {share
+                ? "Copy the existing read-only link for this chat."
+                : "Create a read-only link that expires automatically."}
             </DialogDescription>
           </DialogHeader>
 
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Duration</span>
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={durationDays}
-              onChange={(event) => setDurationDays(Number(event.currentTarget.value) || 7)}
-              className="h-9 w-20 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-            <span className="text-muted-foreground">days</span>
-          </label>
+          {!share && (
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Duration</span>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={durationDays}
+                onChange={(event) => setDurationDays(Number(event.currentTarget.value) || 7)}
+                className="h-9 w-20 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <span className="text-muted-foreground">days</span>
+            </label>
+          )}
 
           {error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -151,12 +219,25 @@ const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
             </div>
           )}
 
-          {link && (
+          {share && link && (
             <div className="rounded-md border border-border bg-muted p-3">
-              <div className="text-xs font-medium text-foreground">Link copied</div>
+              <div className="text-xs font-medium text-foreground">
+                Created {formatShareDate(share.createdAt)}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                Expires {formatShareDate(share.expiresAt)}
+              </div>
               <code className="mt-1 block max-h-24 overflow-auto break-all text-xs text-muted-foreground">
                 {link}
               </code>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-3"
+                onClick={() => void copyShareLink()}
+              >
+                {copyState === "copied" ? "Copied" : "Copy link"}
+              </Button>
             </div>
           )}
 
@@ -164,13 +245,19 @@ const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Close
             </Button>
-            <Button type="button" onClick={() => void createShare()} disabled={!canShare}>
-              {creating ? "Creating..." : "Create link"}
-            </Button>
+            {share ? (
+              <Button type="button" onClick={() => void copyShareLink()}>
+                {copyState === "copied" ? "Copied" : "Copy link"}
+              </Button>
+            ) : (
+              <Button type="button" onClick={() => void createShare()} disabled={!canShare}>
+                {creating ? "Creating..." : "Create link"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </ShareThreadContext.Provider>
   );
 };
 
@@ -446,9 +533,25 @@ const AssistantActionBar: FC = () => (
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
     </ActionBarPrimitive.Root>
+    <ShareThreadAction />
     <ReceiptFooter />
   </div>
 );
+
+const ShareThreadAction: FC = () => {
+  const share = useContext(ShareThreadContext);
+  if (!share) return null;
+  return (
+    <TooltipIconButton
+      tooltip={share.canShare ? "Share chat" : "Send a message before sharing"}
+      disabled={!share.canShare}
+      onClick={share.openShareDialog}
+      className="size-11 md:size-7"
+    >
+      <Share2Icon />
+    </TooltipIconButton>
+  );
+};
 
 // Always-on per-message receipt (spec §5.3). One exchange registers two
 // entries: the input (prompt) share on the user message and the output
