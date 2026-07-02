@@ -8,11 +8,13 @@ import {
   useAuiState,
   useMessage,
 } from "@assistant-ui/react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   AlertTriangleIcon,
   ArrowDownIcon,
   CheckIcon,
   CopyIcon,
+  Share2Icon,
   SendHorizontalIcon,
   Square,
 } from "lucide-react";
@@ -20,20 +22,35 @@ import {
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   formatCredits,
   getReceipt,
   onReceipt,
   type ReceiptEntry,
 } from "@/lib/billingApi";
+import { createTinychatShareLink } from "@/lib/tinychatShareLinks";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
 
-export const Thread: FC = () => {
+interface ThreadProps {
+  tcw: TinyCloudWeb;
+}
+
+export const Thread: FC<ThreadProps> = ({ tcw }) => {
   return (
     <TooltipProvider delayDuration={300}>
       <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
         <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          <ShareThreadButton tcw={tcw} />
           <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
             <ThreadBody />
           </div>
@@ -42,6 +59,118 @@ export const Thread: FC = () => {
         </ThreadPrimitive.Viewport>
       </ThreadPrimitive.Root>
     </TooltipProvider>
+  );
+};
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
+  const threadId = useAuiState(
+    (s) => s.threadListItem.remoteId ?? s.threadListItem.id,
+  ) as string;
+  const isEmpty = useAuiState((s) => s.thread.isEmpty);
+  const isLoading = useAuiState((s) => s.thread.isLoading);
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [durationDays, setDurationDays] = useState(7);
+  const [link, setLink] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canShare = Boolean(threadId && !isEmpty && !isLoading && !creating);
+
+  const createShare = async () => {
+    if (!canShare) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await createTinychatShareLink(tcw, threadId, { durationDays });
+      setLink(result.link);
+      await copyText(result.link);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <>
+      <TooltipIconButton
+        tooltip={canShare ? "Share chat" : "Send a message before sharing"}
+        side="left"
+        disabled={!canShare}
+        onClick={() => {
+          setLink(null);
+          setError(null);
+          setOpen(true);
+        }}
+        className="absolute right-3 top-3 z-20 size-11 border border-border bg-background/95 shadow-sm md:size-8"
+      >
+        <Share2Icon className="size-4" />
+      </TooltipIconButton>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Share chat</DialogTitle>
+            <DialogDescription>
+              Create a read-only link that expires automatically.
+            </DialogDescription>
+          </DialogHeader>
+
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Duration</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={durationDays}
+              onChange={(event) => setDurationDays(Number(event.currentTarget.value) || 7)}
+              className="h-9 w-20 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <span className="text-muted-foreground">days</span>
+          </label>
+
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          {link && (
+            <div className="rounded-md border border-border bg-muted p-3">
+              <div className="text-xs font-medium text-foreground">Link copied</div>
+              <code className="mt-1 block max-h-24 overflow-auto break-all text-xs text-muted-foreground">
+                {link}
+              </code>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Close
+            </Button>
+            <Button type="button" onClick={() => void createShare()} disabled={!canShare}>
+              {creating ? "Creating..." : "Create link"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
 

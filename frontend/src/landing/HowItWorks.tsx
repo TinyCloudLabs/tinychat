@@ -16,6 +16,11 @@ const LAYERS = [
   },
   {
     number: "04",
+    title: "Sharing",
+    body: "A share link mints a short-lived session key and delegates read access to the threads database. The recipient opens the link in a read-only shared view.",
+  },
+  {
+    number: "05",
     title: "Sync",
     body: "Your threads follow you across devices, restored straight from your space the moment you sign in.",
   },
@@ -38,7 +43,7 @@ export function HowItWorks() {
           </p>
         </div>
 
-        <ol className="mt-14 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <ol className="mt-14 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-[repeat(auto-fit,minmax(12rem,1fr))]">
           {LAYERS.map((layer) => (
             <li
               key={layer.number}

@@ -118,6 +118,50 @@ if the browser shows a TLS warning page; WebAuthn is not supported on sites
 with TLS certificate errors. Do not commit `.auth/`, browser traces,
 screenshots, videos, or reports from real-auth runs.
 
+## Chat Sharing
+
+TinyCloud Chat supports read-only sharing for saved threads. The active chat
+view exposes a share action after the thread has at least one message. Creating
+a link:
+
+- mints a temporary TinyCloud share session key for
+  `xyz.tinycloud.tinychat/threads`;
+- creates a `tinycloud.sql/read` delegation scoped to the share expiry;
+- stores the encoded share payload in a `#share=` URL;
+- opens the URL in a read-only shared transcript view without requiring sign-in.
+
+The shared view enforces the thread id embedded in the share payload at the app
+layer. The underlying TinyCloud grant is still a SQL read delegation for the
+threads database, matching the current TinyCloud sharing primitive.
+
+### Manual sharing verification
+
+1. Start the local stack:
+
+   ```bash
+   bun run dev
+   ```
+
+2. Open the frontend URL shown by Vite, sign in with OpenKey, and create a chat
+   with at least one message.
+3. Click the share icon in the upper-right of the chat view.
+4. Keep the default duration or choose another value, then click **Create
+   link**. The link is copied to the clipboard and displayed in the dialog.
+5. Open the copied link in a fresh browser profile or private window. It should
+   show the shared transcript without prompting for sign-in.
+6. Confirm the shared view is read-only: there is no composer, model picker, or
+   settings surface.
+
+Useful local checks for this code path:
+
+```bash
+bun run build:packages
+bun test frontend/src/lib/tinychatShareLinks.test.ts
+bun run build:frontend
+bun run test:frontend
+bun run lint
+```
+
 ## Standalone App
 
 This scaffold is ready to install and run on its own. It includes the app

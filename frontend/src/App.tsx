@@ -22,6 +22,7 @@ import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import { DEFAULT_MODEL, getSetting, readMemoryCache, setSetting } from "./lib/threadStore";
+import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import {
   createBillingClient,
@@ -41,6 +42,7 @@ import { PanelLeftIcon, SettingsIcon } from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
+import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const APP_NAME = "TinyCloud Chat";
@@ -87,6 +89,7 @@ export function App() {
   // instead of letting it cover the composer (iOS Safari `100dvh` does not).
   useVisualViewportFit();
   const initialModel = getInitialModel();
+  const initialShareToken = useMemo(() => readShareTokenFromLocation(), []);
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const restoredRef = useRef(false);
   const modelRef = useRef<string>(initialModel);
@@ -124,6 +127,7 @@ export function App() {
   const [pricingOpen, setPricingOpen] = useState(false);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
+  const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
   const openRates = useCallback(() => setRatesOpen(true), []);
 
@@ -611,7 +615,17 @@ export function App() {
       </header>
 
       <main className="min-h-0 flex-1">
-        {isReady && tcw ? (
+        {shareToken ? (
+          <SharedThreadSurface
+            token={shareToken}
+            onClose={() => {
+              setShareToken(null);
+              if (window.location.hash.startsWith("#share=")) {
+                window.history.replaceState(null, "", window.location.pathname + window.location.search);
+              }
+            }}
+          />
+        ) : isReady && tcw ? (
           <>
             {/* ChatWorkspace stays mounted while the settings route is active —
                 visibility toggle (not a <Routes> swap) preserves the assistant
@@ -881,7 +895,7 @@ function ChatWorkspace(props: {
           <ThreadList />
         </aside>
         <section className="min-h-0">
-          <Thread />
+          <Thread tcw={props.tcw} />
         </section>
       </div>
       <Sheet open={props.sidebarOpen} onOpenChange={props.setSidebarOpen}>
@@ -902,6 +916,103 @@ function ChatWorkspace(props: {
         silentlyEnabled={silentlyEnabled}
       />
     </AssistantRuntimeProvider>
+  );
+}
+
+function SharedThreadSurface(props: { token: string; onClose: () => void }) {
+  const [thread, setThread] = useState<ThreadDoc | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setThread(null);
+    setError(null);
+    loadSharedThreadFromToken(props.token)
+      .then((doc) => {
+        if (!cancelled) setThread(doc);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.token]);
+
+  return (
+    <div className="flex h-full flex-col bg-background">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-muted-foreground">Shared chat</div>
+          <h1 className="truncate text-sm font-semibold text-foreground">
+            {thread?.title ?? "TinyCloud Chat"}
+          </h1>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={props.onClose}>
+          Close
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4">
+        <div className="mx-auto flex w-full max-w-[46rem] flex-col gap-6 py-8">
+          {!thread && !error && (
+            <div className="text-sm text-muted-foreground">Loading shared chat...</div>
+          )}
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+          {thread?.messages.map((item, index) => (
+            <SharedMessage key={sharedMessageKey(item, index)} item={item} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function sharedMessageKey(item: StoredMessageItem, index: number): string {
+  const id = (item.message as { id?: unknown })?.id;
+  return typeof id === "string" ? id : String(index);
+}
+
+function messageText(item: StoredMessageItem): string {
+  const parts = (item.message?.content ?? []) as readonly unknown[];
+  return parts
+    .map((part) => {
+      const p = part as { type?: string; text?: unknown };
+      return p.type === "text" && typeof p.text === "string" ? p.text : "";
+    })
+    .join("");
+}
+
+function SharedMessage({ item }: { item: StoredMessageItem }) {
+  const role = item.message?.role;
+  const text = messageText(item);
+  if (!text) return null;
+
+  if (role === "user") {
+    return (
+      <div className="flex w-full justify-end">
+        <div className="max-w-[80%] overflow-hidden whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-2.5 text-sm leading-relaxed text-foreground">
+          {text}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-1">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+          T
+        </span>
+        <span>TinyCloud Chat</span>
+      </div>
+      <div className="whitespace-pre-wrap break-words pl-7 text-sm leading-relaxed text-foreground">
+        {text}
+      </div>
+    </div>
   );
 }
 
