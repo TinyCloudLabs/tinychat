@@ -144,20 +144,39 @@ function writeStoredTinychatShares(shares: StoredTinychatShare[]): void {
   store.setItem(STORAGE_KEY, JSON.stringify(shares));
 }
 
-export function saveTinychatShareToken(token: string): StoredTinychatShare {
-  const payload = decodeTinychatShareToken(token);
+function storeTinychatShare(
+  token: string,
+  payload: TinychatSharePayload,
+  storedAt: string,
+): StoredTinychatShare {
   if (new Date(payload.expiresAt).getTime() <= Date.now()) {
     throw new Error("This share link has expired");
   }
 
   const share: StoredTinychatShare = {
     ...payload,
-    acceptedAt: new Date().toISOString(),
+    acceptedAt: storedAt,
     token,
   };
   const existing = listStoredTinychatShares().filter((item) => item.id !== share.id);
   writeStoredTinychatShares([share, ...existing]);
   return share;
+}
+
+export function saveTinychatShareToken(token: string): StoredTinychatShare {
+  const payload = decodeTinychatShareToken(token);
+  return storeTinychatShare(token, payload, new Date().toISOString());
+}
+
+export function saveCreatedTinychatShare(
+  token: string,
+  payload: TinychatSharePayload,
+): StoredTinychatShare {
+  return storeTinychatShare(token, payload, payload.createdAt);
+}
+
+export function findStoredTinychatShareForThread(threadId: string): StoredTinychatShare | null {
+  return listStoredTinychatShares().find((share) => share.threadId === threadId) ?? null;
 }
 
 function normalizeDurationDays(value?: number): number {
@@ -174,7 +193,7 @@ export async function createTinychatShareLink(
   tcw: TinyCloudWeb,
   threadId: string,
   options: CreateTinychatShareOptions = {},
-): Promise<{ link: string; payload: TinychatSharePayload }> {
+): Promise<{ link: string; payload: TinychatSharePayload; token: string }> {
   const thread = await getThread(tcw, threadId);
   if (!thread || thread.messages.length === 0) {
     throw new Error("Send a message before sharing this chat");
@@ -206,10 +225,12 @@ export async function createTinychatShareLink(
     sql,
   };
   const token = encodePayload(payload);
+  saveCreatedTinychatShare(token, payload);
 
   return {
     link: shareLinkForToken(token),
     payload,
+    token,
   };
 }
 
