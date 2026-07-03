@@ -10,6 +10,7 @@ import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
 import {
   CatalogFetchError,
+  contextLengthFor,
   getCatalog,
   isBlocklistedModel,
   isOfferedModel,
@@ -29,6 +30,13 @@ import {
 // so the server boots cleanly even without a key configured.
 
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
+
+// Reactive context-overflow classifier (§C.12): matches an upstream 400/413 body
+// that reads like a context-window / token-length failure. Kept as a single
+// module-level regex so the classification is deterministic and testable. New
+// upstream phrasings that don't match here fall through to the baseline 502 (§H.5).
+const CONTEXT_OVERFLOW_BODY_RE =
+  /context|token[s]?\s*(limit|exceed)|too\s+(long|large)|maximum.*(length|context)/i;
 // Default to a VERIFIABLE (GREEN tier) offered model so a model-less POST is
 // allowed on every tier instead of self-denying with a 402 (ST6). Overridable
 // via REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
@@ -326,6 +334,19 @@ export function createChatRouter() {
       } catch {
         parsed = { error: "upstream_error", message: errBody || upstreamRes.statusText };
       }
+      // Context-overflow classification (§C.12): a 400/413 whose body reads like a
+      // context/token-length failure becomes a typed 413 context_overflow so the
+      // client can compact-and-retry instead of surfacing a raw 502. ALL OTHER
+      // upstream errors keep the baseline 502 passthrough shape byte-for-byte (§F.11).
+      if (
+        (upstreamRes.status === 400 || upstreamRes.status === 413) &&
+        CONTEXT_OVERFLOW_BODY_RE.test(errBody)
+      ) {
+        res.status(413).json({
+          error: { code: "context_overflow", message: errBody || upstreamRes.statusText },
+        });
+        return;
+      }
       res.status(502).json(parsed);
       return;
     }
@@ -459,9 +480,10 @@ export function createChatRouter() {
           }
         }
 
-        const degraded = PICKER_MODELS.map((id) =>
-          gateAnnotation(id, degradedGating, degradedTier),
-        );
+        const degraded = PICKER_MODELS.map((id) => ({
+          ...gateAnnotation(id, degradedGating, degradedTier),
+          contextLength: contextLengthFor(id),
+        }));
         res.json({ models: degraded });
         return;
       }
@@ -504,7 +526,14 @@ export function createChatRouter() {
         creditsPerKOutput: modelRates.creditsPerKOutput,
         multiplier: multiplierFor(modelRates, baselineRates),
       };
-      return { ...gateAnnotation(m.id, gating, tier), ...rateFields };
+      // contextLength (integer tokens) drives client-side compaction budgeting
+      // (§C.4c). Static in-code map with a DEFAULT_CONTEXT_TOKENS fallback; does
+      // not touch the tier/credit-rate fields above.
+      return {
+        ...gateAnnotation(m.id, gating, tier),
+        ...rateFields,
+        contextLength: contextLengthFor(m.id),
+      };
     });
 
     res.json({ models: annotated });

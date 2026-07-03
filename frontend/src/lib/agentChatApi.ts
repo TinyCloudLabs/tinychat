@@ -14,6 +14,7 @@ import {
   type UsageInfo,
   PaywallError,
   ModelSelectionError,
+  classifyContextOverflow,
   type PaywallErrorPayload,
   type ModelSelectionErrorPayload,
 } from "./chatApi.js";
@@ -138,13 +139,12 @@ export async function* streamAgentChat(
     }
   }
   if (!res.ok || !res.body) {
-    let detail = res.statusText;
-    try {
-      const err = await res.json();
-      detail = err.message ?? err.error ?? detail;
-    } catch {
-      // non-JSON error body
-    }
+    // Context-overflow (§C.12): 413 (incl. Wall-A non-JSON) or a JSON
+    // error.code === "context_overflow" → typed ContextOverflowError, distinct
+    // from the 401/402/403 branches above (§F.8). Reuses the plain-path
+    // classifier so both transports agree.
+    const { overflow, detail } = await classifyContextOverflow(res);
+    if (overflow) throw overflow;
     throw new Error(`Agent chat request failed (${res.status}): ${detail}`);
   }
 

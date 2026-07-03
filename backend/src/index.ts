@@ -101,7 +101,12 @@ async function main() {
   // so it applies to that mount specifically (like the nras-proxy mount above).
   app.use("/api/phala-verify", express.json({ limit: "256kb" }));
 
-  const globalJsonParser = express.json({ limit: "64kb" });
+  // 1 MB global body limit (raised from 64 KB): a long chat history serialized as
+  // {model, messages} can exceed 64 KB well below the model's context window, and
+  // the bare parser 413 (non-JSON PayloadTooLargeError) is un-catchable client-side.
+  // Auth + rate limiting already sit in front of this parser (see below), so the
+  // larger limit does not widen the unauthenticated attack surface. (compaction §C.4a)
+  const globalJsonParser = express.json({ limit: "1mb" });
   app.use((req, res, next) => {
     if (req.path === "/api/nras-proxy" || req.path.startsWith("/api/nras-proxy/")) {
       next();

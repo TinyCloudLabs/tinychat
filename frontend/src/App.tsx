@@ -21,7 +21,16 @@ import { useAgentEnablement } from "./chat/useAgentEnablement";
 import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
-import { DEFAULT_MODEL, getSetting, readMemoryCache, setSetting } from "./lib/threadStore";
+import {
+  DEFAULT_MODEL,
+  appendCompaction,
+  getLatestCompaction,
+  getSetting,
+  readMemoryCache,
+  setSetting,
+} from "./lib/threadStore";
+import { completeChat, type ChatMessage } from "./lib/chatApi";
+import { COMPACTION_SUMMARY_MAX_TOKENS, DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import {
@@ -82,6 +91,12 @@ interface ModelOption {
   creditsPerKInput: number;
   creditsPerKOutput: number;
   multiplier: number;
+  /**
+   * Context window in tokens (spec §D.4). Plumbed from /api/chat/models so the
+   * adapter can size compaction; absent → DEFAULT_CONTEXT_TOKENS via
+   * contextTokensFor below.
+   */
+  contextLength?: number;
 }
 
 export function App() {
@@ -188,6 +203,17 @@ export function App() {
     offeredModelsRef.current = models;
     offeredModelIdsRef.current = new Set(models.map((m) => m.id));
   }, [models]);
+
+  // Context window (tokens) for a model id, read from the live offered catalog
+  // (§D.4). Stable callback over a ref so it can be threaded into the runtime
+  // deps without re-memoizing on every model-list change. Falls back to
+  // DEFAULT_CONTEXT_TOKENS when the model carries no contextLength.
+  const contextTokensFor = useCallback((modelId: string): number => {
+    const found = offeredModelsRef.current.find((m) => m.id === modelId);
+    return typeof found?.contextLength === "number" && found.contextLength > 0
+      ? found.contextLength
+      : DEFAULT_CONTEXT_TOKENS;
+  }, []);
 
   const remediateUnavailableModel = useCallback(() => {
     const offered = new Set(offeredModelsRef.current.map((m) => m.id));
@@ -640,6 +666,7 @@ export function App() {
                 memoryRef={memoryRef}
                 onActiveThreadModel={setSelectedModel}
                 onMemoryUpdated={onMemoryUpdated}
+                contextTokensFor={contextTokensFor}
                 sidebarOpen={sidebarOpen}
                 setSidebarOpen={setSidebarOpen}
               />
@@ -837,6 +864,7 @@ function ChatWorkspace(props: {
   memoryRef: React.MutableRefObject<string | null>;
   onActiveThreadModel: (model: string) => void;
   onMemoryUpdated: (doc: string | null) => void;
+  contextTokensFor: (modelId: string) => number;
   sidebarOpen: boolean;
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
@@ -857,6 +885,22 @@ function ChatWorkspace(props: {
       onMemoryUpdated: props.onMemoryUpdated,
       activeThreadIdRef,
       agentEnabledRef,
+      // ── Compaction deps (§D.3) ─────────────────────────────────────
+      contextTokensFor: props.contextTokensFor,
+      getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
+      appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
+        appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),
+      // Plain single-shot summarization (§C.9): bypasses the runtime exchange
+      // ring, so it never writes thread storage / memory nor triggers extraction
+      // (§F.3). max_tokens is hard-capped by the summary budget.
+      summarize: ({ model, messages }: { model: string; messages: ChatMessage[] }) =>
+        completeChat({
+          backendUrl: BACKEND_URL,
+          sessionStore: props.sessionStore,
+          model,
+          messages,
+          maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
+        }),
     }),
     [
       props.tcw,
@@ -866,6 +910,7 @@ function ChatWorkspace(props: {
       props.memoryRef,
       props.onActiveThreadModel,
       props.onMemoryUpdated,
+      props.contextTokensFor,
       // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
     ],
   );

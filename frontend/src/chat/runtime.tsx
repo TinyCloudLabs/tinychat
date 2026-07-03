@@ -19,6 +19,7 @@ import {
   type ChatMessage,
 } from "../lib/chatApi";
 import { createChatModelAdapter } from "./chatModelAdapter";
+import type { CompactionCheckpoint } from "./compaction";
 import {
   appendMessage,
   deleteThread,
@@ -139,6 +140,19 @@ export interface ChatRuntimeDeps {
    * Read by the adapter at request time to branch streamAgentChat vs streamChat.
    */
   agentEnabledRef: React.MutableRefObject<boolean>;
+  // ── Compaction deps (§D.3): injected so the adapter stays unit-testable. ──
+  /** Latest chain-checkpoint for a thread (or null). */
+  getCheckpoint: (threadId: string) => Promise<CompactionCheckpoint | null>;
+  /** Append a compaction checkpoint (INSERT-only) and return it. */
+  appendCompaction: (
+    threadId: string,
+    coversThroughMessageId: string,
+    summary: string,
+  ) => Promise<CompactionCheckpoint>;
+  /** Single-shot summarization wrapping the plain streamChat (max_tokens capped). */
+  summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
+  /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
+  contextTokensFor: (modelId: string) => number;
 }
 
 // ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──

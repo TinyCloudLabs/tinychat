@@ -2,6 +2,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
 import { historyPrefetch } from "./historyPrefetch";
 import { MEMORY_TEMPLATE } from "./memory";
+import type { CompactionCheckpoint } from "../chat/compaction";
 
 // ── Storage layout ───────────────────────────────────────────────────
 //
@@ -68,6 +69,18 @@ const SCHEMA: string[] = [
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  )`,
+  // Compaction checkpoints (spec §C.7): append-only per-thread LLM summaries.
+  // The latest row per thread (by created_at, tie-break id) is the active
+  // checkpoint. APPEND-ONLY — never UPSERT/UPDATE/DELETE (the memory-loss
+  // incident lesson). No CREATE INDEX (authorizer denies it); the reader
+  // selects by thread_id and picks the latest in JS.
+  `CREATE TABLE IF NOT EXISTS compactions (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    covers_through_message_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL
   )`,
 ];
 
@@ -450,6 +463,77 @@ export async function clearMemory(tcw: TinyCloudWeb): Promise<void> {
   ]);
   if (!res.ok) throw new SqlOpError(res.error, "clearMemory");
   removeMemoryCache(tcw);
+}
+
+// ── Compaction checkpoints (append-only per-thread summaries; §C.7) ──
+//
+// Writes are INSERT-only (§F.2). The reader selects every row for a thread and
+// picks the latest by created_at (tie-break id) in JS — never relying on SQL
+// ORDER BY semantics. A tiny per-thread in-memory cache short-circuits the
+// extra SELECT on the hot request path; it is invalidated on append. No
+// localStorage tier this milestone (§H.4).
+
+const compactionCache = new Map<string, CompactionCheckpoint | null>();
+
+/** Pure latest-row picker (exported for tests): latest created_at, tie-break id. */
+export function latestCompaction(rows: CompactionCheckpoint[]): CompactionCheckpoint | null {
+  let best: CompactionCheckpoint | null = null;
+  for (const row of rows) {
+    if (!best) {
+      best = row;
+      continue;
+    }
+    const byTime = row.createdAt.localeCompare(best.createdAt);
+    if (byTime > 0 || (byTime === 0 && row.id.localeCompare(best.id) > 0)) {
+      best = row;
+    }
+  }
+  return best;
+}
+
+/** Append a compaction checkpoint (INSERT-only). Invalidates the per-thread cache. */
+export async function appendCompaction(
+  tcw: TinyCloudWeb,
+  threadId: string,
+  coversThroughMessageId: string,
+  summary: string,
+): Promise<CompactionCheckpoint> {
+  await ensureSchema(tcw);
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const res = await store(tcw).execute(
+    `INSERT INTO compactions (id, thread_id, covers_through_message_id, summary, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, threadId, coversThroughMessageId, summary, createdAt],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "appendCompaction");
+  const cp: CompactionCheckpoint = { id, threadId, coversThroughMessageId, summary, createdAt };
+  compactionCache.set(threadId, cp);
+  return cp;
+}
+
+/** Latest checkpoint for a thread, or null. Reads the cache first, else SQL. */
+export async function getLatestCompaction(
+  tcw: TinyCloudWeb,
+  threadId: string,
+): Promise<CompactionCheckpoint | null> {
+  if (compactionCache.has(threadId)) return compactionCache.get(threadId) ?? null;
+  await ensureSchema(tcw);
+  const res = await store(tcw).query(
+    "SELECT id, thread_id, covers_through_message_id, summary, created_at FROM compactions WHERE thread_id = ?",
+    [threadId],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "getLatestCompaction");
+  const rows: CompactionCheckpoint[] = res.data.rows.map((row) => ({
+    id: cellStr(row, 0, ""),
+    threadId: cellStr(row, 1, threadId),
+    coversThroughMessageId: cellStr(row, 2, ""),
+    summary: cellStr(row, 3, ""),
+    createdAt: cellStr(row, 4, ""),
+  }));
+  const latest = latestCompaction(rows);
+  compactionCache.set(threadId, latest);
+  return latest;
 }
 
 // ── Local instant cache (stale-while-revalidate) ─────────────────────
