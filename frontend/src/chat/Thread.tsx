@@ -1,4 +1,4 @@
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useState, useSyncExternalStore, type FC } from "react";
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
@@ -14,6 +14,8 @@ import {
   ArrowDownIcon,
   CheckIcon,
   CopyIcon,
+  HistoryIcon,
+  Loader2Icon,
   Share2Icon,
   SendHorizontalIcon,
   Square,
@@ -38,6 +40,7 @@ import {
   type ReceiptEntry,
 } from "@/lib/billingApi";
 import { createTinychatShareLink } from "@/lib/tinychatShareLinks";
+import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
 
@@ -52,6 +55,7 @@ export const Thread: FC<ThreadProps> = ({ tcw }) => {
         <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
           <ShareThreadButton tcw={tcw} />
           <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
+            <CompactionIndicator />
             <ThreadBody />
           </div>
 
@@ -77,6 +81,77 @@ async function copyText(text: string): Promise<void> {
   document.execCommand("copy");
   textarea.remove();
 }
+
+// Subtle in-thread indicator (spec §C.14): when the active thread has a valid
+// compaction checkpoint, older turns are summarized into a system block rather
+// than sent verbatim. This surfaces that ("Earlier conversation summarized")
+// with a dialog to read the summary, plus a transient "Compacting…" hint. The
+// full history stays stored and rendered below — nothing is deleted. Copy is
+// provider-agnostic and never names a model/provider vendor (§F.12).
+const CompactionIndicator: FC = () => {
+  const threadId = useAuiState(
+    (s) => s.threadListItem.remoteId ?? s.threadListItem.id,
+  ) as string | undefined;
+  const info = useSyncExternalStore(
+    subscribeThreadCompaction,
+    () => getThreadCompaction(threadId),
+    () => null,
+  );
+  const [open, setOpen] = useState(false);
+
+  if (!info || (!info.summary && !info.compacting)) return null;
+
+  if (info.compacting && !info.summary) {
+    return (
+      <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+        <Loader2Icon className="size-3.5 animate-spin" />
+        <span>Compacting conversation…</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+        <HistoryIcon className="size-3.5" />
+        {info.compacting ? (
+          <span className="inline-flex items-center gap-1">
+            <Loader2Icon className="size-3 animate-spin" />
+            Compacting conversation…
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="underline decoration-dotted underline-offset-4 hover:text-foreground"
+          >
+            Earlier conversation summarized
+          </button>
+        )}
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Conversation summary</DialogTitle>
+            <DialogDescription>
+              To stay within the model's context, earlier messages are sent as
+              this summary. Your full history stays saved and visible below.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted p-3 text-sm text-foreground">
+            {info.summary}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+};
 
 const ShareThreadButton: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   const threadId = useAuiState(

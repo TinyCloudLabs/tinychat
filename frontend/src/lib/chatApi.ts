@@ -57,6 +57,61 @@ export class ModelSelectionError extends Error {
   }
 }
 
+/**
+ * Thrown when the backend (or Wall-A body parser) signals a context-window
+ * overflow (spec §C.12): HTTP 413 — including the non-JSON `PayloadTooLargeError`
+ * body the global express.json limit emits before any handler runs — or a JSON
+ * body carrying `error.code === "context_overflow"`. Kept DISTINCT from the
+ * 401/402/403 typed emitters (§F.8) so the adapter can compact-and-retry.
+ */
+export class ContextOverflowError extends Error {
+  readonly code = "context_overflow";
+  constructor(message = "The conversation exceeds the model's context window.") {
+    super(message);
+    this.name = "ContextOverflowError";
+  }
+}
+
+/**
+ * Defensive classifier for the non-ok branch. A 413 (JSON or not) is always an
+ * overflow; otherwise a parsed JSON `error.code === "context_overflow"` (nested
+ * or flat) is too. Returns null when the response is not an overflow so the
+ * caller can fall through to its existing generic error. Consumes the body via
+ * `res.text()` so the caller does not double-read it.
+ */
+export async function classifyContextOverflow(
+  res: Response,
+): Promise<{ overflow: ContextOverflowError | null; detail: string }> {
+  let bodyText = "";
+  try {
+    bodyText = await res.text();
+  } catch {
+    // body already consumed / unreadable — status alone still classifies 413.
+  }
+  let detail = res.statusText;
+  let code: unknown;
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      message?: unknown;
+      code?: unknown;
+      error?: { code?: unknown; message?: unknown } | string;
+    };
+    code =
+      (parsed.error && typeof parsed.error === "object" ? parsed.error.code : undefined) ??
+      parsed.code;
+    const nestedMsg =
+      parsed.error && typeof parsed.error === "object" ? parsed.error.message : undefined;
+    const msg = nestedMsg ?? parsed.message ?? (typeof parsed.error === "string" ? parsed.error : undefined);
+    if (typeof msg === "string" && msg.length > 0) detail = msg;
+  } catch {
+    // non-JSON body (Wall-A PayloadTooLargeError) — status drives the decision.
+  }
+  if (res.status === 413 || code === "context_overflow") {
+    return { overflow: new ContextOverflowError(detail || undefined), detail };
+  }
+  return { overflow: null, detail };
+}
+
 // ── Billing-event emitter (paywall + receipt) ───────────────────────
 
 export type BillingEvent =
@@ -220,13 +275,13 @@ export async function* streamChat(options: StreamChatOptions): AsyncGenerator<st
     }
   }
   if (!res.ok || !res.body) {
-    let detail = res.statusText;
-    try {
-      const err = await res.json();
-      detail = err.message ?? err.error ?? detail;
-    } catch {
-      // non-JSON error body
-    }
+    // Context-overflow (§C.12): 413 (incl. Wall-A non-JSON) or a JSON
+    // error.code === "context_overflow" → typed ContextOverflowError so the
+    // adapter can compact-and-retry. Kept ahead of the generic throw below and
+    // distinct from the 401/402/403 branches handled earlier (§F.8). This
+    // consumes the body, so the generic branch reads statusText only.
+    const { overflow, detail } = await classifyContextOverflow(res);
+    if (overflow) throw overflow;
     throw new Error(`Chat request failed (${res.status}): ${detail}`);
   }
 

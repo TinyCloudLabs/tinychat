@@ -79,6 +79,35 @@ export const PICKER_MODELS = [
 const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
 
 /**
+ * Static, in-code context-window map (tokens) used by the chat-compaction path.
+ *
+ * The estimator is chars/4 (no real tokenizer), so these are the token budgets
+ * the compaction planner and the agent-path guard size against. This is a static
+ * map by design — §C.4c / §I.3 forbid a runtime dependency on the upstream
+ * catalog for context length. The cached RedPill /models payload carries only
+ * `id` + `pricing` (see CatalogModel above and fetchCatalogOnce's map) — it does
+ * NOT expose a context/max-length field for `deepseek/deepseek-v4-pro` — so there
+ * is no verifiable upstream number to adopt; every id falls back to
+ * DEFAULT_CONTEXT_TOKENS. When a verifiable window appears upstream, add it here
+ * with a source comment (per §C.4c).
+ */
+export const DEFAULT_CONTEXT_TOKENS = 64000;
+
+export const CONTEXT_TOKENS: Record<string, number> = {
+  // (intentionally empty — no id carries a verifiable upstream context length yet;
+  // all ids resolve to DEFAULT_CONTEXT_TOKENS via contextLengthFor)
+};
+
+/**
+ * Context-window length (integer tokens) for a model id, from the static
+ * CONTEXT_TOKENS map with a DEFAULT_CONTEXT_TOKENS fallback for any unknown id.
+ * Pure and side-effect-free; no upstream dependency (§C.4c / §D.5).
+ */
+export function contextLengthFor(modelId: string): number {
+  return CONTEXT_TOKENS[modelId] ?? DEFAULT_CONTEXT_TOKENS;
+}
+
+/**
  * True when the model id is an offered model — an exact member of the picker
  * allowlist. Used by the offered-model gate on every relay/agent POST and to
  * filter the display catalog (see chat.ts). Replaces the older

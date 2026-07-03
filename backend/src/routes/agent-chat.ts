@@ -15,7 +15,8 @@ import type { Request, RequestHandler, Response } from "express";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
-import { getCatalog, type CatalogModel } from "../billing/catalog.js";
+import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
+import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
 import { creditsFor, ratesForModel, type ModelRates } from "../billing/credits.js";
 
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
@@ -291,7 +292,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = config.maxRounds ?? 3;
-  const convo: ChatMsg[] = [...params.messages];
+  let convo: ChatMsg[] = [...params.messages];
   // The original question, for the clean-synthesis forced round (last user message).
   const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
@@ -301,6 +302,12 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 
   for (let round = 0; round < maxRounds; round++) {
     if (params.isAborted?.()) break;
+
+    // Deterministic context guard (§C.11, NO LLM): before this round's upstream
+    // fetch, first cap oversize role:"tool" results, then drop the oldest
+    // droppable messages until the growing convo fits the model's window. Never
+    // drops system messages, the first user message, or the last user message.
+    convo = trimConvoToBudget(truncateToolResults(convo), contextLengthFor(model));
 
     // On the final allowed round, force a text answer (tool_choice "none"): some
     // models (e.g. phala/gpt-oss-*) will otherwise keep calling the tool every
