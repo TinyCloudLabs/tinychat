@@ -20,7 +20,10 @@ export interface SessionTokenPayload {
 
 // ── Nonce Store ─────────────────────────────────────────────────────
 
-const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// web-sdk 2.4.1's sign-in enumerates every account-index entry sequentially
+// (~2s each); a polluted index makes sign-in outlive a 5-minute nonce. Keep
+// the TTL above that ceiling until the SDK-side fix (js-sdk 2.5) lands.
+const NONCE_TTL_MS = 20 * 60 * 1000; // 20 minutes
 
 /**
  * Create an in-memory nonce store for SIWE authentication.

@@ -21,7 +21,8 @@
       "path": "threads",
       "actions": [
         "read",
-        "write"
+        "write",
+        "schema"
       ],
       "description": "Store chat threads and messages in your space's SQL database."
     }
