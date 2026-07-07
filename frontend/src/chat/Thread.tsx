@@ -81,6 +81,7 @@ export const Thread: FC<ThreadProps> = ({ tcw }) => {
 };
 
 interface ShareThreadContextValue {
+  visible: boolean;
   canShare: boolean;
   openShareDialog: () => void;
 }
@@ -217,7 +218,11 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const canShare = Boolean(threadId && !isEmpty && !isLoading && !creating);
+  // `visible` gates whether the share button renders at all — only once a
+  // chat exchange exists (not empty, history loaded). `canShare` additionally
+  // pauses actions while a share link is being created.
+  const visible = Boolean(threadId && !isEmpty && !isLoading);
+  const canShare = Boolean(visible && !creating);
 
   const openShareDialog = useCallback(() => {
     setShare(threadId ? findStoredTinychatShareForThread(threadId) : null);
@@ -252,10 +257,11 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
 
   const value = useMemo(
     () => ({
+      visible,
       canShare,
       openShareDialog,
     }),
-    [canShare, openShareDialog],
+    [visible, canShare, openShareDialog],
   );
 
   const link = share ? shareLinkForStoredShare(share) : null;
@@ -609,17 +615,24 @@ const AssistantActionBar: FC = () => (
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
     </ActionBarPrimitive.Root>
-    <ShareThreadAction />
+    {/* Share sits outside the per-message action bar, so hideWhenRunning
+        doesn't cover it — gate on the thread's running state directly. */}
+    <ThreadPrimitive.If running={false}>
+      <ShareThreadAction />
+    </ThreadPrimitive.If>
     <ReceiptFooter />
   </div>
 );
 
+// Renders nothing until a chat exchange exists (see `visible` in
+// ShareThreadProvider) — no disabled placeholder for empty/loading threads.
+// Only the transient link-creation state keeps a disabled button.
 const ShareThreadAction: FC = () => {
   const share = useContext(ShareThreadContext);
-  if (!share) return null;
+  if (!share?.visible) return null;
   return (
     <TooltipIconButton
-      tooltip={share.canShare ? "Share chat" : "Send a message before sharing"}
+      tooltip="Share chat"
       disabled={!share.canShare}
       onClick={share.openShareDialog}
       className="size-11 md:size-7"
