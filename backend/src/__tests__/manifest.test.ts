@@ -28,7 +28,7 @@ describe("TinyChat manifest and backend policy", () => {
       {
         service: "tinycloud.sql",
         path: "threads",
-        actions: ["read", "write"],
+        actions: ["read", "write", "schema"],
         description: "Store chat threads and messages in your space's SQL database.",
       },
     ]);
