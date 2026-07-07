@@ -81,6 +81,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
           REDPILL_API_KEY: ${{ secrets.REDPILL_API_KEY }}
+          AGENT_DID: ${{ vars.AGENT_DID }}
+          ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
+          ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
         run: |
           missing=()
           for item in \
@@ -89,7 +92,10 @@ jobs:
             BACKEND_PRIVATE_KEY \
             CLOUDFLARE_API_TOKEN \
             CERTBOT_EMAIL \
-            REDPILL_API_KEY; do
+            REDPILL_API_KEY \
+            AGENT_DID \
+            ELIZA_SERVICE_URL \
+            ELIZA_SERVICE_SECRET; do
             if [ -z "${!item}" ]; then
               missing+=("$item")
               echo "::error title=Missing deployment config::$item is not configured"
@@ -326,6 +332,22 @@ jobs:
             --wait \
             --no-public-logs
 
+      # `phala deploy` updates the encrypted env but NOT the CVM's registered
+      # allowed_envs whitelist (frozen at CVM creation), so env vars added after
+      # creation are silently dropped at injection time. This broke /api/agent
+      # (web search) on 2026-07-07. Sync the whitelist to the deploy env keys.
+      - name: Sync CVM allowed_envs
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          ENV_FILE: ${{ runner.temp }}/phala-prod.env
+        run: |
+          mkdir -p "$RUNNER_TEMP/phala-sync"
+          cp .github/scripts/phala-sync-allowed-envs.mjs "$RUNNER_TEMP/phala-sync/"
+          cd "$RUNNER_TEMP/phala-sync"
+          npm init -y >/dev/null
+          npm install @phala/cloud@0.3.0
+          node phala-sync-allowed-envs.mjs
+
       - name: Wait for CVM to report running
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -431,12 +453,34 @@ jobs:
             exit 1
           fi
 
+          # /api/agent mounts only when AGENT_DID / ELIZA_SERVICE_URL /
+          # ELIZA_SERVICE_SECRET all reach the backend. Mounted → 401
+          # (auth-gated); 404 means the agent env was dropped and web
+          # search is silently dead (2026-07-07 regression).
+          AGENT_URL="${PRODUCTION_API_URL%/}/api/agent/session"
+          echo "Probing agent route at $AGENT_URL (expect 401)"
+          AGENT_STATUS=0
+          for i in {1..30}; do
+            AGENT_STATUS="$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "$AGENT_URL" || echo 000)"
+            echo "Attempt $i/30: http_status=$AGENT_STATUS"
+            if [ "$AGENT_STATUS" = "401" ]; then
+              break
+            fi
+            sleep 10
+          done
+          if [ "$AGENT_STATUS" != "401" ]; then
+            echo "::error title=Agent route probe failed::GET /api/agent/session returned $AGENT_STATUS (expected 401). The agent router is not mounted — AGENT_DID / ELIZA_SERVICE_URL / ELIZA_SERVICE_SECRET did not reach the backend, so web search is disabled."
+            exit 1
+          fi
+          echo "Agent route probe passed (401 = mounted, auth-gated)."
+
           {
             echo
             echo "### Public API probes"
             echo
             echo "- ${HEALTH_URL}: passed"
             echo "- ${INFO_URL}: passed"
+            echo "- ${AGENT_URL}: passed (401 = agent route mounted)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   phala-status:
