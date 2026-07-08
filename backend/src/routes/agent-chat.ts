@@ -14,10 +14,18 @@
 import type { Request, RequestHandler, Response } from "express";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
-import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
+import {
+  getUsage,
+  isOverBudget,
+  recordUsage,
+  startOfAnchoredWeek,
+  startOfUtcDay,
+} from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
 import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
 import { creditsFor, ratesForModel, type ModelRates } from "../billing/credits.js";
+import type { LedgerFlusher } from "../billing/ledger-flusher.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
@@ -55,6 +63,10 @@ export interface AgentChatConfig {
   fetchImpl?: typeof fetch;
   /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
+  /** §E.6 — shadow-push outbox (disabled when absent). */
+  flusher?: LedgerFlusher;
+  /** §E.7 — lazy rehydrator (disabled when absent). */
+  rehydrator?: LedgerRehydrator;
 }
 
 // The single tool exposed for the first cut. OpenAI function-calling schema.
@@ -567,6 +579,21 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
         return;
       }
 
+      // §E.7 — seed the in-memory counter from the durable ledger before gating.
+      if (config.rehydrator) {
+        const atLimit = await config.rehydrator.rehydrateIfNeeded(address, tierConfig, anchor);
+        if (atLimit) {
+          const usage = getUsage(address, tierConfig, anchor);
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            usage,
+          });
+          return;
+        }
+      }
+
       if (isOverBudget(address, tierConfig, anchor)) {
         const usage = getUsage(address, tierConfig, anchor);
         res.status(402).json({
@@ -639,6 +666,26 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
           orchestrateResult.completionTokens,
         );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        // §E.6 — shadow-push to ledger (async, never blocks serving)
+        if (config.flusher && credits > 0) {
+          const now = Date.now();
+          const tierCfg = TIERS[gatedTier];
+          const ws =
+            tierCfg.budgetWindow === "week"
+              ? startOfAnchoredWeek(anchor ?? now, now)
+              : startOfUtcDay(now);
+          config.flusher.enqueue({
+            account: address,
+            window_start: ws,
+            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+            credits,
+            model: resolvedModel,
+            prompt_tokens: orchestrateResult.promptTokens,
+            completion_tokens: orchestrateResult.completionTokens,
+            occurred_at: now,
+            signed_token_count: null,
+          });
+        }
       } catch (error) {
         console.error("[agent-chat] failed to record post-stream usage:", error);
         try {
@@ -648,6 +695,25 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
             orchestrateResult.completionTokens,
           );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          if (config.flusher && credits > 0) {
+            const now = Date.now();
+            const tierCfg = TIERS[gatedTier];
+            const ws =
+              tierCfg.budgetWindow === "week"
+                ? startOfAnchoredWeek(anchor ?? now, now)
+                : startOfUtcDay(now);
+            config.flusher.enqueue({
+              account: address,
+              window_start: ws,
+              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+              credits,
+              model: resolvedModel,
+              prompt_tokens: orchestrateResult.promptTokens,
+              completion_tokens: orchestrateResult.completionTokens,
+              occurred_at: now,
+              signed_token_count: null,
+            });
+          }
         } catch (fallbackError) {
           console.error("[agent-chat] fallback usage recording also failed:", fallbackError);
         }

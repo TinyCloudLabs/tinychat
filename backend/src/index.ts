@@ -23,6 +23,8 @@ import { createDelegationRouter } from "./routes/delegations.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
+import { LedgerFlusher } from "./billing/ledger-flusher.js";
+import { LedgerRehydrator } from "./billing/ledger-rehydrate.js";
 import { isOfferedModel } from "./billing/catalog.js";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "./entity-id.js";
 import { createSignatureRouter } from "./routes/signature.js";
@@ -58,6 +60,11 @@ const AGENT_DID = process.env.AGENT_DID;
 const ELIZA_SERVICE_URL = process.env.ELIZA_SERVICE_URL;
 const ELIZA_SERVICE_SECRET = process.env.ELIZA_SERVICE_SECRET;
 
+// §E.6/E.7 — ledger shadow-push + lazy rehydrate (additive; disabled when unset).
+// Mirrors the ELIZA_SERVICE_URL/ELIZA_SERVICE_SECRET outbound-service precedent.
+const LEDGER_SERVICE_URL = process.env.LEDGER_SERVICE_URL;
+const LEDGER_SERVICE_SECRET = process.env.LEDGER_SERVICE_SECRET;
+
 if (!BACKEND_PRIVATE_KEY) {
   console.error(
     "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
@@ -71,6 +78,21 @@ async function main() {
     privateKey: backendPrivateKey,
     host: TINYCLOUD_HOST,
   });
+
+  // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
+  let ledgerFlusher: LedgerFlusher | undefined;
+  let ledgerRehydrator: LedgerRehydrator | undefined;
+  if (LEDGER_SERVICE_URL && LEDGER_SERVICE_SECRET) {
+    ledgerFlusher = new LedgerFlusher(LEDGER_SERVICE_URL, LEDGER_SERVICE_SECRET);
+    ledgerFlusher.start();
+    ledgerRehydrator = new LedgerRehydrator(LEDGER_SERVICE_URL, LEDGER_SERVICE_SECRET);
+    console.log("[startup] ledger shadow-push + rehydration enabled.");
+  } else {
+    console.warn(
+      "[startup] LEDGER_SERVICE_URL / LEDGER_SERVICE_SECRET not set — " +
+        "ledger shadow-push + rehydration disabled.",
+    );
+  }
   const delegationStore = new DelegationStore(node);
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
@@ -165,6 +187,8 @@ async function main() {
                 redpillBaseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
+                flusher: ledgerFlusher,
+                rehydrator: ledgerRehydrator,
               },
             }
           : {}),
@@ -176,7 +200,11 @@ async function main() {
         "/api/agent (eliza delegation courier) is disabled.",
     );
   }
-  app.use("/api/chat", authMiddleware, createChatRouter());
+  app.use(
+    "/api/chat",
+    authMiddleware,
+    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator }),
+  );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
   app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());
@@ -206,6 +234,7 @@ async function main() {
 
   const shutdown = (signal: string) => {
     console.log(`${signal} received. Shutting down.`);
+    ledgerFlusher?.stop();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 10_000);
   };

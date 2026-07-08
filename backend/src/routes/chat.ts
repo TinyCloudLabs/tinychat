@@ -7,7 +7,15 @@ import {
   type TierId,
 } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
-import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
+import {
+  getUsage,
+  isOverBudget,
+  recordUsage,
+  startOfAnchoredWeek,
+  startOfUtcDay,
+} from "../billing/usage.js";
+import type { LedgerFlusher } from "../billing/ledger-flusher.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
   CatalogFetchError,
   contextLengthFor,
@@ -175,7 +183,14 @@ function gateAnnotation(
 
 // ── Router factory ───────────────────────────────────────────────────────────
 
-export function createChatRouter() {
+export interface ChatRouterOptions {
+  flusher?: LedgerFlusher;
+  rehydrator?: LedgerRehydrator;
+}
+
+export function createChatRouter(options?: ChatRouterOptions) {
+  const flusher = options?.flusher;
+  const rehydrator = options?.rehydrator;
   const router = Router();
 
   /**
@@ -269,6 +284,21 @@ export function createChatRouter() {
           ...(requiredTier && requiredTier !== tier ? { requiredTier } : {}),
         });
         return;
+      }
+
+      // §E.7 — seed the in-memory counter from the durable ledger before gating.
+      if (rehydrator) {
+        const atLimit = await rehydrator.rehydrateIfNeeded(address, tierConfig, anchor);
+        if (atLimit) {
+          const usage = getUsage(address, tierConfig, anchor);
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            usage,
+          });
+          return;
+        }
       }
 
       if (isOverBudget(address, tierConfig, anchor)) {
@@ -406,6 +436,26 @@ export function createChatRouter() {
               scanner.completionText,
             );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        // §E.6 — shadow-push to ledger (async, never blocks serving)
+        if (flusher && credits > 0) {
+          const now = Date.now();
+          const tierCfg = TIERS[gatedTier];
+          const ws =
+            tierCfg.budgetWindow === "week"
+              ? startOfAnchoredWeek(anchor ?? now, now)
+              : startOfUtcDay(now);
+          flusher.enqueue({
+            account: address,
+            window_start: ws,
+            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+            credits,
+            model: resolvedModel,
+            prompt_tokens: scanner.promptTokens ?? 0,
+            completion_tokens: scanner.completionTokens ?? 0,
+            occurred_at: now,
+            signed_token_count: null,
+          });
+        }
       } catch (error) {
         console.error("[chat] failed to record post-stream usage:", error);
         try {
@@ -421,6 +471,25 @@ export function createChatRouter() {
                 scanner.completionText,
               );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          if (flusher && credits > 0) {
+            const now = Date.now();
+            const tierCfg = TIERS[gatedTier];
+            const ws =
+              tierCfg.budgetWindow === "week"
+                ? startOfAnchoredWeek(anchor ?? now, now)
+                : startOfUtcDay(now);
+            flusher.enqueue({
+              account: address,
+              window_start: ws,
+              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+              credits,
+              model: resolvedModel,
+              prompt_tokens: scanner.promptTokens ?? 0,
+              completion_tokens: scanner.completionTokens ?? 0,
+              occurred_at: now,
+              signed_token_count: null,
+            });
+          }
         } catch (fallbackError) {
           console.error("[chat] fallback usage recording also failed:", fallbackError);
         }
