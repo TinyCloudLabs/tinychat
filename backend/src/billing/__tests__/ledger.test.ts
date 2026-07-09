@@ -293,6 +293,76 @@ describe("LedgerRehydrator", () => {
     expect(rehydrator.unrehydratedServesCount).toBe(0);
   });
 
+  // ── getEntitlement: null-aware outage signal ──────────────────────────────
+
+  describe("getEntitlement", () => {
+    test("(a) 200 with committed=5, limit=28000 → isOutage=false, fields populated", async () => {
+      const now = Date.now();
+      const ws = startOfUtcDay(now);
+
+      globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : String(input);
+        expect(url).toContain(`window_start=${ws}`);
+        return new Response(
+          JSON.stringify({
+            account: "0xentitle",
+            credit_limit: 28000,
+            period_anchor: "anchored_week",
+            window_start: ws,
+            committed_credits: 5,
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const rehydrator = new LedgerRehydrator("http://sidecar", "secret");
+      const result = await rehydrator.getEntitlement("0xentitle", TIERS.free, null, now);
+
+      expect(result.isOutage).toBe(false);
+      expect(result.committed_credits).toBe(5);
+      expect(result.credit_limit).toBe(28000);
+      expect(result.period_anchor).toBe("anchored_week");
+    });
+
+    test("(b) fetch throws → isOutage=true, all fields null", async () => {
+      globalThis.fetch = mock(async () => {
+        throw new Error("network down");
+      }) as typeof fetch;
+
+      const rehydrator = new LedgerRehydrator("http://sidecar", "secret");
+      const result = await rehydrator.getEntitlement("0xdown", TIERS.free, null);
+
+      expect(result.isOutage).toBe(true);
+      expect(result.credit_limit).toBeNull();
+      expect(result.committed_credits).toBeNull();
+      expect(result.period_anchor).toBeNull();
+    });
+
+    test("(c) 200 with committed_credits=null while window asked → isOutage=true, NOT zero", async () => {
+      const now = Date.now();
+
+      globalThis.fetch = mock(async () => {
+        return new Response(
+          JSON.stringify({
+            account: "0xnull",
+            credit_limit: 28000,
+            period_anchor: "anchored_week",
+            window_start: null,
+            committed_credits: null,
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const rehydrator = new LedgerRehydrator("http://sidecar", "secret");
+      const result = await rehydrator.getEntitlement("0xnull", TIERS.plus, null, now);
+
+      expect(result.isOutage).toBe(true);
+      expect(result.committed_credits).toBeNull(); // must NOT be 0
+      expect(result.committed_credits).not.toBe(0);
+    });
+  });
+
   test("(d) anchored-week window_start matches usage.ts startOfAnchoredWeek", async () => {
     const anchor = Date.UTC(2026, 0, 1); // 2026-01-01 as anchor
     const now = Date.UTC(2026, 0, 5, 12); // 5 days later

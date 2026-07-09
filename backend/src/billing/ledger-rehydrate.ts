@@ -93,6 +93,67 @@ export class LedgerRehydrator {
     return false;
   }
 
+  /**
+   * Fetch the entitlement for (address, tier) from the sidecar, returning a
+   * null-aware outage signal alongside credit_limit and committed_credits.
+   * Never throws. isOutage=true when the fetch fails OR when committed_credits
+   * is null despite a window being requested (DO soft-fail — must not be read
+   * as zero).
+   */
+  async getEntitlement(
+    address: string,
+    tier: TierConfig,
+    anchor: number | null,
+    now: number = Date.now(),
+  ): Promise<{
+    credit_limit: number | null;
+    committed_credits: number | null;
+    period_anchor: string | null;
+    isOutage: boolean;
+  }> {
+    const ws =
+      tier.budgetWindow === "week"
+        ? startOfAnchoredWeek(anchor ?? now, now)
+        : startOfUtcDay(now);
+
+    try {
+      const url =
+        `${this.serviceUrl}/api/credit-entitlement/${encodeURIComponent(address)}` +
+        `?window_start=${ws}`;
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(2000),
+        headers: { Authorization: `Bearer ${this.serviceSecret}` },
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as CreditEntitlementResponse;
+      // committed_credits===null while we asked for a window → DO soft-fail → outage
+      if (body.committed_credits === null) {
+        return {
+          credit_limit: body.credit_limit ?? null,
+          committed_credits: null,
+          period_anchor: body.period_anchor ?? null,
+          isOutage: true,
+        };
+      }
+      return {
+        credit_limit: body.credit_limit ?? null,
+        committed_credits: body.committed_credits,
+        period_anchor: body.period_anchor ?? null,
+        isOutage: false,
+      };
+    } catch (err) {
+      console.warn("[ledger-rehydrate] getEntitlement failed", address, ":", err);
+      return {
+        credit_limit: null,
+        committed_credits: null,
+        period_anchor: null,
+        isOutage: true,
+      };
+    }
+  }
+
   /** For tests: current count of failed first-touch serves. */
   get unrehydratedServesCount(): number {
     return this.unrehydratedServes;

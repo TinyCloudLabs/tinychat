@@ -594,15 +594,57 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
         }
       }
 
-      if (isOverBudget(address, tierConfig, anchor)) {
-        const usage = getUsage(address, tierConfig, anchor);
-        res.status(402).json({
-          error: "credit_budget_exceeded",
-          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
-          tier,
-          usage,
-        });
-        return;
+      if (process.env.LEDGER_AUTHORITATIVE === "true" && config.rehydrator) {
+        const { credit_limit, committed_credits, isOutage } = await config.rehydrator.getEntitlement(
+          address, tierConfig, anchor,
+        );
+        const outagePolicy = process.env.LEDGER_OUTAGE_POLICY ?? "bounded_k";
+        if (isOutage || credit_limit === null) {
+          if (outagePolicy === "fail_closed") {
+            const usage = getUsage(address, tierConfig, anchor);
+            res.status(402).json({
+              error: "credit_budget_exceeded",
+              message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+              tier,
+              usage,
+            });
+            return;
+          } else if (outagePolicy === "fail_open") {
+            console.warn("[agent-chat] LEDGER_OUTAGE_POLICY=fail_open: serving without ledger enforcement");
+          } else {
+            // bounded_k: K guard already applied by rehydrateIfNeeded above; fall through to local path
+            if (isOverBudget(address, tierConfig, anchor)) {
+              const usage = getUsage(address, tierConfig, anchor);
+              res.status(402).json({
+                error: "credit_budget_exceeded",
+                message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+                tier,
+                usage,
+              });
+              return;
+            }
+          }
+        } else if (committed_credits !== null && committed_credits >= credit_limit) {
+          const usage = getUsage(address, tierConfig, anchor);
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            usage,
+          });
+          return;
+        }
+      } else {
+        if (isOverBudget(address, tierConfig, anchor)) {
+          const usage = getUsage(address, tierConfig, anchor);
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            usage,
+          });
+          return;
+        }
       }
 
       try {

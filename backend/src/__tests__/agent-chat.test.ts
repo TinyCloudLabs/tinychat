@@ -921,3 +921,73 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
     }
   });
 });
+
+// ── LEDGER_AUTHORITATIVE gate for agent-chat (Phase 2) ────────────────────────
+
+describe("createAgentChatHandler LEDGER_AUTHORITATIVE gate", () => {
+  // Minimal fetch that never gets called (402 paths short-circuit before upstream)
+  const noopFetch = (() => Promise.resolve({ ok: true, status: 200, body: null } as unknown as Response)) as unknown as typeof fetch;
+
+  function makeAgentRehydrator(opts: {
+    atLimit?: boolean;
+    entitlement: { credit_limit: number | null; committed_credits: number | null; isOutage: boolean };
+  }) {
+    return {
+      rehydrateIfNeeded: async () => opts.atLimit ?? false,
+      getEntitlement: async () => ({
+        credit_limit: opts.entitlement.credit_limit,
+        committed_credits: opts.entitlement.committed_credits,
+        period_anchor: "anchored_week",
+        isOutage: opts.entitlement.isOutage,
+      }),
+      get unrehydratedServesCount() { return 0; },
+    };
+  }
+
+  it("flag-OFF: local isOverBudget governs — exhausted local budget → 402", async () => {
+    delete process.env.LEDGER_AUTHORITATIVE;
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    process.env.CREDIT_BUDGET_FREE = "10";
+    _setStripeClient(mockStripe(null)); // free tier
+    recordUsage(ADDR, TIERS.free, 10, null);
+
+    const rehydrator = makeAgentRehydrator({
+      atLimit: false,
+      // Ledger says under limit — flag is OFF so local path wins
+      entitlement: { credit_limit: 1000, committed_credits: 0, isOutage: false },
+    });
+    const { req, res } = makeReqRes();
+    const handler = createAgentChatHandler({
+      ...baseConfig(noopFetch),
+      rehydrator: rehydrator as any,
+    });
+    await handler(req, res);
+
+    expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
+    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
+    expect(body?.error).toBe("credit_budget_exceeded");
+  });
+
+  it("flag-ON: clean ledger read at limit → 402 (ledger-sourced; local tally is 0)", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null)); // free tier, local tally = 0
+
+    const rehydrator = makeAgentRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: 1000, committed_credits: 1000, isOutage: false },
+    });
+    const { req, res } = makeReqRes();
+    const handler = createAgentChatHandler({
+      ...baseConfig(noopFetch),
+      rehydrator: rehydrator as any,
+    });
+    await handler(req, res);
+
+    expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
+    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
+    expect(body?.error).toBe("credit_budget_exceeded");
+  });
+});

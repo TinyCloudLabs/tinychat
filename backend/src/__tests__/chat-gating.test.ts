@@ -6,7 +6,8 @@ import { _resetCatalogCache, isBlocklistedModel, isOfferedModel } from "../billi
 import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { isModelAllowed, TIERS } from "../billing/tiers.js";
-import { _resetUsage, getUsage } from "../billing/usage.js";
+import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import { createChatRouter, defaultModel } from "../routes/chat.js";
 
 // Mirror of the frontend memory-extraction model id (frontend/src/chat/runtime.tsx
@@ -722,5 +723,274 @@ describe("POST /api/chat blocklist enforcement (ST7)", () => {
   test("rejects a blocklisted model even with the paywall disabled", async () => {
     process.env.PAYWALL_ENABLED = "false";
     await expectBlocked();
+  });
+});
+
+// ── LEDGER_AUTHORITATIVE gate (Phase 2) ────────────────────────────────────────
+
+function makeMockRehydrator(opts: {
+  atLimit?: boolean;
+  entitlement: {
+    credit_limit: number | null;
+    committed_credits: number | null;
+    isOutage: boolean;
+  };
+}): LedgerRehydrator {
+  return {
+    rehydrateIfNeeded: async () => opts.atLimit ?? false,
+    getEntitlement: async () => ({
+      credit_limit: opts.entitlement.credit_limit,
+      committed_credits: opts.entitlement.committed_credits,
+      period_anchor: "anchored_week",
+      isOutage: opts.entitlement.isOutage,
+    }),
+    get unrehydratedServesCount() { return 0; },
+  } as unknown as LedgerRehydrator;
+}
+
+function createAppWithRehydrator(rehydrator: LedgerRehydrator) {
+  const app = express();
+  app.use(express.json());
+  app.use("/api/chat", authStub, createChatRouter({ rehydrator }));
+  return app;
+}
+
+describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
+  test("flag-OFF (unset): local isOverBudget governs — exhausted local budget → 402 even when ledger says under limit", async () => {
+    delete process.env.LEDGER_AUTHORITATIVE;
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    process.env.CREDIT_BUDGET_FREE = "10";
+    _setStripeClient(mockStripe(null)); // free tier
+    recordUsage(ADDR, TIERS.free, 10);
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      // Ledger says plenty of credits — flag is OFF so local path wins
+      entitlement: { credit_limit: 1000, committed_credits: 0, isOutage: false },
+    });
+    const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody("deepseek/deepseek-v4-pro"),
+    });
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("credit_budget_exceeded");
+    assertNoDollarLeak(body);
+  });
+
+  test("flag-OFF (false): local isOverBudget governs — parity with today's path", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "false";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    process.env.CREDIT_BUDGET_FREE = "10";
+    _setStripeClient(mockStripe(null)); // free tier
+    recordUsage(ADDR, TIERS.free, 10);
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: 1000, committed_credits: 0, isOutage: false },
+    });
+    const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody("deepseek/deepseek-v4-pro"),
+    });
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("credit_budget_exceeded");
+    assertNoDollarLeak(body);
+  });
+
+  test("flag-ON: clean ledger read at limit → 402 (ledger-sourced; local tally is 0)", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    // Local tally = 0 (would serve under the local path alone)
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: 1000, committed_credits: 1000, isOutage: false },
+    });
+    const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody("deepseek/deepseek-v4-pro"),
+    });
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("credit_budget_exceeded");
+    assertNoDollarLeak(body);
+  });
+
+  test("flag-ON: clean ledger read under limit → serves (local tally exhausted but ledger is authoritative)", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    process.env.CREDIT_BUDGET_FREE = "10";
+    _setStripeClient(mockStripe(null)); // free tier
+    recordUsage(ADDR, TIERS.free, 10); // local exhausted
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: 1000, committed_credits: 500, isOutage: false },
+    });
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("deepseek/deepseek-v4-pro"),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+
+  test("flag-ON + outage + fail_closed → 402 immediately", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "fail_closed";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody("deepseek/deepseek-v4-pro"),
+    });
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("credit_budget_exceeded");
+    assertNoDollarLeak(body);
+  });
+
+  test("flag-ON + outage + fail_open → serves despite outage", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "fail_open";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("deepseek/deepseek-v4-pro"),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+
+  test("flag-ON + outage + bounded_k (default) + local budget exhausted → 402 via local path", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    // LEDGER_OUTAGE_POLICY unset → defaults to bounded_k
+    delete process.env.LEDGER_OUTAGE_POLICY;
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    process.env.CREDIT_BUDGET_FREE = "10";
+    _setStripeClient(mockStripe(null)); // free tier
+    recordUsage(ADDR, TIERS.free, 10); // local exhausted
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody("deepseek/deepseek-v4-pro"),
+    });
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("credit_budget_exceeded");
+    assertNoDollarLeak(body);
+  });
+
+  test("flag-ON + outage + bounded_k + local budget NOT exhausted → serves", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    delete process.env.LEDGER_OUTAGE_POLICY;
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+    // local tally = 0, local budget not exhausted
+
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const sseChunks = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const restore = stubRedPillFetch({
+      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      sseChunks,
+    });
+    try {
+      const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chatBody("deepseek/deepseek-v4-pro"),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      restore();
+    }
+  });
+
+  test("flag-ON: null committed_credits with window → isOutage (null-vs-zero: cannot be read as 0)", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "fail_closed";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    _setStripeClient(mockStripe(null)); // free tier
+
+    // committed_credits=null with a credit_limit present → getEntitlement returns isOutage=true
+    const rehydrator = makeMockRehydrator({
+      atLimit: false,
+      entitlement: { credit_limit: 1000, committed_credits: null, isOutage: true },
+    });
+    const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody("deepseek/deepseek-v4-pro"),
+    });
+    // fail_closed under outage → 402 (not served, proving null !== 0)
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.error).toBe("credit_budget_exceeded");
+    assertNoDollarLeak(body);
   });
 });
