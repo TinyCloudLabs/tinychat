@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { pickExtractionModel } from "./extractionModel";
 
-const PREFERRED = "deepseek/deepseek-v4-pro";
+const PREFERRED = "deepseek/deepseek-v3.2";
 
 describe("pickExtractionModel", () => {
   it("returns the preferred id (best effort) when the catalog has not loaded", () => {
