@@ -74,9 +74,11 @@ export function isBlocklistedModel(id: string): boolean {
  */
 export const PICKER_MODELS = [
   // deepseek-v4-pro was delisted from serving on 2026-07-17 (still in /models,
-  // but /chat/completions returns 404 "The model does not exist") — swapped to
-  // v3.2, live-verified 200 + flat ECDSA signature path the same day.
-  "deepseek/deepseek-v3.2", // the single offered/green model
+  // but /chat/completions returns 404 "The model does not exist"). Its first
+  // replacement, deepseek-v3.2, turned out to be load-shedding (4/6 requests
+  // 429'd in a sequential burst), so the offered model moved to v4-flash the
+  // same day: 200s under burst, flat ECDSA signature path, tool-calling OK.
+  "deepseek/deepseek-v4-flash", // the single offered/green model
 ] as const;
 
 const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
@@ -96,9 +98,9 @@ const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
 export const DEFAULT_CONTEXT_TOKENS = 64000;
 
 export const CONTEXT_TOKENS: Record<string, number> = {
-  // Raw RedPill GET /v1/models `context_length` for deepseek/deepseek-v3.2,
-  // checked by hand 2026-07-17 (163840 = 160k).
-  "deepseek/deepseek-v3.2": 163840,
+  // Raw RedPill GET /v1/models `context_length` for deepseek/deepseek-v4-flash,
+  // checked by hand 2026-07-17 (1048576 = 1M).
+  "deepseek/deepseek-v4-flash": 1048576,
 };
 
 /**

@@ -66,11 +66,11 @@ export function onCompletion(listener: CompletionListener): () => void {
 // can ECDSA-recover to its attested signing_address in-browser. The product is
 // single-model, so this is exactly the backend PICKER_MODELS (one id).
 //
-// NOTE: deepseek/deepseek-v3.2's flat signature path was live-confirmed at the
+// NOTE: deepseek/deepseek-v4-flash's flat signature path was live-confirmed at the
 // API level on 2026-07-17 (GET /v1/signature/{id} returns text-hash pair, ECDSA
 // signature, signing_address, and receipt); the green badge still deserves one
 // live in-browser verify (on-chain DCAP + recover) as a follow-up.
-export const VERIFIABLE_MODELS = ["deepseek/deepseek-v3.2"] as const;
+export const VERIFIABLE_MODELS = ["deepseek/deepseek-v4-flash"] as const;
 
 const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);
 
