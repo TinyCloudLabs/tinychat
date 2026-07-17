@@ -10,7 +10,7 @@ import { _resetUsage } from "../billing/usage.js";
 import { createChatRouter } from "../routes/chat.js";
 
 const ORIGINAL_ENV = { ...process.env };
-const OFFERED_MODEL = "deepseek/deepseek-v4-pro";
+const OFFERED_MODEL = "deepseek/deepseek-v3.2";
 
 function authStub(req: Request, _res: Response, next: NextFunction) {
   req.user = { address: "0xabc" };

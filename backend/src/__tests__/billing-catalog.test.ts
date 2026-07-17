@@ -266,7 +266,7 @@ describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
 
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
   test("the allowlist is exactly the single offered model", () => {
-    expect([...PICKER_MODELS]).toEqual(["deepseek/deepseek-v4-pro"]);
+    expect([...PICKER_MODELS]).toEqual(["deepseek/deepseek-v3.2"]);
   });
 
   test("isOfferedModel accepts the single offered model and nothing else", () => {
