@@ -55,7 +55,7 @@ export class LedgerRehydrator {
 
     if (this.rehydratedKeys.has(key)) return false;
 
-    let committed: number | null = null;
+    let committed: number;
     try {
       const url =
         `${this.serviceUrl}/api/credit-entitlement/${encodeURIComponent(address)}` +
@@ -66,23 +66,38 @@ export class LedgerRehydrator {
       });
       if (res.ok) {
         const body = (await res.json()) as CreditEntitlementResponse;
-        committed = body.committed_credits ?? null;
+        // A null 200 is the DO's soft-fail shape, not a zero-credit read. It
+        // must take the same K-degrade path as a failed fetch and must never
+        // mark this (account, window) as rehydrated.
+        if (typeof body.committed_credits !== "number" || !Number.isFinite(body.committed_credits)) {
+          throw new Error("invalid committed_credits response");
+        }
+        committed = body.committed_credits;
       } else {
         throw new Error(`HTTP ${res.status}`);
       }
     } catch (err) {
       console.warn("[ledger-rehydrate] failed to rehydrate", address, ":", err);
       this.unrehydratedServes++;
+      console.warn(
+        `[ledger-rehydrate] source=k_degrade address=${address} ` +
+          `unrehydrated_serves=${this.unrehydratedServes} k=${K}`,
+      );
+      if (this.unrehydratedServes === K / 2 || this.unrehydratedServes === K) {
+        console.warn(
+          `[ledger-rehydrate] source=k_degrade threshold=${this.unrehydratedServes} k=${K}`,
+        );
+      }
       if (this.unrehydratedServes > K) {
         return true; // degrade to at-limit
       }
       return false; // bounded forgiveness: serve normally
     }
 
-    // Mark as done — even if committed is null/0 so we don't retry every request.
+    // Only a finite committed count successfully rehydrates this key.
     this.rehydratedKeys.add(key);
 
-    if (committed !== null && committed > 0) {
+    if (committed > 0) {
       const local = getUsage(address, tier, anchor, now).used;
       const delta = Math.max(0, Math.floor(committed) - local);
       if (delta > 0) {
@@ -130,6 +145,10 @@ export class LedgerRehydrator {
       const body = (await res.json()) as CreditEntitlementResponse;
       // committed_credits===null while we asked for a window → DO soft-fail → outage
       if (body.committed_credits === null) {
+        console.warn(
+          `[ledger-rehydrate] source=outage_policy null_committed_credits address=${address} ` +
+            `window_start=${ws}`,
+        );
         return {
           credit_limit: body.credit_limit ?? null,
           committed_credits: null,

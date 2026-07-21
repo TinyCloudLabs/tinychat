@@ -65,15 +65,65 @@ const ELIZA_SERVICE_SECRET = process.env.ELIZA_SERVICE_SECRET;
 const LEDGER_SERVICE_URL = process.env.LEDGER_SERVICE_URL;
 const LEDGER_SERVICE_SECRET = process.env.LEDGER_SERVICE_SECRET;
 
-if (!BACKEND_PRIVATE_KEY) {
-  console.error(
-    "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
-  );
-  process.exit(1);
+type LedgerStartupEnv = {
+  LEDGER_AUTHORITATIVE?: string;
+  LEDGER_SERVICE_URL?: string;
+  LEDGER_SERVICE_SECRET?: string;
+  LEDGER_OUTAGE_POLICY?: string;
+};
+
+const VALID_LEDGER_OUTAGE_POLICIES = new Set(["bounded_k", "fail_open", "fail_closed"]);
+
+export function validateLedgerStartupConfig(
+  env: LedgerStartupEnv,
+): { ok: true } | { ok: false; error: string } {
+  if (
+    env.LEDGER_AUTHORITATIVE === "true" &&
+    (!env.LEDGER_SERVICE_URL || !env.LEDGER_SERVICE_SECRET)
+  ) {
+    return {
+      ok: false,
+      error:
+        "LEDGER_AUTHORITATIVE=true requires both LEDGER_SERVICE_URL and LEDGER_SERVICE_SECRET; refusing to start with ledger enforcement silently disabled.",
+    };
+  }
+
+  if (
+    env.LEDGER_OUTAGE_POLICY !== undefined &&
+    !VALID_LEDGER_OUTAGE_POLICIES.has(env.LEDGER_OUTAGE_POLICY)
+  ) {
+    return {
+      ok: false,
+      error:
+        "LEDGER_OUTAGE_POLICY must be one of bounded_k, fail_open, or fail_closed; refusing to start with an unrecognized policy.",
+    };
+  }
+
+  return { ok: true };
 }
-const backendPrivateKey = BACKEND_PRIVATE_KEY;
 
 async function main() {
+  const ledgerStartupConfig = validateLedgerStartupConfig({
+    LEDGER_AUTHORITATIVE: process.env.LEDGER_AUTHORITATIVE,
+    LEDGER_SERVICE_URL,
+    LEDGER_SERVICE_SECRET,
+    LEDGER_OUTAGE_POLICY: process.env.LEDGER_OUTAGE_POLICY,
+  });
+  if (!ledgerStartupConfig.ok) {
+    console.error(`[startup] FATAL LEDGER CONFIGURATION ERROR: ${ledgerStartupConfig.error}`);
+    process.exit(1);
+    return;
+  }
+
+  if (!BACKEND_PRIVATE_KEY) {
+    console.error(
+      "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
+    );
+    process.exit(1);
+    return;
+  }
+  const backendPrivateKey = BACKEND_PRIVATE_KEY;
+
   const { node, did } = await createTinychatBackendIdentity({
     privateKey: backendPrivateKey,
     host: TINYCLOUD_HOST,
@@ -258,7 +308,9 @@ function loadTlsConfig() {
   };
 }
 
-main().catch((error) => {
-  console.error("Failed to start TinyChat backend:", error);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error("Failed to start TinyChat backend:", error);
+    process.exit(1);
+  });
+}

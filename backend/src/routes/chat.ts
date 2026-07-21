@@ -17,6 +17,13 @@ import {
 import type { LedgerFlusher } from "../billing/ledger-flusher.js";
 import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
 import {
+  evaluateLedgerGate,
+  evaluateKDegradePolicy,
+  exposeGateSource,
+  hasMissingWeeklyLedgerAnchor,
+  logCreditGateDeny,
+} from "../billing/ledger-gate.js";
+import {
   CatalogFetchError,
   contextLengthFor,
   getCatalog,
@@ -287,68 +294,85 @@ export function createChatRouter(options?: ChatRouterOptions) {
       }
 
       // §E.7 — seed the in-memory counter from the durable ledger before gating.
-      if (rehydrator) {
+      const ledgerAuthoritative = process.env.LEDGER_AUTHORITATIVE === "true" && Boolean(rehydrator);
+      const missingWeeklyLedgerAnchor =
+        ledgerAuthoritative && hasMissingWeeklyLedgerAnchor(tierConfig, anchor);
+      const outagePolicy = process.env.LEDGER_OUTAGE_POLICY ?? "bounded_k";
+
+      // Shadow rehydration remains active with the authority flag OFF. In that
+      // mode, retain its historic direct K-degrade denial; flag-ON alone lets
+      // the selected outage policy decide whether a K-degrade denies.
+      if (rehydrator && (!ledgerAuthoritative || !missingWeeklyLedgerAnchor)) {
         const atLimit = await rehydrator.rehydrateIfNeeded(address, tierConfig, anchor);
         if (atLimit) {
-          const usage = getUsage(address, tierConfig, anchor);
-          res.status(402).json({
-            error: "credit_budget_exceeded",
-            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
-            tier,
-            usage,
-          });
-          return;
-        }
-      }
-
-      if (process.env.LEDGER_AUTHORITATIVE === "true" && rehydrator) {
-        const { credit_limit, committed_credits, isOutage } = await rehydrator.getEntitlement(
-          address, tierConfig, anchor,
-        );
-        const outagePolicy = process.env.LEDGER_OUTAGE_POLICY ?? "bounded_k";
-        if (isOutage || credit_limit === null) {
-          if (outagePolicy === "fail_closed") {
+          const kDegrade = ledgerAuthoritative
+            ? evaluateKDegradePolicy(outagePolicy)
+            : { deny: true, source: "k_degrade" as const };
+          if (kDegrade.deny) {
             const usage = getUsage(address, tierConfig, anchor);
+            logCreditGateDeny({
+              source: kDegrade.source,
+              address,
+              committed: null,
+              limit: usage.limit,
+              windowKind: tierConfig.budgetWindow,
+            });
             res.status(402).json({
               error: "credit_budget_exceeded",
               message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
               tier,
               usage,
+              ...exposeGateSource(kDegrade.source),
             });
             return;
-          } else if (outagePolicy === "fail_open") {
-            console.warn("[chat] LEDGER_OUTAGE_POLICY=fail_open: serving without ledger enforcement");
-          } else {
-            // bounded_k: K guard already applied by rehydrateIfNeeded above; fall through to local path
-            if (isOverBudget(address, tierConfig, anchor)) {
-              const usage = getUsage(address, tierConfig, anchor);
-              res.status(402).json({
-                error: "credit_budget_exceeded",
-                message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
-                tier,
-                usage,
-              });
-              return;
-            }
           }
-        } else if (committed_credits !== null && committed_credits >= credit_limit) {
-          const usage = getUsage(address, tierConfig, anchor);
+        }
+      }
+      if (ledgerAuthoritative && rehydrator) {
+        const entitlement = missingWeeklyLedgerAnchor
+          ? undefined
+          : await rehydrator.getEntitlement(address, tierConfig, anchor);
+        const gate = evaluateLedgerGate({
+          tier: tierConfig,
+          anchor,
+          entitlement,
+          outagePolicy,
+          isLocalOverBudget: () => isOverBudget(address, tierConfig, anchor),
+        });
+        if (gate.deny) {
+          const usage = gate.includeUsage ? getUsage(address, tierConfig, anchor) : undefined;
+          logCreditGateDeny({
+            source: gate.source,
+            address,
+            committed: entitlement?.committed_credits ?? null,
+            limit: entitlement?.credit_limit ?? null,
+            windowKind: tierConfig.budgetWindow,
+          });
           res.status(402).json({
             error: "credit_budget_exceeded",
             message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
             tier,
-            usage,
+            ...(usage ? { usage } : {}),
+            ...exposeGateSource(gate.source),
           });
           return;
         }
       } else {
         if (isOverBudget(address, tierConfig, anchor)) {
           const usage = getUsage(address, tierConfig, anchor);
+          logCreditGateDeny({
+            source: "local",
+            address,
+            committed: usage.used,
+            limit: usage.limit,
+            windowKind: tierConfig.budgetWindow,
+          });
           res.status(402).json({
             error: "credit_budget_exceeded",
             message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
             tier,
             usage,
+            ...exposeGateSource("local"),
           });
           return;
         }

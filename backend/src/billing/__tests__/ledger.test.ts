@@ -225,11 +225,13 @@ describe("LedgerRehydrator", () => {
     expect(getUsage("0xtest3", tier, null, now).used).toBe(200);
   });
 
-  test("(d) committed_credits null → counter unchanged", async () => {
+  test("(d) persistent 200/null consumes K and never marks the key rehydrated", async () => {
     const now = Date.now();
     const tier = TIERS.free;
+    let fetchCalls = 0;
 
     globalThis.fetch = mock(async () => {
+      fetchCalls++;
       return new Response(
         JSON.stringify({
           account: "0xtest4",
@@ -243,9 +245,22 @@ describe("LedgerRehydrator", () => {
     }) as typeof fetch;
 
     const rehydrator = new LedgerRehydrator("http://sidecar", "secret");
-    await rehydrator.rehydrateIfNeeded("0xtest4", tier, null, now);
-
+    // Same key must retry after a null body instead of being marked complete.
+    expect(await rehydrator.rehydrateIfNeeded("0xtest4", tier, null, now)).toBe(false);
+    expect(await rehydrator.rehydrateIfNeeded("0xtest4", tier, null, now)).toBe(false);
+    expect(fetchCalls).toBe(2);
     expect(getUsage("0xtest4", tier, null, now).used).toBe(0);
+
+    // The next 198 null reads reach K; K+1 must degrade.
+    for (let i = 2; i < 200; i++) {
+      expect(await rehydrator.rehydrateIfNeeded("0xtest4", tier, null, now)).toBe(false);
+    }
+    expect(rehydrator.unrehydratedServesCount).toBe(200);
+    expect(fetchCalls).toBe(200);
+
+    expect(await rehydrator.rehydrateIfNeeded("0xtest4", tier, null, now)).toBe(true);
+    expect(rehydrator.unrehydratedServesCount).toBe(201);
+    expect(fetchCalls).toBe(201);
   });
 
   // ── (e) K-cap: 200 failing rehydrates → 201st degrades to at-limit ────────

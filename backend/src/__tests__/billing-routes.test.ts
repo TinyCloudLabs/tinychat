@@ -10,6 +10,8 @@ import { createBillingRouter } from "../routes/billing.js";
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_FETCH = globalThis.fetch;
 const ADDR = "0xabc";
+let checkoutSessionCreateCalls = 0;
+let portalSessionCreateCalls = 0;
 
 function authStub(req: Request, _res: Response, next: NextFunction) {
   req.user = { address: ADDR };
@@ -75,15 +77,27 @@ function mockStripe(subPriceId: string | null, anchorEpochSec = 1_700_000_000): 
       }),
     },
     checkout: {
-      sessions: { create: async () => ({ url: "https://checkout.stripe.test/session" }) },
+      sessions: {
+        create: async () => {
+          checkoutSessionCreateCalls += 1;
+          return { url: "https://checkout.stripe.test/session" };
+        },
+      },
     },
     billingPortal: {
-      sessions: { create: async () => ({ url: "https://portal.stripe.test/session" }) },
+      sessions: {
+        create: async () => {
+          portalSessionCreateCalls += 1;
+          return { url: "https://portal.stripe.test/session" };
+        },
+      },
     },
   } as unknown as Stripe;
 }
 
 beforeEach(() => {
+  checkoutSessionCreateCalls = 0;
+  portalSessionCreateCalls = 0;
   process.env.STRIPE_PRICE_PLUS_MONTHLY = "price_plus_m";
   process.env.STRIPE_PRICE_PLUS_YEARLY = "price_plus_y";
   process.env.STRIPE_PRICE_PRO_MONTHLY = "price_pro_m";
@@ -168,7 +182,7 @@ describe("GET /api/billing/status", () => {
 });
 
 describe("POST /api/billing/checkout", () => {
-  test("503 when billing not configured", async () => {
+  test("returns 410 for plus even when billing is not configured", async () => {
     process.env.PAYWALL_ENABLED = "true";
     delete process.env.STRIPE_SECRET_KEY;
     const res = await request(createApp(), "/api/billing/checkout", {
@@ -176,8 +190,8 @@ describe("POST /api/billing/checkout", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ tier: "plus", interval: "monthly" }),
     });
-    expect(res.status).toBe(503);
-    expect((await res.json()).error).toBe("billing_not_configured");
+    expect(res.status).toBe(410);
+    expect((await res.json()).error).toBe("billing_retired");
   });
 
   test("400 on invalid tier", async () => {
@@ -192,17 +206,23 @@ describe("POST /api/billing/checkout", () => {
     expect(res.status).toBe(400);
   });
 
-  test("returns checkout url on success", async () => {
+  test("refuses plus and pro without creating checkout sessions", async () => {
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe(null));
-    const res = await request(createApp(), "/api/billing/checkout", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tier: "plus", interval: "monthly" }),
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()).url).toBe("https://checkout.stripe.test/session");
+    for (const tier of ["plus", "pro"]) {
+      const res = await request(createApp(), "/api/billing/checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tier, interval: "monthly" }),
+      });
+      expect(res.status).toBe(410);
+      expect(await res.json()).toMatchObject({
+        error: "billing_retired",
+        accountAppUrl: "https://account.tinycloud.xyz",
+      });
+    }
+    expect(checkoutSessionCreateCalls).toBe(0);
   });
 });
 
@@ -323,7 +343,7 @@ describe("no dollar-denominated fields leak across billing responses (spec §2.1
 });
 
 describe("POST /api/billing/portal", () => {
-  test("returns portal url on success", async () => {
+  test("refuses without creating a portal session", async () => {
     process.env.PAYWALL_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     _setStripeClient(mockStripe("price_plus_m"));
@@ -332,17 +352,21 @@ describe("POST /api/billing/portal", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(200);
-    expect((await res.json()).url).toBe("https://portal.stripe.test/session");
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({
+      error: "billing_retired",
+      accountAppUrl: "https://account.tinycloud.xyz",
+    });
+    expect(portalSessionCreateCalls).toBe(0);
   });
 
-  test("503 when not configured", async () => {
+  test("refuses even when billing is not configured", async () => {
     process.env.PAYWALL_ENABLED = "false";
     const res = await request(createApp(), "/api/billing/portal", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(410);
   });
 });

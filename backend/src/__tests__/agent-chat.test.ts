@@ -19,6 +19,9 @@ import type { Request, Response } from "express";
 const AGENT_ID = "92361e74-91ed-43a2-9656-5cc37ff3a07a";
 const ADDR = "0xabc";
 
+// R3 ruling: 402 bodies hide `source` unless LEDGER_EXPOSE_SOURCE=true; this
+// suite asserts on the tag, so opt in before the env snapshot.
+process.env.LEDGER_EXPOSE_SOURCE = "true";
 const ORIGINAL_ENV = { ...process.env };
 
 function sseStream(frames: string[]): AsyncIterable<Uint8Array> {
@@ -63,7 +66,7 @@ function baseConfig(fetchImpl: typeof fetch): AgentChatConfig {
 }
 
 /** Mock Stripe resolving the caller to a given tier via its price id. */
-function mockStripe(priceId: string | null, anchorEpochSec?: number): Stripe {
+function mockStripe(priceId: string | null, anchorEpochSec?: number | null): Stripe {
   return {
     customers: { search: async () => ({ data: priceId ? [{ id: "cus_1" }] : [] }) },
     subscriptions: {
@@ -73,7 +76,7 @@ function mockStripe(priceId: string | null, anchorEpochSec?: number): Stripe {
               {
                 status: "active",
                 current_period_end: 1_800_000_000,
-                billing_cycle_anchor: anchorEpochSec ?? 1_700_000_000,
+                billing_cycle_anchor: anchorEpochSec === undefined ? 1_700_000_000 : anchorEpochSec,
                 items: { data: [{ price: { id: priceId } }] },
               },
             ]
@@ -914,8 +917,12 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       await handler(req, res);
 
       expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
-      const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
+      const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as {
+        error: string;
+        source: string;
+      };
       expect(body?.error).toBe("credit_budget_exceeded");
+      expect(body?.source).toBe("local");
     } finally {
       restoreGlobalFetch();
     }
@@ -930,14 +937,19 @@ describe("createAgentChatHandler LEDGER_AUTHORITATIVE gate", () => {
 
   function makeAgentRehydrator(opts: {
     atLimit?: boolean;
-    entitlement: { credit_limit: number | null; committed_credits: number | null; isOutage: boolean };
+    entitlement: {
+      credit_limit: number | null;
+      committed_credits: number | null;
+      isOutage: boolean;
+      period_anchor?: string | null;
+    };
   }) {
     return {
       rehydrateIfNeeded: async () => opts.atLimit ?? false,
       getEntitlement: async () => ({
         credit_limit: opts.entitlement.credit_limit,
         committed_credits: opts.entitlement.committed_credits,
-        period_anchor: "anchored_week",
+        period_anchor: opts.entitlement.period_anchor ?? "utc_day",
         isOutage: opts.entitlement.isOutage,
       }),
       get unrehydratedServesCount() { return 0; },
@@ -965,8 +977,12 @@ describe("createAgentChatHandler LEDGER_AUTHORITATIVE gate", () => {
     await handler(req, res);
 
     expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
-    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
+    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as {
+      error: string;
+      source: string;
+    };
     expect(body?.error).toBe("credit_budget_exceeded");
+    expect(body?.source).toBe("local");
   });
 
   it("flag-ON: clean ledger read at limit → 402 (ledger-sourced; local tally is 0)", async () => {
@@ -987,7 +1003,134 @@ describe("createAgentChatHandler LEDGER_AUTHORITATIVE gate", () => {
     await handler(req, res);
 
     expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
-    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as { error: string };
+    const body = (res as unknown as { lastJson: { status: number; body: unknown } }).lastJson?.body as {
+      error: string;
+      source: string;
+    };
     expect(body?.error).toBe("credit_budget_exceeded");
+    expect(body?.source).toBe("ledger");
+  });
+
+  it("flag-ON: exhausted K + bounded_k → k-degrade 402", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "bounded_k";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null));
+
+    const rehydrator = makeAgentRehydrator({
+      atLimit: true,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const { req, res } = makeReqRes();
+    const handler = createAgentChatHandler({
+      ...baseConfig(noopFetch),
+      rehydrator: rehydrator as any,
+    });
+    await handler(req, res);
+
+    expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
+    const body = (res as unknown as { lastJson: { body: unknown } }).lastJson?.body as { source: string };
+    expect(body.source).toBe("k_degrade");
+  });
+
+  it("flag-ON: exhausted K + fail_closed → outage-policy 402", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "fail_closed";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null));
+
+    const rehydrator = makeAgentRehydrator({
+      atLimit: true,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const { req, res } = makeReqRes();
+    const handler = createAgentChatHandler({
+      ...baseConfig(noopFetch),
+      rehydrator: rehydrator as any,
+    });
+    await handler(req, res);
+
+    expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
+    const body = (res as unknown as { lastJson: { body: unknown } }).lastJson?.body as { source: string };
+    expect(body.source).toBe("outage_policy");
+  });
+
+  it("flag-ON: exhausted K + fail_open → serves", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "fail_open";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null));
+
+    const rehydrator = makeAgentRehydrator({
+      atLimit: true,
+      entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
+    });
+    const completionFetch = (async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream([
+        dataFrame({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }),
+        dataFrame({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } }),
+      ]),
+    })) as unknown as typeof fetch;
+    const restoreGlobalFetch = stubCatalogFetch();
+    try {
+      const { req, res } = makeReqRes();
+      const handler = createAgentChatHandler({
+        ...baseConfig(completionFetch),
+        rehydrator: rehydrator as any,
+      });
+      await handler(req, res);
+
+      expect((res as unknown as { lastStatus: number }).lastStatus).toBe(200);
+      expect((res as unknown as { lastJson?: unknown }).lastJson).toBeUndefined();
+    } finally {
+      restoreGlobalFetch();
+    }
+  });
+
+  it("flag-ON: a local weekly tier without an anchor is a hard outage before either ledger window read", async () => {
+    process.env.LEDGER_AUTHORITATIVE = "true";
+    process.env.LEDGER_OUTAGE_POLICY = "fail_closed";
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe("price_plus_m", null));
+
+    let rehydrateCalls = 0;
+    let entitlementCalls = 0;
+    const rehydrator = {
+      rehydrateIfNeeded: async () => {
+        rehydrateCalls++;
+        return false;
+      },
+      getEntitlement: async () => {
+        entitlementCalls++;
+        return {
+          credit_limit: 12_000,
+          committed_credits: 0,
+          period_anchor: "anchored_week",
+          isOutage: false,
+        };
+      },
+    };
+    const { req, res } = makeReqRes();
+    const handler = createAgentChatHandler({
+      ...baseConfig(noopFetch),
+      rehydrator: rehydrator as any,
+    });
+    await handler(req, res);
+
+    expect((res as unknown as { lastStatus: number }).lastStatus).toBe(402);
+    expect(rehydrateCalls).toBe(0);
+    expect(entitlementCalls).toBe(0);
+    const body = (res as unknown as { lastJson: { body: unknown } }).lastJson?.body as {
+      usage?: unknown;
+      source?: string;
+    };
+    expect(body).not.toHaveProperty("usage");
+    expect(body.source).toBe("config_outage");
   });
 });
