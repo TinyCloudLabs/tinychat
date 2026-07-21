@@ -7,7 +7,22 @@ import {
   type TierId,
 } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
-import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
+import {
+  getUsage,
+  isOverBudget,
+  recordUsage,
+  startOfAnchoredWeek,
+  startOfUtcDay,
+} from "../billing/usage.js";
+import type { LedgerFlusher } from "../billing/ledger-flusher.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
+import {
+  evaluateLedgerGate,
+  evaluateKDegradePolicy,
+  exposeGateSource,
+  hasMissingWeeklyLedgerAnchor,
+  logCreditGateDeny,
+} from "../billing/ledger-gate.js";
 import {
   CatalogFetchError,
   contextLengthFor,
@@ -175,7 +190,14 @@ function gateAnnotation(
 
 // ── Router factory ───────────────────────────────────────────────────────────
 
-export function createChatRouter() {
+export interface ChatRouterOptions {
+  flusher?: LedgerFlusher;
+  rehydrator?: LedgerRehydrator;
+}
+
+export function createChatRouter(options?: ChatRouterOptions) {
+  const flusher = options?.flusher;
+  const rehydrator = options?.rehydrator;
   const router = Router();
 
   /**
@@ -271,15 +293,89 @@ export function createChatRouter() {
         return;
       }
 
-      if (isOverBudget(address, tierConfig, anchor)) {
-        const usage = getUsage(address, tierConfig, anchor);
-        res.status(402).json({
-          error: "credit_budget_exceeded",
-          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
-          tier,
-          usage,
+      // §E.7 — seed the in-memory counter from the durable ledger before gating.
+      const ledgerAuthoritative = process.env.LEDGER_AUTHORITATIVE === "true" && Boolean(rehydrator);
+      const missingWeeklyLedgerAnchor =
+        ledgerAuthoritative && hasMissingWeeklyLedgerAnchor(tierConfig, anchor);
+      const outagePolicy = process.env.LEDGER_OUTAGE_POLICY ?? "bounded_k";
+
+      // Shadow rehydration remains active with the authority flag OFF. In that
+      // mode, retain its historic direct K-degrade denial; flag-ON alone lets
+      // the selected outage policy decide whether a K-degrade denies.
+      if (rehydrator && (!ledgerAuthoritative || !missingWeeklyLedgerAnchor)) {
+        const atLimit = await rehydrator.rehydrateIfNeeded(address, tierConfig, anchor);
+        if (atLimit) {
+          const kDegrade = ledgerAuthoritative
+            ? evaluateKDegradePolicy(outagePolicy)
+            : { deny: true, source: "k_degrade" as const };
+          if (kDegrade.deny) {
+            const usage = getUsage(address, tierConfig, anchor);
+            logCreditGateDeny({
+              source: kDegrade.source,
+              address,
+              committed: null,
+              limit: usage.limit,
+              windowKind: tierConfig.budgetWindow,
+            });
+            res.status(402).json({
+              error: "credit_budget_exceeded",
+              message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+              tier,
+              usage,
+              ...exposeGateSource(kDegrade.source),
+            });
+            return;
+          }
+        }
+      }
+      if (ledgerAuthoritative && rehydrator) {
+        const entitlement = missingWeeklyLedgerAnchor
+          ? undefined
+          : await rehydrator.getEntitlement(address, tierConfig, anchor);
+        const gate = evaluateLedgerGate({
+          tier: tierConfig,
+          anchor,
+          entitlement,
+          outagePolicy,
+          isLocalOverBudget: () => isOverBudget(address, tierConfig, anchor),
         });
-        return;
+        if (gate.deny) {
+          const usage = gate.includeUsage ? getUsage(address, tierConfig, anchor) : undefined;
+          logCreditGateDeny({
+            source: gate.source,
+            address,
+            committed: entitlement?.committed_credits ?? null,
+            limit: entitlement?.credit_limit ?? null,
+            windowKind: tierConfig.budgetWindow,
+          });
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            ...(usage ? { usage } : {}),
+            ...exposeGateSource(gate.source),
+          });
+          return;
+        }
+      } else {
+        if (isOverBudget(address, tierConfig, anchor)) {
+          const usage = getUsage(address, tierConfig, anchor);
+          logCreditGateDeny({
+            source: "local",
+            address,
+            committed: usage.used,
+            limit: usage.limit,
+            windowKind: tierConfig.budgetWindow,
+          });
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            usage,
+            ...exposeGateSource("local"),
+          });
+          return;
+        }
       }
 
       // Resolve the requested model's rates once per request, before any bytes
@@ -406,6 +502,26 @@ export function createChatRouter() {
               scanner.completionText,
             );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        // §E.6 — shadow-push to ledger (async, never blocks serving)
+        if (flusher && credits > 0) {
+          const now = Date.now();
+          const tierCfg = TIERS[gatedTier];
+          const ws =
+            tierCfg.budgetWindow === "week"
+              ? startOfAnchoredWeek(anchor ?? now, now)
+              : startOfUtcDay(now);
+          flusher.enqueue({
+            account: address,
+            window_start: ws,
+            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+            credits,
+            model: resolvedModel,
+            prompt_tokens: scanner.promptTokens ?? 0,
+            completion_tokens: scanner.completionTokens ?? 0,
+            occurred_at: now,
+            signed_token_count: null,
+          });
+        }
       } catch (error) {
         console.error("[chat] failed to record post-stream usage:", error);
         try {
@@ -421,6 +537,25 @@ export function createChatRouter() {
                 scanner.completionText,
               );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          if (flusher && credits > 0) {
+            const now = Date.now();
+            const tierCfg = TIERS[gatedTier];
+            const ws =
+              tierCfg.budgetWindow === "week"
+                ? startOfAnchoredWeek(anchor ?? now, now)
+                : startOfUtcDay(now);
+            flusher.enqueue({
+              account: address,
+              window_start: ws,
+              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+              credits,
+              model: resolvedModel,
+              prompt_tokens: scanner.promptTokens ?? 0,
+              completion_tokens: scanner.completionTokens ?? 0,
+              occurred_at: now,
+              signed_token_count: null,
+            });
+          }
         } catch (fallbackError) {
           console.error("[chat] fallback usage recording also failed:", fallbackError);
         }

@@ -33,6 +33,11 @@ services:
       CREDIT_BUDGET_FREE: ${CREDIT_BUDGET_FREE:-}
       CREDIT_BUDGET_PLUS_WEEKLY: ${CREDIT_BUDGET_PLUS_WEEKLY:-}
       CREDIT_BUDGET_PRO_WEEKLY: ${CREDIT_BUDGET_PRO_WEEKLY:-}
+      # Ledger authority defaults OFF (shadow disabled) until rollout values are provided.
+      LEDGER_SERVICE_URL: ${LEDGER_SERVICE_URL:-}
+      LEDGER_SERVICE_SECRET: ${LEDGER_SERVICE_SECRET:-}
+      LEDGER_AUTHORITATIVE: ${LEDGER_AUTHORITATIVE:-false}
+      LEDGER_OUTAGE_POLICY: ${LEDGER_OUTAGE_POLICY:-bounded_k}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
     restart: unless-stopped

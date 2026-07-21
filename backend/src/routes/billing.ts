@@ -11,7 +11,6 @@ import { getUsage } from "../billing/usage.js";
 import {
   BillingNotConfiguredError,
   createCheckoutSession,
-  createPortalSession,
   paywallEnabled,
   resolveTier,
   stripeConfigured,
@@ -23,12 +22,22 @@ interface BillingRoutesConfig {
   authMiddleware: RequestHandler;
 }
 
+const ACCOUNT_APP_URL = "https://account.tinycloud.xyz";
+
 function requireUser(req: Request, res: Response): { address: string } | null {
   if (!req.user) {
     res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
     return null;
   }
   return req.user;
+}
+
+function retiredBillingResponse(res: Response): void {
+  res.status(410).json({
+    error: "billing_retired",
+    message: "TinyChat billing checkout and portal have moved to the account app.",
+    accountAppUrl: ACCOUNT_APP_URL,
+  });
 }
 
 /**
@@ -129,6 +138,12 @@ export function createBillingRouter(config: BillingRoutesConfig) {
     const user = requireUser(req, res);
     if (!user) return;
 
+    const { tier, interval } = (req.body ?? {}) as { tier?: unknown; interval?: unknown };
+    if (tier === "plus" || tier === "pro") {
+      retiredBillingResponse(res);
+      return;
+    }
+
     if (!paywallEnabled() || !stripeConfigured()) {
       res.status(503).json({
         error: "billing_not_configured",
@@ -137,7 +152,6 @@ export function createBillingRouter(config: BillingRoutesConfig) {
       return;
     }
 
-    const { tier, interval } = req.body as { tier?: unknown; interval?: unknown };
     if (tier !== "plus" && tier !== "pro") {
       res.status(400).json({
         error: "invalid_body",
@@ -177,25 +191,7 @@ export function createBillingRouter(config: BillingRoutesConfig) {
     const user = requireUser(req, res);
     if (!user) return;
 
-    if (!paywallEnabled() || !stripeConfigured()) {
-      res.status(503).json({
-        error: "billing_not_configured",
-        message: "Billing is not configured on this server.",
-      });
-      return;
-    }
-
-    try {
-      const url = await createPortalSession(user.address);
-      res.json({ url });
-    } catch (error) {
-      if (error instanceof BillingNotConfiguredError) {
-        res.status(503).json({ error: "billing_not_configured", message: error.message });
-        return;
-      }
-      console.error("[billing] failed to create portal session:", error);
-      res.status(500).json({ error: "internal_error", message: "Failed to create portal session" });
-    }
+    retiredBillingResponse(res);
   });
 
   return router;

@@ -23,6 +23,8 @@ import { createDelegationRouter } from "./routes/delegations.js";
 import { createAgentRouter } from "./routes/agent.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
+import { LedgerFlusher } from "./billing/ledger-flusher.js";
+import { LedgerRehydrator } from "./billing/ledger-rehydrate.js";
 import { isOfferedModel } from "./billing/catalog.js";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "./entity-id.js";
 import { createSignatureRouter } from "./routes/signature.js";
@@ -58,19 +60,89 @@ const AGENT_DID = process.env.AGENT_DID;
 const ELIZA_SERVICE_URL = process.env.ELIZA_SERVICE_URL;
 const ELIZA_SERVICE_SECRET = process.env.ELIZA_SERVICE_SECRET;
 
-if (!BACKEND_PRIVATE_KEY) {
-  console.error(
-    "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
-  );
-  process.exit(1);
+// §E.6/E.7 — ledger shadow-push + lazy rehydrate (additive; disabled when unset).
+// Mirrors the ELIZA_SERVICE_URL/ELIZA_SERVICE_SECRET outbound-service precedent.
+const LEDGER_SERVICE_URL = process.env.LEDGER_SERVICE_URL;
+const LEDGER_SERVICE_SECRET = process.env.LEDGER_SERVICE_SECRET;
+
+type LedgerStartupEnv = {
+  LEDGER_AUTHORITATIVE?: string;
+  LEDGER_SERVICE_URL?: string;
+  LEDGER_SERVICE_SECRET?: string;
+  LEDGER_OUTAGE_POLICY?: string;
+};
+
+const VALID_LEDGER_OUTAGE_POLICIES = new Set(["bounded_k", "fail_open", "fail_closed"]);
+
+export function validateLedgerStartupConfig(
+  env: LedgerStartupEnv,
+): { ok: true } | { ok: false; error: string } {
+  if (
+    env.LEDGER_AUTHORITATIVE === "true" &&
+    (!env.LEDGER_SERVICE_URL || !env.LEDGER_SERVICE_SECRET)
+  ) {
+    return {
+      ok: false,
+      error:
+        "LEDGER_AUTHORITATIVE=true requires both LEDGER_SERVICE_URL and LEDGER_SERVICE_SECRET; refusing to start with ledger enforcement silently disabled.",
+    };
+  }
+
+  if (
+    env.LEDGER_OUTAGE_POLICY !== undefined &&
+    !VALID_LEDGER_OUTAGE_POLICIES.has(env.LEDGER_OUTAGE_POLICY)
+  ) {
+    return {
+      ok: false,
+      error:
+        "LEDGER_OUTAGE_POLICY must be one of bounded_k, fail_open, or fail_closed; refusing to start with an unrecognized policy.",
+    };
+  }
+
+  return { ok: true };
 }
-const backendPrivateKey = BACKEND_PRIVATE_KEY;
 
 async function main() {
+  const ledgerStartupConfig = validateLedgerStartupConfig({
+    LEDGER_AUTHORITATIVE: process.env.LEDGER_AUTHORITATIVE,
+    LEDGER_SERVICE_URL,
+    LEDGER_SERVICE_SECRET,
+    LEDGER_OUTAGE_POLICY: process.env.LEDGER_OUTAGE_POLICY,
+  });
+  if (!ledgerStartupConfig.ok) {
+    console.error(`[startup] FATAL LEDGER CONFIGURATION ERROR: ${ledgerStartupConfig.error}`);
+    process.exit(1);
+    return;
+  }
+
+  if (!BACKEND_PRIVATE_KEY) {
+    console.error(
+      "BACKEND_PRIVATE_KEY is required. Generate one from the repo root with `bun run generate-key`.",
+    );
+    process.exit(1);
+    return;
+  }
+  const backendPrivateKey = BACKEND_PRIVATE_KEY;
+
   const { node, did } = await createTinychatBackendIdentity({
     privateKey: backendPrivateKey,
     host: TINYCLOUD_HOST,
   });
+
+  // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
+  let ledgerFlusher: LedgerFlusher | undefined;
+  let ledgerRehydrator: LedgerRehydrator | undefined;
+  if (LEDGER_SERVICE_URL && LEDGER_SERVICE_SECRET) {
+    ledgerFlusher = new LedgerFlusher(LEDGER_SERVICE_URL, LEDGER_SERVICE_SECRET);
+    ledgerFlusher.start();
+    ledgerRehydrator = new LedgerRehydrator(LEDGER_SERVICE_URL, LEDGER_SERVICE_SECRET);
+    console.log("[startup] ledger shadow-push + rehydration enabled.");
+  } else {
+    console.warn(
+      "[startup] LEDGER_SERVICE_URL / LEDGER_SERVICE_SECRET not set — " +
+        "ledger shadow-push + rehydration disabled.",
+    );
+  }
   const delegationStore = new DelegationStore(node);
   const delegationCache = new DelegationCache();
   const nonceStore = createNonceStore();
@@ -165,6 +237,8 @@ async function main() {
                 redpillBaseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
+                flusher: ledgerFlusher,
+                rehydrator: ledgerRehydrator,
               },
             }
           : {}),
@@ -176,7 +250,11 @@ async function main() {
         "/api/agent (eliza delegation courier) is disabled.",
     );
   }
-  app.use("/api/chat", authMiddleware, createChatRouter());
+  app.use(
+    "/api/chat",
+    authMiddleware,
+    createChatRouter({ flusher: ledgerFlusher, rehydrator: ledgerRehydrator }),
+  );
   app.use("/api/signature", authMiddleware, createSignatureRouter());
   app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter());
   app.use("/api/phala-verify", authMiddleware, createPhalaVerifyRouter());
@@ -206,6 +284,7 @@ async function main() {
 
   const shutdown = (signal: string) => {
     console.log(`${signal} received. Shutting down.`);
+    ledgerFlusher?.stop();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 10_000);
   };
@@ -229,7 +308,9 @@ function loadTlsConfig() {
   };
 }
 
-main().catch((error) => {
-  console.error("Failed to start TinyChat backend:", error);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error("Failed to start TinyChat backend:", error);
+    process.exit(1);
+  });
+}

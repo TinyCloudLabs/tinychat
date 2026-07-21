@@ -14,10 +14,25 @@
 import type { Request, RequestHandler, Response } from "express";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
-import { getUsage, isOverBudget, recordUsage } from "../billing/usage.js";
+import {
+  getUsage,
+  isOverBudget,
+  recordUsage,
+  startOfAnchoredWeek,
+  startOfUtcDay,
+} from "../billing/usage.js";
 import { contextLengthFor, getCatalog, type CatalogModel } from "../billing/catalog.js";
 import { truncateToolResults, trimConvoToBudget } from "../lib/contextGuard.js";
 import { creditsFor, ratesForModel, type ModelRates } from "../billing/credits.js";
+import type { LedgerFlusher } from "../billing/ledger-flusher.js";
+import type { LedgerRehydrator } from "../billing/ledger-rehydrate.js";
+import {
+  evaluateLedgerGate,
+  evaluateKDegradePolicy,
+  exposeGateSource,
+  hasMissingWeeklyLedgerAnchor,
+  logCreditGateDeny,
+} from "../billing/ledger-gate.js";
 
 // Conservative default rates for the post-stream recording fallback (mirrors chat.ts §7).
 const FALLBACK_RECORDING_RATES: ModelRates = {
@@ -55,6 +70,10 @@ export interface AgentChatConfig {
   fetchImpl?: typeof fetch;
   /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
+  /** §E.6 — shadow-push outbox (disabled when absent). */
+  flusher?: LedgerFlusher;
+  /** §E.7 — lazy rehydrator (disabled when absent). */
+  rehydrator?: LedgerRehydrator;
 }
 
 // The single tool exposed for the first cut. OpenAI function-calling schema.
@@ -567,15 +586,90 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
         return;
       }
 
-      if (isOverBudget(address, tierConfig, anchor)) {
-        const usage = getUsage(address, tierConfig, anchor);
-        res.status(402).json({
-          error: "credit_budget_exceeded",
-          message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
-          tier,
-          usage,
+      // §E.7 — seed the in-memory counter from the durable ledger before gating.
+      const ledgerAuthoritative =
+        process.env.LEDGER_AUTHORITATIVE === "true" && Boolean(config.rehydrator);
+      const missingWeeklyLedgerAnchor =
+        ledgerAuthoritative && hasMissingWeeklyLedgerAnchor(tierConfig, anchor);
+      const outagePolicy = process.env.LEDGER_OUTAGE_POLICY ?? "bounded_k";
+
+      // Shadow rehydration remains active with the authority flag OFF. In that
+      // mode, retain its historic direct K-degrade denial; flag-ON alone lets
+      // the selected outage policy decide whether a K-degrade denies.
+      if (config.rehydrator && (!ledgerAuthoritative || !missingWeeklyLedgerAnchor)) {
+        const atLimit = await config.rehydrator.rehydrateIfNeeded(address, tierConfig, anchor);
+        if (atLimit) {
+          const kDegrade = ledgerAuthoritative
+            ? evaluateKDegradePolicy(outagePolicy)
+            : { deny: true, source: "k_degrade" as const };
+          if (kDegrade.deny) {
+            const usage = getUsage(address, tierConfig, anchor);
+            logCreditGateDeny({
+              source: kDegrade.source,
+              address,
+              committed: null,
+              limit: usage.limit,
+              windowKind: tierConfig.budgetWindow,
+            });
+            res.status(402).json({
+              error: "credit_budget_exceeded",
+              message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+              tier,
+              usage,
+              ...exposeGateSource(kDegrade.source),
+            });
+            return;
+          }
+        }
+      }
+      if (ledgerAuthoritative && config.rehydrator) {
+        const entitlement = missingWeeklyLedgerAnchor
+          ? undefined
+          : await config.rehydrator.getEntitlement(address, tierConfig, anchor);
+        const gate = evaluateLedgerGate({
+          tier: tierConfig,
+          anchor,
+          entitlement,
+          outagePolicy,
+          isLocalOverBudget: () => isOverBudget(address, tierConfig, anchor),
         });
-        return;
+        if (gate.deny) {
+          const usage = gate.includeUsage ? getUsage(address, tierConfig, anchor) : undefined;
+          logCreditGateDeny({
+            source: gate.source,
+            address,
+            committed: entitlement?.committed_credits ?? null,
+            limit: entitlement?.credit_limit ?? null,
+            windowKind: tierConfig.budgetWindow,
+          });
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            ...(usage ? { usage } : {}),
+            ...exposeGateSource(gate.source),
+          });
+          return;
+        }
+      } else {
+        if (isOverBudget(address, tierConfig, anchor)) {
+          const usage = getUsage(address, tierConfig, anchor);
+          logCreditGateDeny({
+            source: "local",
+            address,
+            committed: usage.used,
+            limit: usage.limit,
+            windowKind: tierConfig.budgetWindow,
+          });
+          res.status(402).json({
+            error: "credit_budget_exceeded",
+            message: `Credit budget exhausted for the ${tierConfig.name} tier.`,
+            tier,
+            usage,
+            ...exposeGateSource("local"),
+          });
+          return;
+        }
       }
 
       try {
@@ -639,6 +733,26 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
           orchestrateResult.completionTokens,
         );
         recordUsage(address, TIERS[gatedTier], credits, anchor);
+        // §E.6 — shadow-push to ledger (async, never blocks serving)
+        if (config.flusher && credits > 0) {
+          const now = Date.now();
+          const tierCfg = TIERS[gatedTier];
+          const ws =
+            tierCfg.budgetWindow === "week"
+              ? startOfAnchoredWeek(anchor ?? now, now)
+              : startOfUtcDay(now);
+          config.flusher.enqueue({
+            account: address,
+            window_start: ws,
+            window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+            credits,
+            model: resolvedModel,
+            prompt_tokens: orchestrateResult.promptTokens,
+            completion_tokens: orchestrateResult.completionTokens,
+            occurred_at: now,
+            signed_token_count: null,
+          });
+        }
       } catch (error) {
         console.error("[agent-chat] failed to record post-stream usage:", error);
         try {
@@ -648,6 +762,25 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
             orchestrateResult.completionTokens,
           );
           recordUsage(address, TIERS[gatedTier], credits, anchor);
+          if (config.flusher && credits > 0) {
+            const now = Date.now();
+            const tierCfg = TIERS[gatedTier];
+            const ws =
+              tierCfg.budgetWindow === "week"
+                ? startOfAnchoredWeek(anchor ?? now, now)
+                : startOfUtcDay(now);
+            config.flusher.enqueue({
+              account: address,
+              window_start: ws,
+              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+              credits,
+              model: resolvedModel,
+              prompt_tokens: orchestrateResult.promptTokens,
+              completion_tokens: orchestrateResult.completionTokens,
+              occurred_at: now,
+              signed_token_count: null,
+            });
+          }
         } catch (fallbackError) {
           console.error("[agent-chat] fallback usage recording also failed:", fallbackError);
         }
