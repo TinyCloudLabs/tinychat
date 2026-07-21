@@ -2,10 +2,10 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import {
   TIERS,
-  TIER_ORDER,
   creditBudgetFor,
   type Interval,
   type PaidTierId,
+  type TierId,
 } from "../billing/tiers.js";
 import { getUsage } from "../billing/usage.js";
 import {
@@ -41,11 +41,20 @@ function retiredBillingResponse(res: Response): void {
 }
 
 /**
+ * Public tier ids surfaced to the frontend, in display order. The universal-
+ * ledger cutover collapsed the paid lineup to ONE unified plan, so only "free"
+ * and "pro" are advertised. "plus" is intentionally omitted from the public
+ * catalog even though it remains in `TIERS`/`TIER_ORDER` for internal tier
+ * resolution and legacy-subscription fallback (Phase 5 deletes the local stack).
+ */
+const PUBLIC_TIER_ORDER: TierId[] = ["free", "pro"];
+
+/**
  * Public pricing payload shared with the frontend. Derived from the tier config
  * so there is a single source of truth.
  */
 function publicTiers() {
-  return TIER_ORDER.map((id) => {
+  return PUBLIC_TIER_ORDER.map((id) => {
     const tier = TIERS[id];
     return {
       id: tier.id,
@@ -64,7 +73,14 @@ export function createBillingRouter(config: BillingRoutesConfig) {
 
   /** GET /config — public pricing. No auth. */
   router.get("/config", (_req: Request, res: Response) => {
-    res.json({ paywallEnabled: paywallEnabled(), tiers: publicTiers() });
+    res.json({
+      paywallEnabled: paywallEnabled(),
+      tiers: publicTiers(),
+      // Where the upgrade/manage-subscription UX lives now that TinyChat billing
+      // checkout and portal have moved to the account app. The frontend opens
+      // `${accountAppUrl}/billing` instead of a local Stripe redirect.
+      accountAppUrl: ACCOUNT_APP_URL,
+    });
   });
 
   /**
