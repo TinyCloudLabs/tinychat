@@ -16,6 +16,14 @@ import {
 
 const K = 200;
 
+// Issue #31: the ledger read must select the SAME namespaced window the producer
+// wrote (routes push window_kind="anchored_week" for the weekly paid window, else
+// "utc_day"). Mirror that mapping exactly so the read and the write key on the
+// same bucket and the paid-week / free-day integer collision can never surface.
+function windowKindFor(tier: TierConfig): "anchored_week" | "utc_day" {
+  return tier.budgetWindow === "week" ? "anchored_week" : "utc_day";
+}
+
 interface CreditEntitlementResponse {
   account: string;
   credit_limit: number;
@@ -59,7 +67,7 @@ export class LedgerRehydrator {
     try {
       const url =
         `${this.serviceUrl}/api/credit-entitlement/${encodeURIComponent(address)}` +
-        `?window_start=${ws}`;
+        `?window_start=${ws}&window_kind=${windowKindFor(tier)}`;
       const res = await fetch(url, {
         signal: AbortSignal.timeout(2000),
         headers: { Authorization: `Bearer ${this.serviceSecret}` },
@@ -134,7 +142,7 @@ export class LedgerRehydrator {
     try {
       const url =
         `${this.serviceUrl}/api/credit-entitlement/${encodeURIComponent(address)}` +
-        `?window_start=${ws}`;
+        `?window_start=${ws}&window_kind=${windowKindFor(tier)}`;
       const res = await fetch(url, {
         signal: AbortSignal.timeout(2000),
         headers: { Authorization: `Bearer ${this.serviceSecret}` },

@@ -16,6 +16,15 @@ import { creditBudgetFor, type BudgetWindow, type TierConfig } from "./tiers.js"
 interface UsageRecord {
   /** Epoch ms marking the start of the current window. */
   periodStart: number;
+  /**
+   * Window kind ("day" | "week" | "month") this record belongs to. Issue #31:
+   * a paid anchored-week and a free UTC-day can resolve to the SAME periodStart
+   * integer at a midnight anchor on the first day of the week. Keying the slot
+   * on periodStart alone then reads old paid usage against the new free limit
+   * (a silent 402). Pairing periodStart with the window kind makes the two
+   * windows distinct, so a tier transition always rolls the record over.
+   */
+  windowKind: BudgetWindow;
   creditsUsed: number;
 }
 
@@ -133,8 +142,8 @@ export function recordUsage(
   preflightAnchor(tier, anchor);
   const start = windowStart(tier.budgetWindow, anchor, now);
   const record = usageByAddress.get(address);
-  if (!record || record.periodStart !== start) {
-    usageByAddress.set(address, { periodStart: start, creditsUsed: credits });
+  if (!record || record.periodStart !== start || record.windowKind !== tier.budgetWindow) {
+    usageByAddress.set(address, { periodStart: start, windowKind: tier.budgetWindow, creditsUsed: credits });
     return;
   }
   record.creditsUsed += credits;
@@ -148,7 +157,7 @@ function currentCredits(
 ): number {
   const start = windowStart(window, anchor, now);
   const record = usageByAddress.get(address);
-  if (!record || record.periodStart !== start) return 0;
+  if (!record || record.periodStart !== start || record.windowKind !== window) return 0;
   return record.creditsUsed;
 }
 
