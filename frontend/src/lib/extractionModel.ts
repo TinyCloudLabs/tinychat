@@ -2,7 +2,8 @@
 //
 // Memory extraction must POST an OFFERED model id or the node 403s with
 // `model_not_offered` and memory silently never updates. The model lineup has
-// churned repeatedly (gpt-5-mini → gpt-oss-20b → qwen-2.5-7b → deepseek-v4-pro),
+// churned repeatedly (gpt-5-mini → gpt-oss-20b → qwen-2.5-7b → deepseek-v4-pro
+// → deepseek-v3.2 → deepseek-v4-flash),
 // so a hardcoded preferred id can drift out of the catalog. This pure helper
 // picks a model guaranteed to be offered (when the catalog is loaded) and
 // reports WHY, so the caller can warn on drift without baking I/O into the

@@ -73,7 +73,12 @@ export function isBlocklistedModel(id: string): boolean {
  * path so it reaches tier 1.
  */
 export const PICKER_MODELS = [
-  "deepseek/deepseek-v4-pro", // the single offered/green model
+  // deepseek-v4-pro was delisted from serving on 2026-07-17 (still in /models,
+  // but /chat/completions returns 404 "The model does not exist"). Its first
+  // replacement, deepseek-v3.2, turned out to be load-shedding (4/6 requests
+  // 429'd in a sequential burst), so the offered model moved to v4-flash the
+  // same day: 200s under burst, flat ECDSA signature path, tool-calling OK.
+  "deepseek/deepseek-v4-flash", // the single offered/green model
 ] as const;
 
 const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
@@ -85,17 +90,17 @@ const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
  * the compaction planner and the agent-path guard size against. This is a static
  * map by design — §C.4c / §I.3 forbid a runtime dependency on the upstream
  * catalog for context length. The cached RedPill /models payload carries only
- * `id` + `pricing` (see CatalogModel above and fetchCatalogOnce's map) — it does
- * NOT expose a context/max-length field for `deepseek/deepseek-v4-pro` — so there
- * is no verifiable upstream number to adopt; every id falls back to
- * DEFAULT_CONTEXT_TOKENS. When a verifiable window appears upstream, add it here
- * with a source comment (per §C.4c).
+ * `id` + `pricing` (see CatalogModel above and fetchCatalogOnce's map), so any
+ * window recorded here must come from a manual check of the raw upstream
+ * catalog, with a source comment (per §C.4c). Ids without an entry fall back to
+ * DEFAULT_CONTEXT_TOKENS.
  */
 export const DEFAULT_CONTEXT_TOKENS = 64000;
 
 export const CONTEXT_TOKENS: Record<string, number> = {
-  // (intentionally empty — no id carries a verifiable upstream context length yet;
-  // all ids resolve to DEFAULT_CONTEXT_TOKENS via contextLengthFor)
+  // Raw RedPill GET /v1/models `context_length` for deepseek/deepseek-v4-flash,
+  // checked by hand 2026-07-17 (1048576 = 1M).
+  "deepseek/deepseek-v4-flash": 1048576,
 };
 
 /**

@@ -61,12 +61,12 @@ import {
  * for the POST to pass the model gate; an unoffered id 403s with
  * `model_not_offered` and memory silently never updates (ST3). To survive
  * picker churn (the lineup has changed several times: gpt-5-mini → gpt-oss-20b
- * → qwen-2.5-7b → deepseek-v4-pro), this is now the *preferred* id only —
+ * → qwen-2.5-7b → deepseek-v4-pro → deepseek-v3.2 → deepseek-v4-flash), this is now the *preferred* id only —
  * `pickExtractionModel` falls back to the current chat model, then the first
  * offered id, so extraction keeps working even if this preferred id drifts out
  * of the catalog.
  */
-const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-pro";
+const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-flash";
 
 /**
  * Choose an extraction model that is guaranteed to be offered, so the

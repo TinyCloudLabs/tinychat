@@ -14,7 +14,7 @@ import { createChatRouter, defaultModel } from "../routes/chat.js";
 // MEMORY_EXTRACTION_MODEL). Kept in sync here so ST3 regresses if either drifts
 // off the offered-model tier gate. The product is single-model, so this is the
 // single offered model.
-const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-pro";
+const MEMORY_EXTRACTION_MODEL = "deepseek/deepseek-v4-flash";
 
 // R3 ruling: 402 bodies hide `source` unless LEDGER_EXPOSE_SOURCE=true. This
 // suite asserts on the tag, so opt in BEFORE the ORIGINAL_ENV snapshot (the
@@ -210,7 +210,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -235,7 +235,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -258,7 +258,7 @@ describe("POST /api/chat gating", () => {
     const res = await request(createApp(), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -305,14 +305,14 @@ describe("POST /api/chat offered-model gate, paywall OFF (ST2)", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      models: [{ id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }],
       sseChunks,
     });
     try {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro"),
+        body: chatBody("deepseek/deepseek-v4-flash"),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -334,7 +334,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // is unoffered — the default must heal to the curated baseline.
       process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
       const value = defaultModel();
-      expect(value).toBe("deepseek/deepseek-v4-pro");
+      expect(value).toBe("deepseek/deepseek-v4-flash");
       expect(isBlocklistedModel(value)).toBe(false);
       expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
     } finally {
@@ -349,7 +349,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
       process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
       expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
-      expect(defaultModel()).toBe("deepseek/deepseek-v4-pro");
+      expect(defaultModel()).toBe("deepseek/deepseek-v4-flash");
     } finally {
       console.warn = originalWarn;
     }
@@ -363,15 +363,15 @@ describe("defaultModel() override validation (ST11)", () => {
       // so it is no longer offered — the default must not resolve to it.
       process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-120b";
       expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
-      expect(defaultModel()).toBe("deepseek/deepseek-v4-pro");
+      expect(defaultModel()).toBe("deepseek/deepseek-v4-flash");
     } finally {
       console.warn = originalWarn;
     }
   });
 
   test("a valid (allowlisted) override is returned unchanged", () => {
-    process.env.REDPILL_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
-    expect(defaultModel()).toBe("deepseek/deepseek-v4-pro");
+    process.env.REDPILL_DEFAULT_MODEL = "deepseek/deepseek-v4-flash";
+    expect(defaultModel()).toBe("deepseek/deepseek-v4-flash");
   });
 });
 
@@ -392,7 +392,7 @@ describe("POST /api/chat recording", () => {
     ];
     const restore = stubRedPillFetch({
       models: [
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor + requested offered model
+        { id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }, // default → baseline anchor + requested offered model
         { id: "anthropic/claude-opus-4.1", pricing: OPUS_PRICING },
       ],
       sseChunks,
@@ -402,7 +402,7 @@ describe("POST /api/chat recording", () => {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro"),
+        body: chatBody("deepseek/deepseek-v4-flash"),
       });
       expect(res.status).toBe(200);
       await res.text(); // drain
@@ -427,7 +427,7 @@ describe("POST /api/chat recording", () => {
     ];
     const restore = stubRedPillFetch({
       models: [
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // default → baseline anchor + requested offered model
+        { id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }, // default → baseline anchor + requested offered model
       ],
       sseChunks,
     });
@@ -436,7 +436,7 @@ describe("POST /api/chat recording", () => {
       const res = await request(createApp(), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro", promptContent),
+        body: chatBody("deepseek/deepseek-v4-flash", promptContent),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -451,7 +451,7 @@ describe("POST /api/chat recording", () => {
 describe("GET /api/chat/models annotation", () => {
   test("only the single offered model is listed (non-offered filtered out); allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
-    // The multiplier anchor is the default model (deepseek/deepseek-v4-pro). Price
+    // The multiplier anchor is the default model (deepseek/deepseek-v4-flash). Price
     // it at the MINI baseline so it anchors multiplier 1. The non-TEE
     // openai/gpt-5-mini and the unoffered phala/gpt-oss-120b must be filtered OUT
     // of the /models output (only the single offered model is listed).
@@ -460,7 +460,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
         { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // formerly offered, now unoffered (filtered out)
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
+        { id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
       ],
     });
     try {
@@ -481,9 +481,9 @@ describe("GET /api/chat/models annotation", () => {
         expect(typeof m.multiplier).toBe("number");
       }
       // The single offered model is the default → baseline rates → multiplier 1.
-      expect(byId["deepseek/deepseek-v4-pro"].creditsPerKInput).toBe(2.5);
-      expect(byId["deepseek/deepseek-v4-pro"].creditsPerKOutput).toBe(20);
-      expect(byId["deepseek/deepseek-v4-pro"].multiplier).toBe(1);
+      expect(byId["deepseek/deepseek-v4-flash"].creditsPerKInput).toBe(2.5);
+      expect(byId["deepseek/deepseek-v4-flash"].creditsPerKOutput).toBe(20);
+      expect(byId["deepseek/deepseek-v4-flash"].multiplier).toBe(1);
       // Spec §2.1 invariant — no dollar fields ever leak from /models either.
       assertNoDollarLeak(body);
     } finally {
@@ -505,14 +505,14 @@ describe("GET /api/chat/models annotation", () => {
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered extra
         { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // formerly offered
         { id: "qwen/qwen3-vl-30b-a3b-instruct", pricing: MINI_PRICING }, // formerly offered
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // the single offered model
+        { id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }, // the single offered model
       ],
     });
     try {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
       const ids = body.models.map((m: any) => m.id);
-      expect(ids).toEqual(["deepseek/deepseek-v4-pro"]);
+      expect(ids).toEqual(["deepseek/deepseek-v4-flash"]);
     } finally {
       restore();
     }
@@ -528,7 +528,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
         { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // formerly offered (filtered out)
-        { id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
+        { id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
       ],
     });
     try {
@@ -542,14 +542,14 @@ describe("GET /api/chat/models annotation", () => {
       expect("qwen/qwen-2.5-7b-instruct" in byId).toBe(false);
       expect(body.models.every((m: any) => isOfferedModel(m.id))).toBe(true);
       // Free tier allows the offered model → allowed:true with no requiredTier.
-      expect(byId["deepseek/deepseek-v4-pro"]).toMatchObject({
-        id: "deepseek/deepseek-v4-pro",
+      expect(byId["deepseek/deepseek-v4-flash"]).toMatchObject({
+        id: "deepseek/deepseek-v4-flash",
         allowed: true,
         creditsPerKInput: 2.5,
         creditsPerKOutput: 20,
         multiplier: 1,
       });
-      expect("requiredTier" in byId["deepseek/deepseek-v4-pro"]).toBe(false);
+      expect("requiredTier" in byId["deepseek/deepseek-v4-flash"]).toBe(false);
       assertNoDollarLeak(body);
     } finally {
       restore();
@@ -578,7 +578,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
     };
   }
 
-  const CURATED_MODELS = ["deepseek/deepseek-v4-pro"];
+  const CURATED_MODELS = ["deepseek/deepseek-v4-flash"];
 
   test("returns the curated allowlist (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
     process.env.PAYWALL_ENABLED = "false";
@@ -799,7 +799,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -823,7 +823,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -846,7 +846,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -869,7 +869,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
 
     expect(res.status).toBe(402);
@@ -890,7 +890,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
 
     expect(res.status).toBe(402);
@@ -909,7 +909,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
       entitlement: { credit_limit: null, committed_credits: null, isOutage: true },
     });
     const restore = stubRedPillFetch({
-      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      models: [{ id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }],
       sseChunks: [
         `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
         "data: [DONE]\n\n",
@@ -919,7 +919,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
       const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro"),
+        body: chatBody("deepseek/deepseek-v4-flash"),
       });
 
       expect(res.status).toBe(200);
@@ -948,7 +948,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
 
     expect(res.status).toBe(402);
@@ -972,14 +972,14 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      models: [{ id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }],
       sseChunks,
     });
     try {
       const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro"),
+        body: chatBody("deepseek/deepseek-v4-flash"),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -1002,7 +1002,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -1027,14 +1027,14 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      models: [{ id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }],
       sseChunks,
     });
     try {
       const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro"),
+        body: chatBody("deepseek/deepseek-v4-flash"),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -1060,7 +1060,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     expect(res.status).toBe(402);
     const body = (await res.json()) as any;
@@ -1086,14 +1086,14 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
       "data: [DONE]\n\n",
     ];
     const restore = stubRedPillFetch({
-      models: [{ id: "deepseek/deepseek-v4-pro", pricing: MINI_PRICING }],
+      models: [{ id: "deepseek/deepseek-v4-flash", pricing: MINI_PRICING }],
       sseChunks,
     });
     try {
       const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: chatBody("deepseek/deepseek-v4-pro"),
+        body: chatBody("deepseek/deepseek-v4-flash"),
       });
       expect(res.status).toBe(200);
       await res.text();
@@ -1117,7 +1117,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
     // fail_closed under outage → 402 (not served, proving null !== 0)
     expect(res.status).toBe(402);
@@ -1155,7 +1155,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     const res = await request(createAppWithRehydrator(rehydrator), "/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: chatBody("deepseek/deepseek-v4-pro"),
+      body: chatBody("deepseek/deepseek-v4-flash"),
     });
 
     expect(res.status).toBe(402);

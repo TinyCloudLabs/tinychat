@@ -123,7 +123,7 @@ describe("model allowance (prefix matching)", () => {
   // (PICKER_MODELS / isOfferedModel). Tiers differ ONLY by credit budget.
   test("every tier allows offered models", () => {
     for (const tier of ["free", "plus", "pro"] as const) {
-      expect(isModelAllowed(tier, "deepseek/deepseek-v4-pro")).toBe(true);
+      expect(isModelAllowed(tier, "deepseek/deepseek-v4-flash")).toBe(true);
       expect(isModelAllowed(tier, "qwen/qwen-2.5-7b-instruct")).toBe(true);
       expect(isModelAllowed(tier, "qwen/qwen3.5-27b")).toBe(true);
     }
@@ -147,7 +147,7 @@ describe("model allowance (prefix matching)", () => {
     // any given model. This is the invariant that replaces the old per-tier
     // whitelists; only credit budgets differ between tiers.
     for (const modelId of [
-      "deepseek/deepseek-v4-pro",
+      "deepseek/deepseek-v4-flash",
       "qwen/qwen-2.5-7b-instruct",
       "openai/gpt-5",
       "openai/gpt-5-mini",
@@ -165,7 +165,7 @@ describe("model allowance (prefix matching)", () => {
   test("requiredTierForModel is 'free' for every model (allowance gate is permissive)", () => {
     // The lowest tier that allows any model is free (all tiers allow everything);
     // the offered-model gate, not the tier, is what refuses unoffered ids.
-    expect(requiredTierForModel("deepseek/deepseek-v4-pro")).toBe("free");
+    expect(requiredTierForModel("deepseek/deepseek-v4-flash")).toBe("free");
     expect(requiredTierForModel("qwen/qwen-2.5-7b-instruct")).toBe("free");
     expect(requiredTierForModel("openai/gpt-5-mini")).toBe("free");
     expect(requiredTierForModel("openai/gpt-5")).toBe("free");
