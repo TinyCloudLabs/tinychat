@@ -2,7 +2,7 @@ import { createApiClient, type SessionStore } from "@tinyboilerplate/client";
 
 // ── Billing API types (mirror the backend contract exactly) ──────────
 
-export type TierId = "free" | "plus" | "pro";
+export type TierId = "free" | "pro";
 
 export interface BillingTier {
   id: TierId;
@@ -19,6 +19,12 @@ export interface BillingTier {
 export interface BillingConfig {
   paywallEnabled: boolean;
   tiers: BillingTier[];
+  /**
+   * Base URL of the account app, where checkout + subscription management now
+   * live (TinyChat's local checkout/portal were retired in the universal-ledger
+   * cutover). The pricing UI opens `${accountAppUrl}/billing`.
+   */
+  accountAppUrl: string;
 }
 
 export interface BillingUsage {
@@ -60,10 +66,6 @@ export interface BillingClient {
   getStatus(): Promise<BillingStatus>;
   /** Public, no-auth: per-model credit rates table. */
   getRates(): Promise<RatesResponse>;
-  /** Authed: start a Stripe Checkout session; returns the hosted-page URL. */
-  checkout(tier: "plus" | "pro", interval: "monthly" | "yearly"): Promise<string>;
-  /** Authed: open the Stripe billing portal; returns the hosted-page URL. */
-  portal(): Promise<string>;
 }
 
 /**
@@ -88,17 +90,6 @@ export function createBillingClient(
     },
     getRates() {
       return api.get<RatesResponse>("/api/billing/rates");
-    },
-    async checkout(tier, interval) {
-      const { url } = await api.post<{ url: string }>("/api/billing/checkout", {
-        tier,
-        interval,
-      });
-      return url;
-    },
-    async portal() {
-      const { url } = await api.post<{ url: string }>("/api/billing/portal", {});
-      return url;
     },
   };
 }

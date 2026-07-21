@@ -117,22 +117,30 @@ afterEach(() => {
 });
 
 describe("GET /api/billing/config (public)", () => {
-  test("returns paywall flag + tiers with cents prices", async () => {
+  test("returns paywall flag + only the free/pro public tiers with cents prices", async () => {
     process.env.PAYWALL_ENABLED = "false";
     const res = await request(createApp(), "/api/billing/config");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.paywallEnabled).toBe(false);
-    expect(body.tiers.map((t: any) => t.id)).toEqual(["free", "plus", "pro"]);
-    const plus = body.tiers.find((t: any) => t.id === "plus");
-    expect(plus.priceMonthly).toBe(1000);
-    expect(plus.priceYearly).toBe(9600);
-    expect(plus.creditBudget).toBe(12_000);
-    expect(plus.budgetWindow).toBe("week");
-    expect(Array.isArray(plus.modelPatterns)).toBe(true);
+    // Post-cutover: one unified paid plan. "plus" is retired from the public
+    // catalog (still present in TIERS for internal resolution / legacy subs).
+    expect(body.tiers.map((t: any) => t.id)).toEqual(["free", "pro"]);
     const pro = body.tiers.find((t: any) => t.id === "pro");
+    expect(pro.priceMonthly).toBe(2000);
+    expect(pro.priceYearly).toBe(19200);
     expect(pro.creditBudget).toBe(28_000);
     expect(pro.budgetWindow).toBe("week");
+    expect(Array.isArray(pro.modelPatterns)).toBe(true);
+  });
+
+  test("advertises the account app url and omits the retired plus tier", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const res = await request(createApp(), "/api/billing/config");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.accountAppUrl).toBe("https://account.tinycloud.xyz");
+    expect(body.tiers.some((t: any) => t.id === "plus")).toBe(false);
   });
 
   test("reflects paywall enabled", async () => {

@@ -131,8 +131,9 @@ export function App() {
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
-  // sign-in and refreshed on dialog-open + after a successful checkout. All
-  // paywall UI is gated on `billingConfig?.paywallEnabled` — when the backend
+  // sign-in and refreshed on dialog-open. Checkout + subscription management
+  // live in the account app now (opened in a new tab from the pricing dialog).
+  // All paywall UI is gated on `billingConfig?.paywallEnabled` — when the backend
   // reports the paywall off (or before config loads) nothing renders.
   const billingRef = useRef<BillingClient>(
     createBillingClient(BACKEND_URL, sessionStoreRef.current),
@@ -351,8 +352,8 @@ export function App() {
   }, [state, paywallEnabled, refreshBillingStatus]);
 
   // Optimistically bump the usage chip when a receipt event fires — avoids
-  // a per-message status refetch. Real reconciliation happens on dialog-open,
-  // ?billing=success, and 402. Skips silently before status loads.
+  // a per-message status refetch. Real reconciliation happens on dialog-open
+  // and 402. Skips silently before status loads.
   useEffect(() => {
     return onBillingEvent((event) => {
       if (event.type !== "receipt") return;
@@ -414,24 +415,6 @@ export function App() {
       remediateUnavailableModel();
     });
   }, [remediateUnavailableModel]);
-
-  // Handle Stripe Checkout redirect-back: ?billing=success | ?billing=cancelled.
-  // Success → refetch status + show a brief notice; cancelled → silent. Either
-  // way, strip the param so a refresh doesn't re-trigger.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const billing = params.get("billing");
-    if (billing !== "success" && billing !== "cancelled") return;
-    if (billing === "success") {
-      void refreshBillingStatus();
-      setBillingNotice("Subscription updated. Thanks for upgrading!");
-    }
-    params.delete("billing");
-    const query = params.toString();
-    const next = window.location.pathname + (query ? `?${query}` : "") + window.location.hash;
-    window.history.replaceState(null, "", next);
-  }, [refreshBillingStatus]);
 
   // Auto-dismiss the success notice.
   useEffect(() => {
@@ -704,7 +687,6 @@ export function App() {
           onOpenChange={setPricingOpen}
           config={billingConfig}
           status={billingStatus}
-          billing={billingRef.current}
           onOpenRates={openRates}
         />
       )}

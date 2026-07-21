@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { CheckIcon, Loader2Icon, SparklesIcon, ShieldCheckIcon } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { CheckIcon, ShieldCheckIcon } from "lucide-react";
 
 import {
   Dialog,
@@ -13,23 +13,21 @@ import { cn } from "@/lib/utils";
 import {
   formatCreditBudgetWithWindow,
   formatPrice,
-  yearlyDiscountPercent,
-  type BillingClient,
   type BillingConfig,
   type BillingStatus,
   type BillingTier,
   type TierId,
 } from "@/lib/billingApi";
 
-type Interval = "monthly" | "yearly";
+/** Fallback account-app origin if `/config` somehow omits `accountAppUrl`. */
+const ACCOUNT_APP_URL_FALLBACK = "https://account.tinycloud.xyz";
 
-const TIER_ORDER: Record<TierId, number> = { free: 0, plus: 1, pro: 2 };
+const TIER_ORDER: Record<TierId, number> = { free: 0, pro: 1 };
 
 /** Short, provider-agnostic blurb per tier (no model/provider names here). */
 const TIER_TAGLINE: Record<TierId, string> = {
   free: "Get started with everyday chat.",
-  plus: "More capacity and access to premium models.",
-  pro: "Maximum capacity, premium and confidential TEE models.",
+  pro: "One plan, everything unlocked.",
 };
 
 interface PricingDialogProps {
@@ -37,7 +35,6 @@ interface PricingDialogProps {
   onOpenChange: (open: boolean) => void;
   config: BillingConfig;
   status: BillingStatus | null;
-  billing: BillingClient;
   /** Open the rates table dialog from the footer "How credits work" link. */
   onOpenRates: () => void;
 }
@@ -47,95 +44,45 @@ export function PricingDialog({
   onOpenChange,
   config,
   status,
-  billing,
   onOpenRates,
 }: PricingDialogProps) {
-  const [interval, setInterval] = useState<Interval>("yearly");
-  // Per-action busy state, keyed by tier id (or "portal") so only the clicked
-  // CTA shows a spinner.
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
   const tiers = useMemo(
     () => [...config.tiers].sort((a, b) => TIER_ORDER[a.id] - TIER_ORDER[b.id]),
     [config.tiers],
   );
 
-  const maxYearlyDiscount = useMemo(() => {
-    let best = 0;
-    for (const t of tiers) {
-      const d = yearlyDiscountPercent(t.priceMonthly, t.priceYearly);
-      if (d > best) best = d;
-    }
-    return best;
-  }, [tiers]);
-
   const currentTier = status?.tier ?? "free";
   const hasActiveSubscription = Boolean(status?.subscription);
 
-  const startCheckout = useCallback(
-    async (tier: "plus" | "pro") => {
-      setError(null);
-      setBusy(tier);
-      try {
-        const url = await billing.checkout(tier, interval);
-        window.location.href = url;
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not start checkout.");
-        setBusy(null);
-      }
-    },
-    [billing, interval],
-  );
-
-  const openPortal = useCallback(async () => {
-    setError(null);
-    setBusy("portal");
-    try {
-      const url = await billing.portal();
-      window.location.href = url;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open billing portal.");
-      setBusy(null);
-    }
-  }, [billing]);
+  // Checkout + subscription management both live in the account app now. Open it
+  // in a NEW TAB so the chat session stays intact; the Stripe success bounce
+  // returns to the account app, never back to TinyChat.
+  const openAccountBilling = useCallback(() => {
+    const base = config.accountAppUrl || ACCOUNT_APP_URL_FALLBACK;
+    window.open(`${base}/billing`, "_blank", "noopener,noreferrer");
+  }, [config.accountAppUrl]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl gap-5 rounded-xl">
+      <DialogContent className="max-w-2xl gap-5 rounded-xl">
         <DialogHeader className="items-center text-center">
           <DialogTitle className="text-xl">Choose your plan</DialogTitle>
           <DialogDescription>
-            Upgrade for more capacity and access to premium models.
+            Upgrade to the paid plan for more credits every week.
           </DialogDescription>
         </DialogHeader>
 
-        <IntervalToggle
-          interval={interval}
-          onChange={setInterval}
-          maxYearlyDiscount={maxYearlyDiscount}
-        />
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {tiers.map((tier) => (
             <TierCard
               key={tier.id}
               tier={tier}
-              interval={interval}
               isCurrent={tier.id === currentTier}
-              busy={busy}
               hasActiveSubscription={hasActiveSubscription}
-              onCheckout={startCheckout}
-              onManage={openPortal}
+              onManageBilling={openAccountBilling}
             />
           ))}
         </div>
-
-        {error && (
-          <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-center text-xs text-destructive">
-            {error}
-          </p>
-        )}
 
         <div className="text-center">
           <button
@@ -152,86 +99,30 @@ export function PricingDialog({
   );
 }
 
-function IntervalToggle({
-  interval,
-  onChange,
-  maxYearlyDiscount,
-}: {
-  interval: Interval;
-  onChange: (next: Interval) => void;
-  maxYearlyDiscount: number;
-}) {
-  return (
-    <div className="mx-auto inline-flex items-center rounded-lg border border-input bg-muted/50 p-0.5 text-xs font-medium">
-      {(["monthly", "yearly"] as const).map((value) => (
-        <button
-          key={value}
-          type="button"
-          onClick={() => onChange(value)}
-          className={cn(
-            "rounded-md px-3 py-1.5 capitalize transition-colors",
-            interval === value
-              ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-          aria-pressed={interval === value}
-        >
-          {value}
-          {value === "yearly" && maxYearlyDiscount > 0 && (
-            <span className="ml-1 text-[10px] font-semibold text-primary">
-              Save {maxYearlyDiscount}%
-            </span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function TierCard({
   tier,
-  interval,
   isCurrent,
-  busy,
   hasActiveSubscription,
-  onCheckout,
-  onManage,
+  onManageBilling,
 }: {
   tier: BillingTier;
-  interval: Interval;
   isCurrent: boolean;
-  busy: string | null;
   hasActiveSubscription: boolean;
-  onCheckout: (tier: "plus" | "pro") => void;
-  onManage: () => void;
+  onManageBilling: () => void;
 }) {
-  const isPaid = tier.id === "plus" || tier.id === "pro";
-  const isPro = tier.id === "pro";
-  const price = interval === "yearly" ? tier.priceYearly : tier.priceMonthly;
-  const discount = yearlyDiscountPercent(tier.priceMonthly, tier.priceYearly);
-  const anyBusy = busy !== null;
-  const thisBusy = busy === tier.id || (isCurrent && busy === "portal");
+  const isPaid = tier.id === "pro";
+  const price = tier.priceMonthly;
 
   return (
     <div
       className={cn(
         "relative flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground",
-        isPro ? "border-primary/60 shadow-sm" : "border-border",
+        isPaid ? "border-primary/60 shadow-sm" : "border-border",
       )}
     >
-      {isPro && (
-        <span className="absolute -top-2 right-3 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-          Best value
-        </span>
-      )}
-
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-1.5">
-          {isPro ? (
-            <ShieldCheckIcon className="size-4 text-primary" />
-          ) : tier.id === "plus" ? (
-            <SparklesIcon className="size-4 text-primary" />
-          ) : null}
+          {isPaid && <ShieldCheckIcon className="size-4 text-primary" />}
           <span className="text-sm font-semibold">{tier.name}</span>
           {isCurrent && (
             <span className="ml-auto rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -246,21 +137,13 @@ function TierCard({
         <span className="text-2xl font-semibold tracking-tight">
           {formatPrice(price)}
         </span>
-        {isPaid && price > 0 && (
-          <span className="text-xs text-muted-foreground">
-            /{interval === "yearly" ? "yr" : "mo"}
-          </span>
-        )}
-        {isPaid && interval === "yearly" && discount > 0 && (
-          <span className="ml-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-            Save {discount}%
-          </span>
-        )}
+        {isPaid && price > 0 && <span className="text-xs text-muted-foreground">/mo</span>}
       </div>
 
       <ul className="flex flex-col gap-1.5 text-xs">
-        <Feature>{formatCreditBudgetWithWindow(tier.creditBudget, tier.budgetWindow)}</Feature>
-        <Feature>{modelAccessSummary(tier.id)}</Feature>
+        {tierFeatures(tier).map((feature) => (
+          <Feature key={feature}>{feature}</Feature>
+        ))}
       </ul>
 
       <div className="mt-auto">
@@ -268,36 +151,13 @@ function TierCard({
           <Button variant="outline" size="sm" className="w-full" disabled>
             {isCurrent ? "Your plan" : "Free forever"}
           </Button>
-        ) : isCurrent && hasActiveSubscription ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full"
-            disabled={anyBusy}
-            onClick={onManage}
-            aria-label={busy === "portal" ? "Processing…" : undefined}
-          >
-            {busy === "portal" ? (
-              <Loader2Icon aria-hidden="true" className="size-3.5 animate-spin" />
-            ) : (
-              "Manage subscription"
-            )}
+        ) : hasActiveSubscription ? (
+          <Button variant="outline" size="sm" className="w-full" onClick={onManageBilling}>
+            Manage subscription
           </Button>
         ) : (
-          <Button
-            size="sm"
-            className="w-full"
-            disabled={anyBusy || isCurrent}
-            onClick={() => onCheckout(tier.id as "plus" | "pro")}
-            aria-label={thisBusy ? "Processing…" : undefined}
-          >
-            {thisBusy ? (
-              <Loader2Icon aria-hidden="true" className="size-3.5 animate-spin" />
-            ) : isCurrent ? (
-              "Current plan"
-            ) : (
-              `Upgrade to ${tier.name}`
-            )}
+          <Button size="sm" className="w-full" onClick={onManageBilling}>
+            Upgrade to {tier.name}
           </Button>
         )}
       </div>
@@ -314,14 +174,19 @@ function Feature({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Provider-agnostic, tier-level model access summary. */
-function modelAccessSummary(tier: TierId): string {
-  switch (tier) {
-    case "free":
-      return "Basic models";
-    case "plus":
-      return "Basic and premium models";
-    case "pro":
-      return "All models, including confidential TEE models";
+/**
+ * Feature bullets per tier. Credits/window are derived from the live config so
+ * they never drift from the backend; the paid plan spells out the unified
+ * product (all models incl. confidential TEE + storage).
+ */
+function tierFeatures(tier: BillingTier): string[] {
+  const credits = formatCreditBudgetWithWindow(tier.creditBudget, tier.budgetWindow);
+  if (tier.id === "pro") {
+    return [
+      credits,
+      "All models, including confidential TEE models",
+      "1 GiB storage",
+    ];
   }
+  return [credits, "All models, including confidential TEE models"];
 }
