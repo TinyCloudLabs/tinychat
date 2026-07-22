@@ -42,6 +42,11 @@ import {
 } from "./lib/billingApi";
 import { onBillingEvent, onModelSelectionError, onPaywallError } from "./lib/chatApi";
 import { isPaywallActionable } from "./lib/paywall";
+import {
+  fetchConfigWithRetry,
+  shouldRefetch,
+  type RefetchTrigger,
+} from "./lib/billingConfigPolicy";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
@@ -140,6 +145,13 @@ export function App() {
   );
   const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null);
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
+  // A1 — refs mirror the config-fetch policy inputs so the trigger callbacks
+  // (settings entry / 402 / focus) read the live state without stale closures.
+  const billingConfigRef = useRef<BillingConfig | null>(null);
+  const initialFetchFailedRef = useRef(false);
+  // Guards against overlapping config requests (initial retry + a trigger, or
+  // two triggers) — bounded + only-when-null already, this makes it storm-proof.
+  const configFetchInFlightRef = useRef(false);
   const [pricingOpen, setPricingOpen] = useState(false);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
@@ -328,22 +340,76 @@ export function App() {
     })();
   }, []);
 
-  // Fetch the billing config once on load (public, no auth). Cached for the
-  // session. The result decides whether ANY paywall UI renders.
+  // A1 — keep the policy-input refs in sync with render state.
+  useEffect(() => {
+    billingConfigRef.current = billingConfig;
+  }, [billingConfig]);
+
+  // Re-request the config for a trigger, but ONLY while it is still null
+  // (shouldRefetch). A held config is never re-fetched — no polling, no focus
+  // storms. Each trigger refetch is a single attempt (the trigger IS the
+  // retry); the initial mount fetch does the bounded backoff. Storm-guarded so
+  // overlapping triggers can't fan out concurrent requests.
+  const refetchConfigOnTrigger = useCallback((trigger: RefetchTrigger) => {
+    if (
+      !shouldRefetch(
+        {
+          config: billingConfigRef.current,
+          initialFetchFailed: initialFetchFailedRef.current,
+        },
+        trigger,
+      )
+    ) {
+      return;
+    }
+    if (configFetchInFlightRef.current) return;
+    configFetchInFlightRef.current = true;
+    void (async () => {
+      try {
+        const cfg = await fetchConfigWithRetry(
+          () => billingRef.current.getConfig(),
+          { maxAttempts: 1 },
+        );
+        // Only adopt it if we still hold nothing (avoid clobbering a config that
+        // landed meanwhile).
+        if (cfg && billingConfigRef.current === null) setBillingConfig(cfg);
+      } finally {
+        configFetchInFlightRef.current = false;
+      }
+    })();
+  }, []);
+
+  // Fetch the billing config on load (public, no auth) with a bounded, backed-off
+  // retry so a single transient failure can't darken monetization for the whole
+  // session. Cached on success. If every attempt still fails we record that and
+  // keep the current "treat the paywall as off" behavior — the trigger refetches
+  // (settings entry / 402 / focus) below can still recover it later.
   useEffect(() => {
     let cancelled = false;
+    configFetchInFlightRef.current = true;
     (async () => {
-      try {
-        const cfg = await billingRef.current.getConfig();
-        if (!cancelled) setBillingConfig(cfg);
-      } catch {
-        // No config → treat the paywall as off (no UI).
+      const cfg = await fetchConfigWithRetry(() => billingRef.current.getConfig());
+      configFetchInFlightRef.current = false;
+      if (cancelled) return;
+      if (cfg) {
+        setBillingConfig(cfg);
+      } else {
+        initialFetchFailedRef.current = true;
       }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // A1 trigger (c): window regains focus after a failed initial fetch. Gated by
+  // shouldRefetch to null + initialFetchFailed, so a held config is never
+  // re-fetched here. Event-driven (no interval) — nothing is left polling.
+  useEffect(() => {
+    const onFocus = () => refetchConfigOnTrigger("window-focus");
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refetchConfigOnTrigger]);
 
   // Fetch billing status after sign-in (only when the paywall is on).
   useEffect(() => {
@@ -374,6 +440,10 @@ export function App() {
   // backend is enforcing the paywall.
   useEffect(() => {
     return onPaywallError((payload) => {
+      // A1 trigger (b): a 402 means the backend is enforcing the paywall — if a
+      // transient failure left us config-null, recover it now so the pricing
+      // dialog can actually mount (no-op when a config is already held).
+      refetchConfigOnTrigger("paywall-402");
       // ST3 — branch on the error so we only open the pricing dialog when an
       // upgrade can actually resolve the 402. `credit_budget_exceeded` and a
       // `model_not_allowed` carrying a higher `requiredTier` are upgrade-fixable.
@@ -388,7 +458,7 @@ export function App() {
       // verifiable model and surface a brief notice instead of an un-fixable dialog.
       remediateUnavailableModel();
     });
-  }, [refreshBillingStatus, remediateUnavailableModel]);
+  }, [refreshBillingStatus, remediateUnavailableModel, refetchConfigOnTrigger]);
 
   useEffect(() => {
     return onModelSelectionError(() => {
@@ -400,6 +470,8 @@ export function App() {
   // agentChatApi.ts emits these because chatApi.ts's emitters are module-private.
   useEffect(() => {
     return onAgentPaywallError((payload) => {
+      // A1 trigger (b): recover a config-null session on a 402 (see above).
+      refetchConfigOnTrigger("paywall-402");
       const actionable = isPaywallActionable(payload);
       if (actionable) {
         void refreshBillingStatus();
@@ -408,7 +480,7 @@ export function App() {
       }
       remediateUnavailableModel();
     });
-  }, [refreshBillingStatus, remediateUnavailableModel]);
+  }, [refreshBillingStatus, remediateUnavailableModel, refetchConfigOnTrigger]);
 
   useEffect(() => {
     return onAgentModelSelectionError(() => {
@@ -545,6 +617,12 @@ export function App() {
     }
   }, [isReady, showSettings, navigate]);
 
+  // A1 trigger (a): entering the settings page recovers a config-null session
+  // (the Plan & Usage card lives there). No-op when a config is already held.
+  useEffect(() => {
+    if (showSettings) refetchConfigOnTrigger("settings-entry");
+  }, [showSettings, refetchConfigOnTrigger]);
+
   // Prefer history-back so the previous chat scroll/composer focus restores
   // naturally; fall back to /chat when there's no in-app history (deep link or
   // refresh on /chat/settings). react-router v7 stamps `idx` on history state.
@@ -592,13 +670,17 @@ export function App() {
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
           {isReady && paywallEnabled && (
-            <div className="hidden sm:block">
-              <UsageIndicator
-                status={billingStatus}
-                onClick={openPricing}
-                onOpenRates={openRates}
-              />
-            </div>
+            // A2 — render the chip on mobile too. The chip already degrades to a
+            // compact tier label under `sm` (the usage numbers + bar are
+            // `hidden sm:*` inside UsageIndicator), so this surfaces the
+            // tier/usage affordance on narrow viewports without a redesign and
+            // without crowding the header (the attestation pill stays
+            // `hidden sm:inline-flex`).
+            <UsageIndicator
+              status={billingStatus}
+              onClick={openPricing}
+              onOpenRates={openRates}
+            />
           )}
           <span className="hidden sm:inline-flex">
             <ThemeToggle />
