@@ -34,13 +34,20 @@ import { COMPACTION_SUMMARY_MAX_TOKENS, DEFAULT_CONTEXT_TOKENS } from "./chat/co
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import {
+  aggregateTurnCredits,
   createBillingClient,
   formatCredits,
+  getCachedRates,
   type BillingClient,
   type BillingConfig,
   type BillingStatus,
 } from "./lib/billingApi";
-import { onBillingEvent, onModelSelectionError, onPaywallError } from "./lib/chatApi";
+import {
+  emitReceipt,
+  onBillingEvent,
+  onModelSelectionError,
+  onPaywallError,
+} from "./lib/chatApi";
 import { isPaywallActionable } from "./lib/paywall";
 import {
   fetchConfigWithRetry,
@@ -957,14 +964,44 @@ function ChatWorkspace(props: {
       // Plain single-shot summarization (§C.9): bypasses the runtime exchange
       // ring, so it never writes thread storage / memory nor triggers extraction
       // (§F.3). max_tokens is hard-capped by the summary budget.
-      summarize: ({ model, messages }: { model: string; messages: ChatMessage[] }) =>
-        completeChat({
+      summarize: ({ model, messages }: { model: string; messages: ChatMessage[] }) => {
+        // Compaction is a real billed background call with NO pending visible
+        // reply, so its credits bump the SESSION METER ONLY — never a badge
+        // (edge case a). Fold once via aggregateTurnCredits so in-app usage
+        // tracks the ledger; a 0-token/aborted summarize contributes 0.
+        let folded = false;
+        return completeChat({
           backendUrl: BACKEND_URL,
           sessionStore: props.sessionStore,
           model,
           messages,
           maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
-        }),
+          onUsage: (usage) => {
+            if (folded) return;
+            folded = true;
+            void getCachedRates(
+              createBillingClient(BACKEND_URL, props.sessionStore),
+            )
+              .then((rates) => {
+                const m = rates.models.find((r) => r.id === model);
+                if (!m) return;
+                const { backgroundCredits } = aggregateTurnCredits(0, [
+                  {
+                    rates: m,
+                    promptTokens: usage.promptTokens,
+                    completionTokens: usage.completionTokens,
+                  },
+                ]);
+                if (backgroundCredits > 0) {
+                  emitReceipt(model, backgroundCredits, model);
+                }
+              })
+              .catch(() => {
+                // receipts are UI sugar; a rates failure must never surface
+              });
+          },
+        });
+      },
     }),
     [
       props.tcw,

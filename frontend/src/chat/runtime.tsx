@@ -17,6 +17,7 @@ import {
   completeChat,
   emitReceipt,
   type ChatMessage,
+  type UsageInfo,
 } from "../lib/chatApi";
 import { createChatModelAdapter } from "./chatModelAdapter";
 import type { CompactionCheckpoint } from "./compaction";
@@ -43,7 +44,10 @@ import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { renderMemoryBlock, runExtraction } from "../lib/memory";
 import { pickExtractionModel as chooseExtractionModel } from "../lib/extractionModel";
 import {
+  aggregateTurnCredits,
   createBillingClient,
+  getCachedRates as sharedGetCachedRates,
+  getReceipt,
   setReceipt,
   splitCredits,
   type RatesResponse,
@@ -163,17 +167,73 @@ export interface ChatRuntimeDeps {
 // They are keyed PER THREAD (ST4) so two threads' interleaved stream finishes
 // can never cross-contaminate each other's message metadata.
 
-let cachedRatesPromise: Promise<RatesResponse> | null = null;
 function getCachedRates(deps: ChatRuntimeDeps): Promise<RatesResponse> {
-  if (!cachedRatesPromise) {
-    const billing = createBillingClient(deps.backendUrl, deps.sessionStore);
-    cachedRatesPromise = billing.getRates().catch((err) => {
-      // Allow a retry on the next stream — receipts are UI sugar, never block chat.
-      cachedRatesPromise = null;
-      throw err;
+  // Delegate to the shared session cache in billingApi so the visible receipt
+  // path and the background-credit fold read the exact same catalog. The client
+  // is cheap to build; the cache dedupes the actual fetch.
+  return sharedGetCachedRates(
+    createBillingClient(deps.backendUrl, deps.sessionStore),
+  );
+}
+
+/**
+ * Fold a background billed call's usage (memory extraction) into the
+ * just-finished turn: bump the meter by the background credits and, when a
+ * visible reply badge exists, fold those credits into its output-side total so
+ * the badge shows the FULL turn cost (visible + upkeep). Edge cases per plan:
+ *
+ *  - 0-token / aborted usage ⇒ no credits ⇒ no-op (creditsFor returns 0).
+ *  - No pending visible reply (no badge for the assistant id) ⇒ meter bump
+ *    only, no badge mutation.
+ *  - Single fold per background call — the caller passes a one-shot guard.
+ *
+ * Never throws into the stream: rates/lookup failures silently skip (UI sugar).
+ */
+function foldBackgroundCredits(
+  deps: ChatRuntimeDeps,
+  modelId: string,
+  usage: UsageInfo,
+  turn: { assistantMessageId?: string; userMessageId?: string },
+): void {
+  // 0-token usage bills nothing (creditsFor → 0); ignore before touching rates.
+  if (usage.promptTokens <= 0 && usage.completionTokens <= 0) return;
+  void getCachedRates(deps)
+    .then((rates) => {
+      const m = rates.models.find((r) => r.id === modelId);
+      if (!m) return; // unknown model in catalog — skip (never the source of truth)
+      // Visible reply total = the two footers already set by computeReceipt.
+      const inputEntry = turn.userMessageId ? getReceipt(turn.userMessageId) : undefined;
+      const outputEntry = turn.assistantMessageId
+        ? getReceipt(turn.assistantMessageId)
+        : undefined;
+      const visibleTotal = (inputEntry?.credits ?? 0) + (outputEntry?.credits ?? 0);
+      const { backgroundCredits } = aggregateTurnCredits(visibleTotal, [
+        {
+          rates: m,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+        },
+      ]);
+      if (backgroundCredits <= 0) return;
+      // (4) Meter: emit a receipt event carrying ONLY the background credits so
+      // App.tsx's optimistic usage bump tracks the ledger (the visible reply
+      // already emitted its own total). App ignores the messageId.
+      emitReceipt(turn.assistantMessageId ?? modelId, backgroundCredits, modelId);
+      // (3) Badge: fold the background credits into the reply's output-side
+      // total so the footer shows the full turn cost. Skip when there's no
+      // pending visible reply (edge case a) — meter bump above already landed.
+      if (turn.assistantMessageId && outputEntry) {
+        setReceipt(
+          turn.assistantMessageId,
+          outputEntry.credits + backgroundCredits,
+          "output",
+          true, // includesUpkeep — labels the extra neutrally in the footer
+        );
+      }
+    })
+    .catch(() => {
+      // receipts are UI sugar; a rates failure must never surface to chat
     });
-  }
-  return cachedRatesPromise;
 }
 
 // ── ChatModelAdapter (transport to the backend SSE proxy) ────────────
@@ -272,8 +332,15 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
 function createHistoryAdapter(
   tcw: TinyCloudWeb,
   threadId: string,
-  /** Triggered fire-and-forget after every assistant-turn append. */
-  onAssistantTurn: (exchange: ChatMessage[]) => void,
+  /**
+   * Triggered fire-and-forget after every assistant-turn append. Carries the
+   * turn's message ids so a background call's billed usage can be folded back
+   * onto the just-finished reply's badge (see `foldBackgroundCredits`).
+   */
+  onAssistantTurn: (
+    exchange: ChatMessage[],
+    turn: { assistantMessageId?: string; userMessageId?: string },
+  ) => void,
   /**
    * Computes the input/output split receipt for an assistant turn, applies it
    * to the in-session store (setReceipt both sides + emitReceipt once), and
@@ -380,9 +447,13 @@ function createHistoryAdapter(
       }
 
       // Fire-and-forget extraction after an assistant turn — never await it
-      // into the append path or the next user message stalls behind it.
+      // into the append path or the next user message stalls behind it. Pass
+      // the turn ids so extraction's billed usage folds onto THIS reply's badge.
       if (role === "assistant") {
-        onAssistantTurn([...lastExchange]);
+        onAssistantTurn([...lastExchange], {
+          assistantMessageId: typeof id === "string" ? id : undefined,
+          userMessageId: lastUserMessageId,
+        });
       }
     },
   };
@@ -408,33 +479,51 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
     setPrefetchFetcher((id) => getThread(tcw, id));
   }
 
-  const onAssistantTurn = useCallback((exchange: ChatMessage[]) => {
-    const d = depsRef.current;
-    void runExtraction(exchange, {
-      complete: (messages, opts) =>
-        completeChat({
-          backendUrl: d.backendUrl,
-          sessionStore: d.sessionStore,
-          model: pickExtractionModel(d),
-          messages,
-          maxTokens: MEMORY_EXTRACTION_MAX_TOKENS,
-          abortSignal: opts?.abortSignal,
-        }),
-      getDoc: async () => {
-        // Prefer the live ref (already reconciled by getMemory on mount) so
-        // we don't pay a SQL round-trip per assistant turn.
-        const ref = d.memoryRef.current;
-        if (ref !== null) return ref;
-        return getMemory(d.tcw);
-      },
-      setDoc: async (next) => {
-        d.memoryRef.current = next;
-        d.onMemoryUpdated?.(next);
-        await setMemory(d.tcw, next);
-      },
-      writeGen: memoryWriteGen,
-    });
-  }, []);
+  const onAssistantTurn = useCallback(
+    (
+      exchange: ChatMessage[],
+      turn: { assistantMessageId?: string; userMessageId?: string },
+    ) => {
+      const d = depsRef.current;
+      // Resolve the extraction model ONCE so the usage fold re-derives credits
+      // against the same model id the POST billed (it may differ from the
+      // visible reply's model — pickExtractionModel falls through the catalog).
+      const extractionModel = pickExtractionModel(d);
+      // One fold per background call — a double-fire guard so the meter/badge
+      // can never count this extraction twice (edge case c).
+      let folded = false;
+      void runExtraction(exchange, {
+        complete: (messages, opts) =>
+          completeChat({
+            backendUrl: d.backendUrl,
+            sessionStore: d.sessionStore,
+            model: extractionModel,
+            messages,
+            maxTokens: MEMORY_EXTRACTION_MAX_TOKENS,
+            abortSignal: opts?.abortSignal,
+            onUsage: (usage) => {
+              if (folded) return;
+              folded = true;
+              foldBackgroundCredits(d, extractionModel, usage, turn);
+            },
+          }),
+        getDoc: async () => {
+          // Prefer the live ref (already reconciled by getMemory on mount) so
+          // we don't pay a SQL round-trip per assistant turn.
+          const ref = d.memoryRef.current;
+          if (ref !== null) return ref;
+          return getMemory(d.tcw);
+        },
+        setDoc: async (next) => {
+          d.memoryRef.current = next;
+          d.onMemoryUpdated?.(next);
+          await setMemory(d.tcw, next);
+        },
+        writeGen: memoryWriteGen,
+      });
+    },
+    [],
+  );
 
   const computeReceipt = useCallback(
     async (
