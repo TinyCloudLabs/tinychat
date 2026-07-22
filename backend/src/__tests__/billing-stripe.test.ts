@@ -59,6 +59,50 @@ function mockStripe(opts: {
   } as unknown as Stripe;
 }
 
+/**
+ * Build a mock Stripe whose `customers.search` returns a customer only for the
+ * query it is keyed to (`did` or `address`), recording each query it sees. Lets
+ * us assert the did-first / address-fallback ordering in findCustomerByAddress.
+ */
+function mockByQuery(
+  seen: string[],
+  hits: {
+    did?: { customer: { id: string }; priceId: string };
+    address?: { customer: { id: string }; priceId: string };
+  },
+): Stripe {
+  return {
+    customers: {
+      search: async ({ query }: { query: string }) => {
+        seen.push(query);
+        const hit = query.startsWith("metadata['did']") ? hits.did : hits.address;
+        return { data: hit ? [hit.customer] : [] };
+      },
+    },
+    subscriptions: {
+      list: async ({ customer }: { customer: string }) => {
+        const hit =
+          hits.did?.customer.id === customer
+            ? hits.did
+            : hits.address?.customer.id === customer
+              ? hits.address
+              : null;
+        if (!hit) return { data: [] };
+        return {
+          data: [
+            {
+              status: "active",
+              current_period_end: 1_800_000_000,
+              billing_cycle_anchor: 1_700_000_000,
+              items: { data: [{ price: { id: hit.priceId }, current_period_end: 1_800_000_000 }] },
+            },
+          ],
+        };
+      },
+    },
+  } as unknown as Stripe;
+}
+
 beforeEach(() => {
   process.env.PAYWALL_ENABLED = "true";
   process.env.STRIPE_SECRET_KEY = "sk_test_x";
@@ -230,6 +274,46 @@ describe("resolveTier (stateless, mocked Stripe)", () => {
     );
     const res = await resolveTier(ADDR);
     expect(res.subscription?.anchor).toBe(new Date(1_500_000_000 * 1000).toISOString());
+  });
+
+  test("resolves via metadata.did query (post-cutover customers)", async () => {
+    const seen: string[] = [];
+    _setStripeClient(
+      mockByQuery(seen, {
+        did: { customer: { id: "cus_did" }, priceId: "price_plus_m" },
+      }),
+    );
+    const res = await resolveTier(ADDR);
+    expect(res.tier).toBe("plus");
+    expect(res.customerId).toBe("cus_did");
+    // Only the DID query runs — it hits, so the legacy query is never reached.
+    expect(seen).toEqual([`metadata['did']:'did:pkh:eip155:1:${ADDR.toLowerCase()}'`]);
+  });
+
+  test("falls back to legacy metadata.address query when DID misses", async () => {
+    const seen: string[] = [];
+    _setStripeClient(
+      mockByQuery(seen, {
+        address: { customer: { id: "cus_legacy" }, priceId: "price_pro_m" },
+      }),
+    );
+    const res = await resolveTier(ADDR);
+    expect(res.tier).toBe("pro");
+    expect(res.customerId).toBe("cus_legacy");
+    // DID query first (miss), then the legacy address query (hit).
+    expect(seen).toEqual([
+      `metadata['did']:'did:pkh:eip155:1:${ADDR.toLowerCase()}'`,
+      `metadata['address']:'${ADDR.toLowerCase()}'`,
+    ]);
+  });
+
+  test("neither DID nor address query hits => free", async () => {
+    const seen: string[] = [];
+    _setStripeClient(mockByQuery(seen, {}));
+    const res = await resolveTier(ADDR);
+    expect(res.tier).toBe("free");
+    expect(res.customerId).toBeNull();
+    expect(seen).toHaveLength(2);
   });
 
   test("cache round-trips anchor on second call without re-search", async () => {

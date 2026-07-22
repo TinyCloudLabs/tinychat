@@ -140,17 +140,31 @@ async function fetchTierFromStripe(address: string): Promise<TierResolution> {
   return { tier: "free", customerId: customer.id, subscription: null };
 }
 
-/** Find a customer by metadata.address, falling back to a list scan. */
+/**
+ * Find a customer by metadata, preferring the DID key.
+ *
+ * Post-cutover the billing worker creates every customer and writes
+ * `metadata.did = "did:pkh:eip155:1:<lowercase address>"` with no `address`
+ * key, so we search that first. The legacy `metadata.address` query remains as
+ * a fallback for customers created by the pre-cutover checkout path.
+ * `address` arrives already lowercased from resolveTier/ensureCustomer.
+ */
 async function findCustomerByAddress(
   stripe: Stripe,
   address: string,
 ): Promise<Stripe.Customer | null> {
   // Stripe customer search (requires search to be enabled on the account).
-  const result = await stripe.customers.search({
+  const byDid = await stripe.customers.search({
+    query: `metadata['did']:'did:pkh:eip155:1:${address}'`,
+    limit: 1,
+  });
+  if (byDid.data[0]) return byDid.data[0];
+
+  const byAddress = await stripe.customers.search({
     query: `metadata['address']:'${address}'`,
     limit: 1,
   });
-  return result.data[0] ?? null;
+  return byAddress.data[0] ?? null;
 }
 
 function periodEndIso(sub: Stripe.Subscription): string | null {
