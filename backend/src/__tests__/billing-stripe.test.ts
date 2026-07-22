@@ -3,6 +3,8 @@ import type Stripe from "stripe";
 import {
   _resetCache,
   _setStripeClient,
+  addressForCustomer,
+  addressFromMetadata,
   invalidateAddress,
   paywallEnabled,
   resolveTier,
@@ -338,5 +340,97 @@ describe("resolveTier (stateless, mocked Stripe)", () => {
     expect(searches).toBe(1);
     expect(second.subscription?.anchor).toBe(new Date(1_710_000_000 * 1000).toISOString());
     expect(second.subscription?.anchor).toBe(first.subscription?.anchor);
+  });
+});
+
+/** Mock Stripe exposing only `customers.retrieve`, as addressForCustomer uses. */
+function mockRetrieve(customer: {
+  deleted?: boolean;
+  metadata?: Record<string, string> | null;
+}): Stripe {
+  return {
+    customers: {
+      retrieve: async () => ({ deleted: false, ...customer }),
+    },
+  } as unknown as Stripe;
+}
+
+describe("addressFromMetadata (pure, did-first)", () => {
+  test("parses the address out of a chain-1 DID (lowercased)", () => {
+    expect(
+      addressFromMetadata({ did: "did:pkh:eip155:1:0xABC0000000000000000000000000000000000009" }),
+    ).toBe("0xabc0000000000000000000000000000000000009");
+  });
+
+  test("falls back to legacy metadata.address when no DID (lowercased)", () => {
+    expect(
+      addressFromMetadata({ address: "0xABC0000000000000000000000000000000000009" }),
+    ).toBe("0xabc0000000000000000000000000000000000009");
+  });
+
+  test("DID wins over a legacy address key", () => {
+    expect(
+      addressFromMetadata({
+        did: "did:pkh:eip155:1:0xAAA0000000000000000000000000000000000001",
+        address: "0xBBB0000000000000000000000000000000000002",
+      }),
+    ).toBe("0xaaa0000000000000000000000000000000000001");
+  });
+
+  test("multi-chain DID is ignored, falling through to the address key", () => {
+    expect(
+      addressFromMetadata({
+        did: "did:pkh:eip155:137:0xCCC0000000000000000000000000000000000003",
+        address: "0xDDD0000000000000000000000000000000000004",
+      }),
+    ).toBe("0xddd0000000000000000000000000000000000004");
+  });
+
+  test("multi-chain DID with no address key => null", () => {
+    expect(
+      addressFromMetadata({ did: "did:pkh:eip155:137:0xCCC0000000000000000000000000000000000003" }),
+    ).toBeNull();
+  });
+
+  test("empty / null / undefined metadata => null", () => {
+    expect(addressFromMetadata({})).toBeNull();
+    expect(addressFromMetadata(null)).toBeNull();
+    expect(addressFromMetadata(undefined)).toBeNull();
+  });
+});
+
+describe("addressForCustomer (customer → address, did-first)", () => {
+  test("did-only customer (no address key) => parsed lowercase address", async () => {
+    const addr = "0xabcdef0000000000000000000000000000000001";
+    _setStripeClient(mockRetrieve({ metadata: { did: `did:pkh:eip155:1:${addr}` } }));
+    expect(await addressForCustomer("cus_x")).toBe(addr);
+  });
+
+  test("uppercase address inside the DID is returned lowercased", async () => {
+    const upper = "0xABCDEF0000000000000000000000000000000001";
+    _setStripeClient(mockRetrieve({ metadata: { did: `did:pkh:eip155:1:${upper}` } }));
+    expect(await addressForCustomer("cus_x")).toBe(upper.toLowerCase());
+  });
+
+  test("no did + legacy metadata.address => that address (lowercased)", async () => {
+    _setStripeClient(
+      mockRetrieve({ metadata: { address: "0xABC0000000000000000000000000000000000009" } }),
+    );
+    expect(await addressForCustomer("cus_x")).toBe("0xabc0000000000000000000000000000000000009");
+  });
+
+  test("neither did nor address => null", async () => {
+    _setStripeClient(mockRetrieve({ metadata: {} }));
+    expect(await addressForCustomer("cus_x")).toBeNull();
+  });
+
+  test("deleted customer => null", async () => {
+    _setStripeClient(mockRetrieve({ deleted: true }));
+    expect(await addressForCustomer("cus_x")).toBeNull();
+  });
+
+  test("returns null when Stripe is not configured (no retrieve call)", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    expect(await addressForCustomer("cus_x")).toBeNull();
   });
 });

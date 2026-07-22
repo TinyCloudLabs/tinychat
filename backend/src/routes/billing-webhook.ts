@@ -1,5 +1,10 @@
 import type { Request, RequestHandler, Response } from "express";
-import { addressForCustomer, constructWebhookEvent, invalidateAddress } from "../billing/stripe.js";
+import {
+  addressForCustomer,
+  addressFromMetadata,
+  constructWebhookEvent,
+  invalidateAddress,
+} from "../billing/stripe.js";
 
 /**
  * Stripe webhook handler.
@@ -43,7 +48,7 @@ export function createBillingWebhookHandler(): RequestHandler {
       try {
         const subscription = event.data.object as { customer?: string; metadata?: Record<string, string> };
         const address =
-          subscription.metadata?.address?.toLowerCase() ??
+          addressFromMetadata(subscription.metadata) ??
           (typeof subscription.customer === "string"
             ? await addressForCustomer(subscription.customer)
             : null);
