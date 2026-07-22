@@ -670,13 +670,17 @@ export function App() {
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
           {isReady && paywallEnabled && (
-            <div className="hidden sm:block">
-              <UsageIndicator
-                status={billingStatus}
-                onClick={openPricing}
-                onOpenRates={openRates}
-              />
-            </div>
+            // A2 — render the chip on mobile too. The chip already degrades to a
+            // compact tier label under `sm` (the usage numbers + bar are
+            // `hidden sm:*` inside UsageIndicator), so this surfaces the
+            // tier/usage affordance on narrow viewports without a redesign and
+            // without crowding the header (the attestation pill stays
+            // `hidden sm:inline-flex`).
+            <UsageIndicator
+              status={billingStatus}
+              onClick={openPricing}
+              onOpenRates={openRates}
+            />
           )}
           <span className="hidden sm:inline-flex">
             <ThemeToggle />
