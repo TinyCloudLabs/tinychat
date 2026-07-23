@@ -186,14 +186,37 @@ function billingAnchorIso(sub: Stripe.Subscription): string | null {
   return typeof epoch === "number" ? new Date(epoch * 1000).toISOString() : null;
 }
 
+/**
+ * Resolve a wallet address from a Stripe metadata bag, preferring the DID key.
+ *
+ * Post-cutover the billing worker writes `metadata.did =
+ * "did:pkh:eip155:1:<lowercase address>"` with no `address` key, so we read
+ * that first and parse out the address suffix. The legacy `metadata.address`
+ * key remains as a fallback for objects created by the pre-cutover checkout
+ * path. `eip155:1` is hardcoded parity with findCustomerByAddress — multi-chain
+ * DIDs (any other chain id) fall through to the legacy fallback → null. Returns
+ * the address lowercased, or null.
+ */
+export function addressFromMetadata(
+  metadata: Record<string, string> | null | undefined,
+): string | null {
+  const DID_PREFIX = "did:pkh:eip155:1:";
+  const did = metadata?.did;
+  if (typeof did === "string" && did.startsWith(DID_PREFIX)) {
+    const address = did.slice(DID_PREFIX.length);
+    if (address) return address.toLowerCase();
+  }
+  const address = metadata?.address;
+  return typeof address === "string" ? address.toLowerCase() : null;
+}
+
 /** Resolve an address from a Stripe customer id (used by the webhook). */
 export async function addressForCustomer(customerId: string): Promise<string | null> {
   if (!stripeConfigured()) return null;
   const stripe = getStripe();
   const customer = await stripe.customers.retrieve(customerId);
   if (customer.deleted) return null;
-  const address = customer.metadata?.address;
-  return typeof address === "string" ? address.toLowerCase() : null;
+  return addressFromMetadata(customer.metadata);
 }
 
 // ── Checkout & portal ─────────────────────────────────────────────────────────
