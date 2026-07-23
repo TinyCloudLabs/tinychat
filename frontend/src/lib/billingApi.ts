@@ -94,6 +94,28 @@ export function createBillingClient(
   };
 }
 
+// ── Shared per-session rates cache ──────────────────────────────────
+//
+// The rates catalog is public + immutable for a session, and BOTH the visible
+// receipt path (runtime.tsx computeReceipt) and the background-credit fold
+// (extraction in runtime.tsx, compaction in App.tsx) re-derive credits from it.
+// Memoize a single fetch so every fold reads the same catalog the visible path
+// does. On failure we reset so the next caller retries — receipts are UI sugar,
+// never a chat blocker.
+
+let cachedRatesPromise: Promise<RatesResponse> | null = null;
+
+/** Fetch the rates catalog once per session (shared by every credit re-derivation). */
+export function getCachedRates(client: BillingClient): Promise<RatesResponse> {
+  if (!cachedRatesPromise) {
+    cachedRatesPromise = client.getRates().catch((err) => {
+      cachedRatesPromise = null;
+      throw err;
+    });
+  }
+  return cachedRatesPromise;
+}
+
 // ── Formatting helpers (shared by the pricing dialog + usage indicator) ──
 
 /** Human-format a raw credit budget, e.g. 50_000 → "50K credits". */
@@ -194,6 +216,67 @@ export function splitCredits(
   return { total, inputCredits, outputCredits };
 }
 
+// ── Turn-total aggregation (visible reply + background billed calls) ──
+//
+// A single assistant turn can bill MORE than the visible completion: memory
+// extraction fires every turn and compaction fires occasionally, each a real
+// billed `/api/chat` call whose credits the ledger charges but which the
+// visible badge never covered — so the meter jumped by more than the badge
+// showed. `aggregateTurnCredits` is the ONE fold that reconciles them: given
+// the visible reply's charged total and the turn's background usages (each with
+// its own model's rates — extraction may run a different model than the reply),
+// it re-derives each background call's credits with the same `creditsFor`
+// formula the visible path uses and returns the turn total. The invariant the
+// callers rely on: `visibleCredits + Σ backgroundComponents === total`, so the
+// badge (visible + background) and the meter bump (background) always agree.
+//
+// A 0-token usage contributes 0 (creditsFor returns 0 for no tokens), so an
+// aborted/empty background call is folded in as a no-op automatically.
+
+/** One background billed call's usage + the rates of the model that served it. */
+export interface BackgroundUsage {
+  rates: Pick<ModelRates, "creditsPerKInput" | "creditsPerKOutput">;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/** Result of folding a turn's background usages into its visible reply total. */
+export interface TurnAggregation {
+  /** The full turn cost: visible reply + every background call. */
+  total: number;
+  /** The visible reply's charged credits (unchanged, echoed for callers). */
+  visibleCredits: number;
+  /** Sum of every background call's credits — the meter bump / badge delta. */
+  backgroundCredits: number;
+  /** Per-background-call credits, in input order. Their sum is backgroundCredits. */
+  backgroundComponents: number[];
+}
+
+/**
+ * Pure fold: the turn total from the visible reply's charged credits plus the
+ * turn's background billed calls. `visibleCredits + Σ backgroundComponents ===
+ * total` always holds (integer credits, no rounding leak — each component is a
+ * whole `creditsFor`). Pass `visibleCredits = 0` for a background call with no
+ * pending visible reply (e.g. compaction on load) — then `total` is just the
+ * background sum, to bump the session meter without touching any badge.
+ */
+export function aggregateTurnCredits(
+  visibleCredits: number,
+  background: readonly BackgroundUsage[],
+): TurnAggregation {
+  const visible = Math.max(0, Math.floor(visibleCredits));
+  const backgroundComponents = background.map((u) =>
+    creditsFor(u.rates, u.promptTokens, u.completionTokens),
+  );
+  const backgroundCredits = backgroundComponents.reduce((sum, c) => sum + c, 0);
+  return {
+    total: visible + backgroundCredits,
+    visibleCredits: visible,
+    backgroundCredits,
+    backgroundComponents,
+  };
+}
+
 // ── Receipt store (session-scoped per-message credit charges) ───────
 //
 // A single completed exchange registers TWO entries: the user message id (the
@@ -205,6 +288,13 @@ export function splitCredits(
 export interface ReceiptEntry {
   credits: number;
   side: "input" | "output";
+  /**
+   * True when this output-side total was folded up to the FULL turn cost —
+   * i.e. it now includes background credits (memory upkeep) beyond the visible
+   * completion. Lets the footer label the extra neutrally without naming any
+   * model/provider. Absent/false on plain visible-only receipts.
+   */
+  includesUpkeep?: boolean;
 }
 
 const receiptMap = new Map<string, ReceiptEntry>();
@@ -221,8 +311,9 @@ export function setReceipt(
   messageId: string,
   credits: number,
   side: "input" | "output",
+  includesUpkeep?: boolean,
 ): void {
-  const entry: ReceiptEntry = { credits, side };
+  const entry: ReceiptEntry = { credits, side, includesUpkeep };
   receiptMap.set(messageId, entry);
   for (const listener of receiptListeners) {
     try {

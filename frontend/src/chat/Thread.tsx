@@ -666,12 +666,14 @@ const ReceiptFooter: FC = () => {
   const label =
     entry.side === "input"
       ? "Input cost — includes conversation context"
-      : `Cost: ${formatCredits(entry.credits)}`;
+      : entry.includesUpkeep
+        ? `Cost: ${formatCredits(entry.credits)} — includes memory upkeep`
+        : `Cost: ${formatCredits(entry.credits)}`;
   return (
     <span
       className="text-[11px] leading-none text-muted-foreground/70 tabular-nums"
       aria-label={label}
-      title={entry.side === "input" ? label : undefined}
+      title={entry.side === "input" || entry.includesUpkeep ? label : undefined}
     >
       {formatCredits(entry.credits)}
     </span>
