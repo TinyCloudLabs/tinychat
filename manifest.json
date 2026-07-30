@@ -46,6 +46,17 @@
         "list"
       ],
       "description": "Store transcript content synced from connected sources in your space."
+    },
+    {
+      "service": "tinycloud.kv",
+      "space": "secrets",
+      "path": "keys/secrets/scoped/fireflies/API_KEY",
+      "skipPrefix": true,
+      "actions": [
+        "get",
+        "put"
+      ],
+      "description": "Read and write the wrapped encryption key for the stored Fireflies API key."
     }
   ],
   "secrets": {

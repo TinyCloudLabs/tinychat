@@ -35,6 +35,10 @@ const repoRoot = resolve(new URL("../..", import.meta.url).pathname);
 const env = resolveRealAuthCommandEnv({ cwd: repoRoot, env: process.env });
 
 const corsCheckOnly = process.argv.includes("--cors-check");
+// Reads the two KV paths the vault actually touches, directly and separately, to
+// name which resource a failing secrets call is denied on. Diagnostic only — it
+// asserts nothing and writes nothing.
+const secretsProbeOnly = process.argv.includes("--secrets-probe");
 // Forces the sign-in ceremony even when the profile holds a live session. Use
 // when a session predates a manifest change: capabilities are baked in at
 // sign-in, so a stale session keeps the old (narrower) grants forever.
@@ -146,6 +150,8 @@ try {
 
   if (corsCheckOnly) {
     await runCorsCheck();
+  } else if (secretsProbeOnly) {
+    await runSecretsProbe();
   } else {
     await runLane();
   }
@@ -651,6 +657,133 @@ async function runCorsCheck(): Promise<void> {
     );
   }
   console.log("Verdict: allowed — plain-http loopback upstream is reachable from the https page.");
+}
+
+// ── Secrets authorization probe ────────────────────────────────────────────
+
+/**
+ * Name the resource a denied secrets call is actually denied on.
+ *
+ * `secrets.get` is one call but two KV reads: DataVaultService reads
+ * `keys/<vaultKey>` for the wrapped entry key and then `vault/<vaultKey>` for
+ * the ciphertext. A single PERMISSION_DENIED off `secrets.get` cannot say which
+ * one was refused, and the two are granted differently — the manifest's
+ * `secrets:` shorthand only ever emits `vault/...`. So read both paths directly
+ * through the space-scoped KV service, which skips the vault's crypto entirely
+ * and isolates the authorization layer.
+ *
+ * Diagnostic only: no assertions, no writes, no ceremony.
+ */
+async function runSecretsProbe(): Promise<void> {
+  const context = await launchContext();
+  const page = context.pages()[0] ?? (await context.newPage());
+  wirePageLogging(page);
+  await page.goto(appUrl, { waitUntil: "domcontentloaded" });
+  await page.bringToFront();
+  await waitForSignedIn(context, page);
+
+  const vaultKey = `secrets/scoped/${SOURCE}/API_KEY`;
+  const probe = await evalStep(
+    page,
+    "secrets probe: direct KV reads in the secrets space",
+    async (args: { vaultKey: string }) => {
+      const tcw = (window as unknown as { __tcw?: Record<string, any> }).__tcw;
+      if (!tcw) throw new Error("window.__tcw is not exposed");
+
+      // Every call gets its own deadline — a stuck read must report, not wedge.
+      const race = async (p: Promise<any>, ms: number) =>
+        Promise.race([
+          p,
+          new Promise((r) => setTimeout(() => r({ __timedOut: true }), ms)),
+        ]);
+      const describe = (res: any) =>
+        res?.__timedOut
+          ? { outcome: "TIMED_OUT" }
+          : {
+              outcome: res?.ok ? "ok" : "denied/failed",
+              code: res?.error?.code ?? null,
+              message: res?.error?.message ?? null,
+            };
+
+      const notes: string[] = [];
+      let spaceId: string | null = null;
+      try {
+        spaceId = tcw.spaces.get("secrets").id;
+      } catch (e) {
+        notes.push(`could not resolve the secrets space: ${String(e)}`);
+      }
+
+      const reads: Record<string, unknown> = {};
+      const writes: Record<string, unknown> = {};
+      if (spaceId) {
+        const kv = tcw.kvForSpace(spaceId);
+        for (const path of [`keys/${args.vaultKey}`, `vault/${args.vaultKey}`]) {
+          reads[path] = describe(await race(kv.get(path, { raw: true }), 30_000));
+        }
+        // Is the WRITE side authorized where the read side is not? Probe throwaway
+        // names, never the real vault keys — clobbering keys/<vaultKey> would
+        // destroy the stored secret. The vault/ probe is the control: the grant is
+        // an exact path, so a sibling name must be refused there too.
+        for (const path of [
+          `keys/secrets/scoped/${"fireflies"}/__probe__`,
+          `vault/secrets/scoped/${"fireflies"}/__probe__`,
+        ]) {
+          writes[path] = describe(await race(kv.put(path, "probe"), 30_000));
+        }
+      }
+
+      // The same read through the product surface, for comparison.
+      if (!tcw.secrets.isUnlocked) {
+        const unlock = await race(tcw.secrets.unlock(), 30_000);
+        if ((unlock as any)?.__timedOut) notes.push("secrets.unlock TIMED_OUT");
+        else if (!(unlock as any)?.ok) notes.push(`secrets.unlock failed: ${(unlock as any)?.error?.message}`);
+      }
+      const viaSecrets = describe(
+        await race(tcw.secrets.get("API_KEY", { scope: "fireflies" }), 30_000),
+      );
+
+      // What the session's recap actually carries, straight from the persisted
+      // session — the authority on which grants this session was minted with.
+      const recaps: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        const v = localStorage.getItem(k) ?? "";
+        if (v.includes("urn:recap:")) recaps.push(v);
+      }
+
+      return { spaceId, reads, writes, viaSecrets, recaps, notes };
+    },
+    { vaultKey },
+  );
+
+  console.log("");
+  console.log(`secrets space: ${probe.spaceId}`);
+  console.log("direct KV reads (authorization layer only, no vault crypto):");
+  for (const [path, res] of Object.entries(probe.reads)) {
+    console.log(`  ${path}\n    ${JSON.stringify(res)}`);
+  }
+  console.log("direct KV writes (throwaway names, never the real vault keys):");
+  for (const [path, res] of Object.entries(probe.writes)) {
+    console.log(`  ${path}\n    ${JSON.stringify(res)}`);
+  }
+  console.log(`via tcw.secrets.get: ${JSON.stringify(probe.viaSecrets)}`);
+  for (const note of probe.notes) console.log(`  note: ${note}`);
+
+  // Decode the recap URNs out here; the page has no business parsing them.
+  for (const raw of probe.recaps) {
+    for (const urn of raw.match(/urn:recap:[A-Za-z0-9+/=_-]+/g) ?? []) {
+      const payload = urn.slice("urn:recap:".length);
+      try {
+        const json = JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
+        console.log("session recap att:");
+        console.log(JSON.stringify(json.att ?? json, null, 2));
+      } catch {
+        console.log(`session recap (undecodable): ${urn.slice(0, 80)}…`);
+      }
+    }
+  }
+  await shot(page, "secrets-probe");
 }
 
 // ── Sign-in wall ───────────────────────────────────────────────────────────

@@ -44,6 +44,22 @@ describe("TinyChat manifest and backend policy", () => {
         actions: ["get", "put", "del", "list"],
         description: "Store transcript content synced from connected sources in your space.",
       },
+      // The `secrets` shorthand below grants only `vault/<vaultKey>`, but
+      // DataVaultService stores an entry as TWO objects: the wrapped entry key
+      // at `keys/<vaultKey>` and the ciphertext at `vault/<vaultKey>`, and its
+      // `get` reads `keys/` first. Nothing in the SDK's permission model ever
+      // emits that path — not the shorthand, not the runtime escalation — so it
+      // has to be declared explicitly or every secrets read is refused.
+      // `space`/`skipPrefix` keep it on the owner's secrets space, unprefixed.
+      {
+        service: "tinycloud.kv",
+        space: "secrets",
+        path: "keys/secrets/scoped/fireflies/API_KEY",
+        skipPrefix: true,
+        actions: ["get", "put"],
+        description:
+          "Read and write the wrapped encryption key for the stored Fireflies API key.",
+      },
     ]);
   });
 
