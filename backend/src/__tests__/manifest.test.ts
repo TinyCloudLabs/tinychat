@@ -47,6 +47,24 @@ describe("TinyChat manifest and backend policy", () => {
     ]);
   });
 
+  // The `secrets` shorthand is a top-level sibling of `permissions`, not an
+  // entry in it: the SDK expands it into a `tinycloud.vault` grant on the
+  // owner's `secrets` space. Declaring it is what lets `secrets.put` skip
+  // runtime escalation. Only fireflies is declared because only fireflies
+  // ships; the other registry entries reuse the secret name API_KEY, so
+  // adding them means keying this map differently and overriding `name`.
+  it("declares the fireflies secret so scoped puts need no escalation", () => {
+    const manifest = runtimeManifest();
+
+    expect(manifest.secrets).toEqual({
+      API_KEY: {
+        scope: "fireflies",
+        actions: ["read", "write"],
+        description: "Store your Fireflies API key, encrypted, in your secrets space.",
+      },
+    });
+  });
+
   it("derives and hashes backend policy from resolved runtime manifest permissions", () => {
     const backendDid = "did:key:z6MkBackend";
     const config = backendManifestConfig(backendDid);

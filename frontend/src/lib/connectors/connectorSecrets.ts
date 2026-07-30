@@ -40,10 +40,44 @@ export function isSecretsUnlocked(tcw: SecretsTcw): boolean {
   return tcw.secrets.isUnlocked;
 }
 
+/** Message we substitute for the cold-cache unlock failure. */
+export const UNLOCK_NEEDS_SIGN_IN_MESSAGE =
+  "Please sign out and sign back in to unlock secrets.";
+
+/**
+ * True if `err` is the vault's "no signer, no cached signature" failure.
+ *
+ * A boot-time session restore reconnects the TinyCloud session but NOT the
+ * wallet, so the vault has no signer. That is fine while the master signature
+ * is still cached in IndexedDB (the warm path — unlock succeeds silently), but
+ * on a cold cache (new browser profile, cleared storage, other device) the
+ * vault cannot derive the master key and returns VAULT_LOCKED. The only fix
+ * available to the user is a fresh sign-in, which reconnects the signer.
+ */
+function isMissingUnlockSigner(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  const e = err as { code?: unknown; message?: unknown };
+  return (
+    e.code === "VAULT_LOCKED" &&
+    typeof e.message === "string" &&
+    /signer is required/i.test(e.message)
+  );
+}
+
 export async function unlockSecrets<E>(
   tcw: SecretsTcw,
 ): Promise<SecretsResult<void, E>> {
-  return (await tcw.secrets.unlock()) as SecretsResult<void, E>;
+  const result = (await tcw.secrets.unlock()) as SecretsResult<void, E>;
+  // Rewrite only this one error's message into something the user can act on.
+  // The code and the rest of the error are preserved for logs — no swallowing,
+  // no retry, no fallback.
+  if (!result.ok && isMissingUnlockSigner(result.error)) {
+    return {
+      ok: false,
+      error: { ...result.error, message: UNLOCK_NEEDS_SIGN_IN_MESSAGE },
+    };
+  }
+  return result;
 }
 
 export async function saveConnectorKey<E>(

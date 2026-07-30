@@ -326,8 +326,18 @@ export function App() {
 
     (async () => {
       try {
+        // The manifest must ride along here, not just on the fresh sign-in
+        // path: TinyCloudWeb stores it from constructor config only, and a
+        // manifest-less instance cannot escalate permissions (secrets.put
+        // throws "requestPermissions requires a stored manifest") after a
+        // page reload. A manifest-endpoint hiccup must not break boot, so a
+        // failed fetch degrades to the previous manifest-less restore.
+        const manifest = await loadAppManifest(`${BACKEND_URL}/api/manifest`).catch(
+          () => undefined,
+        );
         const restored = await restoreTinyCloudWebSession(storedAddress, {
           autoCreateSpace: false,
+          manifest,
         });
         if (restored.status !== "restored" || !restored.tcw) {
           sessionStore.clear();

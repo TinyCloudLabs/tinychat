@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
+  UNLOCK_NEEDS_SIGN_IN_MESSAGE,
   deleteConnectorKey,
   getConnectorKey,
   isSecretsUnlocked,
@@ -273,5 +274,42 @@ describe("connectorSecrets delete", () => {
     const res = await deleteConnectorKey(f.tcw, FIREFLIES);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.code).toBe("KEY_NOT_FOUND");
+  });
+});
+
+describe("connectorSecrets unlock on a restored session", () => {
+  /** tcw whose unlock returns the vault's cold-cache failure verbatim. */
+  function unlockFailingTcw(error: SecretErr): TinyCloudWeb {
+    return {
+      secrets: {
+        isUnlocked: false,
+        unlock: async (): Promise<Result<void, SecretErr>> => ({ ok: false, error }),
+      },
+    } as unknown as TinyCloudWeb;
+  }
+
+  test("cold-cache VAULT_LOCKED is rewritten into an actionable sign-in message", async () => {
+    // Exactly what DataVaultService.unlock returns when the session was
+    // restored (no wallet signer) and IndexedDB holds no master signature.
+    const tcw = unlockFailingTcw({
+      code: "VAULT_LOCKED",
+      message: "Signer is required when no cached master signature exists",
+    });
+
+    const res = await unlockSecrets<SecretErr>(tcw);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.message).toBe(UNLOCK_NEEDS_SIGN_IN_MESSAGE);
+      // The code survives for logs.
+      expect(res.error.code).toBe("VAULT_LOCKED");
+    }
+  });
+
+  test("other VAULT_LOCKED failures keep the SDK's own message", async () => {
+    const tcw = unlockFailingTcw({ code: "VAULT_LOCKED", message: "Vault is locked" });
+
+    const res = await unlockSecrets<SecretErr>(tcw);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toBe("Vault is locked");
   });
 });
