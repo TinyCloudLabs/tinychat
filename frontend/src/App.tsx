@@ -13,6 +13,7 @@ import {
   restoreTinyCloudWebSession,
   verifySession,
 } from "@tinyboilerplate/client";
+import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
@@ -582,11 +583,19 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
+      //
+      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
+      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
+      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
+      // it, and the grant cannot be declared in the static manifest because its
+      // network id embeds this user's DID. Capabilities are minted from the
+      // manifest passed here, so sign-in is the only moment it can be added.
+      // Delete this call when the SDK carries the capability itself.
       const { tcw: signedTcw, session } = await createAndSignIn(web3Provider, {
         address: connectedAddress,
         nonce,
         autoCreateSpace: true,
-        manifest,
+        manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
       });
 
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).

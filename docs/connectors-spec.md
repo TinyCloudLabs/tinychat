@@ -266,11 +266,21 @@ Thin wrapper over `tcw.secrets` (`ISecretsService`):
 - `put`/`delete` may trigger the SDK's own permission-escalation modal
   (`requestPermissions`) — that's expected UX, don't suppress it.
 
-**KNOWN BLOCKER — `getConnectorKey` cannot succeed on web-sdk 2.5.1.** Reading a
-secret back is refused with `PERMISSION_DENIED` ("grantRuntimePermissions requires
-wallet mode with a signer or privateKey"), and no manifest change can fix it. The
-write path works, so connect + sync are unaffected; only re-reading the stored key
-is blocked (which "Sync now" needs once the in-memory key is gone).
+**KNOWN BLOCKER (worked around app-side, pending an SDK fix) — secrets reads on
+web-sdk 2.5.1.** Reading a secret back is refused with `PERMISSION_DENIED`
+("grantRuntimePermissions requires wallet mode with a signer or privateKey"), and
+no *static* manifest change can fix it. The write path works, so connect + sync
+were never affected; only re-reading the stored key was blocked (which "Sync now"
+needs once the in-memory key is gone).
+
+The workaround: `lib/connectors/encryptionGrant.ts` composes the missing
+`tinycloud.encryption` / `decrypt` entry once the address is known, and `App.tsx`
+appends it to the manifest handed to `createAndSignIn` — sign-in only, since
+capabilities are minted from that manifest and a restored session can never
+acquire them. It hardcodes the SDK-internal networkId URN format, so it is
+sanctioned product surgery, not a design: delete the single
+`withEncryptionDecryptGrant(...)` call when the SDK carries the capability itself.
+Existing sessions need one sign-out/sign-in to pick the grant up.
 
 Why: node-sdk's `createVaultService` always passes an `encryption` config, and
 `usesNetworkEncryption` is just `encryption !== undefined`, so the secrets vault is
