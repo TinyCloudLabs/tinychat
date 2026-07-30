@@ -44,23 +44,22 @@ describe("TinyChat manifest and backend policy", () => {
         actions: ["get", "put", "del", "list"],
         description: "Store transcript content synced from connected sources in your space.",
       },
-      // The `secrets` shorthand below grants only `vault/<vaultKey>`, but
-      // DataVaultService stores an entry as TWO objects: the wrapped entry key
-      // at `keys/<vaultKey>` and the ciphertext at `vault/<vaultKey>`, and its
-      // `get` reads `keys/` first. Nothing in the SDK's permission model ever
-      // emits that path — not the shorthand, not the runtime escalation — so it
-      // has to be declared explicitly or every secrets read is refused.
-      // `space`/`skipPrefix` keep it on the owner's secrets space, unprefixed.
-      {
-        service: "tinycloud.kv",
-        space: "secrets",
-        path: "keys/secrets/scoped/fireflies/API_KEY",
-        skipPrefix: true,
-        actions: ["get", "put"],
-        description:
-          "Read and write the wrapped encryption key for the stored Fireflies API key.",
-      },
     ]);
+  });
+
+  // DataVaultService has two storage layouts. The local-envelope one stores an
+  // entry as TWO objects (`keys/<vaultKey>` + `vault/<vaultKey>`); the
+  // network-encrypted one stores only `vault/<vaultKey>`. node-sdk's
+  // createVaultService always passes an `encryption` config and
+  // `usesNetworkEncryption` is just `encryption !== undefined`, so the secrets
+  // vault is ALWAYS network-encrypted and `keys/` is never touched — a probe on
+  // a fresh session read it back KV_NOT_FOUND. No `keys/` grant is declared,
+  // deliberately: granting a path the code cannot reach is dead surface. Re-add
+  // it only if the SDK ever exposes a local-envelope mode.
+  it("declares no keys/ grant — the network-encrypted vault never writes that path", () => {
+    const manifest = runtimeManifest();
+    const paths = (manifest.permissions ?? []).map((permission) => permission.path);
+    expect(paths.some((path) => path.startsWith("keys/"))).toBe(false);
   });
 
   // The `secrets` shorthand is a top-level sibling of `permissions`, not an

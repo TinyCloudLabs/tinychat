@@ -266,6 +266,23 @@ Thin wrapper over `tcw.secrets` (`ISecretsService`):
 - `put`/`delete` may trigger the SDK's own permission-escalation modal
   (`requestPermissions`) — that's expected UX, don't suppress it.
 
+**KNOWN BLOCKER — `getConnectorKey` cannot succeed on web-sdk 2.5.1.** Reading a
+secret back is refused with `PERMISSION_DENIED` ("grantRuntimePermissions requires
+wallet mode with a signer or privateKey"), and no manifest change can fix it. The
+write path works, so connect + sync are unaffected; only re-reading the stored key
+is blocked (which "Sync now" needs once the in-memory key is gone).
+
+Why: node-sdk's `createVaultService` always passes an `encryption` config, and
+`usesNetworkEncryption` is just `encryption !== undefined`, so the secrets vault is
+always network-encrypted. `NodeSecretsService.ensurePermission` adds, for `get`
+only, a `tinycloud.encryption` / `decrypt` entry on the network id
+`urn:tinycloud:encryption:<ownerDid>:default`. Nothing grants it: no default tier
+includes encryption, and the manifest cannot name it because the URN embeds the
+signed-in user's DID, while `expandEncryptionPermissionEntry` rejects any path that
+is not a networkId URN (so no wildcard). Escalation is the SDK's only route and it
+needs a wallet signer a restored session does not have. Fix belongs in the SDK —
+do not work around it in product code.
+
 ## 8. Sync engine (`firefliesSync.ts`)
 
 `syncFireflies({ client, store, tcw, onProgress, signal })` → `Promise<Result<SyncResult>>`:
