@@ -225,7 +225,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     // stray transcript body behind, which would defeat the "delete synced
     // meetings from my space" UI promise.
     const transcriptKeysBefore = Array.from(fake.kv.entries.keys()).filter((k) =>
-      k.startsWith("connectors/fireflies/transcript/"),
+      k.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`),
     );
     expect(transcriptKeysBefore.length).toBe(SEED_COUNT);
 
@@ -249,7 +249,7 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
       expect(fake.kv.entries.has(k)).toBe(false);
     }
     const survivorTranscriptKeys = Array.from(fake.kv.entries.keys()).filter((k) =>
-      k.startsWith("connectors/fireflies/transcript/"),
+      k.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`),
     );
     expect(survivorTranscriptKeys.length).toBe(0);
 

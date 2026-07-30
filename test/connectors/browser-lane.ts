@@ -74,8 +74,12 @@ const mockUrl = `http://127.0.0.1:${config.mockPort}/graphql`;
 const LANE_API_KEY = "mock-key-browser-lane";
 
 const APP_ID = "xyz.tinycloud.tinychat";
+// SQL db names AND KV keys are both sent verbatim as the invoke path and must
+// carry the full app-id prefix the manifest resolved the grant to. See the
+// RESOURCE PATH CONVENTION note in connectorStore.ts.
 const CONNECTORS_DB = `${APP_ID}/connectors`;
 const SOURCE = "fireflies";
+const TRANSCRIPT_KV_PREFIX = `${APP_ID}/connectors/${SOURCE}/transcript/`;
 const SEED_COUNT = 30;
 const EXPECTED_IDS = Array.from(
   { length: SEED_COUNT },
@@ -114,7 +118,10 @@ interface TcwProbe {
   secrets: {
     isUnlocked: boolean;
     unlock: () => Promise<{ ok: boolean; error?: { message?: string } }>;
-    get: (name: string, opts: { scope: string }) => Promise<{ ok: boolean; data?: unknown }>;
+    get: (
+      name: string,
+      opts: { scope: string },
+    ) => Promise<{ ok: boolean; data?: unknown; error?: { code?: string; message?: string } }>;
     delete: (name: string, opts: { scope: string }) => Promise<{ ok: boolean }>;
   };
 }
@@ -323,7 +330,7 @@ async function resetConnectorState(page: Page): Promise<void> {
         if (!tcw) throw new Error("window.__tcw is not exposed");
         return (await tcw.kv.delete(key)).ok;
       },
-      `connectors/${SOURCE}/transcript/${sid}`,
+      `${TRANSCRIPT_KV_PREFIX}${sid}`,
       { quiet: true },
     );
   }
@@ -557,6 +564,15 @@ async function probeStorage(page: Page): Promise<StorageProbe> {
       }
       const secret = await tcw.secrets.get(args.secretName, { scope: args.secretScope });
       const secretMatches = secret.ok && secret.data === args.apiKey;
+      // A bare `secretReadBack=false` is undiagnosable — say whether the read
+      // failed (and why) or succeeded with a value that does not match.
+      if (!secretMatches) {
+        notes.push(
+          secret.ok
+            ? "secret read back a value that does not match the key the UI submitted"
+            : `secret read failed: [${secret.error?.code ?? "?"}] ${secret.error?.message ?? "unknown"}`,
+        );
+      }
 
       return {
         sqlCount,
@@ -573,7 +589,7 @@ async function probeStorage(page: Page): Promise<StorageProbe> {
       dbName: CONNECTORS_DB,
       source: SOURCE,
       apiKey: LANE_API_KEY,
-      kvPrefix: `connectors/${SOURCE}/transcript/`,
+      kvPrefix: TRANSCRIPT_KV_PREFIX,
       expectedIds: EXPECTED_IDS,
       sampleIds: SAMPLE_IDS,
         secretName: "API_KEY",

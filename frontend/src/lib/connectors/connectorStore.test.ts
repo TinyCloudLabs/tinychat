@@ -3,6 +3,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { FirefliesTranscript } from "./firefliesClient";
 import {
+  CONNECTORS_KV_PREFIX,
   CONNECTORS_SQL_DB_NAME,
   _resetConnectorSchemaMemoForTests,
   countMeetings,
@@ -518,12 +519,14 @@ describe("connectorStore.updateSyncState / getConnection", () => {
 // ── KV key format ───────────────────────────────────────────────────────
 
 describe("connectorStore.putTranscriptBody / transcriptKvKey", () => {
-  test("KV key is app-relative (no app-id prefix) at connectors/<source>/transcript/<id>", async () => {
+  test("KV key carries the full APP_ID path the manifest grant resolves to", async () => {
     const f = makeFake();
     const key = transcriptKvKey("fireflies", "abc");
-    expect(key).toBe("connectors/fireflies/transcript/abc");
-    // Nothing app-id-shaped in the key — the SDK's KV service adds the prefix.
-    expect(key.startsWith("xyz.tinycloud")).toBe(false);
+    expect(key).toBe("xyz.tinycloud.tinychat/connectors/fireflies/transcript/abc");
+    // The KV service sends the key verbatim, so it has to start inside the
+    // granted `${APP_ID}/connectors/` prefix or the node returns 401.
+    expect(key.startsWith(`${CONNECTORS_KV_PREFIX}/`)).toBe(true);
+    expect(CONNECTORS_KV_PREFIX).toBe(CONNECTORS_SQL_DB_NAME);
     const put = await putTranscriptBody(f.tcw, "fireflies", "abc", [
       { index: 0, speaker_name: "Ada", text: "hi", start_time: 0, end_time: 1 },
     ]);

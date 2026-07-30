@@ -1,10 +1,14 @@
 // Connectors persistence — SQL + KV. See docs/connectors-spec.md §6.
 //
-// SQL handle: `${APP_ID}/connectors` — the FULL app-id path, verbatim.
-// The SQL service authorizes against the resource string as-is; a bare
-// db("connectors") 401s (see the DB HANDLE CONVENTION note in
-// threadStore.ts:16-22). KV IS app-prefixed automatically — do not
-// double-prefix.
+// RESOURCE PATH CONVENTION (critical — applies to BOTH backends). Neither
+// service app-prefixes for you: the SQL db name and the KV key are each sent
+// VERBATIM as the invoke path, and the node authorizes against that string.
+// The manifest resolves every permission path with the app id (its `prefix`
+// defaults to `app_id`), so the session's granted resources are
+// `${APP_ID}/connectors` for SQL and `${APP_ID}/connectors/` for KV. Both
+// handles must therefore carry the full `${APP_ID}/connectors` path; a bare
+// `connectors/...` key fails AUTH_UNAUTHORIZED, exactly like db("connectors")
+// does (see the DB HANDLE CONVENTION note in threadStore.ts:16-22).
 //
 // TinyCloud SQLite authorizer restrictions (from listen): no CREATE INDEX,
 // no UNIQUE constraints, no REFERENCES. Dedup is app-level (SELECT before
@@ -29,9 +33,18 @@ import type { ConnectorConnection, ConnectorId } from "./types";
 /** Full resolved SQL db path — must match the granted resource string. */
 export const CONNECTORS_SQL_DB_NAME = `${APP_ID}/connectors`;
 
-/** KV key prefix for a source's transcript bodies. KV is app-prefixed by the SDK. */
+/**
+ * Full resolved KV key prefix — must match the granted resource string.
+ * The manifest grants `tinycloud.kv` on `connectors/`, which resolves to
+ * `${APP_ID}/connectors/` (trailing slash = prefix match), so every key the
+ * store writes has to start here. Single source of the prefix — callers build
+ * keys through {@link transcriptKvKey}, never by hand.
+ */
+export const CONNECTORS_KV_PREFIX = `${APP_ID}/connectors`;
+
+/** Full KV key for a source's transcript body. */
 export function transcriptKvKey(source: string, sourceId: string): string {
-  return `connectors/${source}/transcript/${sourceId}`;
+  return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
 }
 
 export interface StoreError {

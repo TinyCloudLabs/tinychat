@@ -160,6 +160,31 @@ describe("sync e2e (spec §10 driver 2)", () => {
       expect(name).toBe(connectorStore.CONNECTORS_SQL_DB_NAME);
       expect(name.endsWith("/connectors")).toBe(true);
     }
+    expect(fake.unauthorizedDbNames).toEqual([]);
+
+    // Same gotcha on the KV side: keys are sent verbatim too, so every one has
+    // to sit under the granted `${APP_ID}/connectors/` prefix.
+    for (const key of fake.kv.entries.keys()) {
+      expect(key.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/`)).toBe(true);
+    }
+    expect(fake.kv.unauthorized).toEqual([]);
+  });
+
+  test("the fake rejects an unprefixed KV key — the shape that 401s against a real node", async () => {
+    const fake = makeFakeTinyCloud({ did: "did:test:kv-authz" });
+
+    // This is exactly what transcriptKvKey used to build. It must not store.
+    const bare = await fake.tcw.kv.put("connectors/fireflies/transcript/x", "[]");
+    expect(bare.ok).toBe(false);
+    if (!bare.ok) expect(bare.error.code).toBe("AUTH_UNAUTHORIZED");
+    expect(fake.kv.entries.size).toBe(0);
+
+    const prefixed = await fake.tcw.kv.put(
+      connectorStore.transcriptKvKey("fireflies", "x"),
+      "[]",
+    );
+    expect(prefixed.ok).toBe(true);
+    expect(fake.kv.entries.size).toBe(1);
   });
 
   test("second sync is a no-op via early-exit — 0 added, mock sees fewer list calls than a full crawl", async () => {

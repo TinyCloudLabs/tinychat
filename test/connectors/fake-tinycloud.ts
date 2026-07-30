@@ -8,7 +8,73 @@
 // Map keyed by primary key so app-level dedup and DELETE behave correctly.
 // Adding a new statement to the store means adding a matcher here.
 
+import { readFileSync } from "node:fs";
+
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+
+// ── Authorization (mirrors what the node actually enforces) ─────────────
+//
+// SQL db names and KV keys are sent VERBATIM as the invoke path, and the node
+// checks that path against the session's manifest-resolved capabilities. The
+// manifest resolves each permission path by prepending `prefix` (which defaults
+// to `app_id`); a granted path ending in "/" is a prefix match, otherwise it is
+// an exact match.
+//
+// Without this check the fake authorized everything, so 24 green drivers sat on
+// top of unprefixed KV keys that fail AUTH_UNAUTHORIZED against a real node.
+// Grants are read from the real manifest.json — the expected paths are not
+// spelled out a second time here.
+
+interface ManifestShape {
+  app_id: string;
+  prefix?: string;
+  permissions?: { service: string; path: string }[];
+}
+
+const MANIFEST = JSON.parse(
+  readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"),
+) as ManifestShape;
+
+const MANIFEST_PREFIX = MANIFEST.prefix ?? MANIFEST.app_id;
+
+/** Resolve a manifest permission path the way `applyPrefix` in sdk-core does. */
+function resolveManifestPath(path: string): string {
+  if (MANIFEST_PREFIX === "") return path;
+  return path.startsWith("/")
+    ? `${MANIFEST_PREFIX}${path}`
+    : `${MANIFEST_PREFIX}/${path}`;
+}
+
+function grantedPaths(service: string): string[] {
+  return (MANIFEST.permissions ?? [])
+    .filter((p) => p.service === service)
+    .map((p) => resolveManifestPath(p.path));
+}
+
+/** Path containment per spec: trailing "/" grants a prefix match, else exact. */
+function pathContains(granted: string, requested: string): boolean {
+  if (granted === "" || granted === "/") return true;
+  if (granted.endsWith("/")) return requested.startsWith(granted);
+  return requested === granted;
+}
+
+/**
+ * The AUTH_UNAUTHORIZED error the node returns for an unmatched path, or null
+ * when the request is covered by a grant.
+ */
+function authorize(
+  service: string,
+  requested: string,
+): { code: string; message: string } | null {
+  const granted = grantedPaths(service);
+  if (granted.some((g) => pathContains(g, requested))) return null;
+  return {
+    code: "AUTH_UNAUTHORIZED",
+    message:
+      `Unauthorized Action: ${requested} / ${service}` +
+      ` — no grant matches (manifest grants: ${granted.join(", ") || "none"})`,
+  };
+}
 
 // ── Result shapes (mirroring the SDK) ───────────────────────────────────
 
@@ -243,10 +309,21 @@ export class FakeSqlDb {
 
 export class FakeKv {
   entries = new Map<string, string>();
+  /** Every key rejected by the authorizer — drivers can assert on the shape. */
+  readonly unauthorized: string[] = [];
+
+  /** Authorization runs before any storage effect, exactly like the node. */
+  private deny(key: string): KvErr | null {
+    const error = authorize("tinycloud.kv", key);
+    if (error) this.unauthorized.push(key);
+    return error;
+  }
 
   async get(
     key: string,
   ): Promise<OkErr<{ data: unknown; headers: Record<string, string> }, KvErr>> {
+    const denied = this.deny(key);
+    if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
     }
@@ -257,12 +334,16 @@ export class FakeKv {
     key: string,
     value: unknown,
   ): Promise<OkErr<{ data: void; headers: Record<string, string> }, KvErr>> {
+    const denied = this.deny(key);
+    if (denied) return { ok: false, error: denied };
     const stored = typeof value === "string" ? value : JSON.stringify(value);
     this.entries.set(key, stored);
     return { ok: true, data: { data: undefined as unknown as void, headers: {} } };
   }
 
   async delete(key: string): Promise<OkErr<void, KvErr>> {
+    const denied = this.deny(key);
+    if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
       return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
     }
@@ -336,6 +417,8 @@ export interface FakeTinyCloud {
   secrets: FakeSecrets;
   /** Every db name the store asked for — asserts it uses the full APP_ID path. */
   dbNamesRequested: string[];
+  /** Db names the authorizer rejected (no manifest grant covers them). */
+  unauthorizedDbNames: string[];
   ensureOwnedSpaceCalls: string[];
 }
 
@@ -349,6 +432,7 @@ export function makeFakeTinyCloud(opts: MakeFakeOptions = {}): FakeTinyCloud {
   const kv = new FakeKv();
   const secrets = new FakeSecrets();
   const dbNamesRequested: string[] = [];
+  const unauthorizedDbNames: string[] = [];
   const ensureOwnedSpaceCalls: string[] = [];
 
   const tcw = {
@@ -357,6 +441,11 @@ export function makeFakeTinyCloud(opts: MakeFakeOptions = {}): FakeTinyCloud {
     sql: {
       db: (name: string) => {
         dbNamesRequested.push(name);
+        const denied = authorize("tinycloud.sql", name);
+        if (denied) {
+          unauthorizedDbNames.push(name);
+          return unauthorizedDb(denied);
+        }
         return sql;
       },
     },
@@ -367,10 +456,34 @@ export function makeFakeTinyCloud(opts: MakeFakeOptions = {}): FakeTinyCloud {
     },
   } as unknown as TinyCloudWeb;
 
-  return { tcw, sql, kv, secrets, dbNamesRequested, ensureOwnedSpaceCalls };
+  return {
+    tcw,
+    sql,
+    kv,
+    secrets,
+    dbNamesRequested,
+    unauthorizedDbNames,
+    ensureOwnedSpaceCalls,
+  };
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
+
+/** A db handle for an unauthorized name: every statement fails, nothing stores. */
+function unauthorizedDb(error: { code: string; message: string }): FakeSqlDb {
+  const denied: SqlResult = { ok: false, error };
+  return {
+    async query() {
+      return denied;
+    },
+    async execute() {
+      return denied;
+    },
+    async batch() {
+      return denied;
+    },
+  } as unknown as FakeSqlDb;
+}
 
 function ok(rows: unknown[][]): SqlResult {
   return { ok: true, data: { rows } };

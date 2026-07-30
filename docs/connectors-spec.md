@@ -170,9 +170,11 @@ only handles one — copy listen's approach here):
 ## 6. Storage (`connectorStore.ts`)
 
 SQL database handle: `tcw.sql.db("xyz.tinycloud.tinychat/connectors")`.
-**Gotcha (from `threadStore.ts:16-22`): the SQL db path is sent verbatim, NOT
-app-prefixed like KV — the full `${APP_ID}/connectors` string is required or every call
-401s.** Reuse the `APP_ID` const. Schema bootstrap memoized per space keyed by
+**Gotcha (from `threadStore.ts:16-22`): resource paths are sent verbatim — neither SQL
+nor KV app-prefixes for you, so the full `${APP_ID}/connectors` string is required or
+every call 401s.** The manifest's `prefix` defaults to `app_id`, so a manifest
+permission on `connectors` grants `${APP_ID}/connectors`; the requested path has to
+match that string. Reuse the `APP_ID` const. Schema bootstrap memoized per space keyed by
 `tcw.did` (NOT spaceId — spaceId is undefined on a restored session), exactly like
 `threadStore.ts` does with `schemaReadySpaces`.
 
@@ -212,8 +214,11 @@ CREATE TABLE IF NOT EXISTS connector_meeting (
 ```
 
 Transcript bodies (sentences array) go to KV, **not** SQL:
-`tcw.kv` key `connectors/fireflies/transcript/<source_id>` → JSON string of the
-sentences array. (KV IS app-prefixed automatically, unlike SQL — do not double-prefix.)
+`tcw.kv` key `xyz.tinycloud.tinychat/connectors/fireflies/transcript/<source_id>` → JSON
+string of the sentences array. KV keys are sent verbatim just like SQL db names, so the
+key carries the full `${APP_ID}/connectors/` prefix that the manifest's `connectors/`
+grant resolves to. Build keys through `transcriptKvKey()` — the prefix lives in exactly
+one place (`CONNECTORS_KV_PREFIX`).
 
 Store API (all take `tcw` as first arg, mirror `threadStore` style):
 `ensureSchema`, `getConnection(connectorId)`, `listKnownSourceIds(source)`,
