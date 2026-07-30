@@ -258,8 +258,9 @@ e2e drivers run it under bun against the mock upstream + fake tcw.
 ### `ConnectorsCard.tsx` (mounted in SettingsPage, near the Data/import card)
 
 - Section title "Connectors", subtitle: "Connect external sources. Synced data is
-  stored encrypted in your space." (secrets are encrypted; SQL/KV rows live in the
-  user's own space — keep copy honest: "stored in your space").
+  stored in your space." (Only the API key in `tcw.secrets` is AES-encrypted;
+  SQL/KV rows live in the user's own space but are not encrypted at rest — keep
+  copy honest.)
 - One row/card per registry entry: icon, name, description.
   - `coming-soon` → greyed, "Coming soon" badge, non-interactive.
   - `available` + disconnected → "Connect" button → opens `ConnectorDialog`.
