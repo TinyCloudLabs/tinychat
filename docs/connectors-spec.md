@@ -49,14 +49,40 @@ New files:
 - `test/connectors/mock-fireflies.mjs` — mock Fireflies GraphQL upstream (HTTP server)
 - `test/connectors/fake-tinycloud.ts` — in-memory fake of the SQL/KV/secrets surfaces
 - `test/connectors/*.e2e.test.ts` — e2e drivers (bun test) against the real mock upstream
+- `test/connectors/browser-lane.ts` — browser-e2e lane (Playwright, headed Chrome) — see §10
 
 Modified files (minimal edits only):
 
 - `frontend/src/chat/SettingsPage.tsx` — mount `ConnectorsCard`
-- `package.json` (root) — add `"test:connectors": "bun test test/connectors"`
+- `package.json` (root) — add `"test:connectors"` and `"test:connectors:browser"`
+- `test/package.json` — add the `connectors:browser` script
+- `frontend/src/vite-env.d.ts` — type `VITE_FIREFLIES_API_URL` / `VITE_FIREFLIES_DELAY_MS`
+- `frontend/src/App.tsx` — dev-only `window.__tcw` probe seam for the browser lane
+  (guarded by `import.meta.env.DEV`, so it is absent from production bundles)
 
-NEVER: touch `backend/`, `manifest.json`, `mobile/`, the threads SQL schema, or create
-new top-level directories.
+NEVER: touch `mobile/`, the threads SQL schema, or create new top-level directories.
+
+### 3a. Sanctioned exceptions to the original allowlist (amended)
+
+This section originally read "NEVER touch `backend/` or `manifest.json`". That rule
+was written before the secrets-escalation and browser-e2e work, and reality has
+outgrown it. The exceptions below are deliberate and reviewed; nothing else in
+`backend/` or `manifest.json` is in scope.
+
+- `manifest.json` — the connectors secrets grant. `tcw.secrets.put` cannot escalate
+  without the capability being present in the app manifest (commits `b614a8e`,
+  `ecc84c1`).
+- `backend/` — the manifest-pin test only, which asserts the served manifest still
+  carries that grant.
+- `frontend/src/App.tsx` — restores the stored manifest on boot so a restored
+  session can escalate, plus the dev-only `__tcw` probe seam described above.
+
+The browser lane additionally requires a test seam in otherwise-pure product code:
+`firefliesClient.ts` exports `resolveFirefliesClientDefaults` /
+`defaultFirefliesClientOptions`, read at all three UI construction sites, so the lane
+can retarget the client at the mock upstream. With the env vars unset the resolver
+returns the production endpoint and the production 800 ms pacing, so shipped
+behaviour is unchanged.
 
 ## 4. Connectors architecture
 

@@ -110,6 +110,22 @@ function jsonResponse(payload, init = {}) {
   });
 }
 
+/**
+ * CORS for the browser-e2e lane (test/connectors/browser-lane.ts): the page is
+ * served from the vite dev origin and the FirefliesClient posts JSON with an
+ * Authorization header, which makes every call a preflighted cross-origin
+ * request. Test-only server — the origin is reflected rather than allowlisted.
+ */
+function corsHeaders(req) {
+  return {
+    "access-control-allow-origin": req.headers.get("origin") || "*",
+    "access-control-allow-headers": "authorization, content-type, x-mock-mode",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-max-age": "600",
+    vary: "origin",
+  };
+}
+
 /** Classify a GraphQL query string into one of our three ops. */
 function classifyOp(query) {
   if (/\bquery\s+GetUser\b/.test(query)) return "user";
@@ -164,99 +180,109 @@ export async function startMockFireflies(opts = {}) {
   const server = Bun.serve({
     port: opts.port ?? 0,
     hostname: "127.0.0.1",
+    // Thin wrapper over `handle` (below) so CORS lands on every response path,
+    // including the 401/404/405/429 ones a browser must still be able to read.
     async fetch(req) {
-      if (req.method !== "POST") return new Response(null, { status: 405 });
-      const url = new URL(req.url);
-      if (!/\/graphql\/?$/.test(url.pathname)) return new Response(null, { status: 404 });
-
-      const headerMode = req.headers.get("x-mock-mode") || undefined;
-      const mode =
-        headerMode && MODES.has(headerMode) ? /** @type {MockMode} */ (headerMode) : defaultMode;
-
-      // Auth: reject if no bearer at all, and always reject in invalid-key mode.
-      const auth = req.headers.get("authorization") || "";
-      const bearerOk = /^Bearer\s+.+/i.test(auth);
-      if (mode === "invalid-key" || !bearerOk) {
-        return jsonResponse(
-          {
-            errors: [
-              { message: "Unauthorized", extensions: { code: "unauthenticated" } },
-            ],
-          },
-          { status: 401 },
-        );
-      }
-
-      let body;
-      try {
-        body = await req.json();
-      } catch {
-        return jsonResponse({ errors: [{ message: "invalid JSON" }] }, { status: 400 });
-      }
-
-      const query = typeof body?.query === "string" ? body.query : "";
-      const variables = body?.variables ?? {};
-      const op = classifyOp(query);
-      if (!op) return jsonResponse({ errors: [{ message: "unknown op" }] });
-
-      // Rate-limit modes: consume the one-shot on the FIRST request for this
-      // mode. We increment the op counter regardless so drivers can see the
-      // retry actually happened.
-      state.counts[op] += 1;
-      if (mode === "persistent-rate-limit") {
-        // Never used up — every request rate-limits. retry-after: "1"
-        // parses to 1000ms so exhaustion surfaces retryAfterMs > 0; the
-        // client honors delayMs:0 so real waits between retries collapse.
-        return jsonResponse(
-          { errors: [{ message: "Too many requests" }] },
-          { status: 429, headers: { "retry-after": "1" } },
-        );
-      }
-      if (mode === "rate-limit-429" && !state.rlUsed["rate-limit-429"]) {
-        state.rlUsed["rate-limit-429"] = true;
-        return jsonResponse(
-          { errors: [{ message: "Too many requests" }] },
-          { status: 429, headers: { "retry-after": "0" } },
-        );
-      }
-      if (mode === "rate-limit-graphql" && !state.rlUsed["rate-limit-graphql"]) {
-        state.rlUsed["rate-limit-graphql"] = true;
-        return jsonResponse({
-          errors: [
-            {
-              // The client parses `retry after <date>` out of the message; a
-              // past ISO date collapses to zero wait so tests don't stall.
-              message: "Rate limit hit, retry after 1970-01-01T00:00:00.001Z",
-              extensions: { code: "too_many_requests" },
-            },
-          ],
-        });
-      }
-
-      if (op === "user") {
-        return jsonResponse({ data: { user: USER } });
-      }
-      if (op === "transcripts") {
-        const limit = Number.isFinite(variables.limit) ? Math.max(1, Number(variables.limit)) : 25;
-        const skip = Number.isFinite(variables.skip) ? Math.max(0, Number(variables.skip)) : 0;
-        // seed is already newest-first (index 0 is newest)
-        const page = seed.slice(skip, skip + limit).map((t) => ({
-          id: t.id,
-          title: t.title,
-          date: t.date,
-          duration: t.duration,
-          organizer_email: t.organizer_email,
-        }));
-        return jsonResponse({ data: { transcripts: page } });
-      }
-      if (op === "transcript") {
-        const id = String(variables.id ?? "");
-        const found = seed.find((t) => t.id === id) ?? null;
-        return jsonResponse({ data: { transcript: found } });
-      }
-      return jsonResponse({ data: null });
+      const res = await handle(req);
+      for (const [k, v] of Object.entries(corsHeaders(req))) res.headers.set(k, v);
+      return res;
     },
   });
+
+  async function handle(req) {
+    // Preflight: the browser sends OPTIONS before the client's POST.
+    if (req.method === "OPTIONS") return new Response(null, { status: 204 });
+    if (req.method !== "POST") return new Response(null, { status: 405 });
+    const url = new URL(req.url);
+    if (!/\/graphql\/?$/.test(url.pathname)) return new Response(null, { status: 404 });
+
+    const headerMode = req.headers.get("x-mock-mode") || undefined;
+    const mode =
+      headerMode && MODES.has(headerMode) ? /** @type {MockMode} */ (headerMode) : defaultMode;
+
+    // Auth: reject if no bearer at all, and always reject in invalid-key mode.
+    const auth = req.headers.get("authorization") || "";
+    const bearerOk = /^Bearer\s+.+/i.test(auth);
+    if (mode === "invalid-key" || !bearerOk) {
+      return jsonResponse(
+        {
+          errors: [
+            { message: "Unauthorized", extensions: { code: "unauthenticated" } },
+          ],
+        },
+        { status: 401 },
+      );
+    }
+
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ errors: [{ message: "invalid JSON" }] }, { status: 400 });
+    }
+
+    const query = typeof body?.query === "string" ? body.query : "";
+    const variables = body?.variables ?? {};
+    const op = classifyOp(query);
+    if (!op) return jsonResponse({ errors: [{ message: "unknown op" }] });
+
+    // Rate-limit modes: consume the one-shot on the FIRST request for this
+    // mode. We increment the op counter regardless so drivers can see the
+    // retry actually happened.
+    state.counts[op] += 1;
+    if (mode === "persistent-rate-limit") {
+      // Never used up — every request rate-limits. retry-after: "1"
+      // parses to 1000ms so exhaustion surfaces retryAfterMs > 0; the
+      // client honors delayMs:0 so real waits between retries collapse.
+      return jsonResponse(
+        { errors: [{ message: "Too many requests" }] },
+        { status: 429, headers: { "retry-after": "1" } },
+      );
+    }
+    if (mode === "rate-limit-429" && !state.rlUsed["rate-limit-429"]) {
+      state.rlUsed["rate-limit-429"] = true;
+      return jsonResponse(
+        { errors: [{ message: "Too many requests" }] },
+        { status: 429, headers: { "retry-after": "0" } },
+      );
+    }
+    if (mode === "rate-limit-graphql" && !state.rlUsed["rate-limit-graphql"]) {
+      state.rlUsed["rate-limit-graphql"] = true;
+      return jsonResponse({
+        errors: [
+          {
+            // The client parses `retry after <date>` out of the message; a
+            // past ISO date collapses to zero wait so tests don't stall.
+            message: "Rate limit hit, retry after 1970-01-01T00:00:00.001Z",
+            extensions: { code: "too_many_requests" },
+          },
+        ],
+      });
+    }
+
+    if (op === "user") {
+      return jsonResponse({ data: { user: USER } });
+    }
+    if (op === "transcripts") {
+      const limit = Number.isFinite(variables.limit) ? Math.max(1, Number(variables.limit)) : 25;
+      const skip = Number.isFinite(variables.skip) ? Math.max(0, Number(variables.skip)) : 0;
+      // seed is already newest-first (index 0 is newest)
+      const page = seed.slice(skip, skip + limit).map((t) => ({
+        id: t.id,
+        title: t.title,
+        date: t.date,
+        duration: t.duration,
+        organizer_email: t.organizer_email,
+      }));
+      return jsonResponse({ data: { transcripts: page } });
+    }
+    if (op === "transcript") {
+      const id = String(variables.id ?? "");
+      const found = seed.find((t) => t.id === id) ?? null;
+      return jsonResponse({ data: { transcript: found } });
+    }
+    return jsonResponse({ data: null });
+  }
 
   return {
     url: `http://127.0.0.1:${server.port}/graphql`,

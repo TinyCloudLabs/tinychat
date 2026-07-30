@@ -50,6 +50,7 @@ import {
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import {
+  defaultFirefliesClientOptions,
   FirefliesClient,
   type FirefliesUser,
 } from "@/lib/connectors/firefliesClient";
@@ -151,7 +152,7 @@ export const ConnectorConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const handleContinue = useCallback(async () => {
     setError(null);
     setPhase("validating");
-    const client = new FirefliesClient({ apiKey });
+    const client = new FirefliesClient({ apiKey, ...defaultFirefliesClientOptions() });
     const validate = await client.validateKey();
     if (!validate.ok) {
       const kind =
@@ -198,7 +199,7 @@ export const ConnectorConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setProgress({ phase: "listing", done: 0, total: null });
     const ac = new AbortController();
     abortRef.current = ac;
-    const client = new FirefliesClient({ apiKey });
+    const client = new FirefliesClient({ apiKey, ...defaultFirefliesClientOptions() });
     const syncRes = await syncFireflies({
       client,
       store: connectorStore,

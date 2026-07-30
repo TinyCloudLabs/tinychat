@@ -292,6 +292,21 @@ export function App() {
     }
   }, [tcw]);
 
+  // Dev-only probe seam. The browser-e2e lane (test/connectors/browser-lane.ts)
+  // asserts against REAL space storage — SQL rows, KV bodies, secrets — through
+  // this handle, because a UI-only assertion cannot tell "synced" from "looks
+  // synced". `import.meta.env.DEV` is statically false in a production build, so
+  // the whole effect is dropped from the shipped bundle. Cleared on sign-out
+  // (tcw flips to null) so a signed-out page never hands out a live session.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as { __tcw?: TinyCloudWeb | null };
+    w.__tcw = tcw;
+    return () => {
+      w.__tcw = null;
+    };
+  }, [tcw]);
+
   // Close the mobile drawer when the viewport crosses into md+ so the Radix
   // overlay (a portal sibling not covered by md:hidden on SheetContent) can't
   // linger as a full-screen backdrop after a resize-while-open.

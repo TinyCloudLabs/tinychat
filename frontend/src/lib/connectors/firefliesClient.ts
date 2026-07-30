@@ -11,6 +11,52 @@ export const FIREFLIES_DEFAULT_DELAY_MS = 800;
 export const FIREFLIES_MAX_RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_FALLBACK_MS = 60_000;
 
+/** Vite env keys the browser-e2e lane sets to retarget the client at its mock. */
+export interface FirefliesEnvOverrides {
+  VITE_FIREFLIES_API_URL?: string;
+  VITE_FIREFLIES_DELAY_MS?: string;
+}
+
+export interface FirefliesClientDefaults {
+  apiUrl: string;
+  delayMs: number;
+}
+
+/**
+ * Pure env → defaults resolver. Blank, missing, or unparseable values fall back
+ * to the production endpoint and pacing, so a stray/partial .env can never
+ * silently point a real user's sync at a test upstream.
+ */
+export function resolveFirefliesClientDefaults(
+  env: FirefliesEnvOverrides,
+): FirefliesClientDefaults {
+  const rawUrl =
+    typeof env.VITE_FIREFLIES_API_URL === "string" ? env.VITE_FIREFLIES_API_URL.trim() : "";
+  const rawDelay =
+    typeof env.VITE_FIREFLIES_DELAY_MS === "string" ? env.VITE_FIREFLIES_DELAY_MS.trim() : "";
+  const delayMs = Number.parseInt(rawDelay, 10);
+  return {
+    apiUrl: rawUrl.length > 0 ? rawUrl : FIREFLIES_API_URL,
+    delayMs:
+      /^\d+$/.test(rawDelay) && Number.isFinite(delayMs) ? delayMs : FIREFLIES_DEFAULT_DELAY_MS,
+  };
+}
+
+/**
+ * The `{ apiUrl, delayMs }` pair every UI construction site spreads into
+ * `new FirefliesClient({ apiKey, ... })`. `import.meta.env` is read behind a
+ * guard so non-Vite runtimes (bun unit tests) fall through to the defaults.
+ */
+export function defaultFirefliesClientOptions(): FirefliesClientDefaults {
+  let env: FirefliesEnvOverrides = {};
+  try {
+    env = (import.meta.env ?? {}) as FirefliesEnvOverrides;
+  } catch {
+    // No Vite env injection in this runtime — production defaults.
+  }
+  return resolveFirefliesClientDefaults(env);
+}
+
 export const GET_USER_QUERY = `query GetUser { user { name email } }`;
 
 export const LIST_TRANSCRIPTS_QUERY = `query ListTranscripts($limit: Int, $skip: Int) {
@@ -190,7 +236,12 @@ export class FirefliesClient {
     }
     this.apiKey = options.apiKey;
     this.apiUrl = options.apiUrl ?? FIREFLIES_API_URL;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // `fetch` MUST stay bound to the global. Storing the bare reference and
+    // calling it as `this.fetchImpl(...)` rebinds `this` to the client, which
+    // browsers reject with "Illegal invocation" — Bun and Node do not, so this
+    // is invisible to the unit tests and bun e2e drivers and only the browser
+    // lane (test/connectors/browser-lane.ts) catches a regression here.
+    this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
     this.delayMs = options.delayMs ?? FIREFLIES_DEFAULT_DELAY_MS;
   }
 

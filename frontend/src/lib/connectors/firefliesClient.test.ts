@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  defaultFirefliesClientOptions,
   FIREFLIES_API_URL,
+  FIREFLIES_DEFAULT_DELAY_MS,
   FIREFLIES_MAX_RATE_LIMIT_RETRIES,
   FirefliesClient,
   GET_TRANSCRIPT_QUERY,
   GET_USER_QUERY,
   LIST_TRANSCRIPTS_QUERY,
+  resolveFirefliesClientDefaults,
 } from "./firefliesClient";
 
 type FetchCall = {
@@ -467,5 +470,54 @@ describe("FirefliesClient.getTranscript", () => {
     const result = await client.getTranscript("nope");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("graphql-error");
+  });
+});
+
+describe("resolveFirefliesClientDefaults", () => {
+  test("unset env → production endpoint and pacing", () => {
+    expect(resolveFirefliesClientDefaults({})).toEqual({
+      apiUrl: FIREFLIES_API_URL,
+      delayMs: FIREFLIES_DEFAULT_DELAY_MS,
+    });
+  });
+
+  test("set env → mock endpoint and collapsed pacing", () => {
+    expect(
+      resolveFirefliesClientDefaults({
+        VITE_FIREFLIES_API_URL: "http://127.0.0.1:4801/graphql",
+        VITE_FIREFLIES_DELAY_MS: "0",
+      }),
+    ).toEqual({ apiUrl: "http://127.0.0.1:4801/graphql", delayMs: 0 });
+  });
+
+  test("blank or unparseable values fall back rather than retargeting", () => {
+    expect(
+      resolveFirefliesClientDefaults({
+        VITE_FIREFLIES_API_URL: "   ",
+        VITE_FIREFLIES_DELAY_MS: "soon",
+      }),
+    ).toEqual({ apiUrl: FIREFLIES_API_URL, delayMs: FIREFLIES_DEFAULT_DELAY_MS });
+    // A negative delay would make the client's sleeps meaningless; reject it.
+    expect(
+      resolveFirefliesClientDefaults({ VITE_FIREFLIES_DELAY_MS: "-5" }).delayMs,
+    ).toBe(FIREFLIES_DEFAULT_DELAY_MS);
+  });
+
+  test("the resolved pair actually drives the constructed client", () => {
+    const defaults = resolveFirefliesClientDefaults({
+      VITE_FIREFLIES_API_URL: "http://127.0.0.1:4801/graphql",
+      VITE_FIREFLIES_DELAY_MS: "0",
+    });
+    const client = new FirefliesClient({ apiKey: "k", ...defaults });
+    expect(client.delayMs).toBe(0);
+  });
+});
+
+describe("defaultFirefliesClientOptions", () => {
+  test("returns the production defaults with no Vite env injected", () => {
+    expect(defaultFirefliesClientOptions()).toEqual({
+      apiUrl: FIREFLIES_API_URL,
+      delayMs: FIREFLIES_DEFAULT_DELAY_MS,
+    });
   });
 });

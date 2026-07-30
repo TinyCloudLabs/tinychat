@@ -31,6 +31,7 @@
     "test:frontend": "bun run --cwd frontend test",
     "test:packages": "bun run --cwd packages/core test && bun run --cwd packages/client test && bun run --cwd packages/server test",
     "test:connectors": "bun test test/connectors",
+    "test:connectors:browser": "bun run --cwd test connectors:browser",
     "build": "bun run build:packages && bun run build:backend && bun run build:frontend",
     "test": "bun run test:backend && bun run test:packages && bun run test:frontend",
     "test:real-auth": "bun run --cwd test real-auth",

@@ -20,7 +20,10 @@ import type {
   SyncProgress,
 } from "@/lib/connectors/types";
 import * as connectorStore from "@/lib/connectors/connectorStore";
-import { FirefliesClient } from "@/lib/connectors/firefliesClient";
+import {
+  defaultFirefliesClientOptions,
+  FirefliesClient,
+} from "@/lib/connectors/firefliesClient";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import {
   getConnectorKey,
@@ -162,7 +165,10 @@ export function ConnectorsCard({ tcw }: ConnectorsCardProps) {
       }
       const ac = new AbortController();
       syncAbortRefs.current[d.id] = ac;
-      const client = new FirefliesClient({ apiKey: keyRes.data });
+      const client = new FirefliesClient({
+        apiKey: keyRes.data,
+        ...defaultFirefliesClientOptions(),
+      });
       const syncRes = await syncFireflies({
         client,
         store: connectorStore,
