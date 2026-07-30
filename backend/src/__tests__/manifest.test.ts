@@ -31,6 +31,19 @@ describe("TinyChat manifest and backend policy", () => {
         actions: ["read", "write", "schema"],
         description: "Store chat threads and messages in your space's SQL database.",
       },
+      {
+        service: "tinycloud.sql",
+        path: "connectors",
+        actions: ["read", "write", "schema"],
+        description:
+          "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database.",
+      },
+      {
+        service: "tinycloud.kv",
+        path: "connectors/",
+        actions: ["get", "put", "del", "list"],
+        description: "Store transcript content synced from connected sources in your space.",
+      },
     ]);
   });
 

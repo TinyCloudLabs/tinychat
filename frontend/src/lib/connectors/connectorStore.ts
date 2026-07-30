@@ -154,18 +154,34 @@ export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>
 
 // ── Connector state ─────────────────────────────────────────────────────
 
+/**
+ * Read-only and deliberately tolerant: this runs on settings mount (the App
+ * keeps views mounted via visibility toggles, so it effectively runs at app
+ * load). It must NOT run schema DDL, and a session that was signed in before
+ * the connectors permissions existed in the manifest (or a space where the
+ * connectors db doesn't exist yet) reads as "not connected" rather than an
+ * error. Schema creation happens lazily in the write paths (connect/sync).
+ */
 export async function getConnection(
   tcw: TinyCloudWeb,
   connectorId: ConnectorId,
 ): Promise<StoreResult<ConnectorConnection | null>> {
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
   const res = await store(tcw).query(
     `SELECT connector_id, status, last_synced_at, last_sync_status, last_sync_error, item_count
      FROM connector_state WHERE connector_id = ?`,
     [connectorId],
   );
-  if (!res.ok) return fail(res.error, "getConnection");
+  if (!res.ok) {
+    const code = (res.error as { code?: string }).code ?? "";
+    const msg = (res.error.message ?? "").toLowerCase();
+    const notReadable =
+      code === "AUTH_UNAUTHORIZED"
+      || msg.includes("unauthorized")
+      || msg.includes("not authorized")
+      || msg.includes("no such table");
+    if (notReadable) return { ok: true, data: null };
+    return fail(res.error, "getConnection");
+  }
   if (res.data.rows.length === 0) return { ok: true, data: null };
   const row = res.data.rows[0];
   return {
