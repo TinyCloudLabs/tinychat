@@ -263,8 +263,17 @@ Thin wrapper over `tcw.secrets` (`ISecretsService`):
   with a not-found-shaped error, call `tcw.ensureOwnedSpaceHosted?.("secrets")` if the
   method exists, then retry once. If the method doesn't exist on web-sdk, surface the
   error honestly (no silent fallback — debugging rule).
-- `put`/`delete` may trigger the SDK's own permission-escalation modal
-  (`requestPermissions`) — that's expected UX, don't suppress it.
+- **Every action the connector needs must be granted at sign-in consent — do NOT
+  rely on the SDK's permission-escalation modal.** This spec used to say the modal
+  was expected UX; that position was wrong and the browser lane disproved it.
+  Escalation routes through `grantRuntimePermissions`, which requires a wallet
+  signer. A restored session has none, so the modal renders, the user clicks
+  Approve, and it fails with "grantRuntimePermissions requires wallet mode with a
+  signer or privateKey" — a dead end the user cannot get past. Hence the `secrets`
+  shorthand declares `["read","write","delete"]`: `delete` is for disconnect, which
+  would otherwise hit exactly that wall. (SDK issue: runtime escalation is
+  structurally unusable for restored sessions, which is the normal state of any
+  returning user.)
 
 **KNOWN BLOCKER (worked around app-side, pending an SDK fix) — secrets reads on
 web-sdk 2.5.1.** Reading a secret back is refused with `PERMISSION_DENIED`

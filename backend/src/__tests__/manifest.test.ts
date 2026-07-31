@@ -68,13 +68,21 @@ describe("TinyChat manifest and backend policy", () => {
   // runtime escalation. Only fireflies is declared because only fireflies
   // ships; the other registry entries reuse the secret name API_KEY, so
   // adding them means keying this map differently and overriding `name`.
-  it("declares the fireflies secret so scoped puts need no escalation", () => {
+  //
+  // `delete` is granted UP FRONT rather than left to the SDK's escalation
+  // modal. Escalation calls grantRuntimePermissions, which needs a wallet
+  // signer; a restored session has none, so the modal renders and then fails
+  // on Approve — it is unusable, not merely inconvenient. Disconnect therefore
+  // has to carry the grant from sign-in consent. Verified against the SDK that
+  // this is sufficient: in network-encryption mode (the only mode the secrets
+  // vault runs in) DataVaultService.delete touches `vault/<key>` alone.
+  it("declares the fireflies secret with delete, so disconnect needs no escalation", () => {
     const manifest = runtimeManifest();
 
     expect(manifest.secrets).toEqual({
       API_KEY: {
         scope: "fireflies",
-        actions: ["read", "write"],
+        actions: ["read", "write", "delete"],
         description: "Store your Fireflies API key, encrypted, in your secrets space.",
       },
     });

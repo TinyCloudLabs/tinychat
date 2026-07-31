@@ -482,10 +482,48 @@ async function disconnect(page: Page, opts: { purge: boolean }): Promise<void> {
   }
   await shot(page, `disconnect-confirm-purge-${opts.purge}`);
   await confirmDialog.getByRole("button", { name: confirmName, exact: true }).click();
+  await failIfPermissionPromptShown(page, `disconnect(purge=${opts.purge})`);
   // The card flips back to "Connect" once the dialog settles.
   await page
     .getByRole("button", { name: "Connect Fireflies", exact: true })
     .waitFor({ state: "visible", timeout: 120_000 });
+}
+
+/**
+ * Fail the run if the SDK's permission-escalation modal appears.
+ *
+ * The manifest grants everything the connector needs at sign-in — including
+ * `delete` for disconnect — precisely so this prompt never shows. It is not
+ * benign UX: escalation calls grantRuntimePermissions, which needs a wallet
+ * signer, and a restored session has none, so clicking Approve fails with
+ * "grantRuntimePermissions requires wallet mode with a signer or privateKey".
+ * The user is simply stuck. An earlier version of this lane clicked Approve and
+ * hung for two minutes doing it.
+ *
+ * So a prompt here means a grant regression — the manifest stopped covering an
+ * action the code performs, or the session predates the manifest. Say that
+ * plainly rather than letting the leg time out on a mystery.
+ */
+async function failIfPermissionPromptShown(page: Page, leg: string): Promise<void> {
+  const approve = page.getByRole("button", { name: "Approve", exact: true });
+  try {
+    await approve.waitFor({ state: "visible", timeout: 15_000 });
+  } catch {
+    return; // The expected path: the grant was already in the session.
+  }
+  await shot(page, "FAILURE-permission-prompt");
+  const permission =
+    (await page
+      .getByRole("dialog")
+      .textContent()
+      .catch(() => null)) ?? "<dialog text unavailable>";
+  throw new Error(
+    `${leg}: the SDK asked to escalate permissions, which means the manifest no longer ` +
+      `covers an action the code performs (or this session predates the manifest). ` +
+      `Escalation cannot succeed on a restored session — Approve fails for lack of a ` +
+      `wallet signer — so this is a hard failure, not a prompt to click through. ` +
+      `Dialog said: ${permission.replace(/\s+/g, " ").trim().slice(0, 300)}`,
+  );
 }
 
 /** Wait until the card's Sync button is no longer in its syncing state. */

@@ -51,7 +51,7 @@
   "secrets": {
     "API_KEY": {
       "scope": "fireflies",
-      "actions": ["read", "write"],
+      "actions": ["read", "write", "delete"],
       "description": "Store your Fireflies API key, encrypted, in your secrets space."
     }
   }
