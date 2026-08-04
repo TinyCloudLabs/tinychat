@@ -176,7 +176,13 @@ jobs:
 
       - name: Install Phala CLI
         run: |
-          npm install -g phala
+          # Pinned: 1.1.20 (2026-07-26) broke deploys to this CVM — its updateCvm
+          # path requires kms_info.encrypted_env_pubkey on the CVM record (absent
+          # on CVMs created before that field existed) and has no fallback fetch
+          # for centralized KMS: "CVM encrypted_env_pubkey is required for
+          # centralized KMS". 1.1.19 uses the older flow that works. Re-test on
+          # the next CLI release before unpinning.
+          npm install -g phala@1.1.19
           phala --version || true
 
       - name: Capture CVM status before deploy
