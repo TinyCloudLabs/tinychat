@@ -13,6 +13,7 @@ import {
   restoreTinyCloudWebSession,
   verifySession,
 } from "@tinyboilerplate/client";
+import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
@@ -292,6 +293,21 @@ export function App() {
     }
   }, [tcw]);
 
+  // Dev-only probe seam. The browser-e2e lane (test/connectors/browser-lane.ts)
+  // asserts against REAL space storage — SQL rows, KV bodies, secrets — through
+  // this handle, because a UI-only assertion cannot tell "synced" from "looks
+  // synced". `import.meta.env.DEV` is statically false in a production build, so
+  // the whole effect is dropped from the shipped bundle. Cleared on sign-out
+  // (tcw flips to null) so a signed-out page never hands out a live session.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as { __tcw?: TinyCloudWeb | null };
+    w.__tcw = tcw;
+    return () => {
+      w.__tcw = null;
+    };
+  }, [tcw]);
+
   // Close the mobile drawer when the viewport crosses into md+ so the Radix
   // overlay (a portal sibling not covered by md:hidden on SheetContent) can't
   // linger as a full-screen backdrop after a resize-while-open.
@@ -326,8 +342,18 @@ export function App() {
 
     (async () => {
       try {
+        // The manifest must ride along here, not just on the fresh sign-in
+        // path: TinyCloudWeb stores it from constructor config only, and a
+        // manifest-less instance cannot escalate permissions (secrets.put
+        // throws "requestPermissions requires a stored manifest") after a
+        // page reload. A manifest-endpoint hiccup must not break boot, so a
+        // failed fetch degrades to the previous manifest-less restore.
+        const manifest = await loadAppManifest(`${BACKEND_URL}/api/manifest`).catch(
+          () => undefined,
+        );
         const restored = await restoreTinyCloudWebSession(storedAddress, {
           autoCreateSpace: false,
+          manifest,
         });
         if (restored.status !== "restored" || !restored.tcw) {
           sessionStore.clear();
@@ -557,11 +583,19 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
+      //
+      // withEncryptionDecryptGrant is a WORKAROUND that hardcodes an SDK-internal
+      // URN format — see docs/connectors-spec.md §7 "KNOWN BLOCKER" and the header
+      // of lib/connectors/encryptionGrant.ts. Secrets reads are refused without
+      // it, and the grant cannot be declared in the static manifest because its
+      // network id embeds this user's DID. Capabilities are minted from the
+      // manifest passed here, so sign-in is the only moment it can be added.
+      // Delete this call when the SDK carries the capability itself.
       const { tcw: signedTcw, session } = await createAndSignIn(web3Provider, {
         address: connectedAddress,
         nonce,
         autoCreateSpace: true,
-        manifest,
+        manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
       });
 
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).

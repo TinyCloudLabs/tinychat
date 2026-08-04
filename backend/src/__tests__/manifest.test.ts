@@ -31,7 +31,61 @@ describe("TinyChat manifest and backend policy", () => {
         actions: ["read", "write", "schema"],
         description: "Store chat threads and messages in your space's SQL database.",
       },
+      {
+        service: "tinycloud.sql",
+        path: "connectors",
+        actions: ["read", "write", "schema"],
+        description:
+          "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database.",
+      },
+      {
+        service: "tinycloud.kv",
+        path: "connectors/",
+        actions: ["get", "put", "del", "list"],
+        description: "Store transcript content synced from connected sources in your space.",
+      },
     ]);
+  });
+
+  // DataVaultService has two storage layouts. The local-envelope one stores an
+  // entry as TWO objects (`keys/<vaultKey>` + `vault/<vaultKey>`); the
+  // network-encrypted one stores only `vault/<vaultKey>`. node-sdk's
+  // createVaultService always passes an `encryption` config and
+  // `usesNetworkEncryption` is just `encryption !== undefined`, so the secrets
+  // vault is ALWAYS network-encrypted and `keys/` is never touched — a probe on
+  // a fresh session read it back KV_NOT_FOUND. No `keys/` grant is declared,
+  // deliberately: granting a path the code cannot reach is dead surface. Re-add
+  // it only if the SDK ever exposes a local-envelope mode.
+  it("declares no keys/ grant — the network-encrypted vault never writes that path", () => {
+    const manifest = runtimeManifest();
+    const paths = (manifest.permissions ?? []).map((permission) => permission.path);
+    expect(paths.some((path) => path.startsWith("keys/"))).toBe(false);
+  });
+
+  // The `secrets` shorthand is a top-level sibling of `permissions`, not an
+  // entry in it: the SDK expands it into a `tinycloud.vault` grant on the
+  // owner's `secrets` space. Declaring it is what lets `secrets.put` skip
+  // runtime escalation. Only fireflies is declared because only fireflies
+  // ships; the other registry entries reuse the secret name API_KEY, so
+  // adding them means keying this map differently and overriding `name`.
+  //
+  // `delete` is granted UP FRONT rather than left to the SDK's escalation
+  // modal. Escalation calls grantRuntimePermissions, which needs a wallet
+  // signer; a restored session has none, so the modal renders and then fails
+  // on Approve — it is unusable, not merely inconvenient. Disconnect therefore
+  // has to carry the grant from sign-in consent. Verified against the SDK that
+  // this is sufficient: in network-encryption mode (the only mode the secrets
+  // vault runs in) DataVaultService.delete touches `vault/<key>` alone.
+  it("declares the fireflies secret with delete, so disconnect needs no escalation", () => {
+    const manifest = runtimeManifest();
+
+    expect(manifest.secrets).toEqual({
+      API_KEY: {
+        scope: "fireflies",
+        actions: ["read", "write", "delete"],
+        description: "Store your Fireflies API key, encrypted, in your secrets space.",
+      },
+    });
   });
 
   it("derives and hashes backend policy from resolved runtime manifest permissions", () => {

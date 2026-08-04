@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ImportDialog } from "./ImportDialog";
+import { ConnectorsCard } from "./ConnectorsCard";
 import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
@@ -142,6 +143,7 @@ export function SettingsPage({
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
           </SectionCard>
+          <ConnectorsCard tcw={tcw} />
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
               <div className="flex items-baseline justify-between gap-3">
@@ -314,7 +316,7 @@ function formatResetsAt(iso: string): string {
   }
 }
 
-function SectionCard(props: {
+export function SectionCard(props: {
   icon: LucideIcon;
   title: string;
   children?: React.ReactNode;
