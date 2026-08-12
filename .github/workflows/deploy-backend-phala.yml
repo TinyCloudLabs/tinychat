@@ -584,10 +584,15 @@ jobs:
           for i in {1..10}; do
             # Junk signature, junk token, minimal JSON body. Nothing here is a valid
             # delivery, so this never enqueues and never touches a real user's queue.
+            # X-Requested-With satisfies the global CSRF gate (packages/server/src/csrf.ts),
+            # which otherwise 403s every header-less POST BEFORE routing and masks the dark
+            # arm's 404. The mounted arm is unaffected: the delivery route matches in the raw
+            # window ahead of CSRF and still answers 401 to the junk signature.
             WEBHOOK_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
               --connect-timeout 5 --max-time 15 \
               -X POST "$WEBHOOK_URL" \
               -H 'Content-Type: application/json' \
+              -H 'X-Requested-With: XMLHttpRequest' \
               -H 'x-hub-signature: sha256=00000000000000000000000000000000000000000000000000000000deadbeef' \
               --data '{"eventType":"probe","meetingId":"deploy-probe"}' || echo 000)"
             echo "Attempt $i/10: http_status=$WEBHOOK_STATUS"
