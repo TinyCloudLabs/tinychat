@@ -144,6 +144,16 @@ describe("App wiring", () => {
     expect(args).not.toContain("withEncryptionDecryptGrant");
   });
 
+  test("the restore path never publishes a manifest-less client during backend startup", () => {
+    const restoreEffect = app.slice(
+      app.indexOf("// Restore an existing session on boot"),
+      app.indexOf("// A1 — keep the policy-input refs"),
+    );
+    expect(restoreEffect).toContain("await fetchConfigWithRetry(");
+    expect(restoreEffect).toMatch(/if \(!manifest\)\s+throw new Error\(/);
+    expect(restoreEffect).not.toContain("() => undefined");
+  });
+
   test("the workaround has exactly one call site, so removing it is one line", () => {
     expect(app.split("withEncryptionDecryptGrant(").length - 1).toBe(1);
   });

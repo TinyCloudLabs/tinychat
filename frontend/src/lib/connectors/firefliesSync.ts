@@ -97,8 +97,10 @@ function fromStore(err: StoreError, context: string): SyncError {
   return { kind: "storage", message: `${context}: ${err.message}` };
 }
 
-/** Map a FirefliesError from client calls into a SyncError. */
-function fromFireflies(err: FirefliesError): SyncError {
+/** Map a FirefliesError from client calls into a SyncError. Exported so the
+ *  targeted queued-id ingest (targetedSync.ts) classifies client failures
+ *  IDENTICALLY — two copies of this mapping would drift. */
+export function fromFireflies(err: FirefliesError): SyncError {
   switch (err.kind) {
     case "invalid-key":
       return { kind: "auth", message: err.message };
@@ -114,7 +116,7 @@ function fromFireflies(err: FirefliesError): SyncError {
 /** True when the error should abort the whole run rather than being skipped
  *  and recorded. Auth and rate-limit errors are terminal — a bad key won't
  *  suddenly become good, and continuing after a rate-limit just burns budget. */
-function isTerminal(err: FirefliesError): boolean {
+export function isTerminal(err: FirefliesError): boolean {
   return err.kind === "invalid-key" || err.kind === "rate-limited";
 }
 

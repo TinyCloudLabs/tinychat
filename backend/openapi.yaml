@@ -412,6 +412,606 @@ paths:
         "503":
           $ref: "#/components/responses/BillingNotConfigured"
 
+  # ── Connector webhooks (background sync) ──────────────────────────────
+  # The whole group mounts ONLY when CONNECTOR_WEBHOOKS_ENABLED=true. While the
+  # flag is off every path below 404s — that is what the post-deploy probe in
+  # .github/workflows/deploy-backend-phala.yml asserts (mounted -> 401 on a
+  # junk-signature POST; missing -> 404).
+  /api/connectors/webhooks/{source}/{token}:
+    post:
+      operationId: receiveConnectorDelivery
+      summary: Signed connector delivery (public; the per-user routing token rides in the URL)
+      description: >-
+        Unauthenticated and mounted ahead of the global JSON parser, CSRF and the
+        global limiter: the raw body is HMAC-verified against
+        `x-hub-signature: sha256={hex}` before it is parsed. The provider payload
+        carries no user identity, so the URL token is what resolves the tenant.
+        Every rejection — unknown source, malformed token, unknown token, bad
+        signature — returns the identical 401 body, so the route is never an oracle.
+        A 202 means the delivery was durably queued and nothing more — the
+        provider learns the same thing either way, and the two paragraphs below are
+        invisible to it. OUTSIDE the backend-ingest cohort (ingest shape C, the
+        default and the only shape while the flag is dark) queueing the id IS the
+        whole server-side job: nothing is fetched, nothing is drained after the
+        response, and nothing is written to the user's space. For those addresses
+        this server never receives the user's connector API key — the browser does
+        the fetching and the writing on the user's next authenticated visit (POST
+        /drain, then POST /ack). FOR A COHORT ADDRESS (CONNECTOR_BACKEND_INGEST_ENABLED
+        plus the per-address allowlist) the same 202 additionally nudges the backend
+        fetch worker: the server holds a per-user Fireflies OAuth credential for that
+        address, fetches the meeting itself, and keeps an encrypted server-side copy
+        for 90 days, which the user reads back over GET /api/connectors/meetings. The
+        browser's /drain surfaces nothing for it and /ack is an idempotent no-op. What
+        does NOT change either way is the delegation: this server holds no connector
+        delegation for any address — cohort custody is out of band, so nothing is
+        minted inside a user's space.
+      security: []
+      parameters:
+        - name: source
+          in: path
+          required: true
+          description: Connector registry id.
+          schema:
+            type: string
+            enum: [fireflies]
+        - name: token
+          in: path
+          required: true
+          description: Opaque per-user routing token — 32 random bytes, base64url.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{43}$"
+        - name: x-hub-signature
+          in: header
+          required: true
+          description: "`sha256={hex}` over the exact raw request body. No algorithm negotiation."
+          schema:
+            type: string
+            pattern: "^sha256=[0-9a-fA-F]{64}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectorDelivery"
+      responses:
+        "200":
+          description: >-
+            Event verified but not one this connector handles. Answered 200 so the
+            provider stops retrying an event that will never be processed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, event]
+                properties:
+                  status:
+                    type: string
+                    const: ignored
+                  event:
+                    type: string
+        "202":
+          description: >-
+            Verified and durably queued. Byte-identical even when the queue cap
+            dropped an older item — a drop count here would tell a token holder when
+            a victim's queue is saturated; it goes to the log and to GET /pending.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: queued
+        "400":
+          description: >-
+            Verified but unusable — `invalid_json`, `missing_meeting_id`,
+            `invalid_meeting_id`, or `stale_delivery` (outside the ±24 h freshness
+            window). Never a 5xx: a retry cannot fix any of them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/ConnectorDeliveryRejected"
+        "429":
+          $ref: "#/components/responses/ConnectorRateLimited"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+
+  /api/connectors/webhooks/config:
+    get:
+      operationId: getConnectorWebhookConfig
+      summary: Read the caller's background-sync config
+      responses:
+        "200":
+          description: >-
+            Current config. `enabled:false` with a null url/secret when never set up.
+            `secret` is ALWAYS null here — it is returned only by a mint/rotate POST;
+            use `hasSecret` to tell a configured connector from an unconfigured one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorWebhookConfig"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+    post:
+      operationId: enableConnectorWebhook
+      summary: Enable background sync (and rotate the routing token)
+      description: >-
+        Enabling clears the pending queue, the dead-letter and the abort flag for
+        the address first, so re-enabling never replays the off-window. It does NOT
+        clear the purge ledger — only DELETE /api/connectors/webhooks/purged does.
+        A POST while already enabled is a read unless `rotate` is true or a
+        different `source` is named. Rotation is deliberately hard-breaking: the old
+        token stops resolving and the user must re-paste the URL.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source:
+                  type: string
+                  enum: [fireflies]
+                rotate:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: >-
+            Background sync is enabled. A mint/rotate returns the delivery URL AND the derived
+            secret — the only response that carries it. A no-op POST (already enabled, no
+            `rotate`, same `source`) returns `secret: null` like `GET /config`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorWebhookEnabled"
+        "400":
+          description: "`unknown_source` — the source is not in the connector registry."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+    delete:
+      operationId: disableConnectorWebhook
+      summary: Disable background sync — the single idempotent teardown
+      description: >-
+        One call performs the whole teardown in the normative order: durable
+        disabled marker, config + token delete, cache evictions, queue drop. Every
+        crash point leaves a state the drain classifies as revoked. Retry the SAME
+        call on a 503; there is never a second, different call to make. Under
+        Option C the teardown touches NO delegation: the server holds no connector
+        delegation, and the app's unrelated chat delegation — the one every
+        authenticated TinyChat write depends on — is never removed by switching an
+        optional connector off.
+      responses:
+        "200":
+          description: Teardown complete.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, queueDropped]
+                properties:
+                  status:
+                    type: string
+                    const: disabled
+                  queueDropped:
+                    type: integer
+                    description: >-
+                      Pending items discarded by the teardown, summed across every
+                      registered source. Exact, not a lower bound: each count comes
+                      from the clear itself, inside the per-address lock that makes
+                      the delete atomic.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: >-
+            `teardown_incomplete` — the disabled marker is already written, so the
+            address is classified revoked. Retry this same idempotent call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+
+  /api/connectors/webhooks/pending:
+    get:
+      operationId: getConnectorWebhookPending
+      summary: Pending queue, dead-letter and delivery rate-limit state
+      responses:
+        "200":
+          description: Queue snapshot for the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorWebhookPending"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+
+  /api/connectors/webhooks/drain:
+    post:
+      operationId: drainConnectorWebhookQueue
+      summary: Kick a drain for the caller and return the resulting queue snapshot
+      description: >-
+        Under Option C this is THE processing trigger — the authenticated
+        user-visit drain. There is no post-delivery kick, no background drain and
+        no stored connector delegation to gate it on; the only recurring backend
+        job is a bounded TTL/dead-letter sweep that returns counts, never ids. It
+        writes nothing to the user's space: the pending ids go back to the browser,
+        which fetches each exact id with the user's own connector key, writes to
+        the user's own space, and then settles them with POST
+        /api/connectors/webhooks/ack. The response carries the DRAIN'S OWN surfaced
+        list, not the raw queue: an aborted drain (revoked, ledger_unavailable)
+        surfaces nothing and reports `surfaceBlocked`, because an id handed to the
+        client resurrects the meeting just as surely as a server-side write would.
+        A disabled address surfaces nothing either; a drain must never resurrect
+        one. Forced kicks are floored per address — a repeat inside the floor
+        returns the previous pass's result rather than re-reading the shared node.
+        For an address enrolled in the dark backend-ingest cohort no drain pass runs
+        at all: the backend fetch worker is the sole consumer of that queue, so the
+        response surfaces nothing and reports `surfaceBlocked: backend_ingest`. Two
+        consumers settling the same items is the double-drain race this excludes.
+      responses:
+        "200":
+          description: Queue snapshot after the drain attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorWebhookPending"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: "`drain_unavailable` or `unavailable` — retryable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+
+  /api/connectors/webhooks/ack:
+    post:
+      operationId: acknowledgeConnectorWebhookItems
+      summary: Settle queued ids the browser has already written to the user's space
+      description: >-
+        Under ingest shape C the BROWSER is the writer: it fetches the exact queued
+        id with the user's own Fireflies key, writes SQL + KV into the user's own
+        space, and only then calls this route. Ownership is derived from the session
+        and the stored config — a body `address` is ignored and a body `source` may
+        only confirm the configured one. Every id and kind is validated before
+        anything is read or written, and one bad element rejects the whole batch.
+        Only the exact `(meetingId, kind)` identities named are removed, so a
+        summary item survives its transcript sibling's acknowledgement.
+        Acknowledging an identity that is already gone SUCCEEDS — the browser stores
+        the meeting and then acknowledges, so a lost response must converge on
+        retry rather than duplicate the meeting. The disabled marker and the purge
+        ledger are re-applied here: a revoked address and an unreadable or
+        unparseable ledger settle nothing and report `surfaceBlocked`, and a
+        tombstoned id is never counted as ingested. SUCCESSES ONLY in this version —
+        `status` is accepted solely as the literal `done`, and no browser-supplied
+        error string is read, logged or stored; a failed item stays queued until the
+        retry schedule or the 14-day TTL deals with it. For an address enrolled in the
+        dark backend-ingest cohort this route is an IDEMPOTENT NO-OP: the fetch worker
+        owns that queue's removals, so nothing is settled and the counts come back
+        zero rather than deleting an item the worker has not fetched yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectorAckRequest"
+      responses:
+        "200":
+          description: >-
+            Settlement applied. The body is the caller's own queue snapshot plus the
+            settlement counts — never another user's queue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorAckResult"
+        "400":
+          description: >-
+            `invalid_body` (missing / empty / over-cap `items`, or a non-object
+            entry), `invalid_meeting_id`, `invalid_kind`, `unsupported_ack_status`
+            (only `done` is accepted), or `unknown_source`. Nothing is settled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+
+  /api/connectors/webhooks/purged:
+    post:
+      operationId: recordConnectorPurge
+      summary: Record a purge — writes the tombstone ledger that suppresses resurrection
+      description: >-
+        The ledger is an AUTHORIZATION input (it suppresses writes), so this route
+        carries the rigour of the delegation accept route: the address comes from
+        the session and never the body, and every id goes through the shared
+        meeting-id validator — one bad element rejects the whole call and nothing is
+        written. `purgedThrough` advances monotonically; an older value never moves
+        it backwards. The 200-id cap bounds `recentIds` (forensics) ONLY — the
+        watermark tombstones a purge of any size, and an overflow is reported and
+        logged, never silently truncated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectorPurgeRequest"
+      responses:
+        "200":
+          description: >-
+            Accepted with an overflow — more than 200 ids were submitted, so only
+            the newest 200 are retained in `recentIds`. `purgedThrough` still
+            covers every id, so nothing is left unprotected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, stored, dropped]
+                properties:
+                  status:
+                    type: string
+                    const: accepted
+                  stored:
+                    type: integer
+                  dropped:
+                    type: integer
+        "204":
+          description: >-
+            Recorded. Also returned when background sync was never enabled for this
+            address — an idempotent no-op.
+        "400":
+          description: >-
+            `unknown_source`, `invalid_body`, `invalid_meeting_id`, or
+            `invalid_purged_through` (unparseable or more than 24 h in the future).
+            Nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+    delete:
+      operationId: clearConnectorPurgeLedger
+      summary: Clear the purge ledger — the explicit user-initiated re-sync
+      description: >-
+        Resets both `purgedThrough` and `recentIds`, so previously purged meetings
+        become writable again. Fired by the reconnect / re-sync flow and by nothing
+        else: never automatically on drain, never on enable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: string
+                  enum: [fireflies]
+      responses:
+        "204":
+          description: Ledger cleared.
+        "400":
+          description: "`unknown_source` — the source is not in the connector registry."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+
+  /api/connectors/meetings:
+    get:
+      operationId: listConnectorMeetings
+      summary: List the signed-in address's backend-ingested meetings (cohort only)
+      description: >-
+        The cohort's read API. Mounted only when the dark backend-ingest flag is
+        armed, and 404 for every address that is not enrolled — a signed-in user
+        outside the cohort cannot tell the surface exists. The tenant is ALWAYS the
+        session address: no route here accepts an address, an account id or a token.
+        STRICTLY SIDE-EFFECT-FREE — this GET writes nothing, stamps nothing and
+        sweeps nothing. Fails closed: an unreadable archive answers 503, never an
+        empty list that would render as "you have no meetings".
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [fireflies]
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            1–200, default 50. Out of range is a 400 (`invalid_limit`), never a
+            silent clamp.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          description: >-
+            The `nextCursor` of the previous page. A cursor whose row is gone
+            (retention swept it between pages) is a 400 (`invalid_cursor`), never a
+            silent restart at page 1.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,64}$"
+        - name: reconciled
+          in: query
+          required: false
+          description: >-
+            The browser reconcile queue. `false` returns only the rows this space
+            has not copied into the user's own storage yet, `true` only the rows it
+            has; omitted returns both. Any other value is a 400
+            (`invalid_reconciled`) — a silently ignored filter would hand the
+            browser the whole archive to re-copy on every run. Filtering happens
+            before paging, so `cursor` addresses the filtered set.
+          schema:
+            type: string
+            enum: ["true", "false"]
+      responses:
+        "200":
+          description: The caller's own meetings, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorMeetingList"
+        "400":
+          description: "`invalid_limit`, `invalid_cursor` or `invalid_reconciled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: >-
+            The flag is dark or the address is not in the cohort. Deliberately
+            indistinguishable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+
+  /api/connectors/meetings/{source}/{sourceId}:
+    get:
+      operationId: readConnectorMeeting
+      summary: Read one backend-ingested meeting's content (cohort only)
+      description: >-
+        Decrypted inside the TEE and returned to its owner. Also strictly
+        side-effect-free. A meeting id that belongs to another address is simply
+        `not_found`; the id is never echoed back on the 404, and no internal error
+        text ever reaches the caller.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [fireflies]
+        - name: sourceId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,64}$"
+      responses:
+        "200":
+          description: >-
+            The meeting. Either half may be absent — a summary stored without a
+            transcript is a complete row, not an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorMeetingContent"
+        "400":
+          description: "`invalid_meeting_id` — refused before any store call."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: >-
+            No such meeting for THIS address, an unknown source, a dark flag, or a
+            non-cohort address.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "503":
+          $ref: "#/components/responses/ConnectorUnavailable"
+
+  /api/connectors/meetings/{source}/{sourceId}/reconciled:
+    post:
+      operationId: markConnectorMeetingReconciled
+      summary: Stamp a meeting as copied into the user's own space (cohort only)
+      description: >-
+        The reconcile-ack, and the ONE mutating route of the meetings surface. The
+        browser calls it AFTER the user-space write succeeded (storage-before-ack),
+        so a stamp always trails a durable write and never leads it. Idempotent — a
+        lost response is retried and the retry is a success. The server copy is
+        RETAINED: reconciling does not shorten retention, because a second device
+        that has not reconciled still has to be able to read the meeting.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [fireflies]
+        - name: sourceId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,64}$"
+      responses:
+        "200":
+          description: Stamped (or already stamped).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reconciled, source, sourceId]
+                properties:
+                  reconciled:
+                    type: boolean
+                    const: true
+                  source:
+                    type: string
+                  sourceId:
+                    type: string
+        "400":
+          description: "`invalid_meeting_id`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: >-
+            No such meeting for this address, a dark flag, or a non-cohort address.
+            Nothing is stamped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+        "503":
+          description: >-
+            The stamp did not land. Reported as a failure rather than a
+            `reconciled: true` the store never made.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectorError"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -525,6 +1125,14 @@ components:
             - string
             - "null"
           format: date-time
+        verified:
+          type: boolean
+          description: >-
+            Whether the stored delegation's `att` has been cryptographically verified. Present
+            and `false` on every `active` response today: the §9.2 verification chokepoint does
+            not exist yet, so `active` means stored, unexpired and addressed to this backend —
+            the resources, delegator and expiry behind it all come from the bundle's unsigned
+            top-level fields. Additive on purpose; the `status` enum is unchanged.
 
     ChatMessage:
       type: object
@@ -771,6 +1379,351 @@ components:
           type: string
           format: uri
 
+    # ── Connector webhooks ──────────────────────────────────────────────
+    ConnectorError:
+      type: object
+      description: >-
+        Connector-route error body. Only `error` is guaranteed — the public
+        delivery route deliberately carries no detail beyond the code.
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    ConnectorDelivery:
+      type: object
+      description: >-
+        The provider payload. Both the current (`eventType`/`meetingId`) and legacy
+        (`event`/`meeting_id`) key spellings are accepted. `timestamp` is checked
+        against the ±24 h freshness window when present and parseable; the legacy
+        shape carries none and stays indefinitely replayable — a recorded
+        consequence.
+      additionalProperties: true
+      properties:
+        eventType:
+          type: string
+          enum: ["Transcription completed", "meeting.transcribed", "meeting.summarized"]
+        event:
+          type: string
+        meetingId:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+        meeting_id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+        timestamp:
+          type: string
+
+    ConnectorWebhookConfig:
+      type: object
+      required: [enabled, disabledAt, source, url, secret, hasSecret, createdAt]
+      properties:
+        enabled:
+          type: boolean
+          description: >-
+            False whenever a durable disabled marker stands, even over a surviving
+            config — a teardown crash artifact the drain classifies as revoked, and
+            the card must agree.
+        disabledAt:
+          type: [string, "null"]
+          format: date-time
+        source:
+          type: [string, "null"]
+        url:
+          type: [string, "null"]
+          description: >-
+            The delivery URL the user pastes into their provider dashboard. Its origin is
+            pinned by CONNECTOR_WEBHOOK_PUBLIC_ORIGIN, not derived from the request's Host
+            header; unpinned, the host is request-derived and the scheme is forced to https
+            for any routable host.
+        secret:
+          type: [string, "null"]
+          description: >-
+            Per-user signing secret, derived from the token — never the HMAC master.
+            Returned ONLY by a mint/rotate `POST /config`; `null` on `GET /config` and on a
+            no-op POST. §3.8/T11 show it once behind a reveal, and it cannot be rotated without
+            rotating the token, so it does not ride a poll.
+        hasSecret:
+          type: boolean
+          description: Whether a delivery secret exists, so the card renders without re-reading it.
+        createdAt:
+          type: [string, "null"]
+          format: date-time
+
+    ConnectorWebhookEnabled:
+      allOf:
+        - $ref: "#/components/schemas/ConnectorWebhookConfig"
+        - type: object
+          required: [status, rotated]
+          properties:
+            status:
+              type: string
+              const: enabled
+            rotated:
+              type: boolean
+              description: True when a new token was minted, invalidating the previous URL.
+
+    ConnectorPendingItem:
+      type: object
+      required: [meetingId, kind, receivedAt, attempts, nextAttemptAt]
+      properties:
+        meetingId:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+        kind:
+          type: string
+          enum: [transcript, summary]
+        receivedAt:
+          type: string
+          format: date-time
+        attempts:
+          type: integer
+        nextAttemptAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+          description: Short code only — never a payload fragment.
+
+    ConnectorDeadItem:
+      allOf:
+        - $ref: "#/components/schemas/ConnectorPendingItem"
+        - type: object
+          required: [deadAt]
+          properties:
+            deadAt:
+              type: string
+              format: date-time
+
+    ConnectorWebhookPending:
+      type: object
+      required:
+        [enabled, disabledAt, source, deliveriesRateLimited, count, pending, deadCount, dead]
+      properties:
+        enabled:
+          type: boolean
+        disabledAt:
+          type: [string, "null"]
+          format: date-time
+        source:
+          type: [string, "null"]
+        deliveriesRateLimited:
+          type: boolean
+          description: >-
+            True while the caller's per-token delivery bucket is tripped. A tripped
+            bucket is a card state, never silence.
+        count:
+          type: integer
+        pending:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectorPendingItem"
+        deadCount:
+          type: integer
+        dead:
+          type: array
+          description: Dead-letter, capped at 50, surfaced so "why didn't this arrive" is answerable.
+          items:
+            $ref: "#/components/schemas/ConnectorDeadItem"
+        surfaceBlocked:
+          type: string
+          enum:
+            [
+              revoked,
+              ledger_unavailable,
+              delegation_unusable,
+              drain_aborted,
+              drain_unreported,
+              backend_ingest,
+            ]
+          description: >-
+            Present ONLY when the surfacing gate refused to hand back ids, in which case
+            `count` is 0 and `pending`/`dead` are empty. Under Option C the server writes
+            nothing, so surfacing an id resurrects the meeting just as surely as a write would
+            (§4.7/§6.2/§12a R3) — a standing disabled marker, an unreadable or unparseable
+            purge ledger, and an aborted drain all surface nothing. `delegation_unusable` is
+            retained in the enum as an unwired Option-A seam and is not emitted by the shipped
+            gateless drain; clients must still handle it rather than assume the set shrank.
+            `backend_ingest` means this address's queue is consumed by the backend fetch worker
+            rather than by the browser (the dark backend-ingest flag plus a per-address cohort
+            allowlist): the browser has nothing to drain or settle, and its meetings come from
+            the authenticated read API instead. It is not an error state.
+            Absent on the ordinary path.
+            The client renders this as a card state; treating it as "nothing pending" is the
+            silence §4.4 forbids.
+
+    ConnectorAckRequest:
+      type: object
+      required: [items]
+      description: >-
+        There is deliberately no `address` property: ownership comes from the
+        session. `source` is optional and may only confirm the caller's configured
+        source.
+      properties:
+        source:
+          type: string
+          enum: [fireflies]
+        items:
+          type: array
+          minItems: 1
+          maxItems: 200
+          description: >-
+            The identities the browser has already stored. Every element must
+            validate or the whole call is rejected — an over-cap batch is a 400,
+            never a silent truncation.
+          items:
+            type: object
+            required: [meetingId, kind]
+            properties:
+              meetingId:
+                type: string
+                pattern: "^[A-Za-z0-9_-]{1,64}$"
+              kind:
+                type: string
+                enum: [transcript, summary]
+              status:
+                type: string
+                const: done
+                description: >-
+                  Optional, and only `done` is accepted. Browser-reported terminal
+                  failures are not settled in this version: they stay queued until
+                  retry or TTL, and no error string is accepted into logs.
+
+    ConnectorAckResult:
+      allOf:
+        - $ref: "#/components/schemas/ConnectorWebhookPending"
+        - type: object
+          required: [status, acknowledged, alreadySettled, tombstoned]
+          properties:
+            status:
+              type: string
+              const: acknowledged
+            acknowledged:
+              type: integer
+              description: Identities removed from the pending queue by this call.
+            alreadySettled:
+              type: integer
+              description: >-
+                Identities that were already gone — the lost-response retry, which is
+                a success and not an error.
+            tombstoned:
+              type: integer
+              description: >-
+                Identities covered by the purge ledger. They are NOT settled and NOT
+                counted as ingested; an acknowledgement must not re-classify purged
+                work.
+
+    ConnectorPurgeRequest:
+      type: object
+      required: [source, ids]
+      properties:
+        source:
+          type: string
+          enum: [fireflies]
+        ids:
+          type: array
+          description: >-
+            Purged meeting ids. Every element must validate or the whole call is
+            rejected. More than 200 is accepted with a reported `dropped` count —
+            only `recentIds` is capped, never the protection.
+          items:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,64}$"
+        purgedThrough:
+          type: string
+          format: date-time
+          description: >-
+            Watermark to advance to; defaults to now. Rejected when unparseable or
+            more than 24 h in the future, and never moved backwards.
+
+    # ── Backend-ingest read API (cohort only) ───────────────────────────
+    ConnectorMeetingMeta:
+      type: object
+      description: >-
+        One stored meeting's METADATA. The transcript and the summary never ride
+        this shape — they are read one meeting at a time from the content route.
+        A partial row is legal and complete: `hasTranscript` / `hasSummary` say
+        which half has arrived, because a summary can arrive before, or entirely
+        without, its transcript.
+      required: [sourceId, sizeBytes, storedAt, updatedAt, hasTranscript, hasSummary]
+      properties:
+        sourceId:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+        title:
+          type: string
+        ts:
+          type: string
+          description: The provider's own meeting timestamp, when it gave one.
+        transcriptStoredAt:
+          type: string
+          format: date-time
+        summaryStoredAt:
+          type: string
+          format: date-time
+        reconciledAt:
+          type: string
+          format: date-time
+          description: >-
+            Stamped by the reconcile-ack after the browser wrote the meeting into
+            the user's OWN space. The server copy is retained regardless — a
+            second device still has to be able to read it.
+        sizeBytes:
+          type: integer
+        storedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        hasTranscript:
+          type: boolean
+        hasSummary:
+          type: boolean
+
+    ConnectorMeetingList:
+      type: object
+      required: [source, meetings, nextCursor, hasMore]
+      properties:
+        source:
+          type: string
+          enum: [fireflies]
+        meetings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectorMeetingMeta"
+        nextCursor:
+          type: [string, "null"]
+          description: >-
+            The last `sourceId` on this page, or null when there is no next page.
+            A truncated page always says so — there is no silent truncation.
+        hasMore:
+          type: boolean
+
+    ConnectorMeetingContent:
+      type: object
+      required: [source, sourceId, meta, content]
+      properties:
+        source:
+          type: string
+          enum: [fireflies]
+        sourceId:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,64}$"
+        meta:
+          $ref: "#/components/schemas/ConnectorMeetingMeta"
+        content:
+          type: object
+          description: >-
+            The provider halves, decrypted inside the TEE for their owner. Either
+            may be absent. Only these two keys are projected — a stored value never
+            becomes an arbitrary response body.
+          properties:
+            transcript: {}
+            summary: {}
+
   responses:
     BadRequest:
       description: Invalid request
@@ -820,3 +1773,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PaywallError"
+    ConnectorDeliveryRejected:
+      description: >-
+        `invalid_signature` — returned identically for an unknown source, a
+        malformed or unknown token, and a bad signature, so the route is not an
+        oracle for any of them.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConnectorError"
+    ConnectorRateLimited:
+      description: "`rate_limited` — an IP, (ip, token) or per-token bucket is tripped."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConnectorError"
+    ConnectorUnavailable:
+      description: "`unavailable` — a backend store call failed. Retry the same request."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConnectorError"

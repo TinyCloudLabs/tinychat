@@ -9,8 +9,10 @@
 // "Sync now" on the card.
 //
 // Disconnect flow: AlertDialog confirm with a "Also delete the N synced
-// meetings from my space" checkbox (default OFF). Confirm → deleteConnectorKey
-// + (optional) purgeConnector + updateSyncState.
+// meetings from my space" checkbox (default OFF), which selects between the
+// two teardown plans in `connectorLifecycle.ts`. The dialog performs no step
+// itself and decides no order: it supplies the dependencies, renders the
+// orchestrator's progress, and reports success ONLY from `progress.done`.
 //
 // Both dialogs are CONTROLLED (open + onOpenChange props) so the card owns the
 // "which dialog is open" state and can refresh row data on close.
@@ -55,11 +57,22 @@ import {
   type FirefliesUser,
 } from "@/lib/connectors/firefliesClient";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import {
+  disconnectRetry,
+  disconnectStatusMessage,
+  initialDisconnectProgress,
+  runDisconnect,
+  type DisconnectDeps,
+  type DisconnectMode,
+  type DisconnectProgress,
+  type DisconnectWebhooks,
+} from "@/lib/connectors/connectorLifecycle";
 import type {
   ConnectorDescriptor,
   SyncProgress,
   SyncResult,
 } from "@/lib/connectors/types";
+import { removeBackgroundDrainConnectorRecord } from "./useBackgroundDrain";
 
 const FIREFLIES_API_KEY_URL =
   "https://app.fireflies.ai/integrations/custom/fireflies";
@@ -522,6 +535,20 @@ const ConnectFooter: FC<{
 interface ConnectorDisconnectDialogProps {
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
+  /**
+   * The card's typed companion client. Teardown needs exactly two of its
+   * methods — `disable` and `recordPurge`. `DisconnectWebhooks` deliberately
+   * does not name the ledger-clearing verb: no disconnect and no reconnect may
+   * clear a purge ledger, which is why that method is unreachable from here.
+   */
+  webhooks: DisconnectWebhooks;
+  /**
+   * Whether the companion router is ESTABLISHED to be unmounted, from the
+   * card's mount-time probe. Without it a 404 on `POST /purged` or
+   * `DELETE /config` is a hard failure, not "nothing to do" — see
+   * `connectorLifecycle.DisconnectDeps.featureDark`.
+   */
+  featureDark?: boolean;
   /** Count of already-synced meetings — drives the "delete N meetings" copy
    *  and hides the checkbox when there is nothing to delete. */
   itemCount: number;
@@ -533,6 +560,8 @@ interface ConnectorDisconnectDialogProps {
 export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
   tcw,
   descriptor,
+  webhooks,
+  featureDark,
   itemCount,
   open,
   onOpenChange,
@@ -540,16 +569,26 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
 }) => {
   const [alsoPurge, setAlsoPurge] = useState(false);
   const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<DisconnectProgress | null>(null);
+  // The resume point. Held in a ref as well as in state because the retry
+  // handler reads it in the same tick it was written by the failing run.
+  const progressRef = useRef<DisconnectProgress | null>(null);
 
   // Fresh confirm each time the dialog opens: default "keep data" (purge OFF).
   useEffect(() => {
     if (open) {
       setAlsoPurge(false);
-      setError(null);
       setRunning(false);
+      setProgress(null);
+      progressRef.current = null;
     }
   }, [open]);
+
+  const mode: DisconnectMode = alsoPurge ? "delete-data" : "keep-data";
+  // A run that stopped part-way pins its plan: resuming a delete-data teardown
+  // as keep-data (or the reverse) would skip steps by name and claim a
+  // disconnect that never happened.
+  const planLocked = progress !== null;
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
@@ -559,70 +598,60 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     [onOpenChange, running],
   );
 
-  const handleConfirm = useCallback(async () => {
+  const runTeardown = useCallback(async () => {
     setRunning(true);
-    setError(null);
-    if (!isSecretsUnlocked(tcw)) {
-      const unlock = await unlockSecrets<SecretsErr>(tcw);
-      if (!unlock.ok) {
-        setError(unlock.error?.message ?? "Could not unlock secrets");
-        setRunning(false);
-        return;
-      }
-    }
-    const del = await deleteConnectorKey<SecretsErr>(tcw, descriptor);
-    if (!del.ok) {
-      setError(del.error?.message ?? "Could not delete API key");
+    const resume = progressRef.current;
+    const deps: DisconnectDeps = {
+      connectorId: descriptor.id,
+      source: descriptor.source,
+      mode: resume?.mode ?? mode,
+      webhooks,
+      featureDark: featureDark === true,
+      secrets: {
+        isUnlocked: () => isSecretsUnlocked(tcw),
+        unlock: () => unlockSecrets<SecretsErr>(tcw),
+        deleteKey: () => deleteConnectorKey<SecretsErr>(tcw, descriptor),
+      },
+      store: {
+        listKnownSourceIds: () =>
+          connectorStore.listKnownSourceIds(tcw, descriptor.source),
+        // Wipes meetings + KV bodies + state row.
+        purgeConnector: () => connectorStore.purgeConnector(tcw, descriptor.source),
+        getConnection: () => connectorStore.getConnection(tcw, descriptor.id),
+        countMeetings: () => connectorStore.countMeetings(tcw, descriptor.source),
+        updateSyncState: (input) => connectorStore.updateSyncState(tcw, input),
+      },
+    };
+    const final = await runDisconnect(
+      deps,
+      (updater) =>
+        setProgress((prev) =>
+          updater(prev ?? initialDisconnectProgress(deps.mode)),
+        ),
+      resume ?? undefined,
+    );
+    progressRef.current = final;
+    if (!final.done) {
+      // A partial teardown keeps the dialog open with its retry: the connector
+      // is NOT disconnected and nothing may say that it is.
       setRunning(false);
       return;
-    }
-    if (alsoPurge) {
-      // purgeConnector wipes meetings + KV bodies + state row.
-      const purge = await connectorStore.purgeConnector(tcw, descriptor.source);
-      if (!purge.ok) {
-        setError(purge.error.message);
-        setRunning(false);
-        return;
-      }
-    } else {
-      // Data stays; flip the state row to "disconnected" so the card
-      // renders the reconnect state on next mount. Preserve lastSyncedAt
-      // so reconnect shows the true "last synced" — the meetings are still
-      // there and clearing the timestamp would mislead as "never synced".
-      // Sequential — TinyCloud drops concurrent responses on the same space.
-      const existingRes = await connectorStore.getConnection(tcw, descriptor.id);
-      if (!existingRes.ok) {
-        setError(existingRes.error.message);
-        setRunning(false);
-        return;
-      }
-      const countRes = await connectorStore.countMeetings(tcw, descriptor.source);
-      if (!countRes.ok) {
-        setError(countRes.error.message);
-        setRunning(false);
-        return;
-      }
-      const upd = await connectorStore.updateSyncState(tcw, {
-        connectorId: descriptor.id,
-        status: "disconnected",
-        lastSyncedAt: existingRes.data?.lastSyncedAt ?? null,
-        lastSyncStatus: existingRes.data?.lastSyncStatus ?? null,
-        lastSyncError: null,
-        itemCount: countRes.data,
-      });
-      if (!upd.ok) {
-        setError(upd.error.message);
-        setRunning(false);
-        return;
-      }
     }
     // Settle our own state BEFORE the parent removes us from the tree —
     // onOpenChange(false) synchronously unmounts us in the parent's render;
     // a trailing setState would land in an about-to-be-dropped component.
     setRunning(false);
+    // The connector is gone, so its claim on the header badge goes with it:
+    // the shared drain record's entry would otherwise pin a stale count until
+    // the next headless run. Success-path only — a partial teardown left the
+    // connector connected, and its count still stands.
+    removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
     onOpenChange(false);
-  }, [alsoPurge, descriptor, onDisconnected, onOpenChange, tcw]);
+  }, [descriptor, featureDark, mode, onDisconnected, onOpenChange, tcw, webhooks]);
+
+  const retry = progress ? disconnectRetry(progress) : null;
+  const statusMessage = progress ? disconnectStatusMessage(progress) : null;
 
   return (
     <AlertDialog open={open} onOpenChange={handleOpenChange}>
@@ -630,8 +659,9 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
         <AlertDialogHeader>
           <AlertDialogTitle>Disconnect {descriptor.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            Your API key will be removed from encrypted secrets. Your synced
-            meeting data stays in your space unless you also delete it below.
+            Background notifications are turned off first, then your API key is
+            removed from encrypted secrets. Your synced meeting data stays in
+            your space unless you also delete it below.
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -642,39 +672,49 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
               className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary"
               checked={alsoPurge}
               onChange={(e) => setAlsoPurge(e.target.checked)}
-              disabled={running}
+              disabled={running || planLocked}
             />
             <span>
               Also delete the {itemCount} synced meeting
-              {itemCount === 1 ? "" : "s"} from my space.
+              {itemCount === 1 ? "" : "s"} from my space. We record the deletion
+              with the server first, so a late {descriptor.name} notification
+              can’t bring them back.
             </span>
           </label>
         )}
 
-        {error && (
-          <p role="alert" className="text-xs text-destructive">
-            {error}
+        {statusMessage && (
+          <p
+            role={progress?.failure ? "alert" : undefined}
+            className={
+              progress?.failure
+                ? "text-xs text-destructive"
+                : "text-xs text-muted-foreground"
+            }
+          >
+            {statusMessage}
           </p>
         )}
 
         <AlertDialogFooter>
-          <AlertDialogCancel
-            disabled={running}
-            className="h-8 px-3 text-xs"
-          >
-            Cancel
+          <AlertDialogCancel disabled={running} className="h-8 px-3 text-xs">
+            {retry ? "Close" : "Cancel"}
           </AlertDialogCancel>
           <Button
             variant="destructive"
             size="sm"
-            onClick={handleConfirm}
+            onClick={() => void runTeardown()}
             disabled={running}
             className="gap-1.5"
           >
             {running && (
               <Loader2Icon className="size-3.5 animate-spin" aria-hidden />
             )}
-            {alsoPurge ? "Disconnect & delete data" : "Disconnect"}
+            {retry
+              ? retry.label
+              : alsoPurge
+                ? "Disconnect & delete data"
+                : "Disconnect"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

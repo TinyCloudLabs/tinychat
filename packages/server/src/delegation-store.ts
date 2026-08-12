@@ -1,6 +1,10 @@
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import type { StoredDelegation } from "@tinyboilerplate/core";
-import { withSessionRefresh } from "./identity.js";
+import {
+  assertKvResult,
+  isKvMissingKeyResult,
+  withSessionRefresh,
+} from "./identity.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -28,7 +32,11 @@ export class DelegationStore {
   /**
    * Store a serialized delegation for a user identifier.
    */
-  async store(identifier: string, serialized: string, metadata: DelegationMetadata): Promise<void> {
+  async store(
+    identifier: string,
+    serialized: string,
+    metadata: DelegationMetadata,
+  ): Promise<void> {
     const key = this.keyFor(identifier);
     const record: StoredDelegation = {
       serialized,
@@ -41,7 +49,10 @@ export class DelegationStore {
       resources: metadata.resources,
     };
 
-    await withSessionRefresh(this.node, () => this.node.kv.put(key, record));
+    await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.put(key, record);
+      assertKvResult(result);
+    });
   }
 
   /**
@@ -51,7 +62,11 @@ export class DelegationStore {
   async load(identifier: string): Promise<StoredDelegation | null> {
     const key = this.keyFor(identifier);
 
-    const result = await withSessionRefresh(this.node, () => this.node.kv.get(key));
+    const result = await withSessionRefresh(this.node, async () => {
+      const r = await this.node.kv.get(key);
+      if (isKvMissingKeyResult(r, key)) return null;
+      return assertKvResult(r);
+    });
 
     const response = (result as any)?.data;
     if (!response) return null;
@@ -92,7 +107,11 @@ export class DelegationStore {
   async remove(identifier: string): Promise<void> {
     const key = this.keyFor(identifier);
 
-    await withSessionRefresh(this.node, () => this.node.kv.delete(key));
+    await withSessionRefresh(this.node, async () => {
+      const result = await this.node.kv.delete(key);
+      if (isKvMissingKeyResult(result, key)) return;
+      assertKvResult(result);
+    });
   }
 
   /**

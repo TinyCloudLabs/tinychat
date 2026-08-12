@@ -121,6 +121,12 @@ export class FakeSqlDb {
   createdTables = new Set<string>();
   /** When set, the next CREATE TABLE call fails with this error and is consumed. */
   nextCreateError: { code: string; message: string } | null = null;
+  /**
+   * When set, the next `connector_meeting` INSERT/UPDATE fails with this error and is consumed —
+   * the "the user's space write failed" case the webhook loop's storage-before-ack rule turns on.
+   * Scoped to meeting writes so `connector_state` bookkeeping still behaves normally.
+   */
+  nextMeetingWriteError: { code: string; message: string } | null = null;
 
   async query(sql: string, params: unknown[] = []): Promise<SqlResult> {
     const s = sql.trim();
@@ -140,6 +146,35 @@ export class FakeSqlDb {
         if (row.source === source) rows.push([row.source_id]);
       }
       return ok(rows);
+    }
+    // `upsertMeeting`'s lookup — a WIDE select (UPSERT_LOOKUP_COLUMNS), so the update arm can
+    // keep the row id, the creation time and every column the new payload leaves null. Distinct
+    // from the narrow `SELECT id` below, and matched first because that one's pattern is a
+    // prefix of nothing here (`id,` vs `id FROM`).
+    if (/^SELECT\s+id,\s*created_at[\s\S]*FROM\s+connector_meeting/i.test(s)) {
+      const source = String(params[0]);
+      const sourceId = String(params[1]);
+      for (const row of this.meetings.values()) {
+        if (row.source === source && row.source_id === sourceId) {
+          return ok([
+            [
+              row.id,
+              row.created_at,
+              row.title,
+              row.started_at,
+              row.duration_secs,
+              row.organizer_email,
+              row.participants,
+              row.summary_overview,
+              row.summary_action_items,
+              row.keywords,
+              row.meeting_type,
+              row.metadata,
+            ],
+          ]);
+        }
+      }
+      return ok([]);
     }
     if (/^SELECT\s+id\s+FROM\s+connector_meeting/i.test(s)) {
       const source = String(params[0]);
@@ -183,12 +218,22 @@ export class FakeSqlDb {
     return this.applyOne(sql, params) ?? ok([]);
   }
 
-  async batch(stmts: { sql: string; params?: unknown[] }[]): Promise<SqlResult> {
+  async batch(
+    stmts: { sql: string; params?: unknown[] }[],
+  ): Promise<SqlResult> {
     for (const stmt of stmts) {
       const r = this.applyOne(stmt.sql, stmt.params ?? []);
       if (r && !r.ok) return r;
     }
     return ok([]);
+  }
+
+  /** Consume a one-shot injected meeting-write failure, if one is armed. */
+  private takeMeetingWriteError(): SqlResult | null {
+    if (this.nextMeetingWriteError === null) return null;
+    const e = this.nextMeetingWriteError;
+    this.nextMeetingWriteError = null;
+    return { ok: false, error: e };
   }
 
   private applyOne(sql: string, params: unknown[] = []): SqlResult | null {
@@ -206,6 +251,8 @@ export class FakeSqlDb {
     }
 
     if (/^INSERT\s+INTO\s+connector_meeting/i.test(s)) {
+      const injected = this.takeMeetingWriteError();
+      if (injected) return injected;
       const [
         id,
         source,
@@ -259,6 +306,58 @@ export class FakeSqlDb {
       return ok([]);
     }
 
+    // `upsertMeeting`'s update arm: the row id is the last param and every other column is
+    // replaced in UPSERT column order. Nothing is created here — an UPDATE against a missing id
+    // is a no-op, exactly as SQLite would treat it.
+    if (/^UPDATE\s+connector_meeting\s+SET/i.test(s)) {
+      const injected = this.takeMeetingWriteError();
+      if (injected) return injected;
+      const [
+        title,
+        started_at,
+        duration_secs,
+        organizer_email,
+        participants,
+        summary_overview,
+        summary_action_items,
+        keywords,
+        meeting_type,
+        metadata,
+        updated_at,
+        id,
+      ] = params as [
+        string | null,
+        string | null,
+        number | null,
+        string | null,
+        string,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string,
+        string,
+        string,
+      ];
+      const existing = this.meetings.get(id);
+      if (!existing) return ok([]);
+      this.meetings.set(id, {
+        ...existing,
+        title,
+        started_at,
+        duration_secs,
+        organizer_email,
+        participants,
+        summary_overview,
+        summary_action_items,
+        keywords,
+        meeting_type,
+        metadata,
+        updated_at,
+      });
+      return ok([]);
+    }
+
     if (/^INSERT\s+INTO\s+connector_state/i.test(s)) {
       const [
         connector_id,
@@ -289,14 +388,20 @@ export class FakeSqlDb {
       return ok([]);
     }
 
-    if (/^DELETE\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*\?/i.test(s)) {
+    if (
+      /^DELETE\s+FROM\s+connector_meeting\s+WHERE\s+source\s*=\s*\?/i.test(s)
+    ) {
       const source = String(params[0]);
       for (const [id, row] of this.meetings) {
         if (row.source === source) this.meetings.delete(id);
       }
       return ok([]);
     }
-    if (/^DELETE\s+FROM\s+connector_state\s+WHERE\s+connector_id\s*=\s*\?/i.test(s)) {
+    if (
+      /^DELETE\s+FROM\s+connector_state\s+WHERE\s+connector_id\s*=\s*\?/i.test(
+        s,
+      )
+    ) {
       this.states.delete(String(params[0]));
       return ok([]);
     }
@@ -325,7 +430,10 @@ export class FakeKv {
     const denied = this.deny(key);
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
-      return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
+      return {
+        ok: false,
+        error: { code: "KV_NOT_FOUND", message: `no key ${key}` },
+      };
     }
     return { ok: true, data: { data: this.entries.get(key), headers: {} } };
   }
@@ -338,14 +446,20 @@ export class FakeKv {
     if (denied) return { ok: false, error: denied };
     const stored = typeof value === "string" ? value : JSON.stringify(value);
     this.entries.set(key, stored);
-    return { ok: true, data: { data: undefined as unknown as void, headers: {} } };
+    return {
+      ok: true,
+      data: { data: undefined as unknown as void, headers: {} },
+    };
   }
 
   async delete(key: string): Promise<OkErr<void, KvErr>> {
     const denied = this.deny(key);
     if (denied) return { ok: false, error: denied };
     if (!this.entries.has(key)) {
-      return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } };
+      return {
+        ok: false,
+        error: { code: "KV_NOT_FOUND", message: `no key ${key}` },
+      };
     }
     this.entries.delete(key);
     return { ok: true, data: undefined as unknown as void };
@@ -375,7 +489,10 @@ export class FakeSecrets {
   ): Promise<OkErr<void, SecretsErr>> {
     if (this.nextPutRejectsNotFound) {
       this.nextPutRejectsNotFound = false;
-      return { ok: false, error: { code: "NOT_FOUND", message: "space not found" } };
+      return {
+        ok: false,
+        error: { code: "NOT_FOUND", message: "space not found" },
+      };
     }
     const scoped = this.store.get(opts.scope) ?? new Map<string, string>();
     scoped.set(name, value);
@@ -389,7 +506,13 @@ export class FakeSecrets {
   ): Promise<OkErr<string, SecretsErr>> {
     const v = this.store.get(opts.scope)?.get(name);
     if (v === undefined) {
-      return { ok: false, error: { code: "NOT_FOUND", message: `no secret ${opts.scope}:${name}` } };
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `no secret ${opts.scope}:${name}`,
+        },
+      };
     }
     return { ok: true, data: v };
   }

@@ -5,7 +5,10 @@ import {
 } from "@tinyboilerplate/server";
 export const TINYCHAT_BACKEND_KV_PREFIX = "ops.tinychat.backend";
 
-type TinychatBackendIdentityInput = Pick<BackendIdentityConfig, "privateKey" | "host">;
+type TinychatBackendIdentityInput = Pick<
+  BackendIdentityConfig,
+  "privateKey" | "host"
+>;
 
 export function tinychatBackendIdentityConfig(
   config: TinychatBackendIdentityInput,
@@ -17,8 +20,20 @@ export function tinychatBackendIdentityConfig(
   };
 }
 
-export function createTinychatBackendIdentity(
+export async function createTinychatBackendIdentity(
   config: TinychatBackendIdentityInput,
 ): Promise<BackendIdentity> {
-  return createBackendIdentity(tinychatBackendIdentityConfig(config));
+  const identity = await createBackendIdentity(
+    tinychatBackendIdentityConfig(config),
+  );
+  return ensureTinychatBackendSpace(identity);
+}
+
+export async function ensureTinychatBackendSpace(
+  identity: BackendIdentity,
+): Promise<BackendIdentity> {
+  // Explicit hosting is idempotent and avoids treating a successful sign-in activation as proof
+  // that this app-specific, newly named primary space already exists on the node.
+  await identity.node.hostOwnedSpace(TINYCHAT_BACKEND_KV_PREFIX);
+  return identity;
 }

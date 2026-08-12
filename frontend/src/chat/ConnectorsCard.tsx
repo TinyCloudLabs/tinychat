@@ -7,7 +7,8 @@
 // key entry → validate → save → initial sync stepper, and a Radix AlertDialog
 // wraps the disconnect confirm with an "also delete N meetings" checkbox.
 
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon, PlugIcon, PlugZapIcon } from "lucide-react";
 
@@ -32,13 +33,26 @@ import {
   type SecretsErr,
 } from "@/lib/connectors/connectorSecrets";
 import {
+  createConnectorWebhooksClient,
+  type ConnectorWebhooksClient,
+} from "@/lib/connectors/webhooksApi";
+import {
+  createConnectorMeetingsClient,
+  type ConnectorMeetingsClient,
+} from "@/lib/connectors/meetingsApi";
+import {
   ConnectorConnectDialog,
   ConnectorDisconnectDialog,
 } from "./ConnectorDialog";
+import { BackgroundSyncSection } from "./BackgroundSyncSection";
+import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { SectionCard } from "./SettingsPage";
 
 interface ConnectorsCardProps {
   tcw: TinyCloudWeb;
+  /** Passed down from SettingsPage — the card constructs no globals of its own. */
+  backendUrl: string;
+  sessionStore: SessionStore;
 }
 
 interface RowState {
@@ -70,8 +84,32 @@ const INITIAL_ROW_STATE_MAP: RowStateMap = {
   "google-meet": DEFAULT_ROW_STATE,
 };
 
-export function ConnectorsCard({ tcw }: ConnectorsCardProps) {
+export function ConnectorsCard({
+  tcw,
+  backendUrl,
+  sessionStore,
+}: ConnectorsCardProps) {
   const [rows, setRows] = useState<RowStateMap>(INITIAL_ROW_STATE_MAP);
+  // The companion router's mount-time verdict, established ONCE by the
+  // background-notifications section's `GET /config` probe. The teardown needs
+  // it to tell a dark deployment from a 404 that means something else — see
+  // `connectorLifecycle.DisconnectDeps.featureDark`. `false` until the probe
+  // answers: unknown is not dark.
+  const [featureDark, setFeatureDark] = useState(false);
+  // One typed companion client for the card. Constructing it performs no I/O —
+  // the background-notifications section is what decides whether to call it.
+  const webhooks: ConnectorWebhooksClient = useMemo(
+    () => createConnectorWebhooksClient(backendUrl, { sessionStore }),
+    [backendUrl, sessionStore],
+  );
+  // The second typed companion client — the cohort-gated meetings READ
+  // surface — from the same two props. Constructing it performs no I/O
+  // either: the background-notifications section owns the one mount-time
+  // probe that decides which consent text its off state shows (F011).
+  const meetings: ConnectorMeetingsClient = useMemo(
+    () => createConnectorMeetingsClient(backendUrl, { sessionStore }),
+    [backendUrl, sessionStore],
+  );
   // Which connector (if any) currently owns a modal. Only one can be open at
   // a time — the card is a settings list, not a multi-dialog dashboard.
   const [dialog, setDialog] = useState<
@@ -244,7 +282,20 @@ export function ConnectorsCard({ tcw }: ConnectorsCardProps) {
                 onSyncNow={() => handleSyncNow(d)}
                 onStopSync={() => handleStopSync(d.id)}
                 onDisconnect={() => handleDisconnect(d)}
-              />
+              >
+                {supportsBackgroundNotifications(d, rows[d.id].connection) && (
+                  <BackgroundSyncSection
+                    tcw={tcw}
+                    descriptor={d}
+                    webhooks={webhooks}
+                    meetings={meetings}
+                    // A processing run writes meetings, so the row's stored
+                    // count is stale until it is re-read.
+                    onIngested={() => void refreshRow(d.id)}
+                    onFeatureDark={setFeatureDark}
+                  />
+                )}
+              </ConnectorRow>
             </li>
           ))}
         </ul>
@@ -266,6 +317,8 @@ export function ConnectorsCard({ tcw }: ConnectorsCardProps) {
         <ConnectorDisconnectDialog
           tcw={tcw}
           descriptor={dialogDescriptor}
+          webhooks={webhooks}
+          featureDark={featureDark}
           itemCount={rows[dialogDescriptor.id].connection?.itemCount ?? 0}
           open
           onOpenChange={(next) => {
@@ -289,7 +342,17 @@ const ConnectorRow: FC<{
   onSyncNow: () => void;
   onStopSync: () => void;
   onDisconnect: () => void;
-}> = ({ descriptor: d, state, onConnect, onSyncNow, onStopSync, onDisconnect }) => {
+  /** The optional background-notifications surface, when this row offers one. */
+  children?: React.ReactNode;
+}> = ({
+  descriptor: d,
+  state,
+  onConnect,
+  onSyncNow,
+  onStopSync,
+  onDisconnect,
+  children,
+}) => {
   const comingSoon = d.status === "coming-soon";
   const connected = state.connection?.status === "connected";
   const containerCls =
@@ -404,6 +467,7 @@ const ConnectorRow: FC<{
             {state.connection.lastSyncError}
           </p>
         )}
+      {children}
     </div>
   );
 };

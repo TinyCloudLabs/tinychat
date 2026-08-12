@@ -93,7 +93,7 @@ export function createBillingRouter(config: BillingRoutesConfig) {
   router.get("/rates", async (_req: Request, res: Response) => {
     try {
       const catalog = await getCatalog();
-      const baselineId = process.env.REDPILL_DEFAULT_MODEL ?? "openai/gpt-5-mini";
+      const baselineId = process.env.REDPILL_DEFAULT_MODEL ?? "deepseek/deepseek-v4-flash";
       const baselineEntry = catalog.find((m) => m.id === baselineId) ?? {
         id: baselineId,
         pricing: null,

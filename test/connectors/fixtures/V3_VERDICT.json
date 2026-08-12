@@ -1,0 +1,19 @@
+{
+  "probedAt": "2026-08-04",
+  "nodeVersion": "1.4.2",
+  "nodeCommit": "8128842",
+  "provenance": "static-analysis",
+  "liveProbeRun": false,
+  "provenanceNote": "THE BOOLEANS BELOW ARE DERIVED FROM READING tinycloud-node SOURCE, NOT FROM OBSERVING A LIVE NODE. test/connectors/probe-sql-scope-escape.ts was written but never executed: a live run needs a scratch space and node credentials the operator controls, and the build agent had no session to run it under. Every claim is source-traceable to docs/specs/tinycloud-node-sql-delegation-scope-escape.md (quoted code + file:line, two independent reads, the second explicitly tasked with refuting and unable to). Treat these as a well-evidenced prediction, not a measurement. The direction of the risk is safe — the design is written AROUND the escape existing, so a false 'true' costs conservatism, never exposure. Flip to provenance:\"live-probe\" ONLY by running the script and reviewing its log.",
+  "escapeReproduces": true,
+  "cases": {
+    "authorizes": true,
+    "resolvedDb": "threads",
+    "dropTable": true,
+    "exportUnderReadGrant": true,
+    "duckdb": true,
+    "kvNegativeControl": "refused"
+  },
+  "verdictBy": "tinychat-connectors build V3 (operator probe on a scratch space)",
+  "notes": "SQL delegation scope escape reproduces. A delegation scoped ONLY to tinycloud.sql xyz.tinycloud.tinychat/connectors [read,write] authorizes an invocation the delegatee signs on xyz.tinycloud.tinychat/connectors/<other-db>: Resource::extends accepts the extended path on a '/' boundary while SqlService::db_name_from_path projects the last segment, so the node opens the <other-db> database (sentinel row lands there, not in connectors). DROP TABLE succeeds on the escaped database; SqlRequest::Export under a read-only grant returns a full binary copy; tinycloud.duckdb is identically vulnerable. The KV negative control is REFUSED (a kv connectors/ grant used on a threads/ key is rejected) -- KV keys are used verbatim with no last-segment collapse, so KV is sound and this is not a variant. Source-confirmed 2026-08-04 in docs/specs/tinycloud-node-sql-delegation-scope-escape.md (repositories/tinycloud-node, git describe v1.4.2-22-g8128842; prod reports 1.4.2); both candidate builds are affected. This artifact ships escapeReproduces=true and STAYS true until a real re-run of test/connectors/probe-sql-scope-escape.ts against a node the operator controls flips it; flipping it without a re-run is a reviewable lie in the diff. The exact resource strings sent and the node's responses (the exploit narrative) are kept in the gitignored run log while the defect is unpatched -- this checked-in JSON carries only booleans and a date. Do NOT publish this verdict publicly before the node team has a fix. B2 reads this file and fails closed if it is absent; while escapeReproduces is true, no confinement claim ('and nothing else', 'cannot reach', 'only your connectors data') may ship in the consent copy. Remediations 1-3 of the finding are the real fix and are not ours to ship; cross-reference the node-side fix commit here when it lands, re-run the probe, and only then may this flip to false."
+}

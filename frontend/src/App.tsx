@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -59,6 +66,25 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { SettingsPage } from "./chat/SettingsPage";
+// W5 — the cohort meetings view. It renders NOTHING unless the backend's read
+// API answers for this address (dark flag / non-cohort = 404 = invisible), and
+// it needs neither the vault nor a connector key: a session is the whole
+// requirement, which is what makes the meetings readable on a device that has
+// never opened the app.
+import { MeetingsSection } from "./chat/MeetingsSection";
+// …and W6's headless counterpart: the same meetings copied into the user's OWN
+// space whenever a session with an unlocked vault happens to be open. Separate
+// from the view on purpose — the view must keep working with no vault at all.
+import { BackendReconciler } from "./chat/BackendReconciler";
+import {
+  BackgroundDrainer,
+  badgePendingCount,
+  badgePillLabel,
+  clearBackgroundDrainRecord,
+  readBackgroundDrainRecord,
+  settingsAriaLabel,
+  subscribeBackgroundDrainRecord,
+} from "./chat/useBackgroundDrain";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { PanelLeftIcon, SettingsIcon } from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
@@ -346,11 +372,15 @@ export function App() {
         // path: TinyCloudWeb stores it from constructor config only, and a
         // manifest-less instance cannot escalate permissions (secrets.put
         // throws "requestPermissions requires a stored manifest") after a
-        // page reload. A manifest-endpoint hiccup must not break boot, so a
-        // failed fetch degrades to the previous manifest-less restore.
-        const manifest = await loadAppManifest(`${BACKEND_URL}/api/manifest`).catch(
-          () => undefined,
+        // page reload. Vite can become ready before the backend during local
+        // startup, so retry that bounded race instead of publishing a broken
+        // manifest-less client as ready.
+        const manifest = await fetchConfigWithRetry(
+          () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
+          { maxAttempts: 4 },
         );
+        if (!manifest)
+          throw new Error("Could not load the TinyCloud app manifest");
         const restored = await restoreTinyCloudWebSession(storedAddress, {
           autoCreateSpace: false,
           manifest,
@@ -621,6 +651,10 @@ export function App() {
     historyPrefetch.clear();
     // Clear the agent session cache so the next sign-in re-probes.
     clearAgentSessionCache();
+    // Drop the background-drain counts: they belong to the account that is
+    // leaving, and the next user must never inherit them. ONLY the record —
+    // this page load's attempt/dark latches are about the page, not the user.
+    clearBackgroundDrainRecord();
     if (typeof window !== "undefined") {
       try {
         window.localStorage.removeItem(MODEL_STORAGE_KEY);
@@ -647,6 +681,20 @@ export function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const showSettings = location.pathname.endsWith("/chat/settings");
+
+  // The pending-count badge follows the drain record's store directly — no
+  // polling, no second count, no state of its own. Whichever path settles the
+  // queue next (the headless drainer or a Settings sync) publishes into the
+  // same store, so the count clears without a reload. The record is null while
+  // signed out (cleared in `signOut`) and the helper is silent on dark, so
+  // this is a no-op for every user on today's default deployment.
+  const drainRecord = useSyncExternalStore(
+    subscribeBackgroundDrainRecord,
+    readBackgroundDrainRecord,
+    readBackgroundDrainRecord,
+  );
+  // Hidden on the settings route: the section itself is visible there.
+  const pendingMeetings = showSettings ? 0 : badgePendingCount(drainRecord);
 
   // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings
   // while signed out (post-signOut flip, deep link, etc.), kick them to /chat.
@@ -730,12 +778,23 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
-              aria-label={showSettings ? "Close settings" : "Settings"}
+              aria-label={settingsAriaLabel(showSettings, pendingMeetings)}
               aria-pressed={showSettings}
               onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
-              className="h-11 w-11 p-0 md:h-8 md:w-8"
+              className="relative h-11 w-11 p-0 md:h-8 md:w-8"
             >
               <SettingsIcon className="size-4" />
+              {pendingMeetings > 0 && (
+                // Absolutely positioned inside the button's own relative box so
+                // the 44/32px footprint never changes. `aria-hidden` keeps the
+                // folded aria-label the single announcement.
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"
+                >
+                  {badgePillLabel(pendingMeetings)}
+                </span>
+              )}
             </Button>
           )}
           {(state === "unauthenticated" || state === "recoverableError") && (
@@ -796,6 +855,12 @@ export function App() {
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
+                meetingsSlot={
+                  <MeetingsSection
+                    backendUrl={BACKEND_URL}
+                    sessionStore={sessionStoreRef.current}
+                  />
+                }
               />
             )}
           </>
@@ -820,6 +885,30 @@ export function App() {
         billing={billingRef.current}
       />
 
+      {/* The once-per-session headless webhook-queue drain (Option C's "next
+          visit"). Same gate as the authenticated surfaces; renders nothing in
+          every state, coordinates with Settings on a shared lane, and never
+          unlocks — see useBackgroundDrain.ts. */}
+      {state === "ready" && tcw && (
+        <BackgroundDrainer
+          tcw={tcw}
+          sessionStore={sessionStoreRef.current}
+          backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* W6's browser reconcile: with an unlocked vault, copy the meetings the
+          backend already holds into the user's OWN space (KV only), then stamp
+          them. Renders nothing, queues on the drain's lane so the one space has
+          a single writer, and is a no-op for every address outside the dark
+          cohort — see BackendReconciler.tsx. */}
+      {state === "ready" && tcw && (
+        <BackendReconciler
+          tcw={tcw}
+          sessionStore={sessionStoreRef.current}
+          backendUrl={BACKEND_URL}
+        />
+      )}
 
       {billingNotice && (
         <div
