@@ -12,7 +12,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-https://tinycloud.chat}
       REDPILL_API_KEY: ${REDPILL_API_KEY:-}
       REDPILL_BASE_URL: ${REDPILL_BASE_URL:-https://api.redpill.ai/v1}
-      REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-openai/gpt-5-mini}
+      REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-deepseek/deepseek-v4-flash}
       # Per-user delegated agent tools (Milestone E). All three must be set for
       # the agent/tool-calling path to turn on; unset = agent path stays off and
       # only plain chat is served (see backend/src/index.ts).
@@ -38,6 +38,46 @@ services:
       LEDGER_SERVICE_SECRET: ${LEDGER_SERVICE_SECRET:-}
       LEDGER_AUTHORITATIVE: ${LEDGER_AUTHORITATIVE:-false}
       LEDGER_OUTAGE_POLICY: ${LEDGER_OUTAGE_POLICY:-bounded_k}
+      # Connector webhooks ship dark: the flag defaults false, so the public route is not
+      # mounted (404), the authenticated companions 404 and the drain timer never starts.
+      # Turning it on requires WEBHOOK_HMAC_MASTER and LOG_HASH_SALT — each generated with
+      # `openssl rand -base64 32`, never reused — or the backend refuses to boot.
+      CONNECTOR_WEBHOOKS_ENABLED: ${CONNECTOR_WEBHOOKS_ENABLED:-false}
+      WEBHOOK_HMAC_MASTER: ${WEBHOOK_HMAC_MASTER:-}
+      # Rotation grace key (§4.2/§7.6): set only while a master rotation is draining.
+      WEBHOOK_HMAC_MASTER_PREV: ${WEBHOOK_HMAC_MASTER_PREV:-}
+      # Its own secret — never derived from WEBHOOK_HMAC_MASTER; keys the public log hashes.
+      LOG_HASH_SALT: ${LOG_HASH_SALT:-}
+      # The public HTTPS origin of every minted callback URL. Pinned, not derived from the
+      # request's Host header: a wrong host or scheme mints a webhook that never delivers.
+      CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: ${CONNECTOR_WEBHOOK_PUBLIC_ORIGIN:-}
+      # W9 host-header allowlist on the public delivery route (findings §6 control 6). Unset =
+      # derived from the origin above; `*` disables it for an ingress that rewrites Host.
+      CONNECTOR_WEBHOOK_HOST_ALLOWLIST: ${CONNECTOR_WEBHOOK_HOST_ALLOWLIST:-}
+      # W9 / D4: the single-instance ingest seat. Unset = a random per-process id; pin it so a
+      # redeploy of the same logical instance reclaims its own lease without waiting out the TTL.
+      CONNECTOR_INGEST_INSTANCE_ID: ${CONNECTOR_INGEST_INSTANCE_ID:-}
+      # Backend-owned ingestion (W1) — dark by default. true only ARMS the feature; which
+      # addresses it applies to is a separate per-address cohort allowlist in the backend's own
+      # config KV. Every non-cohort address keeps the shipped browser-drain path exactly.
+      CONNECTOR_BACKEND_INGEST_ENABLED: ${CONNECTOR_BACKEND_INGEST_ENABLED:-false}
+      # W2 credential custody. Required only when backend ingestion is ARMED, and then the
+      # backend refuses to boot without it: it wraps every stored per-user Fireflies credential.
+      # Its own `openssl rand -base64 32` value — reusing WEBHOOK_HMAC_MASTER is a hard error.
+      # It MUST survive CVM redeploys: a redeploy that strips it orphans every stored credential.
+      CONNECTOR_CREDENTIAL_MASTER: ${CONNECTOR_CREDENTIAL_MASTER:-}
+      # W4 content custody. Same gate, one invariant further: it wraps every stored MEETING.
+      # Its own `openssl rand -base64 32` value — reusing either master above is a hard error.
+      # It MUST survive CVM redeploys: a redeploy that strips it orphans every stored meeting.
+      CONNECTOR_CONTENT_MASTER: ${CONNECTOR_CONTENT_MASTER:-}
+      # The registered Fireflies OAuth app (custody branch b1). Required with the flag armed.
+      FIREFLIES_OAUTH_CLIENT_ID: ${FIREFLIES_OAUTH_CLIENT_ID:-}
+      FIREFLIES_OAUTH_CLIENT_SECRET: ${FIREFLIES_OAUTH_CLIENT_SECRET:-}
+      FIREFLIES_OAUTH_REDIRECT_URI: ${FIREFLIES_OAUTH_REDIRECT_URI:-}
+      # Unset = code defaults (5 min drain, 20/hour per address on each Option-A ceiling).
+      CONNECTOR_DRAIN_INTERVAL_MS: ${CONNECTOR_DRAIN_INTERVAL_MS:-}
+      CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${CONNECTOR_A_FETCH_CEILING_PER_HOUR:-}
+      CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR: ${CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
     restart: unless-stopped

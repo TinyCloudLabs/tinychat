@@ -1,0 +1,33 @@
+{
+  "probedAt": "2026-08-05",
+  "sdk": "@tinycloud/node-sdk 2.5.1 (re-exporting @tinycloud/sdk-core 2.5.1)",
+  "provenance": "live-probe + static-analysis",
+  "liveProbeRun": true,
+  "provenanceNote": "Half 1 was EXECUTED against the installed SDK (backend/src/__tests__/space-id-derivation.test.ts calls the real makePkhSpaceId/buildSpaceUri/parseSpaceUri and asserts determinism, canonicalization and round-trip). Half 2 is static analysis of the shipped dist: node_modules/@tinycloud/node-sdk/dist/core-ojeY-wet.d.ts:676-722 (the DelegatedAccess class) and dist/core.js:1273-1275 (the spaceId getter body). No live node session was needed for either half, which is itself part of the answer.",
+  "result": "split",
+  "derivationDeterministic": true,
+  "resolvedSpaceIdReadable": false,
+  "verdict": "ESCALATE",
+  "halves": {
+    "deterministicDerivation": {
+      "answer": "yes",
+      "api": "makePkhSpaceId(address, chainId, name) — also reachable as buildSpaceUri(did:pkh, name)",
+      "exportedFrom": "@tinycloud/node-sdk/core (re-export of @tinycloud/sdk-core)",
+      "form": "tinycloud:pkh:eip155:{chainId}:{canonicalizeAddress(address)}:{name}",
+      "pure": true,
+      "network": false,
+      "sessionRequired": false,
+      "notes": "Pure, synchronous, in-process. Address case is canonicalized (EIP-55 checksum), so a lowercase and a checksummed address derive the SAME id; chainId is validated and an empty name throws. parseSpaceUri round-trips it back to {owner: did:pkh, chainId, address, name}. This is exactly the comparand §9.2's (F)-branch control needs on the right-hand side, derived from the SESSION's address rather than fetched from any endpoint."
+    },
+    "activatedAccessExposesResolvedSpaceId": {
+      "answer": "no — it exposes an ECHO, not a resolution",
+      "api": "DelegatedAccess.spaceId (getter)",
+      "implementation": "get spaceId() { return this._delegation.spaceId; }  // dist/core.js:1273-1275",
+      "notes": "The getter returns the spaceId field of the PortableDelegation the caller passed in — the same unsigned, attacker-rewritable top-level field §9.2 exists to stop trusting. It is not the space the node resolved the invocation into; nothing in the class records that, and useDelegation performs no node round trip at all (dist/core.js:5056 compares delegateDID against our own DID and constructs DelegatedAccess locally). So reading access.spaceId back and comparing it to a derived id compares the derived id against the attacker's own input."
+    }
+  },
+  "consequence": "R10 requires BOTH halves to be yes before §9.2's (F)-branch owner-binding control may be built. Half 2 is no, so per R10 the answer is the escape hatch, NOT a weaker probe: escalate to the operator, whose honest options are (a) ship Option C (no delegation at all, §10.1/§10.2 option (c)), or (b) hold Phase 2 until the SDK exposes either a verifier (branch V) or a genuinely resolved space id. Do not substitute a read-through-the-activated-handle check: §9.2 already records that that half SUCCEEDS FOR THE ATTACKER in T9's rebinding attack.",
+  "whatWASbuilt": "Nothing that depends on this verdict. The in-process activation clamp (§3.2a edit 2) already refuses a tinycloud:-prefixed resource space that is not the delegation's own (portable-delegation.ts resourceSpaceWithinPolicy), and this fix round extended the same identity rule to the ACCEPT-side ceiling (foreignSpaceResources, wired into POST /api/delegations). That bounds what this process invokes and what it is willing to store. It is NOT the R10 control and must not be recorded as one: both of its sides still read the bundle's own declared spaceId, so it cannot tell a bundle that lies consistently from an honest one.",
+  "verdictBy": "tinychat-connectors build V4 (SDK inspection + executed derivation probe)",
+  "notes": "This artifact ships verdict=ESCALATE and STAYS that way until either (i) node-sdk exposes the space id an activation actually resolved to (making half 2 yes), or (ii) §9.2's branch (V) becomes reachable and the whole (F) branch is moot. Flipping it without a re-run against a newer SDK is a reviewable lie in the diff. S2b's acceptance reads this file; the delegation gate remains unverified until then — see docs/connector-webhooks-delegation-gate.md."
+}

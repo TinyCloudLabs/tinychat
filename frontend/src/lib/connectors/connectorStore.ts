@@ -47,6 +47,19 @@ export function transcriptKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
 }
 
+/**
+ * Full KV key for one meeting's record in the user's own space.
+ *
+ * Written ONLY by the backend-ingest reconcile (`backendReconcile.ts`, plan §8.1 W6), which is
+ * KV-only by rule — it holds no SQL handle, so a reconciled meeting needs a key of its own to
+ * live at rather than a `connector_meeting` row. Built here for the same reason
+ * {@link transcriptKvKey} is: the granted resource is the `${APP_ID}/connectors/` prefix, and a
+ * key assembled by hand somewhere else is the one that 401s.
+ */
+export function meetingKvKey(source: string, sourceId: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/meeting/${sourceId}`;
+}
+
 export interface StoreError {
   code: string;
   message: string;
@@ -327,6 +340,18 @@ export async function insertMeeting(
   if (existing.data.rows.length > 0) return { ok: true, data: false };
 
   const now = new Date().toISOString();
+  const res = await insertMeetingRow(tcw, meeting, now, "insertMeeting(insert)");
+  if (!res.ok) return res;
+  return { ok: true, data: true };
+}
+
+/** Shared INSERT used by both the v1 sync path and the targeted upsert. */
+async function insertMeetingRow(
+  tcw: TinyCloudWeb,
+  meeting: NormalizedMeeting,
+  now: string,
+  context: string,
+): Promise<StoreResult<void>> {
   const res = await store(tcw).execute(
     `INSERT INTO connector_meeting
       (id, source, source_id, title, started_at, duration_secs, organizer_email,
@@ -351,8 +376,141 @@ export async function insertMeeting(
       now,
     ],
   );
-  if (!res.ok) return fail(res.error, "insertMeeting(insert)");
-  return { ok: true, data: true };
+  if (!res.ok) return fail(res.error, context);
+  return { ok: true, data: undefined };
+}
+
+// ── Targeted upsert (webhook queued-id ingest) ─────────────────────────
+
+export interface UpsertMeetingOutcome {
+  /** The row id actually in the store — the PRE-EXISTING id when updated. */
+  id: string;
+  /** true when a brand-new row was inserted, false when an existing row was updated. */
+  inserted: boolean;
+  /** Original creation timestamp — preserved verbatim across updates. */
+  createdAt: string;
+}
+
+/** Columns the upsert lookup reads, in the order the merge below unpacks them. */
+const UPSERT_LOOKUP_COLUMNS =
+  "id, created_at, title, started_at, duration_secs, organizer_email, participants, "
+  + "summary_overview, summary_action_items, keywords, meeting_type, metadata";
+
+function parseJsonObject(raw: string | null): Record<string, unknown> {
+  if (raw === null) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Corrupt metadata is not worth failing an ingest over — the new payload
+    // simply replaces it wholesale.
+  }
+  return {};
+}
+
+/**
+ * Insert-or-update a meeting keyed on (source, source_id), then write/refresh
+ * the transcript KV body.
+ *
+ * WHY this exists alongside `insertMeeting`: the v1 sync (`syncFireflies`)
+ * lists newest-first and deliberately SKIPS ids it already has, so a
+ * `meeting.summarized` webhook for an already-stored meeting would be
+ * dropped forever. The webhook path supplies exact ids and must be able to
+ * land late-arriving summary fields on the existing row. `insertMeeting`
+ * keeps its skip semantics — v1 sync behaviour is unchanged.
+ *
+ * Merge rules (a re-delivery must never destroy data):
+ *  - the existing row id and `created_at` are preserved; the throwaway
+ *    `meeting.id` from normalize() is used only when inserting;
+ *  - a `null` scalar in the new payload keeps the stored value — Fireflies
+ *    summaries lag transcripts, so a later `meeting.transcribed` fetch with
+ *    no summary must not erase one;
+ *  - an empty participants list / `null` keywords keep what's stored;
+ *  - metadata is shallow-merged, new keys winning;
+ *  - an empty sentence list on an UPDATE leaves the stored transcript body
+ *    alone (on INSERT it is written, so the key always exists).
+ *
+ * All storage calls are sequential — TinyCloud drops concurrent responses on
+ * one space. Every resolved `{ ok: false }` surfaces; nothing is swallowed.
+ */
+export async function upsertMeeting(
+  tcw: TinyCloudWeb,
+  meeting: NormalizedMeeting,
+  sentences: FirefliesSentence[],
+): Promise<StoreResult<UpsertMeetingOutcome>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+
+  const existing = await store(tcw).query(
+    `SELECT ${UPSERT_LOOKUP_COLUMNS} FROM connector_meeting
+     WHERE source = ? AND source_id = ? LIMIT 1`,
+    [meeting.source, meeting.sourceId],
+  );
+  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)");
+
+  const now = new Date().toISOString();
+  const row = existing.data.rows[0];
+
+  if (!row) {
+    const ins = await insertMeetingRow(tcw, meeting, now, "upsertMeeting(insert)");
+    if (!ins.ok) return ins;
+    const kv = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
+    if (!kv.ok) return kv;
+    return { ok: true, data: { id: meeting.id, inserted: true, createdAt: now } };
+  }
+
+  const existingId = cellStr(row, 0, null);
+  const createdAt = cellStr(row, 1, null);
+  if (existingId === null || createdAt === null) {
+    return {
+      ok: false,
+      error: {
+        code: "STORE_CORRUPT_ROW",
+        message: "upsertMeeting: existing row is missing id or created_at",
+      },
+    };
+  }
+
+  const keepStr = (next: string | null, idx: number): string | null =>
+    next !== null ? next : cellStr(row, idx, null);
+  const mergedMetadata = {
+    ...parseJsonObject(cellStr(row, 11, null)),
+    ...meeting.metadata,
+  };
+
+  const upd = await store(tcw).execute(
+    `UPDATE connector_meeting SET
+       title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
+       participants = ?, summary_overview = ?, summary_action_items = ?,
+       keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
+     WHERE id = ?`,
+    [
+      keepStr(meeting.title, 2),
+      keepStr(meeting.startedAt, 3),
+      meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
+      keepStr(meeting.organizerEmail, 5),
+      meeting.participants.length > 0
+        ? JSON.stringify(meeting.participants)
+        : (cellStr(row, 6, null) ?? "[]"),
+      keepStr(meeting.summaryOverview, 7),
+      keepStr(meeting.summaryActionItems, 8),
+      meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
+      keepStr(meeting.meetingType, 10),
+      JSON.stringify(mergedMetadata),
+      now,
+      existingId,
+    ],
+  );
+  if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
+
+  if (sentences.length > 0) {
+    const kv = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
+    if (!kv.ok) return kv;
+  }
+
+  return { ok: true, data: { id: existingId, inserted: false, createdAt } };
 }
 
 // ── Transcript bodies (KV) ──────────────────────────────────────────────

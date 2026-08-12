@@ -121,6 +121,16 @@ Granola + Google Meet (`coming-soon`, rendered greyed out, non-interactive).
 All persistence/service modules follow the tinychat house pattern: **return `Result`-style
 objects, never throw across module boundaries** (see `threadStore.ts`).
 
+This rule is scoped to the **frontend** connector modules above. The **backend** connector
+services (`backend/src/services/connector-queue.ts`, `webhook-tokens.ts`, `connector-drain.ts`)
+deliberately REJECT instead: their callers are Express handlers whose §4.3 requirement is that
+nothing may leave a request unanswered or throw out of the handler, so every call site is already
+inside a `try`/`catch` that maps a failure to a status code, and a second `{ok:false}` channel
+alongside it would be a second thing to forget to check. The `{ok, …}` shape is used where a
+result is *inspected* rather than propagated — `validateConnectorWebhookSecrets` (startup gate)
+and `createStoredDelegationGate.validate` (a per-address verdict that is *inspected*; under
+Option C the drain does not wire it — see `docs/connector-webhooks-delegation-gate.md`).
+
 ## 5. Fireflies GraphQL client (`firefliesClient.ts`)
 
 Endpoint: `https://api.fireflies.ai/graphql` (module-level const, overridable via

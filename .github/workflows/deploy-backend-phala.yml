@@ -297,6 +297,58 @@ jobs:
           LEDGER_SERVICE_SECRET: ${{ secrets.LEDGER_SERVICE_SECRET }}
           LEDGER_AUTHORITATIVE: ${{ secrets.LEDGER_AUTHORITATIVE || vars.LEDGER_AUTHORITATIVE || 'false' }}
           LEDGER_OUTAGE_POLICY: ${{ secrets.LEDGER_OUTAGE_POLICY || vars.LEDGER_OUTAGE_POLICY || 'bounded_k' }}
+          # Connector webhooks — ships DARK: the flag defaults false, so a deploy with no
+          # master/salt set mounts nothing (404) and the drain timer never starts. Every var
+          # here must ALSO appear in the printf block below and in docker-compose.phala.yml:
+          # allowed_envs is derived from the ENV_FILE keys and is frozen at CVM creation, so a
+          # var missing from the printf block is silently dropped at injection (2026-07-07).
+          # Generate the three secrets with `openssl rand -base64 32`, never reused across
+          # them; startup refuses to boot on a weak value when the flag is on.
+          CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
+          WEBHOOK_HMAC_MASTER: ${{ secrets.WEBHOOK_HMAC_MASTER }}
+          # The rotation grace key. Set only while a master rotation is draining; drop it in
+          # the SAME deploy as the new master on a CONFIRMED compromise (runbook (b)).
+          WEBHOOK_HMAC_MASTER_PREV: ${{ secrets.WEBHOOK_HMAC_MASTER_PREV }}
+          # Keys the public log stream's `tid=`/`sig=`/`mid=`/`aid=` hashes. Its OWN secret —
+          # never derived from WEBHOOK_HMAC_MASTER, rotated on its own schedule.
+          LOG_HASH_SALT: ${{ secrets.LOG_HASH_SALT }}
+          # The public HTTPS origin of every minted callback URL, pinned rather than derived
+          # from the request's Host header. `https://host[:port]`, no path — a malformed value
+          # refuses to build the companion router instead of minting dead webhooks.
+          CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: ${{ vars.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN }}
+          # W9 host-header allowlist on the public delivery route. Unset = derived from the
+          # pinned origin above, so the host we ANSWER on cannot drift from the URL we hand the
+          # provider. Set it only for an ingress that rewrites Host (`*` disables, loudly).
+          CONNECTOR_WEBHOOK_HOST_ALLOWLIST: ${{ vars.CONNECTOR_WEBHOOK_HOST_ALLOWLIST }}
+          # W9 / D4 single-instance seat. Unset = a random per-process id, which is correct for a
+          # single CVM; pin it when the SAME logical instance redeploys and should reclaim its own
+          # ingest lease instead of waiting out the 90 s TTL.
+          CONNECTOR_INGEST_INSTANCE_ID: ${{ vars.CONNECTOR_INGEST_INSTANCE_ID }}
+          # Backend-owned ingestion (W1). Ships DARK and stays dark until the operator enables
+          # it deliberately: true only ARMS it — deliveries still route by a per-address cohort
+          # allowlist held in the backend's own config KV, so a non-cohort address is untouched
+          # Option C. Declared here now because allowed_envs is frozen at CVM creation.
+          CONNECTOR_BACKEND_INGEST_ENABLED: ${{ vars.CONNECTOR_BACKEND_INGEST_ENABLED || 'false' }}
+          # W2 credential custody (backend-ingest plan §6.2). Wraps every stored per-user
+          # Fireflies credential; its OWN `openssl rand -base64 32` value — reusing
+          # WEBHOOK_HMAC_MASTER is a hard boot error. Declared now because allowed_envs is frozen
+          # at CVM creation, and it must SURVIVE redeploys: stripping it orphans every stored
+          # credential (cf. the tee-node ingress-secret-strip incident).
+          CONNECTOR_CREDENTIAL_MASTER: ${{ secrets.CONNECTOR_CREDENTIAL_MASTER }}
+          # W4 content custody (backend-ingest plan §8.1 W4 / DECISIONS D3). Wraps every stored
+          # meeting; its OWN `openssl rand -base64 32` value — reusing either master above is a
+          # hard boot error. Declared now for the same allowed_envs freeze reason, and stripping
+          # it on a redeploy orphans every stored meeting rather than just failing loudly.
+          CONNECTOR_CONTENT_MASTER: ${{ secrets.CONNECTOR_CONTENT_MASTER }}
+          # The registered Fireflies OAuth app (custody branch b1 — DECISIONS V-a-branch).
+          FIREFLIES_OAUTH_CLIENT_ID: ${{ secrets.FIREFLIES_OAUTH_CLIENT_ID }}
+          FIREFLIES_OAUTH_CLIENT_SECRET: ${{ secrets.FIREFLIES_OAUTH_CLIENT_SECRET }}
+          FIREFLIES_OAUTH_REDIRECT_URI: ${{ vars.FIREFLIES_OAUTH_REDIRECT_URI }}
+          # Tunables (repo variables). Unset = the code defaults; a non-positive value is a
+          # hard boot error, never a silent revert to the default.
+          CONNECTOR_DRAIN_INTERVAL_MS: ${{ vars.CONNECTOR_DRAIN_INTERVAL_MS }}
+          CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${{ vars.CONNECTOR_A_FETCH_CEILING_PER_HOUR }}
+          CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR: ${{ vars.CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -333,6 +385,22 @@ jobs:
             printf '%s\n' "LEDGER_SERVICE_SECRET=$LEDGER_SERVICE_SECRET"
             printf '%s\n' "LEDGER_AUTHORITATIVE=${LEDGER_AUTHORITATIVE:-false}"
             printf '%s\n' "LEDGER_OUTAGE_POLICY=${LEDGER_OUTAGE_POLICY:-bounded_k}"
+            printf '%s\n' "CONNECTOR_WEBHOOKS_ENABLED=${CONNECTOR_WEBHOOKS_ENABLED:-false}"
+            printf '%s\n' "WEBHOOK_HMAC_MASTER=$WEBHOOK_HMAC_MASTER"
+            printf '%s\n' "WEBHOOK_HMAC_MASTER_PREV=$WEBHOOK_HMAC_MASTER_PREV"
+            printf '%s\n' "LOG_HASH_SALT=$LOG_HASH_SALT"
+            printf '%s\n' "CONNECTOR_WEBHOOK_PUBLIC_ORIGIN=$CONNECTOR_WEBHOOK_PUBLIC_ORIGIN"
+            printf '%s\n' "CONNECTOR_WEBHOOK_HOST_ALLOWLIST=$CONNECTOR_WEBHOOK_HOST_ALLOWLIST"
+            printf '%s\n' "CONNECTOR_INGEST_INSTANCE_ID=$CONNECTOR_INGEST_INSTANCE_ID"
+            printf '%s\n' "CONNECTOR_BACKEND_INGEST_ENABLED=${CONNECTOR_BACKEND_INGEST_ENABLED:-false}"
+            printf '%s\n' "CONNECTOR_CREDENTIAL_MASTER=$CONNECTOR_CREDENTIAL_MASTER"
+            printf '%s\n' "CONNECTOR_CONTENT_MASTER=$CONNECTOR_CONTENT_MASTER"
+            printf '%s\n' "FIREFLIES_OAUTH_CLIENT_ID=$FIREFLIES_OAUTH_CLIENT_ID"
+            printf '%s\n' "FIREFLIES_OAUTH_CLIENT_SECRET=$FIREFLIES_OAUTH_CLIENT_SECRET"
+            printf '%s\n' "FIREFLIES_OAUTH_REDIRECT_URI=$FIREFLIES_OAUTH_REDIRECT_URI"
+            printf '%s\n' "CONNECTOR_DRAIN_INTERVAL_MS=$CONNECTOR_DRAIN_INTERVAL_MS"
+            printf '%s\n' "CONNECTOR_A_FETCH_CEILING_PER_HOUR=$CONNECTOR_A_FETCH_CEILING_PER_HOUR"
+            printf '%s\n' "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR=$CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"
@@ -408,6 +476,10 @@ jobs:
           exit 1
 
       - name: Verify public API
+        env:
+          # Same expression as the deploy step's env: block — the probe must expect
+          # what this deploy actually shipped, never a hard-coded assumption.
+          CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
         run: |
           probe_url() {
             local label="$1"
@@ -489,6 +561,55 @@ jobs:
           fi
           echo "Agent route probe passed (401 = mounted, auth-gated)."
 
+          # The connector-webhook mount canary, modeled on the agent probe above.
+          # The raw delivery route mounts only when CONNECTOR_WEBHOOKS_ENABLED=true
+          # AND the HMAC master / log salt reached the backend — the flag alone is
+          # not enough, because startup refuses to boot the mount on a weak secret.
+          #
+          #   flag on  -> 401 (mounted; a junk signature on an unregistered token is
+          #               the same generic invalid_signature as every other rejection)
+          #   flag off -> 404 (nothing mounted — the dark-ship state)
+          #
+          # A 404 with the flag ON is the silently-dropped-env failure this exists to
+          # catch (the 2026-07-07 class): background sync would be dead with no other
+          # signal. A 401 with the flag OFF means the route shipped hot.
+          WEBHOOK_URL="${PRODUCTION_API_URL%/}/api/connectors/webhooks/fireflies/probe-token"
+          if [ "${CONNECTOR_WEBHOOKS_ENABLED:-false}" = "true" ]; then
+            WEBHOOK_EXPECT=401
+          else
+            WEBHOOK_EXPECT=404
+          fi
+          echo "Probing connector webhook route at $WEBHOOK_URL (expect $WEBHOOK_EXPECT; flag=${CONNECTOR_WEBHOOKS_ENABLED:-false})"
+          WEBHOOK_STATUS=0
+          for i in {1..10}; do
+            # Junk signature, junk token, minimal JSON body. Nothing here is a valid
+            # delivery, so this never enqueues and never touches a real user's queue.
+            WEBHOOK_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 5 --max-time 15 \
+              -X POST "$WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -H 'x-hub-signature: sha256=00000000000000000000000000000000000000000000000000000000deadbeef' \
+              --data '{"eventType":"probe","meetingId":"deploy-probe"}' || echo 000)"
+            echo "Attempt $i/10: http_status=$WEBHOOK_STATUS"
+            if [ "$WEBHOOK_STATUS" = "$WEBHOOK_EXPECT" ]; then
+              break
+            fi
+            sleep 6
+          done
+          if [ "$WEBHOOK_STATUS" != "$WEBHOOK_EXPECT" ]; then
+            if [ "$WEBHOOK_EXPECT" = "401" ]; then
+              echo "::error title=Connector webhook probe failed::POST /api/connectors/webhooks/fireflies/probe-token returned $WEBHOOK_STATUS (expected 401). CONNECTOR_WEBHOOKS_ENABLED is true but the route is not mounted — WEBHOOK_HMAC_MASTER / LOG_HASH_SALT did not reach the backend (or were rejected as weak), so background sync is silently dead."
+            else
+              echo "::error title=Connector webhook probe failed::POST /api/connectors/webhooks/fireflies/probe-token returned $WEBHOOK_STATUS (expected 404 while CONNECTOR_WEBHOOKS_ENABLED is not 'true'). The route is mounted on a deploy that was meant to ship dark."
+            fi
+            exit 1
+          fi
+          if [ "$WEBHOOK_EXPECT" = "401" ]; then
+            echo "Connector webhook probe passed (401 = mounted, signature-gated)."
+          else
+            echo "Connector webhook probe passed (404 = flag off, nothing mounted)."
+          fi
+
           {
             echo
             echo "### Public API probes"
@@ -496,6 +617,11 @@ jobs:
             echo "- ${HEALTH_URL}: passed"
             echo "- ${INFO_URL}: passed"
             echo "- ${AGENT_URL}: passed (401 = agent route mounted)"
+            if [ "$WEBHOOK_EXPECT" = "401" ]; then
+              echo "- ${WEBHOOK_URL}: passed (401 = connector webhook route mounted)"
+            else
+              echo "- ${WEBHOOK_URL}: passed (404 = connector webhooks shipped dark)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   phala-status:

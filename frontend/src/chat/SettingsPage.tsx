@@ -40,6 +40,13 @@ interface SettingsPageProps {
   onOpenRates: () => void;
   backendUrl: string;
   sessionStore: SessionStore;
+  /**
+   * W5's cohort meetings view, constructed by App (which owns the session and the
+   * backend URL). A slot rather than another set of props: this page knows where
+   * the section goes and nothing about how it reads the API. It renders nothing
+   * at all for every address outside the dark backend-ingest cohort.
+   */
+  meetingsSlot?: React.ReactNode;
 }
 
 export function SettingsPage({
@@ -60,6 +67,7 @@ export function SettingsPage({
   onOpenRates,
   backendUrl,
   sessionStore,
+  meetingsSlot,
 }: SettingsPageProps) {
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
@@ -143,7 +151,14 @@ export function SettingsPage({
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
           </SectionCard>
-          <ConnectorsCard tcw={tcw} />
+          <ConnectorsCard
+            tcw={tcw}
+            backendUrl={backendUrl}
+            sessionStore={sessionStore}
+          />
+          {/* Directly under the connector it belongs to. Absent for everyone
+              outside the cohort — the section returns null on the dark answer. */}
+          {meetingsSlot}
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
               <div className="flex items-baseline justify-between gap-3">

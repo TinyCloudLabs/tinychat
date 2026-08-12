@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { validateLedgerStartupConfig } from "../index.js";
-import { TINYCHAT_BACKEND_KV_PREFIX, tinychatBackendIdentityConfig } from "../startup.js";
+import {
+  ensureTinychatBackendSpace,
+  TINYCHAT_BACKEND_KV_PREFIX,
+  tinychatBackendIdentityConfig,
+} from "../startup.js";
 
 describe("tinychat backend startup config", () => {
   it("uses an app-specific backend-owned KV prefix for operational state", () => {
@@ -20,13 +24,32 @@ describe("tinychat backend startup config", () => {
     });
   });
 
+  it("explicitly hosts the backend-owned space after sign-in", async () => {
+    const hosted: string[] = [];
+    const identity = {
+      did: "did:key:backend",
+      node: {
+        hostOwnedSpace: async (name: string) => {
+          hosted.push(name);
+          return `tinycloud:test:${name}`;
+        },
+      },
+    } as any;
+
+    expect(await ensureTinychatBackendSpace(identity)).toBe(identity);
+    expect(hosted).toEqual([TINYCHAT_BACKEND_KV_PREFIX]);
+  });
+
   it("rejects authoritative ledger mode without a service URL", () => {
     expect(
       validateLedgerStartupConfig({
         LEDGER_AUTHORITATIVE: "true",
         LEDGER_SERVICE_SECRET: "test-secret",
       }),
-    ).toEqual({ ok: false, error: expect.stringContaining("LEDGER_SERVICE_URL") });
+    ).toEqual({
+      ok: false,
+      error: expect.stringContaining("LEDGER_SERVICE_URL"),
+    });
   });
 
   it("rejects authoritative ledger mode without a service secret", () => {
@@ -35,11 +58,16 @@ describe("tinychat backend startup config", () => {
         LEDGER_AUTHORITATIVE: "true",
         LEDGER_SERVICE_URL: "https://ledger.example",
       }),
-    ).toEqual({ ok: false, error: expect.stringContaining("LEDGER_SERVICE_SECRET") });
+    ).toEqual({
+      ok: false,
+      error: expect.stringContaining("LEDGER_SERVICE_SECRET"),
+    });
   });
 
   it("rejects an unrecognized ledger outage policy", () => {
-    expect(validateLedgerStartupConfig({ LEDGER_OUTAGE_POLICY: "unexpected" })).toEqual({
+    expect(
+      validateLedgerStartupConfig({ LEDGER_OUTAGE_POLICY: "unexpected" }),
+    ).toEqual({
       ok: false,
       error: expect.stringContaining("LEDGER_OUTAGE_POLICY"),
     });

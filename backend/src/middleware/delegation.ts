@@ -1,12 +1,13 @@
 import type { NextFunction, Request, Response } from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import type { DelegationCache, DelegationStore } from "@tinyboilerplate/server";
-import { backendDelegationPolicyHash } from "../manifest.js";
+import { backendDelegationPolicyHash, backendDelegationResolvedPermissions } from "../manifest.js";
 import {
   activatePortableDelegation,
   deserializePortableDelegationSet,
   normalizeDid,
 } from "../portable-delegation.js";
+import { redactedErrorMessage } from "../services/webhook-tokens.js";
 
 interface DelegationMiddlewareConfig {
   node: TinyCloudNode;
@@ -57,16 +58,51 @@ export function createDelegationMiddleware(config: DelegationMiddlewareConfig) {
       }
 
       const delegation = deserializePortableDelegationSet(stored.serialized);
-      const access = await activatePortableDelegation(node, delegation);
+      // Re-activation is clamped to the policy too (§3.2a edit 2) — the stored bundle is not
+      // re-trusted just because it was accepted once.
+      const access = await activatePortableDelegation(node, delegation, {
+        policy: backendDelegationResolvedPermissions(backendDid),
+        // §3.2a — re-run against the STORED bundle, not inherited from the accept route.
+        ownerAddress: address,
+      });
       cache.set(address, access);
       req.delegatedAccess = access;
       next();
     } catch (error) {
-      console.error("[delegation] activation failed:", error);
+      // §6.3, same reason as the accept route: the stored `serialized` is capability material and
+      // a parse/activation failure prints a fragment of it onto a `public_logs=true` stream.
+      console.error("[delegation] activation failed:", redactedErrorMessage(error));
       res
         .status(500)
         .json({ error: "delegation_activation_failed", message: "Failed to activate delegation" });
     }
+  };
+}
+
+/**
+ * §3.6 rule 1, for callers that are not a request: re-validate the STORED record — existence,
+ * `expiresAt`, `policyHash`/`delegateDid` — rather than trusting a warm cache entry. A cache hit
+ * is not evidence the grant still exists, and the drain (W5) holds an activated access in
+ * memory for up to the cache TTL.
+ *
+ * Shares `validateStoredDelegation` with the middleware on purpose: a second copy of this check
+ * is a second thing to forget to update when the policy changes.
+ */
+export function createStoredDelegationGate(config: {
+  store: DelegationStore;
+  cache: DelegationCache;
+  backendDid: string;
+}): { validate(address: string): Promise<{ ok: true } | { ok: false; reason: string }> } {
+  return {
+    validate: async (address: string) => {
+      const result = await validateStoredDelegation(
+        address,
+        config.store,
+        config.cache,
+        config.backendDid,
+      );
+      return result.ok ? { ok: true } : { ok: false, reason: result.error };
+    },
   };
 }
 

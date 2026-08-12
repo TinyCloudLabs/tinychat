@@ -19,6 +19,11 @@ screenshots/
 test/.passkey.json
 test/.last-run.log
 
+# Connector verdict probes are throwaways; the checked-in fixtures/*_VERDICT.json are NOT.
+# The exploit narrative (resource strings + node responses) stays out of git while unpatched.
+test/connectors/probe-*.ts
+test/connectors/*.run.log
+
 # Real-auth browser profiles and artifacts
 .playwright/
 

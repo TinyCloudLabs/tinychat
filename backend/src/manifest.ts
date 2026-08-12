@@ -10,6 +10,7 @@ import {
   type PermissionEntry,
 } from "@tinycloud/node-sdk/core";
 import type { NonEmptyServerInfoPermissions, ServerInfoPermission } from "@tinyboilerplate/core";
+import { isCanonicalResourcePath } from "./portable-delegation.js";
 
 export const APP_ID = "xyz.tinycloud.tinychat";
 export const THREADS_KV_PATH = "threads/";
@@ -30,6 +31,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(__dirname, "../../manifest.json");
 const BACKEND_DELEGATION_NAME = "TinyChat Backend";
 const BACKEND_DELEGATION_EXPIRY = "7d";
+/**
+ * The same 7 days as a number (§3.3). The delegation accept path clamps the stored `expiresAt`
+ * to it: the TTL T2/T4 name as the mitigation has to be a bound this backend applies, not a
+ * client-supplied field it repeats back.
+ */
+export const BACKEND_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 function backendDelegationPermissions(): NonEmptyServerInfoPermissions {
   return [
@@ -78,21 +85,55 @@ function validateTinychatManifest(manifest: Manifest): TinychatManifest {
   return manifest as TinychatManifest;
 }
 
+// The manifest is baked into the image and cannot change without a redeploy, but
+// `runtimeManifest()` sits under `validateBackendPolicy()`, which §3.6 rule 2 puts on the
+// per-write path: without memoization a drained queue pays a synchronous `readFileSync`
+// plus several `resolveManifest` passes per item, on the event loop of a public HTTP
+// server. Memoized for the process lifetime (§9.3). Nothing here mutates the cached
+// manifest — `resolveManifest`/`validateManifest` only read it — and the resolved policy
+// is cloned on the way out, so callers cannot corrupt the cache either.
+let memoizedManifest: TinychatManifest | undefined;
+let backendPolicyValidated = false;
+let memoizedResolvedPolicy: ServerInfoPermission[] | undefined;
+const memoizedPolicyHashes = new Map<string, string>();
+
 export function runtimeManifest(): TinychatManifest {
-  const raw = JSON.parse(readFileSync(MANIFEST_PATH, "utf-8")) as Manifest;
-  return validateTinychatManifest(validateManifest(raw));
+  if (memoizedManifest === undefined) {
+    const raw = JSON.parse(readFileSync(MANIFEST_PATH, "utf-8")) as Manifest;
+    memoizedManifest = validateTinychatManifest(validateManifest(raw));
+  }
+  return memoizedManifest;
 }
 
-function resolvePermissions(
+/**
+ * Key a permission by the pair that identifies it after resolution. `resolveManifest` is
+ * not order- or shape-preserving: entries flat-map (a `tinycloud.vault` entry becomes a
+ * `tinycloud.kv` one at `vault/<path>`), the result is deduped, and a
+ * `tinycloud.capabilities` resource is appended — so the filter below can drop an entry
+ * from the middle of the array. Matching resolved entries back to their inputs by array
+ * index therefore misattaches `skipPrefix` and `description` as soon as the policy has
+ * more than one entry, and a lost `skipPrefix: true` changes the resolved path form and
+ * so both the coverage check and the policy hash — silently, since the hash excludes
+ * `description` (§3.2).
+ */
+function resolvedPermissionKey(service: string, resolvedPath: string): string {
+  return `${service}\u0000${resolvedPath}`;
+}
+
+export function resolvePermissions(
   manifest: TinychatManifest,
   permissions: readonly ServerInfoPermission[],
 ): ServerInfoPermission[] {
   const { secrets: _secrets, ...manifestWithoutGeneratedResources } = manifest;
-  const requestedPaths = new Set(
-    permissions.map((permission) =>
+  const requestedByKey = new Map<string, ServerInfoPermission>();
+  for (const permission of permissions) {
+    const key = resolvedPermissionKey(
+      permission.service,
       permission.skipPrefix ? permission.path : `${APP_ID}/${permission.path}`,
-    ),
-  );
+    );
+    if (!requestedByKey.has(key)) requestedByKey.set(key, permission);
+  }
+
   const resolved = resolveManifest({
     ...manifestWithoutGeneratedResources,
     defaults: false,
@@ -103,16 +144,23 @@ function resolvePermissions(
       actions: [...permission.actions],
       ...(permission.skipPrefix !== undefined ? { skipPrefix: permission.skipPrefix } : {}),
     })),
-  }).resources.filter((permission) => requestedPaths.has(permission.path));
+  }).resources.filter((permission) =>
+    requestedByKey.has(resolvedPermissionKey(permission.service, permission.path)),
+  );
 
-  return resolved.map((permission, index) => ({
-    service: permission.service,
-    space: permission.space,
-    path: permission.path,
-    actions: [...permission.actions],
-    skipPrefix: permissions[index]?.skipPrefix,
-    description: permissions[index]?.description,
-  }));
+  return resolved.map((permission) => {
+    const requested = requestedByKey.get(
+      resolvedPermissionKey(permission.service, permission.path),
+    );
+    return {
+      service: permission.service,
+      space: permission.space,
+      path: permission.path,
+      actions: [...permission.actions],
+      skipPrefix: requested?.skipPrefix,
+      description: requested?.description,
+    };
+  });
 }
 
 function validateBackendPolicy(manifest: TinychatManifest): void {
@@ -129,9 +177,18 @@ function validateBackendPolicy(manifest: TinychatManifest): void {
   }
 }
 
-export function backendManifestConfig(_backendDid: string): BackendDelegationConfig {
+/** Validated once: the manifest and the policy it is checked against are both immutable. */
+function ensureBackendPolicyValidated(): TinychatManifest {
   const manifest = runtimeManifest();
-  validateBackendPolicy(manifest);
+  if (!backendPolicyValidated) {
+    validateBackendPolicy(manifest);
+    backendPolicyValidated = true;
+  }
+  return manifest;
+}
+
+export function backendManifestConfig(_backendDid: string): BackendDelegationConfig {
+  ensureBackendPolicyValidated();
   return {
     name: BACKEND_DELEGATION_NAME,
     expiry: BACKEND_DELEGATION_EXPIRY,
@@ -140,13 +197,24 @@ export function backendManifestConfig(_backendDid: string): BackendDelegationCon
 }
 
 export function backendDelegationResolvedPermissions(backendDid: string): ServerInfoPermission[] {
-  const manifest = runtimeManifest();
-  validateBackendPolicy(manifest);
   if (!backendDid) throw new Error("backend DID is required for delegation policy resolution");
-  return resolvePermissions(manifest, backendDelegationPermissions());
+  if (memoizedResolvedPolicy === undefined) {
+    const manifest = ensureBackendPolicyValidated();
+    // The resolved policy does not depend on the delegate DID — only the hash below does.
+    memoizedResolvedPolicy = resolvePermissions(manifest, backendDelegationPermissions());
+  }
+  // Clone: the cached array outlives every caller, and callers store and serialize what
+  // they get back.
+  return memoizedResolvedPolicy.map((permission) => ({
+    ...permission,
+    actions: [...permission.actions],
+  }));
 }
 
 export function backendDelegationPolicyHash(backendDid: string): string {
+  const memoized = memoizedPolicyHashes.get(backendDid);
+  if (memoized !== undefined) return memoized;
+
   const policy = {
     delegateDid: backendDid,
     permissions: backendDelegationResolvedPermissions(backendDid)
@@ -161,7 +229,20 @@ export function backendDelegationPolicyHash(backendDid: string): string {
       ),
   };
 
-  return createHash("sha256").update(JSON.stringify(policy)).digest("hex");
+  const hash = createHash("sha256").update(JSON.stringify(policy)).digest("hex");
+  memoizedPolicyHashes.set(backendDid, hash);
+  return hash;
+}
+
+function toCapabilityEntries(
+  permissions: readonly ServerInfoPermission[],
+): ServerInfoPermission[] {
+  return permissions.map((permission) => ({
+    service: permission.service,
+    ...(permission.space !== undefined ? { space: permission.space } : {}),
+    path: permission.path,
+    actions: [...permission.actions],
+  }));
 }
 
 export function delegationCoversBackendPolicy(
@@ -169,14 +250,42 @@ export function delegationCoversBackendPolicy(
   backendDid: string,
 ): boolean {
   const requested = backendDelegationResolvedPermissions(backendDid);
-  const granted = permissions.map((permission) => ({
-    service: permission.service,
-    ...(permission.space !== undefined ? { space: permission.space } : {}),
-    path: permission.path,
-    actions: [...permission.actions],
-  }));
+  // An entry the prefix predicate cannot compare cannot be counted as coverage either — see
+  // `delegationExceedsBackendPolicy` below and `isCanonicalResourcePath`.
+  const granted = toCapabilityEntries(permissions).filter((entry) =>
+    isCanonicalResourcePath(entry.path),
+  );
 
   return isCapabilitySubset(requested, granted).subset;
+}
+
+/**
+ * Least-privilege ceiling (§3.2a). `delegationCoversBackendPolicy` runs the subset check in one
+ * direction only — "does the bundle cover the policy?" — so a bundle that grants strictly more
+ * than the policy passes it. This is the same check with the arguments swapped: "is the bundle no
+ * broader than the policy?". Returns the granted entries the policy does not cover, empty when the
+ * grant sits at or below the policy.
+ *
+ * This is an in-process bound on which bundles this backend is willing to store. It is not
+ * enforced by the node and says nothing about what the node would authorize for a holder of a
+ * broader bundle obtained elsewhere.
+ */
+export function delegationExceedsBackendPolicy(
+  permissions: readonly ServerInfoPermission[],
+  backendDid: string,
+): ServerInfoPermission[] {
+  const allowed = backendDelegationResolvedPermissions(backendDid);
+  const granted = toCapabilityEntries(permissions);
+
+  // `isCapabilitySubset` compares paths by raw string prefix, so `<policy>/../../` reads as
+  // INSIDE the policy and this check returns an EMPTY offending list for a grant that escapes
+  // it. Such an entry is offending by construction rather than by comparison — the ceiling and
+  // the activation clamp (§3.2a edit 2, `isCanonicalResourcePath`) have to agree on that, or a
+  // bundle carrying one legitimate entry plus one escaping entry passes both.
+  const uncomparable = granted.filter((entry) => !isCanonicalResourcePath(entry.path));
+  const comparable = granted.filter((entry) => isCanonicalResourcePath(entry.path));
+
+  return [...uncomparable, ...isCapabilitySubset(comparable, allowed).missing];
 }
 
 export function resolveAppPath(path: string, service = "tinycloud.kv"): string {
