@@ -66,6 +66,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { SettingsPage } from "./chat/SettingsPage";
+import { MeetingsPage } from "./chat/MeetingsPage";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
 // it needs neither the vault nor a connector key: a session is the whole
@@ -86,7 +87,7 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
-import { PanelLeftIcon, SettingsIcon } from "lucide-react";
+import { CalendarClockIcon, PanelLeftIcon, SettingsIcon } from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
@@ -681,6 +682,7 @@ export function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const showSettings = location.pathname.endsWith("/chat/settings");
+  const showMeetings = location.pathname.endsWith("/chat/meetings");
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -697,14 +699,14 @@ export function App() {
   const pendingMeetings = showSettings ? 0 : badgePendingCount(drainRecord);
 
   // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings
-  // while signed out (post-signOut flip, deep link, etc.), kick them to /chat.
-  // SettingsPage only renders inside the isReady branch below, so this is the
-  // sole place the URL gets normalized.
+  // or /chat/meetings while signed out (post-signOut flip, deep link, etc.),
+  // kick them to /chat. Both pages only render inside the isReady branch below,
+  // so this is the sole place the URL gets normalized.
   useEffect(() => {
-    if (!isReady && showSettings) {
+    if (!isReady && (showSettings || showMeetings)) {
       navigate("/chat", { replace: true });
     }
-  }, [isReady, showSettings, navigate]);
+  }, [isReady, showSettings, showMeetings, navigate]);
 
   // A1 trigger (a): entering the settings page recovers a config-null session
   // (the Plan & Usage card lives there). No-op when a config is already held.
@@ -778,6 +780,18 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
+              aria-label={showMeetings ? "Close meetings" : "Meetings"}
+              aria-pressed={showMeetings}
+              onClick={() => (showMeetings ? onBack() : navigate("/chat/meetings"))}
+              className="h-11 w-11 p-0 md:h-8 md:w-8"
+            >
+              <CalendarClockIcon className="size-4" />
+            </Button>
+          )}
+          {isReady && (
+            <Button
+              variant="outline"
+              size="sm"
               aria-label={settingsAriaLabel(showSettings, pendingMeetings)}
               aria-pressed={showSettings}
               onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
@@ -818,10 +832,11 @@ export function App() {
           />
         ) : isReady && tcw ? (
           <>
-            {/* ChatWorkspace stays mounted while the settings route is active —
-                visibility toggle (not a <Routes> swap) preserves the assistant
-                runtime, the active thread, and composer state across nav. */}
-            <div className={showSettings ? "hidden" : "contents"}>
+            {/* ChatWorkspace stays mounted while the settings or meetings route
+                is active — visibility toggle (not a <Routes> swap) preserves the
+                assistant runtime, the active thread, and composer state across
+                nav. */}
+            <div className={showSettings || showMeetings ? "hidden" : "contents"}>
               <ChatWorkspace
                 key={importRefreshKey}
                 tcw={tcw}
@@ -863,6 +878,12 @@ export function App() {
                 }
               />
             )}
+            {/* The meetings explorer: the same keep-mounted arrangement as
+                Settings — ChatWorkspace above is hidden, not unmounted, so
+                coming back restores the thread and the composer untouched.
+                Unlike the cohort section inside Settings, this page reads the
+                user's OWN space, so it takes the session client directly. */}
+            {showMeetings && <MeetingsPage tcw={tcw} onBack={onBack} />}
           </>
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
