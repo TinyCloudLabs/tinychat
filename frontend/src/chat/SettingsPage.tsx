@@ -8,11 +8,11 @@ import {
   ShieldCheckIcon,
   SunIcon,
   UserIcon,
-  type LucideIcon,
 } from "lucide-react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ImportDialog } from "./ImportDialog";
@@ -331,19 +331,6 @@ function formatResetsAt(iso: string): string {
   }
 }
 
-export function SectionCard(props: {
-  icon: LucideIcon;
-  title: string;
-  children?: React.ReactNode;
-}) {
-  const Icon = props.icon;
-  return (
-    <section className="rounded-lg border border-border bg-card p-4">
-      <div className="flex items-center gap-2">
-        <Icon className="size-4 text-muted-foreground" />
-        <h2 className="text-sm font-semibold tracking-tight">{props.title}</h2>
-      </div>
-      {props.children && <div className="mt-3">{props.children}</div>}
-    </section>
-  );
-}
+// Re-exported for the cards that compose Settings (ConnectorsCard imports it
+// from here); the component itself now lives in components/ui/section-card.
+export { SectionCard };
