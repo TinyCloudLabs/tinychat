@@ -1746,3 +1746,46 @@ describe("I3 focus re-check — wiring (source-asserted)", () => {
     expect(app).not.toContain("resumeBackgroundDrain");
   });
 });
+
+// ── google-meet contributes nothing to the badge (WP-C) ──────────────
+//
+// Same skip as the sibling suite, asserted where the badge arithmetic lives:
+// a google-meet row cannot add to — or zero out — the waiting count, because
+// the drain never reaches its decision layer. Built locally in its POST-flip
+// shape so the pin survives the registry flip commit unchanged.
+
+describe("google-meet never reaches the badge", () => {
+  const gmeetAvailable: ConnectorDescriptor = {
+    id: "google-meet",
+    name: "Google Meet",
+    description: "Sync Google Meet recordings and captions.",
+    status: "available",
+    secretName: "REFRESH_TOKEN",
+    secretScope: "google-meet",
+    source: "google-meet",
+  };
+
+  test("an available, connected google-meet row leaves the badge at zero", async () => {
+    const b = backend({ pending: [item("m1"), item("m2")] });
+    await start(b, {
+      tcw: explodingVaultTcw(false),
+      connectors: [gmeetAvailable],
+      connection: connection({ connectorId: "google-meet", status: "connected" }),
+    });
+    expect(b.events).toEqual([]);
+    expect(readBackgroundDrainRecord()?.connectors).toEqual([]);
+    expect(badgePendingCount(readBackgroundDrainRecord())).toBe(0);
+  });
+
+  test("the fireflies count beside it is unaffected", async () => {
+    const b = backend({ pending: [item("m1"), item("m2")] });
+    await start(b, {
+      tcw: explodingVaultTcw(false),
+      connectors: [gmeetAvailable, fireflies],
+    });
+    expect(readBackgroundDrainRecord()?.connectors.map((e) => e.source)).toEqual([
+      "fireflies",
+    ]);
+    expect(badgePendingCount(readBackgroundDrainRecord())).toBe(2);
+  });
+});

@@ -14,11 +14,12 @@ import { SectionCard } from "@/components/ui/section-card";
 import { copyText } from "@/lib/copyText";
 import {
   listMeetings,
-  readTranscriptSentences,
+  meetingSourceLabel,
+  readTranscript,
   transcriptCopyText,
   type MeetingListItem,
+  type TranscriptRead,
 } from "@/lib/connectors/meetingExplorer";
-import type { FirefliesSentence } from "@/lib/connectors/firefliesClient";
 
 interface MeetingsPageProps {
   tcw: TinyCloudWeb;
@@ -29,19 +30,22 @@ interface MeetingsPageProps {
 const COPIED_DURATION = 1500;
 
 /**
- * Browse the meetings this space has already synced, and read (or copy) one
- * transcript at a time.
+ * Browse the meetings this space has already synced — every connector's, in one
+ * newest-first list — and read (or copy) one transcript at a time.
  *
  * Read-only by construction — every storage call goes through meetingExplorer,
  * which never issues DDL or a write. Transcripts are fetched lazily, cached for
  * the life of the page, and chained through a single promise so two fast
  * expands can never put two KV reads in flight at once (TinyCloud drops
  * concurrent responses on one space).
+ *
+ * Rows are keyed by their `connector_meeting.id` (a UUID), not by `sourceId`:
+ * source ids are only unique WITHIN a connector, and the list now spans several.
  */
 export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
   const [phase, setPhase] = useState<"loading" | "ready">("loading");
   const [meetings, setMeetings] = useState<MeetingListItem[]>([]);
-  const [openSourceId, setOpenSourceId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
   );
@@ -50,7 +54,7 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
   // synchronously to decide whether a meeting still needs a KV call, so a
   // render-cycle-late copy would refetch. `revision` is the render nudge that
   // publishes a completed fetch — the cache itself is the source of truth.
-  const cacheRef = useRef(new Map<string, FirefliesSentence[] | null>());
+  const cacheRef = useRef(new Map<string, TranscriptRead>());
   const [revision, setRevision] = useState(0);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const mountedRef = useRef(true);
@@ -67,9 +71,11 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      // listMeetings is tolerant (a failed Result reads as "no meetings"); the
-      // catch is for the transport itself, so a storage hiccup lands on the
-      // empty state rather than an error page.
+      // One read across every browsable source (meetingExplorer's
+      // EXPLORER_MEETING_SOURCES default), merged newest-first. listMeetings is
+      // tolerant (a failed Result reads as "no meetings"); the catch is for the
+      // transport itself, so a storage hiccup lands on the empty state rather
+      // than an error page.
       const items = await listMeetings(tcw).catch(() => [] as MeetingListItem[]);
       if (cancelled) return;
       setMeetings(items);
@@ -88,56 +94,64 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
     setCopyState("idle");
   }, []);
 
-  // A cached `null` is not a durable answer: "no transcript stored" and "that
-  // read failed" are indistinguishable here, so only sentences settle the
-  // question. Anything else is refetched, which makes collapse-and-reopen the
-  // retry path for a transient failure instead of pinning the row on
-  // "not synced yet" for the life of the page.
-  const needsFetch = useCallback(
-    (sourceId: string) => !cacheRef.current.get(sourceId),
-    [],
-  );
+  // Only a SETTLED read is cached. `ok` and `absent` are durable answers — the
+  // store has spoken, and re-reading would say the same thing. A `failed` read
+  // is a transient miss (transport, expired session, storage hiccup) and is
+  // never allowed to stick: it is refetched on the next expand, so
+  // collapse-and-reopen is the retry path instead of the row being pinned on a
+  // wrong "nothing here" for the life of the page.
+  const needsFetch = useCallback((id: string) => {
+    const entry = cacheRef.current.get(id);
+    return entry === undefined || entry.status === "failed";
+  }, []);
 
   const onToggle = useCallback(
-    (sourceId: string) => {
+    (meeting: MeetingListItem) => {
       // The copy affordance belongs to whichever transcript is open.
       resetCopy();
-      const willOpen = openSourceId !== sourceId;
-      setOpenSourceId(willOpen ? sourceId : null);
-      if (!willOpen || !needsFetch(sourceId)) return;
+      const { id, source, sourceId } = meeting;
+      const willOpen = openId !== id;
+      setOpenId(willOpen ? id : null);
+      if (!willOpen || !needsFetch(id)) return;
+
+      // Drop a previous failure before retrying so the panel reads "loading"
+      // rather than restating an error a fresh read may be about to clear.
+      cacheRef.current.delete(id);
 
       const fetchOne = async () => {
-        if (!needsFetch(sourceId)) return;
-        const sentences = await readTranscriptSentences(tcw, sourceId).catch(
-          () => null,
+        if (!needsFetch(id)) return;
+        // Both halves of the identity: the transcript key is source-scoped, so
+        // a Meet meeting read under the Fireflies prefix is a guaranteed miss.
+        const read = await readTranscript(tcw, source, sourceId).catch(
+          (): TranscriptRead => ({ status: "failed" }),
         );
         // Cache-write-only: a completion that lands after the row was closed
         // (or another row opened) is still a valid cache entry, so there is no
         // stale-result race to arbitrate.
-        cacheRef.current.set(sourceId, sentences);
+        cacheRef.current.set(id, read);
         if (mountedRef.current) setRevision((n) => n + 1);
       };
       // Sequential by construction: each fetch waits for the previous one,
       // whether it resolved or rejected.
       chainRef.current = chainRef.current.then(fetchOne, fetchOne);
     },
-    [needsFetch, openSourceId, resetCopy, tcw],
+    [needsFetch, openId, resetCopy, tcw],
   );
 
-  const openSentences = useMemo(() => {
-    if (!openSourceId) return undefined;
+  const openRead = useMemo(() => {
+    if (!openId) return undefined;
     void revision;
-    return cacheRef.current.get(openSourceId);
-  }, [openSourceId, revision]);
+    return cacheRef.current.get(openId);
+  }, [openId, revision]);
 
   // One string for both the rendered block and the clipboard, computed once per
   // open meeting so scrolling a long transcript never re-joins it.
   const openText = useMemo(
     () =>
-      openSentences && openSentences.length > 0
-        ? transcriptCopyText(openSentences)
+      openRead?.status === "ok" && openRead.sentences.length > 0
+        ? transcriptCopyText(openRead.sentences)
         : null,
-    [openSentences],
+    [openRead],
   );
 
   const onCopy = useCallback(async () => {
@@ -182,10 +196,29 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
                 ))}
               </div>
             ) : count === 0 ? (
-              <p className="px-3 py-2 text-xs text-muted-foreground">
-                No meetings yet. Connect Fireflies in Settings to sync meeting
-                transcripts.
-              </p>
+              // Names the cause for each way this list can be legitimately
+              // empty, so nobody re-runs a sync waiting for a transcript that
+              // cannot exist. No dead ends: every paragraph says what to do or
+              // why there is nothing to do.
+              <div className="flex flex-col gap-2 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                <p>
+                  No meetings yet. Connect Fireflies or Google Meet in Settings
+                  and run a sync — meetings from both connectors land in this one
+                  list.
+                </p>
+                <p>
+                  Google Meet only has a transcript when the meeting host was on
+                  a paid Google Workspace edition and transcription was turned on
+                  for that meeting. Meetings hosted on a free or personal Google
+                  account can never produce one, so those calls will not show up
+                  here no matter how often you sync.
+                </p>
+                <p>
+                  A sync also reaches back at most 30 days, and a meeting where
+                  transcription was switched on partway through arrives as a
+                  partial transcript — both are expected, not errors.
+                </p>
+              </div>
             ) : (
               <>
                 <p className="text-xs text-muted-foreground">
@@ -193,20 +226,26 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
                 </p>
                 <ul className="mt-2 flex flex-col gap-0.5">
                   {meetings.map((m) => {
-                    const isOpen = openSourceId === m.sourceId;
+                    const isOpen = openId === m.id;
                     const dateLabel = formatStartedAt(m.startedAt);
-                    const panelId = `transcript-${m.sourceId}`;
+                    const panelId = `transcript-${m.id}`;
                     return (
                       <li key={m.id}>
                         <button
                           type="button"
-                          onClick={() => onToggle(m.sourceId)}
+                          onClick={() => onToggle(m)}
                           aria-expanded={isOpen}
                           aria-controls={panelId}
                           className="group flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent md:min-h-0"
                         >
                           <span className="flex-1 truncate">
                             {m.title ?? "Untitled meeting"}
+                          </span>
+                          {/* Which connector this row came from — the list is
+                              merged, so the source has to be on the row itself.
+                              Read out as part of the row's own label. */}
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {meetingSourceLabel(m.source)}
                           </span>
                           {dateLabel && (
                             <span className="shrink-0 text-xs text-muted-foreground">
@@ -222,7 +261,7 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
                         </button>
                         {isOpen && (
                           <div id={panelId} className="px-3 pb-2">
-                            {!cacheRef.current.has(m.sourceId) ? (
+                            {openRead === undefined ? (
                               <p className="flex items-center gap-1.5 py-2 text-xs text-muted-foreground">
                                 <Loader2Icon
                                   className="size-3.5 animate-spin"
@@ -230,14 +269,25 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
                                 />
                                 Loading transcript…
                               </p>
-                            ) : openText === null ? (
-                              // Null payload or an empty sentence list: either
-                              // way there is nothing to read or copy yet. A
-                              // failed read looks the same, so point at the
-                              // retry rather than claiming it will never load.
+                            ) : openRead.status === "failed" ? (
+                              // The read itself did not land — say so, rather
+                              // than reporting a missing transcript the store
+                              // never actually answered about.
                               <p className="py-2 text-xs text-muted-foreground">
-                                Transcript not synced yet. Close and reopen this
-                                meeting to check again.
+                                Couldn&apos;t load this transcript just now.
+                                Close and reopen the meeting to try again.
+                              </p>
+                            ) : openText === null ? (
+                              // The store answered, and there is nothing to
+                              // read: not stored yet, or never will be. Both
+                              // causes named so neither reads as a dead end.
+                              <p className="py-2 text-xs text-muted-foreground">
+                                No transcript stored for this meeting yet.
+                                Transcripts can land a little after a call ends,
+                                so the next sync often picks one up. If
+                                transcription was never turned on — or the host
+                                was on a free Google account — there won&apos;t
+                                be one to fetch.
                               </p>
                             ) : (
                               <>

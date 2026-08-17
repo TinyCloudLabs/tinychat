@@ -53,6 +53,11 @@
       "scope": "fireflies",
       "actions": ["read", "write", "delete"],
       "description": "Store your Fireflies API key, encrypted, in your secrets space."
+    },
+    "REFRESH_TOKEN": {
+      "scope": "google-meet",
+      "actions": ["read", "write", "delete"],
+      "description": "Store your Google sign-in for Google Meet, encrypted, in your secrets space."
     }
   }
 }

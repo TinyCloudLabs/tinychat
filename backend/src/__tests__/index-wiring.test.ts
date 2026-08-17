@@ -141,6 +141,98 @@ describe("backend index middleware wiring", () => {
     expect(INDEX).not.toMatch(/=\s*createDelegationMiddleware\(/);
   });
 
+  test("the google oauth mount lives INSIDE the googleMeetOAuthEnabled() branch", () => {
+    // WP-A ships dark (gmeet plan §6/§11): flag off ⇒ no mount ⇒ 404 on all five paths, the same
+    // canary shape the webhook route has. A mount that drifted OUT of the branch would arm the
+    // OAuth proxy on every deployment the moment this file is edited.
+    const gate = INDEX.lastIndexOf("if (googleMeetOAuthEnabled()) {");
+    const mount = INDEX.indexOf('"/api/connectors/google/oauth"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(gate);
+    // Nothing closes the branch between the gate and the mount — a `\n  }` is a top-level
+    // statement boundary inside main(), so its absence is what "inside" means here.
+    expect(INDEX.slice(gate, mount)).not.toMatch(/\n {2}\}/);
+    // Exactly ONE mount: a second app.use on the prefix would re-run the router with a
+    // different middleware chain, and the unauthenticated one would win.
+    expect(INDEX.match(/"\/api\/connectors\/google\/oauth"/g)).toHaveLength(1);
+  });
+
+  test("google oauth mounts in the NORMAL window — parser, CSRF and its own limiter first", () => {
+    // The opposite of the webhook route's raw window. These bodies are ordinary JSON, the POSTs
+    // must be CSRF-covered, and the prefix has to reach `applyRateLimiters` for its own bucket.
+    const mount = INDEX.indexOf('"/api/connectors/google/oauth"');
+    const jsonParserIndex = INDEX.indexOf("const globalJsonParser");
+    const csrfIndex = INDEX.indexOf("createCsrfMiddleware()");
+    const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
+
+    expect(mount).toBeGreaterThan(jsonParserIndex);
+    expect(mount).toBeGreaterThan(csrfIndex);
+    expect(mount).toBeGreaterThan(limiterIndex);
+  });
+
+  test("GET /start and /callback mount WITHOUT authMiddleware; the three POSTs are behind it", () => {
+    // `/callback` is a top-level navigation from Google and carries no Bearer — middleware/auth.ts
+    // would 401 it before the popup could hand `{code, state}` back. CSRF exempts GET, and the
+    // anti-forgery control on the pair is the `state` param the SPA mints and re-checks.
+    // `authMiddleware` must therefore NOT sit unconditionally in front of the mount…
+    expect(INDEX).not.toMatch(
+      /app\.use\(\s*\n?\s*"\/api\/connectors\/google\/oauth",\s*\n?\s*authMiddleware/,
+    );
+    // …it is reached through an ALLOWLIST gate: exactly the two GETs skip it, everything else
+    // (the three POSTs, and any route added later) goes through it. Default-deny, so the
+    // accident falls toward authentication rather than away from it.
+    expect(INDEX).toContain(
+      'export const GOOGLE_OAUTH_PUBLIC_PATHS: ReadonlySet<string> = new Set([\n  "/start",\n  "/callback",\n]);',
+    );
+    expect(INDEX).toMatch(
+      /if \(req\.method === "GET" && GOOGLE_OAUTH_PUBLIC_PATHS\.has\(req\.path\)\) \{/,
+    );
+    expect(INDEX).toMatch(/void authMiddleware\(req, res, next\);/);
+
+    // And the router really does register those five and only those five, split the way the
+    // gate assumes: the unauthenticated names are GETs, the authenticated ones are POSTs.
+    const ROUTES = readFileSync(resolve(import.meta.dir, "../routes/google-oauth.ts"), "utf8");
+    const registered = [...ROUTES.matchAll(/router\.(get|post|delete|put|patch)\(\s*"([^"]+)"/g)]
+      .map((m) => ({ method: m[1]!, path: m[2]! }));
+    expect(registered).toEqual([
+      { method: "get", path: "/start" },
+      { method: "get", path: "/callback" },
+      { method: "post", path: "/exchange" },
+      { method: "post", path: "/refresh" },
+      { method: "post", path: "/revoke" },
+    ]);
+    // Nothing that reaches Google's token endpoint may be in the public set.
+    for (const route of registered) {
+      const isPublic = ['"/start"', '"/callback"'].includes(`"${route.path}"`);
+      expect(isPublic).toBe(route.method === "get");
+    }
+  });
+
+  test("the google oauth prefix carries its own rate-limit bucket, never the global one", () => {
+    // An OAuth dance plus a few refreshes must not spend `/api/chat`'s 120/15min allowance —
+    // the same rule §4.4 applies to the connector companions.
+    const LIMITS = readFileSync(resolve(import.meta.dir, "../rate-limits.ts"), "utf8");
+    expect(LIMITS).toContain('GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"]');
+    expect(LIMITS).toContain("googleOAuthLimiter");
+    // …and the prefix is EXEMPTED from the global bucket, not merely given a second one.
+    expect(LIMITS).toMatch(/const DEDICATED_PATHS = \[[\s\S]*\.\.\.GOOGLE_OAUTH_PATHS,[\s\S]*\]/);
+  });
+
+  test("an armed-but-unregistered google OAuth config refuses to boot", () => {
+    // The `firefliesOAuthConfigFromEnv` posture (:236): an operator who sets the flag and forgets
+    // a client var learns it from a refused start, not from a user's half-finished consent screen.
+    const bootCheck = INDEX.indexOf("if (googleMeetOAuthEnabled()) {");
+    const mount = INDEX.indexOf('"/api/connectors/google/oauth"');
+    expect(bootCheck).toBeGreaterThan(-1);
+    expect(bootCheck).toBeLessThan(mount);
+    const block = INDEX.slice(bootCheck, mount);
+    expect(block).toContain("googleOAuthConfigFromEnv(process.env)");
+    // The callback's postMessage target is validated at boot too — a `*` or a bare host must not
+    // wait until the first consent to fail.
+    expect(block).toContain("normalizeAppOrigin(FRONTEND_URL)");
+    expect(block).toMatch(/process\.exit\(1\)/);
+  });
+
   test("large NRAS JSON parsing happens after auth on the route mount", () => {
     expect(INDEX).not.toContain('app.use("/api/nras-proxy", express.json({ limit: "4mb" }))');
     expect(INDEX).toContain(

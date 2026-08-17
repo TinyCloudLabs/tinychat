@@ -34,9 +34,17 @@
  * — it is still what a non-cohort user reads, and plan §5.3 requires that path to stay
  * byte-identical. The cohort text is not a softening of C; it is C's two custody sentences
  * replaced by what is actually true once the server holds the credential and the meeting.
+ *
+ * GMEET(connector plan §4.1/§4.3, WP-C): and a THIRD, `GOOGLE_MEET_CONSENT_COPY`, for the Google
+ * Meet OAuth connect dialog. It is not a background-sync variant — google-meet has no webhook lane
+ * at all — but it is the same KIND of text (a pinned disclosure checked claim-by-claim against
+ * what the code does), it renders through the same interface, and it is bound by the same
+ * deny-list, so it lives here rather than as loose JSX in the dialog. The deny-list is what makes
+ * this file's home a decision rather than a filing choice: a sentence about what a permission
+ * cannot reach fails B2 wherever it is written.
  */
 
-export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest";
+export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest" | "google-oauth";
 
 export interface BackgroundSyncConsentCopy {
   /** Which §3.8 branch this text is. Read by B2 to pick its assertion set. */
@@ -200,6 +208,95 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
     "If Fireflies is down and we cannot revoke upstream, we tell you so instead of pretending it " +
     "worked — so you can revoke it yourself from your Fireflies account.",
 };
+
+/**
+ * GMEET(connector plan §4.1, §4.3, §6 WP-C) — the Google Meet CONNECT consent text.
+ *
+ * A different lane from the two above and it says so in its own words: nothing about background
+ * notifications, no queue, no delivery URL. What it has to be honest about is the trust model the
+ * plan settled on, which is unusual in exactly one place — the backend is a stateless
+ * code-exchange/refresh proxy, so Google token material passes THROUGH it (Google requires the
+ * app's client secret on the token call) while nothing is stored there. Saying "the server never
+ * touches your token" would be false; saying nothing about it would be the same omission by
+ * silence. So the transient visibility is stated, with the bound that makes it acceptable.
+ *
+ * The other four things it must carry, per the plan:
+ *
+ *  1. Google and OAuth NAMED, and the EXACT two scopes in plain language —
+ *     `meetings.space.readonly` (read transcripts + participants) and `meetings.space.settings`
+ *     (change transcription settings). `backend/src/__tests__/consent-scope.test.ts` matches these
+ *     sentences against `GOOGLE_MEET_SCOPES` itself, so adding a scope without amending the copy
+ *     fails the build — which is the point, because a Drive scope is a compliance decision.
+ *  2. The browser fetches meeting content DIRECTLY from Google; it does not pass through the
+ *     TinyChat backend, and the data lands only in the user's space.
+ *  3. The coverage cliff, D5's tone: cause named, no dead ends. A Google transcript exists only
+ *     when the HOST was on a paid Workspace edition AND transcription was on for that meeting.
+ *     The sentence names what closes the gap instead of leaving the user at a wall.
+ *  4. No confinement claim (header note, deny-list): the node cannot confine a SQL delegation to a
+ *     path and `V3_VERDICT.json` records the escape unpatched. This copy has less reason than
+ *     most to reach for one — this connector mints no backend delegation whatsoever — and it
+ *     states that as a fact about our policy, which B2 re-checks against the activated scope.
+ *
+ * No `consentCheckbox`: nothing is granted to our server, so there is nothing to attest to — the
+ * same reasoning that deleted Option B's. The `disconnectNote` IS present, because disconnect has
+ * a real failure mode worth naming up front (an upstream revoke Google may refuse).
+ */
+export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  variant: "google-oauth",
+  heading: "Connecting Google Meet",
+  intro:
+    "You'll sign in with Google in a popup window and approve two Google Meet permissions " +
+    "(a standard Google OAuth consent screen). After that, this browser fetches your Meet " +
+    "transcripts from Google and writes them into your space.",
+  changesHeading: "What you're granting",
+  bullets: [
+    "**Two Google Meet permissions, and those are the only two we ask for.** *See your Google " +
+      "Meet meetings, their transcripts and who took part* — the conference records your Google " +
+      "account already has access to. *Change Google Meet transcription settings* — so TinyChat " +
+      "can offer to switch automatic transcription on for **meetings you host**. No Drive, no " +
+      "Calendar, no Gmail permission is requested.",
+    "**Your browser talks to Google directly.** Titles, transcripts and participants are fetched " +
+      "by this browser from Google's API and written straight into your space — that content " +
+      "**never passes through TinyChat's server**, and we keep no copy of it.",
+    "**Our server sees Google tokens only in passing.** Google requires the app's client secret " +
+      "to trade your sign-in for a token, so that one call — and each later token refresh — goes " +
+      "through our backend, inside the attested CVM. It **persists nothing**: no database row, no " +
+      "file, and no log line carrying a token. The long-lived token comes straight back to your " +
+      "browser and is saved in your TinyCloud encrypted secrets, the same place your other " +
+      "connector credentials live.",
+    "Connecting gives our server **no new permission** on your space. Nothing is granted and " +
+      "nothing is asked for — the synced meetings are written by your browser, as they are today.",
+    "**A Google transcript only exists when two things were true of the meeting**: the host was " +
+      "on a paid Google Workspace edition (Business Standard/Plus, Enterprise, Education, or " +
+      "Workspace Individual) **and** transcription was switched on for that meeting. Meetings " +
+      "hosted on a free/consumer Google account never produce one — for any tool, this connector " +
+      "included. That is Google's limit rather than ours, and switching on auto-transcription for " +
+      "**meetings you host** is what closes most of the gap.",
+    "**Google keeps meeting records for about 30 days.** The first sync reaches back a month at " +
+      "most, and meetings older than that are gone from Google's side before we ever ask — so " +
+      "connecting sooner is what widens the history, never a later backfill.",
+  ],
+  disconnectNote:
+    "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
+    "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
+    "and you can always remove TinyChat yourself from your Google account's third-party access " +
+    "page. Your already-synced meetings stay in your space unless you also choose to delete them.",
+};
+
+/**
+ * GMEET(plan §2b gate G3) — the testing-mode re-auth caveat.
+ *
+ * Kept OUT of the bullets above deliberately: it is true only while the Google app is in Google's
+ * testing mode, and the connect dialog gates it on a flag that ships hidden for the internal-mode
+ * dogfood. It lives here anyway, and now rather than later, because G3 requires the caveat to be
+ * live in the dialog BEFORE the app opens beyond the team — a string that has to be written under
+ * gate pressure is a string that gets written badly.
+ */
+export const GOOGLE_TESTING_MODE_REAUTH_COPY =
+  "While TinyChat's Google app is in Google's testing mode, Google expires the saved access after " +
+  "7 days, so you'll be asked to reconnect Google Meet about once a week. Syncing pauses until " +
+  "you do — meetings already in your space are unaffected, and nothing is lost as long as you " +
+  "reconnect within Google's 30-day record window.";
 
 /**
  * Every sentence of the shipped copy as one string — what B2's claim patterns are matched against.

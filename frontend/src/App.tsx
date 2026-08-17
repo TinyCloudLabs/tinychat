@@ -86,6 +86,7 @@ import {
   settingsAriaLabel,
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
+import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { CalendarClockIcon, PanelLeftIcon, SettingsIcon } from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
@@ -912,6 +913,18 @@ export function App() {
           unlocks — see useBackgroundDrain.ts. */}
       {state === "ready" && tcw && (
         <BackgroundDrainer
+          tcw={tcw}
+          sessionStore={sessionStoreRef.current}
+          backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* The once-per-session Google Meet sync — a SEPARATE lane from the
+          drainer above (gmeet has no webhook queue). Same ready gate; renders
+          nothing, defers silently while the vault is locked, and is a no-op for
+          every user while the registry row is coming-soon. */}
+      {state === "ready" && tcw && (
+        <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}

@@ -22,10 +22,15 @@ import {
   refreshQueue,
   requestHistoricalResync,
   rotateCredentials,
+  supportsBackgroundNotifications,
   syncQueuedMeetings,
   type BackgroundSyncDeps,
   type BackgroundSyncState,
 } from "./backgroundSyncState";
+import type {
+  ConnectorConnection,
+  ConnectorDescriptor,
+} from "@/lib/connectors/types";
 import type {
   ConnectorWebhookConfigPoll,
   ConnectorWebhookEnabled,
@@ -903,5 +908,57 @@ describe("historical re-sync", () => {
     await confirmHistoricalResync(h.deps, h.emit);
     const message = h.state().notice?.message ?? "";
     expect(message.toLowerCase()).toContain("deleted");
+  });
+});
+
+// ── Google Meet has no background-notification lane (WP-C) ───────────
+//
+// Pinned DIRECTLY, on a descriptor built here rather than read from the
+// registry: the gmeet connector's sync is a separate session-start lane
+// (`useGmeetSessionSync`) and Google sends no webhook, so there is nothing for
+// this surface to offer — before OR after the registry flip. Building the row
+// locally is what makes that claim flip-agnostic: a suite that read the shipped
+// row would be asserting today's `coming-soon` status by accident.
+
+describe("supportsBackgroundNotifications — google-meet", () => {
+  const gmeetAvailable: ConnectorDescriptor = {
+    id: "google-meet",
+    name: "Google Meet",
+    description: "Sync Google Meet recordings and captions.",
+    // The POST-flip row, deliberately: even fully available and connected,
+    // this connector gets no background-notifications surface.
+    status: "available",
+    secretName: "REFRESH_TOKEN",
+    secretScope: "google-meet",
+    source: "google-meet",
+  };
+
+  const gmeetConnected: ConnectorConnection = {
+    connectorId: "google-meet",
+    status: "connected",
+    lastSyncedAt: null,
+    lastSyncStatus: null,
+    lastSyncError: null,
+    itemCount: 0,
+  };
+
+  test("is false even for an available, CONNECTED google-meet row", () => {
+    expect(supportsBackgroundNotifications(gmeetAvailable, gmeetConnected)).toBe(false);
+  });
+
+  test("is false in every other state too — no status flips this on", () => {
+    expect(supportsBackgroundNotifications(gmeetAvailable, null)).toBe(false);
+    expect(
+      supportsBackgroundNotifications(
+        { ...gmeetAvailable, status: "coming-soon" },
+        gmeetConnected,
+      ),
+    ).toBe(false);
+    expect(
+      supportsBackgroundNotifications(gmeetAvailable, {
+        ...gmeetConnected,
+        status: "disconnected",
+      }),
+    ).toBe(false);
   });
 });

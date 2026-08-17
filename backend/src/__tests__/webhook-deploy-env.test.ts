@@ -61,6 +61,16 @@ const REQUIRED_KEYS = [
   "FIREFLIES_OAUTH_CLIENT_ID",
   "FIREFLIES_OAUTH_CLIENT_SECRET",
   "FIREFLIES_OAUTH_REDIRECT_URI",
+  // WP-A's Google Meet OAuth proxy (gmeet plan §6 WP-A / §11). Same freeze argument as every
+  // var above, and here the dark state is the ABSENCE of the repo secrets rather than an
+  // explicit 'false': unset ⇒ empty ⇒ flag off ⇒ the routes never mount. That is the intended
+  // stage-1 landing, which makes the four-place dance load-bearing NOW — the deploy that arms
+  // the connector must not also be the deploy that first introduces these keys, or they are
+  // silently dropped at injection and the mount stays 404 with the flag reading true.
+  "GOOGLE_MEET_OAUTH_ENABLED",
+  "GOOGLE_OAUTH_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
+  "GOOGLE_OAUTH_REDIRECT_URI",
   "CONNECTOR_DRAIN_INTERVAL_MS",
   "CONNECTOR_A_FETCH_CEILING_PER_HOUR",
   "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR",
@@ -181,6 +191,66 @@ describe("Phala backend deploy connector-webhook environment", () => {
     // A mismatch must FAIL the deploy, never just print.
     expect(probe?.run).toContain('if [ "$WEBHOOK_STATUS" != "$WEBHOOK_EXPECT" ]');
     expect(probe?.run).toContain("Connector webhook probe failed");
+  });
+
+  test("the Google Meet OAuth flag ships dark at every layer that has a default", () => {
+    const writer = deployEnvWriter(readWorkflow());
+
+    // Deliberately UNLIKE the two flags above: the workflow env: expression has no `|| 'false'`
+    // fallback, because the arming secret does not exist yet and "unset" must stay the dark
+    // state without an operator having to set anything. The default therefore lives at every
+    // layer that CAN default — and each one defaults OFF, so no layer can turn it on by
+    // omission. `=== "true"` in googleMeetOAuthEnabled() makes empty-string read as off too.
+    expect(writer?.run).toContain('"GOOGLE_MEET_OAUTH_ENABLED=${GOOGLE_MEET_OAUTH_ENABLED:-false}"');
+    expect(backendComposeEnv().GOOGLE_MEET_OAUTH_ENABLED).toBe("${GOOGLE_MEET_OAUTH_ENABLED:-false}");
+    expect(/^GOOGLE_MEET_OAUTH_ENABLED=(.*)$/m.exec(envExample())?.[1]).toBe("false");
+  });
+
+  /**
+   * WP-A's mount canary, the Fireflies probe one connector over. The 400/404 pair is the only
+   * post-deploy signal separating "shipped dark on purpose" from "the client vars vanished at
+   * injection and the connector is silently dead" — and, in the other direction, from "the OAuth
+   * proxy shipped hot on a deploy meant to be dark".
+   */
+  test("the post-deploy probe asserts 400 when the Google flag is on and 404 while it is off", () => {
+    const probe = publicApiProbe(readWorkflow());
+
+    expect(probe?.run).toBeTruthy();
+    // The unauthenticated GET at `/start`, with no params: reachable from CI with no credential,
+    // and incapable of becoming a real authorization attempt.
+    expect(probe?.run).toContain("/api/connectors/google/oauth/start");
+    // Both halves of the canary, and the flag that selects between them.
+    expect(probe?.run).toContain("GOOGLE_EXPECT=400");
+    expect(probe?.run).toContain("GOOGLE_EXPECT=404");
+    expect(probe?.run).toContain('[ "${GOOGLE_MEET_OAUTH_ENABLED:-false}" = "true" ]');
+    // The probe reads the flag this deploy shipped rather than assuming one.
+    expect(Object.hasOwn(probe?.env ?? {}, "GOOGLE_MEET_OAUTH_ENABLED")).toBe(true);
+    // A mismatch must FAIL the deploy, never just print.
+    expect(probe?.run).toContain('if [ "$GOOGLE_STATUS" != "$GOOGLE_EXPECT" ]');
+    expect(probe?.run).toContain("Google Meet OAuth probe failed");
+    // The Fireflies probe is untouched by all of the above — same step, separate canary.
+    expect(probe?.run).toContain("/api/connectors/webhooks/fireflies/probe-token");
+  });
+
+  test(".env.example ships no real Google client id or secret", () => {
+    const contents = envExample();
+
+    // The client secret is issued by Google, so SECRET_KEYS' CSPRNG rule does not apply — but
+    // "no sample value that someone deploys" does, and for the id it is stronger than that: a
+    // real client id in a committed file is a live app identifier, not a placeholder.
+    expect(/^GOOGLE_OAUTH_CLIENT_ID=(.*)$/m.exec(contents)?.[1]).toBe("");
+    expect(/^GOOGLE_OAUTH_CLIENT_SECRET=(.*)$/m.exec(contents)?.[1]).toBe("");
+    // Google's own credential formats, anywhere in the file, commented lines included. The
+    // client-secret prefix is assembled rather than spelled: a file that greps positive for it
+    // is exactly what the repo-wide secret scan is looking for, test or not.
+    const clientSecretPrefix = ["GO", "CSPX", "-"].join("");
+    expect(contents).not.toContain(clientSecretPrefix);
+    expect(contents).not.toMatch(/\d{10,}-[a-z0-9]{16,}\.apps\.googleusercontent\.com/);
+    // The redirect URI IS given a sample, because its SHAPE is the thing operators get wrong.
+    // It must be an unresolvable example host, never a real origin.
+    const redirect = /^GOOGLE_OAUTH_REDIRECT_URI=(.*)$/m.exec(contents)?.[1] ?? "";
+    expect(redirect).toContain(".invalid/");
+    expect(redirect).toContain("/api/connectors/google/oauth/callback");
   });
 
   test(".env.example declares every REQUIRED_KEY as an uncommented assignment", () => {

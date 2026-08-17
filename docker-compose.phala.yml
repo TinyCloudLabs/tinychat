@@ -74,6 +74,14 @@ services:
       FIREFLIES_OAUTH_CLIENT_ID: ${FIREFLIES_OAUTH_CLIENT_ID:-}
       FIREFLIES_OAUTH_CLIENT_SECRET: ${FIREFLIES_OAUTH_CLIENT_SECRET:-}
       FIREFLIES_OAUTH_REDIRECT_URI: ${FIREFLIES_OAUTH_REDIRECT_URI:-}
+      # Google Meet OAuth proxy (WP-A) — dark by default: unset flag = the five
+      # /api/connectors/google/oauth/* routes are never mounted (404). Armed, the three client
+      # vars below are mandatory and the backend refuses to build the router without them.
+      # Nothing here is persisted: the proxy is a credential-shaped pipe to Google.
+      GOOGLE_MEET_OAUTH_ENABLED: ${GOOGLE_MEET_OAUTH_ENABLED:-false}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
       # Unset = code defaults (5 min drain, 20/hour per address on each Option-A ceiling).
       CONNECTOR_DRAIN_INTERVAL_MS: ${CONNECTOR_DRAIN_INTERVAL_MS:-}
       CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${CONNECTOR_A_FETCH_CEILING_PER_HOUR:-}

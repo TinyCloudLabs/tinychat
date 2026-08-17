@@ -7,9 +7,12 @@ import type { ServerInfoPermission } from "@tinyboilerplate/core";
 import { APP_ID, THREADS_KV_PREFIX, backendDelegationResolvedPermissions } from "../manifest.js";
 import { activatePortableDelegation } from "../portable-delegation.js";
 import { RETENTION_WINDOW_DAYS } from "../services/content-store.js";
+import { GOOGLE_MEET_SCOPES } from "../services/google-oauth.js";
 import {
   BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
+  GOOGLE_MEET_CONSENT_COPY,
+  GOOGLE_TESTING_MODE_REAUTH_COPY,
   consentCopyText,
 } from "../../../frontend/src/lib/connectors/consentCopy";
 
@@ -70,6 +73,13 @@ const COPY_TEXT = normalize(consentCopyText(COPY));
 // claim by claim, against the same deny-lists. It is a second product, not a second draft.
 const COHORT_COPY = BACKEND_INGEST_CONSENT_COPY;
 const COHORT_TEXT = normalize(consentCopyText(COHORT_COPY));
+
+// GMEET(connector plan §4.1/§4.3, WP-C) — the Google Meet CONNECT text, read the same way again.
+// A third product on this file's desk, and the first one that is not a background-sync variant:
+// google-meet has no webhook lane, so what it has to be honest about is the OAuth trust model.
+// The deny-lists are not relaxed for it — they never were about which lane a text belongs to.
+const GOOGLE_COPY = GOOGLE_MEET_CONSENT_COPY;
+const GOOGLE_TEXT = normalize(consentCopyText(GOOGLE_COPY));
 
 // ---------------------------------------------------------------------------------------------
 // The ability → authorized-SQLite-AuthAction table (§3.2b, acceptance half 1).
@@ -881,6 +891,163 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
       // Wired: the "not yet" record must be retired in the same change, not left to rot.
       expect(deployment).not.toMatch(/NOT yet wired/);
     }
+  });
+});
+
+/**
+ * GMEET(connector plan §4.1, §4.3, §6 WP-C) — the Google Meet connect consent copy.
+ *
+ * Same job as the two blocks above, against a different set of facts: this connector's server-side
+ * role is a STATELESS OAuth proxy (`services/google-oauth.ts` + `routes/google-oauth.ts`), and the
+ * two claims most worth pinning are the ones a copywriter would be most tempted to smooth — that
+ * Google token material does pass through our backend, and that a transcript may simply not exist.
+ *
+ * The scope sentences are matched against `GOOGLE_MEET_SCOPES` itself rather than against a list
+ * repeated here, so widening the grant without amending the copy fails the build. That is the
+ * whole point: a Drive scope is a CASA Tier-2 compliance decision (plan §4.1), not a code tweak,
+ * and it should be impossible to make quietly.
+ */
+describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C)", () => {
+  const scopes = GOOGLE_MEET_SCOPES.split(" ");
+
+  it("names Google and OAuth, and describes exactly the two scopes that are requested", () => {
+    // The grant, from the code: two scopes, and neither is a Drive/Calendar/Gmail one.
+    expect(scopes).toEqual([
+      "https://www.googleapis.com/auth/meetings.space.readonly",
+      "https://www.googleapis.com/auth/meetings.space.settings",
+    ]);
+    expect(GOOGLE_MEET_SCOPES).not.toMatch(/drive|calendar|gmail/i);
+
+    expect(GOOGLE_COPY.variant).toBe("google-oauth");
+    expect(GOOGLE_TEXT).toContain("google");
+    expect(GOOGLE_TEXT).toContain("oauth");
+    // …and the two scopes in plain language, in the order they are requested.
+    const readable = GOOGLE_TEXT.indexOf("transcripts");
+    const settings = GOOGLE_TEXT.indexOf("change google meet transcription settings");
+    expect(readable).toBeGreaterThan(-1);
+    expect(settings).toBeGreaterThan(-1);
+    expect(readable).toBeLessThan(settings);
+    expect(GOOGLE_TEXT).toMatch(/who took part/);
+    // The settings scope is disclosed for what it is: the host-only toggle (S4).
+    expect(GOOGLE_TEXT).toMatch(/meetings you host/);
+    // And the copy says the grant stops there, in the one form the deny-list allows: what we ASK
+    // FOR, never what a permission cannot reach.
+    expect(GOOGLE_TEXT).toContain("no drive, no calendar, no gmail permission is requested");
+  });
+
+  it("discloses the transient backend token visibility instead of smoothing it", () => {
+    // `routes/google-oauth.ts` proxies /exchange and /refresh because Google requires the client
+    // secret; it persists nothing (its own test pins the absence of a store import). A copy that
+    // said "your token never touches our server" would be false, and one that said nothing would
+    // be the same omission by silence.
+    expect(GOOGLE_TEXT).toMatch(/client secret/);
+    expect(GOOGLE_TEXT).toMatch(/token refresh/);
+    expect(GOOGLE_TEXT).toMatch(/(goes|go) through our backend/);
+    expect(GOOGLE_TEXT).toContain("cvm");
+    expect(GOOGLE_TEXT).toContain("persists nothing");
+    expect(GOOGLE_TEXT).toMatch(/no log line carrying a token/);
+    // Where the long-lived credential ends up: the user's own encrypted secrets, not with us.
+    expect(GOOGLE_TEXT).toMatch(/encrypted secrets/);
+  });
+
+  it("says the browser fetches the meeting itself, and where the data lands", () => {
+    expect(GOOGLE_TEXT).toMatch(/browser talks to google directly/);
+    expect(GOOGLE_TEXT).toMatch(/never passes through tinychat's server/);
+    expect(GOOGLE_TEXT).toMatch(/written straight into your space/);
+    // No server-side copy is claimed, because there is none — the opposite of the cohort text.
+    expect(GOOGLE_TEXT).toMatch(/we keep no copy of it/);
+  });
+
+  it("states the coverage cliff with its cause, and names what closes the gap", () => {
+    // D5's tone: cause named, no dead ends. "Nothing synced" is where a user concludes the
+    // connector is broken, so BOTH conditions are spelled out and a next step is offered.
+    expect(GOOGLE_TEXT).toMatch(/paid google workspace edition/);
+    expect(GOOGLE_TEXT).toMatch(/transcription was switched on for that meeting/);
+    expect(GOOGLE_TEXT).toMatch(/free\/consumer google account/);
+    expect(GOOGLE_TEXT).toMatch(/google's limit rather than ours/);
+    expect(GOOGLE_TEXT).toMatch(/closes most of the gap/);
+    // The 30-day record horizon, the other reason a meeting is simply not there.
+    expect(GOOGLE_TEXT).toMatch(/about 30 days/);
+    // …and no promise that connecting captures everything.
+    for (const overclaim of [
+      /every meeting (?:in|on|from) your (?:team|workspace|organi[sz]ation)/,
+      /all (?:your )?(?:past |team )?meetings/,
+      /every meeting you (?:attend|are invited to)/,
+    ]) {
+      expect({ overclaim: overclaim.source, found: overclaim.test(GOOGLE_TEXT) }).toEqual({
+        overclaim: overclaim.source,
+        found: false,
+      });
+    }
+  });
+
+  it("makes no confinement or delete-capability claim, on the same terms as the others", () => {
+    // Unconditional here too: this connector mints no delegation at all, and that STILL does not
+    // license a sentence about what a permission cannot reach while V3 records the escape.
+    const { escapeReproduces } = readV3Verdict();
+    expect(escapeReproduces ? matched(CONFINEMENT_CLAIMS, GOOGLE_TEXT) : []).toEqual([]);
+    expect(matched(DELETE_CAPABILITY_CLAIMS, GOOGLE_TEXT)).toEqual([]);
+  });
+
+  it("claims no new permission on the user's space, and the policy agrees", async () => {
+    // This plan adds NO backend delegation permission — the backend is a credential-shaped pipe.
+    // Same check the other two texts get, against the same activated scope.
+    const activated = await activatedScope();
+
+    expect(GOOGLE_TEXT).toContain("no new permission");
+    expect(
+      activated.filter((entry) => entry.path.startsWith(`${APP_ID}/connectors`)),
+    ).toEqual([]);
+    expect(sortScope(activated)).toEqual(
+      sortScope(backendDelegationResolvedPermissions(BACKEND_DID)),
+    );
+  });
+
+  it("carries no attestation checkbox, and a disconnect note that promises no certain revoke", () => {
+    // Nothing is granted to our server, so there is nothing to attest to — the reasoning that
+    // deleted Option B's checkbox, applied to a third text.
+    expect(GOOGLE_COPY.consentCheckbox).toBeUndefined();
+    expect(GOOGLE_TEXT).not.toContain("i understand that");
+
+    // The disconnect note IS present, and it states the failure mode rather than a guarantee:
+    // the dialog's teardown reports a failed upstream revoke instead of swallowing it.
+    const note = normalize(GOOGLE_COPY.disconnectNote ?? "");
+    expect(note).toMatch(/asks google to revoke/);
+    expect(note).toMatch(/instead of pretending the revoke worked/);
+    expect(note).toMatch(/remove tinychat yourself/);
+    for (const overpromise of [
+      /\brevocation is (?:immediate|instant)/,
+      /\balways revokes\b/,
+      /\bguarantees? (?:the )?revoke/,
+    ]) {
+      expect({ overpromise: overpromise.source, found: overpromise.test(note) }).toEqual({
+        overpromise: overpromise.source,
+        found: false,
+      });
+    }
+  });
+
+  it("keeps the testing-mode re-auth caveat out of the always-on copy, and honest in itself", () => {
+    // G3 (plan §2b) requires this text live in the connect dialog before the Google app opens
+    // beyond the team, and the dialog gates it on a flag that ships hidden — internal mode does
+    // not expire weekly, and a warning that is currently false is its own dishonesty. So it is
+    // NOT a bullet: it must not render unconditionally.
+    const caveat = normalize(GOOGLE_TESTING_MODE_REAUTH_COPY);
+    expect(caveat).toMatch(/7 days/);
+    expect(caveat).toMatch(/reconnect/);
+    expect(GOOGLE_TEXT).not.toContain("7 days");
+    // No dead end: it says what happens meanwhile and what is at stake.
+    expect(caveat).toMatch(/syncing pauses/);
+    expect(caveat).toMatch(/already in your space are unaffected/);
+  });
+
+  it("does not disturb the two background-sync texts", () => {
+    // A third product on the same file is exactly where a shared edit goes wrong.
+    expect(COPY.variant).toBe("C");
+    expect(COHORT_COPY.variant).toBe("B-ingest");
+    expect(GOOGLE_TEXT).not.toContain("fireflies");
+    expect(COPY_TEXT).not.toContain("google");
+    expect(COHORT_TEXT).not.toContain("google");
   });
 });
 

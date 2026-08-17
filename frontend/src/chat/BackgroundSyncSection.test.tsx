@@ -11,6 +11,8 @@
 // the view is asserted for what it renders in each state.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
@@ -19,9 +21,14 @@ import {
   applyEnableResult,
   dismissReveal,
   initialBackgroundSyncState,
+  supportsBackgroundNotifications,
   type BackgroundSyncState,
 } from "./backgroundSyncState";
 import type { ConnectorWebhookEnabled } from "@/lib/connectors/webhooksApi";
+import type {
+  ConnectorConnection,
+  ConnectorDescriptor,
+} from "@/lib/connectors/types";
 
 const DELIVERY_URL = "https://api.example.test/api/connectors/webhooks/fireflies/tok_abc";
 const DELIVERY_SECRET = "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKK";
@@ -457,5 +464,54 @@ describe("allow historical re-sync", () => {
   test("is not offered when background notifications are off", () => {
     const html = render({ ...initialBackgroundSyncState(), phase: "off" });
     expect(html).not.toContain(HISTORICAL_RESYNC_CONFIRM_COPY.heading);
+  });
+});
+
+// ── The section self-hides for Google Meet (WP-C) ────────────────────
+//
+// This surface is mounted by `ConnectorsCard` behind
+// `supportsBackgroundNotifications(descriptor, connection)` — the section has
+// no other mount point — so "self-hides" means that gate is false for a
+// google-meet row in every state, and the section therefore never renders a
+// setup control the connector cannot honour (Google sends no webhook; the Meet
+// sync is the separate session-start lane).
+//
+// Mock-driven and flip-agnostic: the descriptor is built here in its POST-flip
+// shape, never read from the registry, so nothing here moves with the flip.
+
+describe("google-meet gets no background-sync surface", () => {
+  const gmeetAvailable: ConnectorDescriptor = {
+    id: "google-meet",
+    name: "Google Meet",
+    description: "Sync Google Meet recordings and captions.",
+    status: "available",
+    secretName: "REFRESH_TOKEN",
+    secretScope: "google-meet",
+    source: "google-meet",
+  };
+
+  const gmeetConnected: ConnectorConnection = {
+    connectorId: "google-meet",
+    status: "connected",
+    lastSyncedAt: "2026-08-16T10:00:00.000Z",
+    lastSyncStatus: "ok",
+    lastSyncError: null,
+    itemCount: 4,
+  };
+
+  test("the card's mount gate is false for an available, connected row", () => {
+    expect(supportsBackgroundNotifications(gmeetAvailable, gmeetConnected)).toBe(false);
+  });
+
+  test("the card mounts the section behind exactly that gate", () => {
+    // Source-asserted because `ConnectorsCard.tsx` cannot be imported into a
+    // bun test process (its dialog chain evaluates browser globals) — the same
+    // idiom `ConnectorsCard.test.ts` documents.
+    const card = readFileSync(join(import.meta.dir, "ConnectorsCard.tsx"), "utf8");
+    const at = card.indexOf("<BackgroundSyncSection");
+    expect(at).toBeGreaterThan(0);
+    expect(card.slice(0, at)).toContain(
+      "supportsBackgroundNotifications(d, rows[d.id].connection) && (",
+    );
   });
 });

@@ -1,11 +1,13 @@
 // Connectors settings card — spec §9. Registry-driven rows; loads connection
 // state on mount via connectorStore.getConnection (SQL only — never touches
 // tcw.secrets on mount so a fresh settings-page open cannot trigger the wallet
-// unlock popup). Sync now runs the real sync engine with a real FirefliesClient
-// keyed via connectorSecrets after an interactive unlock. Connect + Disconnect
-// flows are handed off to ConnectorDialog (spec §9): a Radix Dialog wraps the
-// key entry → validate → save → initial sync stepper, and a Radix AlertDialog
-// wraps the disconnect confirm with an "also delete N meetings" checkbox.
+// unlock popup). Sync now runs the real sync engine for the row, keyed via
+// connectorSecrets after an interactive unlock — ONE ENGINE PER CONNECTOR,
+// dispatched from the registry id (see `handleSyncNow`), never a shared
+// default. Connect + Disconnect flows are handed off to ConnectorDialog
+// (spec §9): a Radix Dialog wraps the key entry → validate → save → initial
+// sync stepper, and a Radix AlertDialog wraps the disconnect confirm with an
+// "also delete N meetings" checkbox.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -26,6 +28,13 @@ import {
   FirefliesClient,
 } from "@/lib/connectors/firefliesClient";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
+import { GmeetClient } from "@/lib/connectors/gmeetClient";
+import {
+  isGmeetSyncInFlight,
+  syncGoogleMeet,
+  type GmeetSyncProgress,
+  type GmeetSyncStore,
+} from "@/lib/connectors/gmeetSync";
 import {
   getConnectorKey,
   isSecretsUnlocked,
@@ -46,6 +55,7 @@ import {
 } from "./ConnectorDialog";
 import { BackgroundSyncSection } from "./BackgroundSyncSection";
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
+import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync";
 import { SectionCard } from "./SettingsPage";
 
 interface ConnectorsCardProps {
@@ -59,6 +69,15 @@ interface RowState {
   loaded: boolean;
   connection: ConnectorConnection | null;
   syncing: boolean;
+  /**
+   * This press JOINED a run started elsewhere (the session-start lane), rather
+   * than starting one. `syncGoogleMeet` is single-flight, and only the FIRST
+   * caller's `onProgress` and `signal` are honoured — so for a joined run this
+   * row's Stop would abort nothing and its progress would never move. The row
+   * says "syncing in the background" and offers no Stop instead of rendering a
+   * dead button.
+   */
+  joinedBackgroundSync: boolean;
   progress: SyncProgress | null;
   // In-session error surface. Persists across renders until the next action;
   // separate from `connection.lastSyncError` because retryAfterMs is not
@@ -71,6 +90,7 @@ const DEFAULT_ROW_STATE: RowState = {
   loaded: false,
   connection: null,
   syncing: false,
+  joinedBackgroundSync: false,
   progress: null,
   actionError: null,
   actionRetryAfterMs: null,
@@ -83,6 +103,108 @@ const INITIAL_ROW_STATE_MAP: RowStateMap = {
   granola: DEFAULT_ROW_STATE,
   "google-meet": DEFAULT_ROW_STATE,
 };
+
+// ── Sync-now engines ───────────────────────────────────────────────────
+//
+// Note that being an INITIAL_ROW_STATE_MAP key forces nothing: `granola` is one
+// too and has no engine. The dispatch in `handleSyncNow` plus the registry's
+// `status` are the forcing functions, and the not-implemented branch is what a
+// row without an engine lands on.
+
+type RowSyncEngine = "fireflies" | "gmeet";
+
+/** The two engines' results, flattened to what the row actually renders. */
+type RowSyncOutcome =
+  | { ok: true }
+  | { ok: false; message: string; retryAfterMs: number | null };
+
+/** The real store for the Meet engine, assembled explicitly so a signature
+ *  drift in connectorStore fails at compile time rather than at the first sync. */
+const GMEET_STORE: GmeetSyncStore = {
+  getConnection: connectorStore.getConnection,
+  putTranscriptBody: connectorStore.putTranscriptBody,
+  upsertMeeting: connectorStore.upsertMeeting,
+  updateSyncState: connectorStore.updateSyncState,
+  countMeetings: connectorStore.countMeetings,
+};
+
+/** Meet's progress vocabulary → the row's. Counts only; no titles, no text. */
+function gmeetRowProgress(p: GmeetSyncProgress): SyncProgress {
+  return {
+    phase: p.type === "status" ? "listing" : "storing",
+    done: p.current,
+    total: p.total,
+  };
+}
+
+async function runFirefliesSyncNow(opts: {
+  tcw: TinyCloudWeb;
+  apiKey: string;
+  signal: AbortSignal;
+  onProgress: (p: SyncProgress) => void;
+}): Promise<RowSyncOutcome> {
+  const client = new FirefliesClient({
+    apiKey: opts.apiKey,
+    ...defaultFirefliesClientOptions(),
+  });
+  const res = await syncFireflies({
+    client,
+    store: connectorStore,
+    tcw: opts.tcw,
+    onProgress: opts.onProgress,
+    signal: opts.signal,
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+}
+
+/**
+ * "Sync now" for Google Meet.
+ *
+ * The refresh token rides one authenticated request to the backend proxy and is
+ * never logged or re-persisted; the access token lives in the client for this
+ * run only. `syncGoogleMeet`'s module-level single-flight is shared with the
+ * session-start lane, so a button press while that run is in flight JOINS it
+ * rather than racing it over the same upserts.
+ */
+async function runGmeetSyncNow(opts: {
+  tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
+  refreshToken: string;
+  signal: AbortSignal;
+  onProgress: (p: SyncProgress) => void;
+}): Promise<RowSyncOutcome> {
+  const { tcw, backendUrl, sessionStore, refreshToken, signal } = opts;
+  const mint = () =>
+    mintGmeetAccessToken({ backendUrl, sessionStore, refreshToken, signal });
+  const accessToken = await mint();
+  if (!accessToken) {
+    // Every mint failure — signed out, a dark route, a revoked grant — resolves
+    // to null rather than a message, so this is the one string the card owns.
+    return {
+      ok: false,
+      message: "Couldn't reach Google with your saved connection. Try reconnecting Google Meet.",
+      retryAfterMs: null,
+    };
+  }
+  const client = new GmeetClient({
+    accessToken,
+    // One 401 re-mints through the same proxy — the refresh token never leaves
+    // this scope, and the new access token stays in the client.
+    refreshAccessToken: mint,
+    signal,
+  });
+  const res = await syncGoogleMeet({
+    client,
+    store: GMEET_STORE,
+    tcw,
+    onProgress: (p) => opts.onProgress(gmeetRowProgress(p)),
+    signal,
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, message: res.error.message, retryAfterMs: res.error.retryAfterMs ?? null };
+}
 
 export function ConnectorsCard({
   tcw,
@@ -166,11 +288,16 @@ export function ConnectorsCard({
 
   const handleSyncNow = useCallback(
     async (d: ConnectorDescriptor) => {
-      // v1 only wires the Fireflies engine. A future descriptor moving from
-      // coming-soon → available without its own dispatch entry would silently
-      // fetch its data with the Fireflies client + saved key — surface an
-      // explicit not-implemented error instead.
-      if (d.id !== "fireflies") {
+      // ENGINE DISPATCH — by registry id, and exhaustively. There is no shared
+      // default here on purpose: a descriptor moving coming-soon → available
+      // WITHOUT its own entry below would otherwise be fetched with the
+      // Fireflies client and the Fireflies key. Google Meet has its own entry
+      // (it reads a refresh token, mints an access token through the backend
+      // proxy and runs `syncGoogleMeet`) and never touches FirefliesClient;
+      // anything else still gets the explicit not-implemented error.
+      const engine: RowSyncEngine | null =
+        d.id === "fireflies" ? "fireflies" : d.id === GMEET_CONNECTOR_ID ? "gmeet" : null;
+      if (engine === null) {
         patchRow(d.id, {
           syncing: false,
           actionError: "Sync not yet implemented for this connector.",
@@ -179,6 +306,7 @@ export function ConnectorsCard({
       }
       patchRow(d.id, {
         syncing: true,
+        joinedBackgroundSync: false,
         progress: null,
         actionError: null,
         actionRetryAfterMs: null,
@@ -193,27 +321,49 @@ export function ConnectorsCard({
           return;
         }
       }
+      // The registry row names the secret — API key for Fireflies, refresh
+      // token for Google Meet. This file spells neither, which is what lets the
+      // flip commit change what is read without touching here.
       const keyRes = await getConnectorKey<SecretsErr>(tcw, d);
       if (!keyRes.ok) {
         patchRow(d.id, {
           syncing: false,
-          actionError: keyRes.error?.message ?? "Could not read API key",
+          actionError:
+            keyRes.error?.message ??
+            (engine === "gmeet"
+              ? "Could not read the saved Google connection"
+              : "Could not read API key"),
         });
         return;
       }
       const ac = new AbortController();
       syncAbortRefs.current[d.id] = ac;
-      const client = new FirefliesClient({
-        apiKey: keyRes.data,
-        ...defaultFirefliesClientOptions(),
-      });
-      const syncRes = await syncFireflies({
-        client,
-        store: connectorStore,
-        tcw,
-        onProgress: (p) => patchRow(d.id, { progress: p }),
-        signal: ac.signal,
-      });
+      // Asked at the last moment before the call, because that is when the
+      // answer is true: the Meet engine's single-flight slot is shared with the
+      // session-start lane, so a press landing while that run walks a 30-day
+      // backfill JOINS it. The joined caller's signal and onProgress are both
+      // ignored by the engine, which is exactly what the row must not pretend.
+      if (engine === "gmeet" && isGmeetSyncInFlight()) {
+        patchRow(d.id, { joinedBackgroundSync: true });
+      }
+      const onProgress = (p: SyncProgress) => patchRow(d.id, { progress: p });
+      const syncRes =
+        engine === "gmeet"
+          ? await runGmeetSyncNow({
+              tcw,
+              backendUrl,
+              sessionStore,
+              // Memory only, for this run: never logged, never re-persisted.
+              refreshToken: keyRes.data,
+              signal: ac.signal,
+              onProgress,
+            })
+          : await runFirefliesSyncNow({
+              tcw,
+              apiKey: keyRes.data,
+              signal: ac.signal,
+              onProgress,
+            });
       if (syncAbortRefs.current[d.id] === ac) {
         delete syncAbortRefs.current[d.id];
       }
@@ -224,22 +374,24 @@ export function ConnectorsCard({
       if (!syncRes.ok) {
         patchRow(d.id, {
           syncing: false,
+          joinedBackgroundSync: false,
           progress: null,
           connection: conn,
-          actionError: syncRes.error.message,
-          actionRetryAfterMs: syncRes.error.retryAfterMs ?? null,
+          actionError: syncRes.message,
+          actionRetryAfterMs: syncRes.retryAfterMs,
         });
         return;
       }
       patchRow(d.id, {
         syncing: false,
+        joinedBackgroundSync: false,
         progress: null,
         connection: conn,
         actionError: null,
         actionRetryAfterMs: null,
       });
     },
-    [tcw, patchRow],
+    [tcw, patchRow, backendUrl, sessionStore],
   );
 
   const handleStopSync = useCallback((id: ConnectorId) => {
@@ -304,6 +456,8 @@ export function ConnectorsCard({
         <ConnectorConnectDialog
           tcw={tcw}
           descriptor={dialogDescriptor}
+          backendUrl={backendUrl}
+          sessionStore={sessionStore}
           open
           onOpenChange={(next) => {
             if (!next) setDialog(null);
@@ -318,6 +472,8 @@ export function ConnectorsCard({
           tcw={tcw}
           descriptor={dialogDescriptor}
           webhooks={webhooks}
+          backendUrl={backendUrl}
+          sessionStore={sessionStore}
           featureDark={featureDark}
           itemCount={rows[dialogDescriptor.id].connection?.itemCount ?? 0}
           open
@@ -420,14 +576,19 @@ const ConnectorRow: FC<{
                   <span>{syncButtonLabel(state)}</span>
                 </Button>
                 {state.syncing ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onStopSync}
-                    aria-label={`Stop syncing ${d.name}`}
-                  >
-                    Stop
-                  </Button>
+                  // No Stop for a run this press only JOINED: the engine honours
+                  // the first caller's signal alone, so the button would abort
+                  // nothing. The status line below says where the run came from.
+                  state.joinedBackgroundSync ? null : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={onStopSync}
+                      aria-label={`Stop syncing ${d.name}`}
+                    >
+                      Stop
+                    </Button>
+                  )
                 ) : (
                   <Button
                     variant="outline"
@@ -445,6 +606,13 @@ const ConnectorRow: FC<{
       </div>
       {!comingSoon && connected && state.connection && (
         <ConnectedStatusLine connection={state.connection} />
+      )}
+      {!comingSoon && state.syncing && state.joinedBackgroundSync && (
+        <p className="text-xs text-muted-foreground">
+          A sync that started when you opened TinyChat is still running — this one
+          joined it rather than starting a second pass over the same meetings. It
+          finishes on its own; progress isn’t shown for the run that owns it.
+        </p>
       )}
       {/* Reliable SR announcement of sync progress — the button's own label
           change is not universally announced. Same pattern ImportDialog uses. */}
@@ -504,6 +672,7 @@ function syncButtonLabel(state: RowState): string {
 }
 
 function syncAnnouncement(name: string, state: RowState): string {
+  if (state.joinedBackgroundSync) return `Syncing ${name} in the background.`;
   const p = state.progress;
   if (p && typeof p.total === "number" && p.total > 0) {
     return `Syncing ${name} ${p.done} of ${p.total} meetings.`;

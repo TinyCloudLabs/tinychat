@@ -386,8 +386,201 @@ describe("connector webhook paths", () => {
     // The dead-letter is surfaced on /pending so an operator can answer "why didn't it arrive".
     expect(schemas.ConnectorWebhookPending.required).toContain("dead");
     expect(schemas.ConnectorWebhookPending.required).toContain("deliveriesRateLimited");
+  });
+});
 
-    // Walk every $ref in the document; a dangling one breaks the boot-time load.
+/**
+ * Google Meet OAuth proxy (WP-A). Additive, and the same flag-gated shape as the group above:
+ * while `GOOGLE_MEET_OAUTH_ENABLED` is off every path here 404s. Documented because the SPA is the
+ * only client and these five routes are the entire contract between it and Google.
+ */
+describe("google meet oauth paths", () => {
+  const START = "/api/connectors/google/oauth/start";
+  const CALLBACK = "/api/connectors/google/oauth/callback";
+  const EXCHANGE = "/api/connectors/google/oauth/exchange";
+  const REFRESH = "/api/connectors/google/oauth/refresh";
+  const REVOKE = "/api/connectors/google/oauth/revoke";
+
+  test("publishes exactly the five routes, on the sibling prefix", () => {
+    expect(Object.keys(paths())).toEqual(
+      expect.arrayContaining([START, CALLBACK, EXCHANGE, REFRESH, REVOKE]),
+    );
+    // A SIBLING of /api/connectors/webhooks, never a child: a path under the webhook prefix
+    // would be caught by that group's one-segment rule (or worse, by the public raw mount).
+    const googlePaths = Object.keys(paths()).filter((p) =>
+      p.startsWith("/api/connectors/google/"),
+    );
+    expect(googlePaths.sort()).toEqual([CALLBACK, EXCHANGE, REFRESH, REVOKE, START].sort());
+    for (const p of googlePaths) {
+      expect(p.startsWith("/api/connectors/webhooks")).toBe(false);
+    }
+  });
+
+  test("the two GETs are public and the three POSTs are bearer-authenticated", () => {
+    // This is the whole middleware split index.ts wires, restated where clients read it: a
+    // top-level navigation from Google carries no Bearer, so /start and /callback cannot require
+    // one — and nothing that reaches Google's token endpoint may be missing one.
+    expect(paths()[START].get.security).toEqual([]);
+    expect(paths()[CALLBACK].get.security).toEqual([]);
+    for (const p of [EXCHANGE, REFRESH, REVOKE]) {
+      expect(paths()[p].post.security).toEqual([{ bearerAuth: [] }]);
+      // …and each one documents the 401 it will actually return.
+      expect(paths()[p].post.responses["401"]).toEqual({
+        $ref: "#/components/responses/Unauthenticated",
+      });
+      // No GET verb sneaked onto an authenticated path (it would bypass CSRF too).
+      expect(Object.keys(paths()[p])).toEqual(["post"]);
+    }
+    // And no POST on the public pair, which would be an unauthenticated mutation.
+    expect(Object.keys(paths()[START])).toEqual(["get"]);
+    expect(Object.keys(paths()[CALLBACK])).toEqual(["get"]);
+  });
+
+  test("the /start params are the anti-forgery contract, pinned to the router's own patterns", () => {
+    const start = paths()[START].get;
+    const params = start.parameters as Record<string, any>[];
+    const state = params.find((p) => p.name === "state");
+    const challenge = params.find((p) => p.name === "challenge");
+    // Both required, both query params — `state` is the anti-forgery control on an
+    // unauthenticated GET that turns into a 302, so a missing one must be a 400.
+    expect(state.in).toBe("query");
+    expect(state.required).toBe(true);
+    expect(state.schema.pattern).toBe("^[A-Za-z0-9._~-]{16,512}$");
+    expect(challenge.in).toBe("query");
+    expect(challenge.required).toBe(true);
+    // RFC 7636: the S256 challenge is 43-128 unreserved characters.
+    expect(challenge.schema.pattern).toBe("^[A-Za-z0-9._~-]{43,128}$");
+    // The redirect is the success case, and it is documented as one.
+    expect(start.responses["302"].headers.Location.required).toBe(true);
+    expect(start.responses["400"]).toBeTruthy();
+
+    // The callback's `code` is length-bounded ONLY — Google codes carry `/` and `%`, so an
+    // alphabet pattern here would reject valid codes.
+    const callbackParams = paths()[CALLBACK].get.parameters as Record<string, any>[];
+    const code = callbackParams.find((p) => p.name === "code");
+    expect(code.schema.maxLength).toBe(2048);
+    expect(code.schema.pattern).toBeUndefined();
+    expect(code.required).toBe(false);
+  });
+
+  test("descriptions state the invariants: persists nothing, pinned origin, whitelisted payload", () => {
+    const start = paths()[START].get.description as string;
+    const callback = paths()[CALLBACK].get.description as string;
+    const exchange = paths()[EXCHANGE].post.description as string;
+    const refresh = paths()[REFRESH].post.description as string;
+    const revoke = paths()[REVOKE].post.description as string;
+
+    // Spike-verified 2026-08-17: without BOTH params Google mints no refresh token and the
+    // connector silently becomes single-session. Named here so a future edit cannot drop one.
+    expect(start).toMatch(/access_type=offline/);
+    expect(start).toMatch(/prompt=consent/);
+    expect(start).toMatch(/refresh token/i);
+    // The scope pair is a compliance boundary, not a code tweak — a Drive scope is Restricted.
+    expect(start).toMatch(/meetings\.space\.readonly/);
+    expect(start).toMatch(/meetings\.space\.settings/);
+    expect(start).toMatch(/no Drive/i);
+    // The server holds the challenge, never the verifier.
+    expect(start).toMatch(/never the verifier/i);
+
+    // The callback's two controls: a PINNED target origin and no token in the message.
+    expect(callback).toMatch(/pinned app origin/i);
+    expect(callback).toMatch(/never .{0,10}"\*"/i);
+    expect(callback).toMatch(/no Bearer/i);
+    expect(callback).toMatch(/no-referrer/);
+
+    // The reason this proxy exists at all, on the route where a token first appears.
+    expect(exchange).toMatch(/stores NOTHING/);
+    expect(exchange).toMatch(/id_token/);
+    expect(exchange).toMatch(/invalid_grant/);
+    expect(refresh).toMatch(/BROWSER holds the refresh token/);
+    expect(refresh).toMatch(/nothing is written on this side/i);
+    // A swallowed revoke is a lie to the user about what they just disconnected.
+    expect(revoke).toMatch(/SURFACED, never\s+swallowed/);
+  });
+
+  test("the token payload is whitelisted and the error keeps Google's structure", () => {
+    const schemas = components().schemas as Record<string, Record<string, any>>;
+    expect(Object.keys(schemas)).toEqual(
+      expect.arrayContaining([
+        "GoogleOAuthExchangeRequest",
+        "GoogleOAuthRefreshRequest",
+        "GoogleOAuthRevokeRequest",
+        "GoogleTokenResponse",
+        "GoogleOAuthError",
+      ]),
+    );
+
+    // Only `access_token` is promised; `refresh_token` is absent on most refreshes.
+    const token = schemas.GoogleTokenResponse;
+    expect(token.required).toEqual(["access_token"]);
+    expect(Object.keys(token.properties)).toEqual([
+      "access_token",
+      "token_type",
+      "expires_in",
+      "refresh_token",
+      "scope",
+    ]);
+    // The id_token must never be documented as returned — documenting it would be the first
+    // step to passing it through.
+    expect(Object.keys(token.properties)).not.toContain("id_token");
+
+    // The structured upstream error the UI branches on (plan §6 WP-A: Listen flattened it and
+    // could not tell reconnect from no-access from slow-down).
+    const error = schemas.GoogleOAuthError;
+    expect(error.required).toEqual(["error"]);
+    expect(Object.keys(error.properties)).toEqual([
+      "error",
+      "error_description",
+      "upstream_status",
+    ]);
+    expect(error.properties.error_description.maxLength).toBe(200);
+
+    // Request bodies carry no address/tenant field — ownership is the session, and these three
+    // routes are stateless besides.
+    for (const name of [
+      "GoogleOAuthExchangeRequest",
+      "GoogleOAuthRefreshRequest",
+      "GoogleOAuthRevokeRequest",
+    ]) {
+      expect(Object.keys(schemas[name].properties)).not.toContain("address");
+    }
+    expect(schemas.GoogleOAuthExchangeRequest.required).toEqual(["code", "verifier"]);
+    expect(schemas.GoogleOAuthRefreshRequest.required).toEqual(["refreshToken"]);
+    expect(schemas.GoogleOAuthRevokeRequest.required).toEqual(["token"]);
+  });
+
+  test("upstream failures are documented separately from our own, and 429 is its own bucket", () => {
+    const responses = components().responses as Record<string, Record<string, any>>;
+    expect(Object.keys(responses)).toEqual(
+      expect.arrayContaining([
+        "GoogleOAuthRateLimited",
+        "GoogleOAuthUpstreamRejected",
+        "GoogleOAuthUpstreamUnavailable",
+      ]),
+    );
+    // A Google 5xx / timeout is a 502 (retry), never a 4xx (re-consent).
+    expect(responses.GoogleOAuthUpstreamUnavailable.description).toMatch(/RETRY/);
+    for (const p of [START, CALLBACK]) {
+      expect(paths()[p].get.responses["429"]).toEqual({
+        $ref: "#/components/responses/GoogleOAuthRateLimited",
+      });
+    }
+    for (const p of [EXCHANGE, REFRESH, REVOKE]) {
+      expect(paths()[p].post.responses["429"]).toEqual({
+        $ref: "#/components/responses/GoogleOAuthRateLimited",
+      });
+      expect(paths()[p].post.responses["502"]).toEqual({
+        $ref: "#/components/responses/GoogleOAuthUpstreamUnavailable",
+      });
+      // 500 is deliberately detail-free: the cause is ours and its message is not
+      // guaranteed token-free.
+      expect(paths()[p].post.responses["500"]).toBeTruthy();
+    }
+  });
+
+  test("every $ref in the document still resolves — a dangling one kills the boot-time load", () => {
+    // index.ts loads openapi.yaml at BOOT, so a dangling $ref anywhere in this file — including
+    // the block above — is a startup failure, not a documentation bug.
     const seen: string[] = [];
     const walk = (node: unknown): void => {
       if (Array.isArray(node)) {

@@ -676,3 +676,55 @@ describe("app wiring", () => {
     expect(source).not.toContain("Promise.all");
   });
 });
+
+// ── google-meet is not on this lane (WP-C) ───────────────────────────
+//
+// The drainer serves the Option-C webhook queue. Google Meet has no webhook —
+// its sync is the separate session-start lane in `useGmeetSessionSync` — so the
+// supports-gate skips it, and that skip is INTENTIONAL rather than an oversight
+// the flip commit is supposed to fix.
+//
+// Flip-agnostic by construction: the descriptor is built here in its POST-flip
+// shape and handed to the drain through the `connectors` seam, so this stays
+// green both while the registry row is `coming-soon` and after it flips.
+
+describe("google-meet is skipped at the supports gate", () => {
+  const gmeetAvailable: ConnectorDescriptor = {
+    id: "google-meet",
+    name: "Google Meet",
+    description: "Sync Google Meet recordings and captions.",
+    status: "available",
+    secretName: "REFRESH_TOKEN",
+    secretScope: "google-meet",
+    source: "google-meet",
+  };
+
+  test("an available, CONNECTED google-meet row makes no webhook call at all", async () => {
+    const b = backend({ pending: [item("m1")] });
+    const { promise, connectionReads } = start(b, {
+      connectors: [gmeetAvailable],
+      connection: connection({ connectorId: "google-meet", status: "connected" }),
+    });
+    await promise;
+    // Discovery reads the row's connection (cheap SQL, never the vault) and
+    // then stops: no `GET /config`, no drain, no ingest.
+    expect(connectionReads()).toBe(1);
+    expect(b.events).toEqual([]);
+    // And nothing is recorded for it — a badge entry would promise a queue
+    // this connector does not have.
+    expect(readBackgroundDrainRecord()?.connectors).toEqual([]);
+  });
+
+  test("it does not interrupt the fireflies row beside it", async () => {
+    const b = backend({ pending: [item("m1"), item("m2")] });
+    const { promise } = start(b, {
+      tcw: explodingVaultTcw(false),
+      connectors: [gmeetAvailable, fireflies],
+    });
+    await promise;
+    expect(b.events).toEqual(["config", "pending"]);
+    const record = readBackgroundDrainRecord();
+    expect(record?.connectors.map((e) => e.source)).toEqual(["fireflies"]);
+    expect(record?.connectors[0]?.pendingCount).toBe(2);
+  });
+});

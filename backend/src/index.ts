@@ -46,6 +46,7 @@ import {
 } from "./routes/connector-webhooks.js";
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
+import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -64,6 +65,10 @@ import {
   FirefliesOAuthClient,
   firefliesOAuthConfigFromEnv,
 } from "./services/fireflies-oauth.js";
+import {
+  googleMeetOAuthEnabled,
+  googleOAuthConfigFromEnv,
+} from "./services/google-oauth.js";
 import { ConnectorFetchWorker } from "./services/fetch-worker.js";
 import { FirefliesMeetingFetcher } from "./services/fireflies-fetch.js";
 import { backendIngestEnabled, IngestModeService } from "./services/ingest-mode.js";
@@ -142,6 +147,32 @@ export function connectorWebhooksEnabled(): boolean {
 }
 
 /**
+ * Google Meet OAuth ships dark on the same terms (gmeet plan §6 WP-A / §11):
+ * `GOOGLE_MEET_OAUTH_ENABLED` off ⇒ the five `/api/connectors/google/oauth/*` routes are never
+ * mounted, so every one of them 404s — the identical canary shape `connectorWebhooksEnabled()`
+ * gives the webhook route.
+ *
+ * RE-EXPORTED rather than redefined here. The flag that decides the MOUNT and the flag
+ * `googleOAuthConfigFromEnv` reads to decide "armed ⇒ the client vars are mandatory" have to be
+ * one function: two copies could drift into a deployment that mounts the routes without ever
+ * demanding a client id, which is precisely the half-armed state the boot check below refuses.
+ */
+export { googleMeetOAuthEnabled };
+
+/**
+ * The ONLY two paths under the Google OAuth mount that run without `authMiddleware`.
+ *
+ * An allowlist, deliberately, rather than a "skip auth when the method is GET": a GET added to
+ * that router later is authenticated by default, which is the direction an accident should fall.
+ * These two are unauthenticated by necessity — `/callback` is a top-level browser navigation from
+ * Google that carries no Bearer at all, and `/start` is the same navigation one hop earlier.
+ */
+export const GOOGLE_OAUTH_PUBLIC_PATHS: ReadonlySet<string> = new Set([
+  "/start",
+  "/callback",
+]);
+
+/**
  * Presence is NOT the check that matters (§7.1/§4.2). §4.2's derivation hands every consenting
  * user a complete (public salt, known info, displayed 32-byte output) oracle against
  * `WEBHOOK_HMAC_MASTER`, testable offline at any rate — so a weak master is a silent, total
@@ -207,6 +238,26 @@ async function main() {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
       console.error(webhookSecrets.error);
+      process.exit(1);
+      return;
+    }
+  }
+
+  // WP-A — armed-but-unregistered is a BOOT failure, the same posture the Fireflies config check
+  // below has (`firefliesOAuthConfigFromEnv`, :236). An operator who sets GOOGLE_MEET_OAUTH_ENABLED
+  // and forgets a client var must learn it from a refused start, never from a user stranded on a
+  // half-finished consent screen — and the message names the missing VARS only, never a value,
+  // because one of them is the client secret and this CVM logs publicly.
+  if (googleMeetOAuthEnabled()) {
+    try {
+      googleOAuthConfigFromEnv(process.env);
+      // The callback page's `postMessage` target, validated at boot rather than at the first
+      // consent. Same value `cors()` is built from, so "the origin we accept requests from" and
+      // "the origin we hand an authorization code to" cannot drift apart; anything that is not a
+      // parseable origin (a bare host, a `*`) throws here.
+      normalizeAppOrigin(FRONTEND_URL);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
       return;
     }
@@ -650,6 +701,44 @@ async function main() {
       ).start();
     }
   }
+
+  // WP-A — the Google Meet OAuth proxy (gmeet plan §4.1 / §6 WP-A), DARK by default. With the flag
+  // off this `app.use` never runs, so all five paths 404: the same canary the webhook mount gives.
+  // A SIBLING prefix of `/api/connectors/webhooks`, so it can collide with neither the public
+  // two-segment delivery route nor the one-segment companions, and it carries its own rate-limit
+  // bucket (rate-limits.ts) — an OAuth dance plus a few refreshes must not spend `/api/chat`'s
+  // 120/15min global allowance.
+  //
+  // The middleware SPLIT is why this mounts here, in the normal window (behind the global JSON
+  // parser, CSRF and `applyRateLimiters`) rather than in the raw window:
+  //
+  //  - `GET /start` and `GET /callback` run WITHOUT `authMiddleware`. `/callback` is a top-level
+  //    browser navigation from Google carrying no Bearer, so auth would 401 the flow before the
+  //    popup could hand anything back; `/start` is the same navigation one hop earlier. CSRF
+  //    exempts GET, and the anti-forgery control on these two is the `state` param the SPA mints
+  //    and re-checks. Neither reads a session, a store or a credential — `/callback` renders one
+  //    nonce'd page that postMessages `{code, state}` to the pinned app origin and nothing else.
+  //  - Everything else — the three POSTs that actually reach Google's token endpoint — goes
+  //    through `authMiddleware`, with global CSRF already covering the unsafe methods.
+  if (googleMeetOAuthEnabled()) {
+    app.use(
+      "/api/connectors/google/oauth",
+      (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        if (req.method === "GET" && GOOGLE_OAUTH_PUBLIC_PATHS.has(req.path)) {
+          next();
+          return;
+        }
+        void authMiddleware(req, res, next);
+      },
+      createGoogleOAuthRouter({
+        // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
+        // process already resolved the app origin once, with the localhost/TLS fallback a bare
+        // env read does not have. ONE value feeds `cors()` and the callback's postMessage target.
+        appOrigin: FRONTEND_URL,
+      }),
+    );
+  }
+
   if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
     const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
     const redpillApiKey = process.env.REDPILL_API_KEY;
