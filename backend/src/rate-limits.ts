@@ -57,11 +57,31 @@ export const CONNECTOR_MEETINGS_PATHS = ["/api/connectors/meetings"] as const;
 export const DELEGATION_LIMIT = 240;
 export const DELEGATION_PATHS = ["/api/delegations"] as const;
 
+/**
+ * The Google Meet OAuth proxy (gmeet plan §4.1 / §6 WP-A) gets its own bucket for the reason this
+ * file's header states: it mounts after `applyRateLimiters`, so without one it would land in
+ * `globalLimiter`'s 120/15min — the bucket `/api/chat` shares — and a user who reconnects a couple
+ * of times would 429 their own next chat send.
+ *
+ * SMALL on purpose, and the only bucket here that is. The others exist because a legitimate visit
+ * is chatty; this one is the opposite. A whole consent dance costs three requests (`/start`,
+ * `/callback`, `/exchange`) and a sync costs at most one `/refresh`, so 30/15min is roughly six
+ * reconnects or twenty-odd token mints an hour from one IP — generous for a human, tight for the
+ * two abuses that matter on an UNAUTHENTICATED pair of GETs: `/start` is an open 302 into Google's
+ * consent screen, and `/callback` renders a page for anyone who asks. Neither may be free.
+ *
+ * Keyed by IP like every bucket in this file — `applyRateLimiters` runs ahead of `authMiddleware`,
+ * so no session is known here even for the three authenticated POSTs.
+ */
+export const GOOGLE_OAUTH_LIMIT = 30;
+export const GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"] as const;
+
 const DEDICATED_PATHS = [
   ...VERIFICATION_PATHS,
   ...CONNECTOR_COMPANION_PATHS,
   ...CONNECTOR_MEETINGS_PATHS,
   ...DELEGATION_PATHS,
+  ...GOOGLE_OAUTH_PATHS,
 ] as const;
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -69,7 +89,8 @@ function matchesMountPath(path: string, mount: string): boolean {
 }
 
 /** Mount the global limiter (exempting every path that carries its own bucket) plus one
- *  dedicated limiter per group: verification, connector companions, delegations. */
+ *  dedicated limiter per group: verification, connector companions, connector meetings,
+ *  delegations, google oauth. */
 export function applyRateLimiters(app: Express): void {
   app.set("trust proxy", 1);
   const verificationLimiter = rateLimit({
@@ -96,6 +117,12 @@ export function applyRateLimiters(app: Express): void {
     standardHeaders: "draft-7",
     legacyHeaders: false,
   });
+  const googleOAuthLimiter = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: GOOGLE_OAUTH_LIMIT,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+  });
   const globalLimiter = rateLimit({
     windowMs: WINDOW_MS,
     limit: GLOBAL_LIMIT,
@@ -108,4 +135,5 @@ export function applyRateLimiters(app: Express): void {
   for (const p of CONNECTOR_COMPANION_PATHS) app.use(p, connectorCompanionLimiter);
   for (const p of CONNECTOR_MEETINGS_PATHS) app.use(p, connectorMeetingsLimiter);
   for (const p of DELEGATION_PATHS) app.use(p, delegationLimiter);
+  for (const p of GOOGLE_OAUTH_PATHS) app.use(p, googleOAuthLimiter);
 }

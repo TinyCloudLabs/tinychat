@@ -4,8 +4,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
 import type { FirefliesSentence } from "./firefliesClient.js";
 import {
+  EXPLORER_MEETING_SOURCES,
   listMeetings,
-  readTranscriptSentences,
+  meetingSourceLabel,
+  readTranscript,
   transcriptCopyText,
 } from "./meetingExplorer.js";
 
@@ -95,8 +97,8 @@ describe("listMeetings", () => {
         ok: true,
         data: {
           rows: [
-            ["row-1", "src-1", "Standup", "2026-08-01T10:00:00.000Z"],
-            ["row-2", "src-2", "Retro", "2026-07-30T10:00:00.000Z"],
+            ["row-1", "fireflies", "src-1", "Standup", "2026-08-01T10:00:00.000Z"],
+            ["row-2", "fireflies", "src-2", "Retro", "2026-07-30T10:00:00.000Z"],
           ],
         },
       },
@@ -104,12 +106,14 @@ describe("listMeetings", () => {
     expect(await listMeetings(tcw)).toEqual([
       {
         id: "row-1",
+        source: "fireflies",
         sourceId: "src-1",
         title: "Standup",
         startedAt: "2026-08-01T10:00:00.000Z",
       },
       {
         id: "row-2",
+        source: "fireflies",
         sourceId: "src-2",
         title: "Retro",
         startedAt: "2026-07-30T10:00:00.000Z",
@@ -117,20 +121,51 @@ describe("listMeetings", () => {
     ]);
   });
 
-  it("queries the fully-resolved connectors db and passes the source param", async () => {
+  it("lists both sources in one merged list, each row labelled with its source", async () => {
+    const { tcw } = fakeTcw({
+      sql: {
+        ok: true,
+        data: {
+          // As the DB hands them back: newest-first ACROSS the union, so the
+          // two connectors interleave rather than grouping.
+          rows: [
+            ["row-1", "google-meet", "conf-1", "Design sync", "2026-08-16T09:00:00.000Z"],
+            ["row-2", "fireflies", "src-2", "Standup", "2026-08-15T09:00:00.000Z"],
+            ["row-3", "google-meet", "conf-3", "Retro", "2026-08-14T09:00:00.000Z"],
+          ],
+        },
+      },
+    });
+    const meetings = await listMeetings(tcw);
+    expect(meetings.map((m) => [m.source, m.sourceId])).toEqual([
+      ["google-meet", "conf-1"],
+      ["fireflies", "src-2"],
+      ["google-meet", "conf-3"],
+    ]);
+  });
+
+  it("queries the fully-resolved connectors db across every requested source", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
-    await listMeetings(tcw, "otter");
+    await listMeetings(tcw, ["otter", "granola"]);
     expect(sqlCalls).toHaveLength(1);
     expect(sqlCalls[0].db).toBe(CONNECTORS_SQL_DB_NAME);
-    expect(sqlCalls[0].params).toEqual(["otter"]);
+    expect(sqlCalls[0].params).toEqual(["otter", "granola"]);
     expect(sqlCalls[0].sql).toContain("FROM connector_meeting");
+    expect(sqlCalls[0].sql).toContain("source IN (?, ?)");
     expect(sqlCalls[0].sql).toContain("ORDER BY started_at DESC");
   });
 
-  it("defaults the source to fireflies", async () => {
+  it("defaults to fireflies AND google-meet", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
     await listMeetings(tcw);
-    expect(sqlCalls[0].params).toEqual(["fireflies"]);
+    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet"]);
+    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet"]);
+  });
+
+  it("runs no query at all for an empty source list", async () => {
+    const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
+    expect(await listMeetings(tcw, [])).toEqual([]);
+    expect(sqlCalls).toEqual([]);
   });
 
   it("returns [] when the query fails (not connected / missing table)", async () => {
@@ -147,30 +182,40 @@ describe("listMeetings", () => {
 
   it("maps non-string title / started_at cells to null", async () => {
     const { tcw } = fakeTcw({
-      sql: { ok: true, data: { rows: [["row-1", "src-1", null, 1723600000]] } },
+      sql: { ok: true, data: { rows: [["row-1", "fireflies", "src-1", null, 1723600000]] } },
     });
     expect(await listMeetings(tcw)).toEqual([
-      { id: "row-1", sourceId: "src-1", title: null, startedAt: null },
+      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null },
     ]);
   });
 
-  it("skips rows with a falsy id or source_id", async () => {
+  it("skips rows with a falsy id, source or source_id", async () => {
     const { tcw } = fakeTcw({
       sql: {
         ok: true,
         data: {
           rows: [
-            ["", "src-1", "No id", null],
-            [null, "src-2", "Null id", null],
-            ["row-3", "", "No source id", null],
-            ["row-4", null, "Null source id", null],
-            ["row-5", "src-5", "Keeper", null],
+            ["", "fireflies", "src-1", "No id", null],
+            [null, "fireflies", "src-2", "Null id", null],
+            ["row-3", "fireflies", "", "No source id", null],
+            ["row-4", "fireflies", null, "Null source id", null],
+            // No source: the transcript key is (source, source_id), so this row
+            // could never be expanded.
+            ["row-5", "", "src-5", "No source", null],
+            ["row-6", null, "src-6", "Null source", null],
+            ["row-7", "google-meet", "conf-7", "Keeper", null],
           ],
         },
       },
     });
     expect(await listMeetings(tcw)).toEqual([
-      { id: "row-5", sourceId: "src-5", title: "Keeper", startedAt: null },
+      {
+        id: "row-7",
+        source: "google-meet",
+        sourceId: "conf-7",
+        title: "Keeper",
+        startedAt: null,
+      },
     ]);
   });
 
@@ -190,7 +235,7 @@ describe("listMeetings", () => {
   });
 });
 
-describe("readTranscriptSentences", () => {
+describe("readTranscript", () => {
   const stored = [
     sentence({ index: 0, speaker_name: "Ada", text: "Morning." }),
     sentence({ index: 1, speaker_name: null, text: "Morning back." }),
@@ -200,51 +245,86 @@ describe("readTranscriptSentences", () => {
     const { tcw } = fakeTcw({
       kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } },
     });
-    expect(await readTranscriptSentences(tcw, "src-1")).toEqual(stored);
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({
+      status: "ok",
+      sentences: stored,
+    });
   });
 
   it("accepts an already-parsed array payload", async () => {
     const { tcw } = fakeTcw({ kv: { ok: true, data: { data: stored, headers: {} } } });
-    expect(await readTranscriptSentences(tcw, "src-1")).toEqual(stored);
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({
+      status: "ok",
+      sentences: stored,
+    });
   });
 
-  it("reads the prefixed transcript key for the source", async () => {
+  it("reads the fireflies-scoped key for a fireflies meeting", async () => {
     const { tcw, kvKeys } = fakeTcw({
       kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
     });
-    await readTranscriptSentences(tcw, "src-9", "otter");
-    expect(kvKeys).toEqual([transcriptKvKey("otter", "src-9")]);
-  });
-
-  it("defaults the source to fireflies", async () => {
-    const { tcw, kvKeys } = fakeTcw({
-      kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
-    });
-    await readTranscriptSentences(tcw, "src-9");
+    await readTranscript(tcw, "fireflies", "src-9");
     expect(kvKeys).toEqual([transcriptKvKey("fireflies", "src-9")]);
   });
 
-  it("returns null on malformed JSON", async () => {
-    const { tcw } = fakeTcw({ kv: { ok: true, data: { data: "{not json", headers: {} } } });
-    expect(await readTranscriptSentences(tcw, "src-1")).toBeNull();
-  });
-
-  it("returns null when the read fails", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: false, error: { code: "KV_NOT_FOUND", message: "no key" } },
+  it("reads the google-meet-scoped key for a Meet meeting", async () => {
+    const { tcw, kvKeys } = fakeTcw({
+      kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
     });
-    expect(await readTranscriptSentences(tcw, "src-1")).toBeNull();
+    await readTranscript(tcw, "google-meet", "conf-9");
+    expect(kvKeys).toEqual([transcriptKvKey("google-meet", "conf-9")]);
+    // The Fireflies key for the same id must not be what was read — that miss
+    // would render as "not synced yet" forever.
+    expect(kvKeys).not.toContain(transcriptKvKey("fireflies", "conf-9"));
   });
 
-  it("returns null when the read rejects instead of returning a Result", async () => {
-    await expect(readTranscriptSentences(throwingTcw(), "src-1")).resolves.toBeNull();
+  it("reports an empty stored transcript as ok, not absent", async () => {
+    const { tcw } = fakeTcw({
+      kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
+    });
+    expect(await readTranscript(tcw, "google-meet", "conf-1")).toEqual({
+      status: "ok",
+      sentences: [],
+    });
   });
 
-  it("returns null when the payload is not an array", async () => {
+  it("reports malformed JSON as absent (re-reading returns the same bytes)", async () => {
+    const { tcw } = fakeTcw({ kv: { ok: true, data: { data: "{not json", headers: {} } } });
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "absent" });
+  });
+
+  it("reports a payload that is not an array as absent", async () => {
     const { tcw } = fakeTcw({
       kv: { ok: true, data: { data: { sentences: [] }, headers: {} } },
     });
-    expect(await readTranscriptSentences(tcw, "src-1")).toBeNull();
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "absent" });
+  });
+
+  it("reports a missing key as absent", async () => {
+    const { tcw } = fakeTcw({
+      kv: { ok: false, error: { code: "KV_NOT_FOUND", message: "no key" } },
+    });
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "absent" });
+  });
+
+  it("reports a non-missing store error as failed, so the caller can retry", async () => {
+    const { tcw } = fakeTcw({
+      kv: { ok: false, error: { code: "AUTH_UNAUTHORIZED", message: "unauthorized" } },
+    });
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "failed" });
+  });
+
+  it("reports an unlabelled store error as failed", async () => {
+    const { tcw } = fakeTcw({
+      kv: { ok: false, error: { code: "", message: "" } },
+    });
+    expect(await readTranscript(tcw, "google-meet", "conf-1")).toEqual({ status: "failed" });
+  });
+
+  it("reports a rejected read as failed and never throws", async () => {
+    await expect(readTranscript(throwingTcw(), "fireflies", "src-1")).resolves.toEqual({
+      status: "failed",
+    });
   });
 
   it("filters out entries without a string text", async () => {
@@ -263,9 +343,27 @@ describe("readTranscriptSentences", () => {
         },
       },
     });
-    expect(await readTranscriptSentences(tcw, "src-1")).toEqual([
-      { index: 0, speaker_name: "Ada", text: "kept" } as FirefliesSentence,
-    ]);
+    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({
+      status: "ok",
+      sentences: [{ index: 0, speaker_name: "Ada", text: "kept" } as FirefliesSentence],
+    });
+  });
+});
+
+describe("meetingSourceLabel", () => {
+  it("names each browsable source the way Settings does", () => {
+    expect(meetingSourceLabel("fireflies")).toBe("Fireflies");
+    expect(meetingSourceLabel("google-meet")).toBe("Google Meet");
+  });
+
+  it("labels every source the explorer browses", () => {
+    for (const source of EXPLORER_MEETING_SOURCES) {
+      expect(meetingSourceLabel(source)).not.toBe(source);
+    }
+  });
+
+  it("falls back to the raw source string rather than rendering blank", () => {
+    expect(meetingSourceLabel("otter")).toBe("otter");
   });
 });
 

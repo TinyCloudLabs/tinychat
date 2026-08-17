@@ -67,9 +67,14 @@ describe("TinyChat manifest and backend policy", () => {
   // The `secrets` shorthand is a top-level sibling of `permissions`, not an
   // entry in it: the SDK expands it into a `tinycloud.vault` grant on the
   // owner's `secrets` space. Declaring it is what lets `secrets.put` skip
-  // runtime escalation. Only fireflies is declared because only fireflies
-  // ships; the other registry entries reuse the secret name API_KEY, so
-  // adding them means keying this map differently and overriding `name`.
+  // runtime escalation.
+  //
+  // The map is keyed by SECRET NAME, not by connector — the trap the old
+  // "only fireflies ships" note pointed at. Two connectors that both called
+  // their secret API_KEY would collide on one key and silently take one
+  // scope, so Google Meet is declared under its own name: it stores an OAuth
+  // REFRESH_TOKEN, not an API key, and the honest name is also the
+  // non-colliding one. Any third connector has to do the same.
   //
   // `delete` is granted UP FRONT rather than left to the SDK's escalation
   // modal. Escalation calls grantRuntimePermissions, which needs a wallet
@@ -89,7 +94,7 @@ describe("TinyChat manifest and backend policy", () => {
   // `tinycloud.secrets` grant this manifest must never declare, which is exactly the shape plan
   // §9 row 3 excludes. So this assertion is kept as a regression guard: a secrets scope appearing
   // for anything but the browser's own key means custody moved into the delegation.
-  it("declares the fireflies secret with delete, so disconnect needs no escalation", () => {
+  it("declares each connector secret with delete, so disconnect needs no escalation", () => {
     const manifest = runtimeManifest();
 
     expect(manifest.secrets).toEqual({
@@ -98,7 +103,27 @@ describe("TinyChat manifest and backend policy", () => {
         actions: ["read", "write", "delete"],
         description: "Store your Fireflies API key, encrypted, in your secrets space.",
       },
+      REFRESH_TOKEN: {
+        scope: "google-meet",
+        actions: ["read", "write", "delete"],
+        description:
+          "Store your Google sign-in for Google Meet, encrypted, in your secrets space.",
+      },
     });
+  });
+
+  // The collision guard the comment above argues for, asserted rather than assumed: one entry
+  // per connector scope, and no two entries sharing a secret name. A future connector added
+  // under `API_KEY` would overwrite the fireflies row in this object literal and this pin would
+  // not see it — the scope count would silently drop by one, which is what this checks.
+  it("keys the secrets map so no two connector scopes share a secret name", () => {
+    const secrets = runtimeManifest().secrets ?? {};
+    const names = Object.keys(secrets);
+    const scopes = Object.values(secrets).map((entry) => entry.scope);
+
+    expect(new Set(names).size).toBe(names.length);
+    expect(new Set(scopes).size).toBe(scopes.length);
+    expect(scopes.sort()).toEqual(["fireflies", "google-meet"]);
   });
 
   // INGEST-CUTOVER(plan §11) — the `[threads/]` pin is the assertion findings §4 expected to

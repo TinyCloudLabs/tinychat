@@ -819,6 +819,288 @@ paths:
         "503":
           $ref: "#/components/responses/ConnectorUnavailable"
 
+  # ── Google Meet OAuth proxy (WP-A) ───────────────────────────────────
+  # The whole group mounts ONLY when GOOGLE_MEET_OAUTH_ENABLED=true. While the
+  # flag is off every path below 404s, the same canary shape the connector
+  # webhook group has. Two invariants hold across all five:
+  #   1. The backend PERSISTS NOTHING. No KV, no SQL, no file, no in-process
+  #      credential cache — it is a credential-shaped pipe between the SPA and
+  #      Google, and the browser is the only place a Google token ever lands.
+  #   2. The PKCE verifier never leaves the SPA. An authorization code
+  #      intercepted anywhere on this surface is useless without it.
+  /api/connectors/google/oauth/start:
+    get:
+      operationId: startGoogleOAuth
+      summary: Redirect the consent popup to Google (public; no session, no token)
+      description: >-
+        A 302 to Google's authorize endpoint with the caller's `state` and PKCE
+        `code_challenge` attached, plus `access_type=offline` and `prompt=consent`
+        — both non-optional, because without either one Google mints no refresh
+        token and the connector silently becomes single-session. Requests EXACTLY
+        two scopes, `meetings.space.readonly` and `meetings.space.settings`; no
+        Drive and no Calendar, which would pull the app into Restricted-scope
+        verification. Unauthenticated by design: this is a top-level browser
+        navigation and carries no Bearer, and CSRF exempts GET. The anti-forgery
+        control is the `state` param, minted by the SPA and re-checked by it when
+        the popup reports back. The server holds only the CHALLENGE, never the
+        verifier, so it cannot complete an exchange on its own and has nothing to
+        persist. Carries its own rate-limit bucket — an OAuth dance must not spend
+        the global allowance /api/chat shares.
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          description: >-
+            SPA-minted anti-forgery nonce, echoed back on the callback. A repeated
+            `?state=` param is rejected rather than resolved to its first value.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._~-]{16,512}$"
+        - name: challenge
+          in: query
+          required: true
+          description: >-
+            RFC 7636 S256 code challenge — the base64url SHA-256 of a verifier the
+            server never sees.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._~-]{43,128}$"
+      responses:
+        "302":
+          description: >-
+            Redirect to Google's consent screen. `Location` only; the params are
+            already in the URL the client is sent to.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri
+        "400":
+          description: >-
+            `invalid_request` — a missing, duplicated, over-long or
+            wrong-alphabet `state`/`challenge`. A shape check runs before
+            anything else, so an absurd value is a 400 and never a redirect.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "429":
+          $ref: "#/components/responses/GoogleOAuthRateLimited"
+
+  /api/connectors/google/oauth/callback:
+    get:
+      operationId: googleOAuthCallback
+      summary: Google's redirect target — hands {code, state} to the app origin (public)
+      description: >-
+        The tiny self-contained page the popup lands on. It runs one nonce'd inline
+        script that postMessages `{code, state}` to the PINNED app origin — never
+        `"*"`, never a token — and closes itself. Unauthenticated by necessity: a
+        top-level navigation from Google carries no Bearer, so requiring one would
+        401 the flow before the popup could report back. Harmless with it: the route
+        holds no session, reads no store, and hands the code to exactly one origin,
+        the same one the CORS allowlist is built from. A denial or a malformed return
+        renders a cancelled page and postMessages NOTHING, which the SPA reads as
+        cancelled. Responds `text/html` with `Cache-Control: no-store`,
+        `Referrer-Policy: no-referrer` (the code is in this page's URL and must not
+        ride a Referer anywhere), `X-Frame-Options: DENY`, `nosniff`, and a
+        `default-src 'none'` CSP whose only executable script is the nonce'd one.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: >-
+            Google's authorization code. Absent on a denial. Length-bounded only —
+            these carry `/` and `%`, so no alphabet pattern is defensible.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: state
+          in: query
+          required: false
+          description: The nonce handed to /start, echoed back for the SPA to re-check.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9._~-]{16,512}$"
+      responses:
+        "200":
+          description: >-
+            The relay page. Its script postMessages `{code, state}` to the pinned
+            app origin and closes the popup.
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: >-
+            No usable code — a denial (`?error=access_denied`) or a malformed
+            return. Renders the cancelled page and posts no message at all.
+          content:
+            text/html:
+              schema:
+                type: string
+        "429":
+          $ref: "#/components/responses/GoogleOAuthRateLimited"
+
+  /api/connectors/google/oauth/exchange:
+    post:
+      operationId: exchangeGoogleOAuthCode
+      summary: Trade an authorization code + PKCE verifier for Google tokens
+      description: >-
+        Authenticated, and the first point in the flow where a token exists at all.
+        The backend forwards code + verifier + client secret to Google's token
+        endpoint and returns the payload to the caller — it stores NOTHING: no KV,
+        no SQL, no in-process cache. The browser is the only place a Google token
+        lands. The response is field-whitelisted rather than a passthrough, so the
+        `id_token` some grants carry (a JWT with the user's Google email, name and
+        picture) is dropped rather than handed to the SPA. A 4xx from Google is
+        surfaced with ITS OWN status and code — `invalid_grant` means reconnect,
+        `PERMISSION_DENIED` means not-your-meeting — because a flattened upstream
+        error cannot tell those apart. Google's error text is preserved
+        field-scoped and re-scrubbed of every secret the request carried.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleOAuthExchangeRequest"
+      responses:
+        "200":
+          description: Google's token payload, field-whitelisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleTokenResponse"
+        "400":
+          description: >-
+            `invalid_request` for a missing or over-long field, or Google's own
+            400 (`invalid_grant`, `invalid_client`) forwarded verbatim.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/GoogleOAuthUpstreamRejected"
+        "429":
+          $ref: "#/components/responses/GoogleOAuthRateLimited"
+        "500":
+          description: >-
+            `internal_error`. The cause is ours and its message is not guaranteed
+            token-free, so no detail is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "502":
+          $ref: "#/components/responses/GoogleOAuthUpstreamUnavailable"
+
+  /api/connectors/google/oauth/refresh:
+    post:
+      operationId: refreshGoogleOAuthToken
+      summary: Mint a fresh access token from a browser-held refresh token
+      description: >-
+        The per-sync access-token mint. The BROWSER holds the refresh token and
+        hands it in on each call; nothing is written on this side, which is the
+        deliberate difference from the Fireflies connector, where the server holds
+        the credential and rotates it in a store. Google usually omits
+        `refresh_token` on a rotation, so the caller keeps the one it sent. Same
+        upstream-error posture as /exchange: a 4xx arrives as itself so the UI can
+        tell reconnect from back-off, and no token reaches a log or an error
+        message.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleOAuthRefreshRequest"
+      responses:
+        "200":
+          description: >-
+            A fresh access token. `refresh_token` is usually absent — that is a
+            rotation that did not happen, not a failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleTokenResponse"
+        "400":
+          description: >-
+            `invalid_request` for a missing or over-long token, or Google's
+            `invalid_grant` — the refresh token was revoked or expired and the
+            user must reconnect.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/GoogleOAuthRateLimited"
+        "500":
+          description: "`internal_error` — no detail, for the reason /exchange states."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "502":
+          $ref: "#/components/responses/GoogleOAuthUpstreamUnavailable"
+
+  /api/connectors/google/oauth/revoke:
+    post:
+      operationId: revokeGoogleOAuthToken
+      summary: Revoke a Google token upstream on disconnect
+      description: >-
+        Upstream revocation, so a disconnect actually ends Google's grant instead
+        of only forgetting the token locally. A failure is SURFACED, never
+        swallowed — a revoke that silently did not happen is a lie to the user
+        about what they just disconnected. Stateless like the rest of the group;
+        the token arrives in the body, is used once, and is never stored or logged.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleOAuthRevokeRequest"
+      responses:
+        "200":
+          description: Revoked upstream.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: revoked
+        "400":
+          description: "`invalid_request`, or Google's own 400 forwarded."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/GoogleOAuthRateLimited"
+        "500":
+          description: "`internal_error` — no detail, for the reason /exchange states."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthError"
+        "502":
+          $ref: "#/components/responses/GoogleOAuthUpstreamUnavailable"
+
   /api/connectors/meetings:
     get:
       operationId: listConnectorMeetings
@@ -1724,6 +2006,94 @@ components:
             transcript: {}
             summary: {}
 
+    # ── Google Meet OAuth proxy (WP-A) ─────────────────────────────────
+    GoogleOAuthExchangeRequest:
+      type: object
+      description: >-
+        The authorization code and the PKCE verifier that proves the same client
+        began the dance. Both are single-use and neither is stored anywhere.
+      required: [code, verifier]
+      properties:
+        code:
+          type: string
+          maxLength: 2048
+          description: Google's authorization code, exactly as the callback page relayed it.
+        verifier:
+          type: string
+          maxLength: 128
+          description: >-
+            The RFC 7636 verifier whose S256 hash was sent to /start. It lives in
+            SPA memory for the length of the dance and is never persisted.
+
+    GoogleOAuthRefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          maxLength: 4096
+          description: >-
+            The browser's own refresh token. The server does not hold a copy — it
+            is presented per call and forgotten when the response is written.
+
+    GoogleOAuthRevokeRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          maxLength: 4096
+          description: The access or refresh token to revoke upstream.
+
+    GoogleTokenResponse:
+      type: object
+      description: >-
+        Google's token payload, FIELD-WHITELISTED on the way out. Deliberately not
+        a passthrough: an `id_token` (a JWT carrying the user's Google email, name
+        and picture) rides along on some grants and this connector has no business
+        handing that to the SPA. Only what a sync needs is here.
+      required: [access_token]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+        expires_in:
+          type: integer
+          description: Seconds until the access token expires.
+        refresh_token:
+          type: string
+          description: >-
+            Present on the initial exchange (thanks to `access_type=offline` plus
+            `prompt=consent`) and usually ABSENT on a refresh — the caller keeps
+            the one it sent.
+        scope:
+          type: string
+
+    GoogleOAuthError:
+      type: object
+      description: >-
+        Google's structured failure, preserved rather than flattened. `error` is
+        what the UI branches on — `invalid_grant` means reconnect,
+        `PERMISSION_DENIED` means not-your-meeting, `slow_down` means back off —
+        and a proxy that collapsed all three into one message could not tell them
+        apart. Both strings are bounded, control-stripped and re-scrubbed of every
+        secret the request carried, so no upstream body can turn into a token in a
+        log line. Local sentinels: `invalid_request` (shape check), `network_error`,
+        `invalid_response`, `internal_error`.
+      required: [error]
+      properties:
+        error:
+          type: string
+        error_description:
+          type: string
+          maxLength: 200
+        upstream_status:
+          type: integer
+          description: >-
+            Google's own HTTP status, kept even when this response's status differs
+            (a Google 5xx is answered 502). 0 means the request never completed.
+
   responses:
     BadRequest:
       description: Invalid request
@@ -1794,3 +2164,31 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ConnectorError"
+    GoogleOAuthRateLimited:
+      description: >-
+        The OAuth proxy's own per-IP bucket is tripped. Separate from the global
+        one on purpose, in both directions: a consent dance must not spend
+        /api/chat's allowance, and an unauthenticated /start or /callback must not
+        be free.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GoogleOAuthError"
+    GoogleOAuthUpstreamRejected:
+      description: >-
+        Google refused with its own 4xx, forwarded at the SAME status —
+        `PERMISSION_DENIED` (not your meeting) is the one that matters here.
+        Re-consenting will not fix it; the user needs access, not a reconnect.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GoogleOAuthError"
+    GoogleOAuthUpstreamUnavailable:
+      description: >-
+        The proxy could not complete the upstream call — a Google 5xx, a timeout,
+        an unparseable body. Answered 502 rather than passed through, because the
+        client should RETRY rather than send the user back through consent.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GoogleOAuthError"

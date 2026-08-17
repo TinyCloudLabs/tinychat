@@ -344,6 +344,18 @@ jobs:
           FIREFLIES_OAUTH_CLIENT_ID: ${{ secrets.FIREFLIES_OAUTH_CLIENT_ID }}
           FIREFLIES_OAUTH_CLIENT_SECRET: ${{ secrets.FIREFLIES_OAUTH_CLIENT_SECRET }}
           FIREFLIES_OAUTH_REDIRECT_URI: ${{ vars.FIREFLIES_OAUTH_REDIRECT_URI }}
+          # WP-A — the Google Meet OAuth proxy (gmeet plan §6 WP-A / §11). Ships DARK, and the
+          # dark state is the ABSENCE of these repo secrets rather than a deliberate 'false':
+          # unset ⇒ empty string ⇒ GOOGLE_MEET_OAUTH_ENABLED != 'true' ⇒ the five
+          # /api/connectors/google/oauth/* routes are never mounted (404). Declared here now for
+          # the same allowed_envs freeze reason as every var above — arming later by setting the
+          # secrets must not be the deploy that first introduces the keys, or they silently
+          # never arrive. Armed, the three client vars are MANDATORY: startup refuses to boot
+          # the mount without them rather than serving a half-configured OAuth proxy.
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REDIRECT_URI: ${{ secrets.GOOGLE_OAUTH_REDIRECT_URI }}
+          GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
           # Tunables (repo variables). Unset = the code defaults; a non-positive value is a
           # hard boot error, never a silent revert to the default.
           CONNECTOR_DRAIN_INTERVAL_MS: ${{ vars.CONNECTOR_DRAIN_INTERVAL_MS }}
@@ -398,6 +410,10 @@ jobs:
             printf '%s\n' "FIREFLIES_OAUTH_CLIENT_ID=$FIREFLIES_OAUTH_CLIENT_ID"
             printf '%s\n' "FIREFLIES_OAUTH_CLIENT_SECRET=$FIREFLIES_OAUTH_CLIENT_SECRET"
             printf '%s\n' "FIREFLIES_OAUTH_REDIRECT_URI=$FIREFLIES_OAUTH_REDIRECT_URI"
+            printf '%s\n' "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID"
+            printf '%s\n' "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET"
+            printf '%s\n' "GOOGLE_OAUTH_REDIRECT_URI=$GOOGLE_OAUTH_REDIRECT_URI"
+            printf '%s\n' "GOOGLE_MEET_OAUTH_ENABLED=${GOOGLE_MEET_OAUTH_ENABLED:-false}"
             printf '%s\n' "CONNECTOR_DRAIN_INTERVAL_MS=$CONNECTOR_DRAIN_INTERVAL_MS"
             printf '%s\n' "CONNECTOR_A_FETCH_CEILING_PER_HOUR=$CONNECTOR_A_FETCH_CEILING_PER_HOUR"
             printf '%s\n' "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR=$CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR"
@@ -480,6 +496,7 @@ jobs:
           # Same expression as the deploy step's env: block — the probe must expect
           # what this deploy actually shipped, never a hard-coded assumption.
           CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
+          GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
         run: |
           probe_url() {
             local label="$1"
@@ -615,6 +632,55 @@ jobs:
             echo "Connector webhook probe passed (404 = flag off, nothing mounted)."
           fi
 
+          # WP-A's Google Meet OAuth mount canary, modeled on the webhook probe above.
+          # The five /api/connectors/google/oauth/* routes mount only when
+          # GOOGLE_MEET_OAUTH_ENABLED=true AND the three client vars reached the
+          # backend — the flag alone is not enough, because startup refuses to build
+          # the router when any of id/secret/redirect_uri is missing.
+          #
+          #   flag on  -> 400 (mounted; `/start` validates `state` + `challenge` BEFORE
+          #               anything else and a bare param-less GET is `invalid_request`.
+          #               A valid pair would 302 to Google, which we deliberately do not
+          #               send: this probe must not mint a real authorize URL.)
+          #   flag off -> 404 (nothing mounted — the dark-ship state)
+          #
+          # `/start` is unauthenticated by design (a top-level browser navigation), so
+          # the 400 arm is reachable from CI with no credential. A 404 with the flag ON
+          # is the silently-dropped-env failure this exists to catch (the 2026-07-07
+          # class); a 400 with the flag OFF means the OAuth proxy shipped hot.
+          GOOGLE_URL="${PRODUCTION_API_URL%/}/api/connectors/google/oauth/start"
+          if [ "${GOOGLE_MEET_OAUTH_ENABLED:-false}" = "true" ]; then
+            GOOGLE_EXPECT=400
+          else
+            GOOGLE_EXPECT=404
+          fi
+          echo "Probing Google Meet OAuth route at $GOOGLE_URL (expect $GOOGLE_EXPECT; flag=${GOOGLE_MEET_OAUTH_ENABLED:-false})"
+          GOOGLE_STATUS=0
+          for i in {1..10}; do
+            # No `state`, no `challenge`, no credential — this can never become a real
+            # authorization attempt, and nothing here is logged or persisted.
+            GOOGLE_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 5 --max-time 15 "$GOOGLE_URL" || echo 000)"
+            echo "Attempt $i/10: http_status=$GOOGLE_STATUS"
+            if [ "$GOOGLE_STATUS" = "$GOOGLE_EXPECT" ]; then
+              break
+            fi
+            sleep 6
+          done
+          if [ "$GOOGLE_STATUS" != "$GOOGLE_EXPECT" ]; then
+            if [ "$GOOGLE_EXPECT" = "400" ]; then
+              echo "::error title=Google Meet OAuth probe failed::GET /api/connectors/google/oauth/start returned $GOOGLE_STATUS (expected 400). GOOGLE_MEET_OAUTH_ENABLED is true but the routes are not mounted — GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / GOOGLE_OAUTH_REDIRECT_URI did not reach the backend, so the Google Meet connector is silently dead."
+            else
+              echo "::error title=Google Meet OAuth probe failed::GET /api/connectors/google/oauth/start returned $GOOGLE_STATUS (expected 404 while GOOGLE_MEET_OAUTH_ENABLED is not 'true'). The OAuth proxy is mounted on a deploy that was meant to ship dark."
+            fi
+            exit 1
+          fi
+          if [ "$GOOGLE_EXPECT" = "400" ]; then
+            echo "Google Meet OAuth probe passed (400 = mounted, param-gated)."
+          else
+            echo "Google Meet OAuth probe passed (404 = flag off, nothing mounted)."
+          fi
+
           {
             echo
             echo "### Public API probes"
@@ -626,6 +692,11 @@ jobs:
               echo "- ${WEBHOOK_URL}: passed (401 = connector webhook route mounted)"
             else
               echo "- ${WEBHOOK_URL}: passed (404 = connector webhooks shipped dark)"
+            fi
+            if [ "$GOOGLE_EXPECT" = "400" ]; then
+              echo "- ${GOOGLE_URL}: passed (400 = Google Meet OAuth routes mounted)"
+            else
+              echo "- ${GOOGLE_URL}: passed (404 = Google Meet OAuth shipped dark)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
