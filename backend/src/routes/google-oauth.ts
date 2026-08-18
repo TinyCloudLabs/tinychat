@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 
 import {
   GoogleOAuthClient,
@@ -201,6 +201,19 @@ export function createGoogleOAuthRouter(
   );
 
   const router = Router();
+
+  /**
+   * Helmet's app-wide default `Cross-Origin-Opener-Policy: same-origin` severs `window.opener`
+   * for the popup the SPA opens: the `/start` 302 is the popup's first document-bearing response
+   * and already carries the header, the browser swaps browsing-context groups, and the callback
+   * page's `postMessage` can never reach the app (live-verified 2026-08-18 — the SPA reads the
+   * silent close as "cancelled"). These routes exist to be a popup — the opener relationship IS
+   * the feature — so they opt out; every other route keeps the helmet default.
+   */
+  router.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Cross-Origin-Opener-Policy", "unsafe-none");
+    next();
+  });
 
   /**
    * `GET /start?state=…&challenge=…` → 302 to Google.

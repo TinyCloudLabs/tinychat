@@ -676,7 +676,22 @@ jobs:
             exit 1
           fi
           if [ "$GOOGLE_EXPECT" = "400" ]; then
-            echo "Google Meet OAuth probe passed (400 = mounted, param-gated)."
+            # Mounted, so also pin the popup contract: /start must answer with
+            # `Cross-Origin-Opener-Policy: unsafe-none`. Helmet's app-wide default is
+            # `same-origin`, which severs `window.opener` at the popup's very first
+            # response — the callback postMessage then never reaches the app and every
+            # connect attempt reports "cancelled". The router-level exemption is the
+            # fix; this catches the helmet default resurfacing on the popup surfaces.
+            GOOGLE_COOP="$(curl -s -o /dev/null -D - \
+              --connect-timeout 5 --max-time 15 "$GOOGLE_URL" \
+              | tr -d '\r' | tr '[:upper:]' '[:lower:]' \
+              | sed -n 's/^cross-origin-opener-policy: *//p' | head -n 1)"
+            echo "Google Meet OAuth /start cross-origin-opener-policy=${GOOGLE_COOP:-<absent>}"
+            if [ "$GOOGLE_COOP" != "unsafe-none" ]; then
+              echo "::error title=Google Meet OAuth COOP probe failed::GET /api/connectors/google/oauth/start answered with Cross-Origin-Opener-Policy '${GOOGLE_COOP:-<absent>}' (expected 'unsafe-none'). Helmet's same-origin default severs window.opener in the OAuth popup, so the callback postMessage never reaches the app and every Google Meet connect attempt fails as 'cancelled'."
+              exit 1
+            fi
+            echo "Google Meet OAuth probe passed (400 = mounted, param-gated; COOP=unsafe-none)."
           else
             echo "Google Meet OAuth probe passed (404 = flag off, nothing mounted)."
           fi
