@@ -1227,7 +1227,9 @@ const GmeetDonePanel: FC<{
         <p className="text-xs text-muted-foreground">
           Nothing synced yet. Google only produces a transcript when the meeting’s
           host is on a paid Workspace edition and transcription was on for that
-          meeting — and it keeps meeting records for about 30 days.
+          meeting — and it keeps meeting records for about 30 days — and meetings
+          where only Gemini took notes don’t count; Gemini’s notes live in Google
+          Docs, which we don’t access.
         </p>
       )}
       {summary.failed > 0 && (
@@ -1282,7 +1284,7 @@ const GmeetDonePanel: FC<{
           {autoTranscription.status === "not-host" && (
             <p className="text-xs text-muted-foreground">
               Only the meeting host can change this. Nothing else about your
-              connection changed — ask the host, or use a meeting you organise.
+              connection changed — ask the host, or use a meeting you organize.
             </p>
           )}
           {autoTranscription.status === "failed" && (
