@@ -25,6 +25,7 @@ import {
   isValidPkceChallenge,
   normalizeAppOrigin,
 } from "../routes/google-oauth.js";
+import { applySecurityDefaults } from "../security.js";
 
 /**
  * WP-A tests (gmeet-connector plan §8): the OAuth client's Google-specific parameters, the
@@ -603,6 +604,75 @@ describe("GET /callback", () => {
     const html = await response.text();
     expect(html).not.toContain("postMessage");
     expect(html).not.toContain(APP_ORIGIN);
+  });
+});
+
+// ── Cross-Origin-Opener-Policy ───────────────────────────────────────
+//
+// `applySecurityDefaults` applies helmet app-wide, and helmet 8 defaults to
+// `Cross-Origin-Opener-Policy: same-origin` on EVERY response. On the popup surfaces that is not
+// hardening but breakage: the `/start` 302 is the popup's first document-bearing response, the
+// browser swaps browsing-context groups, `window.opener` becomes null, and the callback page's
+// `postMessage` silently never fires (live-verified 2026-08-18). This harness mirrors the
+// production wiring order — helmet first, the router mounted after — and pins that the router's
+// exemption wins on its own routes ONLY, while every other route keeps the helmet default.
+
+describe("Cross-Origin-Opener-Policy", () => {
+  let helmetServer: ReturnType<express.Express["listen"]>;
+  let helmetBase: string;
+
+  beforeEach(async () => {
+    const app = express();
+    applySecurityDefaults(app);
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok" });
+    });
+    app.use(
+      "/api/connectors/google/oauth",
+      createGoogleOAuthRouter({
+        oauth: port,
+        config: TEST_CONFIG,
+        appOrigin: APP_ORIGIN,
+      }),
+    );
+    helmetServer = app.listen(0);
+    await new Promise<void>((resolve) =>
+      helmetServer.once("listening", resolve),
+    );
+    helmetBase = `http://127.0.0.1:${(helmetServer.address() as AddressInfo).port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => helmetServer.close(() => resolve()));
+  });
+
+  test("armed /start answers its 302 with unsafe-none despite helmet running first", async () => {
+    const response = await fetch(
+      `${helmetBase}/api/connectors/google/oauth/start?state=${STATE}&challenge=${CHALLENGE}`,
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("cross-origin-opener-policy")).toBe(
+      "unsafe-none",
+    );
+  });
+
+  test("the callback page answers with unsafe-none", async () => {
+    const response = await fetch(
+      `${helmetBase}/api/connectors/google/oauth/callback?code=fake-auth-code&state=${STATE}`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cross-origin-opener-policy")).toBe(
+      "unsafe-none",
+    );
+  });
+
+  test("a non-OAuth route keeps helmet's same-origin default", async () => {
+    const response = await fetch(`${helmetBase}/health`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cross-origin-opener-policy")).toBe(
+      "same-origin",
+    );
   });
 });
 
