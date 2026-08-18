@@ -466,19 +466,28 @@ describe("GmeetClient — abort", () => {
 });
 
 describe("GmeetClient — patchSpaceAutoTranscription", () => {
-  test("PATCHes the space with the auto-transcription mask and body", async () => {
+  test("resolves via GET first, then PATCHes the returned resource name with the mask and body", async () => {
+    // The code alias resolves on spaces.get only; the PATCH must target the
+    // canonical name the GET returns, never the code (live-verified
+    // 2026-08-18: PATCH spaces/aoy-ivyq-prk → 403 for everyone).
     const h = harness([
-      () => jsonResponse({ name: "spaces/abc", meetingCode: "aoy-ivyq-prk", config: {} }),
+      () => jsonResponse({ name: "spaces/Yw6w3qtq7HYB", meetingCode: "aoy-ivyq-prk", config: {} }),
+      () => jsonResponse({ name: "spaces/Yw6w3qtq7HYB", meetingCode: "aoy-ivyq-prk", config: {} }),
     ]);
-    const res = await client(h).patchSpaceAutoTranscription("spaces/abc");
+    const res = await client(h).patchSpaceAutoTranscription("aoy-ivyq-prk");
 
     expect(res.ok).toBe(true);
-    expect(h.calls[0].method).toBe("PATCH");
-    expect(h.calls[0].url.pathname).toBe("/v2/spaces/abc");
-    expect(h.calls[0].url.searchParams.get("updateMask")).toBe(
+    expect(h.calls.length).toBe(2);
+    expect(h.calls[0].method).toBe("GET");
+    expect(h.calls[0].url.pathname).toBe("/v2/spaces/aoy-ivyq-prk");
+    expect(h.calls[0].headers["authorization"]).toBe("Bearer test-access-token");
+    expect(h.calls[1].method).toBe("PATCH");
+    expect(h.calls[1].url.pathname).toBe("/v2/spaces/Yw6w3qtq7HYB");
+    expect(h.calls[1].url.searchParams.get("updateMask")).toBe(
       GMEET_AUTO_TRANSCRIPTION_UPDATE_MASK,
     );
-    expect(h.calls[0].body).toEqual({
+    expect(h.calls[1].headers["authorization"]).toBe("Bearer test-access-token");
+    expect(h.calls[1].body).toEqual({
       config: { artifactConfig: { transcriptionConfig: { autoTranscriptionGeneration: "ON" } } },
     });
   });
@@ -489,8 +498,13 @@ describe("GmeetClient — patchSpaceAutoTranscription", () => {
     await c.patchSpaceAutoTranscription("aoy-ivyq-prk");
     await c.patchSpaceAutoTranscription("spaces/rny-gwda-wui");
 
+    // Whatever form the user pasted goes to the resolve GET; every PATCH
+    // targets the canonical name from the GET's response.
+    expect(h.calls.map((call) => call.method)).toEqual(["GET", "PATCH", "GET", "PATCH"]);
     expect(h.calls[0].url.pathname).toBe("/v2/spaces/aoy-ivyq-prk");
-    expect(h.calls[1].url.pathname).toBe("/v2/spaces/rny-gwda-wui");
+    expect(h.calls[1].url.pathname).toBe("/v2/spaces/abc");
+    expect(h.calls[2].url.pathname).toBe("/v2/spaces/rny-gwda-wui");
+    expect(h.calls[3].url.pathname).toBe("/v2/spaces/abc");
   });
 
   test("accepts the meeting LINK the Meet UI offers for copying", async () => {
@@ -502,14 +516,58 @@ describe("GmeetClient — patchSpaceAutoTranscription", () => {
     await c.patchSpaceAutoTranscription("meet.google.com/abc-defg-hij?authuser=0");
     await c.patchSpaceAutoTranscription("  https://meet.google.com/abc-defg-hij/  ");
 
+    expect(h.calls.map((call) => call.method)).toEqual([
+      "GET",
+      "PATCH",
+      "GET",
+      "PATCH",
+      "GET",
+      "PATCH",
+    ]);
     expect(h.calls[0].url.pathname).toBe("/v2/spaces/abc-defg-hij");
-    expect(h.calls[1].url.pathname).toBe("/v2/spaces/abc-defg-hij");
     expect(h.calls[2].url.pathname).toBe("/v2/spaces/abc-defg-hij");
+    expect(h.calls[4].url.pathname).toBe("/v2/spaces/abc-defg-hij");
   });
 
-  test("403 PERMISSION_DENIED is the quiet not-host outcome, never an auth failure", async () => {
+  test("a GET 403 is the quiet not-host outcome and no PATCH is attempted", async () => {
+    // Google masks existence: a space this user cannot access 403s on the
+    // resolve GET whether or not it exists, so the not-host copy is right.
+    const h = harness([
+      () =>
+        googleError(
+          403,
+          "PERMISSION_DENIED",
+          "Permission denied on resource Space (or it might not exist).",
+        ),
+    ]);
+    const res = await client(h).patchSpaceAutoTranscription("aoy-ivyq-prk");
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("not-host");
+    expect(res.error.kind).toBe("forbidden");
+    expect(res.error.status).toBe(403);
+    expect(h.calls.length).toBe(1);
+    expect(h.calls[0].method).toBe("GET");
+  });
+
+  test("a GET 404 is also the not-host outcome — indistinguishable from no access", async () => {
+    const h = harness([() => googleError(404, "NOT_FOUND", "Space not found.")]);
+    const res = await client(h).patchSpaceAutoTranscription("aoy-ivyq-prk");
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("not-host");
+    expect(res.error.kind).toBe("not-found");
+    expect(h.calls.length).toBe(1);
+  });
+
+  test("a PATCH 403 after a successful GET is the quiet not-host outcome, never an auth failure", async () => {
+    // The visible-but-not-hosted case: the member can resolve the space, and
+    // host-only enforcement then happens at the PATCH.
     let refreshCalls = 0;
     const h = harness([
+      () => jsonResponse({ name: "spaces/0oVIeQftknMB", meetingCode: "aoy-ivyq-prk" }),
       () => googleError(403, "PERMISSION_DENIED", "Permission denied on resource space."),
     ]);
     const res = await client(h, {
@@ -517,7 +575,7 @@ describe("GmeetClient — patchSpaceAutoTranscription", () => {
         refreshCalls++;
         return "refreshed-token";
       },
-    }).patchSpaceAutoTranscription("spaces/0oVIeQftknMB");
+    }).patchSpaceAutoTranscription("aoy-ivyq-prk");
 
     expect(res.ok).toBe(false);
     if (res.ok) return;
@@ -528,16 +586,37 @@ describe("GmeetClient — patchSpaceAutoTranscription", () => {
     expect(res.error.message).toBe("Permission denied on resource space.");
     // Host-only semantics must not be mistaken for a dead token.
     expect(refreshCalls).toBe(0);
-    expect(h.calls.length).toBe(1);
+    expect(h.calls.length).toBe(2);
+    expect(h.calls[1].method).toBe("PATCH");
   });
 
   test("a real auth failure on patch still reports auth-expired, not not-host", async () => {
-    const h = harness([() => googleError(401, "UNAUTHENTICATED", "Invalid Credentials")]);
+    const h = harness([
+      () => jsonResponse({ name: "spaces/abc" }),
+      () => googleError(401, "UNAUTHENTICATED", "Invalid Credentials"),
+    ]);
     const res = await client(h).patchSpaceAutoTranscription("spaces/abc");
 
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toBe("auth-expired");
+    expect(h.calls.length).toBe(2);
+  });
+
+  test("a 401 refreshed on the resolve GET carries the new token into the PATCH", async () => {
+    const h = harness([
+      () => googleError(401, "UNAUTHENTICATED", "Invalid Credentials"),
+      () => jsonResponse({ name: "spaces/abc" }),
+      () => jsonResponse({ name: "spaces/abc" }),
+    ]);
+    const res = await client(h, {
+      refreshAccessToken: async () => "refreshed-token",
+    }).patchSpaceAutoTranscription("aoy-ivyq-prk");
+
+    expect(res.ok).toBe(true);
+    expect(h.calls.length).toBe(3);
+    expect(h.calls[1].headers["authorization"]).toBe("Bearer refreshed-token");
+    expect(h.calls[2].headers["authorization"]).toBe("Bearer refreshed-token");
   });
 });
 
