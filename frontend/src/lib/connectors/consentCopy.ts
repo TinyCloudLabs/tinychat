@@ -271,7 +271,10 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
       "Workspace Individual) **and** transcription was switched on for that meeting. Meetings " +
       "hosted on a free/consumer Google account never produce one — for any tool, this connector " +
       "included. That is Google's limit rather than ours, and switching on auto-transcription for " +
-      "**meetings you host** is what closes most of the gap.",
+      "**meetings you host** is what closes most of the gap. Meetings where only Gemini took " +
+      "notes won't appear either — Gemini's notes live in Google Docs, which we don't request " +
+      "access to; turning on transcription for **meetings you host** is what makes future calls " +
+      "show up here.",
     "**Google keeps meeting records for about 30 days.** The first sync reaches back a month at " +
       "most, and meetings older than that are gone from Google's side before we ever ask — so " +
       "connecting sooner is what widens the history, never a later backfill.",

@@ -380,19 +380,58 @@ export class GmeetClient {
 
   /**
    * Turn auto-transcription ON for a space. Accepts a full `spaces/{id}`
-   * resource name, a bare space id, a meeting code — the `spaces/{code}` alias
-   * works for GET and PATCH (spike-verified) — or a pasted meeting link, whose
-   * code `gmeetSpaceIdFromInput` extracts.
+   * resource name, a bare space id, a meeting code, or a pasted meeting link,
+   * whose code `gmeetSpaceIdFromInput` extracts.
+   *
+   * Two requests by necessity: meeting-code aliases resolve on spaces.get
+   * ONLY — spaces.patch requires the `spaces/{spaceId}` resource name and
+   * rejects the alias with a 403 for every caller, host included
+   * (live-verified 2026-08-18). So the input is first resolved via GET, and
+   * the PATCH targets the canonical `name` that comes back.
    *
    * A 403 is host-only semantics, surfaced as the quiet, expected
-   * `{ ok: false, reason: "not-host" }` — never an auth failure.
+   * `{ ok: false, reason: "not-host" }` — never an auth failure. That holds
+   * on both legs: a GET 403/404 means this user cannot even see the space
+   * (Google masks existence for spaces you have no access to), and a PATCH
+   * 403 after a successful GET means visible-but-not-hosted.
    */
   async patchSpaceAutoTranscription(
     spaceNameOrMeetingCode: string,
     opts: GmeetCallOptions = {},
   ): Promise<GmeetPatchSpaceResult> {
     const id = gmeetSpaceIdFromInput(spaceNameOrMeetingCode);
-    const url = this.url(`spaces/${id}`, { updateMask: GMEET_AUTO_TRANSCRIPTION_UPDATE_MASK });
+    // Resolve the alias to the canonical resource name first — spaces.get is
+    // the one endpoint that takes a meeting code; spaces.patch 403s on it
+    // (live-verified 2026-08-18). The GET doubles as the access check: a
+    // non-host cannot resolve someone else's space and Google masks whether
+    // it exists at all, so 403 and 404 here are both the not-host outcome.
+    const resolved = await this.request<GmeetSpace>(
+      this.url(`spaces/${id}`, {}),
+      { method: "GET" },
+      opts,
+    );
+    if (!resolved.ok) {
+      const reason: GmeetPatchSpaceReason =
+        resolved.error.kind === "forbidden" || resolved.error.kind === "not-found"
+          ? "not-host"
+          : (resolved.error.kind as GmeetPatchSpaceReason);
+      return { ok: false, reason, error: resolved.error };
+    }
+    const name = typeof resolved.data.name === "string" ? resolved.data.name.trim() : "";
+    if (name.length === 0) {
+      // Never observed live, but PATCHing the alias again would just re-trip
+      // the very 403 this resolve step exists to avoid — refuse honestly.
+      return {
+        ok: false,
+        reason: "api-error",
+        error: {
+          kind: "api-error",
+          status: 200,
+          message: "Google Meet returned a space without a resource name",
+        },
+      };
+    }
+    const url = this.url(name, { updateMask: GMEET_AUTO_TRANSCRIPTION_UPDATE_MASK });
     const res = await this.request<GmeetSpace>(
       url,
       {

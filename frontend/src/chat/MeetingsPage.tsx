@@ -211,7 +211,11 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
                   a paid Google Workspace edition and transcription was turned on
                   for that meeting. Meetings hosted on a free or personal Google
                   account can never produce one, so those calls will not show up
-                  here no matter how often you sync.
+                  here no matter how often you sync. Meetings where only Gemini
+                  took notes won't appear either — Gemini's notes live in Google
+                  Docs, which we don't request access to; turning on
+                  transcription for meetings you host is what makes future calls
+                  show up here.
                 </p>
                 <p>
                   A sync also reaches back at most 30 days, and a meeting where

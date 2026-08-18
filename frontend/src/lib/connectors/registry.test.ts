@@ -16,18 +16,27 @@ describe("connector registry", () => {
     expect(fireflies?.status).toBe("available");
   });
 
-  test("granola and google-meet are registered as coming-soon", () => {
-    for (const id of ["granola", "google-meet"] as const) {
-      const entry = CONNECTORS.find((c) => c.id === id);
-      expect(entry).toBeDefined();
-      expect(entry?.status).toBe("coming-soon");
-    }
+  test("granola is registered as coming-soon", () => {
+    const granola = CONNECTORS.find((c) => c.id === "granola");
+    expect(granola).toBeDefined();
+    expect(granola?.status).toBe("coming-soon");
+  });
+
+  test("google-meet is registered and available", () => {
+    const gmeet = CONNECTORS.find((c) => c.id === "google-meet");
+    expect(gmeet).toBeDefined();
+    expect(gmeet?.status).toBe("available");
   });
 
   test("every secretName matches /^[A-Z][A-Z0-9_]*$/", () => {
     for (const c of CONNECTORS) {
       expect(c.secretName).toMatch(SECRET_NAME_RE);
     }
+  });
+
+  test("google-meet stores a refresh token, not an api key", () => {
+    const gmeet = CONNECTORS.find((c) => c.id === "google-meet");
+    expect(gmeet?.secretName).toBe("REFRESH_TOKEN");
   });
 
   test("secretScope matches the connector id", () => {
