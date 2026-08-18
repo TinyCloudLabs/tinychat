@@ -17,6 +17,7 @@ import { MemoryPanel } from "@/components/MemoryPanel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ImportDialog } from "./ImportDialog";
 import { ConnectorsCard } from "./ConnectorsCard";
+import { TranscriberSection } from "./TranscriberSection";
 import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
@@ -159,6 +160,9 @@ export function SettingsPage({
           {/* Directly under the connector it belongs to. Absent for everyone
               outside the cohort — the section returns null on the dark answer. */}
           {meetingsSlot}
+          {/* Send a notetaker bot to a meeting link; transcripts read back here. Only needs
+              the session and the backend URL, so it takes them directly. */}
+          <TranscriberSection backendUrl={backendUrl} sessionStore={sessionStore} />
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
               <div className="flex items-baseline justify-between gap-3">

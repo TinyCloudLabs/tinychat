@@ -76,12 +76,21 @@ export const DELEGATION_PATHS = ["/api/delegations"] as const;
 export const GOOGLE_OAUTH_LIMIT = 30;
 export const GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"] as const;
 
+/**
+ * The transcriber surface (routes/transcriber.ts) polls: while a bot is joining or in a meeting
+ * the settings card re-reads the list every few seconds, and that alone would exhaust the
+ * 120/15min global bucket `/api/chat` shares. Own bucket, same reasoning as the meetings view.
+ */
+export const TRANSCRIBER_LIMIT = 600;
+export const TRANSCRIBER_PATHS = ["/api/transcriber"] as const;
+
 const DEDICATED_PATHS = [
   ...VERIFICATION_PATHS,
   ...CONNECTOR_COMPANION_PATHS,
   ...CONNECTOR_MEETINGS_PATHS,
   ...DELEGATION_PATHS,
   ...GOOGLE_OAUTH_PATHS,
+  ...TRANSCRIBER_PATHS,
 ] as const;
 
 function matchesMountPath(path: string, mount: string): boolean {
@@ -90,7 +99,7 @@ function matchesMountPath(path: string, mount: string): boolean {
 
 /** Mount the global limiter (exempting every path that carries its own bucket) plus one
  *  dedicated limiter per group: verification, connector companions, connector meetings,
- *  delegations, google oauth. */
+ *  delegations, google oauth, transcriber. */
 export function applyRateLimiters(app: Express): void {
   app.set("trust proxy", 1);
   const verificationLimiter = rateLimit({
@@ -123,6 +132,12 @@ export function applyRateLimiters(app: Express): void {
     standardHeaders: "draft-7",
     legacyHeaders: false,
   });
+  const transcriberLimiter = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: TRANSCRIBER_LIMIT,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+  });
   const globalLimiter = rateLimit({
     windowMs: WINDOW_MS,
     limit: GLOBAL_LIMIT,
@@ -136,4 +151,5 @@ export function applyRateLimiters(app: Express): void {
   for (const p of CONNECTOR_MEETINGS_PATHS) app.use(p, connectorMeetingsLimiter);
   for (const p of DELEGATION_PATHS) app.use(p, delegationLimiter);
   for (const p of GOOGLE_OAUTH_PATHS) app.use(p, googleOAuthLimiter);
+  for (const p of TRANSCRIBER_PATHS) app.use(p, transcriberLimiter);
 }
