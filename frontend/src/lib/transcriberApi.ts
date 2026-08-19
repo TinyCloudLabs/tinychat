@@ -183,11 +183,13 @@ export function createTranscriberClient(
         method: "GET",
         missing: "not-found",
         read: async (response) => {
-          if (response.status === 202) {
-            const body = (await response.json()) as { status?: TranscriberMeetingStatus };
+          const body = (await response.json()) as TranscriberTranscript;
+          // 202 = still being prepared; a 200 whose status is not `completed` (failed/cancelled)
+          // carries no transcript either.
+          if (response.status === 202 || body.status !== "completed") {
             return { status: "pending", meetingStatus: body.status ?? "processing" };
           }
-          return { status: "ready", transcript: (await response.json()) as TranscriberTranscript };
+          return { status: "ready", transcript: body };
         },
       }),
     remove: (value) =>

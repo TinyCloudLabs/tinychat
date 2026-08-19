@@ -332,6 +332,9 @@ describe("transcription api client", () => {
     expect(created.id).toBe("mtg_9");
     expect((await api.getMeeting("mtg_9")).status).toBe("in_progress");
     expect(await api.getTranscript("mtg_9")).toEqual({ pending: true, status: "processing" });
+    // Live upstream answers 200 + {meeting_id, status} (no segments) for failed/cancelled.
+    answers["GET /v1/meetings/mtg_9/transcript"] = { status: 200, body: { meeting_id: "mtg_9", status: "failed" } };
+    expect(await api.getTranscript("mtg_9")).toEqual({ pending: true, status: "failed" });
     expect(await api.stopMeeting("mtg_9")).toEqual({ id: "mtg_9", status: "processing" });
     await api.deleteMeeting("mtg_9");
     await expect(api.getMeeting("mtg_missing")).rejects.toMatchObject({ status: 404, code: "meeting_not_found" });

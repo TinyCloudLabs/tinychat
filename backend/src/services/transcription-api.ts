@@ -173,11 +173,13 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     },
     async getTranscript(id) {
       const { status, json } = await request("GET", `/v1/meetings/${encode(id)}/transcript`);
-      if (status === 202) {
-        const s = (json as { status?: TranscriptionMeetingStatus } | null)?.status ?? "processing";
-        return { pending: true, status: s };
+      const body = json as TranscriptionTranscript | null;
+      // 202 = still being prepared. Upstream also answers 200 with just `{meeting_id, status}`
+      // (no segments) for a failed/cancelled meeting; that is not a transcript either.
+      if (status === 202 || !body || body.status !== "completed") {
+        return { pending: true, status: body?.status ?? "processing" };
       }
-      return { pending: false, transcript: json as TranscriptionTranscript };
+      return { pending: false, transcript: body };
     },
     async deleteMeeting(id) {
       await request("DELETE", `/v1/meetings/${encode(id)}`);

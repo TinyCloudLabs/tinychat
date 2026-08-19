@@ -253,26 +253,25 @@ describe("transcriber client", () => {
     expect(JSON.parse(seen[0]!.body as string)).toEqual({ meeting_url: "nope" });
   });
 
-  test("transcript maps 202 to pending and 200 to ready", async () => {
+  test("transcript maps 202 to pending, 200+completed to ready, 200+failed to pending", async () => {
     let status = 202;
-    const fetchImpl = (async () =>
-      new Response(
-        JSON.stringify(
-          status === 202
-            ? { meeting_id: "mtg_1", status: "processing" }
-            : { meeting_id: "mtg_1", status: "completed", segments: [], text: "" },
-        ),
-        { status },
-      )) as typeof fetch;
+    let body: unknown = { meeting_id: "mtg_1", status: "processing" };
+    const fetchImpl = (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
     const client = createTranscriberClient("https://api.example", { sessionStore: session(), fetchImpl });
     expect(await client.transcript("mtg_1")).toEqual({
       status: "ok",
       value: { status: "pending", meetingStatus: "processing" },
     });
     status = 200;
+    body = { meeting_id: "mtg_1", status: "completed", segments: [], text: "" };
     const ready = await client.transcript("mtg_1");
     expect(ready.status).toBe("ok");
     if (ready.status === "ok") expect(ready.value.status).toBe("ready");
+    body = { meeting_id: "mtg_1", status: "failed" };
+    expect(await client.transcript("mtg_1")).toEqual({
+      status: "ok",
+      value: { status: "pending", meetingStatus: "failed" },
+    });
   });
 
   test("no token = unauthenticated without a network call; 401 clears the session", async () => {
