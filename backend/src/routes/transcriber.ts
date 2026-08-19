@@ -51,7 +51,7 @@ export function isValidMeetingUrl(raw: unknown): raw is string {
 
 export function createTranscriberRouter(options: TranscriberRouterOptions): Router {
   const { api, index } = options;
-  const defaultBotName = options.defaultBotName ?? "TinyCloud Notetaker";
+  const defaultBotName = options.defaultBotName ?? "TinyCloud Private Notetaker";
   const router = Router();
 
   function addressOf(req: Request, res: Response): string | null {

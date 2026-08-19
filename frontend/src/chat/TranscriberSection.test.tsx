@@ -33,7 +33,7 @@ function meeting(patch: Partial<TranscriberMeeting> = {}): TranscriberMeeting {
     status: "queued",
     platform: "google_meet",
     meeting_url: "https://meet.google.com/abc-defg-hij",
-    bot: { name: "TinyCloud Notetaker" },
+    bot: { name: "TinyCloud Private Notetaker" },
     created_at: "2026-08-18T10:00:00.000Z",
     ...patch,
   };

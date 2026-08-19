@@ -177,7 +177,7 @@ describe("POST /api/transcriber/meetings", () => {
     await withServer(h.app, async (base) => {
       await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.google.com/abc-defg-hij" });
     });
-    expect((h.calls[0]!.args[0] as { bot_name: string }).bot_name).toBe("TinyCloud Notetaker");
+    expect((h.calls[0]!.args[0] as { bot_name: string }).bot_name).toBe("TinyCloud Private Notetaker");
   });
 
   test("401 without a session", async () => {

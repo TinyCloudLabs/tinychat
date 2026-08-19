@@ -15,7 +15,7 @@ const meeting: TranscriberMeeting = {
   status: "completed",
   platform: "jitsi",
   meeting_url: "https://meet.ffmuc.net/TinyCloudZcash",
-  bot: { name: "TinyCloud Notetaker", joined_at: "2026-08-19T09:37:56.729Z" },
+  bot: { name: "TinyCloud Private Notetaker", joined_at: "2026-08-19T09:37:56.729Z" },
   created_at: "2026-08-19T09:37:35.245Z",
   started_at: "2026-08-19T09:37:56.729Z",
   ended_at: "2026-08-19T09:39:40.000Z",
