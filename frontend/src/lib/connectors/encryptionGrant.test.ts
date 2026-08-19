@@ -134,12 +134,14 @@ describe("App wiring", () => {
   test("sign-in passes the composed manifest to createAndSignIn", () => {
     const signInCall = app.slice(app.indexOf("await createAndSignIn("));
     const args = signInCall.slice(0, signInCall.indexOf("});"));
+    expect(args).toContain("tinycloudHosts: TINYCLOUD_HOSTS");
     expect(args).toContain("manifest: withEncryptionDecryptGrant(manifest, connectedAddress)");
   });
 
   test("the restore path passes the plain manifest", () => {
     const restoreCall = app.slice(app.indexOf("await restoreTinyCloudWebSession("));
     const args = restoreCall.slice(0, restoreCall.indexOf("});"));
+    expect(args).toContain("tinycloudHosts: TINYCLOUD_HOSTS");
     expect(args).toContain("manifest,");
     expect(args).not.toContain("withEncryptionDecryptGrant");
   });
