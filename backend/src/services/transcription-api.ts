@@ -156,8 +156,8 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     };
     // A CVM redeploy on the other side shows up here as a closed socket mid-request. One
     // retry after a short pause covers the blip without turning an outage into a hammer.
-    // POSTs are only retried because the caller sends an Idempotency-Key (see createMeeting),
-    // so a retried create cannot send a second bot.
+    // Retried creates carry an Idempotency-Key, so they cannot send a second bot.
+    // The only other POST is stop, whose upstream contract is explicitly idempotent.
     let response: Response;
     try {
       response = await fetchImpl(`${base}${path}`, init);

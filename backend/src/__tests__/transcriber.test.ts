@@ -424,6 +424,22 @@ describe("transcription api client — transient upstream blips", () => {
     await expect(api2.getMeeting("mtg_1")).rejects.toThrow("ECONNRESET");
     expect(calls).toBe(2);
 
+    // The upstream stop contract is idempotent, so it is also safe to retry once.
+    calls = 0;
+    const stopAfterBlip = (async () => {
+      calls++;
+      if (calls === 1) throw new Error("ECONNRESET");
+      return new Response(JSON.stringify({ id: "mtg_1", status: "processing" }));
+    }) as unknown as typeof fetch;
+    const apiStop = createTranscriptionApiClient({
+      baseUrl: "https://t.example",
+      apiKey: "k",
+      fetchImpl: stopAfterBlip,
+      sleep: async () => {},
+    });
+    await expect(apiStop.stopMeeting("mtg_1")).resolves.toEqual({ id: "mtg_1", status: "processing" });
+    expect(calls).toBe(2);
+
     // An HTTP error is NOT a transport blip: one call, thrown as TranscriptionApiError.
     calls = 0;
     const http503 = (async () => {
