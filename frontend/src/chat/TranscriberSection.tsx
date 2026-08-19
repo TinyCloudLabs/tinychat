@@ -160,6 +160,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
       <p className="text-xs text-muted-foreground">
         Paste a meeting link and a TinyCloud notetaker joins the call. When the meeting ends the
         speaker-attributed transcript is saved to your TinyCloud space and shows up in Meetings.
+        Once everyone else leaves, the notetaker waits five minutes before ending automatically.
+        You can end it immediately from the meeting row.
       </p>
 
       {dark ? (
@@ -372,9 +374,11 @@ function MeetingRow(props: {
               size="sm"
               disabled={busy}
               onClick={() => props.onStop(meeting.id)}
-              className="h-8 px-2"
+              aria-label="End meeting and transcribe now"
+              className="h-8 gap-1.5 px-2"
             >
-              Stop
+              {busy && <Loader2Icon className="size-4 animate-spin" />}
+              <span>{busy ? "Ending & transcribing…" : "End meeting & transcribe now"}</span>
             </Button>
           )}
           {meeting.status === "completed" && (
