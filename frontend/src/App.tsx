@@ -99,6 +99,9 @@ const APP_NAME = "TinyCloud Chat";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
   `${globalThis.location?.protocol ?? "http:"}//localhost:3014`;
+const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
+  ? [import.meta.env.VITE_TINYCLOUD_HOST]
+  : undefined;
 const MODEL_STORAGE_KEY = "xyz.tinycloud.tinychat:active-model";
 // Empty offered-set sentinel for the pre-/models-load sanitize path (ST1).
 const EMPTY_OFFERED: ReadonlySet<string> = new Set();
@@ -385,6 +388,7 @@ export function App() {
           throw new Error("Could not load the TinyCloud app manifest");
         const restored = await restoreTinyCloudWebSession(storedAddress, {
           autoCreateSpace: false,
+          tinycloudHosts: TINYCLOUD_HOSTS,
           manifest,
         });
         if (restored.status !== "restored" || !restored.tcw) {
@@ -627,6 +631,7 @@ export function App() {
         address: connectedAddress,
         nonce,
         autoCreateSpace: true,
+        tinycloudHosts: TINYCLOUD_HOSTS,
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
       });
 
