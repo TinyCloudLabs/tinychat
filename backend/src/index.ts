@@ -47,6 +47,12 @@ import {
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
+import { createTranscriberRouter } from "./routes/transcriber.js";
+import {
+  createTranscriptionApiClient,
+  transcriptionApiConfigFromEnv,
+} from "./services/transcription-api.js";
+import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -793,6 +799,32 @@ async function main() {
     }),
   );
   app.use("/api/billing", createBillingRouter({ authMiddleware }));
+
+  // The TRANSCRIBER surface (routes/transcriber.ts): send a bot to a meeting URL through the
+  // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
+  // only when TRANSCRIPTION_API_URL + TRANSCRIPTION_API_KEY are set — the project key stays in
+  // this process, and the browser only ever talks to this authenticated, per-address proxy.
+  const transcriptionConfig = transcriptionApiConfigFromEnv();
+  if (transcriptionConfig) {
+    // §9.3 — writes to the backend's own space share ONE lane per process. Reuse the connector
+    // lane when it exists; a process without connectors gets its own, single one.
+    const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
+    app.use(
+      "/api/transcriber/meetings",
+      authMiddleware,
+      createTranscriberRouter({
+        api: createTranscriptionApiClient(transcriptionConfig),
+        index: new KvTranscriberIndexStore(node, transcriberStorageLane),
+        ...(process.env.TRANSCRIPTION_BOT_NAME
+          ? { defaultBotName: process.env.TRANSCRIPTION_BOT_NAME }
+          : {}),
+      }),
+    );
+  } else {
+    console.warn(
+      "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
+    );
+  }
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const spec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
