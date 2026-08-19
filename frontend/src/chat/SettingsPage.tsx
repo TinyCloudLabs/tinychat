@@ -162,7 +162,7 @@ export function SettingsPage({
           {meetingsSlot}
           {/* Send a notetaker bot to a meeting link; transcripts read back here. Only needs
               the session and the backend URL, so it takes them directly. */}
-          <TranscriberSection backendUrl={backendUrl} sessionStore={sessionStore} />
+          <TranscriberSection backendUrl={backendUrl} sessionStore={sessionStore} tcw={tcw} />
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
               <div className="flex items-baseline justify-between gap-3">

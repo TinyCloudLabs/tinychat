@@ -361,6 +361,13 @@ jobs:
           CONNECTOR_DRAIN_INTERVAL_MS: ${{ vars.CONNECTOR_DRAIN_INTERVAL_MS }}
           CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${{ vars.CONNECTOR_A_FETCH_CEILING_PER_HOUR }}
           CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR: ${{ vars.CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR }}
+          # Transcriber (Settings → Transcriber; backend/src/routes/transcriber.ts). Both set ⇒
+          # /api/transcriber/meetings mounts; either empty ⇒ the routes do not exist and the card
+          # says so. The URL is public (repo var); the tc_live_… project key is a secret and never
+          # leaves the backend. Declared in all four places for the allowed_envs freeze reason.
+          TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
+          TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
+          TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -417,6 +424,9 @@ jobs:
             printf '%s\n' "CONNECTOR_DRAIN_INTERVAL_MS=$CONNECTOR_DRAIN_INTERVAL_MS"
             printf '%s\n' "CONNECTOR_A_FETCH_CEILING_PER_HOUR=$CONNECTOR_A_FETCH_CEILING_PER_HOUR"
             printf '%s\n' "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR=$CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR"
+            printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
+            printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
+            printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

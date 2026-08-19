@@ -34,6 +34,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore";
 import type { FirefliesSentence } from "./firefliesClient";
 import { GMEET_MEETING_SOURCE } from "./gmeetNormalize";
+import {
+  TRANSCRIBER_MEETING_SOURCE,
+  TRANSCRIBER_MEETING_SOURCE_LABEL,
+} from "../transcriberSave";
 import { CONNECTORS } from "./registry";
 
 /**
@@ -47,6 +51,7 @@ import { CONNECTORS } from "./registry";
 export const EXPLORER_MEETING_SOURCES: readonly string[] = [
   "fireflies",
   GMEET_MEETING_SOURCE,
+  TRANSCRIBER_MEETING_SOURCE,
 ];
 
 /**
@@ -56,6 +61,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
  * rendering blank.
  */
 export function meetingSourceLabel(source: string): string {
+  if (source === TRANSCRIBER_MEETING_SOURCE) return TRANSCRIBER_MEETING_SOURCE_LABEL;
   return CONNECTORS.find((c) => c.source === source)?.name ?? source;
 }
 

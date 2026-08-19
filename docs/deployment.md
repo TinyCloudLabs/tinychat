@@ -160,6 +160,9 @@ Repository **variables** (all optional — defaults shown):
 | `LEDGER_OUTAGE_POLICY` | `bounded_k` |
 | `CONNECTOR_BACKEND_INGEST_ENABLED` | `false` (**dark**; `true` only ARMS backend ingestion — addresses come from the cohort allowlist in the backend's own config KV. See §4 and the operator pre-rollout gates before ever setting this.) |
 | `FIREFLIES_OAUTH_REDIRECT_URI` | _(empty — the registered OAuth redirect URI; required with the ingest flag armed)_ |
+| `TRANSCRIPTION_API_URL` | _(empty — repo **variable**; the TinyCloud Private Transcription API base URL. With `TRANSCRIPTION_API_KEY` set, `/api/transcriber/meetings` mounts and Settings → Transcriber lights up; either empty ⇒ 404 and the card says it is not configured)_ |
+| `TRANSCRIPTION_API_KEY` | _(empty — repo **secret**; the `tc_live_…` project key minted with the transcription service's `create-key` CLI. Never reaches the browser)_ |
+| `TRANSCRIPTION_BOT_NAME` | `TinyCloud Notetaker` (repo variable; the bot's display name in the meeting) |
 
 > Any env var added to the deploy must land in **four** places or the CVM silently
 > drops it: the deploy step's `env:` block, the `printf` ENV_FILE block it writes

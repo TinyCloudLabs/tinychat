@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FC, type FormEvent } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AudioLinesIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,10 @@ import {
   type TranscriberResult,
   type TranscriberTranscript,
 } from "@/lib/transcriberApi";
+import {
+  listSavedTranscriberMeetingIds,
+  saveTranscriberMeeting,
+} from "@/lib/transcriberSave";
 
 export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
@@ -41,9 +46,13 @@ export interface OpenTranscriptState {
   transcript?: TranscriberTranscript;
 }
 
+export type SaveState = "saving" | "saved" | "error";
+
 export interface TranscriberViewProps {
   listStatus: ListStatus;
   meetings: TranscriberListRow[];
+  /** Per meeting id: whether its transcript has been copied into the user's space. */
+  saved: Readonly<Record<string, SaveState>>;
   form: { url: string; botName: string; submitting: boolean; error: string | null };
   busyId: string | null;
   open: OpenTranscriptState | null;
@@ -131,6 +140,7 @@ const inputClass =
 export const TranscriberView: FC<TranscriberViewProps> = ({
   listStatus,
   meetings,
+  saved,
   form,
   busyId,
   open,
@@ -148,8 +158,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   return (
     <SectionCard icon={AudioLinesIcon} title="Transcriber">
       <p className="text-xs text-muted-foreground">
-        Paste a meeting link and a TinyCloud notetaker joins the call. When the meeting ends you
-        get a speaker-attributed transcript here, on any device you sign in to.
+        Paste a meeting link and a TinyCloud notetaker joins the call. When the meeting ends the
+        speaker-attributed transcript is saved to your TinyCloud space and shows up in Meetings.
       </p>
 
       {dark ? (
@@ -267,6 +277,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
                   ) : (
                     <MeetingRow
                       meeting={row}
+                      saveState={saved[row.id]}
                       busy={busyId === row.id}
                       open={open !== null && open.id === row.id ? open : null}
                       onStop={onStop}
@@ -309,6 +320,7 @@ function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: strin
 
 function MeetingRow(props: {
   meeting: TranscriberMeeting;
+  saveState: SaveState | undefined;
   busy: boolean;
   open: OpenTranscriptState | null;
   onStop: (id: string) => void;
@@ -342,6 +354,11 @@ function MeetingRow(props: {
             </span>
             {when && <span>· {when}</span>}
             {meeting.bot?.name && <span>· {meeting.bot.name}</span>}
+            {props.saveState === "saved" && <span>· Saved to your space</span>}
+            {props.saveState === "saving" && <span>· Saving to your space…</span>}
+            {props.saveState === "error" && (
+              <span className="text-destructive">· Could not save to your space</span>
+            )}
           </span>
           {meeting.status === "failed" && meeting.error && (
             <span className="mt-0.5 block text-xs text-destructive">{meeting.error.message}</span>
@@ -454,8 +471,22 @@ function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
 export interface TranscriberSectionProps {
   backendUrl: string;
   sessionStore: SessionStore;
+  /**
+   * The user's session client. When present, a completed meeting's transcript is copied into
+   * the user's own space (connector_meeting row + KV body, like Fireflies) as soon as it is seen.
+   */
+  tcw?: TinyCloudWeb;
   /** Injectable for tests; defaults to the real client. */
   client?: TranscriberClient;
+  /** Injectable for tests; defaults to the real store writers. */
+  saver?: {
+    listSaved: (tcw: TinyCloudWeb) => Promise<{ ok: boolean; data?: string[] }>;
+    save: (
+      tcw: TinyCloudWeb,
+      meeting: TranscriberMeeting,
+      transcript: TranscriberTranscript,
+    ) => Promise<{ ok: boolean }>;
+  };
 }
 
 function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
@@ -499,12 +530,21 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
   }
 }
 
-export const TranscriberSection: FC<TranscriberSectionProps> = ({ backendUrl, sessionStore, client }) => {
+export const TranscriberSection: FC<TranscriberSectionProps> = ({
+  backendUrl,
+  sessionStore,
+  tcw,
+  client,
+  saver,
+}) => {
   const apiRef = useRef<TranscriberClient | null>(null);
   if (apiRef.current === null) {
     apiRef.current = client ?? createTranscriberClient(backendUrl, { sessionStore });
   }
   const api = apiRef.current;
+  const saverRef = useRef(
+    saver ?? { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting },
+  );
 
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [meetings, setMeetings] = useState<TranscriberListRow[]>([]);
@@ -514,9 +554,17 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({ backendUrl, se
   const [formError, setFormError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
+  const [saved, setSaved] = useState<Record<string, SaveState>>({});
+  const savedSeeded = useRef(false);
 
   const load = useCallback(async () => {
     setListStatus((s) => (s === "ready" ? s : "loading"));
+    // A failed save gets another go on every explicit or polled refresh.
+    setSaved((current) => {
+      const next: Record<string, SaveState> = {};
+      for (const [id, state] of Object.entries(current)) if (state !== "error") next[id] = state;
+      return next;
+    });
     const result = await api.list();
     setListStatus(listStatusOf(result));
     if (result.status === "ok") setMeetings(result.value.meetings);
@@ -533,6 +581,47 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({ backendUrl, se
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [anyActive, listStatus, load]);
+
+  // Seed "already saved" from the user's space once, so a reload does not re-copy meetings.
+  useEffect(() => {
+    if (!tcw || savedSeeded.current) return;
+    savedSeeded.current = true;
+    void (async () => {
+      const result = await saverRef.current.listSaved(tcw);
+      if (!result.ok || !result.data) return;
+      setSaved((current) => {
+        const next = { ...current };
+        for (const id of result.data ?? []) if (next[id] === undefined) next[id] = "saved";
+        return next;
+      });
+    })();
+  }, [tcw]);
+
+  // Copy every COMPLETED meeting into the user's space exactly once. Transcript fetch + upsert;
+  // a failure is shown on the row and retried when the user hits Refresh (`load` clears errors).
+  useEffect(() => {
+    if (!tcw) return;
+    const pending = meetings.filter(
+      (m): m is TranscriberMeeting =>
+        !("unavailable" in m) && m.status === "completed" && saved[m.id] === undefined,
+    );
+    if (pending.length === 0) return;
+    setSaved((current) => {
+      const next = { ...current };
+      for (const m of pending) next[m.id] = "saving";
+      return next;
+    });
+    void (async () => {
+      for (const m of pending) {
+        const result = await api.transcript(m.id);
+        let ok = false;
+        if (result.status === "ok" && result.value.status === "ready") {
+          ok = (await saverRef.current.save(tcw, m, result.value.transcript)).ok;
+        }
+        setSaved((current) => ({ ...current, [m.id]: ok ? "saved" : "error" }));
+      }
+    })();
+  }, [api, meetings, saved, tcw]);
 
   const onSubmit = useCallback(() => {
     const trimmed = url.trim();
@@ -614,6 +703,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({ backendUrl, se
     <TranscriberView
       listStatus={listStatus}
       meetings={meetings}
+      saved={saved}
       form={{ url, botName, submitting, error: formError }}
       busyId={busyId}
       open={open}

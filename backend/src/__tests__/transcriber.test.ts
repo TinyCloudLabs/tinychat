@@ -359,3 +359,36 @@ describe("wiring", () => {
     expect(limits.TRANSCRIBER_LIMIT).toBeGreaterThan(limits.GLOBAL_LIMIT);
   });
 });
+
+describe("Phala deploy environment", () => {
+  // Same four-place rule as webhook-deploy-env.test.ts: `allowed_envs` is derived from the
+  // ENV_FILE the workflow writes and frozen at CVM creation, so a var missing from any place is
+  // silently dropped at injection and the transcriber stays 404 with the repo secret set.
+  const KEYS = ["TRANSCRIPTION_API_URL", "TRANSCRIPTION_API_KEY", "TRANSCRIPTION_BOT_NAME"] as const;
+  const repoRoot = resolve(import.meta.dir, "../../..");
+  const { load: loadYaml } = require("js-yaml") as typeof import("js-yaml");
+
+  test("deploy workflow declares and writes every transcriber var; compose passes it through", () => {
+    const workflow = loadYaml(
+      readFileSync(resolve(repoRoot, ".github/workflows/deploy-backend-phala.yml"), "utf8"),
+    ) as { jobs?: { deploy?: { steps?: { env?: Record<string, unknown>; run?: string }[] } } };
+    const writer = workflow.jobs?.deploy?.steps?.find(
+      (s) => typeof s.run === "string" && s.run.includes('ENV_FILE="$RUNNER_TEMP/phala-prod.env"'),
+    );
+    expect(writer).toBeTruthy();
+    const compose = loadYaml(readFileSync(resolve(repoRoot, "docker-compose.phala.yml"), "utf8")) as {
+      services?: Record<string, { environment?: Record<string, string> }>;
+    };
+    const env = compose.services?.["tinychat-backend"]?.environment ?? {};
+    const example = readFileSync(resolve(repoRoot, "backend/.env.example"), "utf8");
+    for (const key of KEYS) {
+      expect(Object.hasOwn(writer?.env ?? {}, key)).toBe(true);
+      expect(writer?.run).toContain(`"${key}=`);
+      expect(String(env[key])).toContain(`\${${key}`);
+      expect(example).toContain(`${key}=`);
+    }
+    // The key is a secret, the URL a public variable.
+    expect(String(writer?.env?.TRANSCRIPTION_API_KEY)).toContain("secrets.TRANSCRIPTION_API_KEY");
+    expect(String(writer?.env?.TRANSCRIPTION_API_URL)).toContain("vars.TRANSCRIPTION_API_URL");
+  });
+});

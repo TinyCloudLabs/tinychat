@@ -86,6 +86,11 @@ services:
       CONNECTOR_DRAIN_INTERVAL_MS: ${CONNECTOR_DRAIN_INTERVAL_MS:-}
       CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${CONNECTOR_A_FETCH_CEILING_PER_HOUR:-}
       CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR: ${CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR:-}
+      # Transcriber (Settings → Transcriber). Both set ⇒ /api/transcriber/meetings mounts;
+      # either empty ⇒ the routes do not exist. The key never leaves this process.
+      TRANSCRIPTION_API_URL: ${TRANSCRIPTION_API_URL:-}
+      TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
+      TRANSCRIPTION_BOT_NAME: ${TRANSCRIPTION_BOT_NAME:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
     restart: unless-stopped

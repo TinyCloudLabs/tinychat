@@ -45,6 +45,7 @@ function render(patch: Partial<TranscriberViewProps> = {}): string {
   const props: TranscriberViewProps = {
     listStatus: "ready",
     meetings: [],
+    saved: {},
     form: { url: "", botName: "", submitting: false, error: null },
     busyId: null,
     open: null,
@@ -170,6 +171,19 @@ describe("TranscriberView", () => {
     expect(html).toContain(">Hide<");
   });
 
+  test("save state is shown on the row", () => {
+    expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "saved" } })).toContain(
+      "Saved to your space",
+    );
+    expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "saving" } })).toContain(
+      "Saving to your space",
+    );
+    expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "error" } })).toContain(
+      "Could not save to your space",
+    );
+    expect(render({ meetings: [meeting({ status: "completed" })] })).not.toContain("your space");
+  });
+
   test("a pending transcript is told as still being prepared", () => {
     const html = render({
       meetings: [meeting({ status: "completed" })],
@@ -292,12 +306,16 @@ describe("transcriber client", () => {
 });
 
 describe("Settings wiring", () => {
-  test("SettingsPage mounts TranscriberSection with the session and backend URL only", () => {
+  test("SettingsPage mounts TranscriberSection with the session, backend URL and the user's tcw", () => {
     const src = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
     expect(src).toContain('import { TranscriberSection } from "./TranscriberSection";');
-    expect(src).toMatch(/<TranscriberSection backendUrl=\{backendUrl\} sessionStore=\{sessionStore\} \/>/);
+    expect(src).toMatch(
+      /<TranscriberSection backendUrl=\{backendUrl\} sessionStore=\{sessionStore\} tcw=\{tcw\} \/>/,
+    );
+    // The section never touches connector secrets or a provider key: the backend proxy holds
+    // the transcription key, and the user's space is written through the shared connector store.
     const section = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
-    expect(section).not.toContain("TinyCloudWeb");
     expect(section).not.toContain("connectorSecrets");
+    expect(section).toContain("saveTranscriberMeeting");
   });
 });
