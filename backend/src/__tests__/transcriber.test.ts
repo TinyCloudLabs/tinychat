@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import express from "express";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { load as loadYaml } from "js-yaml";
 
 import { createTranscriberRouter } from "../routes/transcriber.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
@@ -366,7 +367,6 @@ describe("Phala deploy environment", () => {
   // silently dropped at injection and the transcriber stays 404 with the repo secret set.
   const KEYS = ["TRANSCRIPTION_API_URL", "TRANSCRIPTION_API_KEY", "TRANSCRIPTION_BOT_NAME"] as const;
   const repoRoot = resolve(import.meta.dir, "../../..");
-  const { load: loadYaml } = require("js-yaml") as typeof import("js-yaml");
 
   test("deploy workflow declares and writes every transcriber var; compose passes it through", () => {
     const workflow = loadYaml(
@@ -390,5 +390,48 @@ describe("Phala deploy environment", () => {
     // The key is a secret, the URL a public variable.
     expect(String(writer?.env?.TRANSCRIPTION_API_KEY)).toContain("secrets.TRANSCRIPTION_API_KEY");
     expect(String(writer?.env?.TRANSCRIPTION_API_URL)).toContain("vars.TRANSCRIPTION_API_URL");
+  });
+});
+
+describe("transcription api client — transient upstream blips", () => {
+  test("retries once on a closed socket, sends the SAME Idempotency-Key, and does not retry HTTP errors", async () => {
+    let calls = 0;
+    const keys: string[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls++;
+      keys.push((init?.headers as Record<string, string>)["Idempotency-Key"]);
+      if (calls === 1) throw new Error("The socket connection was closed unexpectedly");
+      return new Response(JSON.stringify(meeting("mtg_r")), { status: 201 });
+    }) as typeof fetch;
+    const api = createTranscriptionApiClient({
+      baseUrl: "https://t.example",
+      apiKey: "tc_live_x",
+      fetchImpl,
+      sleep: async () => {},
+      idempotencyKey: () => "idem-1",
+    });
+    expect((await api.createMeeting({ meeting_url: "https://meet.jit.si/x" })).id).toBe("mtg_r");
+    expect(calls).toBe(2);
+    expect(keys).toEqual(["idem-1", "idem-1"]);
+
+    // A second transport failure in a row surfaces (one retry only).
+    calls = 0;
+    const dead = (async () => {
+      calls++;
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    const api2 = createTranscriptionApiClient({ baseUrl: "https://t.example", apiKey: "k", fetchImpl: dead, sleep: async () => {} });
+    await expect(api2.getMeeting("mtg_1")).rejects.toThrow("ECONNRESET");
+    expect(calls).toBe(2);
+
+    // An HTTP error is NOT a transport blip: one call, thrown as TranscriptionApiError.
+    calls = 0;
+    const http503 = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { code: "provider_unavailable", message: "x" } }), { status: 503 });
+    }) as unknown as typeof fetch;
+    const api3 = createTranscriptionApiClient({ baseUrl: "https://t.example", apiKey: "k", fetchImpl: http503, sleep: async () => {} });
+    await expect(api3.getMeeting("mtg_1")).rejects.toMatchObject({ status: 503, code: "provider_unavailable" });
+    expect(calls).toBe(1);
   });
 });
