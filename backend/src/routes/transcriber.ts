@@ -63,7 +63,9 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     return address.toLowerCase();
   }
 
-  /** Every upstream failure is TOLD with our own code, never with upstream's raw text. */
+  /** Upstream failures become our own codes; only a 400-class validation message (benign by
+   *  upstream's taxonomy — detail-carrying errors are 5xx and go down the generic path) is
+   *  passed through so the form can say why a link was refused. */
   function upstreamFailure(res: Response, error: unknown, what: string): void {
     if (error instanceof TranscriptionApiError) {
       if (error.status === 404) {
