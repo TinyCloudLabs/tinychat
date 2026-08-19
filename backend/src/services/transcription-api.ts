@@ -106,6 +106,9 @@ export interface TranscriptionApiConfig {
   baseUrl: string;
   apiKey: string;
   fetchImpl?: typeof fetch;
+  /** Injectable for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  idempotencyKey?: () => string;
 }
 
 /** Both env vars set = the transcriber surface mounts. Either missing = the routes do not exist. */
@@ -118,24 +121,51 @@ export function transcriptionApiConfigFromEnv(
   return { baseUrl, apiKey };
 }
 
+/** Retry once on a transport failure (socket closed, reset, timeout) — never on an HTTP status. */
+const TRANSIENT_RETRY_DELAY_MS = 750;
+
+export function isTransientTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const text = `${error.name} ${error.message} ${(error as { code?: string }).code ?? ""}`;
+  return /socket|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|timed out|network|closed unexpectedly|fetch failed/i.test(
+    text,
+  );
+}
+
 export function createTranscriptionApiClient(config: TranscriptionApiConfig): TranscriptionApiClient {
   const base = config.baseUrl.replace(/\/+$/, "");
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
+  const sleep = config.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const newIdempotencyKey = config.idempotencyKey ?? (() => crypto.randomUUID());
 
   async function request(
     method: "GET" | "POST" | "DELETE",
     path: string,
     body?: unknown,
+    extraHeaders: Record<string, string> = {},
   ): Promise<{ status: number; json: unknown }> {
-    const response = await fetchImpl(`${base}${path}`, {
+    const init: RequestInit = {
       method,
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         Accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...extraHeaders,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    };
+    // A CVM redeploy on the other side shows up here as a closed socket mid-request. One
+    // retry after a short pause covers the blip without turning an outage into a hammer.
+    // Retried creates carry an Idempotency-Key, so they cannot send a second bot.
+    // The only other POST is stop, whose upstream contract is explicitly idempotent.
+    let response: Response;
+    try {
+      response = await fetchImpl(`${base}${path}`, init);
+    } catch (error) {
+      if (!isTransientTransportError(error)) throw error;
+      await sleep(TRANSIENT_RETRY_DELAY_MS);
+      response = await fetchImpl(`${base}${path}`, init);
+    }
     let json: unknown = null;
     const text = await response.text();
     if (text.length > 0) {
@@ -160,7 +190,9 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
 
   return {
     async createMeeting(input) {
-      const { json } = await request("POST", "/v1/meetings", input);
+      const { json } = await request("POST", "/v1/meetings", input, {
+        "Idempotency-Key": newIdempotencyKey(),
+      });
       return json as TranscriptionMeeting;
     },
     async getMeeting(id) {
