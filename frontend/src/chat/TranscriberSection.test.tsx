@@ -4,7 +4,7 @@
 // an injected fetch. Rules:
 //   1. dark (backend has no transcriber) says so and hides the form — never a blank card;
 //   2. an outage/offline/signed-out list is TOLD, never rendered as "no meetings";
-//   3. active meetings show Stop, completed ones show Transcript, terminal ones show Remove;
+//   3. active meetings can end and transcribe now, completed ones show Transcript, terminal ones show Remove;
 //   4. a transcript renders speaker-attributed segments;
 //   5. the client sends bearer + CSRF header, maps 202 to pending and list-404 to feature-dark;
 //   6. Settings mounts the section with the session and backend URL only.
@@ -74,6 +74,8 @@ describe("TranscriberView", () => {
     const html = render();
     expect(html).toContain('id="transcriber-meeting-url"');
     expect(html).toContain("Send bot");
+    expect(html).toContain("hears no one else for five minutes");
+    expect(html).toContain("end it immediately");
     expect(html).toContain("No meetings yet");
   });
 
@@ -95,21 +97,21 @@ describe("TranscriberView", () => {
     expect(html).toContain("meeting link");
   });
 
-  test("row actions follow the status: Stop while active, Transcript when completed, Remove when settled", () => {
+  test("row actions follow the status: end and transcribe while active, Transcript when completed, Remove when settled", () => {
     const active = render({ meetings: [meeting({ status: "in_progress" })] });
     expect(active).toContain("In meeting");
-    expect(active).toContain(">Stop<");
+    expect(active).toContain("End meeting &amp; transcribe now");
     expect(active).not.toContain(">Remove<");
     expect(active).not.toContain(">Transcript<");
 
     const processing = render({ meetings: [meeting({ status: "processing" })] });
     expect(processing).toContain("Transcribing");
-    expect(processing).not.toContain(">Stop<");
+    expect(processing).not.toContain("End meeting &amp; transcribe now");
 
     const done = render({ meetings: [meeting({ status: "completed" })] });
     expect(done).toContain(">Transcript<");
     expect(done).toContain(">Remove<");
-    expect(done).not.toContain(">Stop<");
+    expect(done).not.toContain("End meeting &amp; transcribe now");
 
     const failed = render({
       meetings: [
@@ -122,6 +124,16 @@ describe("TranscriberView", () => {
     expect(failed).toContain("Failed");
     expect(failed).toContain("Nobody admitted the bot.");
     expect(failed).toContain(">Remove<");
+  });
+
+  test("ending a meeting shows immediate finalization feedback", () => {
+    const html = render({
+      meetings: [meeting({ status: "in_progress" })],
+      busyId: "mtg_1",
+    });
+    expect(html).toContain("Ending &amp; transcribing…");
+    expect(html).toContain("animate-spin");
+    expect(html).toContain("disabled");
   });
 
   test("the row title is the meeting host + path, linked to the meeting", () => {
