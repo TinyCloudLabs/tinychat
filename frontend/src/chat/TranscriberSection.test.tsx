@@ -74,7 +74,7 @@ describe("TranscriberView", () => {
     const html = render();
     expect(html).toContain('id="transcriber-meeting-url"');
     expect(html).toContain("Send bot");
-    expect(html).toContain("waits five minutes");
+    expect(html).toContain("hears no one else for five minutes");
     expect(html).toContain("end it immediately");
     expect(html).toContain("No meetings yet");
   });

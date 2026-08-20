@@ -160,8 +160,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
       <p className="text-xs text-muted-foreground">
         Paste a meeting link and a TinyCloud notetaker joins the call. When the meeting ends the
         speaker-attributed transcript is saved to your TinyCloud space and shows up in Meetings.
-        Once everyone else leaves, the notetaker waits five minutes before ending automatically.
-        You can end it immediately from the meeting row.
+        If the notetaker hears no one else for five minutes, it ends automatically. You can end it
+        immediately from the meeting row.
       </p>
 
       {dark ? (
