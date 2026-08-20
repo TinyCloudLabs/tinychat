@@ -1,0 +1,43 @@
+[package]
+name = "exo-desktop"
+version = "0.1.0"
+description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
+edition = "2021"
+publish = false
+
+# Standalone package: the tinychat repo has no root Cargo workspace.
+[workspace]
+
+[lib]
+name = "exo_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- Transcription (anarlog, MIT layer) -------------------------------------
+# Local meeting capture + on-device Whisper, reused from fastrepl/anarlog's
+# MIT-licensed Tauri plugins. Feature-gated because they pull in a large crate
+# graph (whisper.cpp native build). Enable with:
+#   cargo tauri dev --features transcription
+# and add the matching entries in capabilities/default.json (see ../README.md).
+[dependencies.tauri-plugin-transcription]
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+[dependencies.tauri-plugin-local-stt]
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+# GPU backends are per-platform Cargo features on tauri-plugin-local-stt:
+# metal/coreml (macOS), cuda/directml/vulkan/openblas (Windows/Linux).
+
+[features]
+default = []
+transcription = ["dep:tauri-plugin-transcription", "dep:tauri-plugin-local-stt"]

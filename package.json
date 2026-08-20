@@ -7,7 +7,8 @@
     "packages/*",
     "frontend",
     "backend",
-    "test"
+    "test",
+    "desktop"
   ],
   "overrides": {
     "@tinycloud/sdk-core": "2.5.1",
@@ -42,7 +43,9 @@
     "deploy:backend:phala": "phala deploy --cvm-id ${TINYCHAT_CVM_ID:?set TINYCHAT_CVM_ID} -c docker-compose.phala.yml -e .env.prod -e TINYCHAT_BACKEND_IMAGE=${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} -e TINYCHAT_INGRESS_IMAGE=${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest} -e TINYCLOUD_HOST=${TINYCLOUD_HOST:-https://tee.node.tinycloud.xyz} -e PORT=3001 -e PHALA_GATEWAY_CNAME=${PHALA_GATEWAY_CNAME:?set PHALA_GATEWAY_CNAME} --wait && curl -fsS https://api.tinycloud.chat/health && curl -fsS https://api.tinycloud.chat/api/server-info",
     "docker:backend:build": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} .",
     "docker:backend:push": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} --push .",
-    "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs"
+    "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs",
+    "dev:desktop": "bun run --cwd desktop dev",
+    "build:desktop": "bun run --cwd desktop build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
