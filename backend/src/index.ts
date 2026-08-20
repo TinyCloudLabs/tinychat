@@ -95,6 +95,7 @@ import {
 import { assertStrongSecret, WebhookTokenService } from "./services/webhook-tokens.js";
 import { APP_ID } from "./manifest.js";
 import { createTinychatBackendIdentity } from "./startup.js";
+import { appCorsOrigins } from "./cors-origins.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://node.tinycloud.xyz";
@@ -258,9 +259,9 @@ async function main() {
     try {
       googleOAuthConfigFromEnv(process.env);
       // The callback page's `postMessage` target, validated at boot rather than at the first
-      // consent. Same value `cors()` is built from, so "the origin we accept requests from" and
-      // "the origin we hand an authorization code to" cannot drift apart; anything that is not a
-      // parseable origin (a bare host, a `*`) throws here.
+      // consent. This web origin is also one member of the CORS allowlist; Exo's fixed Tauri origin
+      // is the other. The callback deliberately stays pinned to the web origin because the desktop
+      // Google OAuth handoff has not been designed yet. A bare host or `*` throws here.
       normalizeAppOrigin(FRONTEND_URL);
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
@@ -372,7 +373,7 @@ async function main() {
   const app = express();
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
-  app.use(cors({ origin: FRONTEND_URL }));
+  app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }));
 
   // Stripe webhook MUST be mounted before the JSON body parser and CSRF
   // middleware: it needs the raw request bytes for signature verification, and
@@ -738,8 +739,9 @@ async function main() {
       },
       createGoogleOAuthRouter({
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
-        // process already resolved the app origin once, with the localhost/TLS fallback a bare
-        // env read does not have. ONE value feeds `cors()` and the callback's postMessage target.
+        // process already resolved the web app origin once, with the localhost/TLS fallback a bare
+        // env read does not have. CORS also accepts Exo's fixed Tauri origin, but the callback stays
+        // pinned to this web origin until a desktop OAuth handoff is designed.
         appOrigin: FRONTEND_URL,
       }),
     );
