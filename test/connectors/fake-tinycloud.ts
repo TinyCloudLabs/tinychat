@@ -485,7 +485,7 @@ export class FakeSecrets {
   async put(
     name: string,
     value: string,
-    opts: { scope: string },
+    opts?: { scope?: string },
   ): Promise<OkErr<void, SecretsErr>> {
     if (this.nextPutRejectsNotFound) {
       this.nextPutRejectsNotFound = false;
@@ -494,23 +494,25 @@ export class FakeSecrets {
         error: { code: "NOT_FOUND", message: "space not found" },
       };
     }
-    const scoped = this.store.get(opts.scope) ?? new Map<string, string>();
+    const scope = opts?.scope ?? "";
+    const scoped = this.store.get(scope) ?? new Map<string, string>();
     scoped.set(name, value);
-    this.store.set(opts.scope, scoped);
+    this.store.set(scope, scoped);
     return { ok: true, data: undefined as unknown as void };
   }
 
   async get(
     name: string,
-    opts: { scope: string },
+    opts?: { scope?: string },
   ): Promise<OkErr<string, SecretsErr>> {
-    const v = this.store.get(opts.scope)?.get(name);
+    const scope = opts?.scope ?? "";
+    const v = this.store.get(scope)?.get(name);
     if (v === undefined) {
       return {
         ok: false,
         error: {
           code: "NOT_FOUND",
-          message: `no secret ${opts.scope}:${name}`,
+          message: `no secret ${scope}:${name}`,
         },
       };
     }
@@ -519,15 +521,15 @@ export class FakeSecrets {
 
   async delete(
     name: string,
-    opts: { scope: string },
+    opts?: { scope?: string },
   ): Promise<OkErr<void, SecretsErr>> {
-    this.store.get(opts.scope)?.delete(name);
+    this.store.get(opts?.scope ?? "")?.delete(name);
     return { ok: true, data: undefined as unknown as void };
   }
 
   /** Test helper — did a secret land at (scope, name)? */
-  has(scope: string, name: string): boolean {
-    return this.store.get(scope)?.has(name) ?? false;
+  has(scope: string | undefined, name: string): boolean {
+    return this.store.get(scope ?? "")?.has(name) ?? false;
   }
 }
 

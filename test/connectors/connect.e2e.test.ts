@@ -11,7 +11,7 @@
 //      "invalid-key" } (NOT network-error, NOT graphql-error).
 //   4. Connect-flow key custody — running the exact validate → unlock → save
 //      steps the ConnectorDialog runs stores the key ONLY in fake secrets at
-//      the scoped path ("fireflies" / "API_KEY"). It appears NOWHERE in fake
+//      the global `FIREFLIES_API_KEY` path shared with Listen. It appears NOWHERE in fake
 //      KV or fake SQL — the connect step must not touch data storage.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -126,7 +126,7 @@ describe("connect + key custody e2e (spec §10 driver 1)", () => {
     }
   });
 
-  test("connect flow logic stores the key ONLY in fake secrets at the scoped path — nothing in KV or SQL", async () => {
+  test("connect flow logic stores the key ONLY as the global Listen-compatible secret — nothing in KV or SQL", async () => {
     handle.resetCounters();
     const fake = makeFakeTinyCloud();
 
@@ -156,13 +156,15 @@ describe("connect + key custody e2e (spec §10 driver 1)", () => {
     const saved = await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY);
     expect(saved.ok).toBe(true);
 
-    // The key MUST land at the scoped path — never anywhere else.
-    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(true);
-    // Only one (scope, name) pair, and it's the fireflies one.
+    // The key MUST land in the global namespace — never anywhere else.
+    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
+      true,
+    );
+    // Only one (scope, name) pair, and it is the shared Fireflies key.
     expect(fake.secrets.store.size).toBe(1);
-    const scoped = fake.secrets.store.get(FIREFLIES.secretScope);
-    expect(scoped?.size).toBe(1);
-    expect(scoped?.get(FIREFLIES.secretName)).toBe(HAPPY_KEY);
+    const global = fake.secrets.store.get("");
+    expect(global?.size).toBe(1);
+    expect(global?.get(FIREFLIES.secretName)).toBe(HAPPY_KEY);
 
     // Custody guard: the raw key value MUST NOT appear anywhere else.
     for (const [k, v] of fake.kv.entries) {

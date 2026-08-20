@@ -53,10 +53,12 @@ function keyFor(name: string, scope: string): string {
   return `${scope}:${name}`;
 }
 
-function makeFake(opts: {
-  locked?: boolean;
-  omitEnsureOwnedSpaceHosted?: boolean;
-} = {}): Fake {
+function makeFake(
+  opts: {
+    locked?: boolean;
+    omitEnsureOwnedSpaceHosted?: boolean;
+  } = {},
+): Fake {
   const entries = new Map<string, StoredKey>();
   const calls: FakeCalls = {
     unlockCount: 0,
@@ -91,7 +93,10 @@ function makeFake(opts: {
     ): Promise<Result<void, SecretErr>> {
       calls.putCount++;
       if (state.locked) {
-        return { ok: false, error: { code: "VAULT_LOCKED", message: "Vault is locked" } };
+        return {
+          ok: false,
+          error: { code: "VAULT_LOCKED", message: "Vault is locked" },
+        };
       }
       if (state.putErrorSticky) {
         return { ok: false, error: state.putErrorSticky };
@@ -111,12 +116,18 @@ function makeFake(opts: {
     ): Promise<Result<string, SecretErr>> {
       calls.getCount++;
       if (state.locked) {
-        return { ok: false, error: { code: "VAULT_LOCKED", message: "Vault is locked" } };
+        return {
+          ok: false,
+          error: { code: "VAULT_LOCKED", message: "Vault is locked" },
+        };
       }
       const scope = options?.scope ?? "";
       const row = entries.get(keyFor(name, scope));
       if (!row) {
-        return { ok: false, error: { code: "KEY_NOT_FOUND", message: `no key ${name}` } };
+        return {
+          ok: false,
+          error: { code: "KEY_NOT_FOUND", message: `no key ${name}` },
+        };
       }
       return { ok: true, data: row.value };
     },
@@ -126,12 +137,18 @@ function makeFake(opts: {
     ): Promise<Result<void, SecretErr>> {
       calls.deleteCount++;
       if (state.locked) {
-        return { ok: false, error: { code: "VAULT_LOCKED", message: "Vault is locked" } };
+        return {
+          ok: false,
+          error: { code: "VAULT_LOCKED", message: "Vault is locked" },
+        };
       }
       const scope = options?.scope ?? "";
       const k = keyFor(name, scope);
       if (!entries.has(k)) {
-        return { ok: false, error: { code: "KEY_NOT_FOUND", message: `no key ${name}` } };
+        return {
+          ok: false,
+          error: { code: "KEY_NOT_FOUND", message: `no key ${name}` },
+        };
       }
       entries.delete(k);
       return { ok: true, data: undefined as unknown as void };
@@ -183,8 +200,8 @@ describe("connectorSecrets happy path", () => {
     expect(f.calls.putCount).toBe(1);
     // No retry-recovery path was needed → ensureOwnedSpaceHosted must NOT be called.
     expect(f.calls.ensureOwnedSpaceHostedCalls).toEqual([]);
-    // The wrapper must pass the descriptor's scope through — spec §7.
-    const stored = f.entries.get(`${FIREFLIES.secretScope}:${FIREFLIES.secretName}`);
+    // Source keys are global so Listen and TinyChat share one canonical value.
+    const stored = f.entries.get(keyFor(FIREFLIES.secretName, ""));
     expect(stored?.value).toBe("sk-fire-1");
 
     const got = await getConnectorKey(f.tcw, FIREFLIES);
@@ -203,7 +220,11 @@ describe("connectorSecrets locked vault", () => {
 
     const put = await saveConnectorKey(f.tcw, FIREFLIES, "k");
     expect(put.ok).toBe(false);
-    if (!put.ok) expect(put.error).toEqual({ code: "VAULT_LOCKED", message: "Vault is locked" });
+    if (!put.ok)
+      expect(put.error).toEqual({
+        code: "VAULT_LOCKED",
+        message: "Vault is locked",
+      });
 
     const get = await getConnectorKey(f.tcw, FIREFLIES);
     expect(get.ok).toBe(false);
@@ -225,13 +246,16 @@ describe("connectorSecrets locked vault", () => {
 describe("connectorSecrets first-put 404 defense", () => {
   test("SPACE_NOT_FOUND → ensureOwnedSpaceHosted('secrets') → retry once → success", async () => {
     const f = makeFake();
-    f.putErrorOnce = { code: "SPACE_NOT_FOUND", message: "Space not found: xxx" };
+    f.putErrorOnce = {
+      code: "SPACE_NOT_FOUND",
+      message: "Space not found: xxx",
+    };
 
     const res = await saveConnectorKey(f.tcw, FIREFLIES, "sk-fire-2");
     expect(res.ok).toBe(true);
     expect(f.calls.putCount).toBe(2);
     expect(f.calls.ensureOwnedSpaceHostedCalls).toEqual(["secrets"]);
-    expect(f.entries.get(`${FIREFLIES.secretScope}:${FIREFLIES.secretName}`)?.value).toBe(
+    expect(f.entries.get(keyFor(FIREFLIES.secretName, ""))?.value).toBe(
       "sk-fire-2",
     );
   });
@@ -286,7 +310,10 @@ describe("connectorSecrets unlock on a restored session", () => {
     return {
       secrets: {
         isUnlocked: false,
-        unlock: async (): Promise<Result<void, SecretErr>> => ({ ok: false, error }),
+        unlock: async (): Promise<Result<void, SecretErr>> => ({
+          ok: false,
+          error,
+        }),
       },
     } as unknown as TinyCloudWeb;
   }
@@ -309,7 +336,10 @@ describe("connectorSecrets unlock on a restored session", () => {
   });
 
   test("other VAULT_LOCKED failures keep the SDK's own message", async () => {
-    const tcw = unlockFailingTcw({ code: "VAULT_LOCKED", message: "Vault is locked" });
+    const tcw = unlockFailingTcw({
+      code: "VAULT_LOCKED",
+      message: "Vault is locked",
+    });
 
     const res = await unlockSecrets<SecretErr>(tcw);
     expect(res.ok).toBe(false);
@@ -339,7 +369,10 @@ describe("I2 unlock events", () => {
     return {
       secrets: {
         isUnlocked: false,
-        unlock: async (): Promise<Result<void, SecretErr>> => ({ ok: false, error }),
+        unlock: async (): Promise<Result<void, SecretErr>> => ({
+          ok: false,
+          error,
+        }),
       },
     } as unknown as TinyCloudWeb;
   }
@@ -373,7 +406,8 @@ describe("I2 unlock events", () => {
       }),
     );
     expect(rewritten.ok).toBe(false);
-    if (!rewritten.ok) expect(rewritten.error.message).toBe(UNLOCK_NEEDS_SIGN_IN_MESSAGE);
+    if (!rewritten.ok)
+      expect(rewritten.error.message).toBe(UNLOCK_NEEDS_SIGN_IN_MESSAGE);
 
     // And any other failure.
     const plain = await unlockSecrets<SecretErr>(

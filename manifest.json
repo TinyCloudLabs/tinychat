@@ -8,51 +8,36 @@
     {
       "service": "tinycloud.kv",
       "path": "threads/",
-      "actions": [
-        "get",
-        "put",
-        "del",
-        "list"
-      ],
+      "actions": ["get", "put", "del", "list"],
       "description": "Read and write chat threads and messages."
     },
     {
       "service": "tinycloud.sql",
       "path": "threads",
-      "actions": [
-        "read",
-        "write",
-        "schema"
-      ],
+      "actions": ["read", "write", "schema"],
       "description": "Store chat threads and messages in your space's SQL database."
     },
     {
       "service": "tinycloud.sql",
       "path": "connectors",
-      "actions": [
-        "read",
-        "write",
-        "schema"
-      ],
+      "actions": ["read", "write", "schema"],
       "description": "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database."
     },
     {
       "service": "tinycloud.kv",
       "path": "connectors/",
-      "actions": [
-        "get",
-        "put",
-        "del",
-        "list"
-      ],
+      "actions": ["get", "put", "del", "list"],
       "description": "Store transcript content synced from connected sources in your space."
     }
   ],
   "secrets": {
-    "API_KEY": {
-      "scope": "fireflies",
+    "FIREFLIES_API_KEY": {
       "actions": ["read", "write", "delete"],
       "description": "Store your Fireflies API key, encrypted, in your secrets space."
+    },
+    "GRANOLA_API_KEY": {
+      "actions": ["read", "write", "delete"],
+      "description": "Store your Granola API key, encrypted, in your secrets space."
     },
     "REFRESH_TOKEN": {
       "scope": "google-meet",
