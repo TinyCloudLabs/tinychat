@@ -577,6 +577,9 @@ export interface GmeetNotesAssociation {
   sourceId: string;
   title: string | null;
   startedAt: string | null;
+  /** Read when a standalone Notes row must move onto a later conference. */
+  summaryOverview: string | null;
+  summaryActionItems: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -598,16 +601,22 @@ export async function findGmeetNotesAssociation(
     params.push(title, startedAt);
   }
   const res = await store(tcw).query(
-    `SELECT id, source_id, title, started_at, metadata FROM connector_meeting
+    `SELECT id, source_id, title, started_at, summary_overview, summary_action_items, metadata FROM connector_meeting
      WHERE source = ? AND (${terms.join(" OR ")})`,
     params,
   );
   if (!res.ok) return fail(res.error, "findGmeetNotesAssociation");
   const rows = res.data.rows.map((row) => ({
     id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
-    startedAt: cellStr(row, 3, null), metadata: parseJsonObject(cellStr(row, 4, null)),
+    startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
+    summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(cellStr(row, 6, null)),
   })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
   const candidates = excludeSourceId === undefined ? rows : rows.filter((row) => row.sourceId !== excludeSourceId);
+  // During a migration both the standalone row and its new conference target
+  // temporarily identify the same Drive file. The standalone source id wins so
+  // removal deletes its row/body instead of clearing the target's fresh notes.
+  const sourceMatch = candidates.find((row) => row.sourceId === fileId);
+  if (sourceMatch) return { ok: true, data: sourceMatch };
   const idMatch = candidates.find((row) => row.metadata.drive_file_id === fileId);
   if (idMatch) return { ok: true, data: idMatch };
   const exportMatches = candidates.filter((row) => Array.isArray(row.metadata.docs_export_uris)

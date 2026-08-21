@@ -31,6 +31,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { FirefliesSentence } from "./firefliesClient";
 import type {
   NormalizedMeeting,
+  GmeetNotesAssociation,
   StoreError,
   StoreResult,
   UpdateSyncStateInput,
@@ -140,10 +141,8 @@ export interface GmeetSyncStore {
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
   getDriveCursor?(tcw: TinyCloudWeb, source: string): Promise<StoreResult<string | null>>;
   putDriveCursor?(tcw: TinyCloudWeb, source: string, cursor: string): Promise<StoreResult<void>>;
-  findGmeetNotesAssociation?(tcw: TinyCloudWeb, source: string, fileId: string, title: string | null, startedAt: string | null, excludeSourceId?: string): Promise<StoreResult<{
-    id: string; sourceId: string; title: string | null; startedAt: string | null; metadata: Record<string, unknown>;
-  } | null>>;
-  attachGmeetNotes?(tcw: TinyCloudWeb, row: { id: string; sourceId: string; title: string | null; startedAt: string | null; metadata: Record<string, unknown> }, notes: Pick<NormalizedMeeting, "summaryOverview" | "summaryActionItems" | "metadata">): Promise<StoreResult<void>>;
+  findGmeetNotesAssociation?(tcw: TinyCloudWeb, source: string, fileId: string, title: string | null, startedAt: string | null, excludeSourceId?: string): Promise<StoreResult<GmeetNotesAssociation | null>>;
+  attachGmeetNotes?(tcw: TinyCloudWeb, row: Pick<GmeetNotesAssociation, "id" | "sourceId" | "title" | "startedAt" | "metadata">, notes: Pick<NormalizedMeeting, "summaryOverview" | "summaryActionItems" | "metadata">): Promise<StoreResult<void>>;
   removeGmeetNotes?(tcw: TinyCloudWeb, source: string, fileId: string): Promise<StoreResult<void>>;
 }
 
@@ -621,7 +620,19 @@ async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, reco
     record(fileId, "error", doc.error.message); return { failed: true };
   }
   const parsed = parseGmeetNotesDocument(doc.data, { fileId, modifiedTime: file.modifiedTime ?? null });
-  if (!parsed) { record(fileId, "skipped", "document is not a valid Notes by Gemini record"); return {}; }
+  if (!parsed) {
+    // A previously valid Notes document can lose its marker or every Notes
+    // section. Its content was read successfully, so remove only this file's
+    // owned fields/body before allowing the Changes cursor to advance.
+    if (association.data !== null) {
+      const removed = await opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId);
+      if (!removed.ok) { record(fileId, "error", fromStore(removed.error, "removeGmeetNotes").message); return { failed: true }; }
+      record(fileId, "updated");
+      return {};
+    }
+    record(fileId, "skipped", "document is not a valid Notes by Gemini record");
+    return {};
+  }
   const target = association.data?.sourceId === fileId
     ? (migrationTarget === null
       ? await opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, parsed.meeting.title, parsed.meeting.startedAt, fileId)
@@ -742,7 +753,54 @@ async function syncOneRecord(
     return { sourceId, outcome: "error", reason: fromStore(upsertRes.error, "upsertMeeting").message };
   }
 
+  const reconciled = await reconcileNotesFirstConference(opts, meeting, upsertRes.data.id);
+  if (!reconciled.ok) {
+    return { sourceId, outcome: "error", reason: reconciled.reason };
+  }
+
   return { sourceId, outcome: upsertRes.data.inserted ? "created" : "updated" };
+}
+
+/**
+ * A Gemini Notes Doc can appear before Meet exposes the conference transcript.
+ * Once that transcript arrives, migrate a uniquely matching Notes-first row
+ * even when Drive Changes is empty; Drive is not the source of that event.
+ */
+async function reconcileNotesFirstConference(
+  opts: GmeetSyncOptions,
+  conference: NormalizedMeeting,
+  conferenceRowId: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { store, tcw } = opts;
+  if (!store.findGmeetNotesAssociation || !store.attachGmeetNotes || !store.removeGmeetNotes
+    || conference.title === null || conference.startedAt === null) return { ok: true };
+
+  const candidate = await store.findGmeetNotesAssociation(
+    tcw, SOURCE, conference.sourceId, conference.title, conference.startedAt, conference.sourceId,
+  );
+  if (!candidate.ok) return { ok: false, reason: fromStore(candidate.error, "findGmeetNotesAssociation").message };
+  const standalone = candidate.data;
+  const owned = standalone?.metadata.notes_owned_fields;
+  if (!standalone || standalone.metadata.notes_association !== "standalone" || standalone.metadata.notes_kind !== "gemini"
+    || !Array.isArray(owned) || !owned.includes("summary_overview") || !owned.includes("summary_action_items")) {
+    return { ok: true };
+  }
+
+  const attached = await store.attachGmeetNotes(tcw, {
+    id: conferenceRowId,
+    sourceId: conference.sourceId,
+    title: conference.title,
+    startedAt: conference.startedAt,
+    metadata: conference.metadata,
+  }, {
+    summaryOverview: standalone.summaryOverview ?? null,
+    summaryActionItems: standalone.summaryActionItems ?? null,
+    metadata: standalone.metadata,
+  });
+  if (!attached.ok) return { ok: false, reason: fromStore(attached.error, "attachGmeetNotes").message };
+  const removed = await store.removeGmeetNotes(tcw, SOURCE, standalone.sourceId);
+  if (!removed.ok) return { ok: false, reason: fromStore(removed.error, "removeGmeetNotes").message };
+  return { ok: true };
 }
 
 function classifyRecordFailure(sourceId: string, err: GmeetError): RecordOutcome {
