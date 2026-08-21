@@ -19,6 +19,7 @@ COPY packages ./packages
 COPY backend ./backend
 COPY frontend/package.json ./frontend/package.json
 COPY test/package.json ./test/package.json
+COPY desktop/package.json ./desktop/package.json
 
 RUN bun install --frozen-lockfile
 RUN cd packages/core && bun run build
