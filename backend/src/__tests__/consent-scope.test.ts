@@ -910,18 +910,20 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
 describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C)", () => {
   const scopes = GOOGLE_MEET_SCOPES.split(" ");
 
-  it("names Google and OAuth, and describes exactly the two scopes that are requested", () => {
-    // The grant, from the code: two scopes, and neither is a Drive/Calendar/Gmail one.
+  it("names Google and OAuth, and describes the Meet, Drive metadata, and Docs scopes requested", () => {
+    // The grant, from the code: Meet plus Drive metadata and Docs read; no Calendar/Gmail.
     expect(scopes).toEqual([
       "https://www.googleapis.com/auth/meetings.space.readonly",
       "https://www.googleapis.com/auth/meetings.space.settings",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
     ]);
-    expect(GOOGLE_MEET_SCOPES).not.toMatch(/drive|calendar|gmail/i);
+    expect(GOOGLE_MEET_SCOPES).not.toMatch(/calendar|gmail/i);
 
     expect(GOOGLE_COPY.variant).toBe("google-oauth");
     expect(GOOGLE_TEXT).toContain("google");
     expect(GOOGLE_TEXT).toContain("oauth");
-    // …and the two scopes in plain language, in the order they are requested.
+    // …and the requested capabilities in plain language, in the order they are requested.
     const readable = GOOGLE_TEXT.indexOf("transcripts");
     const settings = GOOGLE_TEXT.indexOf("change google meet transcription settings");
     expect(readable).toBeGreaterThan(-1);
@@ -932,7 +934,7 @@ describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C)", () =
     expect(GOOGLE_TEXT).toMatch(/meetings you host/);
     // And the copy says the grant stops there, in the one form the deny-list allows: what we ASK
     // FOR, never what a permission cannot reach.
-    expect(GOOGLE_TEXT).toContain("no drive, no calendar, no gmail permission is requested");
+    expect(GOOGLE_TEXT).toContain("no calendar or gmail permission is requested");
   });
 
   it("discloses the transient backend token visibility instead of smoothing it", () => {

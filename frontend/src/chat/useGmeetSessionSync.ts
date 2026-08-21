@@ -42,6 +42,11 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import {
   countMeetings,
+  getDriveCursor,
+  putDriveCursor,
+  findGmeetNotesAssociation,
+  attachGmeetNotes,
+  removeGmeetNotes,
   getConnection as storeGetConnection,
   putTranscriptBody,
   updateSyncState,
@@ -140,6 +145,11 @@ const DEFAULT_STORE: GmeetSyncStore = {
   upsertMeeting,
   updateSyncState,
   countMeetings,
+  getDriveCursor,
+  putDriveCursor,
+  findGmeetNotesAssociation,
+  attachGmeetNotes,
+  removeGmeetNotes,
 };
 
 /**

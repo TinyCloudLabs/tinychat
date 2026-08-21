@@ -47,6 +47,11 @@ export function transcriptKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
 }
 
+/** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
+export function driveCursorKvKey(source: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/drive-page-token`;
+}
+
 /**
  * Full KV key for one meeting's record in the user's own space.
  *
@@ -216,7 +221,7 @@ export async function getConnection(
       connectorId: (cellStr(row, 0, connectorId) as ConnectorId) ?? connectorId,
       status: (cellStr(row, 1, "disconnected") ?? "disconnected") as "connected" | "disconnected",
       lastSyncedAt: cellStr(row, 2, null),
-      lastSyncStatus: cellStr(row, 3, null) as "ok" | "error" | null,
+      lastSyncStatus: cellStr(row, 3, null) as "ok" | "partial" | "error" | null,
       lastSyncError: cellStr(row, 4, null),
       itemCount: cellNum(row, 5, 0) ?? 0,
     },
@@ -227,7 +232,7 @@ export interface UpdateSyncStateInput {
   connectorId: ConnectorId;
   status: "connected" | "disconnected";
   lastSyncedAt: string | null;
-  lastSyncStatus: "ok" | "error" | null;
+  lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
 }
@@ -391,13 +396,66 @@ export interface UpsertMeetingOutcome {
   createdAt: string;
 }
 
+export interface MeetingDatetimeStats {
+  rows: number;
+  dated: number;
+  sourceMeet: number;
+  sourceDocs: number;
+  sourceDriveCreatedApprox: number;
+  sourceUnavailable: number;
+  invalidAmbiguous: number;
+  duplicates: number;
+}
+
+export async function getMeetingDatetimeStats(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<MeetingDatetimeStats>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await store(tcw).query(
+    "SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ?",
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "getMeetingDatetimeStats");
+  const stats: MeetingDatetimeStats = {
+    rows: res.data.rows.length, dated: 0, sourceMeet: 0, sourceDocs: 0,
+    sourceDriveCreatedApprox: 0, sourceUnavailable: 0,
+    invalidAmbiguous: 0, duplicates: 0,
+  };
+  const seen = new Set<string>();
+  for (const row of res.data.rows) {
+    const sourceId = cellStr(row, 0, null);
+    if (sourceId !== null) {
+      if (seen.has(sourceId)) stats.duplicates++;
+      else seen.add(sourceId);
+    }
+    const startedAt = cellStr(row, 1, null);
+    if (startedAt !== null) {
+      if (Number.isFinite(Date.parse(startedAt))) stats.dated++;
+      else stats.invalidAmbiguous++;
+    }
+    const metadata = parseJsonObject(row[2]);
+    switch (metadata.datetime_source) {
+      case "meet_conference_start": stats.sourceMeet++; break;
+      case "docs_content": stats.sourceDocs++; break;
+      case "drive_created_time": stats.sourceDriveCreatedApprox++; break;
+      default: stats.sourceUnavailable++; break;
+    }
+  }
+  return { ok: true, data: stats };
+}
+
 /** Columns the upsert lookup reads, in the order the merge below unpacks them. */
 const UPSERT_LOOKUP_COLUMNS =
   "id, created_at, title, started_at, duration_secs, organizer_email, participants, "
   + "summary_overview, summary_action_items, keywords, meeting_type, metadata";
 
-function parseJsonObject(raw: string | null): Record<string, unknown> {
-  if (raw === null) return {};
+function parseJsonObject(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw !== "string") return {};
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -408,6 +466,16 @@ function parseJsonObject(raw: string | null): Record<string, unknown> {
     // simply replaces it wholesale.
   }
   return {};
+}
+
+function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boolean): number {
+  switch (metadata.datetime_source) {
+    case "meet_conference_start": return 3;
+    case "docs_content": return 2;
+    case "drive_created_time": return 1;
+    case "unavailable": return 0;
+    default: return hasStartedAt ? 3 : 0;
+  }
 }
 
 /**
@@ -426,7 +494,9 @@ function parseJsonObject(raw: string | null): Record<string, unknown> {
  *    `meeting.id` from normalize() is used only when inserting;
  *  - a `null` scalar in the new payload keeps the stored value — Fireflies
  *    summaries lag transcripts, so a later `meeting.transcribed` fetch with
- *    no summary must not erase one;
+ *    no summary must not erase one. The two fields explicitly owned by a
+ *    standalone Notes by Gemini Doc are the exception: a later Doc revision
+ *    can delete either section, which must clear the stored field;
  *  - an empty participants list / `null` keywords keep what's stored;
  *  - metadata is shallow-merged, new keys winning;
  *  - an empty sentence list on an UPDATE leaves the stored transcript body
@@ -475,10 +545,28 @@ export async function upsertMeeting(
 
   const keepStr = (next: string | null, idx: number): string | null =>
     next !== null ? next : cellStr(row, idx, null);
-  const mergedMetadata = {
-    ...parseJsonObject(cellStr(row, 11, null)),
+  const notesOwnedFields = meeting.metadata.notes_owned_fields;
+  const ownsStandaloneNotesField = (field: "summary_overview" | "summary_action_items") =>
+    meeting.source === "google-meet"
+    && meeting.metadata.notes_association === "standalone"
+    && meeting.metadata.notes_kind === "gemini"
+    && Array.isArray(notesOwnedFields)
+    && notesOwnedFields.includes(field);
+  const existingStartedAt = cellStr(row, 3, null);
+  const existingMetadata = parseJsonObject(row[11]);
+  const acceptsIncomingDatetime = meeting.startedAt !== null
+    && (existingStartedAt === null
+      || datetimeConfidence(meeting.metadata, true) >= datetimeConfidence(existingMetadata, true));
+  const mergedMetadata: Record<string, unknown> = {
+    ...existingMetadata,
     ...meeting.metadata,
   };
+  if (!acceptsIncomingDatetime) {
+    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
+      if (key in existingMetadata) mergedMetadata[key] = existingMetadata[key];
+      else delete mergedMetadata[key];
+    }
+  }
 
   const upd = await store(tcw).execute(
     `UPDATE connector_meeting SET
@@ -488,14 +576,18 @@ export async function upsertMeeting(
      WHERE id = ?`,
     [
       keepStr(meeting.title, 2),
-      keepStr(meeting.startedAt, 3),
+      acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
       meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
       keepStr(meeting.organizerEmail, 5),
       meeting.participants.length > 0
         ? JSON.stringify(meeting.participants)
         : (cellStr(row, 6, null) ?? "[]"),
-      keepStr(meeting.summaryOverview, 7),
-      keepStr(meeting.summaryActionItems, 8),
+      ownsStandaloneNotesField("summary_overview")
+        ? meeting.summaryOverview
+        : keepStr(meeting.summaryOverview, 7),
+      ownsStandaloneNotesField("summary_action_items")
+        ? meeting.summaryActionItems
+        : keepStr(meeting.summaryActionItems, 8),
       meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
       keepStr(meeting.meetingType, 10),
       JSON.stringify(mergedMetadata),
@@ -527,6 +619,159 @@ export async function putTranscriptBody(
   return { ok: true, data: undefined };
 }
 
+export async function getDriveCursor(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<string | null>> {
+  const res = await tcw.kv.get(driveCursorKvKey(source));
+  if (!res.ok) {
+    if (res.error?.code === "KV_NOT_FOUND") return { ok: true, data: null };
+    return fail(res.error, "getDriveCursor");
+  }
+  const value = res.data.data;
+  if (typeof value !== "string" || value.length === 0) {
+    return { ok: false, error: { code: "STORE_CORRUPT_CURSOR", message: "getDriveCursor: cursor is not a string" } };
+  }
+  return { ok: true, data: value };
+}
+
+export async function putDriveCursor(
+  tcw: TinyCloudWeb,
+  source: string,
+  cursor: string,
+): Promise<StoreResult<void>> {
+  if (!cursor) return { ok: false, error: { code: "STORE_INVALID_CURSOR", message: "putDriveCursor: cursor is required" } };
+  const res = await tcw.kv.put(driveCursorKvKey(source), cursor);
+  if (!res.ok) return fail(res.error, "putDriveCursor");
+  return { ok: true, data: undefined };
+}
+
+export interface GmeetNotesAssociation {
+  id: string;
+  sourceId: string;
+  title: string | null;
+  startedAt: string | null;
+  /** Read when a standalone Notes row must move onto a later conference. */
+  summaryOverview: string | null;
+  summaryActionItems: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export type GmeetNotesRemovalOutcome = "deleted" | "cleared" | "unchanged";
+
+/** Read only rows that can match the supplied Drive id or exact meeting identity. */
+export async function findGmeetNotesAssociation(
+  tcw: TinyCloudWeb,
+  source: string,
+  fileId: string,
+  title: string | null,
+  startedAt: string | null,
+  excludeSourceId?: string,
+): Promise<StoreResult<GmeetNotesAssociation | null>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const terms = ["source_id = ?", "metadata LIKE ? ESCAPE '\\'"];
+  const params: (string | null)[] = [source, fileId, `%${fileId.replace(/[\\%_]/g, "\\$&")}%`];
+  if (title !== null && startedAt !== null) {
+    terms.push("(title = ? AND started_at = ?)");
+    params.push(title, startedAt);
+  }
+  const res = await store(tcw).query(
+    `SELECT id, source_id, title, started_at, summary_overview, summary_action_items, metadata FROM connector_meeting
+     WHERE source = ? AND (${terms.join(" OR ")})`,
+    params,
+  );
+  if (!res.ok) return fail(res.error, "findGmeetNotesAssociation");
+  const rows = res.data.rows.map((row) => ({
+    id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
+    startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
+    summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(row[6]),
+  })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
+  const candidates = excludeSourceId === undefined ? rows : rows.filter((row) => row.sourceId !== excludeSourceId);
+  // During a migration both the standalone row and its new conference target
+  // temporarily identify the same Drive file. The standalone source id wins so
+  // removal deletes its row/body instead of clearing the target's fresh notes.
+  const sourceMatch = candidates.find((row) => row.sourceId === fileId);
+  if (sourceMatch) return { ok: true, data: sourceMatch };
+  const idMatch = candidates.find((row) => row.metadata.drive_file_id === fileId);
+  if (idMatch) return { ok: true, data: idMatch };
+  const exportMatches = candidates.filter((row) => Array.isArray(row.metadata.docs_export_uris)
+    && row.metadata.docs_export_uris.some((uri) => typeof uri === "string" && extractDriveFileId(uri) === fileId));
+  if (exportMatches.length === 1) return { ok: true, data: exportMatches[0]! };
+  // A missing date/title is not an identity. Treating two nulls as "exact"
+  // would silently attach an arbitrary undated meeting Doc to an arbitrary row.
+  if (title === null || startedAt === null) return { ok: true, data: null };
+  const exact = candidates.filter((row) => row.title === title && row.startedAt === startedAt);
+  return { ok: true, data: exact.length === 1 ? exact[0]! : null };
+}
+
+function extractDriveFileId(uri: string): string | null {
+  const match = /\/d\/([A-Za-z0-9_-]+)/.exec(uri) ?? /[?&]id=([A-Za-z0-9_-]+)/.exec(uri);
+  return match?.[1] ?? null;
+}
+
+/** Update only fields owned by one Notes document; never touch a Meet transcript KV body. */
+export async function attachGmeetNotes(
+  tcw: TinyCloudWeb,
+  row: GmeetNotesAssociation,
+  notes: Pick<NormalizedMeeting, "startedAt" | "summaryOverview" | "summaryActionItems" | "metadata">,
+): Promise<StoreResult<void>> {
+  const acceptsIncomingDatetime = notes.startedAt !== null
+    && (row.startedAt === null
+      || datetimeConfidence(notes.metadata, true) >= datetimeConfidence(row.metadata, true));
+  const metadata: Record<string, unknown> = { ...row.metadata, ...notes.metadata, notes_association: "conference" };
+  if (!acceptsIncomingDatetime) {
+    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
+      if (key in row.metadata) metadata[key] = row.metadata[key];
+      else delete metadata[key];
+    }
+  }
+  const res = await store(tcw).execute(
+    "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ?, started_at = ?, metadata = ?, updated_at = ? WHERE id = ?",
+    [notes.summaryOverview, notes.summaryActionItems,
+      acceptsIncomingDatetime ? notes.startedAt : row.startedAt,
+      JSON.stringify(metadata), new Date().toISOString(), row.id],
+  );
+  if (!res.ok) return fail(res.error, "attachGmeetNotes");
+  return { ok: true, data: undefined };
+}
+
+/** Delete a standalone notes row/body, or clear fields proven owned by an associated file. */
+export async function removeGmeetNotes(
+  tcw: TinyCloudWeb,
+  source: string,
+  fileId: string,
+): Promise<StoreResult<GmeetNotesRemovalOutcome>> {
+  const found = await findGmeetNotesAssociation(tcw, source, fileId, null, null);
+  if (!found.ok) return found;
+  if (!found.data) return { ok: true, data: "unchanged" };
+  const row = found.data;
+  if (row.sourceId === fileId) {
+    const kv = await tcw.kv.delete(transcriptKvKey(source, fileId));
+    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)");
+    const del = await store(tcw).execute("DELETE FROM connector_meeting WHERE id = ?", [row.id]);
+    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)");
+    return { ok: true, data: "deleted" };
+  }
+  const owned = row.metadata.notes_owned_fields;
+  if (row.metadata.drive_file_id !== fileId || !Array.isArray(owned)
+    || !owned.includes("summary_overview") || !owned.includes("summary_action_items")) {
+    return { ok: true, data: "unchanged" };
+  }
+  const metadata = { ...row.metadata };
+  delete metadata.drive_file_id;
+  delete metadata.drive_modified_time;
+  delete metadata.notes_kind;
+  delete metadata.notes_owned_fields;
+  delete metadata.notes_association;
+  const clear = await store(tcw).execute(
+    "UPDATE connector_meeting SET summary_overview = NULL, summary_action_items = NULL, metadata = ?, updated_at = ? WHERE id = ?",
+    [JSON.stringify(metadata), new Date().toISOString(), row.id],
+  );
+  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)");
+  return { ok: true, data: "cleared" };
+}
+
 // ── Purge ───────────────────────────────────────────────────────────────
 
 /**
@@ -553,6 +798,8 @@ export async function purgeConnector(
       }
     }
   }
+  const cursor = await tcw.kv.delete(driveCursorKvKey(source));
+  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
   const res = await store(tcw).batch([
     { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },

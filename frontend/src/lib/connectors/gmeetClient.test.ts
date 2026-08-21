@@ -688,4 +688,47 @@ describe("GmeetClient — error preservation", () => {
   test("constructing without an access token throws", () => {
     expect(() => new GmeetClient({ accessToken: "" })).toThrow(/accessToken is required/);
   });
+
+  test("paginates Drive metadata without reading document content", async () => {
+    const h = harness([
+      () => jsonResponse({ files: [{ id: "first", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" }], nextPageToken: "next" }),
+      () => jsonResponse({ files: [{ id: "second", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" }] }),
+    ]);
+    const res = await client(h).listDriveFiles();
+
+    expect(res).toEqual({ ok: true, data: [
+      { id: "first", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" },
+      { id: "second", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" },
+    ] });
+    expect(h.calls.map((call) => call.url.pathname)).toEqual(["/drive/v3/files", "/drive/v3/files"]);
+    expect(h.calls[1]?.url.searchParams.get("pageToken")).toBe("next");
+  });
+
+  test("requests Drive creation provenance separately from modification provenance", async () => {
+    const h = harness([
+      () => jsonResponse({ files: [] }),
+      () => jsonResponse({ changes: [], newStartPageToken: "next" }),
+    ]);
+    const c = client(h);
+
+    await c.listDriveFiles();
+    await c.listDriveChangesPage("current");
+
+    for (const call of h.calls) {
+      const fields = call.url.searchParams.get("fields") ?? "";
+      expect(fields).toContain("createdTime");
+      expect(fields).toContain("modifiedTime");
+    }
+  });
+
+  test("requests full tab content when reading a Drive document", async () => {
+    const h = harness([() => jsonResponse({ documentId: "synthetic-doc", tabs: [] })]);
+
+    const res = await client(h).getDriveDocument("synthetic-doc");
+
+    expect(res.ok).toBe(true);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.url.pathname).toBe("/v1/documents/synthetic-doc");
+    expect(h.calls[0]?.url.searchParams.get("includeTabsContent")).toBe("true");
+  });
 });

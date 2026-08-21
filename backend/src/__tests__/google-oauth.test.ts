@@ -108,15 +108,15 @@ describe("authorizeUrl", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  test("requests EXACTLY the two Meet scopes and nothing else", () => {
+  test("requests the Meet, Drive metadata, and Docs read scopes", () => {
     const scope = url.searchParams.get("scope") ?? "";
     expect(scope).toBe(
       "https://www.googleapis.com/auth/meetings.space.readonly " +
-        "https://www.googleapis.com/auth/meetings.space.settings",
+        "https://www.googleapis.com/auth/meetings.space.settings " +
+        "https://www.googleapis.com/auth/drive.metadata.readonly " +
+        "https://www.googleapis.com/auth/documents.readonly",
     );
-    expect(scope.split(" ")).toHaveLength(2);
-    // A Drive or Calendar scope here is a compliance change, not a code change.
-    expect(scope).not.toContain("drive");
+    expect(scope.split(" ")).toHaveLength(4);
     expect(scope).not.toContain("calendar");
   });
 

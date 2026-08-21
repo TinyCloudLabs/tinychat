@@ -32,6 +32,7 @@ import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   isGmeetSyncInFlight,
   syncGoogleMeet,
+  type GmeetSyncDiagnostics,
   type GmeetSyncProgress,
   type GmeetSyncStore,
 } from "@/lib/connectors/gmeetSync";
@@ -126,6 +127,11 @@ const GMEET_STORE: GmeetSyncStore = {
   upsertMeeting: connectorStore.upsertMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
+  getDriveCursor: connectorStore.getDriveCursor,
+  putDriveCursor: connectorStore.putDriveCursor,
+  findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
+  attachGmeetNotes: connectorStore.attachGmeetNotes,
+  removeGmeetNotes: connectorStore.removeGmeetNotes,
 };
 
 /** Meet's progress vocabulary → the row's. Counts only; no titles, no text. */
@@ -172,13 +178,25 @@ async function runGmeetSyncNow(opts: {
   backendUrl: string;
   sessionStore: SessionStore;
   refreshToken: string;
+  driveMode?: "auto" | "snapshot";
   signal: AbortSignal;
   onProgress: (p: SyncProgress) => void;
+  onDiagnostics?: (diagnostics: GmeetSyncDiagnostics) => void;
 }): Promise<RowSyncOutcome> {
   const { tcw, backendUrl, sessionStore, refreshToken, signal } = opts;
   const mint = () =>
     mintGmeetAccessToken({ backendUrl, sessionStore, refreshToken, signal });
   const accessToken = await mint();
+  // Token mint is the final await before engine dispatch. Re-check here so a
+  // session-start run that claimed the shared slot during vault/key/token work
+  // cannot make Full rescan join it and silently lose snapshot intent.
+  if (opts.driveMode === "snapshot" && isGmeetSyncInFlight()) {
+    return {
+      ok: false,
+      message: "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
+      retryAfterMs: null,
+    };
+  }
   if (!accessToken) {
     // Every mint failure — signed out, a dark route, a revoked grant — resolves
     // to null rather than a message, so this is the one string the card owns.
@@ -199,7 +217,9 @@ async function runGmeetSyncNow(opts: {
     client,
     store: GMEET_STORE,
     tcw,
+    driveMode: opts.driveMode,
     onProgress: (p) => opts.onProgress(gmeetRowProgress(p)),
+    onDiagnostics: opts.onDiagnostics,
     signal,
   });
   if (res.ok) return { ok: true };
@@ -212,6 +232,7 @@ export function ConnectorsCard({
   sessionStore,
 }: ConnectorsCardProps) {
   const [rows, setRows] = useState<RowStateMap>(INITIAL_ROW_STATE_MAP);
+  const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
   // The companion router's mount-time verdict, established ONCE by the
   // background-notifications section's `GET /config` probe. The teardown needs
   // it to tell a dark deployment from a 404 that means something else — see
@@ -287,7 +308,7 @@ export function ConnectorsCard({
   }, [tcw, patchRow]);
 
   const handleSyncNow = useCallback(
-    async (d: ConnectorDescriptor) => {
+    async (d: ConnectorDescriptor, driveMode: "auto" | "snapshot" = "auto") => {
       // ENGINE DISPATCH — by registry id, and exhaustively. There is no shared
       // default here on purpose: a descriptor moving coming-soon → available
       // WITHOUT its own entry below would otherwise be fetched with the
@@ -301,6 +322,16 @@ export function ConnectorsCard({
         patchRow(d.id, {
           syncing: false,
           actionError: "Sync not yet implemented for this connector.",
+        });
+        return;
+      }
+      if (driveMode === "snapshot" && isGmeetSyncInFlight()) {
+        patchRow(d.id, {
+          syncing: false,
+          joinedBackgroundSync: false,
+          progress: null,
+          actionError: "Another Google Meet sync is already running. Try Full rescan again when it finishes.",
+          actionRetryAfterMs: null,
         });
         return;
       }
@@ -336,6 +367,7 @@ export function ConnectorsCard({
         });
         return;
       }
+      if (engine === "gmeet") setGmeetDiagnostics(null);
       const ac = new AbortController();
       syncAbortRefs.current[d.id] = ac;
       // Asked at the last moment before the call, because that is when the
@@ -355,8 +387,10 @@ export function ConnectorsCard({
               sessionStore,
               // Memory only, for this run: never logged, never re-persisted.
               refreshToken: keyRes.data,
+              driveMode,
               signal: ac.signal,
               onProgress,
+              onDiagnostics: import.meta.env.DEV ? setGmeetDiagnostics : undefined,
             })
           : await runFirefliesSyncNow({
               tcw,
@@ -432,6 +466,7 @@ export function ConnectorsCard({
                 state={rows[d.id]}
                 onConnect={() => handleConnect(d)}
                 onSyncNow={() => handleSyncNow(d)}
+                onFullRescan={() => handleSyncNow(d, "snapshot")}
                 onStopSync={() => handleStopSync(d.id)}
                 onDisconnect={() => handleDisconnect(d)}
               >
@@ -451,6 +486,14 @@ export function ConnectorsCard({
             </li>
           ))}
         </ul>
+        {import.meta.env.DEV && gmeetDiagnostics && (
+          <pre
+            data-testid="gmeet-count-only-diagnostics"
+            className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-2 text-[10px] text-muted-foreground"
+          >
+            {JSON.stringify(gmeetDiagnostics, null, 2)}
+          </pre>
+        )}
       </div>
       {dialogDescriptor && dialog?.kind === "connect" && (
         <ConnectorConnectDialog
@@ -496,6 +539,7 @@ const ConnectorRow: FC<{
   state: RowState;
   onConnect: () => void;
   onSyncNow: () => void;
+  onFullRescan?: () => void;
   onStopSync: () => void;
   onDisconnect: () => void;
   /** The optional background-notifications surface, when this row offers one. */
@@ -505,6 +549,7 @@ const ConnectorRow: FC<{
   state,
   onConnect,
   onSyncNow,
+  onFullRescan,
   onStopSync,
   onDisconnect,
   children,
@@ -563,6 +608,16 @@ const ConnectorRow: FC<{
             )}
             {state.loaded && connected && (
               <>
+                {d.id === GMEET_CONNECTOR_ID && onFullRescan && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onFullRescan}
+                    disabled={state.syncing}
+                  >
+                    Full rescan
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   onClick={onSyncNow}
@@ -629,7 +684,7 @@ const ConnectorRow: FC<{
       {!comingSoon &&
         !state.actionError &&
         connected &&
-        state.connection?.lastSyncStatus === "error" &&
+        (state.connection?.lastSyncStatus === "error" || state.connection?.lastSyncStatus === "partial") &&
         state.connection.lastSyncError && (
           <p role="alert" className="text-xs text-destructive">
             {state.connection.lastSyncError}

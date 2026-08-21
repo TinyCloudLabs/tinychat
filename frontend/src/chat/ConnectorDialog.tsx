@@ -681,6 +681,11 @@ const GMEET_STORE: GmeetSyncStore = {
   upsertMeeting: connectorStore.upsertMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
+  getDriveCursor: connectorStore.getDriveCursor,
+  putDriveCursor: connectorStore.putDriveCursor,
+  findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
+  attachGmeetNotes: connectorStore.attachGmeetNotes,
+  removeGmeetNotes: connectorStore.removeGmeetNotes,
 };
 
 const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
@@ -1137,7 +1142,7 @@ const WaitCallbackPanel: FC = () => (
       Waiting for Google…
     </p>
     <p className="text-xs text-muted-foreground">
-      Finish signing in and approve the two permissions in the Google window. If
+      Finish signing in and approve the requested permissions in the Google window. If
       you don’t see it, check for a blocked or hidden popup.
     </p>
   </div>
@@ -1227,9 +1232,8 @@ const GmeetDonePanel: FC<{
         <p className="text-xs text-muted-foreground">
           Nothing synced yet. Google only produces a transcript when the meeting’s
           host is on a paid Workspace edition and transcription was on for that
-          meeting — and it keeps meeting records for about 30 days — and meetings
-          where only Gemini took notes don’t count; Gemini’s notes live in Google
-          Docs, which we don’t access.
+          meeting — and it keeps meeting records for about 30 days. Matching
+          Notes by Gemini Docs can also be imported.
         </p>
       )}
       {summary.failed > 0 && (

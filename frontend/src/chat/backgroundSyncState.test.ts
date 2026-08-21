@@ -924,7 +924,7 @@ describe("supportsBackgroundNotifications — google-meet", () => {
   const gmeetAvailable: ConnectorDescriptor = {
     id: "google-meet",
     name: "Google Meet",
-    description: "Sync Google Meet recordings and captions.",
+    description: "Sync Google Meet transcripts and Notes by Gemini.",
     // The POST-flip row, deliberately: even fully available and connected,
     // this connector gets no background-notifications surface.
     status: "available",
