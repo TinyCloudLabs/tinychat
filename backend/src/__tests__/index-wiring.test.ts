@@ -5,6 +5,11 @@ import { resolve } from "node:path";
 const INDEX = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
 
 describe("backend index middleware wiring", () => {
+  test("CORS uses the web + Exo desktop origin allowlist", () => {
+    expect(INDEX).toContain('import { appCorsOrigins } from "./cors-origins.js"');
+    expect(INDEX).toContain("app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }))");
+  });
+
   test("trusts exactly one ingress proxy before rate limiters are applied", () => {
     const trustIndex = INDEX.indexOf('app.set("trust proxy", 1)');
     const limiterIndex = INDEX.indexOf("applyRateLimiters(app)");
