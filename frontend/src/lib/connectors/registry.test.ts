@@ -39,10 +39,19 @@ describe("connector registry", () => {
     expect(gmeet?.secretName).toBe("REFRESH_TOKEN");
   });
 
-  test("secretScope matches the connector id", () => {
-    for (const c of CONNECTORS) {
-      expect(c.secretScope).toBe(c.id);
-    }
+  test("source API keys use the same global names as Listen", () => {
+    const fireflies = CONNECTORS.find((c) => c.id === "fireflies");
+    const granola = CONNECTORS.find((c) => c.id === "granola");
+
+    expect(fireflies?.secretName).toBe("FIREFLIES_API_KEY");
+    expect(fireflies?.secretScope).toBeUndefined();
+    expect(granola?.secretName).toBe("GRANOLA_API_KEY");
+    expect(granola?.secretScope).toBeUndefined();
+  });
+
+  test("OAuth refresh tokens remain connector-scoped", () => {
+    const gmeet = CONNECTORS.find((c) => c.id === "google-meet");
+    expect(gmeet?.secretScope).toBe("google-meet");
   });
 
   test("source column value is present and matches id for v1 connectors", () => {

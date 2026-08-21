@@ -94,25 +94,33 @@ type ConnectorId = "fireflies" | "granola" | "google-meet";
 
 interface ConnectorDescriptor {
   id: ConnectorId;
-  name: string;              // "Fireflies"
-  description: string;       // one line, user-facing
+  name: string; // "Fireflies"
+  description: string; // one line, user-facing
   status: "available" | "coming-soon";
-  secretName: string;        // "API_KEY"
-  secretScope: string;       // === id
+  secretName: string; // "FIREFLIES_API_KEY"
+  secretScope?: string; // scoped OAuth/session credentials only
 }
 
 interface ConnectorConnection {
   connectorId: ConnectorId;
   status: "connected" | "disconnected";
-  lastSyncedAt: string | null;   // ISO
+  lastSyncedAt: string | null; // ISO
   lastSyncStatus: "ok" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
 }
 
-interface SyncProgress { phase: "listing" | "fetching" | "storing"; done: number; total: number | null; }
+interface SyncProgress {
+  phase: "listing" | "fetching" | "storing";
+  done: number;
+  total: number | null;
+}
 
-interface SyncResult { added: number; skipped: number; errors: string[]; }
+interface SyncResult {
+  added: number;
+  skipped: number;
+  errors: string[];
+}
 ```
 
 `registry.ts` exports `CONNECTORS: ConnectorDescriptor[]` — Fireflies (`available`),
@@ -127,8 +135,8 @@ deliberately REJECT instead: their callers are Express handlers whose §4.3 requ
 nothing may leave a request unanswered or throw out of the handler, so every call site is already
 inside a `try`/`catch` that maps a failure to a status code, and a second `{ok:false}` channel
 alongside it would be a second thing to forget to check. The `{ok, …}` shape is used where a
-result is *inspected* rather than propagated — `validateConnectorWebhookSecrets` (startup gate)
-and `createStoredDelegationGate.validate` (a per-address verdict that is *inspected*; under
+result is _inspected_ rather than propagated — `validateConnectorWebhookSecrets` (startup gate)
+and `createStoredDelegationGate.validate` (a per-address verdict that is _inspected_; under
 Option C the drain does not wire it — see `docs/connector-webhooks-delegation-gate.md`).
 
 ## 5. Fireflies GraphQL client (`firefliesClient.ts`)
@@ -141,19 +149,51 @@ so unit tests inject a mock fetch and e2e uses the real one.
 Operations (query strings verbatim from the proven `listen` implementation):
 
 ```graphql
-query GetUser { user { name email } }
+query GetUser {
+  user {
+    name
+    email
+  }
+}
 
 query ListTranscripts($limit: Int, $skip: Int) {
-  transcripts(limit: $limit, skip: $skip) { id title date duration organizer_email }
+  transcripts(limit: $limit, skip: $skip) {
+    id
+    title
+    date
+    duration
+    organizer_email
+  }
 }
 
 query GetTranscript($id: String!) {
   transcript(id: $id) {
-    id title date duration organizer_email
-    speakers { id name }
-    meeting_attendees { displayName email }
-    sentences { index speaker_name text start_time end_time }
-    summary { keywords action_items overview meeting_type }
+    id
+    title
+    date
+    duration
+    organizer_email
+    speakers {
+      id
+      name
+    }
+    meeting_attendees {
+      displayName
+      email
+    }
+    sentences {
+      index
+      speaker_name
+      text
+      start_time
+      end_time
+    }
+    summary {
+      keywords
+      action_items
+      overview
+      meeting_type
+    }
   }
 }
 ```
@@ -170,6 +210,7 @@ query GetTranscript($id: String!) {
 
 Rate limiting — handle **both** transport layers (listen handles both; fireflies-sync
 only handles one — copy listen's approach here):
+
 - HTTP 429 → read `retry-after` header (seconds), wait, retry (max 3).
 - GraphQL error with `code === "too_many_requests"` (or message matching
   `/rate limit|too many requests|retry after/i`) → parse "retry after <date>" from the
@@ -264,8 +305,11 @@ Thin wrapper over `tcw.secrets` (`ISecretsService`):
 - `unlockSecrets(tcw)` → `tcw.secrets.unlock()` (wallet signature; SDK caches it —
   subsequent unlocks in the session are popup-free). Surface `isUnlocked`.
 - `saveConnectorKey(tcw, descriptor, key)` → `tcw.secrets.put(descriptor.secretName,
-  key, { scope: descriptor.secretScope })`. Secret names MUST match
-  `/^[A-Z][A-Z0-9_]*$/` — `"API_KEY"` with scope `"fireflies"` complies.
+key, descriptor.secretScope ? { scope: descriptor.secretScope } : undefined)`.
+  Source keys use the global Listen-compatible names `FIREFLIES_API_KEY` and
+  `GRANOLA_API_KEY`; OAuth/session credentials such as Google Meet's
+  `REFRESH_TOKEN` remain connector-scoped. Secret names MUST match
+  `/^[A-Z][A-Z0-9_]*$/`.
 - `getConnectorKey`, `deleteConnectorKey` — same pattern via `.get`/`.delete`.
 - All SDK calls return `Result<T, E>` objects (`{ok, data|error}`) — propagate, never throw.
 - **First-put 404 defense**: the node-sdk docs note a valid session can still 404 on the
@@ -288,7 +332,7 @@ Thin wrapper over `tcw.secrets` (`ISecretsService`):
 **KNOWN BLOCKER (worked around app-side, pending an SDK fix) — secrets reads on
 web-sdk 2.5.1.** Reading a secret back is refused with `PERMISSION_DENIED`
 ("grantRuntimePermissions requires wallet mode with a signer or privateKey"), and
-no *static* manifest change can fix it. The write path works, so connect + sync
+no _static_ manifest change can fix it. The write path works, so connect + sync
 were never affected; only re-reading the stored key was blocked (which "Sync now"
 needs once the in-memory key is gone).
 
@@ -352,6 +396,7 @@ e2e drivers run it under bun against the mock upstream + fake tcw.
 ### `ConnectorDialog.tsx` (Radix Dialog, ImportDialog conventions)
 
 Connect flow (stepper-lite, one dialog):
+
 1. **Key entry**: password-type input, helper text linking to
    `https://app.fireflies.ai/integrations/custom/fireflies` ("Find your API key here"),
    Cancel/Continue.
@@ -386,7 +431,7 @@ All states keyboard-reachable; buttons disabled while operations run; no layout 
 - **E2E drivers** (`test/connectors/*.e2e.test.ts`, bun test, real HTTP to the mock,
   real sync engine + real store code against `fake-tinycloud.ts`):
   1. `connect.e2e.test.ts` — validateKey happy + invalid-key; key lands in fake
-     secrets (scoped path), never in KV/SQL.
+     secrets at the global Listen-compatible name, never in KV/SQL.
   2. `sync.e2e.test.ts` — initial sync stores all seeded meetings (SQL rows + KV
      bodies match seed); second sync is a no-op (early-exit, 0 added); new upstream
      transcript → incremental picks up exactly 1; duration cross-check applied.
@@ -397,7 +442,7 @@ All states keyboard-reachable; buttons disabled while operations run; no layout 
   - **Vacuity guard**: every driver asserts a non-zero baseline first (e.g. seeded
     count > 0) so a broken mock can't produce green tests.
 - Full suite: root `bun run test` must stay green; `bun run lint`, `bun run
-  build:frontend` green.
+build:frontend` green.
 
 ## 11. Future (design for, don't build)
 

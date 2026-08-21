@@ -9,8 +9,8 @@
 //      surfaces actually hold non-zero rows (SQL meetings, KV transcripts,
 //      state row) AND the fake secrets hold the connector's API key. Every
 //      assertion below is meaningless if this baseline is zero.
-//   2. Disconnect WITHOUT purge — deleteConnectorKey removes the secret from
-//      the scoped path, but SQL meeting rows, KV transcript bodies, and the
+//   2. Disconnect WITHOUT purge — deleteConnectorKey removes the global secret,
+//      but SQL meeting rows, KV transcript bodies, and the
 //      connector_state row all survive byte-for-byte (data-retention promise
 //      from spec §9: "Also delete… (default OFF)").
 //   3. Disconnect WITH purge — deleteConnectorKey + purgeConnector wipes the
@@ -47,7 +47,11 @@ import { CONNECTORS } from "../../frontend/src/lib/connectors/registry";
 import type { ConnectorDescriptor } from "../../frontend/src/lib/connectors/types";
 
 import { makeFakeTinyCloud } from "./fake-tinycloud";
-import { SEED_COUNT, buildSeed, startMockFireflies } from "./mock-fireflies.mjs";
+import {
+  SEED_COUNT,
+  buildSeed,
+  startMockFireflies,
+} from "./mock-fireflies.mjs";
 
 interface Handle {
   url: string;
@@ -109,7 +113,9 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     expect(unlocked.ok).toBe(true);
     const saved = await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY);
     expect(saved.ok).toBe(true);
-    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(true);
+    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
+      true,
+    );
 
     // Sync: real engine, real store, real HTTP to mock.
     const client = new FirefliesClient({
@@ -146,7 +152,10 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     // "Not synced yet". This mirrors ConnectorDialog.handleConfirm.
     const deleted = await deleteConnectorKey(fake.tcw, FIREFLIES);
     expect(deleted.ok).toBe(true);
-    const existingRes = await connectorStore.getConnection(fake.tcw, "fireflies");
+    const existingRes = await connectorStore.getConnection(
+      fake.tcw,
+      "fireflies",
+    );
     expect(existingRes.ok).toBe(true);
     if (!existingRes.ok) throw new Error("unreachable");
     const existing = existingRes.data;
@@ -154,7 +163,10 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     const preservedSyncedAt = existing!.lastSyncedAt;
     const preservedStatus = existing!.lastSyncStatus;
     expect(preservedSyncedAt).toBeTruthy();
-    const remainingCountRes = await connectorStore.countMeetings(fake.tcw, "fireflies");
+    const remainingCountRes = await connectorStore.countMeetings(
+      fake.tcw,
+      "fireflies",
+    );
     expect(remainingCountRes.ok).toBe(true);
     if (!remainingCountRes.ok) throw new Error("unreachable");
     const upd = await connectorStore.updateSyncState(fake.tcw, {
@@ -167,8 +179,10 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     });
     expect(upd.ok).toBe(true);
 
-    // Secret is gone from the scoped path.
-    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(false);
+    // The global shared secret is gone.
+    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
+      false,
+    );
 
     // Meetings + KV bodies survive byte-for-byte — the "keep data" promise.
     expect(fake.sql.meetings.size).toBe(meetingsBefore.size);
@@ -201,7 +215,9 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
 
     // Connect + sync — real path.
     expect((await unlockSecrets(fake.tcw)).ok).toBe(true);
-    expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(true);
+    expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(
+      true,
+    );
     const client = new FirefliesClient({
       apiKey: HAPPY_KEY,
       apiUrl: handle.url,
@@ -219,13 +235,18 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     expect(fake.sql.meetings.size).toBe(SEED_COUNT);
     expect(fake.kv.entries.size).toBe(SEED_COUNT);
     expect(fake.sql.states.get("fireflies")).toBeDefined();
-    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(true);
+    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
+      true,
+    );
 
     // Grab the exact KV keys that must go away — asserts we don't leave a
     // stray transcript body behind, which would defeat the "delete synced
     // meetings from my space" UI promise.
-    const transcriptKeysBefore = Array.from(fake.kv.entries.keys()).filter((k) =>
-      k.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`),
+    const transcriptKeysBefore = Array.from(fake.kv.entries.keys()).filter(
+      (k) =>
+        k.startsWith(
+          `${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`,
+        ),
     );
     expect(transcriptKeysBefore.length).toBe(SEED_COUNT);
 
@@ -236,7 +257,9 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     expect(purged.ok).toBe(true);
 
     // Secret gone.
-    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(false);
+    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
+      false,
+    );
 
     // Every meeting row for source=fireflies is gone.
     expect(fake.sql.meetings.size).toBe(0);
@@ -248,8 +271,11 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     for (const k of transcriptKeysBefore) {
       expect(fake.kv.entries.has(k)).toBe(false);
     }
-    const survivorTranscriptKeys = Array.from(fake.kv.entries.keys()).filter((k) =>
-      k.startsWith(`${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`),
+    const survivorTranscriptKeys = Array.from(fake.kv.entries.keys()).filter(
+      (k) =>
+        k.startsWith(
+          `${connectorStore.CONNECTORS_KV_PREFIX}/fireflies/transcript/`,
+        ),
     );
     expect(survivorTranscriptKeys.length).toBe(0);
 
@@ -262,7 +288,10 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
     expect(connRes.ok && connRes.data === null).toBe(true);
     const countRes = await connectorStore.countMeetings(fake.tcw, "fireflies");
     expect(countRes.ok && countRes.data === 0).toBe(true);
-    const idsRes = await connectorStore.listKnownSourceIds(fake.tcw, "fireflies");
+    const idsRes = await connectorStore.listKnownSourceIds(
+      fake.tcw,
+      "fireflies",
+    );
     expect(idsRes.ok).toBe(true);
     if (idsRes.ok) expect(idsRes.data).toEqual([]);
   });
@@ -274,7 +303,9 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
 
     // First cycle: connect + sync + purge to reach a truly empty state.
     expect((await unlockSecrets(fake.tcw)).ok).toBe(true);
-    expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(true);
+    expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(
+      true,
+    );
     const client = new FirefliesClient({
       apiKey: HAPPY_KEY,
       apiUrl: handle.url,
@@ -291,16 +322,22 @@ describe("disconnect + purge e2e (spec §10 driver 4)", () => {
 
     // Purge — same call the UI-with-checkbox-checked path issues.
     expect((await deleteConnectorKey(fake.tcw, FIREFLIES)).ok).toBe(true);
-    expect((await connectorStore.purgeConnector(fake.tcw, "fireflies")).ok).toBe(true);
+    expect(
+      (await connectorStore.purgeConnector(fake.tcw, "fireflies")).ok,
+    ).toBe(true);
 
     // Vacuity guard: the store is actually empty before the reconnect.
     expect(fake.sql.meetings.size).toBe(0);
     expect(fake.kv.entries.size).toBe(0);
     expect(fake.sql.states.get("fireflies")).toBeUndefined();
-    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(false);
+    expect(fake.secrets.has(FIREFLIES.secretScope, FIREFLIES.secretName)).toBe(
+      false,
+    );
 
     // Reconnect + re-sync — key put back, engine run against the SAME seed.
-    expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(true);
+    expect((await saveConnectorKey(fake.tcw, FIREFLIES, HAPPY_KEY)).ok).toBe(
+      true,
+    );
     handle.resetCounters();
     const second = await syncFireflies({
       client,

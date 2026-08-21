@@ -12,7 +12,8 @@ export interface ConnectorDescriptor {
   description: string;
   status: "available" | "coming-soon";
   secretName: string;
-  secretScope: string;
+  /** Omit for globally shared source credentials; scope OAuth/session tokens. */
+  secretScope?: string;
   /** SQL `source` column value — the store's countMeetings/purgeConnector
    *  query `WHERE source = ?`. Defaults to `id` for v1 connectors; carried
    *  explicitly so a future connector whose id diverges from its source

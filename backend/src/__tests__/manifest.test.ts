@@ -31,7 +31,8 @@ describe("TinyChat manifest and backend policy", () => {
         service: "tinycloud.sql",
         path: "threads",
         actions: ["read", "write", "schema"],
-        description: "Store chat threads and messages in your space's SQL database.",
+        description:
+          "Store chat threads and messages in your space's SQL database.",
       },
       {
         service: "tinycloud.sql",
@@ -44,7 +45,8 @@ describe("TinyChat manifest and backend policy", () => {
         service: "tinycloud.kv",
         path: "connectors/",
         actions: ["get", "put", "del", "list"],
-        description: "Store transcript content synced from connected sources in your space.",
+        description:
+          "Store transcript content synced from connected sources in your space.",
       },
     ]);
   });
@@ -60,7 +62,9 @@ describe("TinyChat manifest and backend policy", () => {
   // it only if the SDK ever exposes a local-envelope mode.
   it("declares no keys/ grant — the network-encrypted vault never writes that path", () => {
     const manifest = runtimeManifest();
-    const paths = (manifest.permissions ?? []).map((permission) => permission.path);
+    const paths = (manifest.permissions ?? []).map(
+      (permission) => permission.path,
+    );
     expect(paths.some((path) => path.startsWith("keys/"))).toBe(false);
   });
 
@@ -69,12 +73,10 @@ describe("TinyChat manifest and backend policy", () => {
   // owner's `secrets` space. Declaring it is what lets `secrets.put` skip
   // runtime escalation.
   //
-  // The map is keyed by SECRET NAME, not by connector — the trap the old
-  // "only fireflies ships" note pointed at. Two connectors that both called
-  // their secret API_KEY would collide on one key and silently take one
-  // scope, so Google Meet is declared under its own name: it stores an OAuth
-  // REFRESH_TOKEN, not an API key, and the honest name is also the
-  // non-colliding one. Any third connector has to do the same.
+  // Source API keys use the same global names as Listen, so configuring either
+  // app updates one canonical secret. OAuth refresh tokens remain scoped to
+  // the connector because they are app/session credentials rather than shared
+  // source credentials.
   //
   // `delete` is granted UP FRONT rather than left to the SDK's escalation
   // modal. Escalation calls grantRuntimePermissions, which needs a wallet
@@ -92,16 +94,21 @@ describe("TinyChat manifest and backend policy", () => {
   // backend's own credential store, wrapped by `CONNECTOR_CREDENTIAL_MASTER` (plan §6.2). It is
   // deliberately NOT here: routing backend custody through the user's secrets space would need a
   // `tinycloud.secrets` grant this manifest must never declare, which is exactly the shape plan
-  // §9 row 3 excludes. So this assertion is kept as a regression guard: a secrets scope appearing
-  // for anything but the browser's own key means custody moved into the delegation.
+  // §9 row 3 excludes. This assertion remains a regression guard for browser-owned
+  // source credentials; it does not grant the backend access to the user's vault.
   it("declares each connector secret with delete, so disconnect needs no escalation", () => {
     const manifest = runtimeManifest();
 
     expect(manifest.secrets).toEqual({
-      API_KEY: {
-        scope: "fireflies",
+      FIREFLIES_API_KEY: {
         actions: ["read", "write", "delete"],
-        description: "Store your Fireflies API key, encrypted, in your secrets space.",
+        description:
+          "Store your Fireflies API key, encrypted, in your secrets space.",
+      },
+      GRANOLA_API_KEY: {
+        actions: ["read", "write", "delete"],
+        description:
+          "Store your Granola API key, encrypted, in your secrets space.",
       },
       REFRESH_TOKEN: {
         scope: "google-meet",
@@ -112,18 +119,12 @@ describe("TinyChat manifest and backend policy", () => {
     });
   });
 
-  // The collision guard the comment above argues for, asserted rather than assumed: one entry
-  // per connector scope, and no two entries sharing a secret name. A future connector added
-  // under `API_KEY` would overwrite the fireflies row in this object literal and this pin would
-  // not see it — the scope count would silently drop by one, which is what this checks.
-  it("keys the secrets map so no two connector scopes share a secret name", () => {
+  it("keeps source keys global and OAuth credentials scoped", () => {
     const secrets = runtimeManifest().secrets ?? {};
-    const names = Object.keys(secrets);
-    const scopes = Object.values(secrets).map((entry) => entry.scope);
 
-    expect(new Set(names).size).toBe(names.length);
-    expect(new Set(scopes).size).toBe(scopes.length);
-    expect(scopes.sort()).toEqual(["fireflies", "google-meet"]);
+    expect(secrets.FIREFLIES_API_KEY?.scope).toBeUndefined();
+    expect(secrets.GRANOLA_API_KEY?.scope).toBeUndefined();
+    expect(secrets.REFRESH_TOKEN?.scope).toBe("google-meet");
   });
 
   // INGEST-CUTOVER(plan §11) — the `[threads/]` pin is the assertion findings §4 expected to
@@ -142,7 +143,9 @@ describe("TinyChat manifest and backend policy", () => {
     expect(config.name).toBe("TinyChat Backend");
     expect(config.expiry).toBe("7d");
     expect(config.permissions).toHaveLength(1);
-    expect(resolved.map((permission) => permission.path)).toEqual([THREADS_KV_PREFIX]);
+    expect(resolved.map((permission) => permission.path)).toEqual([
+      THREADS_KV_PREFIX,
+    ]);
     expect(THREADS_KV_PREFIX).toBe(`${APP_ID}/threads/`);
     expect(backendDelegationPolicyHash(backendDid)).toMatch(/^[a-f0-9]{64}$/);
   });
@@ -165,9 +168,9 @@ describe("TinyChat manifest and backend policy", () => {
     expect(second[0]!.actions).not.toBe(first[0]!.actions);
 
     first[0]!.actions.push("tinycloud.kv/tamper");
-    expect(backendDelegationResolvedPermissions("did:key:z6MkBackend")[0]!.actions).not.toContain(
-      "tinycloud.kv/tamper",
-    );
+    expect(
+      backendDelegationResolvedPermissions("did:key:z6MkBackend")[0]!.actions,
+    ).not.toContain("tinycloud.kv/tamper");
   });
 });
 
@@ -220,8 +223,14 @@ describe("resolvePermissions entry attribution", () => {
   // Every entry that survives the filter, keyed by the resolved `service` + `path` the
   // node will see. The vault entry is deliberately absent: it resolves to a path outside
   // the requested set.
-  const EXPECTED: Record<string, { description: string; skipPrefix: boolean | undefined }> = {
-    [`tinycloud.kv ${APP_ID}/threads/`]: { description: "threads kv", skipPrefix: undefined },
+  const EXPECTED: Record<
+    string,
+    { description: string; skipPrefix: boolean | undefined }
+  > = {
+    [`tinycloud.kv ${APP_ID}/threads/`]: {
+      description: "threads kv",
+      skipPrefix: undefined,
+    },
     [`tinycloud.sql ${APP_ID}/connectors`]: {
       description: "connectors sql",
       skipPrefix: undefined,
@@ -239,10 +248,9 @@ describe("resolvePermissions entry attribution", () => {
   function permutations<T>(items: readonly T[]): T[][] {
     if (items.length <= 1) return [[...items]];
     return items.flatMap((item, index) =>
-      permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((rest) => [
-        item,
-        ...rest,
-      ]),
+      permutations([...items.slice(0, index), ...items.slice(index + 1)]).map(
+        (rest) => [item, ...rest],
+      ),
     );
   }
 
@@ -250,7 +258,10 @@ describe("resolvePermissions entry attribution", () => {
     return Object.fromEntries(
       resolved.map((permission) => [
         `${permission.service} ${permission.path}`,
-        { description: permission.description, skipPrefix: permission.skipPrefix },
+        {
+          description: permission.description,
+          skipPrefix: permission.skipPrefix,
+        },
       ]),
     );
   }

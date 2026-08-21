@@ -107,7 +107,11 @@ interface TcwProbe {
       query: (
         sql: string,
         params?: unknown[],
-      ) => Promise<{ ok: boolean; data?: { rows: unknown[][] }; error?: { message?: string } }>;
+      ) => Promise<{
+        ok: boolean;
+        data?: { rows: unknown[][] };
+        error?: { message?: string };
+      }>;
       execute: (
         sql: string,
         params?: unknown[],
@@ -117,16 +121,25 @@ interface TcwProbe {
   kv: {
     get: (key: string) => Promise<{ ok: boolean; data?: { data?: unknown } }>;
     delete: (key: string) => Promise<{ ok: boolean }>;
-    list: (opts: { path?: string }) => Promise<{ ok: boolean; data?: { keys?: string[] } }>;
+    list: (opts: {
+      path?: string;
+    }) => Promise<{ ok: boolean; data?: { keys?: string[] } }>;
   };
   secrets: {
     isUnlocked: boolean;
     unlock: () => Promise<{ ok: boolean; error?: { message?: string } }>;
     get: (
       name: string,
-      opts: { scope: string },
-    ) => Promise<{ ok: boolean; data?: unknown; error?: { code?: string; message?: string } }>;
-    delete: (name: string, opts: { scope: string }) => Promise<{ ok: boolean }>;
+      opts?: { scope?: string },
+    ) => Promise<{
+      ok: boolean;
+      data?: unknown;
+      error?: { code?: string; message?: string };
+    }>;
+    delete: (
+      name: string,
+      opts?: { scope?: string },
+    ) => Promise<{ ok: boolean }>;
   };
 }
 
@@ -203,7 +216,13 @@ async function runLane(): Promise<void> {
     .waitFor({ state: "visible", timeout: 60_000 });
   await shot(page, "settings-open-connectors-visible");
 
-  assertNoCeremony(page, framesBefore, popups, popupsBefore, "opening settings");
+  assertNoCeremony(
+    page,
+    framesBefore,
+    popups,
+    popupsBefore,
+    "opening settings",
+  );
   log("settings opened with no wallet popup and no new cross-origin frame");
 
   // The lane must be repeatable against a space that a previous run already
@@ -317,7 +336,9 @@ async function resetConnectorState(page: Page): Promise<void> {
       if (!tcw) throw new Error("window.__tcw is not exposed");
       const res = await tcw.sql
         .db(args.dbName)
-        .query("SELECT source_id FROM connector_meeting WHERE source = ?", [args.source]);
+        .query("SELECT source_id FROM connector_meeting WHERE source = ?", [
+          args.source,
+        ]);
       if (!res.ok) return [] as string[];
       return (res.data?.rows ?? [])
         .map((r) => r[0])
@@ -348,8 +369,12 @@ async function resetConnectorState(page: Page): Promise<void> {
       const tcw = (window as unknown as { __tcw?: TcwProbe }).__tcw;
       if (!tcw) throw new Error("window.__tcw is not exposed");
       const db = tcw.sql.db(args.dbName);
-      await db.execute("DELETE FROM connector_meeting WHERE source = ?", [args.source]);
-      await db.execute("DELETE FROM connector_state WHERE connector_id = ?", [args.source]);
+      await db.execute("DELETE FROM connector_meeting WHERE source = ?", [
+        args.source,
+      ]);
+      await db.execute("DELETE FROM connector_state WHERE connector_id = ?", [
+        args.source,
+      ]);
       return true;
     },
     { dbName: CONNECTORS_DB, source: SOURCE },
@@ -358,32 +383,39 @@ async function resetConnectorState(page: Page): Promise<void> {
   const secretCleared = await evalStep(
     page,
     "reset: clear secret",
-    async (args: { source: string; secretName: string }) => {
+    async (args: { secretName: string }) => {
       const tcw = (window as unknown as { __tcw?: TcwProbe }).__tcw;
       if (!tcw) throw new Error("window.__tcw is not exposed");
       // `secrets.delete` on a key that does not exist has been observed to never
       // settle, so each secrets call gets its own in-page deadline; a stuck reset
       // must degrade into a reported string, not a wedged lane.
-      const raceTimeout = <T,>(p: Promise<T>, ms: number, what: string) =>
+      const raceTimeout = <T>(p: Promise<T>, ms: number, what: string) =>
         Promise.race([
           p,
-          new Promise<string>((r) => setTimeout(() => r(`${what}:TIMED_OUT`), ms)),
+          new Promise<string>((r) =>
+            setTimeout(() => r(`${what}:TIMED_OUT`), ms),
+          ),
         ]);
       if (!tcw.secrets.isUnlocked) {
-        const unlock = await raceTimeout(tcw.secrets.unlock(), 30_000, "unlock");
+        const unlock = await raceTimeout(
+          tcw.secrets.unlock(),
+          30_000,
+          "unlock",
+        );
         if (typeof unlock === "string") return unlock;
-        if (!unlock.ok) return `unlock failed: ${unlock.error?.message ?? "unknown"}`;
+        if (!unlock.ok)
+          return `unlock failed: ${unlock.error?.message ?? "unknown"}`;
       }
       // A missing key is the normal case on a clean space, not a failure.
       const del = await raceTimeout(
-        tcw.secrets.delete(args.secretName, { scope: args.source }),
+        tcw.secrets.delete(args.secretName),
         30_000,
         "delete",
       );
       if (typeof del === "string") return del;
       return del.ok ? "deleted" : "absent";
     },
-    { source: SOURCE, secretName: "API_KEY" },
+    { secretName: "FIREFLIES_API_KEY" },
   );
   log(`reset: cleared ${ids.length} kv bodies, secret ${secretCleared}`);
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -413,7 +445,9 @@ async function assertSeamLive(page: Page): Promise<void> {
 /** Drives the connect stepper end to end; returns the added-count the dialog reports. */
 async function connectFireflies(page: Page, label: string): Promise<number> {
   log(`connect (${label}): opening dialog`);
-  await page.getByRole("button", { name: "Connect Fireflies", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Connect Fireflies", exact: true })
+    .click();
   const keyInput = page.locator("#fireflies-api-key");
   await keyInput.waitFor({ state: "visible", timeout: 30_000 });
   await keyInput.fill(LANE_API_KEY);
@@ -426,7 +460,10 @@ async function connectFireflies(page: Page, label: string): Promise<number> {
       .waitFor({ state: "visible", timeout: 60_000 });
   } catch {
     const upstreams = consoleLog.filter((l) => l.startsWith("[upstream]"));
-    const inlineError = await page.locator("[role=alert]").allInnerTexts().catch(() => []);
+    const inlineError = await page
+      .locator("[role=alert]")
+      .allInnerTexts()
+      .catch(() => []);
     throw new Error(
       `key validation never verified. UI said: ${inlineError.join(" | ") || "(nothing)"}. ` +
         `Upstream requests seen: ${upstreams.join(" | ") || "(none)"}`,
@@ -443,7 +480,9 @@ async function connectFireflies(page: Page, label: string): Promise<number> {
   const settled = page.getByText(
     /\d+ meetings? synced\.|Connected, but the initial sync failed/,
   );
-  await settled.first().waitFor({ state: "visible", timeout: config.syncTimeoutMs });
+  await settled
+    .first()
+    .waitFor({ state: "visible", timeout: config.syncTimeoutMs });
   // Per-item sync errors live in a collapsed <details>; open it so the summary
   // text and the screenshot both carry the reason rather than just the count.
   await page.evaluate(() => {
@@ -455,12 +494,19 @@ async function connectFireflies(page: Page, label: string): Promise<number> {
 
   const summaryText = await page.locator("[role=dialog]").innerText();
   if (summaryText.includes("Connected, but the initial sync failed")) {
-    throw new Error(`sync failed in the UI: ${summaryText.replace(/\s+/g, " ").trim()}`);
+    throw new Error(
+      `sync failed in the UI: ${summaryText.replace(/\s+/g, " ").trim()}`,
+    );
   }
-  const added = Number.parseInt(summaryText.match(/(\d+) meetings? synced\./)?.[1] ?? "-1", 10);
+  const added = Number.parseInt(
+    summaryText.match(/(\d+) meetings? synced\./)?.[1] ?? "-1",
+    10,
+  );
   log(`connect (${label}): dialog reports added=${added}`);
   if (summaryText.includes("failed to sync")) {
-    log(`connect (${label}) sync errors: ${summaryText.replace(/\s+/g, " ").trim()}`);
+    log(
+      `connect (${label}) sync errors: ${summaryText.replace(/\s+/g, " ").trim()}`,
+    );
   }
 
   // Escape rather than a Close click — same reason as above.
@@ -481,7 +527,9 @@ async function disconnect(page: Page, opts: { purge: boolean }): Promise<void> {
     await confirmDialog.getByRole("checkbox").check();
   }
   await shot(page, `disconnect-confirm-purge-${opts.purge}`);
-  await confirmDialog.getByRole("button", { name: confirmName, exact: true }).click();
+  await confirmDialog
+    .getByRole("button", { name: confirmName, exact: true })
+    .click();
   await failIfPermissionPromptShown(page, `disconnect(purge=${opts.purge})`);
   // The card flips back to "Connect" once the dialog settles.
   await page
@@ -504,7 +552,10 @@ async function disconnect(page: Page, opts: { purge: boolean }): Promise<void> {
  * action the code performs, or the session predates the manifest. Say that
  * plainly rather than letting the leg time out on a mystery.
  */
-async function failIfPermissionPromptShown(page: Page, leg: string): Promise<void> {
+async function failIfPermissionPromptShown(
+  page: Page,
+  leg: string,
+): Promise<void> {
   const approve = page.getByRole("button", { name: "Approve", exact: true });
   try {
     await approve.waitFor({ state: "visible", timeout: 15_000 });
@@ -558,86 +609,101 @@ interface StorageProbe {
 async function probeStorage(page: Page): Promise<StorageProbe> {
   const result = await withTimeout(
     page.evaluate(
-    async (args) => {
-      const tcw = (window as unknown as { __tcw?: TcwProbe }).__tcw;
-      if (!tcw) throw new Error("window.__tcw is not exposed — is vite running in DEV mode?");
+      async (args) => {
+        const tcw = (window as unknown as { __tcw?: TcwProbe }).__tcw;
+        if (!tcw)
+          throw new Error(
+            "window.__tcw is not exposed — is vite running in DEV mode?",
+          );
 
-      const notes: string[] = [];
-      const db = tcw.sql.db(args.dbName);
+        const notes: string[] = [];
+        const db = tcw.sql.db(args.dbName);
 
-      // Every call below is sequential on purpose: TinyCloud drops concurrent
-      // responses on the same space.
-      const rowsRes = await db.query(
-        "SELECT id, source, source_id, title, participants, metadata FROM connector_meeting WHERE source = ?",
-        [args.source],
-      );
-      const rows = rowsRes.ok ? (rowsRes.data?.rows ?? []) : [];
-      if (!rowsRes.ok) notes.push(`SQL query failed: ${rowsRes.error?.message ?? "unknown"}`);
-      const sqlCount = rows.length;
-      const keyInSql = JSON.stringify(rows).includes(args.apiKey);
-
-      let kvCount = 0;
-      let kvCountMethod: "list" | "per-id" = "list";
-      const listRes = await tcw.kv.list({ path: args.kvPrefix });
-      if (listRes.ok && Array.isArray(listRes.data?.keys)) {
-        kvCount = listRes.data.keys.filter((k) => k.includes(args.kvPrefix)).length;
-      } else {
-        // The session's capabilities may not include tinycloud.kv/list; fall
-        // back to probing each expected id so the count stays real evidence.
-        kvCountMethod = "per-id";
-        notes.push("kv.list unavailable — counted by probing each expected id");
-        for (const id of args.expectedIds) {
-          const got = await tcw.kv.get(`${args.kvPrefix}${id}`);
-          if (got.ok) kvCount++;
-        }
-      }
-
-      const sampledKvPresent: Record<string, boolean> = {};
-      let keyInKv = false;
-      for (const id of args.sampleIds) {
-        const got = await tcw.kv.get(`${args.kvPrefix}${id}`);
-        sampledKvPresent[id] = got.ok;
-        if (got.ok && JSON.stringify(got.data?.data ?? null).includes(args.apiKey)) {
-          keyInKv = true;
-        }
-      }
-
-      if (!tcw.secrets.isUnlocked) {
-        const unlock = await tcw.secrets.unlock();
-        if (!unlock.ok) notes.push(`secrets unlock failed: ${unlock.error?.message ?? "unknown"}`);
-      }
-      const secret = await tcw.secrets.get(args.secretName, { scope: args.secretScope });
-      const secretMatches = secret.ok && secret.data === args.apiKey;
-      // A bare `secretReadBack=false` is undiagnosable — say whether the read
-      // failed (and why) or succeeded with a value that does not match.
-      if (!secretMatches) {
-        notes.push(
-          secret.ok
-            ? "secret read back a value that does not match the key the UI submitted"
-            : `secret read failed: [${secret.error?.code ?? "?"}] ${secret.error?.message ?? "unknown"}`,
+        // Every call below is sequential on purpose: TinyCloud drops concurrent
+        // responses on the same space.
+        const rowsRes = await db.query(
+          "SELECT id, source, source_id, title, participants, metadata FROM connector_meeting WHERE source = ?",
+          [args.source],
         );
-      }
+        const rows = rowsRes.ok ? (rowsRes.data?.rows ?? []) : [];
+        if (!rowsRes.ok)
+          notes.push(
+            `SQL query failed: ${rowsRes.error?.message ?? "unknown"}`,
+          );
+        const sqlCount = rows.length;
+        const keyInSql = JSON.stringify(rows).includes(args.apiKey);
 
-      return {
-        sqlCount,
-        kvCount,
-        kvCountMethod,
-        sampledKvPresent,
-        secretMatches,
-        keyInSql,
-        keyInKv,
-        notes,
-      };
-    },
-    {
-      dbName: CONNECTORS_DB,
-      source: SOURCE,
-      apiKey: LANE_API_KEY,
-      kvPrefix: TRANSCRIPT_KV_PREFIX,
-      expectedIds: EXPECTED_IDS,
-      sampleIds: SAMPLE_IDS,
-        secretName: "API_KEY",
-        secretScope: SOURCE,
+        let kvCount = 0;
+        let kvCountMethod: "list" | "per-id" = "list";
+        const listRes = await tcw.kv.list({ path: args.kvPrefix });
+        if (listRes.ok && Array.isArray(listRes.data?.keys)) {
+          kvCount = listRes.data.keys.filter((k) =>
+            k.includes(args.kvPrefix),
+          ).length;
+        } else {
+          // The session's capabilities may not include tinycloud.kv/list; fall
+          // back to probing each expected id so the count stays real evidence.
+          kvCountMethod = "per-id";
+          notes.push(
+            "kv.list unavailable — counted by probing each expected id",
+          );
+          for (const id of args.expectedIds) {
+            const got = await tcw.kv.get(`${args.kvPrefix}${id}`);
+            if (got.ok) kvCount++;
+          }
+        }
+
+        const sampledKvPresent: Record<string, boolean> = {};
+        let keyInKv = false;
+        for (const id of args.sampleIds) {
+          const got = await tcw.kv.get(`${args.kvPrefix}${id}`);
+          sampledKvPresent[id] = got.ok;
+          if (
+            got.ok &&
+            JSON.stringify(got.data?.data ?? null).includes(args.apiKey)
+          ) {
+            keyInKv = true;
+          }
+        }
+
+        if (!tcw.secrets.isUnlocked) {
+          const unlock = await tcw.secrets.unlock();
+          if (!unlock.ok)
+            notes.push(
+              `secrets unlock failed: ${unlock.error?.message ?? "unknown"}`,
+            );
+        }
+        const secret = await tcw.secrets.get(args.secretName);
+        const secretMatches = secret.ok && secret.data === args.apiKey;
+        // A bare `secretReadBack=false` is undiagnosable — say whether the read
+        // failed (and why) or succeeded with a value that does not match.
+        if (!secretMatches) {
+          notes.push(
+            secret.ok
+              ? "secret read back a value that does not match the key the UI submitted"
+              : `secret read failed: [${secret.error?.code ?? "?"}] ${secret.error?.message ?? "unknown"}`,
+          );
+        }
+
+        return {
+          sqlCount,
+          kvCount,
+          kvCountMethod,
+          sampledKvPresent,
+          secretMatches,
+          keyInSql,
+          keyInKv,
+          notes,
+        };
+      },
+      {
+        dbName: CONNECTORS_DB,
+        source: SOURCE,
+        apiKey: LANE_API_KEY,
+        kvPrefix: TRANSCRIPT_KV_PREFIX,
+        expectedIds: EXPECTED_IDS,
+        sampleIds: SAMPLE_IDS,
+        secretName: "FIREFLIES_API_KEY",
       },
     ),
     config.syncTimeoutMs,
@@ -676,12 +742,21 @@ async function runCorsCheck(): Promise<void> {
           "Content-Type": "application/json",
           Authorization: "Bearer cors-probe",
         },
-        body: JSON.stringify({ query: "query GetUser { user { name email } }" }),
+        body: JSON.stringify({
+          query: "query GetUser { user { name email } }",
+        }),
       });
       const body = await res.text();
-      return { ok: true as const, status: res.status, body: body.slice(0, 200) };
+      return {
+        ok: true as const,
+        status: res.status,
+        body: body.slice(0, 200),
+      };
     } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+      return {
+        ok: false as const,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }, mockUrl);
 
@@ -694,7 +769,9 @@ async function runCorsCheck(): Promise<void> {
       `Chrome blocked the cross-origin request from an https page to loopback http: ${verdict.error}`,
     );
   }
-  console.log("Verdict: allowed — plain-http loopback upstream is reachable from the https page.");
+  console.log(
+    "Verdict: allowed — plain-http loopback upstream is reachable from the https page.",
+  );
 }
 
 // ── Secrets authorization probe ────────────────────────────────────────────
@@ -720,7 +797,7 @@ async function runSecretsProbe(): Promise<void> {
   await page.bringToFront();
   await waitForSignedIn(context, page);
 
-  const vaultKey = `secrets/scoped/${SOURCE}/API_KEY`;
+  const vaultKey = "secrets/FIREFLIES_API_KEY";
   const probe = await evalStep(
     page,
     "secrets probe: direct KV reads in the secrets space",
@@ -755,16 +832,21 @@ async function runSecretsProbe(): Promise<void> {
       const writes: Record<string, unknown> = {};
       if (spaceId) {
         const kv = tcw.kvForSpace(spaceId);
-        for (const path of [`keys/${args.vaultKey}`, `vault/${args.vaultKey}`]) {
-          reads[path] = describe(await race(kv.get(path, { raw: true }), 30_000));
+        for (const path of [
+          `keys/${args.vaultKey}`,
+          `vault/${args.vaultKey}`,
+        ]) {
+          reads[path] = describe(
+            await race(kv.get(path, { raw: true }), 30_000),
+          );
         }
         // Is the WRITE side authorized where the read side is not? Probe throwaway
         // names, never the real vault keys — clobbering keys/<vaultKey> would
         // destroy the stored secret. The vault/ probe is the control: the grant is
         // an exact path, so a sibling name must be refused there too.
         for (const path of [
-          `keys/secrets/scoped/${"fireflies"}/__probe__`,
-          `vault/secrets/scoped/${"fireflies"}/__probe__`,
+          "keys/secrets/__probe__",
+          "vault/secrets/__probe__",
         ]) {
           writes[path] = describe(await race(kv.put(path, "probe"), 30_000));
         }
@@ -774,10 +856,13 @@ async function runSecretsProbe(): Promise<void> {
       if (!tcw.secrets.isUnlocked) {
         const unlock = await race(tcw.secrets.unlock(), 30_000);
         if ((unlock as any)?.__timedOut) notes.push("secrets.unlock TIMED_OUT");
-        else if (!(unlock as any)?.ok) notes.push(`secrets.unlock failed: ${(unlock as any)?.error?.message}`);
+        else if (!(unlock as any)?.ok)
+          notes.push(
+            `secrets.unlock failed: ${(unlock as any)?.error?.message}`,
+          );
       }
       const viaSecrets = describe(
-        await race(tcw.secrets.get("API_KEY", { scope: "fireflies" }), 30_000),
+        await race(tcw.secrets.get("FIREFLIES_API_KEY"), 30_000),
       );
 
       // What the session's recap actually carries, straight from the persisted
@@ -813,7 +898,9 @@ async function runSecretsProbe(): Promise<void> {
     for (const urn of raw.match(/urn:recap:[A-Za-z0-9+/=_-]+/g) ?? []) {
       const payload = urn.slice("urn:recap:".length);
       try {
-        const json = JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
+        const json = JSON.parse(
+          Buffer.from(payload, "base64").toString("utf8"),
+        );
         console.log("session recap att:");
         console.log(JSON.stringify(json.att ?? json, null, 2));
       } catch {
@@ -830,9 +917,14 @@ async function runSecretsProbe(): Promise<void> {
  * Resume keylessly when the profile already holds a live session; otherwise
  * click "Sign in" and wait for a human to finish the passkey + SIWE ceremony.
  */
-async function waitForSignedIn(context: BrowserContext, page: Page): Promise<void> {
+async function waitForSignedIn(
+  context: BrowserContext,
+  page: Page,
+): Promise<void> {
   if (await hasLiveSession(context)) {
-    log("restoring the profile's existing session (no sign-in ceremony needed)");
+    log(
+      "restoring the profile's existing session (no sign-in ceremony needed)",
+    );
   } else {
     // The header and the empty state both offer "Sign in"; either opens the
     // same OpenKey flow, so nudge the first and say so if the nudge missed.
@@ -841,15 +933,21 @@ async function waitForSignedIn(context: BrowserContext, page: Page): Promise<voi
       .first()
       .click({ timeout: 10_000 })
       .then(() => log("clicked Sign in for you"))
-      .catch((err) => log(`could not click Sign in (${errorMessage(err)}) — please click it`));
+      .catch((err) =>
+        log(`could not click Sign in (${errorMessage(err)}) — please click it`),
+      );
     await shot(page, "sign-in-wall");
     console.log("");
     console.log("=".repeat(72));
     console.log("SIGN-IN REQUIRED — this profile has no live session.");
     console.log("In the Chrome window that just opened:");
     console.log('  1. Click "Sign in" and complete the OpenKey passkey.');
-    console.log("  2. Approve the TinyCloud signature / space creation if prompted.");
-    console.log("The lane resumes automatically and this profile stays signed in");
+    console.log(
+      "  2. Approve the TinyCloud signature / space creation if prompted.",
+    );
+    console.log(
+      "The lane resumes automatically and this profile stays signed in",
+    );
     console.log("for every later run, so this is a one-time cost.");
     console.log(`Profile: ${config.profileDir}`);
     console.log("=".repeat(72));
@@ -862,7 +960,9 @@ async function waitForSignedIn(context: BrowserContext, page: Page): Promise<voi
     // finished booting into its ready state with a live space session.
     if (await hasLiveSession(context)) {
       const ready = await page
-        .evaluate(() => Boolean((window as unknown as { __tcw?: unknown }).__tcw))
+        .evaluate(() =>
+          Boolean((window as unknown as { __tcw?: unknown }).__tcw),
+        )
         .catch(() => false);
       if (ready) return;
     }
@@ -962,7 +1062,8 @@ function wirePageLogging(page: Page): void {
   page.on("console", (msg) => {
     const line = `[${msg.type()}] ${msg.text()}`;
     consoleLog.push(line);
-    if (msg.type() === "error") console.log(`  [browser console.error] ${msg.text()}`);
+    if (msg.type() === "error")
+      console.log(`  [browser console.error] ${msg.text()}`);
   });
   page.on("pageerror", (err) => {
     consoleLog.push(`[pageerror] ${err.message}`);
@@ -972,7 +1073,10 @@ function wirePageLogging(page: Page): void {
 
 async function shot(page: Page, name: string): Promise<void> {
   shotSeq += 1;
-  const file = join(evidenceDir, `${String(shotSeq).padStart(2, "0")}-${name}.png`);
+  const file = join(
+    evidenceDir,
+    `${String(shotSeq).padStart(2, "0")}-${name}.png`,
+  );
   await page.screenshot({ path: file, fullPage: true }).catch((err) => {
     log(`screenshot ${name} failed: ${errorMessage(err)}`);
   });
@@ -982,12 +1086,19 @@ async function shot(page: Page, name: string): Promise<void> {
 // ── Processes ──────────────────────────────────────────────────────────────
 
 async function startMock(): Promise<void> {
-  const proc = Bun.spawn(["bun", join(repoRoot, "test/connectors/mock-fireflies.mjs")], {
-    cwd: repoRoot,
-    env: { ...env, MOCK_FIREFLIES_PORT: String(config.mockPort), MOCK_FIREFLIES_MODE: "happy" },
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+  const proc = Bun.spawn(
+    ["bun", join(repoRoot, "test/connectors/mock-fireflies.mjs")],
+    {
+      cwd: repoRoot,
+      env: {
+        ...env,
+        MOCK_FIREFLIES_PORT: String(config.mockPort),
+        MOCK_FIREFLIES_MODE: "happy",
+      },
+      stdout: "inherit",
+      stderr: "inherit",
+    },
+  );
   cleanups.push(() => {
     proc.kill();
   });
@@ -1023,7 +1134,9 @@ async function startVite(backendUrl: string): Promise<void> {
   });
   log(`vite starting on ${frontendUrl} with VITE_FIREFLIES_API_URL=${mockUrl}`);
   await waitForHttp(frontendUrl, "vite dev server", async () => {
-    const res = await fetch(frontendUrl, { tls: { rejectUnauthorized: false } } as RequestInit);
+    const res = await fetch(frontendUrl, {
+      tls: { rejectUnauthorized: false },
+    } as RequestInit);
     return res.ok;
   });
 }
@@ -1047,7 +1160,11 @@ async function ensureBackend(): Promise<string> {
     cwd: join(repoRoot, "backend"),
     // Explicit env wins over backend/.env in Bun, so these pin the private
     // instance to the lane's port and origin without touching the .env file.
-    env: { ...env, PORT: String(config.ownBackendPort), FRONTEND_URL: frontendUrl },
+    env: {
+      ...env,
+      PORT: String(config.ownBackendPort),
+      FRONTEND_URL: frontendUrl,
+    },
     stdout: "inherit",
     stderr: "inherit",
   });
@@ -1064,7 +1181,9 @@ async function backendUsable(url: string): Promise<boolean> {
       headers: { Origin: frontendUrl },
       tls: { rejectUnauthorized: false },
     } as RequestInit);
-    return res.ok && res.headers.get("access-control-allow-origin") === frontendUrl;
+    return (
+      res.ok && res.headers.get("access-control-allow-origin") === frontendUrl
+    );
   } catch {
     return false;
   }
@@ -1089,7 +1208,9 @@ async function waitForHttp(
     }
     await Bun.sleep(500);
   }
-  throw new Error(`${label} never became ready at ${url} (last error: ${lastError})`);
+  throw new Error(
+    `${label} never became ready at ${url} (last error: ${lastError})`,
+  );
 }
 
 async function teardown(): Promise<void> {
@@ -1133,15 +1254,24 @@ async function evalStep<A, R>(
  * sequential round trips to a real node — one stalled call would hang the lane
  * forever with no evidence. Bound them.
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${label} did not finish within ${Math.round(ms / 1000)}s`)),
+      () =>
+        reject(
+          new Error(`${label} did not finish within ${Math.round(ms / 1000)}s`),
+        ),
       ms,
     );
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+  return Promise.race([promise, timeout]).finally(() =>
+    clearTimeout(timer),
+  ) as Promise<T>;
 }
 
 function intEnv(name: string, fallback: number): number {
