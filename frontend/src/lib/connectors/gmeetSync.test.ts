@@ -772,6 +772,32 @@ describe("single-flight guard", () => {
 });
 
 describe("Drive Notes by Gemini sync", () => {
+  test("keeps a legacy Meet-only grant syncing when Drive rejects its new scopes", async () => {
+    const client = Object.assign(new FakeClient([fixture("meet-still-syncs", { entryTexts: ["present"] })]), {
+      async getDriveStartPageToken() {
+        return { ok: false as const, error: {
+          kind: "forbidden" as const, status: 403, message: "insufficient authentication scopes",
+        } };
+      },
+      async listDriveFiles() { throw new Error("Drive snapshot must stop after its denied token request"); },
+      async listDriveChangesPage() { throw new Error("legacy grant has no cursor"); },
+      async getDriveDocument() { throw new Error("legacy grant must not read documents"); },
+    });
+    const store = Object.assign(new FakeStore(), {
+      async getDriveCursor() { return ok(null); },
+      async putDriveCursor() { return ok(undefined); },
+      async findGmeetNotesAssociation() { return ok(null); },
+      async attachGmeetNotes() { return ok(undefined); },
+      async removeGmeetNotes() { return ok(undefined); },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(true);
+    expect(store.rows.map((row) => row.meeting.sourceId)).toContain("meet-still-syncs");
+    expect(store.state?.lastSyncStatus).toBe("ok");
+  });
+
   test("metadata gate prevents unrelated Docs from being read and commits the snapshot cursor", async () => {
     const client = Object.assign(new FakeClient([]), {
       async getDriveStartPageToken() { return { ok: true as const, data: "snapshot-token" }; },
@@ -815,6 +841,34 @@ describe("Drive Notes by Gemini sync", () => {
     expect(isLikelyGmeetNotesFile({ id: "d", name: "Meeting notes", mimeType: "application/vnd.google-apps.document" })).toBe(false);
   });
 
+  test("rebuilds an expired Drive cursor from a guarded metadata snapshot", async () => {
+    const client = Object.assign(new FakeClient([]), {
+      async listDriveChangesPage() {
+        return { ok: false as const, error: {
+          kind: "api-error" as const, status: 410, message: "page token is expired",
+        } };
+      },
+      async getDriveStartPageToken() { return { ok: true as const, data: "snapshot-after-410" }; },
+      async listDriveFiles() { return { ok: true as const, data: [] }; },
+      async getDriveDocument() { throw new Error("empty snapshot must not read Docs"); },
+    });
+    const store = Object.assign(new FakeStore(), {
+      cursor: "expired-cursor",
+      writes: [] as string[],
+      async getDriveCursor() { return ok(this.cursor); },
+      async putDriveCursor(_: TinyCloudWeb, _source: string, cursor: string) { this.writes.push(cursor); this.cursor = cursor; return ok(undefined); },
+      async findGmeetNotesAssociation() { return ok(null); },
+      async attachGmeetNotes() { return ok(undefined); },
+      async removeGmeetNotes() { return ok(undefined); },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(true);
+    expect(store.cursor).toBe("snapshot-after-410");
+    expect(store.writes).toEqual(["snapshot-after-410"]);
+  });
+
   test("retains the prior change cursor when a candidate document read fails", async () => {
     const client = Object.assign(new FakeClient([]), {
       async getDriveStartPageToken() { throw new Error("not a snapshot"); },
@@ -842,5 +896,48 @@ describe("Drive Notes by Gemini sync", () => {
     expect(result.data.items).toEqual([{ sourceId: "notes", outcome: "error", reason: "offline" }]);
     expect(store.cursor).toBe("old-cursor");
     expect(store.writes).toEqual([]);
+  });
+
+  test("stops on an exhausted Docs rate limit and leaves the Drive cursor retryable", async () => {
+    const documentReads: string[] = [];
+    const client = Object.assign(new FakeClient([]), {
+      async getDriveStartPageToken() { throw new Error("not a snapshot"); },
+      async listDriveFiles() { throw new Error("not a snapshot"); },
+      async listDriveChangesPage() { return { ok: true as const, data: {
+        changes: [
+          { fileId: "first", file: { id: "first", name: "Notes by Gemini — first", mimeType: "application/vnd.google-apps.document" } },
+          { fileId: "second", file: { id: "second", name: "Notes by Gemini — second", mimeType: "application/vnd.google-apps.document" } },
+        ],
+        nextPageToken: null,
+        newStartPageToken: "new-cursor",
+      } }; },
+      async getDriveDocument(id: string) {
+        documentReads.push(id);
+        return { ok: false as const, error: {
+          kind: "rate-limited" as const, status: 429, message: "Docs quota exhausted", retryAfterMs: 1_000,
+        } };
+      },
+    });
+    const store = Object.assign(new FakeStore(), {
+      cursor: "old-cursor",
+      writes: [] as string[],
+      async getDriveCursor() { return ok(this.cursor); },
+      async putDriveCursor(_: TinyCloudWeb, _source: string, cursor: string) { this.writes.push(cursor); this.cursor = cursor; return ok(undefined); },
+      async findGmeetNotesAssociation() { return ok(null); },
+      async attachGmeetNotes() { return ok(undefined); },
+      async removeGmeetNotes() { return ok(undefined); },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatchObject({ kind: "rate-limited", message: "Docs quota exhausted" });
+    expect(result.data?.items).toEqual([{ sourceId: "first", outcome: "error", reason: "Docs quota exhausted" }]);
+    expect(result.data?.failed).toBe(1);
+    expect(documentReads).toEqual(["first"]);
+    expect(store.cursor).toBe("old-cursor");
+    expect(store.writes).toEqual([]);
+    expect(store.state?.lastSyncStatus).toBe("error");
   });
 });

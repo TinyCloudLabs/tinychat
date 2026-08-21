@@ -2,18 +2,26 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import type { FirefliesTranscript } from "./firefliesClient";
+import type { GmeetResult } from "./gmeetClient";
+import { _resetGmeetSyncSingleFlightForTests, syncGoogleMeet, type GmeetSyncClient, type GmeetSyncStore } from "./gmeetSync";
 import {
   CONNECTORS_KV_PREFIX,
   CONNECTORS_SQL_DB_NAME,
   _resetConnectorSchemaMemoForTests,
+  attachGmeetNotes,
   countMeetings,
+  driveCursorKvKey,
   ensureSchema,
+  findGmeetNotesAssociation,
   getConnection,
+  getDriveCursor,
   insertMeeting,
   listKnownSourceIds,
   normalizeFirefliesTranscript,
+  putDriveCursor,
   purgeConnector,
   putTranscriptBody,
+  removeGmeetNotes,
   transcriptKvKey,
   updateSyncState,
   upsertMeeting,
@@ -155,6 +163,16 @@ class FakeSqlDb {
       }
       return { ok: true, data: { rows } };
     }
+    if (/^SELECT\s+id,\s*source_id,\s*title,\s*started_at,\s*metadata\s+FROM\s+connector_meeting/i.test(s)) {
+      const source = String(params[0]);
+      const rows: unknown[][] = [];
+      for (const row of this.meetings.values()) {
+        if (row.source === source) {
+          rows.push([row.id, row.source_id, row.title, row.started_at, row.metadata]);
+        }
+      }
+      return { ok: true, data: { rows } };
+    }
     if (/^SELECT\s+id\s+FROM\s+connector_meeting/i.test(s)) {
       const source = String(params[0]);
       const sourceId = String(params[1]);
@@ -280,6 +298,20 @@ class FakeSqlDb {
       });
       return { ok: true, data: { rows: [] } };
     }
+    if (/^UPDATE\s+connector_meeting\s+SET\s+summary_overview\s*=\s*NULL,\s*summary_action_items\s*=\s*NULL,\s*metadata\s*=\s*\?,\s*updated_at\s*=\s*\?\s+WHERE\s+id\s*=\s*\?/i.test(s)) {
+      const [metadata, updated_at, id] = params as [string, string, string];
+      const existing = this.meetings.get(id);
+      if (!existing) return { ok: true, data: { rows: [] } };
+      this.meetings.set(id, { ...existing, summary_overview: null, summary_action_items: null, metadata, updated_at });
+      return { ok: true, data: { rows: [] } };
+    }
+    if (/^UPDATE\s+connector_meeting\s+SET\s+summary_overview\s*=\s*\?,\s*summary_action_items\s*=\s*\?,\s*metadata\s*=\s*\?,\s*updated_at\s*=\s*\?\s+WHERE\s+id\s*=\s*\?/i.test(s)) {
+      const [summary_overview, summary_action_items, metadata, updated_at, id] = params as [string | null, string | null, string, string, string];
+      const existing = this.meetings.get(id);
+      if (!existing) return { ok: true, data: { rows: [] } };
+      this.meetings.set(id, { ...existing, summary_overview, summary_action_items, metadata, updated_at });
+      return { ok: true, data: { rows: [] } };
+    }
     if (/^UPDATE\s+connector_meeting\s+SET/i.test(s)) {
       const [
         title,
@@ -332,6 +364,10 @@ class FakeSqlDb {
       for (const [id, row] of this.meetings) {
         if (row.source === source) this.meetings.delete(id);
       }
+      return { ok: true, data: { rows: [] } };
+    }
+    if (/^DELETE\s+FROM\s+connector_meeting\s+WHERE\s+id\s*=\s*\?/i.test(s)) {
+      this.meetings.delete(String(params[0]));
       return { ok: true, data: { rows: [] } };
     }
     if (/^DELETE\s+FROM\s+connector_state\s+WHERE\s+connector_id\s*=\s*\?/i.test(s)) {
@@ -611,6 +647,162 @@ describe("connectorStore.purgeConnector", () => {
     expect(purged.ok).toBe(true);
     const afterCount = await countMeetings(f.tcw, "fireflies");
     expect(afterCount.ok && afterCount.data === 0).toBe(true);
+  });
+});
+
+describe("connectorStore Drive Notes lifecycle", () => {
+  test("associates, removes, and purges Drive Notes using the real SQL and KV primitives", async () => {
+    const f = makeFake();
+    const conference: NormalizedMeeting = {
+      id: "conference-row",
+      source: "google-meet",
+      sourceId: "conference-1",
+      title: "Atlas planning",
+      startedAt: "2026-08-17T09:00:00.000Z",
+      durationSecs: null,
+      organizerEmail: null,
+      participants: [],
+      summaryOverview: null,
+      summaryActionItems: null,
+      keywords: null,
+      meetingType: null,
+      metadata: { docs_export_uris: ["https://docs.google.com/document/d/notes-1/edit"] },
+    };
+    const standalone: NormalizedMeeting = {
+      ...conference,
+      id: "notes-row",
+      sourceId: "notes-2",
+      metadata: {
+        drive_file_id: "notes-2",
+        drive_modified_time: "2026-08-17T10:00:00.000Z",
+        notes_association: "standalone",
+      },
+    };
+    expect((await insertMeeting(f.tcw, conference)).ok).toBe(true);
+    expect((await putTranscriptBody(f.tcw, "google-meet", "conference-1", [
+      { index: 0, speaker_name: "Alice", text: "real transcript", start_time: 0, end_time: 1 },
+    ])).ok).toBe(true);
+
+    const found = await findGmeetNotesAssociation(f.tcw, "google-meet", "notes-1", "Atlas planning", conference.startedAt);
+    expect(found.ok && found.data?.sourceId).toBe("conference-1");
+    if (!found.ok || !found.data) return;
+    expect((await attachGmeetNotes(f.tcw, found.data, {
+      summaryOverview: "Gemini summary",
+      summaryActionItems: "Follow up",
+      metadata: {
+        drive_file_id: "notes-1",
+        drive_modified_time: "2026-08-17T10:00:00.000Z",
+        notes_kind: "gemini",
+        notes_owned_fields: ["summary_overview", "summary_action_items"],
+      },
+    })).ok).toBe(true);
+    expect(f.sql.meetings.get("conference-row")?.summary_overview).toBe("Gemini summary");
+    expect(f.kv.entries.get(transcriptKvKey("google-meet", "conference-1"))).toContain("real transcript");
+
+    expect((await removeGmeetNotes(f.tcw, "google-meet", "notes-1")).ok).toBe(true);
+    expect(f.sql.meetings.get("conference-row")?.summary_overview).toBeNull();
+    expect(f.kv.entries.get(transcriptKvKey("google-meet", "conference-1"))).toContain("real transcript");
+
+    expect((await insertMeeting(f.tcw, standalone)).ok).toBe(true);
+    expect((await putTranscriptBody(f.tcw, "google-meet", "notes-2", [
+      { index: 0, speaker_name: "Gemini", text: "notes body", start_time: 0, end_time: 1 },
+    ])).ok).toBe(true);
+    expect((await removeGmeetNotes(f.tcw, "google-meet", "notes-2")).ok).toBe(true);
+    expect(f.sql.meetings.has("notes-row")).toBe(false);
+    expect(f.kv.entries.has(transcriptKvKey("google-meet", "notes-2"))).toBe(false);
+
+    expect((await putDriveCursor(f.tcw, "google-meet", "drive-cursor")).ok).toBe(true);
+    expect((await getDriveCursor(f.tcw, "google-meet")).data).toBe("drive-cursor");
+    expect((await purgeConnector(f.tcw, "google-meet")).ok).toBe(true);
+    expect(f.kv.entries.has(driveCursorKvKey("google-meet"))).toBe(false);
+  });
+
+  test("sync engine applies an associated Drive change then its removal through the real store", async () => {
+    const f = makeFake();
+    const source = "google-meet";
+    await insertMeeting(f.tcw, {
+      id: "conference-row",
+      source,
+      sourceId: "conference-1",
+      title: "Project Atlas",
+      startedAt: "2026-08-17T09:00:00.000Z",
+      durationSecs: null,
+      organizerEmail: null,
+      participants: [],
+      summaryOverview: null,
+      summaryActionItems: null,
+      keywords: null,
+      meetingType: null,
+      metadata: { docs_export_uris: ["https://docs.google.com/document/d/notes-1/edit"] },
+    });
+    await putTranscriptBody(f.tcw, source, "conference-1", [
+      { index: 0, speaker_name: "Alice", text: "Meet transcript survives", start_time: 0, end_time: 1 },
+    ]);
+    await putDriveCursor(f.tcw, source, "cursor-0");
+    const preflightAssociation = await findGmeetNotesAssociation(f.tcw, source, "notes-1", null, null);
+    expect(preflightAssociation.ok && preflightAssociation.data?.sourceId).toBe("conference-1");
+
+    let removal = false;
+    const client: GmeetSyncClient = {
+      delayMs: 0,
+      async pace() {},
+      async listConferenceRecords(): Promise<GmeetResult<[]>> { return { ok: true, data: [] }; },
+      async listParticipants() { return { ok: true as const, data: [] }; },
+      async listTranscripts() { return { ok: true as const, data: [] }; },
+      async listTranscriptEntries() { return { ok: true as const, data: [] }; },
+      async getDriveStartPageToken() { throw new Error("incremental sync must not snapshot"); },
+      async listDriveFiles() { throw new Error("incremental sync must not list files"); },
+      async listDriveChangesPage() {
+        return { ok: true as const, data: {
+          changes: removal
+            ? [{ fileId: "notes-1", removed: true }]
+            : [{ fileId: "notes-1", file: {
+              id: "notes-1", name: "Notes by Gemini — Project Atlas", mimeType: "application/vnd.google-apps.document",
+              modifiedTime: "2026-08-17T10:00:00.000Z",
+            } }],
+          nextPageToken: null,
+          newStartPageToken: removal ? "cursor-2" : "cursor-1",
+        } };
+      },
+      async getDriveDocument() {
+        if (removal) throw new Error("removed Docs must not be read");
+        return { ok: true as const, data: { body: { content: [
+          { paragraph: { paragraphStyle: { namedStyleType: "TITLE" }, elements: [{ textRun: { content: "Notes by Gemini\n" } }] } },
+          { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Project Atlas\n" } }] } },
+          { paragraph: { elements: [{ textRun: { content: "August 17, 2026, 9:00 AM – 9:30 AM\n" } }] } },
+          { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Summary\n" } }] } },
+          { paragraph: { elements: [{ textRun: { content: "The pilot is approved.\n" } }] } },
+          { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Next steps\n" } }] } },
+          { paragraph: { elements: [{ textRun: { content: "• Publish the checklist.\n" } }] } },
+        ] } } };
+      },
+    };
+    const store: GmeetSyncStore = {
+      getConnection,
+      putTranscriptBody,
+      upsertMeeting,
+      updateSyncState,
+      countMeetings,
+      getDriveCursor,
+      putDriveCursor,
+      findGmeetNotesAssociation,
+      attachGmeetNotes,
+      removeGmeetNotes,
+    };
+
+    const first = await syncGoogleMeet({ client, store, tcw: f.tcw, now: () => Date.parse("2026-08-17T12:00:00.000Z") });
+    expect(first.ok).toBe(true);
+    expect(f.sql.meetings.get("conference-row")?.summary_overview).toBe("The pilot is approved.");
+    expect(f.kv.entries.get(transcriptKvKey(source, "conference-1"))).toContain("Meet transcript survives");
+    expect((await getDriveCursor(f.tcw, source)).data).toBe("cursor-1");
+
+    removal = true;
+    _resetGmeetSyncSingleFlightForTests();
+    const second = await syncGoogleMeet({ client, store, tcw: f.tcw, now: () => Date.parse("2026-08-17T12:01:00.000Z") });
+    expect(second.ok).toBe(true);
+    expect(f.sql.meetings.get("conference-row")?.summary_overview).toBeNull();
+    expect(f.kv.entries.get(transcriptKvKey(source, "conference-1"))).toContain("Meet transcript survives");
+    expect((await getDriveCursor(f.tcw, source)).data).toBe("cursor-2");
   });
 });
 
