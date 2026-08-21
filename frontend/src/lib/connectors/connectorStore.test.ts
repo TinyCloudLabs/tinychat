@@ -1115,6 +1115,42 @@ describe("connectorStore.upsertMeeting — update path (the meeting.summarized c
     expect(row?.meeting_type).toBe("call");
   });
 
+  test("a later standalone Notes by Gemini revision clears a deleted section while retaining its current section", async () => {
+    const f = makeFake();
+    const original = meetingFixture({
+      source: "google-meet",
+      sourceId: "notes-drive-1",
+      summaryOverview: "This summary was deleted from the Doc.",
+      summaryActionItems: "Publish the draft.",
+      metadata: {
+        drive_file_id: "notes-drive-1",
+        drive_modified_time: "2026-08-17T10:00:00.000Z",
+        notes_kind: "gemini",
+        notes_association: "standalone",
+        notes_owned_fields: ["summary_overview", "summary_action_items"],
+      },
+    });
+    expect((await upsertMeeting(f.tcw, original, [S("This summary was deleted from the Doc."), S("Publish the draft.")])).ok).toBe(true);
+
+    const revised = await upsertMeeting(f.tcw, {
+      ...original,
+      id: "row-from-revised-doc",
+      summaryOverview: null,
+      summaryActionItems: "Publish the revised draft.",
+      metadata: {
+        ...original.metadata,
+        drive_modified_time: "2026-08-17T11:00:00.000Z",
+      },
+    }, [S("Publish the revised draft.")]);
+
+    expect(revised.ok).toBe(true);
+    const row = f.sql.meetings.get("row-new");
+    expect(row?.summary_overview).toBeNull();
+    expect(row?.summary_action_items).toBe("Publish the revised draft.");
+    expect(f.kv.entries.get(transcriptKvKey("google-meet", "notes-drive-1"))).toContain("Publish the revised draft.");
+    expect(f.kv.entries.get(transcriptKvKey("google-meet", "notes-drive-1"))).not.toContain("This summary was deleted from the Doc.");
+  });
+
   test("participants are kept when the update carries none, and metadata merges (new wins)", async () => {
     const f = makeFake();
     await upsertMeeting(

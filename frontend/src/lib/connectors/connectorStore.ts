@@ -431,7 +431,9 @@ function parseJsonObject(raw: string | null): Record<string, unknown> {
  *    `meeting.id` from normalize() is used only when inserting;
  *  - a `null` scalar in the new payload keeps the stored value — Fireflies
  *    summaries lag transcripts, so a later `meeting.transcribed` fetch with
- *    no summary must not erase one;
+ *    no summary must not erase one. The two fields explicitly owned by a
+ *    standalone Notes by Gemini Doc are the exception: a later Doc revision
+ *    can delete either section, which must clear the stored field;
  *  - an empty participants list / `null` keywords keep what's stored;
  *  - metadata is shallow-merged, new keys winning;
  *  - an empty sentence list on an UPDATE leaves the stored transcript body
@@ -480,6 +482,13 @@ export async function upsertMeeting(
 
   const keepStr = (next: string | null, idx: number): string | null =>
     next !== null ? next : cellStr(row, idx, null);
+  const notesOwnedFields = meeting.metadata.notes_owned_fields;
+  const ownsStandaloneNotesField = (field: "summary_overview" | "summary_action_items") =>
+    meeting.source === "google-meet"
+    && meeting.metadata.notes_association === "standalone"
+    && meeting.metadata.notes_kind === "gemini"
+    && Array.isArray(notesOwnedFields)
+    && notesOwnedFields.includes(field);
   const mergedMetadata = {
     ...parseJsonObject(cellStr(row, 11, null)),
     ...meeting.metadata,
@@ -499,8 +508,12 @@ export async function upsertMeeting(
       meeting.participants.length > 0
         ? JSON.stringify(meeting.participants)
         : (cellStr(row, 6, null) ?? "[]"),
-      keepStr(meeting.summaryOverview, 7),
-      keepStr(meeting.summaryActionItems, 8),
+      ownsStandaloneNotesField("summary_overview")
+        ? meeting.summaryOverview
+        : keepStr(meeting.summaryOverview, 7),
+      ownsStandaloneNotesField("summary_action_items")
+        ? meeting.summaryActionItems
+        : keepStr(meeting.summaryActionItems, 8),
       meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
       keepStr(meeting.meetingType, 10),
       JSON.stringify(mergedMetadata),
