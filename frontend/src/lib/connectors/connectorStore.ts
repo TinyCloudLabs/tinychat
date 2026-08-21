@@ -221,7 +221,7 @@ export async function getConnection(
       connectorId: (cellStr(row, 0, connectorId) as ConnectorId) ?? connectorId,
       status: (cellStr(row, 1, "disconnected") ?? "disconnected") as "connected" | "disconnected",
       lastSyncedAt: cellStr(row, 2, null),
-      lastSyncStatus: cellStr(row, 3, null) as "ok" | "error" | null,
+      lastSyncStatus: cellStr(row, 3, null) as "ok" | "partial" | "error" | null,
       lastSyncError: cellStr(row, 4, null),
       itemCount: cellNum(row, 5, 0) ?? 0,
     },
@@ -232,7 +232,7 @@ export interface UpdateSyncStateInput {
   connectorId: ConnectorId;
   status: "connected" | "disconnected";
   lastSyncedAt: string | null;
-  lastSyncStatus: "ok" | "error" | null;
+  lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
 }
@@ -567,34 +567,43 @@ export interface GmeetNotesAssociation {
   metadata: Record<string, unknown>;
 }
 
-/** Read all possible same-source rows; the narrow deterministic matching lives here. */
+/** Read only rows that can match the supplied Drive id or exact meeting identity. */
 export async function findGmeetNotesAssociation(
   tcw: TinyCloudWeb,
   source: string,
   fileId: string,
   title: string | null,
   startedAt: string | null,
+  excludeSourceId?: string,
 ): Promise<StoreResult<GmeetNotesAssociation | null>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
+  const terms = ["source_id = ?", "metadata LIKE ? ESCAPE '\\'"];
+  const params: (string | null)[] = [source, fileId, `%${fileId.replace(/[\\%_]/g, "\\$&")}%`];
+  if (title !== null && startedAt !== null) {
+    terms.push("(title = ? AND started_at = ?)");
+    params.push(title, startedAt);
+  }
   const res = await store(tcw).query(
-    "SELECT id, source_id, title, started_at, metadata FROM connector_meeting WHERE source = ?",
-    [source],
+    `SELECT id, source_id, title, started_at, metadata FROM connector_meeting
+     WHERE source = ? AND (${terms.join(" OR ")})`,
+    params,
   );
   if (!res.ok) return fail(res.error, "findGmeetNotesAssociation");
   const rows = res.data.rows.map((row) => ({
     id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
     startedAt: cellStr(row, 3, null), metadata: parseJsonObject(cellStr(row, 4, null)),
   })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
-  const idMatch = rows.find((row) => row.metadata.drive_file_id === fileId);
+  const candidates = excludeSourceId === undefined ? rows : rows.filter((row) => row.sourceId !== excludeSourceId);
+  const idMatch = candidates.find((row) => row.metadata.drive_file_id === fileId);
   if (idMatch) return { ok: true, data: idMatch };
-  const exportMatch = rows.find((row) => Array.isArray(row.metadata.docs_export_uris)
+  const exportMatches = candidates.filter((row) => Array.isArray(row.metadata.docs_export_uris)
     && row.metadata.docs_export_uris.some((uri) => typeof uri === "string" && extractDriveFileId(uri) === fileId));
-  if (exportMatch) return { ok: true, data: exportMatch };
+  if (exportMatches.length === 1) return { ok: true, data: exportMatches[0]! };
   // A missing date/title is not an identity. Treating two nulls as "exact"
   // would silently attach an arbitrary undated meeting Doc to an arbitrary row.
   if (title === null || startedAt === null) return { ok: true, data: null };
-  const exact = rows.filter((row) => row.title === title && row.startedAt === startedAt);
+  const exact = candidates.filter((row) => row.title === title && row.startedAt === startedAt);
   return { ok: true, data: exact.length === 1 ? exact[0]! : null };
 }
 

@@ -409,6 +409,13 @@ describe("Sync now — engine dispatch", () => {
     expect(card).toContain("joined it rather than starting a second pass");
   });
 
+  test("a successful Meet-only sync still surfaces the persisted reconnect-required partial state", () => {
+    // A legacy grant can continue its Meet pass while Drive rejects the new
+    // scope. That is neither a full failure nor a success the card may hide.
+    expect(card).toContain('state.connection?.lastSyncStatus === "partial"');
+    expect(card).toContain("state.connection.lastSyncError");
+  });
+
   test("nothing in the card logs or persists token material", () => {
     expect(card).not.toMatch(/console\.(log|debug|info|warn|error)\(/);
     expect(card).not.toContain("localStorage");

@@ -795,7 +795,10 @@ describe("Drive Notes by Gemini sync", () => {
 
     expect(result.ok).toBe(true);
     expect(store.rows.map((row) => row.meeting.sourceId)).toContain("meet-still-syncs");
-    expect(store.state?.lastSyncStatus).toBe("ok");
+    expect(store.state).toMatchObject({
+      lastSyncStatus: "partial",
+      lastSyncError: "Reconnect Google Meet to sync Notes by Gemini",
+    });
   });
 
   test("metadata gate prevents unrelated Docs from being read and commits the snapshot cursor", async () => {
@@ -832,6 +835,82 @@ describe("Drive Notes by Gemini sync", () => {
     expect(client.calls).toContain("listConferenceRecords");
     expect(store.rows.some((row) => row.meeting.sourceId === "notes")).toBe(true);
     expect(store.rows.some((row) => row.meeting.sourceId === "draft")).toBe(false);
+    expect(result.data.skipped).toBe(0);
+    expect(result.data.items).not.toContainEqual(expect.objectContaining({ sourceId: "draft" }));
+  });
+
+  test("migrates a Notes-first standalone row onto a later uniquely matching conference", async () => {
+    const store = new FakeStore();
+    const standalone: NormalizedMeeting = {
+      id: "notes-row", source: "google-meet", sourceId: "notes-1", title: "Project Atlas",
+      startedAt: "2026-08-17T09:00:00.000Z", durationSecs: null, organizerEmail: null,
+      participants: [], summaryOverview: "old summary", summaryActionItems: "old actions",
+      keywords: null, meetingType: null,
+      metadata: { drive_file_id: "notes-1", notes_association: "standalone" },
+    };
+    const conference: NormalizedMeeting = {
+      ...standalone, id: "conference-row", sourceId: "conference-1",
+      summaryOverview: null, summaryActionItems: null, metadata: {},
+    };
+    store.rows.push(
+      { id: standalone.id, createdAt: "created-at", meeting: standalone },
+      { id: conference.id, createdAt: "created-at", meeting: conference },
+    );
+    store.bodies.set("google-meet/notes-1", [{ index: 0, speaker_name: "Gemini", text: "old notes", start_time: 0, end_time: 1 }]);
+    store.bodies.set("google-meet/conference-1", [{ index: 0, speaker_name: "Alice", text: "Meet transcript", start_time: 0, end_time: 1 }]);
+    const attachCalls: string[] = [];
+    const client = Object.assign(new FakeClient([]), {
+      async getDriveStartPageToken() { throw new Error("incremental sync must not snapshot"); },
+      async listDriveFiles() { throw new Error("incremental sync must not snapshot"); },
+      async listDriveChangesPage() { return { ok: true as const, data: {
+        changes: [{ fileId: "notes-1", file: { id: "notes-1", name: "Notes by Gemini — Project Atlas", mimeType: "application/vnd.google-apps.document" } }],
+        nextPageToken: null, newStartPageToken: "cursor-2",
+      } }; },
+      async getDriveDocument() { return { ok: true as const, data: { body: { content: [
+        { paragraph: { paragraphStyle: { namedStyleType: "TITLE" }, elements: [{ textRun: { content: "Notes by Gemini\n" } }] } },
+        { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Project Atlas\n" } }] } },
+        { paragraph: { elements: [{ textRun: { content: "August 17, 2026, 9:00 AM – 9:30 AM\n" } }] } },
+        { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Summary\n" } }] } },
+        { paragraph: { elements: [{ textRun: { content: "The pilot is approved.\n" } }] } },
+      ] } } }; },
+    });
+    Object.assign(store, {
+      cursor: "cursor-1",
+      async getDriveCursor() { return ok(this.cursor); },
+      async putDriveCursor(_: TinyCloudWeb, _source: string, cursor: string) { this.cursor = cursor; return ok(undefined); },
+      async findGmeetNotesAssociation(_: TinyCloudWeb, _source: string, _fileId: string, title: string | null) {
+        const found = title === null
+          ? this.rows.find((row: StoredRow) => row.meeting.sourceId === "notes-1")
+          : this.rows.find((row: StoredRow) => row.meeting.sourceId === "conference-1");
+        return ok(found === undefined ? null : {
+          id: found.id,
+          sourceId: found.meeting.sourceId,
+          title: found.meeting.title,
+          startedAt: found.meeting.startedAt,
+          metadata: found.meeting.metadata,
+        });
+      },
+      async attachGmeetNotes(_: TinyCloudWeb, row: { sourceId: string }, notes: Pick<NormalizedMeeting, "summaryOverview" | "summaryActionItems" | "metadata">) {
+        attachCalls.push(row.sourceId);
+        const target = this.rows.find((stored: StoredRow) => stored.meeting.sourceId === row.sourceId)!;
+        target.meeting = { ...target.meeting, summaryOverview: notes.summaryOverview, summaryActionItems: notes.summaryActionItems, metadata: { ...target.meeting.metadata, ...notes.metadata } };
+        return ok(undefined);
+      },
+      async removeGmeetNotes(_: TinyCloudWeb, _source: string, fileId: string) {
+        const index = this.rows.findIndex((row: StoredRow) => row.meeting.sourceId === fileId);
+        if (index >= 0) this.rows.splice(index, 1);
+        this.bodies.delete(`google-meet/${fileId}`);
+        return ok(undefined);
+      },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(true);
+    expect(attachCalls).toEqual(["conference-1"]);
+    expect(store.rows.map((row) => row.meeting.sourceId)).toEqual(["conference-1"]);
+    expect(store.bodies.has("google-meet/notes-1")).toBe(false);
+    expect(store.bodies.get("google-meet/conference-1")?.[0]?.text).toBe("Meet transcript");
   });
 
   test("recognizes only a non-trashed Google Doc with the narrow Notes by Gemini metadata marker", () => {
@@ -839,6 +918,33 @@ describe("Drive Notes by Gemini sync", () => {
     expect(isLikelyGmeetNotesFile({ id: "b", name: "Notes by Gemini", mimeType: "application/pdf" })).toBe(false);
     expect(isLikelyGmeetNotesFile({ id: "c", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document", trashed: true })).toBe(false);
     expect(isLikelyGmeetNotesFile({ id: "d", name: "Meeting notes", mimeType: "application/vnd.google-apps.document" })).toBe(false);
+  });
+
+  test("removes an associated trashed snapshot file without reading its document", async () => {
+    const client = Object.assign(new FakeClient([]), {
+      async getDriveStartPageToken() { return { ok: true as const, data: "snapshot-token" }; },
+      async listDriveFiles() { return { ok: true as const, data: [
+        { id: "notes-1", name: "Notes by Gemini — old", mimeType: "application/vnd.google-apps.document", trashed: true },
+      ] }; },
+      async listDriveChangesPage() { throw new Error("snapshot must not read changes"); },
+      async getDriveDocument() { throw new Error("trashed Docs must not be read"); },
+    });
+    const removals: string[] = [];
+    const store = Object.assign(new FakeStore(), {
+      async getDriveCursor() { return ok(null); },
+      async putDriveCursor() { return ok(undefined); },
+      async findGmeetNotesAssociation() { return ok({
+        id: "conference-row", sourceId: "conference-1", title: "Old", startedAt: null,
+        metadata: { drive_file_id: "notes-1" },
+      }); },
+      async attachGmeetNotes() { throw new Error("trashed Docs must not attach"); },
+      async removeGmeetNotes(_: TinyCloudWeb, _source: string, fileId: string) { removals.push(fileId); return ok(undefined); },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(true);
+    expect(removals).toEqual(["notes-1"]);
   });
 
   test("rebuilds an expired Drive cursor from a guarded metadata snapshot", async () => {

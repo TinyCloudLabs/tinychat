@@ -634,7 +634,7 @@ const ConnectorRow: FC<{
       {!comingSoon &&
         !state.actionError &&
         connected &&
-        state.connection?.lastSyncStatus === "error" &&
+        (state.connection?.lastSyncStatus === "error" || state.connection?.lastSyncStatus === "partial") &&
         state.connection.lastSyncError && (
           <p role="alert" className="text-xs text-destructive">
             {state.connection.lastSyncError}

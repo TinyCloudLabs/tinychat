@@ -27,7 +27,7 @@ export interface ConnectorConnection {
   connectorId: ConnectorId;
   status: "connected" | "disconnected";
   lastSyncedAt: string | null;
-  lastSyncStatus: "ok" | "error" | null;
+  lastSyncStatus: "ok" | "partial" | "error" | null;
   lastSyncError: string | null;
   itemCount: number;
 }
