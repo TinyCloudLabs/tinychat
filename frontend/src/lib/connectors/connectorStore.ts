@@ -396,13 +396,66 @@ export interface UpsertMeetingOutcome {
   createdAt: string;
 }
 
+export interface MeetingDatetimeStats {
+  rows: number;
+  dated: number;
+  sourceMeet: number;
+  sourceDocs: number;
+  sourceDriveCreatedApprox: number;
+  sourceUnavailable: number;
+  invalidAmbiguous: number;
+  duplicates: number;
+}
+
+export async function getMeetingDatetimeStats(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<MeetingDatetimeStats>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await store(tcw).query(
+    "SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ?",
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "getMeetingDatetimeStats");
+  const stats: MeetingDatetimeStats = {
+    rows: res.data.rows.length, dated: 0, sourceMeet: 0, sourceDocs: 0,
+    sourceDriveCreatedApprox: 0, sourceUnavailable: 0,
+    invalidAmbiguous: 0, duplicates: 0,
+  };
+  const seen = new Set<string>();
+  for (const row of res.data.rows) {
+    const sourceId = cellStr(row, 0, null);
+    if (sourceId !== null) {
+      if (seen.has(sourceId)) stats.duplicates++;
+      else seen.add(sourceId);
+    }
+    const startedAt = cellStr(row, 1, null);
+    if (startedAt !== null) {
+      if (Number.isFinite(Date.parse(startedAt))) stats.dated++;
+      else stats.invalidAmbiguous++;
+    }
+    const metadata = parseJsonObject(row[2]);
+    switch (metadata.datetime_source) {
+      case "meet_conference_start": stats.sourceMeet++; break;
+      case "docs_content": stats.sourceDocs++; break;
+      case "drive_created_time": stats.sourceDriveCreatedApprox++; break;
+      default: stats.sourceUnavailable++; break;
+    }
+  }
+  return { ok: true, data: stats };
+}
+
 /** Columns the upsert lookup reads, in the order the merge below unpacks them. */
 const UPSERT_LOOKUP_COLUMNS =
   "id, created_at, title, started_at, duration_secs, organizer_email, participants, "
   + "summary_overview, summary_action_items, keywords, meeting_type, metadata";
 
-function parseJsonObject(raw: string | null): Record<string, unknown> {
-  if (raw === null) return {};
+function parseJsonObject(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw !== "string") return {};
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -413,6 +466,16 @@ function parseJsonObject(raw: string | null): Record<string, unknown> {
     // simply replaces it wholesale.
   }
   return {};
+}
+
+function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boolean): number {
+  switch (metadata.datetime_source) {
+    case "meet_conference_start": return 3;
+    case "docs_content": return 2;
+    case "drive_created_time": return 1;
+    case "unavailable": return 0;
+    default: return hasStartedAt ? 3 : 0;
+  }
 }
 
 /**
@@ -489,10 +552,21 @@ export async function upsertMeeting(
     && meeting.metadata.notes_kind === "gemini"
     && Array.isArray(notesOwnedFields)
     && notesOwnedFields.includes(field);
-  const mergedMetadata = {
-    ...parseJsonObject(cellStr(row, 11, null)),
+  const existingStartedAt = cellStr(row, 3, null);
+  const existingMetadata = parseJsonObject(row[11]);
+  const acceptsIncomingDatetime = meeting.startedAt !== null
+    && (existingStartedAt === null
+      || datetimeConfidence(meeting.metadata, true) >= datetimeConfidence(existingMetadata, true));
+  const mergedMetadata: Record<string, unknown> = {
+    ...existingMetadata,
     ...meeting.metadata,
   };
+  if (!acceptsIncomingDatetime) {
+    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
+      if (key in existingMetadata) mergedMetadata[key] = existingMetadata[key];
+      else delete mergedMetadata[key];
+    }
+  }
 
   const upd = await store(tcw).execute(
     `UPDATE connector_meeting SET
@@ -502,7 +576,7 @@ export async function upsertMeeting(
      WHERE id = ?`,
     [
       keepStr(meeting.title, 2),
-      keepStr(meeting.startedAt, 3),
+      acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
       meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
       keepStr(meeting.organizerEmail, 5),
       meeting.participants.length > 0
@@ -583,6 +657,8 @@ export interface GmeetNotesAssociation {
   metadata: Record<string, unknown>;
 }
 
+export type GmeetNotesRemovalOutcome = "deleted" | "cleared" | "unchanged";
+
 /** Read only rows that can match the supplied Drive id or exact meeting identity. */
 export async function findGmeetNotesAssociation(
   tcw: TinyCloudWeb,
@@ -609,7 +685,7 @@ export async function findGmeetNotesAssociation(
   const rows = res.data.rows.map((row) => ({
     id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
     startedAt: cellStr(row, 3, null), summaryOverview: cellStr(row, 4, null),
-    summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(cellStr(row, 6, null)),
+    summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(row[6]),
   })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
   const candidates = excludeSourceId === undefined ? rows : rows.filter((row) => row.sourceId !== excludeSourceId);
   // During a migration both the standalone row and its new conference target
@@ -638,12 +714,23 @@ function extractDriveFileId(uri: string): string | null {
 export async function attachGmeetNotes(
   tcw: TinyCloudWeb,
   row: GmeetNotesAssociation,
-  notes: Pick<NormalizedMeeting, "summaryOverview" | "summaryActionItems" | "metadata">,
+  notes: Pick<NormalizedMeeting, "startedAt" | "summaryOverview" | "summaryActionItems" | "metadata">,
 ): Promise<StoreResult<void>> {
-  const metadata = { ...row.metadata, ...notes.metadata, notes_association: "conference" };
+  const acceptsIncomingDatetime = notes.startedAt !== null
+    && (row.startedAt === null
+      || datetimeConfidence(notes.metadata, true) >= datetimeConfidence(row.metadata, true));
+  const metadata: Record<string, unknown> = { ...row.metadata, ...notes.metadata, notes_association: "conference" };
+  if (!acceptsIncomingDatetime) {
+    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
+      if (key in row.metadata) metadata[key] = row.metadata[key];
+      else delete metadata[key];
+    }
+  }
   const res = await store(tcw).execute(
-    "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ?, metadata = ?, updated_at = ? WHERE id = ?",
-    [notes.summaryOverview, notes.summaryActionItems, JSON.stringify(metadata), new Date().toISOString(), row.id],
+    "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ?, started_at = ?, metadata = ?, updated_at = ? WHERE id = ?",
+    [notes.summaryOverview, notes.summaryActionItems,
+      acceptsIncomingDatetime ? notes.startedAt : row.startedAt,
+      JSON.stringify(metadata), new Date().toISOString(), row.id],
   );
   if (!res.ok) return fail(res.error, "attachGmeetNotes");
   return { ok: true, data: undefined };
@@ -654,22 +741,22 @@ export async function removeGmeetNotes(
   tcw: TinyCloudWeb,
   source: string,
   fileId: string,
-): Promise<StoreResult<void>> {
+): Promise<StoreResult<GmeetNotesRemovalOutcome>> {
   const found = await findGmeetNotesAssociation(tcw, source, fileId, null, null);
   if (!found.ok) return found;
-  if (!found.data) return { ok: true, data: undefined };
+  if (!found.data) return { ok: true, data: "unchanged" };
   const row = found.data;
   if (row.sourceId === fileId) {
     const kv = await tcw.kv.delete(transcriptKvKey(source, fileId));
     if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)");
     const del = await store(tcw).execute("DELETE FROM connector_meeting WHERE id = ?", [row.id]);
     if (!del.ok) return fail(del.error, "removeGmeetNotes(row)");
-    return { ok: true, data: undefined };
+    return { ok: true, data: "deleted" };
   }
   const owned = row.metadata.notes_owned_fields;
   if (row.metadata.drive_file_id !== fileId || !Array.isArray(owned)
     || !owned.includes("summary_overview") || !owned.includes("summary_action_items")) {
-    return { ok: true, data: undefined };
+    return { ok: true, data: "unchanged" };
   }
   const metadata = { ...row.metadata };
   delete metadata.drive_file_id;
@@ -682,7 +769,7 @@ export async function removeGmeetNotes(
     [JSON.stringify(metadata), new Date().toISOString(), row.id],
   );
   if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)");
-  return { ok: true, data: undefined };
+  return { ok: true, data: "cleared" };
 }
 
 // ── Purge ───────────────────────────────────────────────────────────────

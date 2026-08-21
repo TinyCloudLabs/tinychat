@@ -182,6 +182,7 @@ export interface GoogleDriveFile {
   id?: string;
   name?: string;
   mimeType?: string;
+  createdTime?: string;
   modifiedTime?: string;
   trashed?: boolean;
   description?: string;
@@ -198,6 +199,16 @@ export interface GoogleDriveChangesPage {
   changes: GoogleDriveChange[];
   nextPageToken: string | null;
   newStartPageToken: string | null;
+}
+
+export interface GoogleDocsDocument {
+  documentId?: string;
+  title?: string;
+  body?: { content?: unknown[] };
+  tabs?: Array<{
+    tabProperties?: { title?: string };
+    documentTab?: { body?: { content?: unknown[] } };
+  }>;
 }
 
 /** Sleep that resolves EARLY (not rejects) when the signal aborts. */
@@ -417,7 +428,7 @@ export class GmeetClient {
     const url = this.driveUrl("files", {
       pageSize: "100",
       orderBy: "modifiedTime",
-      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,description,appProperties)",
+      fields: "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,trashed,description,appProperties)",
     });
     return this.listAllPages<GoogleDriveFile>(url, "files", opts);
   }
@@ -441,7 +452,7 @@ export class GmeetClient {
       this.driveUrl("changes", {
         pageToken,
         pageSize: "100",
-        fields: "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,trashed,description,appProperties))",
+        fields: "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,createdTime,modifiedTime,trashed,description,appProperties))",
       }), { method: "GET" }, opts,
     );
     if (!result.ok) return result;
@@ -456,9 +467,9 @@ export class GmeetClient {
   }
 
   /** Read a Docs structural document. Only the sync engine may call this for a candidate. */
-  async getDriveDocument(fileId: string, opts: GmeetCallOptions = {}): Promise<GmeetResult<Record<string, unknown>>> {
-    return this.request<Record<string, unknown>>(
-      this.docsUrl(`documents/${encodeURIComponent(fileId)}`, {}), { method: "GET" }, opts,
+  async getDriveDocument(fileId: string, opts: GmeetCallOptions = {}): Promise<GmeetResult<GoogleDocsDocument>> {
+    return this.request<GoogleDocsDocument>(
+      this.docsUrl(`documents/${encodeURIComponent(fileId)}`, { includeTabsContent: "true" }), { method: "GET" }, opts,
     );
   }
 

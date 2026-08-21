@@ -7,22 +7,25 @@
 
 import type { FirefliesSentence } from "./firefliesClient";
 import type { NormalizedMeeting } from "./connectorStore";
+import type { GoogleDocsDocument } from "./gmeetClient";
 
-export interface GoogleDocsDocument {
-  documentId?: string;
-  title?: string;
-  body?: { content?: unknown[] };
-}
+export const GMEET_DATETIME_RESOLUTION_VERSION = 1;
 
 export interface GmeetNotesProvenance {
   fileId: string;
+  createdTime?: string | null;
   modifiedTime?: string | null;
+  verifiedCandidate?: boolean;
 }
 
 export interface GmeetNotesParseResult {
   meeting: NormalizedMeeting;
   sentences: FirefliesSentence[];
 }
+
+export type GmeetNotesParseOutcome =
+  | { ok: true; data: GmeetNotesParseResult }
+  | { ok: false; reason: "no-marker" | "no-supported-section" };
 
 interface DocumentParagraph {
   text: string;
@@ -64,12 +67,21 @@ function sectionText(paragraphs: readonly DocumentParagraph[], heading: string):
 
 function parseStartTime(paragraphs: readonly DocumentParagraph[]): string | null {
   for (const paragraph of paragraphs) {
-    const candidate = paragraph.text.split(/[–—-]/)[0]?.trim() ?? "";
-    if (!/\b(?:19|20)\d{2}\b/.test(candidate)) continue;
+    const candidate = paragraph.text.split(/[–—]/)[0]?.trim() ?? "";
+    if (!/\b(?:19|20)\d{2}\b/.test(candidate) || !/\d{1,2}:\d{2}/.test(candidate)) continue;
+    if (!/(?:\b(?:UTC|GMT)\b|(?:Z|[+-]\d{2}:?\d{2})\s*$)/i.test(candidate)) continue;
     const ms = Date.parse(candidate);
     if (Number.isFinite(ms)) return new Date(ms).toISOString();
   }
   return null;
+}
+
+function normalizeIsoInstant(value: string | null | undefined): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const candidate = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(candidate)) return null;
+  const ms = Date.parse(candidate);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
 function meetingId(): string {
@@ -78,20 +90,26 @@ function meetingId(): string {
     : `gmeet-notes-${Math.random().toString(36).slice(2)}`;
 }
 
-/** Parse a verified Notes-by-Gemini Google Doc, otherwise return null. */
-export function parseGmeetNotesDocument(
+/** Parse a verified Notes-by-Gemini Google Doc with a count-only rejection reason. */
+export function diagnoseGmeetNotesDocument(
   document: GoogleDocsDocument,
   provenance: GmeetNotesProvenance,
-): GmeetNotesParseResult | null {
-  if (!provenance.fileId.trim()) return null;
-  const paragraphs = (document.body?.content ?? [])
-    .map(paragraphFrom)
-    .filter((paragraph): paragraph is DocumentParagraph => paragraph !== null);
-  if (!paragraphs.some((paragraph) => normalHeading(paragraph.text) === "notes by gemini")) return null;
+): GmeetNotesParseOutcome {
+  const paragraphGroups = [document.body?.content, ...(document.tabs ?? []).map((tab) => tab.documentTab?.body?.content)]
+    .filter((content): content is unknown[] => Array.isArray(content))
+    .map((content) => content.map(paragraphFrom).filter((paragraph): paragraph is DocumentParagraph => paragraph !== null));
+  const paragraphs = paragraphGroups.flat();
+  const titleHasMarker = typeof document.title === "string" && /\bnotes by gemini\b/i.test(document.title);
+  if (!provenance.verifiedCandidate && !titleHasMarker
+    && !paragraphs.some((paragraph) => normalHeading(paragraph.text) === "notes by gemini")) {
+    return { ok: false, reason: "no-marker" };
+  }
 
-  const overview = sectionText(paragraphs, "summary");
-  const actions = sectionText(paragraphs, "next steps");
-  if (overview === null && actions === null) return null;
+  const overview = paragraphGroups.map((group) => sectionText(group, "summary")).find((text) => text !== null) ?? null;
+  const actions = paragraphGroups.map((group) => sectionText(group, "next steps")).find((text) => text !== null) ?? null;
+  if (overview === null && actions === null) {
+    return { ok: false, reason: "no-supported-section" };
+  }
 
   const markerIndex = paragraphs.findIndex((paragraph) => normalHeading(paragraph.text) === "notes by gemini");
   const titleParagraph = paragraphs.slice(markerIndex + 1).find((paragraph) =>
@@ -99,6 +117,13 @@ export function parseGmeetNotesDocument(
   );
   const title = titleParagraph?.text ?? (typeof document.title === "string" && document.title.trim() ? document.title.trim() : null);
   const texts = [overview, actions].filter((text): text is string => text !== null);
+  const docsStartedAt = parseStartTime(paragraphs);
+  const createdAt = normalizeIsoInstant(provenance.createdTime);
+  const datetime = docsStartedAt !== null
+    ? { startedAt: docsStartedAt, source: "docs_content", exact: true }
+    : createdAt !== null
+      ? { startedAt: createdAt, source: "drive_created_time", exact: false }
+      : { startedAt: null, source: "unavailable", exact: false };
   const sentences = texts.map((text, index) => ({
     index,
     speaker_name: "Notes by Gemini",
@@ -107,13 +132,13 @@ export function parseGmeetNotesDocument(
     end_time: 0,
   }));
 
-  return {
+  return { ok: true, data: {
     meeting: {
       id: meetingId(),
       source: "google-meet",
       sourceId: provenance.fileId,
       title,
-      startedAt: parseStartTime(paragraphs),
+      startedAt: datetime.startedAt,
       durationSecs: null,
       organizerEmail: null,
       participants: [],
@@ -123,11 +148,25 @@ export function parseGmeetNotesDocument(
       meetingType: null,
       metadata: {
         drive_file_id: provenance.fileId,
+        drive_created_time: provenance.createdTime ?? null,
         drive_modified_time: provenance.modifiedTime ?? null,
+        datetime_source: datetime.source,
+        datetime_exact: datetime.exact,
+        datetime_resolution_version: GMEET_DATETIME_RESOLUTION_VERSION,
         notes_kind: "gemini",
         notes_owned_fields: ["summary_overview", "summary_action_items"],
       },
     },
     sentences,
-  };
+  } };
+}
+
+/** Compatibility wrapper for callers that do not need the rejection bucket. */
+export function parseGmeetNotesDocument(
+  document: GoogleDocsDocument,
+  provenance: GmeetNotesProvenance,
+): GmeetNotesParseResult | null {
+  if (!provenance.fileId.trim()) return null;
+  const outcome = diagnoseGmeetNotesDocument(document, provenance);
+  return outcome.ok ? outcome.data : null;
 }
