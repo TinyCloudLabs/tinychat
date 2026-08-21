@@ -26,7 +26,7 @@ export const CONNECTORS: ConnectorDescriptor[] = [
   {
     id: "google-meet",
     name: "Google Meet",
-    description: "Sync Google Meet recordings and captions.",
+    description: "Sync Google Meet transcripts and Notes by Gemini.",
     status: "available",
     secretName: "REFRESH_TOKEN",
     secretScope: "google-meet",

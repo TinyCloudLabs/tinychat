@@ -126,6 +126,11 @@ const GMEET_STORE: GmeetSyncStore = {
   upsertMeeting: connectorStore.upsertMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
+  getDriveCursor: connectorStore.getDriveCursor,
+  putDriveCursor: connectorStore.putDriveCursor,
+  findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
+  attachGmeetNotes: connectorStore.attachGmeetNotes,
+  removeGmeetNotes: connectorStore.removeGmeetNotes,
 };
 
 /** Meet's progress vocabulary → the row's. Counts only; no titles, no text. */

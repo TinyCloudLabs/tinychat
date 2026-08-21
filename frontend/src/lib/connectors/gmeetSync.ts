@@ -44,12 +44,16 @@ import type {
   GmeetResult,
   GmeetTranscript,
   GmeetTranscriptEntry,
+  GoogleDriveChange,
+  GoogleDriveChangesPage,
+  GoogleDriveFile,
 } from "./gmeetClient";
 import {
   GMEET_MEETING_SOURCE,
   normalizeGoogleMeetTranscript,
   type GmeetTranscriptBundle,
 } from "./gmeetNormalize";
+import { parseGmeetNotesDocument } from "./gmeetNotes";
 import type { ConnectorConnection, ConnectorId } from "./types";
 
 /** SQL `source` column value and connector id — one string, one meaning. */
@@ -106,6 +110,10 @@ export interface GmeetSyncClient {
     transcriptName: string,
     opts?: GmeetCallOptions,
   ): Promise<GmeetResult<GmeetTranscriptEntry[]>>;
+  listDriveFiles?(opts?: GmeetCallOptions): Promise<GmeetResult<GoogleDriveFile[]>>;
+  getDriveStartPageToken?(opts?: GmeetCallOptions): Promise<GmeetResult<string>>;
+  listDriveChangesPage?(pageToken: string, opts?: GmeetCallOptions): Promise<GmeetResult<GoogleDriveChangesPage>>;
+  getDriveDocument?(fileId: string, opts?: GmeetCallOptions): Promise<GmeetResult<Record<string, unknown>>>;
 }
 
 /** Structural surface of connectorStore used by the engine. `import * as store
@@ -130,6 +138,13 @@ export interface GmeetSyncStore {
   ): Promise<StoreResult<UpsertMeetingOutcome>>;
   updateSyncState(tcw: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
+  getDriveCursor?(tcw: TinyCloudWeb, source: string): Promise<StoreResult<string | null>>;
+  putDriveCursor?(tcw: TinyCloudWeb, source: string, cursor: string): Promise<StoreResult<void>>;
+  findGmeetNotesAssociation?(tcw: TinyCloudWeb, source: string, fileId: string, title: string | null, startedAt: string | null): Promise<StoreResult<{
+    id: string; sourceId: string; title: string | null; startedAt: string | null; metadata: Record<string, unknown>;
+  } | null>>;
+  attachGmeetNotes?(tcw: TinyCloudWeb, row: { id: string; sourceId: string; title: string | null; startedAt: string | null; metadata: Record<string, unknown> }, notes: Pick<NormalizedMeeting, "summaryOverview" | "summaryActionItems" | "metadata">): Promise<StoreResult<void>>;
+  removeGmeetNotes?(tcw: TinyCloudWeb, source: string, fileId: string): Promise<StoreResult<void>>;
 }
 
 export type GmeetSyncErrorKind = "auth" | "forbidden" | "rate-limited" | "network" | "storage";
@@ -417,6 +432,11 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
         emit("progress");
       }
     }
+    if (terminal === null && !aborted) {
+      const drive = await syncDriveNotes(opts, record);
+      if (drive.terminal) terminal = drive.terminal;
+      if (drive.aborted) aborted = true;
+    }
   } catch (err) {
     // Nothing in the loop is expected to throw (every seam is Result-shaped);
     // an unexpected one is surfaced rather than swallowed.
@@ -458,6 +478,132 @@ async function runGoogleMeetSync(opts: GmeetSyncOptions): Promise<GmeetSyncResul
   }
   emit("complete");
   return { ok: true, data: summary() };
+}
+
+/** A narrow metadata gate. Non-candidates must never reach Docs documents.get. */
+export function isLikelyGmeetNotesFile(file: GoogleDriveFile): boolean {
+  if (file.mimeType !== "application/vnd.google-apps.document" || file.trashed || !file.id?.trim()) return false;
+  const marker = [file.name, file.description, ...Object.values(file.appProperties ?? {})]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ").toLocaleLowerCase();
+  return /\bnotes by gemini\b/.test(marker);
+}
+
+interface DriveOutcome { terminal?: GmeetSyncError; aborted?: boolean }
+
+async function syncDriveNotes(
+  opts: GmeetSyncOptions,
+  record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void,
+): Promise<DriveOutcome> {
+  const { client, store, tcw, signal } = opts;
+  // Optional methods preserve compatibility with deliberately narrow external test clients.
+  if (!client.listDriveFiles || !client.getDriveStartPageToken || !client.listDriveChangesPage || !client.getDriveDocument
+    || !store.getDriveCursor || !store.putDriveCursor || !store.findGmeetNotesAssociation || !store.attachGmeetNotes || !store.removeGmeetNotes) return {};
+
+  const cursor = await store.getDriveCursor(tcw, SOURCE);
+  if (!cursor.ok) return { terminal: fromStore(cursor.error, "getDriveCursor") };
+  if (signal?.aborted) return { aborted: true };
+  if (cursor.data === null) return snapshotDriveNotes(opts, record);
+
+  let pageToken = cursor.data;
+  let finalCursor: string | null = null;
+  let anyFailure = false;
+  while (true) {
+    const page = await client.listDriveChangesPage(pageToken, { signal });
+    if (!page.ok) {
+      if (page.error.kind === "aborted") return { aborted: true };
+      // A stale Drive token is explicitly recovered with a fresh guarded snapshot.
+      if (page.error.kind === "not-found") return snapshotDriveNotes(opts, record);
+      return { terminal: fromGmeetError(page.error) };
+    }
+    let pageFailed = false;
+    for (const change of page.data.changes) {
+      const outcome = await syncDriveChange(change, opts, record);
+      if (outcome.aborted) return outcome;
+      if (outcome.terminal) return outcome;
+      if (outcome.failed) pageFailed = true;
+    }
+    // Never advance beyond a page that contained a failed candidate: replay is
+    // intentional and id+modifiedTime provenance makes it safe.
+    anyFailure ||= pageFailed;
+    if (page.data.nextPageToken) {
+      pageToken = page.data.nextPageToken;
+      continue;
+    }
+    finalCursor = page.data.newStartPageToken;
+    break;
+  }
+  if (anyFailure) return {};
+  if (!finalCursor) return { terminal: { kind: "network", message: "Google Drive changes page had no new start token" } };
+  const write = await store.putDriveCursor(tcw, SOURCE, finalCursor);
+  return write.ok ? {} : { terminal: fromStore(write.error, "putDriveCursor") };
+}
+
+async function snapshotDriveNotes(opts: GmeetSyncOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void): Promise<DriveOutcome> {
+  const { client, store, tcw, signal } = opts;
+  if (!client.getDriveStartPageToken || !client.listDriveFiles || !store.putDriveCursor) return {};
+  const start = await client.getDriveStartPageToken({ signal });
+  if (!start.ok) return start.error.kind === "aborted" ? { aborted: true } : { terminal: fromGmeetError(start.error) };
+  const files = await client.listDriveFiles({ signal });
+  if (!files.ok) return files.error.kind === "aborted" ? { aborted: true } : { terminal: fromGmeetError(files.error) };
+  let failed = false;
+  for (const file of files.data) {
+    const outcome = await syncDriveFile(file, opts, record);
+    if (outcome.aborted || outcome.terminal) return outcome;
+    if (outcome.failed) failed = true;
+  }
+  if (failed) return {};
+  const write = await store.putDriveCursor(tcw, SOURCE, start.data);
+  return write.ok ? {} : { terminal: fromStore(write.error, "putDriveCursor") };
+}
+
+async function syncDriveChange(change: GoogleDriveChange, opts: GmeetSyncOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void): Promise<DriveOutcome & { failed?: boolean }> {
+  const fileId = change.fileId ?? change.file?.id;
+  if (!fileId) return { failed: true };
+  if (change.removed || change.file?.trashed) {
+    const removed = await opts.store.removeGmeetNotes!(opts.tcw, SOURCE, fileId);
+    if (!removed.ok) { record(fileId, "error", fromStore(removed.error, "removeGmeetNotes").message); return { failed: true }; }
+    record(fileId, "updated");
+    return {};
+  }
+  return syncDriveFile(change.file ?? { id: fileId }, opts, record);
+}
+
+async function syncDriveFile(file: GoogleDriveFile, opts: GmeetSyncOptions, record: (sourceId: string, outcome: GmeetItemOutcome, reason?: string) => void): Promise<DriveOutcome & { failed?: boolean }> {
+  const fileId = file.id?.trim();
+  if (!fileId) return { failed: true };
+  // An already-associated exported transcript is eligible even if its Drive
+  // name no longer carries the marker; all other files must pass metadata gate.
+  const association = await opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, null, null);
+  if (!association.ok) { record(fileId, "error", fromStore(association.error, "findGmeetNotesAssociation").message); return { failed: true }; }
+  if (!isLikelyGmeetNotesFile(file) && association.data === null) { record(fileId, "skipped", "not a Notes by Gemini document"); return {}; }
+  if (typeof file.modifiedTime === "string" && file.modifiedTime.length > 0
+    && association.data?.metadata.drive_modified_time === file.modifiedTime) {
+    record(fileId, "skipped", "Drive file unchanged");
+    return {};
+  }
+  const doc = await opts.client.getDriveDocument!(fileId, { signal: opts.signal });
+  if (!doc.ok) {
+    if (doc.error.kind === "aborted") return { aborted: true };
+    record(fileId, "error", doc.error.message); return { failed: true };
+  }
+  const parsed = parseGmeetNotesDocument(doc.data, { fileId, modifiedTime: file.modifiedTime ?? null });
+  if (!parsed) { record(fileId, "skipped", "document is not a valid Notes by Gemini record"); return {}; }
+  const target = association.data ?? await opts.store.findGmeetNotesAssociation!(opts.tcw, SOURCE, fileId, parsed.meeting.title, parsed.meeting.startedAt);
+  if (!target.ok) { record(fileId, "error", fromStore(target.error, "findGmeetNotesAssociation").message); return { failed: true }; }
+  if (target.data && target.data.sourceId !== fileId) {
+    const attached = await opts.store.attachGmeetNotes!(opts.tcw, target.data, parsed.meeting);
+    if (!attached.ok) { record(fileId, "error", fromStore(attached.error, "attachGmeetNotes").message); return { failed: true }; }
+    record(fileId, "updated"); return {};
+  }
+  const standalone = { ...parsed.meeting, metadata: { ...parsed.meeting.metadata, notes_association: "standalone" } };
+  // As with Meet transcripts, the body reaches KV before its visible row.
+  const body = await opts.store.putTranscriptBody(opts.tcw, SOURCE, fileId, parsed.sentences);
+  if (!body.ok) { record(fileId, "error", fromStore(body.error, "putTranscriptBody(notes)").message); return { failed: true }; }
+  const write = await opts.store.upsertMeeting(opts.tcw, standalone, parsed.sentences);
+  if (!write.ok) { record(fileId, "error", fromStore(write.error, "upsertMeeting(notes)").message); return { failed: true }; }
+  record(fileId, write.data.inserted ? "created" : "updated");
+  return {};
 }
 
 interface RecordOutcome {

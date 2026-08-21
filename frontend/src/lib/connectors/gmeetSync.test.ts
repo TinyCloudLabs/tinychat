@@ -23,6 +23,7 @@ import {
   gmeetSyncWindowStartIso,
   gmeetSyncWindowStartMs,
   isGmeetSyncInFlight,
+  isLikelyGmeetNotesFile,
   isPersistableTranscriptState,
   isTerminalGmeetError,
   syncGoogleMeet,
@@ -767,5 +768,79 @@ describe("single-flight guard", () => {
     store.getConnectionError = true;
     await run(new FakeClient([]), store);
     expect(isGmeetSyncInFlight()).toBe(false);
+  });
+});
+
+describe("Drive Notes by Gemini sync", () => {
+  test("metadata gate prevents unrelated Docs from being read and commits the snapshot cursor", async () => {
+    const client = Object.assign(new FakeClient([]), {
+      async getDriveStartPageToken() { return { ok: true as const, data: "snapshot-token" }; },
+      async listDriveFiles() { return { ok: true as const, data: [
+        { id: "draft", name: "Planning draft", mimeType: "application/vnd.google-apps.document" },
+        { id: "notes", name: "Notes by Gemini — Atlas", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-08-17T10:00:00.000Z" },
+      ] }; },
+      async listDriveChangesPage() { throw new Error("snapshot must not read changes"); },
+      async getDriveDocument(id: string) {
+        if (id !== "notes") throw new Error(`unexpected document read: ${id}`);
+        return { ok: true as const, data: { documentId: id, title: "Atlas", body: { content: [
+          { paragraph: { elements: [{ textRun: { content: "Notes by Gemini\n" } }] } },
+          { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Atlas\n" } }] } },
+          { paragraph: { paragraphStyle: { namedStyleType: "HEADING_1" }, elements: [{ textRun: { content: "Summary\n" } }] } },
+          { paragraph: { elements: [{ textRun: { content: "Decision recorded.\n" } }] } },
+        ] } } };
+      },
+    });
+    const store = Object.assign(new FakeStore(), {
+      cursor: null as string | null,
+      async getDriveCursor() { return ok(this.cursor); },
+      async putDriveCursor(_: TinyCloudWeb, _source: string, cursor: string) { this.cursor = cursor; return ok(undefined); },
+      async findGmeetNotesAssociation() { return ok(null); },
+      async attachGmeetNotes() { return ok(undefined); },
+      async removeGmeetNotes() { return ok(undefined); },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(true);
+    expect(store.cursor).toBe("snapshot-token");
+    expect(client.calls).toContain("listConferenceRecords");
+    expect(store.rows.some((row) => row.meeting.sourceId === "notes")).toBe(true);
+    expect(store.rows.some((row) => row.meeting.sourceId === "draft")).toBe(false);
+  });
+
+  test("recognizes only a non-trashed Google Doc with the narrow Notes by Gemini metadata marker", () => {
+    expect(isLikelyGmeetNotesFile({ id: "a", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" })).toBe(true);
+    expect(isLikelyGmeetNotesFile({ id: "b", name: "Notes by Gemini", mimeType: "application/pdf" })).toBe(false);
+    expect(isLikelyGmeetNotesFile({ id: "c", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document", trashed: true })).toBe(false);
+    expect(isLikelyGmeetNotesFile({ id: "d", name: "Meeting notes", mimeType: "application/vnd.google-apps.document" })).toBe(false);
+  });
+
+  test("retains the prior change cursor when a candidate document read fails", async () => {
+    const client = Object.assign(new FakeClient([]), {
+      async getDriveStartPageToken() { throw new Error("not a snapshot"); },
+      async listDriveFiles() { throw new Error("not a snapshot"); },
+      async listDriveChangesPage() { return { ok: true as const, data: {
+        changes: [{ fileId: "notes", file: { id: "notes", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" } }],
+        nextPageToken: null,
+        newStartPageToken: "new-cursor",
+      } }; },
+      async getDriveDocument() { return { ok: false as const, error: { kind: "network-error" as const, status: null, message: "offline" } }; },
+    });
+    const store = Object.assign(new FakeStore(), {
+      cursor: "old-cursor",
+      writes: [] as string[],
+      async getDriveCursor() { return ok(this.cursor); },
+      async putDriveCursor(_: TinyCloudWeb, _source: string, cursor: string) { this.writes.push(cursor); this.cursor = cursor; return ok(undefined); },
+      async findGmeetNotesAssociation() { return ok(null); },
+      async attachGmeetNotes() { return ok(undefined); },
+      async removeGmeetNotes() { return ok(undefined); },
+    });
+
+    const result = await run(client, store);
+
+    expect(result.ok).toBe(true);
+    expect(result.data.items).toEqual([{ sourceId: "notes", outcome: "error", reason: "offline" }]);
+    expect(store.cursor).toBe("old-cursor");
+    expect(store.writes).toEqual([]);
   });
 });

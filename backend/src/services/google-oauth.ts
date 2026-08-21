@@ -31,16 +31,17 @@ export const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 export const GOOGLE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 
 /**
- * EXACTLY the two scopes, space-separated, in this order (handoff §4).
+ * Exactly the required scopes, space-separated, in this order (handoff §4).
  *
  * `meetings.space.readonly` reads conference records / transcripts; `meetings.space.settings`
- * carries the host-only auto-transcription toggle (S4, in scope per G1). No Drive, no Calendar —
- * a Drive scope is Restricted and would pull the build into CASA Tier-2 verification. Adding a
- * scope here is a product decision with a compliance price attached, not a code tweak.
+ * carries the host-only auto-transcription toggle (S4, in scope per G1). The Drive metadata and
+ * Docs scopes are used only to discover and parse Notes by Gemini meeting records.
  */
 export const GOOGLE_MEET_SCOPES = [
   "https://www.googleapis.com/auth/meetings.space.readonly",
   "https://www.googleapis.com/auth/meetings.space.settings",
+  "https://www.googleapis.com/auth/drive.metadata.readonly",
+  "https://www.googleapis.com/auth/documents.readonly",
 ].join(" ");
 
 /** The arming flag. Mirrors `connectorWebhooksEnabled()` (index.ts :140-142) exactly. */

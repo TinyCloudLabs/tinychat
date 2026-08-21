@@ -222,11 +222,9 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
  *
  * The other four things it must carry, per the plan:
  *
- *  1. Google and OAuth NAMED, and the EXACT two scopes in plain language —
- *     `meetings.space.readonly` (read transcripts + participants) and `meetings.space.settings`
- *     (change transcription settings). `backend/src/__tests__/consent-scope.test.ts` matches these
- *     sentences against `GOOGLE_MEET_SCOPES` itself, so adding a scope without amending the copy
- *     fails the build — which is the point, because a Drive scope is a compliance decision.
+ *  1. Google and OAuth NAMED, and every requested scope is described in plain language.
+ *     `backend/src/__tests__/consent-scope.test.ts` matches these sentences against
+ *     `GOOGLE_MEET_SCOPES` itself, so scope and copy cannot drift.
  *  2. The browser fetches meeting content DIRECTLY from Google; it does not pass through the
  *     TinyChat backend, and the data lands only in the user's space.
  *  3. The coverage cliff, D5's tone: cause named, no dead ends. A Google transcript exists only
@@ -245,16 +243,17 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
   variant: "google-oauth",
   heading: "Connecting Google Meet",
   intro:
-    "You'll sign in with Google in a popup window and approve two Google Meet permissions " +
-    "(a standard Google OAuth consent screen). After that, this browser fetches your Meet " +
-    "transcripts from Google and writes them into your space.",
+    "You'll sign in with Google in a popup window and approve Google Meet, Drive metadata, and " +
+    "Google Docs read permissions (a standard Google OAuth consent screen). After that, this " +
+    "browser fetches your Meet transcripts and relevant Notes by Gemini from Google and writes " +
+    "them into your space.",
   changesHeading: "What you're granting",
   bullets: [
-    "**Two Google Meet permissions, and those are the only two we ask for.** *See your Google " +
-      "Meet meetings, their transcripts and who took part* — the conference records your Google " +
-      "account already has access to. *Change Google Meet transcription settings* — so TinyChat " +
-      "can offer to switch automatic transcription on for **meetings you host**. No Drive, no " +
-      "Calendar, no Gmail permission is requested.",
+    "*See your Google Meet meetings, their transcripts and who took part* — the conference " +
+      "records your Google account already has access to. *Change Google Meet transcription " +
+      "settings* — so TinyChat can offer to switch automatic transcription on for **meetings you " +
+      "host**. *See Drive file metadata and read matching Google Docs* — so TinyChat can find " +
+      "and import Notes by Gemini meeting records. No Calendar or Gmail permission is requested.",
     "**Your browser talks to Google directly.** Titles, transcripts and participants are fetched " +
       "by this browser from Google's API and written straight into your space — that content " +
       "**never passes through TinyChat's server**, and we keep no copy of it.",
@@ -271,10 +270,8 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
       "Workspace Individual) **and** transcription was switched on for that meeting. Meetings " +
       "hosted on a free/consumer Google account never produce one — for any tool, this connector " +
       "included. That is Google's limit rather than ours, and switching on auto-transcription for " +
-      "**meetings you host** is what closes most of the gap. Meetings where only Gemini took " +
-      "notes won't appear either — Gemini's notes live in Google Docs, which we don't request " +
-      "access to; turning on transcription for **meetings you host** is what makes future calls " +
-      "show up here.",
+      "**meetings you host** is what closes most of the gap. Notes by Gemini can also appear when " +
+      "Google creates a matching meeting Doc.",
     "**Google keeps meeting records for about 30 days.** The first sync reaches back a month at " +
       "most, and meetings older than that are gone from Google's side before we ever ask — so " +
       "connecting sooner is what widens the history, never a later backfill.",

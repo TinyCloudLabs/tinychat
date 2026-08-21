@@ -47,6 +47,11 @@ export function transcriptKvKey(source: string, sourceId: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/transcript/${sourceId}`;
 }
 
+/** Connector-scoped Drive Changes cursor; it is not the UI sync timestamp. */
+export function driveCursorKvKey(source: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/drive-page-token`;
+}
+
 /**
  * Full KV key for one meeting's record in the user's own space.
  *
@@ -527,6 +532,128 @@ export async function putTranscriptBody(
   return { ok: true, data: undefined };
 }
 
+export async function getDriveCursor(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<string | null>> {
+  const res = await tcw.kv.get(driveCursorKvKey(source));
+  if (!res.ok) {
+    if (res.error?.code === "KV_NOT_FOUND") return { ok: true, data: null };
+    return fail(res.error, "getDriveCursor");
+  }
+  const value = res.data.data;
+  if (typeof value !== "string" || value.length === 0) {
+    return { ok: false, error: { code: "STORE_CORRUPT_CURSOR", message: "getDriveCursor: cursor is not a string" } };
+  }
+  return { ok: true, data: value };
+}
+
+export async function putDriveCursor(
+  tcw: TinyCloudWeb,
+  source: string,
+  cursor: string,
+): Promise<StoreResult<void>> {
+  if (!cursor) return { ok: false, error: { code: "STORE_INVALID_CURSOR", message: "putDriveCursor: cursor is required" } };
+  const res = await tcw.kv.put(driveCursorKvKey(source), cursor);
+  if (!res.ok) return fail(res.error, "putDriveCursor");
+  return { ok: true, data: undefined };
+}
+
+export interface GmeetNotesAssociation {
+  id: string;
+  sourceId: string;
+  title: string | null;
+  startedAt: string | null;
+  metadata: Record<string, unknown>;
+}
+
+/** Read all possible same-source rows; the narrow deterministic matching lives here. */
+export async function findGmeetNotesAssociation(
+  tcw: TinyCloudWeb,
+  source: string,
+  fileId: string,
+  title: string | null,
+  startedAt: string | null,
+): Promise<StoreResult<GmeetNotesAssociation | null>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await store(tcw).query(
+    "SELECT id, source_id, title, started_at, metadata FROM connector_meeting WHERE source = ?",
+    [source],
+  );
+  if (!res.ok) return fail(res.error, "findGmeetNotesAssociation");
+  const rows = res.data.rows.map((row) => ({
+    id: cellStr(row, 0, null), sourceId: cellStr(row, 1, null), title: cellStr(row, 2, null),
+    startedAt: cellStr(row, 3, null), metadata: parseJsonObject(cellStr(row, 4, null)),
+  })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
+  const idMatch = rows.find((row) => row.metadata.drive_file_id === fileId);
+  if (idMatch) return { ok: true, data: idMatch };
+  const exportMatch = rows.find((row) => Array.isArray(row.metadata.docs_export_uris)
+    && row.metadata.docs_export_uris.some((uri) => typeof uri === "string" && extractDriveFileId(uri) === fileId));
+  if (exportMatch) return { ok: true, data: exportMatch };
+  // A missing date/title is not an identity. Treating two nulls as "exact"
+  // would silently attach an arbitrary undated meeting Doc to an arbitrary row.
+  if (title === null || startedAt === null) return { ok: true, data: null };
+  const exact = rows.filter((row) => row.title === title && row.startedAt === startedAt);
+  return { ok: true, data: exact.length === 1 ? exact[0]! : null };
+}
+
+function extractDriveFileId(uri: string): string | null {
+  const match = /\/d\/([A-Za-z0-9_-]+)/.exec(uri) ?? /[?&]id=([A-Za-z0-9_-]+)/.exec(uri);
+  return match?.[1] ?? null;
+}
+
+/** Update only fields owned by one Notes document; never touch a Meet transcript KV body. */
+export async function attachGmeetNotes(
+  tcw: TinyCloudWeb,
+  row: GmeetNotesAssociation,
+  notes: Pick<NormalizedMeeting, "summaryOverview" | "summaryActionItems" | "metadata">,
+): Promise<StoreResult<void>> {
+  const metadata = { ...row.metadata, ...notes.metadata, notes_association: "conference" };
+  const res = await store(tcw).execute(
+    "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ?, metadata = ?, updated_at = ? WHERE id = ?",
+    [notes.summaryOverview, notes.summaryActionItems, JSON.stringify(metadata), new Date().toISOString(), row.id],
+  );
+  if (!res.ok) return fail(res.error, "attachGmeetNotes");
+  return { ok: true, data: undefined };
+}
+
+/** Delete a standalone notes row/body, or clear fields proven owned by an associated file. */
+export async function removeGmeetNotes(
+  tcw: TinyCloudWeb,
+  source: string,
+  fileId: string,
+): Promise<StoreResult<void>> {
+  const found = await findGmeetNotesAssociation(tcw, source, fileId, null, null);
+  if (!found.ok) return found;
+  if (!found.data) return { ok: true, data: undefined };
+  const row = found.data;
+  if (row.sourceId === fileId) {
+    const kv = await tcw.kv.delete(transcriptKvKey(source, fileId));
+    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)");
+    const del = await store(tcw).execute("DELETE FROM connector_meeting WHERE id = ?", [row.id]);
+    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)");
+    return { ok: true, data: undefined };
+  }
+  const owned = row.metadata.notes_owned_fields;
+  if (row.metadata.drive_file_id !== fileId || !Array.isArray(owned)
+    || !owned.includes("summary_overview") || !owned.includes("summary_action_items")) {
+    return { ok: true, data: undefined };
+  }
+  const metadata = { ...row.metadata };
+  delete metadata.drive_file_id;
+  delete metadata.drive_modified_time;
+  delete metadata.notes_kind;
+  delete metadata.notes_owned_fields;
+  delete metadata.notes_association;
+  const clear = await store(tcw).execute(
+    "UPDATE connector_meeting SET summary_overview = NULL, summary_action_items = NULL, metadata = ?, updated_at = ? WHERE id = ?",
+    [JSON.stringify(metadata), new Date().toISOString(), row.id],
+  );
+  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)");
+  return { ok: true, data: undefined };
+}
+
 // ── Purge ───────────────────────────────────────────────────────────────
 
 /**
@@ -553,6 +680,8 @@ export async function purgeConnector(
       }
     }
   }
+  const cursor = await tcw.kv.delete(driveCursorKvKey(source));
+  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
   const res = await store(tcw).batch([
     { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
     { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },

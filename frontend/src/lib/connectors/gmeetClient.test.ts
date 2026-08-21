@@ -688,4 +688,19 @@ describe("GmeetClient — error preservation", () => {
   test("constructing without an access token throws", () => {
     expect(() => new GmeetClient({ accessToken: "" })).toThrow(/accessToken is required/);
   });
+
+  test("paginates Drive metadata without reading document content", async () => {
+    const h = harness([
+      () => jsonResponse({ files: [{ id: "first", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" }], nextPageToken: "next" }),
+      () => jsonResponse({ files: [{ id: "second", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" }] }),
+    ]);
+    const res = await client(h).listDriveFiles();
+
+    expect(res).toEqual({ ok: true, data: [
+      { id: "first", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" },
+      { id: "second", name: "Notes by Gemini", mimeType: "application/vnd.google-apps.document" },
+    ] });
+    expect(h.calls.map((call) => call.url.pathname)).toEqual(["/drive/v3/files", "/drive/v3/files"]);
+    expect(h.calls[1]?.url.searchParams.get("pageToken")).toBe("next");
+  });
 });

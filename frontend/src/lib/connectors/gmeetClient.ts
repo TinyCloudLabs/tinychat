@@ -16,6 +16,9 @@
 // exhaustion — a long meeting must never lose its tail.
 
 export const GMEET_API_BASE = "https://meet.googleapis.com/v2";
+/** Google Drive v3 is deliberately a separate base from Meet v2. */
+export const GOOGLE_DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
+export const GOOGLE_DOCS_API_BASE = "https://docs.googleapis.com/v1";
 
 /** Pacing between record-level iterations (plan §4.2). */
 export const GMEET_DEFAULT_DELAY_MS = 800;
@@ -154,6 +157,10 @@ export interface GmeetClientOptions {
   refreshAccessToken?: () => Promise<string | null>;
   /** Override the API base (tests / harnesses). */
   apiBase?: string;
+  /** Test seam for Drive; normal callers use Google's Drive v3 base. */
+  driveApiBase?: string;
+  /** Test seam for Docs; normal callers use Google's Docs v1 base. */
+  docsApiBase?: string;
   /** Override fetch (unit tests inject a mock). */
   fetchImpl?: typeof fetch;
   /** Pacing between record-level iterations and between pages. */
@@ -168,6 +175,29 @@ export interface GmeetClientOptions {
 
 export interface GmeetCallOptions {
   signal?: AbortSignal;
+}
+
+/** Metadata only; Docs content is fetched separately after sync classification. */
+export interface GoogleDriveFile {
+  id?: string;
+  name?: string;
+  mimeType?: string;
+  modifiedTime?: string;
+  trashed?: boolean;
+  description?: string;
+  appProperties?: Record<string, string>;
+}
+
+export interface GoogleDriveChange {
+  fileId?: string;
+  removed?: boolean;
+  file?: GoogleDriveFile;
+}
+
+export interface GoogleDriveChangesPage {
+  changes: GoogleDriveChange[];
+  nextPageToken: string | null;
+  newStartPageToken: string | null;
 }
 
 /** Sleep that resolves EARLY (not rejects) when the signal aborts. */
@@ -288,6 +318,8 @@ export class GmeetClient {
   private accessToken: string;
   private readonly refreshAccessToken: (() => Promise<string | null>) | null;
   private readonly apiBase: string;
+  private readonly driveApiBase: string;
+  private readonly docsApiBase: string;
   private readonly fetchImpl: typeof fetch;
   private readonly delayImpl: GmeetDelay;
   private readonly signal: AbortSignal | undefined;
@@ -301,6 +333,8 @@ export class GmeetClient {
     this.accessToken = options.accessToken;
     this.refreshAccessToken = options.refreshAccessToken ?? null;
     this.apiBase = (options.apiBase ?? GMEET_API_BASE).replace(/\/+$/, "");
+    this.driveApiBase = (options.driveApiBase ?? GOOGLE_DRIVE_API_BASE).replace(/\/+$/, "");
+    this.docsApiBase = (options.docsApiBase ?? GOOGLE_DOCS_API_BASE).replace(/\/+$/, "");
     // `fetch` MUST stay bound to the global — calling a bare reference as
     // `this.fetchImpl(...)` rebinds `this` and browsers reject it with
     // "Illegal invocation" (see the same note in firefliesClient.ts).
@@ -378,6 +412,56 @@ export class GmeetClient {
     return this.listAllPages<GmeetTranscriptEntry>(url, "transcriptEntries", opts);
   }
 
+  /** Fully paginate Drive metadata. This endpoint never requests Docs content. */
+  async listDriveFiles(opts: GmeetCallOptions = {}): Promise<GmeetResult<GoogleDriveFile[]>> {
+    const url = this.driveUrl("files", {
+      pageSize: "100",
+      orderBy: "modifiedTime",
+      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,description,appProperties)",
+    });
+    return this.listAllPages<GoogleDriveFile>(url, "files", opts);
+  }
+
+  /** Capture before a snapshot so changes made during it can be replayed safely. */
+  async getDriveStartPageToken(opts: GmeetCallOptions = {}): Promise<GmeetResult<string>> {
+    const result = await this.request<Record<string, unknown>>(
+      this.driveUrl("changes/startPageToken", { fields: "startPageToken" }), { method: "GET" }, opts,
+    );
+    if (!result.ok) return result;
+    const token = result.data.startPageToken;
+    if (typeof token !== "string" || token.length === 0) {
+      return { ok: false, error: { kind: "api-error", status: 200, message: "Google Drive returned no start page token" } };
+    }
+    return { ok: true, data: token };
+  }
+
+  /** One changes page. The engine commits its cursor only after processing it. */
+  async listDriveChangesPage(pageToken: string, opts: GmeetCallOptions = {}): Promise<GmeetResult<GoogleDriveChangesPage>> {
+    const result = await this.request<Record<string, unknown>>(
+      this.driveUrl("changes", {
+        pageToken,
+        pageSize: "100",
+        fields: "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,trashed,description,appProperties))",
+      }), { method: "GET" }, opts,
+    );
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      data: {
+        changes: Array.isArray(result.data.changes) ? result.data.changes as GoogleDriveChange[] : [],
+        nextPageToken: typeof result.data.nextPageToken === "string" && result.data.nextPageToken ? result.data.nextPageToken : null,
+        newStartPageToken: typeof result.data.newStartPageToken === "string" && result.data.newStartPageToken ? result.data.newStartPageToken : null,
+      },
+    };
+  }
+
+  /** Read a Docs structural document. Only the sync engine may call this for a candidate. */
+  async getDriveDocument(fileId: string, opts: GmeetCallOptions = {}): Promise<GmeetResult<Record<string, unknown>>> {
+    return this.request<Record<string, unknown>>(
+      this.docsUrl(`documents/${encodeURIComponent(fileId)}`, {}), { method: "GET" }, opts,
+    );
+  }
+
   /**
    * Turn auto-transcription ON for a space. Accepts a full `spaces/{id}`
    * resource name, a bare space id, a meeting code, or a pasted meeting link,
@@ -451,6 +535,18 @@ export class GmeetClient {
 
   private url(path: string, params: Record<string, string>): string {
     const url = new URL(`${this.apiBase}/${resourcePath(path)}`);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    return url.toString();
+  }
+
+  private driveUrl(path: string, params: Record<string, string>): string {
+    const url = new URL(`${this.driveApiBase}/${resourcePath(path)}`);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    return url.toString();
+  }
+
+  private docsUrl(path: string, params: Record<string, string>): string {
+    const url = new URL(`${this.docsApiBase}/${resourcePath(path)}`);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     return url.toString();
   }

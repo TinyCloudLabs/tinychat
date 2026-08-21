@@ -692,7 +692,7 @@ describe("google-meet is skipped at the supports gate", () => {
   const gmeetAvailable: ConnectorDescriptor = {
     id: "google-meet",
     name: "Google Meet",
-    description: "Sync Google Meet recordings and captions.",
+    description: "Sync Google Meet transcripts and Notes by Gemini.",
     status: "available",
     secretName: "REFRESH_TOKEN",
     secretScope: "google-meet",
