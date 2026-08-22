@@ -3,7 +3,11 @@ import cors from "cors";
 import express from "express";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { appCorsOrigins, EXO_DESKTOP_ORIGIN } from "../cors-origins.js";
+import {
+  appCorsOrigins,
+  EXO_DESKTOP_ORIGIN,
+  EXO_DESKTOP_WINDOWS_ORIGIN,
+} from "../cors-origins.js";
 
 const WEB_ORIGIN = "https://tinycloud.chat";
 
@@ -28,14 +32,17 @@ afterAll(async () => {
 });
 
 describe("app CORS origins", () => {
-  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN])("allows %s", async (origin) => {
-    const response = await fetch(`${baseUrl}/health`, {
-      headers: { Origin: origin },
-    });
+  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN])(
+    "allows %s",
+    async (origin) => {
+      const response = await fetch(`${baseUrl}/health`, {
+        headers: { Origin: origin },
+      });
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("access-control-allow-origin")).toBe(origin);
-  });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+    },
+  );
 
   test("does not allow an unrelated web origin", async () => {
     const response = await fetch(`${baseUrl}/health`, {
@@ -57,7 +64,11 @@ describe("app CORS origins", () => {
     });
 
     expect(response.status).toBe(204);
-    expect(response.headers.get("access-control-allow-origin")).toBe(EXO_DESKTOP_ORIGIN);
-    expect(response.headers.get("access-control-allow-headers")).toContain("x-requested-with");
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      EXO_DESKTOP_ORIGIN,
+    );
+    expect(response.headers.get("access-control-allow-headers")).toContain(
+      "x-requested-with",
+    );
   });
 });

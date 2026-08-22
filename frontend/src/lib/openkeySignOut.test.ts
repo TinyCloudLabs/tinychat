@@ -19,7 +19,7 @@ describe("signOutOpenKeySession", () => {
       throw new Error("fallback must stay lazy");
     });
 
-    expect(result).toEqual({ requestId: "current-request", revoked: true });
+    expect(result).toEqual({ status: "revoked" });
     expect(calls).toEqual(["current"]);
   });
 
@@ -36,18 +36,36 @@ describe("signOutOpenKeySession", () => {
       };
     });
 
-    expect(result).toEqual({ requestId: "restored-request", revoked: false });
+    expect(result).toEqual({ status: "unverified", reason: null });
     expect(calls).toEqual(["fallback-created", "fallback-sign-out"]);
   });
 
-  test("propagates cancellation so TinyChat can preserve its local session", async () => {
-    const cancelled = new Error("User cancelled sign-out");
+  test("recognizes the SDK's plain-object cancellation", async () => {
     const current: OpenKeySignOutClient = {
       async signOut() {
-        throw cancelled;
+        throw { code: "USER_CANCELLED", message: "User cancelled sign-out" };
       },
     };
 
-    expect(signOutOpenKeySession(current, () => current)).rejects.toBe(cancelled);
+    await expect(
+      signOutOpenKeySession(current, () => current),
+    ).resolves.toEqual({
+      status: "cancelled",
+    });
+  });
+
+  test("reports a non-cancel widget failure without blocking local logout", async () => {
+    const current: OpenKeySignOutClient = {
+      async signOut() {
+        throw { code: "TIMEOUT", message: "OpenKey timed out" };
+      },
+    };
+
+    await expect(
+      signOutOpenKeySession(current, () => current),
+    ).resolves.toEqual({
+      status: "unverified",
+      reason: "OpenKey timed out",
+    });
   });
 });

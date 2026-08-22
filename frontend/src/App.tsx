@@ -153,6 +153,7 @@ export function App() {
   const initialShareToken = useMemo(() => readShareTokenFromLocation(), []);
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const openkeyRef = useRef<OpenKey | null>(null);
+  const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
   const modelRef = useRef<string>(initialModel);
   // Live ref the runtime reads at model-context request time. Initialized to
@@ -169,6 +170,7 @@ export function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [model, setModel] = useState<string>(initialModel);
   const [error, setError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const offeredModelsRef = useRef<ModelOption[]>([]);
   // Live set of offered model ids — the request-path/per-thread heal source of
@@ -654,59 +656,71 @@ export function App() {
   }, []);
 
   const signOut = useCallback(async () => {
+    if (signOutInFlightRef.current) return;
+    signOutInFlightRef.current = true;
+    setSigningOut(true);
     setError(null);
     try {
-      await signOutOpenKeySession(
+      const openKeyOutcome = await signOutOpenKeySession(
         openkeyRef.current,
         () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST }),
       );
-    } catch (caught) {
-      // The OpenKey widget includes a cancel action. Keep the TinyChat session
-      // intact unless that account-level sign-out completes.
-      setError(errorMessage(caught));
-      return;
-    }
-    openkeyRef.current = null;
-    if (tcw) {
-      try {
-        await tcw.signOut?.();
-      } catch (caught) {
-        // OpenKey is already signed out. Finish local teardown even if the
-        // TinyCloud client's best-effort remote cleanup fails.
-        console.warn("[App] TinyCloud sign-out cleanup failed", caught);
+      // OpenKey clears this client's local auth before showing its widget, even
+      // when the user cancels. Never retain that spent client for another flow.
+      openkeyRef.current = null;
+
+      let openKeyWarning: string | null = null;
+      if (openKeyOutcome.status === "unverified") {
+        const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
+        openKeyWarning =
+          `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
+          "Sign out at openkey.so before choosing another account.";
       }
-    } else if (address) {
-      clearPersistedSession(address);
-    }
-    sessionStoreRef.current.clear();
-    // Drop the in-memory history prefetch cache and stop its queue — it holds
-    // the signed-out account's message docs.
-    historyPrefetch.clear();
-    // Clear the agent session cache so the next sign-in re-probes.
-    clearAgentSessionCache();
-    // Drop the background-drain counts: they belong to the account that is
-    // leaving, and the next user must never inherit them. ONLY the record —
-    // this page load's attempt/dark latches are about the page, not the user.
-    clearBackgroundDrainRecord();
-    if (typeof window !== "undefined") {
-      try {
-        window.localStorage.removeItem(MODEL_STORAGE_KEY);
-      } catch {
-        // localStorage disabled — nothing to clear.
+
+      if (tcw) {
+        try {
+          await tcw.signOut?.();
+        } catch (caught) {
+          console.warn("[App] TinyCloud sign-out cleanup failed", caught);
+        }
       }
+      // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
+      // directly as well so a client cleanup failure cannot restore this user.
+      if (address) clearPersistedSession(address);
+      sessionStoreRef.current.clear();
+      // Drop the in-memory history prefetch cache and stop its queue — it holds
+      // the signed-out account's message docs.
+      historyPrefetch.clear();
+      // Clear the agent session cache so the next sign-in re-probes.
+      clearAgentSessionCache();
+      // Drop the background-drain counts: they belong to the account that is
+      // leaving, and the next user must never inherit them. ONLY the record —
+      // this page load's attempt/dark latches are about the page, not the user.
+      clearBackgroundDrainRecord();
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.removeItem(MODEL_STORAGE_KEY);
+        } catch {
+          // localStorage disabled — nothing to clear.
+        }
+      }
+      modelRef.current = DEFAULT_MODEL;
+      restoredActiveModelForTcwRef.current = null;
+      memoryRef.current = null;
+      setModel(DEFAULT_MODEL);
+      setTcw(null);
+      setAddress(null);
+      setDid(null);
+      setSpaceId(null);
+      setModels([]);
+      setBillingStatus(null);
+      setPricingOpen(false);
+      setError(openKeyWarning);
+      setState(openKeyWarning ? "recoverableError" : "unauthenticated");
+    } finally {
+      signOutInFlightRef.current = false;
+      setSigningOut(false);
     }
-    modelRef.current = DEFAULT_MODEL;
-    restoredActiveModelForTcwRef.current = null;
-    memoryRef.current = null;
-    setModel(DEFAULT_MODEL);
-    setTcw(null);
-    setAddress(null);
-    setDid(null);
-    setSpaceId(null);
-    setModels([]);
-    setBillingStatus(null);
-    setPricingOpen(false);
-    setState("unauthenticated");
   }, [address, tcw]);
 
   const isReady = state === "ready" && tcw !== null;
@@ -891,6 +905,7 @@ export function App() {
                 state={state}
                 error={error}
                 onSignOut={signOut}
+                signingOut={signingOut}
                 paywallEnabled={paywallEnabled}
                 onBack={onBack}
                 tcw={tcw}

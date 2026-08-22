@@ -777,6 +777,8 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     expect(body.indexOf("await signOutOpenKeySession(")).toBeLessThan(
       body.indexOf("await tcw.signOut?.();"),
     );
+    expect(body).toContain('openKeyOutcome.status === "unverified"');
+    expect(body).toContain("if (address) clearPersistedSession(address);");
     expect(body).toContain("historyPrefetch.clear();");
     expect(body).toContain("clearAgentSessionCache();");
     expect(body).toContain("clearBackgroundDrainRecord();");
