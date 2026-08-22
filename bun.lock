@@ -51,7 +51,7 @@
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
-        "@openkey/sdk": "^0.8.4",
+        "@openkey/sdk": "^0.10.0",
         "@peculiar/x509": "^2.0.0",
         "@radix-ui/react-alert-dialog": "^1.1.4",
         "@radix-ui/react-dialog": "^1.1.4",
@@ -96,7 +96,7 @@
         "@tinycloud/sdk-core": "2.5.1",
       },
       "devDependencies": {
-        "@openkey/sdk": "^0.8.4",
+        "@openkey/sdk": "^0.10.0",
         "@tinycloud/web-sdk": "2.5.1",
         "typescript": "^5.7.0",
       },
@@ -324,9 +324,9 @@
 
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
 
-    "@openkey/core": ["@openkey/core@0.7.1", "", {}, "sha512-vihYss7T0zDPLQb4UTruQ/6x62sLml9+zzO1ClnOtmjB9AIQ39RnXmUGUyMi/DY8GoW1Lh4SAUdxzHq9eVXtYw=="],
+    "@openkey/core": ["@openkey/core@0.8.8", "", {}, "sha512-aeGiQ2SK5lMTaJMkLZJ/HKMTym/AlrWLHeKHNZmuV6pTbAgIi9uTTO+IaF11V7+htFHO0kD6XUosNVGCGRWr3w=="],
 
-    "@openkey/sdk": ["@openkey/sdk@0.8.4", "", { "dependencies": { "@openkey/core": "^0.7.1" } }, "sha512-6vPTyNTHxnRtRwixy9G+KV/nvU+2f70+cy2/yzMJT8tIFYmdVAXx3/+FyPO0dwaq0azudFwoUOLe05LwW0XlkA=="],
+    "@openkey/sdk": ["@openkey/sdk@0.10.0", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-ClkYu7YrCUQ898VysOP9mflt5nOUMUIA8SOkwGqTgpBo7bLuLYPK/VzskdtWw5qElTab+l13nbdukGEHY8j8PQ=="],
 
     "@peculiar/asn1-cms": ["@peculiar/asn1-cms@2.7.0", "", { "dependencies": { "@peculiar/asn1-schema": "^2.7.0", "@peculiar/asn1-x509": "^2.7.0", "@peculiar/asn1-x509-attr": "^2.7.0", "asn1js": "^3.0.6", "tslib": "^2.8.1" } }, "sha512-hew63shtzzvBcSHbhm+cyAmKe6AIfinT9hzEqSPjDC6opTTMKmTkQ0gHuN2KsWlvqiKw1S/fS94fhag/FJkioQ=="],
 

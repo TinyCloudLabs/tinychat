@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import OpenKey from "@openkey/sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   SessionStore,
@@ -91,6 +92,7 @@ import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { CalendarClockIcon, PanelLeftIcon, SettingsIcon } from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
+import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 
@@ -150,6 +152,7 @@ export function App() {
   const initialModel = getInitialModel();
   const initialShareToken = useMemo(() => readShareTokenFromLocation(), []);
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
+  const openkeyRef = useRef<OpenKey | null>(null);
   const restoredRef = useRef(false);
   const modelRef = useRef<string>(initialModel);
   // Live ref the runtime reads at model-context request time. Initialized to
@@ -605,10 +608,11 @@ export function App() {
     setError(null);
     try {
       setState("connecting");
-      const { address: connectedAddress, web3Provider } = await connectWallet({
+      const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
       });
+      openkeyRef.current = openkey;
       setAddress(connectedAddress);
 
       const [nonce, manifest] = await Promise.all([
@@ -650,8 +654,30 @@ export function App() {
   }, []);
 
   const signOut = useCallback(async () => {
-    if (tcw) await tcw.signOut?.();
-    else if (address) clearPersistedSession(address);
+    setError(null);
+    try {
+      await signOutOpenKeySession(
+        openkeyRef.current,
+        () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST }),
+      );
+    } catch (caught) {
+      // The OpenKey widget includes a cancel action. Keep the TinyChat session
+      // intact unless that account-level sign-out completes.
+      setError(errorMessage(caught));
+      return;
+    }
+    openkeyRef.current = null;
+    if (tcw) {
+      try {
+        await tcw.signOut?.();
+      } catch (caught) {
+        // OpenKey is already signed out. Finish local teardown even if the
+        // TinyCloud client's best-effort remote cleanup fails.
+        console.warn("[App] TinyCloud sign-out cleanup failed", caught);
+      }
+    } else if (address) {
+      clearPersistedSession(address);
+    }
     sessionStoreRef.current.clear();
     // Drop the in-memory history prefetch cache and stop its queue — it holds
     // the signed-out account's message docs.
