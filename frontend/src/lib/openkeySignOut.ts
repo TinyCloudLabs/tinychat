@@ -1,5 +1,7 @@
+import type { SignOutAcknowledgement } from "@openkey/sdk";
+
 export interface OpenKeySignOutClient {
-  signOut(): Promise<{ requestId: string; revoked: boolean }>;
+  signOut(): Promise<SignOutAcknowledgement>;
 }
 
 export type OpenKeySignOutOutcome =

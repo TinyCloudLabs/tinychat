@@ -670,7 +670,11 @@ export function App() {
       openkeyRef.current = null;
 
       let openKeyWarning: string | null = null;
-      if (openKeyOutcome.status === "unverified") {
+      if (openKeyOutcome.status === "cancelled") {
+        openKeyWarning =
+          "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
+          "Sign out at openkey.so before choosing another account.";
+      } else if (openKeyOutcome.status === "unverified") {
         const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
         openKeyWarning =
           `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
