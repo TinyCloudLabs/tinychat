@@ -138,10 +138,10 @@ function renderCancelledPage(): string {
 /**
  * The app origin the callback page pins its `postMessage` to.
  *
- * SAME SOURCE as the CORS allowlist — `index.ts` builds its `cors({ origin: FRONTEND_URL })` from
- * `FRONTEND_URL` with a localhost fallback that depends on whether local TLS files are present.
- * Reusing that env (rather than adding a second origin field) is what keeps "the origin we accept
- * requests from" and "the origin we hand a code to" from drifting apart.
+ * The web member of the CORS allowlist comes from this same `FRONTEND_URL`, with a localhost
+ * fallback that depends on whether local TLS files are present. Exo's fixed Tauri origin is also
+ * allowed to call the API, but Google OAuth still postMessages only to this pinned web origin until
+ * a desktop handoff is designed.
  */
 export const APP_ORIGIN_ENV = "FRONTEND_URL";
 

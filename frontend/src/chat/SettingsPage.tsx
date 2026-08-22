@@ -30,6 +30,7 @@ interface SettingsPageProps {
   state: AppState;
   error: string | null;
   onSignOut: () => void;
+  signingOut: boolean;
   paywallEnabled: boolean;
   onBack: () => void;
   tcw: TinyCloudWeb;
@@ -57,6 +58,7 @@ export function SettingsPage({
   state,
   error,
   onSignOut,
+  signingOut,
   paywallEnabled,
   onBack,
   tcw,
@@ -122,11 +124,12 @@ export function SettingsPage({
                 variant="outline"
                 size="sm"
                 onClick={onSignOut}
+                disabled={signingOut}
                 aria-label="Sign out"
                 className="gap-1.5"
               >
                 <LogOutIcon className="size-4" />
-                <span>Sign out</span>
+                <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
           </SectionCard>
