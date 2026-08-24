@@ -37,7 +37,7 @@ describe("sanitizeModel (ST1)", () => {
     // A stale phala/ id (no longer in the offered membership set) is also rejected.
     expect(sanitizeModel("phala/anything", EMPTY)).toBe(DEFAULT_MODEL);
     // An offered (TEE-capable) id is kept (instant-paint constraint).
-    expect(sanitizeModel("deepseek/deepseek-v4-flash", EMPTY)).toBe("deepseek/deepseek-v4-flash");
+    expect(sanitizeModel("z-ai/glm-5.2", EMPTY)).toBe("z-ai/glm-5.2");
   });
 
   test("before the offered list loads, still heals known blocklisted phala ids", () => {
@@ -118,9 +118,9 @@ describe("healPersistedModel — ST1 write-back decision", () => {
   test("runtime restore: an offered thread row is kept and not rewritten pre-load", () => {
     const EMPTY = new Set<string>();
     const setThreadModel = mock((_threadId: string, _value: string) => {});
-    const { model: corrected, healed } = healPersistedModel("deepseek/deepseek-v4-flash", EMPTY);
+    const { model: corrected, healed } = healPersistedModel("z-ai/glm-5.2", EMPTY);
     if (healed) setThreadModel("thread-1", corrected);
-    expect(corrected).toBe("deepseek/deepseek-v4-flash");
+    expect(corrected).toBe("z-ai/glm-5.2");
     expect(setThreadModel).not.toHaveBeenCalled();
   });
 });

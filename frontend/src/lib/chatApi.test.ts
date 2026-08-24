@@ -68,7 +68,7 @@ describe("streamChat context-overflow classification (§C.12)", () => {
     const stream = streamChat({
       backendUrl: "http://backend.test",
       sessionStore,
-      model: "deepseek/deepseek-v4-flash",
+      model: "z-ai/glm-5.2",
       messages: [{ role: "user", content: "hi" }],
     });
     try {

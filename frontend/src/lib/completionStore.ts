@@ -61,10 +61,9 @@ export function onCompletion(listener: CompletionListener): () => void {
  * TO EXTEND: confirm the model verifies GREEN in a REAL browser first (on-chain
  * DCAP + signature both pass), then add its exact id here. Never guess.
  */
-// The confirmed tier-1 (GREEN, "Response verified") set — the single offered
-// model. It publishes the FLAT attestation shape so the per-message signature
-// can ECDSA-recover to its attested signing_address in-browser. The product is
-// single-model, so this is exactly the backend PICKER_MODELS (one id).
+// Confirmed tier-1 (GREEN, "Response verified") models. This is a capability
+// record, not the current backend offer list: retaining an older id lets an
+// already-streamed completion finish verification during a rollout.
 //
 // NOTE: deepseek/deepseek-v4-flash's flat signature path was live-confirmed at the
 // API level on 2026-07-17 (GET /v1/signature/{id} returns text-hash pair, ECDSA
@@ -75,12 +74,15 @@ export const VERIFIABLE_MODELS = ["deepseek/deepseek-v4-flash"] as const;
 const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);
 
 /**
- * The full set of TEE-capable OFFERED models. The product is single-model, so
- * this is the single offered/verifiable model — exactly the backend
- * PICKER_MODELS — and the only id worth ATTEMPTING verification on.
- * Membership-based because ids are vendor-prefixed (deepseek/…).
+ * The full set of TEE-capable current or recently-offered models worth
+ * ATTEMPTING verification on. GLM 5.2 is marked `is_tee` in RedPill's live
+ * catalog, but is intentionally not in VERIFIABLE_MODELS until its flat
+ * response-signature path passes a real browser verification.
  */
-const TEE_CAPABLE_MODELS: ReadonlySet<string> = new Set([...VERIFIABLE_MODELS]);
+const TEE_CAPABLE_MODELS: ReadonlySet<string> = new Set([
+  "z-ai/glm-5.2",
+  ...VERIFIABLE_MODELS,
+]);
 
 const MISLABELED_BLOCKLIST: ReadonlySet<string> = new Set([
   "phala/deepseek-chat-v3.1",
@@ -109,12 +111,12 @@ export function isResponseVerifiableModel(model: string): boolean {
 
 /**
  * True when `model` is a confidential (TEE) model worth ATTEMPTING verification
- * on — i.e. an exact member of the offered TEE set (TEE_CAPABLE_MODELS: the
- * single pinned model). The badge orchestrates the result into a tier: flat models
- * reach tier 1 ("Response verified"), non-flat TEE models reach tier 2 ("Enclave
- * attested"), and anything that errors falls back to tier 0 ("Not verifiable").
+ * on — i.e. an exact member of the pinned TEE set. The badge orchestrates the
+ * result into a tier: flat models reach tier 1 ("Response verified"), non-flat
+ * TEE models reach tier 2 ("Enclave attested"), and anything that errors falls
+ * back to tier 0 ("Not verifiable").
  * Membership-based gating because ids are now vendor-prefixed and no longer share
- * a single `phala/` prefix — any model NOT in the offered set short-circuits to
+ * a single `phala/` prefix — any model NOT in the pinned set short-circuits to
  * tier 0 and never attempts verification.
  */
 export function isTeeCapableModel(model: string): boolean {

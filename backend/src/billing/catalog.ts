@@ -68,17 +68,20 @@ export function isBlocklistedModel(id: string): boolean {
  * A model NOT in this list is never listed, never proxied, and never reachable
  * by the agent tool path.
  *
- * The single offered model is GREEN ("Response verified", flat-signed; see
- * frontend completionStore.ts): it publishes the flat per-message signature
- * path so it reaches tier 1.
+ * The single offered model is confidential (TEE-hosted). Response-level
+ * verification remains capability-gated in frontend/completionStore.ts; do not
+ * infer a flat per-message signature merely from catalog `is_tee` metadata.
  */
 export const PICKER_MODELS = [
   // deepseek-v4-pro was delisted from serving on 2026-07-17 (still in /models,
   // but /chat/completions returns 404 "The model does not exist"). Its first
   // replacement, deepseek-v3.2, turned out to be load-shedding (4/6 requests
   // 429'd in a sequential burst), so the offered model moved to v4-flash the
-  // same day: 200s under burst, flat ECDSA signature path, tool-calling OK.
-  "deepseek/deepseek-v4-flash", // the single offered/green model
+  // same day: 200s under burst, flat ECDSA signature path, tool-calling OK. It
+  // moved again after renewed serving flakiness in August 2026.
+  // Live RedPill catalog + availability check 2026-08-24: 1M context, text,
+  // reasoning, structured output, and tool calling; routed through TEE providers.
+  "z-ai/glm-5.2", // the single offered model
 ] as const;
 
 const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
@@ -98,9 +101,9 @@ const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
 export const DEFAULT_CONTEXT_TOKENS = 64000;
 
 export const CONTEXT_TOKENS: Record<string, number> = {
-  // Raw RedPill GET /v1/models `context_length` for deepseek/deepseek-v4-flash,
-  // checked by hand 2026-07-17 (1048576 = 1M).
-  "deepseek/deepseek-v4-flash": 1048576,
+  // Raw RedPill GET /v1/models `context_length` for z-ai/glm-5.2,
+  // checked by hand 2026-08-24 (1048576 = 1M).
+  "z-ai/glm-5.2": 1048576,
 };
 
 /**

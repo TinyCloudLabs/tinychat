@@ -52,10 +52,11 @@ const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai
 // upstream phrasings that don't match here fall through to the baseline 502 (§H.5).
 const CONTEXT_OVERFLOW_BODY_RE =
   /context|token[s]?\s*(limit|exceed)|too\s+(long|large)|maximum.*(length|context)/i;
-// Default to a VERIFIABLE (GREEN tier) offered model so a model-less POST is
-// allowed on every tier instead of self-denying with a 402 (ST6). Overridable
-// via REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
-const DEFAULT_BASELINE_MODEL = "deepseek/deepseek-v4-flash";
+// Default to the offered confidential model so a model-less POST is allowed on
+// every tier instead of self-denying with a 402 (ST6). Response-level
+// verification is a separate frontend capability. Overridable via
+// REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
+const DEFAULT_BASELINE_MODEL = "z-ai/glm-5.2";
 
 // ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale value that isn't
 // in the offered allowlist (e.g. a pre-PR `openai/gpt-5-mini`, or a now-unoffered
@@ -257,7 +258,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
     if (!isOfferedModel(resolvedModel)) {
       res.status(403).json({
         error: "model_not_offered",
-        message: `Model ${resolvedModel} is not offered. Only the curated set of verifiable models is available.`,
+        message: `Model ${resolvedModel} is not offered. Only the curated confidential model is available.`,
       });
       return;
     }
@@ -585,7 +586,7 @@ export function createChatRouter(options?: ChatRouterOptions) {
       // Catalog flakiness (RedPill /models latency-spikes while inference is fine)
       // must never strand the picker empty. getCatalog already serves a stale
       // cache when one exists, so reaching here means a COLD upstream failure with
-      // no last-good list. Degrade to a usable 200: the curated six (PICKER_MODELS)
+      // no last-good list. Degrade to a usable 200: the curated allowlist
       // with tier gating still applied but rate fields omitted (pricing unknown).
       // The frontend tolerates missing rates (the multiplier badge only shows when
       // multiplier>1), so degraded entries render and are selectable.
@@ -645,8 +646,8 @@ export function createChatRouter(options?: ChatRouterOptions) {
 
     // This is a confidential-inference product: only the curated picker allowlist
     // (PICKER_MODELS) is offered. We iterate the allowlist (not the catalog) so the
-    // picker preserves the canonical fast→smart, green-then-teal display order;
-    // any allowlist model absent from the upstream catalog is simply skipped.
+    // picker preserves the canonical allowlist order; any allowlist model absent
+    // from the upstream catalog is simply skipped.
     // (Billing still uses the full catalog above; the mislabeled-model blocklist
     // already pruned getCatalog.)
     const byCatalogId = new Map(catalog.map((m) => [m.id, m]));

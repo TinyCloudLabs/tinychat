@@ -241,16 +241,16 @@ describe("GET /api/billing/rates (public)", () => {
     // independent of the local .env's REDPILL_DEFAULT_MODEL.
     delete process.env.REDPILL_DEFAULT_MODEL;
     stubRedPillModels([
-      { id: "deepseek/deepseek-v4-flash", pricing: { prompt: "0.00000025", completion: "0.000002" } },
+      { id: "z-ai/glm-5.2", pricing: { prompt: "0.00000025", completion: "0.000002" } },
       { id: "anthropic/claude-opus-4.1", pricing: { prompt: "0.000015", completion: "0.000075" } },
     ]);
     const res = await request(createApp(), "/api/billing/rates");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.baseline).toBe("deepseek/deepseek-v4-flash");
+    expect(body.baseline).toBe("z-ai/glm-5.2");
     expect(Array.isArray(body.models)).toBe(true);
     const byId = Object.fromEntries(body.models.map((m: any) => [m.id, m]));
-    expect(byId["deepseek/deepseek-v4-flash"]).toMatchObject({
+    expect(byId["z-ai/glm-5.2"]).toMatchObject({
       creditsPerKInput: 2.5,
       creditsPerKOutput: 20,
       multiplier: 1,

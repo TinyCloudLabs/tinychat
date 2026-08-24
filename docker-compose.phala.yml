@@ -12,7 +12,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-https://tinycloud.chat}
       REDPILL_API_KEY: ${REDPILL_API_KEY:-}
       REDPILL_BASE_URL: ${REDPILL_BASE_URL:-https://api.redpill.ai/v1}
-      REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-deepseek/deepseek-v4-flash}
+      REDPILL_DEFAULT_MODEL: ${REDPILL_DEFAULT_MODEL:-z-ai/glm-5.2}
       # Per-user delegated agent tools (Milestone E). All three must be set for
       # the agent/tool-calling path to turn on; unset = agent path stays off and
       # only plain chat is served (see backend/src/index.ts).
