@@ -45,6 +45,9 @@ export interface ConnectorMeetingMeta {
   title?: string;
   /** The provider's own meeting timestamp, when it gave one. */
   ts?: string;
+  participantNames?: string[];
+  participantEmails?: string[];
+  organizerEmail?: string;
   transcriptStoredAt?: string;
   summaryStoredAt?: string;
   /** Set once the browser copied this meeting into the user's OWN space (W6). */
@@ -112,11 +115,13 @@ export interface ConnectorMeetingsClient {
      * both, which is what the meetings view wants.
      */
     reconciled?: boolean;
+    signal?: AbortSignal;
   }): Promise<ConnectorMeetingsResult<ConnectorMeetingList>>;
   /** One meeting's content, decrypted backend-side for its owner. Also a pure read. */
   read(
     source: string,
     sourceId: string,
+    options?: { signal?: AbortSignal },
   ): Promise<ConnectorMeetingsResult<ConnectorMeetingContent>>;
   /**
    * The reconcile-ack — the ONE mutation. W6 calls it only AFTER the user-space
@@ -142,6 +147,7 @@ export function createConnectorMeetingsClient(
       method: "GET" | "POST";
       /** What a 404 MEANS on this route — the two readings are not interchangeable. */
       missing: "feature-dark" | "not-found";
+      signal?: AbortSignal;
     },
   ): Promise<ConnectorMeetingsResult<T>> {
     // `createApiClient`'s two pre-flight checks. It throws on both; a defined
@@ -161,8 +167,10 @@ export function createConnectorMeetingsClient(
           Authorization: `Bearer ${token}`,
           [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
         },
+        signal: init.signal,
       });
     } catch {
+      if (init.signal?.aborted) throw new DOMException("Aborted", "AbortError");
       // Not narrated: a connector identifier must never reach a log from the
       // browser half either (§6.3).
       return { status: "offline" };
@@ -221,12 +229,13 @@ export function createConnectorMeetingsClient(
       return request<ConnectorMeetingList>(suffix, {
         method: "GET",
         missing: "feature-dark",
+        signal: options.signal,
       });
     },
-    read(source, sourceId) {
+    read(source, sourceId, options) {
       return request<ConnectorMeetingContent>(
         `/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`,
-        { method: "GET", missing: "not-found" },
+        { method: "GET", missing: "not-found", signal: options?.signal },
       );
     },
     markReconciled(source, sourceId) {

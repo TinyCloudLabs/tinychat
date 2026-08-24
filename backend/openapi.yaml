@@ -2227,6 +2227,21 @@ components:
         ts:
           type: string
           description: The provider's own meeting timestamp, when it gave one.
+        participantNames:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            maxLength: 256
+        participantEmails:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            maxLength: 256
+        organizerEmail:
+          type: string
+          maxLength: 256
         transcriptStoredAt:
           type: string
           format: date-time

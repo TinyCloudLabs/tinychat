@@ -157,6 +157,28 @@ const defaultSecrets: BackendReconcileSecrets = { isUnlocked: isSecretsUnlocked 
 /** The user-space record's schema version — a later reader must be able to tell. */
 export const USER_SPACE_MEETING_VERSION = 1;
 
+/**
+ * The V1 record reconciliation writes to the source-scoped meeting KV key.
+ *
+ * This deliberately describes the serialized contract exactly: transcript
+ * sentences live at their own KV key, while the optional summary remains the
+ * opaque server payload it was when reconciliation first shipped.
+ */
+export interface ReconciledMeetingKvRecordV1 {
+  v: typeof USER_SPACE_MEETING_VERSION;
+  source: string;
+  sourceId: string;
+  title: string | null;
+  startedAt: string | null;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  summary?: unknown;
+  storedAt: string;
+  updatedAt: string;
+  copiedAt: string;
+  origin: "backend-ingest";
+}
+
 function errorDetail(error: unknown): string {
   if (error === null || error === undefined) return "unknown";
   if (typeof error === "string") return error;
@@ -342,7 +364,7 @@ async function copyOne(
     }
   }
 
-  const record = {
+  const record: ReconciledMeetingKvRecordV1 = {
     v: USER_SPACE_MEETING_VERSION,
     source,
     sourceId,

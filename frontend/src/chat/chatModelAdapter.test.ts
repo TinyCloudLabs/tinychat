@@ -2,10 +2,19 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 
 import {
   CONTEXT_OVERFLOW_MESSAGE,
+  MEETING_ABORTED_MESSAGE,
+  MEETING_NO_CONTENT_MESSAGE,
+  MEETING_NO_MATCH_MESSAGE,
+  MEETING_STORAGE_ERROR_MESSAGE,
+  clarificationDateToken,
   createChatModelAdapter,
+  meetingOutcomeText,
+  safeClarificationTitle,
   type AdapterDeps,
 } from "./chatModelAdapter";
+import { createMeetingMessageRegistry } from "./pendingHandoff";
 import type { CompactionCheckpoint } from "./compaction";
+import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
 
 const realFetch = globalThis.fetch;
 
@@ -30,6 +39,35 @@ function makeMessages(n: number) {
   }));
 }
 
+function oneUserMessage(question = "What did they decide in the latest meeting?") {
+  return [{
+    id: "user-1",
+    role: "user" as const,
+    content: [{ type: "text" as const, text: question }],
+  }];
+}
+
+function meetingCandidate(patch: Partial<MeetingCandidate> = {}): MeetingCandidate {
+  return {
+    source: "fireflies",
+    sourceId: "meeting-1",
+    title: "Planning",
+    startedAt: "2026-03-01T10:00:00.000Z",
+    participantNames: [],
+    participantEmails: [],
+    organizerEmail: null,
+    hasSqlSummary: false,
+    hasLocalRecord: false,
+    hasLocalTranscript: false,
+    hasServerSummary: false,
+    hasServerTranscript: false,
+    localRowId: null,
+    createdAt: null,
+    updatedAt: null,
+    ...patch,
+  };
+}
+
 function makeDeps(overrides: Partial<AdapterDeps> = {}): {
   deps: AdapterDeps;
   summarize: ReturnType<typeof mock>;
@@ -52,6 +90,7 @@ function makeDeps(overrides: Partial<AdapterDeps> = {}): {
     activeThreadIdRef: ref<string | null>("t1") as never,
     agentEnabledRef: ref(false) as never,
     offeredModelIdsRef: ref<ReadonlySet<string>>(new Set(["m1"])) as never,
+    meetingMessageRegistry: createMeetingMessageRegistry(),
     getCheckpoint: async () => null,
     appendCompaction: appendCompaction as never,
     summarize: summarize as never,
@@ -147,5 +186,238 @@ describe("chatModelAdapter reactive compaction", () => {
     expect(resultB.thrown).toBeInstanceOf(Error);
     expect((resultB.thrown as Error).message).toBe(CONTEXT_OVERFLOW_MESSAGE);
     expect(callB).toBe(2); // initial + exactly one retry, then give up (§F.8)
+  });
+});
+
+describe("chatModelAdapter meeting retrieval preflight", () => {
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("calls the injected retriever once before checkpoint loading and sends grounded context after memory", async () => {
+    const events: string[] = [];
+    const retrieve = mock(async (input: { threadId: string; question: string; signal?: AbortSignal }) => {
+      events.push("retrieve");
+      expect(input).toEqual({
+        threadId: "t1",
+        question: "What did they decide in the latest meeting?",
+        signal: expect.any(AbortSignal),
+      });
+      return {
+        status: "grounded" as const,
+        meeting: meetingCandidate(),
+        evidence: {
+          summary: "private evidence",
+          summaryLocator: null,
+          transcript: null,
+          transcriptLocator: null,
+          reads: 1,
+          partial: false,
+          unavailableLocators: [],
+        },
+        systemMessage: "MEETING SYSTEM EVIDENCE",
+        partial: false,
+      };
+    });
+    let url = "";
+    let body: { messages?: Array<{ role: string; content: string }> } = {};
+    globalThis.fetch = (async (requestUrl: string, init?: RequestInit) => {
+      events.push("fetch");
+      url = requestUrl;
+      body = JSON.parse((init?.body as string) ?? "{}");
+      return okStreamResponse("grounded reply");
+    }) as typeof fetch;
+
+    const { deps } = makeDeps({
+      meetingRetriever: { retrieve } as never,
+      contextTokensFor: () => 64_000,
+      agentEnabledRef: ref(true) as never,
+      getCheckpoint: async () => {
+        events.push("checkpoint");
+        return null;
+      },
+    });
+    const result = await drain(
+      createChatModelAdapter(deps).run({
+        messages: oneUserMessage(),
+        abortSignal: new AbortController().signal,
+        context: { system: "USER MEMORY" },
+        unstable_assistantMessageId: "assistant-1",
+      } as never) as never,
+    );
+
+    expect(result).toEqual({ text: "grounded reply", thrown: undefined });
+    expect(retrieve).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["retrieve", "checkpoint", "fetch"]);
+    expect(url).toContain("/api/chat");
+    expect(url).not.toContain("/api/agent/chat");
+    expect(body.messages).toEqual([
+      { role: "system", content: "USER MEMORY" },
+      { role: "system", content: "MEETING SYSTEM EVIDENCE" },
+      { role: "user", content: "What did they decide in the latest meeting?" },
+    ]);
+    expect(deps.meetingMessageRegistry.isClassified("t1", "assistant-1")).toBe(true);
+  });
+
+  test("counts meeting context as a fixed compaction block on proactive and reactive passes without summarizing it", async () => {
+    const meetingContext = `MEETING-CANARY:${"x".repeat(15_000)}`;
+    const payloads: Array<Array<{ role: string; content: string }>> = [];
+    const urls: string[] = [];
+    let calls = 0;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls += 1;
+      urls.push(url);
+      payloads.push(JSON.parse((init?.body as string) ?? "{}").messages);
+      return calls === 1 ? overflowResponse() : okStreamResponse("retried reply");
+    }) as typeof fetch;
+    const retrieve = mock(async () => ({
+      status: "grounded" as const,
+      meeting: meetingCandidate(),
+      evidence: {
+        summary: null,
+        summaryLocator: null,
+        transcript: null,
+        transcriptLocator: null,
+        reads: 0,
+        partial: false,
+        unavailableLocators: [],
+      },
+      systemMessage: meetingContext,
+      partial: false,
+    }));
+    const { deps, summarize } = makeDeps({
+      meetingRetriever: { retrieve } as never,
+      contextTokensFor: () => 5_000,
+      agentEnabledRef: ref(true) as never,
+    });
+
+    const result = await drain(
+      createChatModelAdapter(deps).run({
+        messages: makeMessages(5),
+        abortSignal: new AbortController().signal,
+        context: { system: "USER MEMORY" },
+        unstable_assistantMessageId: "meeting-compaction",
+      } as never) as never,
+    );
+
+    expect(result).toEqual({ text: "retried reply", thrown: undefined });
+    expect(retrieve).toHaveBeenCalledTimes(1);
+    // The large meeting system block forces both the proactive pass and the
+    // one reactive overflow retry. It is a fixed budget cost for each pass.
+    expect(summarize).toHaveBeenCalledTimes(2);
+    for (const call of summarize.mock.calls) {
+      expect(JSON.stringify(call[0]?.messages)).not.toContain("MEETING-CANARY:");
+    }
+    expect(payloads).toHaveLength(2);
+    expect(urls).toEqual(["http://backend.test/api/chat", "http://backend.test/api/chat"]);
+    for (const payload of payloads) {
+      expect(payload[0]).toEqual({ role: "system", content: "USER MEMORY" });
+      expect(payload[1]).toEqual({ role: "system", content: meetingContext });
+      expect(payload[2]).toEqual({
+        role: "system",
+        content: "<conversation_summary>\nCOMPACTED SUMMARY\n</conversation_summary>",
+      });
+    }
+    expect(deps.meetingMessageRegistry.isClassified("t1", "meeting-compaction")).toBe(true);
+  });
+
+  const deterministicOutcomes: Array<{
+    outcome: Exclude<MeetingRetrievalOutcome, { status: "not-applicable" } | { status: "grounded" }>;
+    expected: string | ((text: string) => void);
+  }> = [
+    {
+      outcome: { status: "clarification", choices: [meetingCandidate()] },
+      expected: (text) => {
+        expect(text).toStartWith("Choose the meeting to use. Reply with an option number:\n- 1. Planning — ");
+        expect(text).toContain("[2026-03-01] (Fireflies)");
+      },
+    },
+    { outcome: { status: "no-match", partial: false }, expected: MEETING_NO_MATCH_MESSAGE },
+    { outcome: { status: "no-content", meeting: meetingCandidate(), partial: false }, expected: MEETING_NO_CONTENT_MESSAGE },
+    { outcome: { status: "storage-error", partial: true }, expected: MEETING_STORAGE_ERROR_MESSAGE },
+    { outcome: { status: "aborted" }, expected: MEETING_ABORTED_MESSAGE },
+  ];
+
+  for (const { outcome, expected } of deterministicOutcomes) {
+    test(`streams ${outcome.status} without inference or compaction`, async () => {
+      let fetchCalls = 0;
+      globalThis.fetch = (async () => {
+        fetchCalls += 1;
+        return okStreamResponse("must not run");
+      }) as typeof fetch;
+      const retrieve = mock(async () => outcome);
+      const getCheckpoint = mock(async () => null);
+      const { deps } = makeDeps({
+        meetingRetriever: { retrieve } as never,
+        getCheckpoint: getCheckpoint as never,
+      });
+
+      const result = await drain(
+        createChatModelAdapter(deps).run({
+          messages: oneUserMessage(),
+          abortSignal: new AbortController().signal,
+          context: {},
+          unstable_assistantMessageId: `meeting-${outcome.status}`,
+        } as never) as never,
+      );
+
+      expect(result.thrown).toBeUndefined();
+      if (typeof expected === "string") expect(result.text).toBe(expected);
+      else expected(result.text);
+      expect(retrieve).toHaveBeenCalledTimes(1);
+      expect(getCheckpoint).not.toHaveBeenCalled();
+      expect(fetchCalls).toBe(0);
+      expect(deps.meetingMessageRegistry.isClassified("t1", `meeting-${outcome.status}`)).toBe(true);
+    });
+  }
+
+  test("renders hostile clarification metadata as one bounded, round-trippable line", () => {
+    const hostile = "# fake choice\n[click](https://bad.test)\u0000 - " + "x".repeat(300);
+    const title = safeClarificationTitle(hostile);
+    expect(title).not.toContain("\r");
+    expect(title).not.toContain("\n");
+    expect(title).not.toContain("\u0000");
+    expect(title).toContain("\\#");
+    expect(title).toContain("\\[");
+    expect(title.length).toBeLessThanOrEqual(320);
+    expect(clarificationDateToken("not-a-date")).toBeNull();
+    expect(clarificationDateToken("2026-03-01T10:00:00.000Z")).toBe("2026-03-01");
+  });
+
+  test("uses transcript-specific no-content copy only when a summary remains available", () => {
+    expect(meetingOutcomeText({
+      status: "no-content",
+      meeting: meetingCandidate(),
+      partial: false,
+      summaryAvailable: true,
+      transcriptRequired: true,
+    })).toBe("I found a summary, but no readable transcript is available for that request.");
+  });
+
+  test("not-applicable preserves the ordinary inference path", async () => {
+    const retrieve = mock(async () => ({ status: "not-applicable" as const }));
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return okStreamResponse("ordinary reply");
+    }) as typeof fetch;
+    const { deps } = makeDeps({
+      meetingRetriever: { retrieve } as never,
+      contextTokensFor: () => 64_000,
+    });
+
+    const result = await drain(
+      createChatModelAdapter(deps).run({
+        messages: oneUserMessage("hello"),
+        abortSignal: new AbortController().signal,
+        context: {},
+        unstable_assistantMessageId: "ordinary-1",
+      } as never) as never,
+    );
+
+    expect(result).toEqual({ text: "ordinary reply", thrown: undefined });
+    expect(retrieve).toHaveBeenCalledTimes(1);
+    expect(fetchCalls).toBe(1);
+    expect(deps.meetingMessageRegistry.isClassified("t1", "ordinary-1")).toBe(false);
   });
 });

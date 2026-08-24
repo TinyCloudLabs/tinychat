@@ -109,6 +109,9 @@ export interface FetchedMeeting {
   title?: string;
   /** ISO meeting timestamp when the provider gave one. */
   ts?: string;
+  participantNames?: string[];
+  participantEmails?: string[];
+  organizerEmail?: string;
   payload: unknown;
 }
 
@@ -150,6 +153,9 @@ export interface ContentUpsertInput {
   kind: PendingKind;
   title?: string;
   ts?: string;
+  participantNames?: string[];
+  participantEmails?: string[];
+  organizerEmail?: string;
   /** Link-stripped provider content. W4 encrypts it; the worker never persists it itself. */
   content: unknown;
   /** ISO. */
@@ -944,6 +950,9 @@ export class ConnectorFetchWorker implements FetchWorkerNudge {
       kind: item.kind,
       ...(typeof content.title === "string" ? { title: content.title } : {}),
       ...(typeof content.ts === "string" ? { ts: content.ts } : {}),
+      ...(content.participantNames ? { participantNames: content.participantNames } : {}),
+      ...(content.participantEmails ? { participantEmails: content.participantEmails } : {}),
+      ...(content.organizerEmail ? { organizerEmail: content.organizerEmail } : {}),
       content: stripped.value,
       fetchedAt: new Date(fetchedAt).toISOString(),
       receivedAt: item.receivedAt,

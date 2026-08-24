@@ -1866,18 +1866,13 @@ function originOf(url: string): string | null {
  * makes reconnect-needed / no-access / slow-down distinguishable at all.
  */
 async function readGoogleProxyError(response: Response): Promise<OAuthErrorState> {
-  let body:
-    | { error?: unknown; error_description?: unknown; upstream_status?: unknown }
-    | null = null;
-  try {
-    body = (await response.json()) as {
+  const body = (await response.json().catch(() => null)) as
+    | {
       error?: unknown;
       error_description?: unknown;
       upstream_status?: unknown;
-    };
-  } catch {
-    body = null;
-  }
+    }
+    | null;
   const code = typeof body?.error === "string" ? body.error : "";
   const description =
     typeof body?.error_description === "string" ? body.error_description : "";

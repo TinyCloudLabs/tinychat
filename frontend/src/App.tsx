@@ -89,6 +89,9 @@ import {
 } from "./chat/useBackgroundDrain";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
+import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
+import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
+import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
 import { CalendarClockIcon, PanelLeftIcon, SettingsIcon } from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
@@ -1150,6 +1153,20 @@ function ChatWorkspace(props: {
   const activeThreadIdRef = useRef<string | null>(null);
   // C3: stable ref read by the adapter at request time to branch agent vs plain relay.
   const agentEnabledRef = useRef(false);
+  const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
+  // One instance per mounted workspace: its thread selection state is
+  // intentionally in-memory only, survives render churn, and vanishes on a
+  // workspace reload. It receives only browser-local handles and the existing
+  // session-backed metadata/content client.
+  const meetingRetriever = useMemo(
+    () => createBrowserMeetingTurnRetriever({
+      tcw: props.tcw,
+      meetings: createConnectorMeetingsClient(BACKEND_URL, {
+        sessionStore: props.sessionStore,
+      }),
+    }),
+    [props.tcw, props.sessionStore],
+  );
 
   const deps = useMemo(
     () => ({
@@ -1163,6 +1180,8 @@ function ChatWorkspace(props: {
       onMemoryUpdated: props.onMemoryUpdated,
       activeThreadIdRef,
       agentEnabledRef,
+      meetingRetriever,
+      meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
       contextTokensFor: props.contextTokensFor,
       getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
@@ -1219,6 +1238,8 @@ function ChatWorkspace(props: {
       props.onActiveThreadModel,
       props.onMemoryUpdated,
       props.contextTokensFor,
+      meetingRetriever,
+      meetingMessageRegistry,
       // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
     ],
   );

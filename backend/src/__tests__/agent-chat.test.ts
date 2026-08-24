@@ -89,6 +89,8 @@ function mockStripe(priceId: string | null, anchorEpochSec?: number | null): Str
 /** Install a global fetch stub for catalog (/models) calls; returns a restore fn. */
 function stubCatalogFetch(): () => void {
   const original = globalThis.fetch;
+  const originalApiKey = process.env.REDPILL_API_KEY;
+  process.env.REDPILL_API_KEY = "rp-test-key";
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/models")) {
@@ -99,7 +101,11 @@ function stubCatalogFetch(): () => void {
     }
     return original(input, init);
   }) as typeof fetch;
-  return () => { globalThis.fetch = original; };
+  return () => {
+    globalThis.fetch = original;
+    if (originalApiKey === undefined) delete process.env.REDPILL_API_KEY;
+    else process.env.REDPILL_API_KEY = originalApiKey;
+  };
 }
 
 /** Build mock req/res objects for direct handler invocation. */

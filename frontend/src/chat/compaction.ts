@@ -110,16 +110,21 @@ export function isCheckpointValid(
  */
 export function planCompaction(opts: {
   messages: PayloadMsgWithId[];
-  memoryBlockChars: number;
+  /**
+   * Characters in system blocks that are sent on every inference request but
+   * must never enter the conversation summary (for example memory and
+   * ephemeral meeting evidence).
+   */
+  fixedSystemBlockChars: number;
   contextTokens: number;
   targetRatio: number;
   prevCheckpoint?: CompactionCheckpoint | null;
 }): CompactionPlan {
-  const { messages, memoryBlockChars, contextTokens, targetRatio, prevCheckpoint } = opts;
-  const memoryTokens = Math.ceil(Math.max(0, memoryBlockChars) / 4);
+  const { messages, fixedSystemBlockChars, contextTokens, targetRatio, prevCheckpoint } = opts;
+  const fixedSystemBlockTokens = Math.ceil(Math.max(0, fixedSystemBlockChars) / 4);
   const targetTokens = Math.floor(targetRatio * contextTokens);
 
-  const fullEstimate = memoryTokens + estimatePayloadTokens(messages);
+  const fullEstimate = fixedSystemBlockTokens + estimatePayloadTokens(messages);
   if (fullEstimate <= targetTokens) {
     return { needed: false };
   }
@@ -144,7 +149,7 @@ export function planCompaction(opts: {
   for (let fold = 1; fold <= maxFold; fold++) {
     const tail = messages.slice(fold);
     const tailTokens = estimatePayloadTokens(tail);
-    if (memoryTokens + SUMMARY_RESERVE_TOKENS + tailTokens <= targetTokens) {
+    if (fixedSystemBlockTokens + SUMMARY_RESERVE_TOKENS + tailTokens <= targetTokens) {
       chosenFold = fold;
       budgetMet = true;
       break;

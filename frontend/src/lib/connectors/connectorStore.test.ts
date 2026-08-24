@@ -15,6 +15,7 @@ import {
   findGmeetNotesAssociation,
   getConnection,
   getMeetingDatetimeStats,
+  meetingKvKey,
   getDriveCursor,
   insertMeeting,
   listKnownSourceIds,
@@ -425,8 +426,15 @@ class FakeKv {
   entries = new Map<string, string>();
   putKeys: string[] = [];
   tracker = new OpTracker();
+  listCalls: { path: string; cursor?: string }[] = [];
+  /** Split each matching prefix listing into deterministic pages when set. */
+  listPageSize: number | null = null;
   /** When set, the NEXT put() fails with the given error. Consumed on use. */
   nextPutError: KvErr | null = null;
+  /** When set, the NEXT list() fails with the given error. Consumed on use. */
+  nextListError: KvErr | null = null;
+  /** Per-key delete failures, retained so one key can fail deterministically. */
+  deleteErrors = new Map<string, KvErr>();
 
   async get(key: string): Promise<{ ok: true; data: { data: unknown; headers: Record<string, string> } } | { ok: false; error: KvErr }> {
     return this.tracker.run("kv.get", () => {
@@ -451,8 +459,34 @@ class FakeKv {
     });
   }
 
+  async list(options: { path: string; cursor?: string }): Promise<
+    | { ok: true; data: { keys: string[]; cursor?: string } }
+    | { ok: false; error: KvErr }
+  > {
+    return this.tracker.run(`kv.list:${options.path}:${options.cursor ?? ""}`, () => {
+      this.listCalls.push(options);
+      if (this.nextListError) {
+        const err = this.nextListError;
+        this.nextListError = null;
+        return { ok: false, error: err } as const;
+      }
+      const all = [...this.entries.keys()].filter((key) => key.startsWith(options.path)).sort();
+      const start = Number.parseInt(options.cursor ?? "0", 10);
+      const offset = Number.isSafeInteger(start) && start >= 0 ? start : 0;
+      const size = this.listPageSize ?? all.length;
+      const keys = all.slice(offset, offset + size);
+      const next = offset + keys.length;
+      return {
+        ok: true,
+        data: next < all.length ? { keys, cursor: String(next) } : { keys },
+      } as const;
+    });
+  }
+
   async delete(key: string): Promise<{ ok: true; data: void } | { ok: false; error: KvErr }> {
     return this.tracker.run("kv.delete", () => {
+      const forcedError = this.deleteErrors.get(key);
+      if (forcedError) return { ok: false, error: forcedError } as const;
       if (!this.entries.has(key)) {
         return { ok: false, error: { code: "KV_NOT_FOUND", message: `no key ${key}` } } as const;
       }
@@ -579,7 +613,7 @@ describe("connectorStore.insertMeeting — app-level dedup on (source, source_id
 });
 
 describe("connectorStore.purgeConnector", () => {
-  test("deletes meeting rows, KV transcript bodies, and the state row", async () => {
+  test("deletes every listed KV-only meeting/transcript record, cursor, SQL rows, and state sequentially", async () => {
     const f = makeFake();
     await insertMeeting(f.tcw, {
       id: "r1",
@@ -613,6 +647,9 @@ describe("connectorStore.purgeConnector", () => {
     });
     await putTranscriptBody(f.tcw, "fireflies", "aaa", []);
     await putTranscriptBody(f.tcw, "fireflies", "bbb", []);
+    await f.kv.put(meetingKvKey("fireflies", "kv-only"), "reconciled record");
+    await f.kv.put(transcriptKvKey("fireflies", "kv-only"), "reconciled transcript");
+    await f.kv.put(driveCursorKvKey("fireflies"), "drive-cursor");
     await updateSyncState(f.tcw, {
       connectorId: "fireflies",
       status: "connected",
@@ -627,6 +664,7 @@ describe("connectorStore.purgeConnector", () => {
     expect(baselineCount.ok && baselineCount.data === 2).toBe(true);
     expect(f.kv.entries.has(transcriptKvKey("fireflies", "aaa"))).toBe(true);
     expect(f.kv.entries.has(transcriptKvKey("fireflies", "bbb"))).toBe(true);
+    expect(f.kv.entries.has(meetingKvKey("fireflies", "kv-only"))).toBe(true);
     const baselineConn = await getConnection(f.tcw, "fireflies");
     expect(baselineConn.ok && baselineConn.data !== null).toBe(true);
 
@@ -638,6 +676,11 @@ describe("connectorStore.purgeConnector", () => {
     expect(f.kv.entries.size).toBe(0);
     const afterConn = await getConnection(f.tcw, "fireflies");
     expect(afterConn.ok && afterConn.data === null).toBe(true);
+    expect(f.kv.listCalls).toEqual([
+      { path: `${CONNECTORS_KV_PREFIX}/fireflies/meeting/` },
+      { path: `${CONNECTORS_KV_PREFIX}/fireflies/transcript/` },
+    ]);
+    expect(f.tracker.maxInFlight).toBe(1);
   });
 
   test("KV_NOT_FOUND during purge is tolerated (already-gone key)", async () => {
@@ -657,12 +700,82 @@ describe("connectorStore.purgeConnector", () => {
       meetingType: null,
       metadata: {},
     });
-    // NO putTranscriptBody — the SQL row references a KV key that doesn't
-    // exist. Purge must not surface an error on KV_NOT_FOUND.
+    await putTranscriptBody(f.tcw, "fireflies", "aaa", []);
+    f.kv.deleteErrors.set(transcriptKvKey("fireflies", "aaa"), {
+      code: "KV_NOT_FOUND",
+      message: "already gone",
+    });
     const purged = await purgeConnector(f.tcw, "fireflies");
     expect(purged.ok).toBe(true);
     const afterCount = await countMeetings(f.tcw, "fireflies");
     expect(afterCount.ok && afterCount.data === 0).toBe(true);
+  });
+
+  test("fails closed when prefix enumeration fails before any purge mutation", async () => {
+    const f = makeFake();
+    await insertMeeting(f.tcw, {
+      id: "r1", source: "fireflies", sourceId: "aaa", title: null, startedAt: null,
+      durationSecs: null, organizerEmail: null, participants: [], summaryOverview: null,
+      summaryActionItems: null, keywords: null, meetingType: null, metadata: {},
+    });
+    await putTranscriptBody(f.tcw, "fireflies", "aaa", []);
+    f.kv.nextListError = { code: "KV_ERROR", message: "cannot enumerate" };
+
+    const purged = await purgeConnector(f.tcw, "fireflies");
+
+    expect(purged).toEqual({
+      ok: false,
+      error: expect.objectContaining({ code: "KV_ERROR", message: expect.stringContaining("list:") }),
+    });
+    expect(f.kv.entries.has(transcriptKvKey("fireflies", "aaa"))).toBe(true);
+    const afterCount = await countMeetings(f.tcw, "fireflies");
+    expect(afterCount.ok && afterCount.data === 1).toBe(true);
+  });
+
+  test("fails closed on rejected, malformed, non-string, or out-of-prefix list data before deleting", async () => {
+    const cases: Array<unknown> = [
+      new Error("rejected"),
+      { ok: true, data: {} },
+      { ok: true, data: { keys: [42] } },
+      { ok: true, data: { keys: ["unrelated/private-key"] } },
+      { ok: true, data: { keys: [], cursor: "more" } },
+    ];
+    for (const reply of cases) {
+      const f = makeFake();
+      await f.kv.put(meetingKvKey("fireflies", "kv-only"), "record");
+      f.kv.list = (async () => {
+        if (reply instanceof Error) throw reply;
+        return reply;
+      }) as never;
+      const result = await purgeConnector(f.tcw, "fireflies");
+      expect(result.ok).toBe(false);
+      expect(f.kv.entries.has(meetingKvKey("fireflies", "kv-only"))).toBe(true);
+    }
+  });
+
+  test("fails closed when deleting a listed KV key fails", async () => {
+    const f = makeFake();
+    await insertMeeting(f.tcw, {
+      id: "r1", source: "fireflies", sourceId: "aaa", title: null, startedAt: null,
+      durationSecs: null, organizerEmail: null, participants: [], summaryOverview: null,
+      summaryActionItems: null, keywords: null, meetingType: null, metadata: {},
+    });
+    await f.kv.put(meetingKvKey("fireflies", "kv-only"), "record");
+    f.kv.deleteErrors.set(meetingKvKey("fireflies", "kv-only"), {
+      code: "KV_ERROR",
+      message: "cannot delete",
+    });
+
+    const purged = await purgeConnector(f.tcw, "fireflies");
+
+    expect(purged).toEqual({
+      ok: false,
+      error: expect.objectContaining({ code: "KV_ERROR", message: expect.stringContaining("kv:") }),
+    });
+    expect(f.kv.entries.has(meetingKvKey("fireflies", "kv-only"))).toBe(true);
+    const afterCount = await countMeetings(f.tcw, "fireflies");
+    expect(afterCount.ok && afterCount.data === 1).toBe(true);
+    expect(f.tracker.maxInFlight).toBe(1);
   });
 });
 

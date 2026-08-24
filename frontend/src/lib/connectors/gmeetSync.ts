@@ -665,7 +665,7 @@ async function syncDriveNotes(
 
   diagnostics.drive_mode = "incremental";
   let pageToken = cursor.data;
-  let finalCursor: string | null = null;
+  let finalCursor: string | null;
   let anyFailure = false;
   while (true) {
     const page = await client.listDriveChangesPage(pageToken, { signal });

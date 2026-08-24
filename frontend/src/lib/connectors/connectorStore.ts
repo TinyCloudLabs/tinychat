@@ -774,27 +774,69 @@ export async function removeGmeetNotes(
 
 // ── Purge ───────────────────────────────────────────────────────────────
 
+/** List one SDK-defined complete prefix response, failing closed before mutation. */
+async function listKvPrefix(
+  tcw: TinyCloudWeb,
+  path: string,
+): Promise<StoreResult<string[]>> {
+  let page: Awaited<ReturnType<typeof tcw.kv.list>>;
+  try {
+    page = await tcw.kv.list({ path });
+  } catch {
+    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
+  }
+  if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
+  if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
+    return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
+  }
+  // Purge intentionally makes one bounded list request per complete source
+  // prefix. A continuation cursor means the complete set is unknown, so fail
+  // before deleting any key rather than report a partial purge as success.
+  const cursor = (page.data as { cursor?: unknown }).cursor;
+  if (cursor !== undefined && cursor !== null) {
+    return fail({ code: "KV_LIST_MALFORMED", message: "unexpected list cursor" }, `purgeConnector(list:${path})`);
+  }
+  const keys: string[] = [];
+  for (const key of page.data.keys) {
+    if (typeof key !== "string" || !key.startsWith(path)) {
+      return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
+    }
+    keys.push(key);
+  }
+  return { ok: true, data: keys };
+}
+
 /**
- * Delete every meeting row for `source`, the corresponding KV transcript
- * bodies, and the state row. Writes are sequential (SQL rows in a single
- * batch, KV deletes one-at-a-time — TinyCloud drops concurrent responses).
+ * Delete every source-scoped reconciled meeting and transcript KV record,
+ * then the Drive cursor, SQL rows, and state row. Listing and deletion stay
+ * sequential because TinyCloud drops concurrent responses on one space.
  */
 export async function purgeConnector(
   tcw: TinyCloudWeb,
   source: string,
 ): Promise<StoreResult<void>> {
+  if (source.length === 0 || source.includes("/")) {
+    return fail({ code: "KV_LIST_MALFORMED", message: "invalid connector source" }, "purgeConnector(source)");
+  }
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
-  const sourceIdsRes = await listKnownSourceIds(tcw, source);
-  if (!sourceIdsRes.ok) return sourceIdsRes;
-  for (const sid of sourceIdsRes.data) {
-    const del = await tcw.kv.delete(transcriptKvKey(source, sid));
+
+  // Enumerate both prefixes before mutating either. This both captures
+  // KV-only reconciled records and ensures a failed enumeration cannot report
+  // a partially completed purge as successful.
+  const meetingKeys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/meeting/`);
+  if (!meetingKeys.ok) return meetingKeys;
+  const transcriptKeys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/transcript/`);
+  if (!transcriptKeys.ok) return transcriptKeys;
+
+  for (const key of [...meetingKeys.data, ...transcriptKeys.data]) {
+    const del = await tcw.kv.delete(key);
     if (!del.ok) {
       // KV_NOT_FOUND is fine — nothing to remove. Anything else is a real
       // failure and must surface.
       const code = del.error?.code ?? "";
       if (code !== "KV_NOT_FOUND") {
-        return fail(del.error, `purgeConnector(kv:${sid})`);
+        return fail(del.error, `purgeConnector(kv:${key})`);
       }
     }
   }

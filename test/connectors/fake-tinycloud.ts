@@ -1,6 +1,6 @@
 // In-memory fake of the TinyCloudWeb surfaces the connectors code touches.
 // See docs/connectors-spec.md §10. Backs: sql.db(name).{execute,query,batch},
-// kv.{get,put,delete}, secrets.{isUnlocked,unlock,put,get,delete}, did,
+// kv.{get,put,list,delete}, secrets.{isUnlocked,unlock,put,get,delete}, did,
 // spaceId, ensureOwnedSpaceHosted.
 //
 // The SQL fake understands ONLY the statement shapes connectorStore.ts
@@ -449,6 +449,26 @@ export class FakeKv {
     return {
       ok: true,
       data: { data: undefined as unknown as void, headers: {} },
+    };
+  }
+
+  /**
+   * Mirror the SDK's prefix listing used by connector data purge. The real
+   * node may paginate, but this compact fake returns its deterministic full
+   * matching set as one page.
+   */
+  async list(
+    options: { path: string; cursor?: string },
+  ): Promise<OkErr<{ keys: string[]; cursor?: string }, KvErr>> {
+    const denied = this.deny(options.path);
+    if (denied) return { ok: false, error: denied };
+    return {
+      ok: true,
+      data: {
+        keys: [...this.entries.keys()]
+          .filter((key) => key.startsWith(options.path))
+          .sort(),
+      },
     };
   }
 
