@@ -27,6 +27,7 @@ import {
   RECONCILE_MAX_PER_RUN,
   reconcileBackendMeetings,
   type BackendReconcileMeetingsClient,
+  type ReconciledMeetingKvRecordV1,
 } from "./backendReconcile";
 import { meetingKvKey, transcriptKvKey } from "./connectorStore";
 import type {
@@ -215,10 +216,22 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
     // KV only, under the granted `${APP_ID}/connectors/` prefix, both halves present.
     expect(kv.entries.has(meetingKvKey(SOURCE, "mtg-a"))).toBe(true);
     expect(kv.entries.has(transcriptKvKey(SOURCE, "mtg-a"))).toBe(true);
-    const record = JSON.parse(kv.entries.get(meetingKvKey(SOURCE, "mtg-a")) ?? "{}");
-    expect(record.sourceId).toBe("mtg-a");
-    expect(record.source).toBe(SOURCE);
-    expect(record.title).toBe("Q3 planning sync");
+    const record = JSON.parse(
+      kv.entries.get(meetingKvKey(SOURCE, "mtg-a")) ?? "{}",
+    ) as ReconciledMeetingKvRecordV1;
+    expect(record).toEqual({
+      v: 1,
+      source: SOURCE,
+      sourceId: "mtg-a",
+      title: "Q3 planning sync",
+      startedAt: null,
+      hasTranscript: true,
+      hasSummary: false,
+      storedAt: "2026-08-10T12:00:00.000Z",
+      updatedAt: "2026-08-10T12:00:00.000Z",
+      copiedAt: expect.any(String),
+      origin: "backend-ingest",
+    });
     // The transcript body keeps Option C's shape, so the user's space stays one archive.
     expect(JSON.parse(kv.entries.get(transcriptKvKey(SOURCE, "mtg-a")) ?? "[]")).toHaveLength(1);
 

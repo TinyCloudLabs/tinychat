@@ -210,7 +210,34 @@ function toFetchedMeeting(row: Record<string, unknown>): FetchedMeeting {
   if (typeof row.title === "string") content.title = row.title;
   const ts = normalizeTimestamp(row.date);
   if (ts !== undefined) content.ts = ts;
+  const organizerEmail = boundedEmail(row.organizer_email);
+  if (organizerEmail) content.organizerEmail = organizerEmail;
+  const names: string[] = [];
+  const emails: string[] = [];
+  if (Array.isArray(row.meeting_attendees)) {
+    for (const attendee of row.meeting_attendees.slice(0, 100)) {
+      if (typeof attendee !== "object" || attendee === null || Array.isArray(attendee)) continue;
+      const value = attendee as Record<string, unknown>;
+      const name = boundedString(value.displayName);
+      const email = boundedEmail(value.email);
+      if (name && !names.some((existing) => existing.toLocaleLowerCase() === name.toLocaleLowerCase())) names.push(name);
+      if (email && !emails.includes(email)) emails.push(email);
+    }
+  }
+  if (names.length > 0) content.participantNames = names;
+  if (emails.length > 0) content.participantEmails = emails;
   return content;
+}
+
+function boundedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().replace(/\s+/g, " ");
+  return normalized.length > 0 && normalized.length <= 256 ? normalized : undefined;
+}
+
+function boundedEmail(value: unknown): string | undefined {
+  const normalized = boundedString(value)?.toLocaleLowerCase();
+  return normalized && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : undefined;
 }
 
 /** Fireflies dates arrive as an ISO string or epoch millis; the store wants one shape. */

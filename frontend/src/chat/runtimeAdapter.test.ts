@@ -7,8 +7,9 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
-import { takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
+import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
+import type { MeetingCandidate } from "../lib/meetingChat/types.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -50,6 +51,27 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): 
     offeredModelIdsRef: { current: new Set() },
     agentEnabledRef: { current: agentEnabled },
     activeThreadIdRef: { current: activeThreadId },
+    meetingMessageRegistry: createMeetingMessageRegistry(),
+  };
+}
+
+function meetingCandidate(): MeetingCandidate {
+  return {
+    source: "fireflies",
+    sourceId: "meeting-1",
+    title: "Planning",
+    startedAt: "2026-03-01T10:00:00.000Z",
+    participantNames: [],
+    participantEmails: [],
+    organizerEmail: null,
+    hasSqlSummary: false,
+    hasLocalRecord: false,
+    hasLocalTranscript: false,
+    hasServerSummary: false,
+    hasServerTranscript: false,
+    localRowId: null,
+    createdAt: null,
+    updatedAt: null,
   };
 }
 
@@ -92,6 +114,32 @@ describe("createChatModelAdapter — C1 branch selection", () => {
     globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
     const { calledUrl } = await drainAdapter(makeDeps(true, "thread-x"));
     expect(calledUrl).toContain("/api/agent/chat");
+  });
+
+  it("forces a grounded meeting turn through /api/chat when agents are enabled", async () => {
+    globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
+    const deps = makeDeps(true, "thread-x");
+    deps.meetingRetriever = {
+      retrieve: async () => ({
+        status: "grounded",
+        meeting: meetingCandidate(),
+        evidence: {
+          summary: null,
+          summaryLocator: null,
+          transcript: null,
+          transcriptLocator: null,
+          reads: 0,
+          partial: false,
+          unavailableLocators: [],
+        },
+        systemMessage: "UNTRUSTED MEETING EVIDENCE",
+        partial: false,
+      }),
+    } as AdapterDeps["meetingRetriever"];
+
+    const { calledUrl } = await drainAdapter(deps);
+    expect(calledUrl).toContain("/api/chat");
+    expect(calledUrl).not.toContain("/api/agent/chat");
   });
 
   it("yields cumulative text on the agent path", async () => {

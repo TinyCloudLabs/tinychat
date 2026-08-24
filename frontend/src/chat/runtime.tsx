@@ -13,6 +13,7 @@ import {
 import { createAssistantStream } from "assistant-stream";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import {
   completeChat,
   emitReceipt,
@@ -57,6 +58,7 @@ import { healPersistedModel } from "../lib/sanitizeModel";
 import {
   takePendingCompletion,
   takePendingReceipt,
+  type MeetingMessageRegistry,
 } from "./pendingHandoff";
 
 /**
@@ -144,6 +146,9 @@ export interface ChatRuntimeDeps {
    * Read by the adapter at request time to branch streamAgentChat vs streamChat.
    */
   agentEnabledRef: React.MutableRefObject<boolean>;
+  /** One mounted, browser-only meeting retriever with ephemeral thread state. */
+  meetingRetriever?: MeetingTurnRetriever;
+  meetingMessageRegistry: MeetingMessageRegistry;
   // ── Compaction deps (§D.3): injected so the adapter stays unit-testable. ──
   /** Latest chain-checkpoint for a thread (or null). */
   getCheckpoint: (threadId: string) => Promise<CompactionCheckpoint | null>;
@@ -329,7 +334,12 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
   return { headId, messages };
 }
 
-function createHistoryAdapter(
+/**
+ * Build the per-thread persistence adapter. Exported for the runtime privacy
+ * contract test; callers must still construct it only at the mounted runtime
+ * boundary below.
+ */
+export function createHistoryAdapter(
   tcw: TinyCloudWeb,
   threadId: string,
   /**
@@ -353,6 +363,7 @@ function createHistoryAdapter(
     messageId: string,
     userMessageId?: string,
   ) => Promise<PersistedReceipt | null>,
+  meetingMessageRegistry?: MeetingMessageRegistry,
 ): ThreadHistoryAdapter {
   // Per-thread rolling 2-item ring of the most recent user/assistant exchange.
   // Owned by the adapter (one ring per active thread instance) so a thread
@@ -391,6 +402,15 @@ function createHistoryAdapter(
     async append(item: ExportedMessageRepositoryItem): Promise<void> {
       const role = item.message?.role;
       const id = (item.message as { id?: unknown })?.id;
+      // Peek before persistence so a failed append retains the classification
+      // for its retry. It never becomes part of `item`.
+      const meetingTurn = role === "assistant" && typeof id === "string" && meetingMessageRegistry
+        ? meetingMessageRegistry.resolveAssistant({
+            threadId,
+            assistantMessageId: id,
+            userMessageId: lastUserMessageId ?? "",
+          })
+        : false;
 
       // Receipt hooks run at ENTRY, before persistence. The receipt only needs
       // the message ids — and `await appendMessage` is the wrong thing to gate
@@ -435,6 +455,13 @@ function createHistoryAdapter(
         }
       }
 
+      // A grounded reply can echo transcript evidence. Keep every applicable
+      // meeting reply transient so neither history nor later compaction can
+      // receive raw meeting text.
+      if (role === "assistant" && meetingTurn) {
+        return;
+      }
+
       await appendMessage(tcw, threadId, item);
 
       // Maintain a rolling 2-item ring of the most recent user/assistant
@@ -449,7 +476,7 @@ function createHistoryAdapter(
       // Fire-and-forget extraction after an assistant turn — never await it
       // into the append path or the next user message stalls behind it. Pass
       // the turn ids so extraction's billed usage folds onto THIS reply's badge.
-      if (role === "assistant") {
+      if (role === "assistant" && !meetingTurn) {
         onAssistantTurn([...lastExchange], {
           assistantMessageId: typeof id === "string" ? id : undefined,
           userMessageId: lastUserMessageId,
@@ -602,6 +629,7 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
             threadId,
             onAssistantTurn,
             computeReceipt,
+            depsRef.current.meetingMessageRegistry,
           ),
         [activeTcw, threadId, onAssistantTurn, computeReceipt],
       );

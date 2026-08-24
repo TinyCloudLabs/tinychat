@@ -174,7 +174,7 @@ const MAX_ERROR_FIELD_LENGTH = 200;
 function safeErrorField(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   // Control characters (CR/LF especially) would forge lines into the CVM's public log stream.
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  const cleaned = value.replace(/\p{Cc}/gu, " ").trim();
   if (cleaned.length === 0) return undefined;
   return cleaned.slice(0, MAX_ERROR_FIELD_LENGTH);
 }

@@ -294,13 +294,8 @@ interface GoogleErrorBody {
 async function readErrorDetail(
   response: Response,
 ): Promise<{ status: number; message: string; googleStatus: string | null; reason: string | null; body: string }> {
-  let raw = "";
-  try {
-    raw = await response.text();
-  } catch {
-    raw = "";
-  }
-  let parsed: GoogleErrorBody | null = null;
+  const raw = await response.text().catch(() => "");
+  let parsed: GoogleErrorBody | null;
   try {
     parsed = raw ? (JSON.parse(raw) as GoogleErrorBody) : null;
   } catch {
@@ -638,7 +633,7 @@ export class GmeetClient {
       if (response.status === 401) {
         if (!refreshAttempted && this.refreshAccessToken) {
           refreshAttempted = true;
-          let token: string | null = null;
+          let token: string | null;
           try {
             token = await this.refreshAccessToken();
           } catch {

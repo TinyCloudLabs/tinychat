@@ -104,6 +104,9 @@ function metaView(meta: ContentMeta) {
     sourceId: meta.sourceId,
     ...(meta.title === undefined ? {} : { title: meta.title }),
     ...(meta.ts === undefined ? {} : { ts: meta.ts }),
+    ...(meta.participantNames === undefined ? {} : { participantNames: meta.participantNames }),
+    ...(meta.participantEmails === undefined ? {} : { participantEmails: meta.participantEmails }),
+    ...(meta.organizerEmail === undefined ? {} : { organizerEmail: meta.organizerEmail }),
     ...(meta.transcriptStoredAt === undefined
       ? {}
       : { transcriptStoredAt: meta.transcriptStoredAt }),

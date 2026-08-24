@@ -91,6 +91,27 @@ const TRANSCRIPT = {
 };
 
 describe("Fireflies fetcher — the request (delta 7)", () => {
+  test("normalizes bounded content-free participant and organizer metadata", async () => {
+    const { fetcher } = fetcherWith(() => json({ data: { transcript: {
+      ...TRANSCRIPT,
+      organizer_email: " Owner@Example.Test ",
+      meeting_attendees: [
+        { displayName: " Alice  Smith ", email: "ALICE@Example.Test" },
+        { displayName: "alice smith", email: "alice@example.test" },
+        { displayName: "", email: "not-an-email" },
+      ],
+    } } }));
+    const result = await fetcher.fetchMeeting(request());
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      content: expect.objectContaining({
+        organizerEmail: "owner@example.test",
+        participantNames: ["Alice Smith"],
+        participantEmails: ["alice@example.test"],
+      }),
+    }));
+  });
+
   test("[delta-07] the request is BY ID: a GraphQL id variable, no URL from any stored record", async () => {
     const { fetcher, calls } = fetcherWith(() =>
       json({ data: { transcript: TRANSCRIPT } }),

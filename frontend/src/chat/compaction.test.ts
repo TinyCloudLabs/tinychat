@@ -49,13 +49,35 @@ describe("compaction core (spec §D.1)", () => {
     ];
     const plan = planCompaction({
       messages,
-      memoryBlockChars: 100,
+      fixedSystemBlockChars: 100,
       contextTokens: 64000,
       targetRatio: 0.5,
     });
     expect(plan.needed).toBe(false);
     expect(plan.tail).toBeUndefined();
     expect(plan.coversThroughMessageId).toBeUndefined();
+  });
+
+  it("fixed_system_blocks_count_toward_planning_without_becoming_messages", () => {
+    const messages: PayloadMsgWithId[] = [
+      { id: "m0", role: "user", content: "short" },
+      { id: "m1", role: "assistant", content: "short" },
+      { id: "m2", role: "user", content: "short" },
+      { id: "m3", role: "assistant", content: "short" },
+      { id: "m4", role: "user", content: "short" },
+    ];
+
+    const plan = planCompaction({
+      messages,
+      fixedSystemBlockChars: 15_000,
+      contextTokens: 5_000,
+      targetRatio: 0.5,
+    });
+
+    // Fixed blocks count against the budget, but only conversation messages
+    // are eligible for the summary input.
+    expect(plan.needed).toBe(true);
+    expect(plan.toSummarize).toEqual([{ role: "user", content: "short" }]);
   });
 
   it("plan_selects_covers_through_min_tail_and_target", () => {
@@ -77,7 +99,7 @@ describe("compaction core (spec §D.1)", () => {
 
     const plan = planCompaction({
       messages,
-      memoryBlockChars: 0,
+      fixedSystemBlockChars: 0,
       contextTokens,
       targetRatio,
     });
@@ -116,7 +138,7 @@ describe("compaction core (spec §D.1)", () => {
     ];
     const plan = planCompaction({
       messages,
-      memoryBlockChars: 0,
+      fixedSystemBlockChars: 0,
       contextTokens: 64000,
       targetRatio: 0.5,
     });
@@ -187,7 +209,7 @@ describe("compaction core (spec §D.1)", () => {
     const prev = cp({ coversThroughMessageId: "m1", summary: "PREV" });
     const plan = planCompaction({
       messages,
-      memoryBlockChars: 0,
+      fixedSystemBlockChars: 0,
       contextTokens: 64000,
       targetRatio: 0.5,
       prevCheckpoint: prev,

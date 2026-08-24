@@ -22,6 +22,7 @@ import {
 import {
   setPendingCompletion,
   setPendingReceipt,
+  type MeetingMessageRegistry,
 } from "./pendingHandoff";
 import {
   COMPACT_TRIGGER_RATIO,
@@ -40,6 +41,9 @@ import type React from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { DEFAULT_MODEL } from "../lib/threadStore";
 import { sanitizeModel } from "../lib/sanitizeModel";
+import { meetingSourceLabel } from "../lib/connectors/meetingExplorer";
+import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
+import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
 
 /**
  * User-facing copy shown when a conversation is still too long AFTER a
@@ -48,6 +52,14 @@ import { sanitizeModel } from "../lib/sanitizeModel";
  */
 export const CONTEXT_OVERFLOW_MESSAGE =
   "This conversation is too long for the model even after compaction. Start a new chat to continue.";
+
+export const MEETING_NO_MATCH_MESSAGE =
+  "I couldn't find a matching meeting. Try a meeting title, participant or email address, a YYYY-MM-DD date, today, or yesterday.";
+export const MEETING_NO_CONTENT_MESSAGE =
+  "I found the meeting, but it has no summary or transcript the chat can use. Try syncing again later or check whether transcription was enabled.";
+export const MEETING_STORAGE_ERROR_MESSAGE =
+  "I couldn't read your meeting data right now. Please try again.";
+export const MEETING_ABORTED_MESSAGE = "Meeting retrieval was canceled.";
 
 // ── Compaction indicator store (subtle UX; §C.14) ────────────────────
 //
@@ -114,6 +126,13 @@ export interface AdapterDeps {
    * never fire a request and 403, regardless of which restore path set it.
    */
   offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
+  /**
+   * Optional until the mounted workspace wires its one stable retriever. Its
+   * absence preserves ordinary chat exactly; when present it runs once before
+   * checkpoint loading or compaction.
+   */
+  meetingRetriever?: MeetingTurnRetriever;
+  meetingMessageRegistry: MeetingMessageRegistry;
   // ── Compaction deps (injected so unit tests can stub them; §D.3) ─────
   /** Latest checkpoint for a thread (or null). */
   getCheckpoint: (threadId: string) => Promise<CompactionCheckpoint | null>;
@@ -132,6 +151,68 @@ export interface AdapterDeps {
   summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
   /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
   contextTokensFor: (modelId: string) => number;
+}
+
+const CLARIFICATION_TITLE_MAX_CHARS = 160;
+
+/** Keep untrusted metadata inside one harmless Markdown list line. */
+export function safeClarificationTitle(value: string | null): string {
+  const oneLine = [...(value ?? "Untitled meeting")]
+    .map((character) => character === "\r" || character === "\n" || character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+      ? " "
+      : character)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  const bounded = oneLine.length > CLARIFICATION_TITLE_MAX_CHARS
+    ? `${oneLine.slice(0, CLARIFICATION_TITLE_MAX_CHARS - 1).trimEnd()}…`
+    : oneLine || "Untitled meeting";
+  // MarkdownText enables GFM. Escape every syntax delimiter that could turn a
+  // provider title into structure, a link, emphasis, or a quoted code span.
+  const markdownDelimiters = new Set(["\\", "`", "*", "_", "{", "}", "[", "]", "<", ">", "(", ")", "#", "+", "-", ".", "!", "|"]);
+  return [...bounded].map((character) => markdownDelimiters.has(character) ? `\\${character}` : character).join("");
+}
+
+/** A stable reply token shared with the retriever's YYYY-MM-DD grammar. */
+export function clarificationDateToken(value: string | null): string | null {
+  if (value === null) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return null;
+  return `${date.getFullYear().toString().padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function choiceLabel(choice: MeetingCandidate, index: number): string {
+  const dateToken = clarificationDateToken(choice.startedAt);
+  const timestamp = dateToken === null
+    ? "date unavailable"
+    : `${new Date(choice.startedAt!).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })} [${dateToken}]`;
+  return `${index + 1}. ${safeClarificationTitle(choice.title)} — ${timestamp} (${safeClarificationTitle(meetingSourceLabel(choice.source))})`;
+}
+
+/** Render retrieval-only outcomes without passing a request to inference. */
+export function meetingOutcomeText(outcome: Exclude<MeetingRetrievalOutcome, { status: "not-applicable" } | { status: "grounded" }>): string {
+  switch (outcome.status) {
+    case "clarification":
+      return [
+        "Choose the meeting to use. Reply with an option number:",
+        ...outcome.choices.slice(0, 5).map((choice, index) => `- ${choiceLabel(choice, index)}`),
+        ...(outcome.partial || outcome.truncated
+          ? ["More or unavailable meetings may not be listed. Refine with a title, participant/email, or date."]
+          : []),
+      ].join("\n");
+    case "no-match":
+      return MEETING_NO_MATCH_MESSAGE;
+    case "no-content":
+      return outcome.partial
+        ? "I found the meeting, but some content could not be read right now. Please try again."
+        : outcome.transcriptRequired && outcome.summaryAvailable
+          ? "I found a summary, but no readable transcript is available for that request."
+        : MEETING_NO_CONTENT_MESSAGE;
+    case "storage-error":
+      return MEETING_STORAGE_ERROR_MESSAGE;
+    case "aborted":
+      return MEETING_ABORTED_MESSAGE;
+  }
 }
 
 /** Flatten an assistant-ui ThreadMessage's content parts into plain text. */
@@ -161,12 +242,16 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
           ? { role: "system", content: systemContent }
           : null;
 
+      const threadId = deps.activeThreadIdRef.current;
       const convo: PayloadMsgWithId[] = [];
       for (const m of messages) {
         if (m.role !== "user" && m.role !== "assistant" && m.role !== "system") continue;
         const content = messageText(m);
         if (!content) continue;
         const id = typeof (m as { id?: unknown }).id === "string" ? (m as { id: string }).id : "";
+        if (m.role === "assistant" && threadId && id && deps.meetingMessageRegistry.isClassified(threadId, id)) {
+          continue;
+        }
         convo.push({ id, role: m.role, content });
       }
 
@@ -179,12 +264,57 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         deps.offeredModelIdsRef.current,
       );
 
+      // Meeting retrieval is a single, ephemeral preflight. It must finish
+      // before any checkpoint/storage compaction work, and its raw evidence
+      // remains only in this local outcome and the assembled inference payload.
+      const latestQuestion = [...convo].reverse().find((message) => message.role === "user")?.content;
+      let meetingSystemBlock: ChatMessage | null = null;
+      if (deps.meetingRetriever && threadId && latestQuestion !== undefined) {
+        let meetingOutcome: MeetingRetrievalOutcome;
+        try {
+          meetingOutcome = await deps.meetingRetriever.retrieve({
+            threadId,
+            question: latestQuestion,
+            signal: abortSignal,
+          });
+        } catch {
+          meetingOutcome = { status: "storage-error", partial: true };
+        }
+
+        // Every applicable meeting outcome (including a deterministic reply)
+        // must skip the post-append memory pipeline. The flag is keyed only by
+        // the assistant message id and is consumed by the history adapter; no
+        // meeting evidence or provenance travels with the persisted item.
+        if (meetingOutcome.status !== "not-applicable") {
+          const userMessageId = [...convo].reverse().find((message) => message.role === "user")?.id;
+          const classified = deps.meetingMessageRegistry.classify({
+            threadId,
+            assistantMessageId:
+              typeof unstable_assistantMessageId === "string" ? unstable_assistantMessageId : undefined,
+            userMessageId: !unstable_assistantMessageId ? userMessageId : undefined,
+          });
+          // An applicable grounded response must never be emitted when there is
+          // no exact assistant id or thread/user correlation to classify it.
+          if (!classified && meetingOutcome.status === "grounded") {
+            yield { content: [{ type: "text", text: meetingOutcomeText({ status: "storage-error", partial: true }) }] };
+            return;
+          }
+        }
+
+        if (meetingOutcome.status !== "not-applicable" && meetingOutcome.status !== "grounded") {
+          yield { content: [{ type: "text", text: meetingOutcomeText(meetingOutcome) }] };
+          return;
+        }
+        if (meetingOutcome.status === "grounded") {
+          meetingSystemBlock = { role: "system", content: meetingOutcome.systemMessage };
+        }
+      }
+
       // ── Compaction wiring (§D.3) ─────────────────────────────────────
       // All compaction deps are injected together (App wires them). When any is
       // absent — e.g. a unit harness that only exercises the transport branch —
       // the adapter degrades to exact baseline behaviour: full history, no
       // proactive/reactive compaction.
-      const threadId = deps.activeThreadIdRef.current;
       const canCompact =
         !!threadId &&
         typeof deps.contextTokensFor === "function" &&
@@ -192,7 +322,10 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         typeof deps.summarize === "function" &&
         typeof deps.appendCompaction === "function";
       const contextTokens = canCompact ? deps.contextTokensFor(modelId) : 0;
-      const memoryChars = memoryBlock?.content.length ?? 0;
+      // Memory and meeting context are fixed system blocks: both consume the
+      // inference budget but neither may be put into a compaction summary.
+      const fixedSystemBlockChars =
+        (memoryBlock?.content.length ?? 0) + (meetingSystemBlock?.content.length ?? 0);
       const messageIds = convo.map((m) => m.id);
 
       // (a) Load + chain-validate the latest checkpoint (§C.8). Never crash on a
@@ -200,20 +333,23 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // history and the reactive path re-compacts if needed.
       let activeCheckpoint: CompactionCheckpoint | null = null;
       if (canCompact && threadId) {
-        let loaded: CompactionCheckpoint | null = null;
         try {
-          loaded = await deps.getCheckpoint(threadId);
+          const loaded = await deps.getCheckpoint(threadId);
+          if (isCheckpointValid(loaded, messageIds)) activeCheckpoint = loaded;
         } catch {
-          loaded = null;
+          // An unreadable checkpoint is intentionally ignored.
         }
-        if (isCheckpointValid(loaded, messageIds)) activeCheckpoint = loaded;
       }
 
       const assemble = (cp: CompactionCheckpoint | null): ChatMessage[] => {
         const body: ChatMessage[] = cp
           ? (applyCheckpoint(convo, cp) as ChatMessage[])
           : convo.map((m) => ({ role: m.role, content: m.content }));
-        return memoryBlock ? [memoryBlock, ...body] : body;
+        return [
+          ...(memoryBlock ? [memoryBlock] : []),
+          ...(meetingSystemBlock ? [meetingSystemBlock] : []),
+          ...body,
+        ];
       };
 
       let payload = assemble(activeCheckpoint);
@@ -229,7 +365,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         if (!canCompact || !threadId) return false;
         const plan = planCompaction({
           messages: convo,
-          memoryBlockChars: memoryChars,
+          fixedSystemBlockChars,
           contextTokens,
           targetRatio,
           prevCheckpoint: activeCheckpoint,
@@ -266,15 +402,16 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         completionId = id;
       };
 
-      // One transport attempt with the CURRENT payload. C1: branch on
-      // agentEnabledRef (agent tool-calling vs plain relay). Both paths receive
-      // the SAME compaction-rewritten payload; the server-side §C.11 guard covers
-      // intra-round agent growth. ContextOverflowError is thrown BEFORE any yield
-      // (pre-stream), so a reactive retry never double-emits text.
+      // One transport attempt with the CURRENT payload. Grounded meeting turns
+      // always use the plain relay: the agent transport may expose the assembled
+      // meeting context to tools. Ordinary turns retain the C1 branch on
+      // agentEnabledRef. Both paths receive the SAME compaction-rewritten payload.
+      // ContextOverflowError is thrown BEFORE any yield (pre-stream), so a
+      // reactive retry never double-emits text.
       const sendOnce = async function* (
         sendPayload: ChatMessage[],
       ): AsyncGenerator<{ content: { type: "text"; text: string }[] }, void, unknown> {
-        if (deps.agentEnabledRef.current) {
+        if (deps.agentEnabledRef.current && !meetingSystemBlock) {
           // C2: read the active thread id from the ref written by the per-thread
           // Provider so roomId is always current at call time.
           const roomId = deps.activeThreadIdRef.current ?? undefined;
@@ -337,7 +474,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
             // always surface the vendor-agnostic friendly copy. The raw
             // ContextOverflowError.message carries the upstream detail, which may
             // name a model/provider — never render it verbatim (§C.13/§F.12).
-            throw new Error(CONTEXT_OVERFLOW_MESSAGE);
+            throw new Error(CONTEXT_OVERFLOW_MESSAGE, { cause: err });
           }
           throw err;
         }

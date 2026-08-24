@@ -142,6 +142,9 @@ export interface ContentMeta {
   title?: string;
   /** The provider's meeting timestamp when it gave one. */
   ts?: string;
+  participantNames?: string[];
+  participantEmails?: string[];
+  organizerEmail?: string;
   transcriptStoredAt?: string;
   summaryStoredAt?: string;
   /** Bytes of the merged, serialized content — the number the per-user cap counts. */
@@ -520,6 +523,15 @@ export class ContentStore implements ContentSink, RetentionGuard {
             : prior?.ts !== undefined
               ? { ts: prior.ts }
               : {}),
+          ...(input.participantNames !== undefined
+            ? { participantNames: input.participantNames }
+            : prior?.participantNames !== undefined ? { participantNames: prior.participantNames } : {}),
+          ...(input.participantEmails !== undefined
+            ? { participantEmails: input.participantEmails }
+            : prior?.participantEmails !== undefined ? { participantEmails: prior.participantEmails } : {}),
+          ...(input.organizerEmail !== undefined
+            ? { organizerEmail: input.organizerEmail }
+            : prior?.organizerEmail !== undefined ? { organizerEmail: prior.organizerEmail } : {}),
           ...(input.kind === "transcript"
             ? { transcriptStoredAt: stamp }
             : prior?.transcriptStoredAt !== undefined
@@ -1012,10 +1024,17 @@ function parseMeta(raw: unknown): ContentMeta | null {
     typeof value.sizeBytes === "number" && Number.isFinite(value.sizeBytes)
       ? value.sizeBytes
       : 0;
+  const participantNames = parseBoundedStrings(value.participantNames, false);
+  const participantEmails = parseBoundedStrings(value.participantEmails, true);
+  const organizerEmail = parseBoundedEmail(value.organizerEmail);
+  if (participantNames === null || participantEmails === null || organizerEmail === null) return null;
   return {
     sourceId: value.sourceId,
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.ts === "string" ? { ts: value.ts } : {}),
+    ...(participantNames === undefined ? {} : { participantNames }),
+    ...(participantEmails === undefined ? {} : { participantEmails }),
+    ...(organizerEmail === undefined ? {} : { organizerEmail }),
     ...(typeof value.transcriptStoredAt === "string"
       ? { transcriptStoredAt: value.transcriptStoredAt }
       : {}),
@@ -1029,6 +1048,25 @@ function parseMeta(raw: unknown): ContentMeta | null {
       ? { reconciledAt: value.reconciledAt }
       : {}),
   };
+}
+
+function parseBoundedEmail(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0 || value.length > 256 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return null;
+  return value.toLocaleLowerCase();
+}
+
+function parseBoundedStrings(value: unknown, emails: boolean): string[] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 100) return null;
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || item.length === 0 || item.length > 256) return null;
+    const normalized = emails ? parseBoundedEmail(item) : item.trim().replace(/\s+/g, " ");
+    if (!normalized) return null;
+    if (!result.some((existing) => existing.toLocaleLowerCase() === normalized.toLocaleLowerCase())) result.push(normalized);
+  }
+  return result;
 }
 
 function parseIndex(plaintext: string): ContentIndex {
