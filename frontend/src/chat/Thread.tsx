@@ -450,7 +450,6 @@ const Composer: FC = () => {
           autoFocus
           rows={1}
           placeholder="Message TinyCloud Chat…"
-          aria-describedby="meeting-provider-disclosure"
           // text-base (16px) on mobile prevents iOS Safari from auto-zooming
           // the page when the field gains focus; desktop keeps the compact 14px.
           className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
@@ -479,9 +478,6 @@ const Composer: FC = () => {
           </ComposerPrimitive.Cancel>
         </ThreadPrimitive.If>
       </ComposerPrimitive.Root>
-      <p id="meeting-provider-disclosure" className="px-1 pt-2 text-xs text-muted-foreground">
-        Meeting questions send selected meeting text to the chosen inference provider.
-      </p>
     </div>
   );
 };
