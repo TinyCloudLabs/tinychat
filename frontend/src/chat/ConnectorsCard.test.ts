@@ -64,12 +64,29 @@ describe("Connectors page composition", () => {
     const app = read("../App.tsx");
     const settings = read("SettingsPage.tsx");
 
-    expect(app).toContain('location.pathname.endsWith("/chat/connectors")');
-    expect(app).toContain('navigate("/chat/connectors")');
+    // Connectors is a SUBTREE now (Sources | Library), so the route match and
+    // the sidebar target moved to connectorsNav's constants — see
+    // connectorsNav.test.tsx for the IA's own assertions.
+    expect(app).toContain("const showConnectors = /\\/chat\\/connectors(");
+    expect(app).toContain("navigate(CONNECTORS_SOURCES_PATH)");
     expect(app).toContain("<ConnectorsPage");
     expect(settings).not.toContain("ConnectorsCard");
     expect(settings).not.toContain("TranscriberSection");
     expect(settings).not.toContain("meetingsSlot");
+  });
+
+  test("Connectors navigation lives in the persistent chat sidebar", () => {
+    const app = read("../App.tsx");
+    const threadList = read("ThreadList.tsx");
+    const header = app.slice(app.indexOf("<header"), app.indexOf("</header>"));
+
+    expect(header).not.toContain("connectorsAriaLabel");
+    expect(threadList).toContain('aria-label="Workspace navigation"');
+    expect(threadList.indexOf("{navigation}")).toBeLessThan(
+      threadList.indexOf("<ThreadListPrimitive.New"),
+    );
+    expect(app).toContain("connectorsSurface={<ConnectorsPage");
+    expect(app).toContain('showConnectors ? "hidden" : "h-full"');
   });
 
   test("the card builds BOTH typed clients from those props — no new globals", () => {

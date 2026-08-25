@@ -1,4 +1,10 @@
-import { createContext, useContext, useSyncExternalStore, type FC } from "react";
+import {
+  createContext,
+  useContext,
+  useSyncExternalStore,
+  type FC,
+  type ReactNode,
+} from "react";
 import {
   ThreadListItemPrimitive,
   ThreadListPrimitive,
@@ -65,15 +71,21 @@ const ThreadListItem: FC = () => {
 };
 
 interface ThreadListProps {
+  navigation?: ReactNode;
   onNavigate?: () => void;
 }
 
 export const ThreadList: FC<ThreadListProps> = ({
+  navigation,
   onNavigate,
 }) => (
   <ThreadListNavigateContext.Provider value={onNavigate}>
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-full flex-col gap-2 p-2">
+      <nav
+        aria-label="Workspace navigation"
+        className="flex h-full flex-col gap-2 p-2"
+      >
+        {navigation}
         <ThreadListPrimitive.New
           onClick={onNavigate}
           className="flex min-h-11 items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent md:min-h-0"
@@ -88,7 +100,7 @@ export const ThreadList: FC<ThreadListProps> = ({
         <ThreadListPrimitive.Root className="relative flex flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
           <ThreadListContents />
         </ThreadListPrimitive.Root>
-      </div>
+      </nav>
     </TooltipProvider>
   </ThreadListNavigateContext.Provider>
 );
