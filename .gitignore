@@ -29,3 +29,10 @@ test/connectors/*.run.log
 
 # Smithers workflow audit artifacts (transient — one dir per feature workflow)
 .*-audit/
+
+# Smithers local run state
+.smithers/executions/
+.smithers/logs/
+smithers.db
+smithers.db-shm
+smithers.db-wal
