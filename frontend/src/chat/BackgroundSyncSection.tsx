@@ -1,9 +1,9 @@
-// The Settings surface for background notifications.
+// The Connectors surface for background notifications.
 //
 // It sits INSIDE the Fireflies connector row and is deliberately a separate,
 // optional thing from "Fireflies connected": the connector works without it,
 // and turning it on is a second, explicit choice. Nothing here is a new visual
-// system — same SectionCard/Button/muted-text language as the rest of Settings.
+// system — same SectionCard/Button/muted-text language as the rest of TinyChat.
 //
 // The component decides nothing. `backgroundSyncState.ts` owns every rule
 // (dark route, one-time reveal, "Enabled in TinyChat" and never "Live",
@@ -126,7 +126,7 @@ export function BackgroundSyncSection({
   onFeatureDark,
 }: BackgroundSyncSectionProps) {
   const [state, setState] = useState<BackgroundSyncState>(initialBackgroundSyncState);
-  // React may keep this mounted state around after Settings closes; an emit
+  // React may keep this mounted state around after Connectors closes; an emit
   // into an unmounted tree is dropped rather than warned about.
   const alive = useRef(true);
   useEffect(() => {
@@ -182,7 +182,7 @@ export function BackgroundSyncSection({
   );
 
   // On the shared drain lane: the app-shell headless drain may already be
-  // mid-run when Settings opens, and two concurrent drains could re-surface
+  // mid-run when Connectors opens, and two concurrent drains could re-surface
   // and double-fetch the same meeting. Serializing changes WHEN this starts,
   // never what it does.
   useEffect(() => {

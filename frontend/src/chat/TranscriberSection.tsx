@@ -1,4 +1,4 @@
-// The TRANSCRIBER card in Settings: paste a meeting link, a notetaker bot joins through the
+// The TRANSCRIBER card in Connectors: paste a meeting link, a notetaker bot joins through the
 // TinyCloud Private Transcription API, and the speaker-attributed transcript comes back here.
 //
 // `TranscriberView` is the whole rendered surface and a pure function of its props (testable with

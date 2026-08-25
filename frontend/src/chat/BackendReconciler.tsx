@@ -8,7 +8,7 @@
 // space. Keeping it here, beside the Option-C drainer, is what lets both stay
 // true at once.
 //
-// ONE LANE. The Option-C drain (`useBackgroundDrain` / the Settings surface) and
+// ONE LANE. The Option-C drain (`useBackgroundDrain` / the Connectors surface) and
 // this reconcile both write the user's single space, and TinyCloud drops
 // concurrent responses on one space — so this run enters through the SAME
 // serialized lane the drain uses (`enqueueDrainWork`). Nothing here reaches into

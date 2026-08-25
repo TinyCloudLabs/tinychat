@@ -1,6 +1,6 @@
-// Connectors settings card — spec §9. Registry-driven rows; loads connection
+// Connectors card — spec §9. Registry-driven rows; loads connection
 // state on mount via connectorStore.getConnection (SQL only — never touches
-// tcw.secrets on mount so a fresh settings-page open cannot trigger the wallet
+// tcw.secrets on mount so opening Connectors cannot trigger the wallet
 // unlock popup). Sync now runs the real sync engine for the row, keyed via
 // connectorSecrets after an interactive unlock — ONE ENGINE PER CONNECTOR,
 // dispatched from the registry id (see `handleSyncNow`), never a shared
@@ -57,13 +57,15 @@ import {
 import { BackgroundSyncSection } from "./BackgroundSyncSection";
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync";
-import { SectionCard } from "./SettingsPage";
+import { SectionCard } from "@/components/ui/section-card";
 
 interface ConnectorsCardProps {
   tcw: TinyCloudWeb;
-  /** Passed down from SettingsPage — the card constructs no globals of its own. */
+  /** Passed down from ConnectorsPage — the card constructs no globals of its own. */
   backendUrl: string;
   sessionStore: SessionStore;
+  /** Lets the first-class page name this group without repeating its own title. */
+  title?: string;
 }
 
 interface RowState {
@@ -230,6 +232,7 @@ export function ConnectorsCard({
   tcw,
   backendUrl,
   sessionStore,
+  title = "Connectors",
 }: ConnectorsCardProps) {
   const [rows, setRows] = useState<RowStateMap>(INITIAL_ROW_STATE_MAP);
   const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
@@ -254,7 +257,7 @@ export function ConnectorsCard({
     [backendUrl, sessionStore],
   );
   // Which connector (if any) currently owns a modal. Only one can be open at
-  // a time — the card is a settings list, not a multi-dialog dashboard.
+  // a time — the card is a source list, not a multi-dialog dashboard.
   const [dialog, setDialog] = useState<
     { kind: "connect" | "disconnect"; id: ConnectorId } | null
   >(null);
@@ -453,7 +456,7 @@ export function ConnectorsCard({
     : null;
 
   return (
-    <SectionCard icon={PlugZapIcon} title="Connectors">
+    <SectionCard icon={PlugZapIcon} title={title}>
       <div className="flex flex-col gap-3">
         <p className="text-xs text-muted-foreground">
           Connect external sources. Synced data is stored in your space.

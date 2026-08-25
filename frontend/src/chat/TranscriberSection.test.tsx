@@ -317,12 +317,12 @@ describe("transcriber client", () => {
   });
 });
 
-describe("Settings wiring", () => {
-  test("SettingsPage mounts TranscriberSection with the session, backend URL and the user's tcw", () => {
-    const src = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
+describe("Connectors page wiring", () => {
+  test("ConnectorsPage mounts TranscriberSection with the session, backend URL and the user's tcw", () => {
+    const src = readFileSync(join(import.meta.dir, "ConnectorsPage.tsx"), "utf8");
     expect(src).toContain('import { TranscriberSection } from "./TranscriberSection";');
     expect(src).toMatch(
-      /<TranscriberSection backendUrl=\{backendUrl\} sessionStore=\{sessionStore\} tcw=\{tcw\} \/>/,
+      /<TranscriberSection[\s\S]{0,180}backendUrl=\{backendUrl\}[\s\S]{0,180}sessionStore=\{sessionStore\}[\s\S]{0,180}tcw=\{tcw\}/,
     );
     // The section never touches connector secrets or a provider key: the backend proxy holds
     // the transcription key, and the user's space is written through the shared connector store.

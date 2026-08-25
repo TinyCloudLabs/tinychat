@@ -209,21 +209,21 @@ async function runLane(): Promise<void> {
   const framesBefore = new Set(page.frames().map((f) => f.url()));
   const popupsBefore = popups.length;
 
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Connectors", exact: true }).click();
   await page
     .getByRole("button", { name: "Fireflies" })
     .first()
     .waitFor({ state: "visible", timeout: 60_000 });
-  await shot(page, "settings-open-connectors-visible");
+  await shot(page, "connectors-open-visible");
 
   assertNoCeremony(
     page,
     framesBefore,
     popups,
     popupsBefore,
-    "opening settings",
+    "opening connectors",
   );
-  log("settings opened with no wallet popup and no new cross-origin frame");
+  log("connectors opened with no wallet popup and no new cross-origin frame");
 
   // The lane must be repeatable against a space that a previous run already
   // wrote to, so start from a known-clean connector: purge through the product's
@@ -419,7 +419,7 @@ async function resetConnectorState(page: Page): Promise<void> {
   );
   log(`reset: cleared ${ids.length} kv bodies, secret ${secretCleared}`);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Connectors", exact: true }).click();
   await page
     .getByRole("button", { name: "Connect Fireflies", exact: true })
     .waitFor({ state: "visible", timeout: 60_000 });

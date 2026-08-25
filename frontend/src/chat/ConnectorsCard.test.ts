@@ -52,18 +52,47 @@ describe("supportsBackgroundNotifications", () => {
   });
 });
 
-describe("Settings composition", () => {
-  test("SettingsPage hands the card the backendUrl and sessionStore it already has", () => {
-    const settings = read("SettingsPage.tsx");
-    const usage = settings.slice(settings.indexOf("<ConnectorsCard"));
+describe("Connectors page composition", () => {
+  test("ConnectorsPage hands the card the backendUrl and sessionStore it already has", () => {
+    const page = read("ConnectorsPage.tsx");
+    const usage = page.slice(page.indexOf("<ConnectorsCard"));
     expect(usage).toContain("backendUrl={backendUrl}");
     expect(usage).toContain("sessionStore={sessionStore}");
+  });
+
+  test("Connectors is a first-class route and Settings no longer owns connector UI", () => {
+    const app = read("../App.tsx");
+    const settings = read("SettingsPage.tsx");
+
+    // Connectors is a SUBTREE now (Sources | Library), so the route match and
+    // the sidebar target moved to connectorsNav's constants — see
+    // connectorsNav.test.tsx for the IA's own assertions.
+    expect(app).toContain("const showConnectors = /\\/chat\\/connectors(");
+    expect(app).toContain("navigate(CONNECTORS_SOURCES_PATH)");
+    expect(app).toContain("<ConnectorsPage");
+    expect(settings).not.toContain("ConnectorsCard");
+    expect(settings).not.toContain("TranscriberSection");
+    expect(settings).not.toContain("meetingsSlot");
+  });
+
+  test("Connectors navigation lives in the persistent chat sidebar", () => {
+    const app = read("../App.tsx");
+    const threadList = read("ThreadList.tsx");
+    const header = app.slice(app.indexOf("<header"), app.indexOf("</header>"));
+
+    expect(header).not.toContain("connectorsAriaLabel");
+    expect(threadList).toContain('aria-label="Workspace navigation"');
+    expect(threadList.indexOf("{navigation}")).toBeLessThan(
+      threadList.indexOf("<ThreadListPrimitive.New"),
+    );
+    expect(app).toContain("connectorsSurface={<ConnectorsPage");
+    expect(app).toContain('showConnectors ? "hidden" : "h-full"');
   });
 
   test("the card builds BOTH typed clients from those props — no new globals", () => {
     // Two companion clients now — the webhooks write/config surface and the
     // cohort-gated meetings read surface (F011's consent probe) — and both
-    // come from the same two props SettingsPage hands down. Still no
+    // come from the same two props ConnectorsPage hands down. Still no
     // module-level singletons, still no other transport.
     const card = read("ConnectorsCard.tsx");
     expect(card).toContain("createConnectorWebhooksClient(backendUrl, { sessionStore })");
@@ -75,7 +104,7 @@ describe("Settings composition", () => {
   test("the card hands the background-sync section the meetings client", () => {
     // The section's mount probe is what selects the consent variant (F011);
     // the card only builds the client and passes it down — constructing it
-    // performs no I/O, so a settings-page open still makes no extra request
+    // performs no I/O, so opening Connectors still makes no extra request
     // by itself.
     const card = read("ConnectorsCard.tsx");
     const usage = card.slice(card.indexOf("<BackgroundSyncSection"));
