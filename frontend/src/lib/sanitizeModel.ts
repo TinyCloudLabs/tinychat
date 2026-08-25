@@ -6,16 +6,16 @@ import { isBlocklistedModel, isTeeCapableModel } from "./completionStore";
  *
  * A pre-PR persisted model id (e.g. `openai/gpt-5-mini`) can re-enter selection
  * state from localStorage, the per-space SQL `active_model` setting, or a stored
- * thread row. None of those sources are validated against the phala-only
+ * thread row. None of those sources are validated against the confidential
  * catalog, so a stale id survives and recurs every sign-in. Route every restore
  * through this pure helper so a non-offered id heals to a valid `fallback`.
  *
  * `offered` is the set of currently-offered model ids (from the loaded `/models`
  * list). BEFORE that list loads it is empty — in which case we fall back to the
- * `phala/` prefix gate (`isTeeCapableModel`) so a non-phala legacy id is still
+ * pinned TEE-capability gate (`isTeeCapableModel`) so a legacy id is still
  * rejected and the instant-paint path never renders a stale non-TEE model.
  *
- * Returns `model` when it is offered (or, pre-load, phala-prefixed); otherwise
+ * Returns `model` when it is offered (or, pre-load, TEE-capable); otherwise
  * `fallback`.
  */
 export function sanitizeModel(
@@ -29,8 +29,8 @@ export function sanitizeModel(
   if (set.size > 0) {
     return set.has(model) ? model : fallback;
   }
-  // Offered list not loaded yet — phala/ prefix gate keeps the first paint valid
-  // while still rejecting a non-phala legacy id.
+  // Offered list not loaded yet — pinned TEE membership keeps first paint valid
+  // while still rejecting a non-confidential legacy id.
   return isTeeCapableModel(model) ? model : fallback;
 }
 

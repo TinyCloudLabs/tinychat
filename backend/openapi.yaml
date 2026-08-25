@@ -1720,7 +1720,7 @@ components:
       properties:
         model:
           type: string
-          description: "RedPill model ID (e.g. openai/gpt-5-mini). Defaults to REDPILL_DEFAULT_MODEL."
+          description: "RedPill model ID (e.g. z-ai/glm-5.2). Defaults to REDPILL_DEFAULT_MODEL."
         messages:
           type: array
           minItems: 1

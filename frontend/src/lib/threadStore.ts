@@ -27,11 +27,10 @@ import type { CompactionCheckpoint } from "../chat/compaction";
 
 export const APP_ID = "xyz.tinycloud.tinychat";
 export const DEFAULT_TITLE = "New chat";
-// New-chat default — a confirmed tier-1 (signed + on-chain-verifiable) model, so a
-// new user lands on a fully verifiable endpoint (green "Response verified"). Must be
-// kept in sync with VERIFIABLE_MODELS in lib/completionStore.ts and the backend
-// PICKER_MODELS default (REDPILL_DEFAULT_MODEL).
-export const DEFAULT_MODEL = "deepseek/deepseek-v4-flash";
+// New-chat default — the backend's single offered confidential model. Keep it
+// in sync with backend PICKER_MODELS and REDPILL_DEFAULT_MODEL. Response-level
+// signature verification is capability-gated separately in completionStore.ts.
+export const DEFAULT_MODEL = "z-ai/glm-5.2";
 
 /**
  * Db handle name. MUST be the full resolved path so the SQL invoke resource
