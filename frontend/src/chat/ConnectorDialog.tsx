@@ -1,4 +1,4 @@
-// Connect + Disconnect dialogs for the Connectors settings card.
+// Connect + Disconnect dialogs for the Connectors page.
 // Spec §9 — Radix Dialog conventions matched from `ImportDialog.tsx`.
 //
 // TWO connect machines live here, selected by the registry row (`usesOAuthConnect`):

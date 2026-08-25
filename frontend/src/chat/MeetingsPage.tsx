@@ -202,7 +202,7 @@ export function MeetingsPage({ tcw, onBack }: MeetingsPageProps) {
               // why there is nothing to do.
               <div className="flex flex-col gap-2 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
                 <p>
-                  No meetings yet. Connect Fireflies or Google Meet in Settings
+                  No meetings yet. Connect Fireflies or Google Meet in Connectors
                   and run a sync — meetings from both connectors land in this one
                   list.
                 </p>

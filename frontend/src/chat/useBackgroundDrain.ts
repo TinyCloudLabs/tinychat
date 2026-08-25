@@ -1,7 +1,7 @@
 // The HEADLESS webhook-queue drain — the app-shell half of "next visit".
 //
-// Phase 2 wired the queue drain to the Settings → Connectors surface, so a
-// user who chats daily and never opens Settings accumulates queued meetings
+// Phase 2 wired the queue drain to the Connectors surface, so a
+// user who chats daily and never opens Connectors accumulates queued meetings
 // indefinitely. This module moves the TRIGGER to any authenticated visit
 // without changing what the drain does: it reuses `loadOnMount` from the
 // decision layer verbatim, per connected + supported connector, emitting into
@@ -20,7 +20,7 @@
 //    timers in this module, by design. Each attempt is still one pass with no
 //    client-side retries — the backend paces drains (~2 s floor, per-address
 //    singleton) and the next trigger is the retry.
-//  - NO DOUBLE DRAIN. Every drain-capable entry — this drainer, the Settings
+//  - NO DOUBLE DRAIN. Every drain-capable entry — this drainer, the Connectors
 //    mount load, and the user-initiated sync — runs on ONE serialized lane
 //    (`enqueueDrainWork`), so an overlapping mount cannot re-surface ids the
 //    other path is still ingesting. Storage stays sequential end to end.
@@ -28,14 +28,14 @@
 //    costs one probe, is remembered for the whole session, and stops the
 //    connector loop.
 //  - FAILURES STAY QUIET. Nothing here throws, rejects unhandled, or renders.
-//    The Settings surface remains the only place detail lives; this module
+//    The Connectors surface remains the only place detail lives; this module
 //    records counts (`readBackgroundDrainRecord`) and says nothing.
 //
 // The record is also a STORE (`subscribeBackgroundDrainRecord`), so a surface
 // that wants to show the count can follow it without polling — and BOTH paths
 // that learn the queue's state publish into it: this drainer at the end of its
-// run, and the Settings section after each of its own runs
-// (`publishBackgroundDrainConnectorState`, no extra HTTP). Otherwise a Settings
+// run, and the Connectors section after each of its own runs
+// (`publishBackgroundDrainConnectorState`, no extra HTTP). Otherwise a Connectors
 // sync would settle the queue and leave a stale count behind. Two rules keep
 // the record honest across time: every publisher captures the store GENERATION
 // when its work begins and a commit whose capture is stale (the record was
@@ -119,7 +119,7 @@ export interface BackgroundDrainConnectorRecord {
   phase: BackgroundSyncPhase;
   pendingCount: number | null;
   ingestBlocked: TargetedIngestBlockedReason | null;
-  /** The Settings surface's fail-closed surfacing gate said "we can't show
+  /** The Connectors surface's fail-closed surfacing gate said "we can't show
    *  what's waiting". A boolean, so no reason string travels with it — a
    *  reader that shows counts must fail closed the same way the surface does. */
   surfaceBlocked: boolean;
@@ -167,7 +167,7 @@ let storeGeneration = 0;
 /**
  * The shared serialization lane for everything that may drain and ingest.
  *
- * The headless run and the Settings surface both enter through here, so their
+ * The headless run and the Connectors surface both enter through here, so their
  * work is strictly ordered: whichever starts second sees the queue AFTER the
  * first's acknowledgements landed, and a surfaced id can never be fetched by
  * both. (The backend's dedup and `alreadySettled` make an overlap safe rather
@@ -225,8 +225,8 @@ export function maybeStartBackgroundDrain(
  * to a tab — so it runs only when at least `FOCUS_DEBOUNCE_MS` has passed since
  * the last attempt STARTED. Either way the work goes through `enqueueDrainWork`,
  * which serializes it behind whatever else is on the lane (the flow that
- * triggered the unlock, a Settings sync, an earlier tick) — the redundant run a
- * Settings sync produces sees an empty queue and the lane makes it safe.
+ * triggered the unlock, a Connectors sync, an earlier tick) — the redundant run a
+ * Connectors sync produces sees an empty queue and the lane makes it safe.
  *
  * The window is BURNED HERE, synchronously at the moment an attempt is
  * committed, not when the lane later runs the work: two ticks inside one window
@@ -295,7 +295,7 @@ export function subscribeBackgroundDrainRecord(cb: () => void): () => void {
 
 /**
  * The store generation an external publisher must capture WHEN ITS WORK
- * BEGINS (the Settings section captures it at mount) and hand back with each
+ * BEGINS (the Connectors section captures it at mount) and hand back with each
  * publish. `clearBackgroundDrainRecord` advances it, which is what strands
  * every already-started publisher on the signed-out account's side of the
  * line. The headless run captures it internally at the moment its attempt is
@@ -336,13 +336,13 @@ function sameConnectorRecord(
  * `generation` is the publisher's capture from when its work BEGAN. A stale
  * capture means the record was cleared while the work was in flight — the
  * account switched — and the commit is DROPPED: neither an unwinding drain run
- * nor a still-emitting Settings publish can resurrect the previous account's
+ * nor a still-emitting Connectors publish can resurrect the previous account's
  * counts.
  *
  * A `"replace"` commit is the headless run's: it enumerated every connector,
  * so its result set IS the record — an entry for a connector the run skipped
  * (disconnected, no longer available) drops out instead of pinning a stale
- * count. An `"upsert"` commit is a Settings publish: one source's fresh
+ * count. An `"upsert"` commit is a Connectors publish: one source's fresh
  * numbers, merged in by `source`.
  *
  * Either way it notifies only when something actually changed — the guard is
@@ -448,11 +448,11 @@ export function deriveDrainConnectorRecord(
 }
 
 /**
- * The Settings surface's publish seam.
+ * The Connectors surface's publish seam.
  *
  * It already holds fresh numbers after every one of its runs, so this costs no
  * request — it just puts them where the headless record lives, which is what
- * stops a Settings sync from leaving a stale count behind. `loading` says
+ * stops a Connectors sync from leaving a stale count behind. `loading` says
  * nothing either way, so a mounting section never clobbers a real record.
  */
 export function publishBackgroundDrainConnectorState(
@@ -480,11 +480,11 @@ export function publishBackgroundDrainConnectorState(
  * Only "the vault is locked, work is queued, nothing was processed" counts.
  * Everything else renders NOTHING, deliberately:
  *
- *  - `"key-missing"` and the fail-closed surfacing gate are Settings' detail to
+ *  - `"key-missing"` and the fail-closed surfacing gate are Connectors' detail to
  *    explain, not a number to put in the header;
  *  - an unblocked leftover (`ingestBlocked: null` with items still pending)
  *    means an attempt RAN and items stayed queued — a failure, and failures
- *    stay quiet outside Settings;
+ *    stay quiet outside Connectors;
  *  - dark, `unavailable`, and the catch-path "we don't know" entry say nothing
  *    either way, so the badge says nothing too.
  *
@@ -504,24 +504,24 @@ export function badgePendingCount(record: BackgroundDrainRecord | null): number 
 }
 
 /**
- * The Settings button's accessible name, with the count folded in.
+ * The Connectors button's accessible name, with the count folded in.
  *
  * Generic copy only — a provider name in the header would leak which service a
  * user connected to anyone reading the screen (or the accessibility tree). When
  * there is nothing to say the label is byte-identical to what it has always
  * been.
  */
-export function settingsAriaLabel(showSettings: boolean, count: number): string {
-  if (showSettings) return "Close settings";
-  if (count <= 0) return "Settings";
-  return `Settings — ${count} ${count === 1 ? "meeting" : "meetings"} waiting`;
+export function connectorsAriaLabel(showConnectors: boolean, count: number): string {
+  if (showConnectors) return "Close connectors";
+  if (count <= 0) return "Connectors";
+  return `Connectors — ${count} ${count === 1 ? "meeting" : "meetings"} waiting`;
 }
 
 /**
  * The pill's visible text. The pill is `aria-hidden` and the label carries the
  * exact number, so this clamp is purely a layout rule: a backend-supplied
  * count in the hundreds must not stretch a 16px pill across the header. Two
- * digits is the ceiling; past it the detail belongs in Settings, not the pill.
+ * digits is the ceiling; past it the detail belongs in Connectors, not the pill.
  */
 export function badgePillLabel(count: number): string {
   return count > 99 ? "99+" : String(count);
@@ -612,7 +612,7 @@ async function drainConnectedConnectors(
 /**
  * The headless `BackgroundSyncDeps`.
  *
- * Identical to the Settings section's wiring with ONE deliberate difference:
+ * Identical to the Connectors section's wiring with ONE deliberate difference:
  * `unlock` is a hard-wired refusal. The headless surface has no user gesture,
  * so nothing it calls may reach the vault's unlock — not even by a future
  * refactor routing it through `syncQueuedMeetings`.
@@ -631,7 +631,7 @@ export function buildHeadlessDrainDeps(
       isUnlocked: () => isSecretsUnlocked(tcw),
       unlock: async () => ({
         ok: false,
-        error: { message: "The headless drain never unlocks. Unlock from Settings → Connectors." },
+        error: { message: "The headless drain never unlocks. Open Connectors to unlock and sync." },
       }),
     },
     ingest: (items) =>
@@ -682,7 +682,7 @@ export function useBackgroundDrain(options: BackgroundDrainOptions): void {
 }
 
 /**
- * The app-shell mount point. Renders NOTHING in every state — the Settings
+ * The app-shell mount point. Renders NOTHING in every state — the Connectors
  * surface stays the only place background-notification detail lives.
  */
 export function BackgroundDrainer(props: BackgroundDrainOptions): null {

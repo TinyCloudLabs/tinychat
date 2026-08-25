@@ -20,8 +20,8 @@
 //     a stale badge behind;
 //   * the record stays COUNTS ONLY — never a meeting identifier.
 //
-// I1 — the pending-count badge on the Settings header button. Two pure helpers
-// (`badgePendingCount`, `settingsAriaLabel`) hold the whole policy, so the
+// I1 — the pending-count badge on the Connectors header button. Two pure helpers
+// (`badgePendingCount`, `connectorsAriaLabel`) hold the whole policy, so the
 // value formula and every hide-state are testable without a DOM:
 //
 //   * value = Σ pendingCount over ENABLED, "secrets-locked", surface-unblocked
@@ -57,7 +57,7 @@ import {
   removeBackgroundDrainConnectorRecord,
   resetBackgroundDrainForTests,
   resumeBackgroundDrain,
-  settingsAriaLabel,
+  connectorsAriaLabel,
   subscribeBackgroundDrainRecord,
   type BackgroundDrainConnectorRecord,
   type BackgroundDrainHooks,
@@ -664,24 +664,24 @@ describe("I1 badge — hide states", () => {
 
 describe("I1 badge — accessibility copy", () => {
   test("the count folds into the EXISTING aria-label, generically", () => {
-    expect(settingsAriaLabel(false, 3)).toBe("Settings — 3 meetings waiting");
-    expect(settingsAriaLabel(false, 1)).toBe("Settings — 1 meeting waiting");
+    expect(connectorsAriaLabel(false, 3)).toBe("Connectors — 3 meetings waiting");
+    expect(connectorsAriaLabel(false, 1)).toBe("Connectors — 1 meeting waiting");
   });
 
   test("when hidden the label reverts to the existing strings EXACTLY", () => {
-    expect(settingsAriaLabel(false, 0)).toBe("Settings");
-    // On the settings route the section itself is visible; the button is a
+    expect(connectorsAriaLabel(false, 0)).toBe("Connectors");
+    // On the connectors route the section itself is visible; the button is a
     // close affordance and says only that.
-    expect(settingsAriaLabel(true, 0)).toBe("Close settings");
-    expect(settingsAriaLabel(true, 5)).toBe("Close settings");
+    expect(connectorsAriaLabel(true, 0)).toBe("Close connectors");
+    expect(connectorsAriaLabel(true, 5)).toBe("Close connectors");
   });
 
   test("no provider name ever reaches the label", () => {
     for (const label of [
-      settingsAriaLabel(false, 0),
-      settingsAriaLabel(false, 1),
-      settingsAriaLabel(false, 42),
-      settingsAriaLabel(true, 42),
+      connectorsAriaLabel(false, 0),
+      connectorsAriaLabel(false, 1),
+      connectorsAriaLabel(false, 42),
+      connectorsAriaLabel(true, 42),
     ]) {
       expect(label.toLowerCase()).not.toContain("fireflies");
       for (const descriptor of CONNECTORS) {
@@ -736,13 +736,13 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     expect(app).toContain("readBackgroundDrainRecord");
     // No polling, no second count, no badge-owned state.
     expect(app).not.toContain("setInterval");
-    // The count is the shared helper's, suppressed on the settings route.
-    expect(app).toMatch(/showSettings\s*\?\s*0\s*:\s*badgePendingCount\(/);
+    // The count is the shared helper's, suppressed on the connectors route.
+    expect(app).toMatch(/showConnectors\s*\?\s*0\s*:\s*badgePendingCount\(/);
   });
 
   test("the pill lives INSIDE the existing button, aria-hidden and layout-neutral", () => {
     const app = read("../App.tsx");
-    const at = app.indexOf("aria-label={settingsAriaLabel(showSettings");
+    const at = app.indexOf("aria-label={connectorsAriaLabel(showConnectors");
     expect(at).toBeGreaterThan(0);
     const button = app.slice(at, app.indexOf("</Button>", at));
     // Absolutely positioned inside the button's own relative box, so the
@@ -750,8 +750,8 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     expect(button).toContain("relative");
     expect(button).toContain("absolute");
     expect(button).toContain('aria-hidden="true"');
-    // The existing icon is still the button's content.
-    expect(button).toContain("<SettingsIcon");
+    // The destination's icon is still the button's content.
+    expect(button).toContain("<PlugIcon");
     // The aria-label is the single announcement; the pill itself renders the
     // bare count and no copy at all — so no provider name, and nothing for a
     // screen reader to double-announce.
@@ -797,15 +797,15 @@ describe("I1 badge — the pill clamps its display, the label does not", () => {
     // The pill is aria-hidden; the LABEL is the announcement and it keeps the
     // exact number — the clamp is a visual overflow rule, never a rounding of
     // what the user is told.
-    expect(settingsAriaLabel(false, 100)).toBe("Settings — 100 meetings waiting");
-    expect(settingsAriaLabel(false, 1234)).toBe("Settings — 1234 meetings waiting");
+    expect(connectorsAriaLabel(false, 100)).toBe("Connectors — 100 meetings waiting");
+    expect(connectorsAriaLabel(false, 1234)).toBe("Connectors — 1234 meetings waiting");
   });
 
   test("App renders the clamped pill text and the unclamped label (source-asserted)", () => {
     const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
     expect(app).toContain("badgePillLabel(pendingMeetings)");
     // The label call still takes the raw count — no clamp on its way in.
-    expect(app).toContain("settingsAriaLabel(showSettings, pendingMeetings)");
+    expect(app).toContain("connectorsAriaLabel(showConnectors, pendingMeetings)");
   });
 });
 

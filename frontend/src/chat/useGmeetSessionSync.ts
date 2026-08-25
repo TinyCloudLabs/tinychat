@@ -362,7 +362,7 @@ async function runGmeetSessionSync(
 
   if (!result.ok) {
     // The KIND only. Google's message can be long and is not ours to narrate
-    // in a background lane; the Settings surface is where detail belongs.
+    // in a background lane; the Connectors surface is where detail belongs.
     breadcrumb(`session sync stopped: ${result.error.kind}`);
     return "sync-error";
   }
@@ -409,7 +409,7 @@ export function useGmeetSessionSync(options: Omit<GmeetSessionSyncOptions, "sign
 
 /**
  * The app-shell mount point. Renders NOTHING in every state — this lane has no
- * surface of its own; "Sync now" and the Settings card own the visible ones.
+ * surface of its own; "Sync now" and the Connectors page own the visible ones.
  */
 export function GmeetSessionSync(props: Omit<GmeetSessionSyncOptions, "signal">): null {
   useGmeetSessionSync(props);

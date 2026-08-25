@@ -232,7 +232,7 @@ describe("MeetingsSection wiring", () => {
 
 describe("App.tsx wiring", () => {
   const APP = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
-  const SETTINGS = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
+  const CONNECTORS = readFileSync(join(import.meta.dir, "ConnectorsPage.tsx"), "utf8");
 
   test("App constructs the meetings view with a session and a backend URL only", () => {
     expect(APP).toContain("MeetingsSection");
@@ -242,8 +242,8 @@ describe("App.tsx wiring", () => {
     expect(APP).not.toMatch(/<MeetingsSection[\s\S]{0,240}tcw=\{/);
   });
 
-  test("SettingsPage renders the slot App hands it", () => {
-    expect(SETTINGS).toContain("meetingsSlot");
+  test("ConnectorsPage renders the slot App hands it", () => {
+    expect(CONNECTORS).toContain("meetingsSlot");
   });
 
   test("the drain-UX wiring App already had is untouched", () => {

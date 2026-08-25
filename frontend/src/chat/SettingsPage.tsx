@@ -16,8 +16,6 @@ import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ImportDialog } from "./ImportDialog";
-import { ConnectorsCard } from "./ConnectorsCard";
-import { TranscriberSection } from "./TranscriberSection";
 import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
@@ -42,13 +40,6 @@ interface SettingsPageProps {
   onOpenRates: () => void;
   backendUrl: string;
   sessionStore: SessionStore;
-  /**
-   * W5's cohort meetings view, constructed by App (which owns the session and the
-   * backend URL). A slot rather than another set of props: this page knows where
-   * the section goes and nothing about how it reads the API. It renders nothing
-   * at all for every address outside the dark backend-ingest cohort.
-   */
-  meetingsSlot?: React.ReactNode;
 }
 
 export function SettingsPage({
@@ -70,7 +61,6 @@ export function SettingsPage({
   onOpenRates,
   backendUrl,
   sessionStore,
-  meetingsSlot,
 }: SettingsPageProps) {
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
@@ -155,17 +145,6 @@ export function SettingsPage({
               <ImportDialog tcw={tcw} onImported={onImported} />
             </div>
           </SectionCard>
-          <ConnectorsCard
-            tcw={tcw}
-            backendUrl={backendUrl}
-            sessionStore={sessionStore}
-          />
-          {/* Directly under the connector it belongs to. Absent for everyone
-              outside the cohort — the section returns null on the dark answer. */}
-          {meetingsSlot}
-          {/* Send a notetaker bot to a meeting link; transcripts read back here. Only needs
-              the session and the backend URL, so it takes them directly. */}
-          <TranscriberSection backendUrl={backendUrl} sessionStore={sessionStore} tcw={tcw} />
           {paywallEnabled && (
             <SectionCard icon={CreditCardIcon} title="Plan & Usage">
               <div className="flex items-baseline justify-between gap-3">
@@ -337,7 +316,3 @@ function formatResetsAt(iso: string): string {
     return d.toDateString();
   }
 }
-
-// Re-exported for the cards that compose Settings (ConnectorsCard imports it
-// from here); the component itself now lives in components/ui/section-card.
-export { SectionCard };

@@ -68,6 +68,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { SettingsPage } from "./chat/SettingsPage";
 import { MeetingsPage } from "./chat/MeetingsPage";
+import { ConnectorsPage } from "./chat/ConnectorsPage";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
 // it needs neither the vault nor a connector key: a session is the whole
@@ -84,7 +85,7 @@ import {
   badgePillLabel,
   clearBackgroundDrainRecord,
   readBackgroundDrainRecord,
-  settingsAriaLabel,
+  connectorsAriaLabel,
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
@@ -92,7 +93,12 @@ import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
 import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
-import { CalendarClockIcon, PanelLeftIcon, SettingsIcon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  PanelLeftIcon,
+  PlugIcon,
+  SettingsIcon,
+} from "lucide-react";
 import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
@@ -736,10 +742,11 @@ export function App() {
   const location = useLocation();
   const showSettings = location.pathname.endsWith("/chat/settings");
   const showMeetings = location.pathname.endsWith("/chat/meetings");
+  const showConnectors = location.pathname.endsWith("/chat/connectors");
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
-  // queue next (the headless drainer or a Settings sync) publishes into the
+  // queue next (the headless drainer or a Connectors sync) publishes into the
   // same store, so the count clears without a reload. The record is null while
   // signed out (cleared in `signOut`) and the helper is silent on dark, so
   // this is a no-op for every user on today's default deployment.
@@ -748,18 +755,19 @@ export function App() {
     readBackgroundDrainRecord,
     readBackgroundDrainRecord,
   );
-  // Hidden on the settings route: the section itself is visible there.
-  const pendingMeetings = showSettings ? 0 : badgePendingCount(drainRecord);
+  // Hidden on the connectors route: the detailed queue state is visible there.
+  const pendingMeetings = showConnectors ? 0 : badgePendingCount(drainRecord);
 
-  // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings
-  // or /chat/meetings while signed out (post-signOut flip, deep link, etc.),
-  // kick them to /chat. Both pages only render inside the isReady branch below,
+  // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings,
+  // /chat/meetings or /chat/connectors while signed out (post-signOut flip,
+  // deep link, etc.),
+  // kick them to /chat. These pages only render inside the isReady branch below,
   // so this is the sole place the URL gets normalized.
   useEffect(() => {
-    if (!isReady && (showSettings || showMeetings)) {
+    if (!isReady && (showSettings || showMeetings || showConnectors)) {
       navigate("/chat", { replace: true });
     }
-  }, [isReady, showSettings, showMeetings, navigate]);
+  }, [isReady, showSettings, showMeetings, showConnectors, navigate]);
 
   // A1 trigger (a): entering the settings page recovers a config-null session
   // (the Plan & Usage card lives there). No-op when a config is already held.
@@ -845,16 +853,15 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
-              aria-label={settingsAriaLabel(showSettings, pendingMeetings)}
-              aria-pressed={showSettings}
-              onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
+              aria-label={connectorsAriaLabel(showConnectors, pendingMeetings)}
+              aria-pressed={showConnectors}
+              onClick={() =>
+                showConnectors ? onBack() : navigate("/chat/connectors")
+              }
               className="relative h-11 w-11 p-0 md:h-8 md:w-8"
             >
-              <SettingsIcon className="size-4" />
+              <PlugIcon className="size-4" />
               {pendingMeetings > 0 && (
-                // Absolutely positioned inside the button's own relative box so
-                // the 44/32px footprint never changes. `aria-hidden` keeps the
-                // folded aria-label the single announcement.
                 <span
                   aria-hidden="true"
                   className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"
@@ -862,6 +869,18 @@ export function App() {
                   {badgePillLabel(pendingMeetings)}
                 </span>
               )}
+            </Button>
+          )}
+          {isReady && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={showSettings ? "Close settings" : "Settings"}
+              aria-pressed={showSettings}
+              onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
+              className="h-11 w-11 p-0 md:h-8 md:w-8"
+            >
+              <SettingsIcon className="size-4" />
             </Button>
           )}
           {(state === "unauthenticated" || state === "recoverableError") && (
@@ -885,11 +904,17 @@ export function App() {
           />
         ) : isReady && tcw ? (
           <>
-            {/* ChatWorkspace stays mounted while the settings or meetings route
-                is active — visibility toggle (not a <Routes> swap) preserves the
+            {/* ChatWorkspace stays mounted while an app surface is active —
+                visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
                 nav. */}
-            <div className={showSettings || showMeetings ? "hidden" : "contents"}>
+            <div
+              className={
+                showSettings || showMeetings || showConnectors
+                  ? "hidden"
+                  : "contents"
+              }
+            >
               <ChatWorkspace
                 key={importRefreshKey}
                 tcw={tcw}
@@ -924,6 +949,14 @@ export function App() {
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
+              />
+            )}
+            {showConnectors && (
+              <ConnectorsPage
+                tcw={tcw}
+                backendUrl={BACKEND_URL}
+                sessionStore={sessionStoreRef.current}
+                onBack={onBack}
                 meetingsSlot={
                   <MeetingsSection
                     backendUrl={BACKEND_URL}
@@ -935,7 +968,7 @@ export function App() {
             {/* The meetings explorer: the same keep-mounted arrangement as
                 Settings — ChatWorkspace above is hidden, not unmounted, so
                 coming back restores the thread and the composer untouched.
-                Unlike the cohort section inside Settings, this page reads the
+                Unlike the cohort section inside Connectors, this page reads the
                 user's OWN space, so it takes the session client directly. */}
             {showMeetings && <MeetingsPage tcw={tcw} onBack={onBack} />}
           </>
