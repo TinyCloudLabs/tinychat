@@ -12,6 +12,7 @@
 // extra `tool_activity` frames the consumer safely ignores.
 
 import type { Request, RequestHandler, Response } from "express";
+import { TINYCLOUD_SEARCH_TRANSCRIPTS_TOOL } from "../transcripts/tool-contract.js";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
@@ -222,12 +223,12 @@ export function buildCleanSynthesisMessages(question: string, results: string): 
     {
       role: "system",
       content:
-        "You are a helpful assistant. Answer the user's question using the web search results " +
-        "provided below. Cite the source URLs. Do not ask to search again.",
+        "You are a helpful assistant. Answer the user's question using the tool results " +
+        "provided below. Preserve their citations. Do not ask to call a tool again.",
     },
     {
       role: "user",
-      content: `Question: ${question}\n\nWeb search results:\n${results}\n\nAnswer concisely, citing sources.`,
+      content: `Question: ${question}\n\nTool results:\n${results}\n\nAnswer concisely, citing the supplied evidence.`,
     },
   ];
 }
@@ -260,7 +261,7 @@ async function dispatchTool(
   const body = (await res.json().catch(() => ({}))) as {
     result?: {
       text?: string;
-      data?: { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+      data?: Record<string, unknown>;
     };
     error?: string;
   };
@@ -272,7 +273,11 @@ async function dispatchTool(
   // `result.text` left every model without a URL — they then hallucinated
   // citations or honestly declined to cite (P4 failure, all models).
   const summary = body.result?.text ?? "";
-  const results = body.result?.data?.results ?? [];
+  if (call.name === "tinycloud_search_transcripts") {
+    const evidence = body.result?.data ? JSON.stringify(body.result.data) : "";
+    return summary && evidence ? `${summary}\n\nTranscript evidence:\n${evidence}` : summary || evidence;
+  }
+  const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
   if (results.length === 0) return summary;
   const sources = results
     .map((r, i) => {
@@ -373,7 +378,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
           : {
               model,
               messages: convo,
-              tools: [WEB_SEARCH_TOOL],
+              tools: [WEB_SEARCH_TOOL, TINYCLOUD_SEARCH_TRANSCRIPTS_TOOL],
               tool_choice: forceAnswer ? "none" : "auto",
               ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
               stream: true,
