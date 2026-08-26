@@ -224,7 +224,10 @@ export function buildCleanSynthesisMessages(question: string, results: string): 
       role: "system",
       content:
         "You are a helpful assistant. Answer the user's question using the tool results " +
-        "provided below. Preserve their citations. Do not ask to call a tool again.",
+        "provided below. Every factual claim must be directly supported by those results, " +
+        "with the nearest supplied citation. Do not infer a decision or action item from " +
+        "evidence that does not state one; say the evidence is insufficient instead. " +
+        "Preserve citations and do not ask to call a tool again.",
     },
     {
       role: "user",
@@ -341,7 +344,16 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = config.maxRounds ?? 3;
-  let convo: ChatMsg[] = [...params.messages];
+  let convo: ChatMsg[] = [
+    {
+      role: "system",
+      content:
+        "When tools return evidence, every factual claim in your answer must be directly " +
+        "supported by that evidence and use its nearest citation. Do not infer a decision " +
+        "or action item that the cited excerpt does not state; report insufficient evidence.",
+    },
+    ...params.messages,
+  ];
   // The original question, for the clean-synthesis forced round (last user message).
   const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
 

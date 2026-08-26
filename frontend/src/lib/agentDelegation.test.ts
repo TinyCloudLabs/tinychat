@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   actionsFromAuthJwt,
+  AGENT_CONSENT_MANIFEST,
   AGENT_DID,
   AGENT_DELEGATION_EXPIRY_MS,
   clearAgentSessionCache,
@@ -155,14 +156,34 @@ describe("ensureAgentSession", () => {
 describe("two-grant session envelope", () => {
   it("scopes the transcript permissions to exactly read-only connector metadata and bodies", () => {
     expect(TRANSCRIPT_PERMISSIONS).toEqual([
-      { service: "tinycloud.sql", path: "xyz.tinycloud.tinychat/connectors", actions: ["read"], skipPrefix: true },
-      { service: "tinycloud.kv", path: "xyz.tinycloud.tinychat/connectors/", actions: ["get", "list"], skipPrefix: true },
+      { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.tinychat/connectors", actions: ["read"], skipPrefix: true },
+      { service: "tinycloud.kv", space: "applications", path: "xyz.tinycloud.tinychat/connectors/", actions: ["get", "list"], skipPrefix: true },
     ]);
     // No write, put, delete, schema, admin, secrets, decrypt, or audio ability.
     const abilities = TRANSCRIPT_PERMISSIONS.flatMap((entry) => entry.actions);
     for (const forbidden of ["write", "put", "delete", "schema", "admin", "secrets", "decrypt"]) {
       expect(abilities).not.toContain(forbidden);
     }
+  });
+
+  it("signs the isolated consent session for only memory plus transcript access", () => {
+    expect(AGENT_CONSENT_MANIFEST).toMatchObject({
+      defaults: false,
+      includePublicSpace: false,
+      space: "applications",
+      prefix: "",
+      expiry: "7d",
+      permissions: [
+        {
+          service: "tinycloud.sql",
+          space: "default",
+          path: "xyz.tinycloud.eliza/memory",
+          actions: ["read", "write", "admin"],
+          skipPrefix: true,
+        },
+        ...TRANSCRIPT_PERMISSIONS,
+      ],
+    });
   });
 
   it("mints memory and transcripts as separate grants, sequentially, inside seven days", async () => {

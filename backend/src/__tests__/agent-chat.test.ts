@@ -742,6 +742,7 @@ describe("orchestrateToolCalling", () => {
       const msgs = buildCleanSynthesisMessages("Q?", "result A\n\nresult B");
       expect(msgs).toHaveLength(2);
       expect(msgs[0].role).toBe("system");
+      expect(msgs[0].content).toContain("Do not infer a decision or action item");
       expect(msgs[1].role).toBe("user");
       expect(msgs[1].content).toContain("Q?");
       expect(msgs[1].content).toContain("result A");

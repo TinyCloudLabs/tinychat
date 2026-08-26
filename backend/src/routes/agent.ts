@@ -275,6 +275,50 @@ function attGrants(att: Record<string, unknown>): Array<{ owner: string; service
   return grants;
 }
 
+/**
+ * Read the exact child attenuation carried by the SDK's `Bearer <cid>` form.
+ * The TinyCloud host verifies this attenuation against the signed CID parent
+ * when the agent activates it; a wider forgery cannot activate, while a
+ * narrower one only reduces the resulting child session.
+ */
+function cidBackedGrants(serialized: string): Array<{ owner: string; service: string; path: string; actions: string[] }> | null {
+  try {
+    const parsed = JSON.parse(serialized) as {
+      cid?: unknown;
+      delegationHeader?: { Authorization?: unknown };
+      resources?: unknown;
+    };
+    const auth = parsed.delegationHeader?.Authorization;
+    if (typeof auth !== "string" || typeof parsed.cid !== "string") return null;
+    const bearer = auth.replace(/^Bearer\s+/i, "");
+    if (bearer.includes(".") || bearer !== parsed.cid || !Array.isArray(parsed.resources)) return null;
+
+    const grants: Array<{ owner: string; service: string; path: string; actions: string[] }> = [];
+    for (const resource of parsed.resources) {
+      if (!resource || typeof resource !== "object") return null;
+      const entry = resource as { service?: unknown; space?: unknown; path?: unknown; actions?: unknown };
+      if (
+        typeof entry.service !== "string" ||
+        typeof entry.space !== "string" ||
+        typeof entry.path !== "string" ||
+        !Array.isArray(entry.actions) ||
+        !entry.actions.every((action) => typeof action === "string")
+      ) return null;
+      const owner = entry.space.split(":")[4] ?? "";
+      if (!owner) return null;
+      grants.push({
+        owner,
+        service: entry.service.replace(/^tinycloud\./, ""),
+        path: entry.path,
+        actions: [...entry.actions],
+      });
+    }
+    return grants.length > 0 ? grants : null;
+  } catch {
+    return null;
+  }
+}
+
 function signedOwnerMatches(serialized: string, owner: string): boolean {
   const payload = signedPayload(serialized);
   if (!payload) return false;
@@ -298,12 +342,14 @@ const TRANSCRIPT_CEILING: Array<{ service: string; path: string | null; actions:
 ];
 
 /**
- * Enforce the local courier ceiling from the SIGNED capability claim only.
+ * Enforce the local courier ceiling from either the inline signed claim or the
+ * SDK's CID-backed child attenuation.
  *
  * TinyChat never activates this grant; the node verifies it cryptographically
- * on use. What this gate guarantees is that a grant TinyChat forwards was
- * signed by the authenticated user, names the configured agent, expires inside
- * seven days, and carries nothing beyond the transcript ceiling.
+ * on use. This courier gate checks the inline signed claim when available, or
+ * the exact CID child request otherwise. In both forms it requires the
+ * authenticated owner, configured agent, seven-day ceiling, and fixed
+ * transcript policy; the host remains the cryptographic authority.
  */
 function validateSignedTranscript(serialized: string, owner: string, agentDid: string): { ok: true } | { ok: false; error: string } {
   let parsed: { delegateDID?: unknown; expiry?: unknown };
@@ -321,11 +367,9 @@ function validateSignedTranscript(serialized: string, owner: string, agentDid: s
   }
 
   const payload = signedPayload(serialized);
-  if (!payload) return { ok: false, error: "malformed" };
-
-  // The ceiling is measured against the SIGNED `exp` when the token carries one:
-  // a short unsigned `expiry` summary must not launder a long-lived signed grant.
-  const signedExpiryMs = payload.exp === null ? null : payload.exp * 1_000;
+  const signedExpiryMs = payload?.exp === null || payload === null ? null : payload.exp * 1_000;
+  // Inline UCANs carry a signed expiry. CID-backed grants are activated into a
+  // child session by the agent and use the bounded portable expiry here.
   const effectiveExpiryMs = signedExpiryMs === null
     ? summaryExpiry.getTime()
     : Math.max(summaryExpiry.getTime(), signedExpiryMs);
@@ -334,7 +378,7 @@ function validateSignedTranscript(serialized: string, owner: string, agentDid: s
     return { ok: false, error: "delegation_expiry_too_long" };
   }
 
-  const grants = attGrants(payload.att);
+  const grants = payload ? attGrants(payload.att) : cidBackedGrants(serialized);
   if (!grants || grants.length === 0) return { ok: false, error: "malformed" };
 
   const seen = new Set<string>();

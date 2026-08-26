@@ -124,6 +124,29 @@ function v2Session(
   };
 }
 
+function cidBackedV2Session(
+  resourceOverrides: Array<Record<string, unknown>> = [],
+  transcriptOverrides: Record<string, unknown> = {},
+) {
+  const cid = "bafkr4iharnesscid";
+  return {
+    version: 2 as const,
+    delegations: {
+      memory: signedDelegation({ [`${SPACE}/sql/xyz.tinycloud.eliza/memory`]: ["tinycloud.sql/read"] }),
+      transcripts: validDelegation({
+        cid,
+        expiry: new Date(Date.now() + 60_000).toISOString(),
+        delegationHeader: { Authorization: `Bearer ${cid}` },
+        resources: resourceOverrides.length > 0 ? resourceOverrides : [
+          { service: "kv", space: SPACE, path: "xyz.tinycloud.tinychat/connectors/", actions: ["tinycloud.kv/get", "tinycloud.kv/list"] },
+          { service: "sql", space: SPACE, path: "xyz.tinycloud.tinychat/connectors", actions: ["tinycloud.sql/read"] },
+        ],
+        ...transcriptOverrides,
+      }),
+    },
+  };
+}
+
 async function postSession(app: express.Express, session: unknown) {
   return request(app, "/api/agent/session", {
     method: "POST",
@@ -213,6 +236,24 @@ describe("agent delegation courier", () => {
     const res = await postSession(app, session);
     expect(res.status).toBe(200);
     expect((calls[0].body as { session?: unknown }).session).toEqual(session);
+  });
+
+  it("couriers the SDK's CID-backed multi-resource transcript attenuation", async () => {
+    const { app, calls } = createApp();
+    const session = cidBackedV2Session();
+    const res = await postSession(app, session);
+    expect(res.status).toBe(200);
+    expect((calls[0].body as { session?: unknown }).session).toEqual(session);
+  });
+
+  it("rejects a CID-backed attenuation whose Authorization does not match cid", async () => {
+    const { app, calls } = createApp();
+    const res = await postSession(app, cidBackedV2Session([], {
+      delegationHeader: { Authorization: "Bearer bafkr4different" },
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("malformed");
+    expect(calls).toHaveLength(0);
   });
 
   it("couriers a grant that also carries the SDK's capabilities/read entry", async () => {
