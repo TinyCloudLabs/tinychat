@@ -269,7 +269,11 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // remains only in this local outcome and the assembled inference payload.
       const latestQuestion = [...convo].reverse().find((message) => message.role === "user")?.content;
       let meetingSystemBlock: ChatMessage | null = null;
-      if (deps.meetingRetriever && threadId && latestQuestion !== undefined) {
+      // A private-agent turn must never let the browser inspect connector storage.
+      // The agent receives the ordinary question and performs any transcript read
+      // through its separately delegated tool.  Keep the existing retriever only
+      // for the non-agent fallback path.
+      if (!deps.agentEnabledRef.current && deps.meetingRetriever && threadId && latestQuestion !== undefined) {
         let meetingOutcome: MeetingRetrievalOutcome;
         try {
           meetingOutcome = await deps.meetingRetriever.retrieve({
@@ -402,10 +406,9 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         completionId = id;
       };
 
-      // One transport attempt with the CURRENT payload. Grounded meeting turns
-      // always use the plain relay: the agent transport may expose the assembled
-      // meeting context to tools. Ordinary turns retain the C1 branch on
-      // agentEnabledRef. Both paths receive the SAME compaction-rewritten payload.
+      // One transport attempt with the CURRENT payload. Grounded browser-meeting
+      // turns use the plain relay. Agent-enabled transcript turns never construct
+      // a browser grounding block and therefore use the delegated agent route.
       // ContextOverflowError is thrown BEFORE any yield (pre-stream), so a
       // reactive retry never double-emits text.
       const sendOnce = async function* (

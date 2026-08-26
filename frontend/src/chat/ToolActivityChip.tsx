@@ -14,6 +14,12 @@ function labelForActivity(activity: ToolActivity): string {
   switch (name.toLowerCase()) {
     case "web_search":
       return isDone ? "Searched the web" : isError ? "Search failed" : "Searching the web…";
+    case "tinycloud_search_transcripts":
+      return isDone
+        ? "Searched your transcripts"
+        : isError
+          ? "Transcript search needs reconnection"
+          : "Searching your transcripts…";
     default:
       return isDone ? "Tool done" : isError ? "Tool failed" : "Running tool…";
   }
