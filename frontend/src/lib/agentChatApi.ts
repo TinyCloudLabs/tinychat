@@ -69,6 +69,8 @@ export interface StreamAgentChatOptions {
   messages: AgentChatMessage[];
   /** tinychat thread id bound to this turn (session-summary room key). */
   roomId?: string;
+  /** Injectable for tests; normal browser turns derive this from the local clock. */
+  clientContext?: AgentClientContext;
   abortSignal?: AbortSignal;
   /** Fired per tool_activity frame (e.g. to render "Searching the web…"). */
   onToolActivity?: (activity: ToolActivity) => void;
@@ -85,6 +87,23 @@ export interface StreamAgentChatOptions {
   onUsage?: (u: UsageInfo) => void;
 }
 
+export interface AgentClientContext {
+  localDate: string;
+  timeZone: string;
+}
+
+export function currentAgentClientContext(now = new Date()): AgentClientContext {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const value = (type: "year" | "month" | "day") => parts.find((part) => part.type === type)?.value ?? "";
+  return { localDate: `${value("year")}-${value("month")}-${value("day")}`, timeZone };
+}
+
 const CSRF_HEADER = "X-Requested-With";
 const CSRF_VALUE = "XMLHttpRequest";
 
@@ -97,6 +116,7 @@ export async function* streamAgentChat(
   options: StreamAgentChatOptions,
 ): AsyncGenerator<string, void, unknown> {
   const { backendUrl, getToken, model, messages, roomId, abortSignal, onToolActivity, onCompletionId, onUsage } = options;
+  const clientContext = options.clientContext ?? currentAgentClientContext();
 
   const token = getToken();
   if (!token) throw new Error("Not authenticated. Please sign in.");
@@ -108,7 +128,7 @@ export async function* streamAgentChat(
       "Content-Type": "application/json",
       [CSRF_HEADER]: CSRF_VALUE,
     },
-    body: JSON.stringify({ ...(model ? { model } : {}), messages, ...(roomId ? { roomId } : {}) }),
+    body: JSON.stringify({ ...(model ? { model } : {}), messages, ...(roomId ? { roomId } : {}), clientContext }),
     signal: abortSignal,
   });
 

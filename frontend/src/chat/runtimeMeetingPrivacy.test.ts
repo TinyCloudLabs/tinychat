@@ -50,7 +50,7 @@ function sseResponse(): Response {
 }
 
 describe("meeting-turn runtime privacy boundary", () => {
-  test("keeps the canary only on the wire and suppresses runtime extraction across append retry", async () => {
+  test("keeps browser-fallback evidence only on the wire and suppresses runtime extraction across append retry", async () => {
     // runtime.tsx normally loads in the browser. Supply the tiny DOM surface
     // pulled in by the SDK before importing its pure history-adapter export.
     (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ??= class {} as never;
@@ -99,7 +99,7 @@ describe("meeting-turn runtime privacy boundary", () => {
         modelRef: { current: "model" } as never,
         offeredModelIdsRef: { current: new Set(["model"]) } as never,
         activeThreadIdRef: { current: "meeting-thread" } as never,
-        agentEnabledRef: { current: true } as never,
+        agentEnabledRef: { current: false } as never,
         meetingRetriever: {
           retrieve: async () => ({
             status: "grounded",
@@ -208,7 +208,9 @@ describe("meeting-turn runtime privacy boundary", () => {
         modelRef: { current: "model" } as never,
         offeredModelIdsRef: { current: new Set(["model"]) } as never,
         activeThreadIdRef: { current: "meeting-thread" } as never,
-        agentEnabledRef: { current: true } as never,
+        // Deterministic browser retrieval outcomes exist only in fallback mode;
+        // delegated turns always reach the agent tool path.
+        agentEnabledRef: { current: false } as never,
         meetingRetriever: { retrieve: async () => ({
           status: "no-content" as const,
           meeting: {

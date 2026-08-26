@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { streamAgentChat, onAgentPaywallError, onAgentModelSelectionError, type ToolActivity, type UsageInfo } from "./agentChatApi.js";
+import { currentAgentClientContext, streamAgentChat, onAgentPaywallError, onAgentModelSelectionError, type ToolActivity, type UsageInfo } from "./agentChatApi.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -69,6 +69,7 @@ describe("streamAgentChat", () => {
       model: "phala/gpt-oss-120b",
       messages: [{ role: "user", content: "hi" }],
       roomId: "thread-9",
+      clientContext: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
     })) {
       // drain
     }
@@ -79,7 +80,14 @@ describe("streamAgentChat", () => {
       model: "phala/gpt-oss-120b",
       messages: [{ role: "user", content: "hi" }],
       roomId: "thread-9",
+      clientContext: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
     });
+  });
+
+  it("derives a stable local calendar date for relative meeting prompts", () => {
+    const context = currentAgentClientContext(new Date("2026-08-26T12:00:00.000Z"));
+    expect(context.timeZone.length).toBeGreaterThan(0);
+    expect(context.localDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it("throws without a token", async () => {

@@ -12,6 +12,7 @@
 // extra `tool_activity` frames the consumer safely ignores.
 
 import type { Request, RequestHandler, Response } from "express";
+import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
@@ -76,7 +77,36 @@ export interface AgentChatConfig {
   rehydrator?: LedgerRehydrator;
 }
 
-// The single tool exposed for the first cut. OpenAI function-calling schema.
+export interface AgentTurnContext {
+  /** User-local calendar day supplied by the authenticated browser. */
+  localDate: string;
+  /** IANA time-zone name used to derive localDate. */
+  timeZone: string;
+}
+
+export function buildMeetingAgentGuidance(context?: AgentTurnContext): string {
+  const calendar = context
+    ? `The user's current local date is ${context.localDate} in ${context.timeZone}. Resolve today/day references from that date. `
+    : "No trusted user-local date was supplied; ask for a concrete date when a relative day would be ambiguous. ";
+  return (
+    "You are a private meeting agent. " + calendar +
+    "Citations are required answer syntax: copy the exact bracketed citation supplied by a TinyCloud tool immediately after every meeting-derived factual claim. If no supporting citation was supplied, do not make the claim. " +
+    "For the user's private meetings, use TinyCloud meeting tools and never substitute web search. " +
+    "Use tinycloud_find_meetings for latest/last, title, participant, or date selection without reading transcripts. " +
+    "For a clearly requested first/newest result set selectFirst=true so room follow-ups can reuse it. " +
+    "Resolve pronouns and elliptical follow-ups from the conversation before resolving calendar words: after one meeting is selected, questions such as 'what next?', 'what did we decide?', 'summarize it', or 'what did they say?' MUST use tinycloud_read_meeting with the appropriate focus and omit meetingRef to reuse the room selection. " +
+    "A citation such as [M1] is never a meetingRef. Never copy a citation into meetingRef; for a room follow-up, omit meetingRef entirely. " +
+    "Use tinycloud_read_meeting after selection for one meeting's summary, explicit actions, decisions, speaker statements, or transcript evidence. " +
+    "Use tinycloud_search_transcripts only for topic or phrase discovery across meeting content. " +
+    "Use tinycloud_list_meeting_actions only when the user explicitly asks for todos/actions across a day, date range, or multiple meetings; never use it for an immediate follow-up about one selected meeting. " +
+    "Ask one concise clarification when meeting selection is ambiguous. Preserve meetingRef only as tool state; never show it to the user. " +
+    "Do not offer to create, edit, or delete meetings or actions because these tools are read-only. Distinguish structured action items from transcript candidates, " +
+    "and never turn a suggestion into a decision, assignment, or todo unless the evidence explicitly states it. " +
+    "Disclose partial or truncated coverage and fail closed when private access is unavailable."
+  );
+}
+
+// Public-web search remains separate from the fixed private-meeting toolkit.
 export const WEB_SEARCH_TOOL = {
   type: "function",
   function: {
@@ -222,18 +252,41 @@ export function buildCleanSynthesisMessages(question: string, results: string): 
     {
       role: "system",
       content:
-        "You are a helpful assistant. Answer the user's question using the web search results " +
-        "provided below. Cite the source URLs. Do not ask to search again.",
+        "You are a helpful assistant. Answer the user's question using the tool results " +
+        "provided below. CITATIONS ARE REQUIRED OUTPUT SYNTAX: copy the exact bracketed citation " +
+        "immediately after every factual claim it supports. Never omit, rename, or invent a citation. " +
+        "Do not infer a decision or action item from " +
+        "evidence that does not state one; transcriptCandidates are evidence to inspect, not " +
+        "automatically assigned todos. Say the evidence is insufficient instead. " +
+        "Preserve citations and do not ask to call a tool again.",
     },
     {
       role: "user",
-      content: `Question: ${question}\n\nWeb search results:\n${results}\n\nAnswer concisely, citing sources.`,
+      content: `Question: ${question}\n\nTool results:\n${results}\n\nAnswer concisely, citing the supplied evidence.`,
     },
   ];
 }
 
+function meetingCitationsIn(toolResults: ChatMsg[]): string[] {
+  return [...new Set(toolResults.flatMap((message) =>
+    message.content.match(/\[M\d+(?::[A-Z]\d*)?(?:,[^\]\r\n]*)?\]/g) ?? [],
+  ))];
+}
+
+/** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
+const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired"]);
+
+export interface ToolDispatchOutcome {
+  /** The role:"tool" content handed back to the model. */
+  text: string;
+  /** Drives the tool_activity frame the browser renders. */
+  status: "done" | "error";
+  /** Set only for a delegation failure the user must act on. */
+  code?: string;
+}
+
 /**
- * Dispatch one tool call to eliza-service POST /tools/:name and return its result text.
+ * Dispatch one tool call to eliza-service POST /tools/:name and return its result.
  * web_search needs no delegation; entityId/roomId are passed for tools that do.
  */
 async function dispatchTool(
@@ -242,7 +295,8 @@ async function dispatchTool(
   call: AccumulatedToolCall,
   entityId: string,
   roomId: string | undefined,
-): Promise<string> {
+  turnContext?: AgentTurnContext,
+): Promise<ToolDispatchOutcome> {
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
@@ -255,25 +309,42 @@ async function dispatchTool(
       "content-type": "application/json",
       authorization: `Bearer ${config.elizaServiceSecret}`,
     },
-    body: JSON.stringify({ args, entityId, ...(roomId ? { roomId } : {}) }),
+    body: JSON.stringify({ args, entityId, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext } : {}) }),
   });
   const body = (await res.json().catch(() => ({}))) as {
     result?: {
       text?: string;
-      data?: { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+      data?: Record<string, unknown>;
     };
     error?: string;
   };
   if (!res.ok) {
-    return `(tool ${call.name} failed: ${body.error ?? res.status})`;
+    const code = typeof body.error === "string" ? body.error : String(res.status);
+    if (DELEGATION_ERROR_CODES.has(code)) {
+      // The user has not granted (or has revoked/expired) transcript access.
+      // Say so explicitly instead of letting the model quietly substitute a web
+      // search, which would make the delegated path look healthy when it is not.
+      return {
+        status: "error",
+        code,
+        text: `(tool ${call.name} could not run: ${code}. The user has not granted this agent access `
+          + "to their private TinyCloud transcripts, or that access has expired. Tell the user you "
+          + "cannot read their transcripts and that they need to reconnect transcript access. Do NOT "
+          + "answer from a web search, from memory, or from any other source, and do not guess.",
+      };
+    }
+    return { status: "error", code, text: `(tool ${call.name} failed: ${code})` };
   }
-  // Forward the one-line summary AND the structured results (title/url/snippet)
-  // so the synthesis model can cite real source URLs. Returning only
-  // `result.text` left every model without a URL — they then hallucinated
-  // citations or honestly declined to cite (P4 failure, all models).
+  // Forward the one-line summary and the structured result. Tool output is
+  // intentionally generic: transcript citations are not web URLs, and future
+  // fixed-policy tools must not require dispatcher changes to reach synthesis.
   const summary = body.result?.text ?? "";
-  const results = body.result?.data?.results ?? [];
-  if (results.length === 0) return summary;
+  if (call.name !== "web_search") {
+    const data = body.result?.data ? JSON.stringify(body.result.data) : "";
+    return { status: "done", text: summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data };
+  }
+  const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
+  if (results.length === 0) return { status: "done", text: summary };
   const sources = results
     .map((r, i) => {
       const parts = [`[${i + 1}] ${r.title ?? "(untitled)"}`];
@@ -282,7 +353,7 @@ async function dispatchTool(
       return parts.join("\n");
     })
     .join("\n");
-  return summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}`;
+  return { status: "done", text: summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}` };
 }
 
 export interface OrchestrateParams {
@@ -291,6 +362,7 @@ export interface OrchestrateParams {
   messages: ChatMsg[];
   entityId: string;
   roomId?: string;
+  turnContext?: AgentTurnContext;
   write: (frame: string) => void;
   isAborted?: () => boolean;
 }
@@ -311,7 +383,13 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = config.maxRounds ?? 3;
-  let convo: ChatMsg[] = [...params.messages];
+  let convo: ChatMsg[] = [
+    {
+      role: "system",
+      content: buildMeetingAgentGuidance(params.turnContext),
+    },
+    ...params.messages,
+  ];
   // The original question, for the clean-synthesis forced round (last user message).
   const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
@@ -350,6 +428,10 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     // never searched, fall through to the normal (tool-enabled) request.
     const toolResults = convo.filter((m) => m.role === "tool");
     const cleanSynthesis = forceAnswer && toolResults.length > 0;
+    const meetingCitations = meetingCitationsIn(toolResults);
+    // Meeting answers are held until their citation contract is validated. This
+    // lets us retry an uncited synthesis without leaking the invalid draft.
+    const bufferMeetingAnswer = meetingCitations.length > 0;
 
     const upstream = await fetchImpl(`${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
@@ -373,7 +455,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
           : {
               model,
               messages: convo,
-              tools: [WEB_SEARCH_TOOL],
+              tools: [WEB_SEARCH_TOOL, ...TINYCLOUD_MEETING_TOOLS],
               tool_choice: forceAnswer ? "none" : "auto",
               ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
               stream: true,
@@ -408,7 +490,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 
     const flushPending = () => {
       if (pendingBuffer) {
-        write(contentFrame(pendingBuffer));
+        if (!bufferMeetingAnswer) write(contentFrame(pendingBuffer));
         pendingBuffer = "";
       }
     };
@@ -430,7 +512,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         if (leakMode) {
           // Already in leak mode: keep accumulating, forward nothing.
         } else if (decided) {
-          write(contentFrame(delta.content));
+          if (!bufferMeetingAnswer) write(contentFrame(delta.content));
         } else {
           pendingBuffer += delta.content;
           const trimmed = pendingBuffer.trimStart();
@@ -494,17 +576,28 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
       });
       for (const call of calls) {
         write(toolActivityFrame(call.name, "running"));
-        let text: string;
+        let outcome: ToolDispatchOutcome;
         try {
-          text = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId);
-          write(toolActivityFrame(call.name, "done"));
+          outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId, params.turnContext);
         } catch {
-          text = `(tool ${call.name} unreachable)`;
-          write(toolActivityFrame(call.name, "error"));
+          outcome = { status: "error", text: `(tool ${call.name} unreachable)` };
         }
-        convo.push({ role: "tool", tool_call_id: call.id, content: text });
+        write(toolActivityFrame(call.name, outcome.status));
+        convo.push({ role: "tool", tool_call_id: call.id, content: outcome.text });
       }
       continue; // loop for the model's answer using the tool results
+    }
+
+    if (bufferMeetingAnswer) {
+      const hasSuppliedCitation = meetingCitations.some((citation) => roundContent.includes(citation));
+      if (!hasSuppliedCitation && !forceAnswer) {
+        // Give the final clean-synthesis round one chance to repair an uncited
+        // meeting draft. The draft was buffered, so the browser never saw it.
+        continue;
+      }
+      write(contentFrame(hasSuppliedCitation
+        ? roundContent
+        : "I found matching private meeting evidence, but could not produce a safely cited answer. Please try again."));
     }
 
     finalCompletionId = currentRoundId;
@@ -529,10 +622,11 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
       return;
     }
 
-    const { model, messages, roomId } = (req.body ?? {}) as {
+    const { model, messages, roomId, clientContext } = (req.body ?? {}) as {
       model?: unknown;
       messages?: unknown;
       roomId?: unknown;
+      clientContext?: unknown;
     };
 
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -545,6 +639,28 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
     if (roomId !== undefined && typeof roomId !== "string") {
       res.status(400).json({ error: "invalid_body", message: "roomId must be a string" });
       return;
+    }
+    let turnContext: AgentTurnContext | undefined;
+    if (clientContext !== undefined) {
+      if (!clientContext || typeof clientContext !== "object") {
+        res.status(400).json({ error: "invalid_body", message: "clientContext must contain localDate and timeZone" });
+        return;
+      }
+      const candidate = clientContext as { localDate?: unknown; timeZone?: unknown };
+      if (
+        typeof candidate.localDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(candidate.localDate)
+        || typeof candidate.timeZone !== "string" || candidate.timeZone.length === 0 || candidate.timeZone.length > 100
+      ) {
+        res.status(400).json({ error: "invalid_body", message: "clientContext must contain a YYYY-MM-DD localDate and IANA timeZone" });
+        return;
+      }
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: candidate.timeZone }).format(new Date());
+      } catch {
+        res.status(400).json({ error: "invalid_body", message: "clientContext timeZone is invalid" });
+        return;
+      }
+      turnContext = { localDate: candidate.localDate, timeZone: candidate.timeZone };
     }
 
     const resolvedModel = typeof model === "string" && model.trim() ? model : config.defaultModel();
@@ -710,6 +826,7 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
         messages: messages as ChatMsg[],
         entityId: config.entityIdFor(req.user.address),
         roomId: typeof roomId === "string" ? roomId : undefined,
+        turnContext,
         write: (frame) => res.write(frame),
         isAborted: () => controller.signal.aborted,
       });

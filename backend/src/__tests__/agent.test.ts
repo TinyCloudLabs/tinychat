@@ -79,6 +79,82 @@ function validDelegation(overrides: Record<string, unknown> = {}) {
   });
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SPACE = `tinycloud:pkh:eip155:1:${TEST_ADDRESS}:default`;
+const TRANSCRIPT_SQL_URI = `${SPACE}/sql/xyz.tinycloud.tinychat/connectors`;
+const TRANSCRIPT_KV_URI = `${SPACE}/kv/xyz.tinycloud.tinychat/connectors/`;
+
+function signedDelegation(
+  resources: Record<string, string[]>,
+  overrides: Record<string, unknown> = {},
+  jwtClaims: Record<string, unknown> = {},
+) {
+  const att = Object.fromEntries(
+    Object.entries(resources)
+      .filter(([, actions]) => actions.length > 0)
+      .map(([key, actions]) => [key, Object.fromEntries(actions.map((action) => [action, []]))]),
+  );
+  const payload = Buffer.from(JSON.stringify({ att, ...jwtClaims })).toString("base64url");
+  return validDelegation({
+    expiry: new Date(Date.now() + 60_000).toISOString(),
+    delegationHeader: { Authorization: `Bearer x.${payload}.x` },
+    ...overrides,
+  });
+}
+
+/** Build a v2 envelope; `transcripts` overrides the exact transcript att. */
+function v2Session(
+  transcripts: Record<string, string[]> = {},
+  opts: { overrides?: Record<string, unknown>; jwtClaims?: Record<string, unknown> } = {},
+) {
+  return {
+    version: 2 as const,
+    delegations: {
+      memory: signedDelegation({ [`${SPACE}/sql/xyz.tinycloud.eliza/memory`]: ["tinycloud.sql/read"] }),
+      transcripts: signedDelegation(
+        {
+          [TRANSCRIPT_SQL_URI]: ["tinycloud.sql/read"],
+          [TRANSCRIPT_KV_URI]: ["tinycloud.kv/get", "tinycloud.kv/list"],
+          ...transcripts,
+        },
+        opts.overrides ?? {},
+        opts.jwtClaims ?? {},
+      ),
+    },
+  };
+}
+
+function cidBackedV2Session(
+  resourceOverrides: Array<Record<string, unknown>> = [],
+  transcriptOverrides: Record<string, unknown> = {},
+) {
+  const cid = "bafkr4iharnesscid";
+  return {
+    version: 2 as const,
+    delegations: {
+      memory: signedDelegation({ [`${SPACE}/sql/xyz.tinycloud.eliza/memory`]: ["tinycloud.sql/read"] }),
+      transcripts: validDelegation({
+        cid,
+        expiry: new Date(Date.now() + 60_000).toISOString(),
+        delegationHeader: { Authorization: `Bearer ${cid}` },
+        resources: resourceOverrides.length > 0 ? resourceOverrides : [
+          { service: "kv", space: SPACE, path: "xyz.tinycloud.tinychat/connectors/", actions: ["tinycloud.kv/get", "tinycloud.kv/list"] },
+          { service: "sql", space: SPACE, path: "xyz.tinycloud.tinychat/connectors", actions: ["tinycloud.sql/read"] },
+        ],
+        ...transcriptOverrides,
+      }),
+    },
+  };
+}
+
+async function postSession(app: express.Express, session: unknown) {
+  return request(app, "/api/agent/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session }),
+  });
+}
+
 describe("agent delegation courier", () => {
   it("couriers a valid delegation to eliza /sessions with the derived entityId + credential", async () => {
     const { app, calls } = createApp();
@@ -152,6 +228,92 @@ describe("agent delegation courier", () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "delegation_expired" });
+  });
+
+  it("couriers the versioned two-grant session only when the signed transcript att is exact", async () => {
+    const { app, calls } = createApp();
+    const session = v2Session();
+    const res = await postSession(app, session);
+    expect(res.status).toBe(200);
+    expect((calls[0].body as { session?: unknown }).session).toEqual(session);
+  });
+
+  it("couriers the SDK's CID-backed multi-resource transcript attenuation", async () => {
+    const { app, calls } = createApp();
+    const session = cidBackedV2Session();
+    const res = await postSession(app, session);
+    expect(res.status).toBe(200);
+    expect((calls[0].body as { session?: unknown }).session).toEqual(session);
+  });
+
+  it("rejects a CID-backed attenuation whose Authorization does not match cid", async () => {
+    const { app, calls } = createApp();
+    const res = await postSession(app, cidBackedV2Session([], {
+      delegationHeader: { Authorization: "Bearer bafkr4different" },
+    }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("malformed");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("couriers a grant that also carries the SDK's capabilities/read entry", async () => {
+    const { app, calls } = createApp();
+    const res = await postSession(app, v2Session({
+      [`${SPACE}/capabilities/xyz.tinycloud.tinychat/connectors`]: ["tinycloud.capabilities/read"],
+    }));
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
+  const rejected: Array<[string, string, () => unknown]> = [
+    ["an extra signed transcript action", "transcript_policy_exceeded", () =>
+      v2Session({ [TRANSCRIPT_SQL_URI]: ["tinycloud.sql/read", "tinycloud.sql/write"] })],
+    ["an extra KV action", "transcript_policy_exceeded", () =>
+      v2Session({ [TRANSCRIPT_KV_URI]: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"] })],
+    ["a broader KV path", "transcript_policy_exceeded", () =>
+      v2Session({ [TRANSCRIPT_KV_URI]: [], [`${SPACE}/kv/`]: ["tinycloud.kv/get"] })],
+    ["a resource outside the transcript ceiling", "transcript_policy_exceeded", () =>
+      v2Session({ [`${SPACE}/sql/xyz.tinycloud.eliza/memory`]: ["tinycloud.sql/read"] })],
+    ["a missing required transcript resource", "transcript_policy_exceeded", () =>
+      v2Session({ [TRANSCRIPT_KV_URI]: [] })],
+    ["a capabilities entry beyond read", "transcript_policy_exceeded", () =>
+      v2Session({ [`${SPACE}/capabilities/x`]: ["tinycloud.capabilities/read", "tinycloud.capabilities/delegate"] })],
+    ["a transcript grant owned by someone else", "wrong_delegator", () => {
+      const other = "tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:default";
+      return v2Session({
+        [TRANSCRIPT_SQL_URI]: [],
+        [TRANSCRIPT_KV_URI]: [],
+        [`${other}/sql/xyz.tinycloud.tinychat/connectors`]: ["tinycloud.sql/read"],
+        [`${other}/kv/xyz.tinycloud.tinychat/connectors/`]: ["tinycloud.kv/get", "tinycloud.kv/list"],
+      });
+    }],
+    ["a transcript grant naming another delegatee", "wrong_delegatee", () =>
+      v2Session({}, { overrides: { delegateDID: OTHER_DID } })],
+    ["an expired transcript grant", "delegation_expired", () =>
+      v2Session({}, { overrides: { expiry: new Date(Date.now() - 1_000).toISOString() } })],
+    ["a transcript grant valid for more than seven days", "delegation_expiry_too_long", () =>
+      v2Session({}, { overrides: { expiry: new Date(Date.now() + 8 * DAY_MS).toISOString() } })],
+    ["a short summary expiry hiding a long SIGNED expiry", "delegation_expiry_too_long", () =>
+      v2Session({}, { jwtClaims: { exp: Math.floor((Date.now() + 30 * DAY_MS) / 1_000) } })],
+  ];
+
+  for (const [label, code, build] of rejected) {
+    it(`rejects ${label} with ${code} before couriering`, async () => {
+      const { app, calls } = createApp();
+      const res = await postSession(app, build());
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe(code);
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  it("never echoes delegation material in a courier rejection", async () => {
+    const { app } = createApp();
+    const session = v2Session({ [TRANSCRIPT_SQL_URI]: ["tinycloud.sql/read", "tinycloud.sql/admin"] });
+    const res = await postSession(app, session);
+    const rendered = JSON.stringify(await res.json());
+    expect(rendered).not.toContain("Bearer");
+    expect(rendered).not.toContain("Authorization");
   });
 
   it("returns 502 when eliza-service is unreachable", async () => {

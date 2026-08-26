@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { ensureAgentSession, mintAgentDelegationViaFreshSignIn } from "../lib/agentDelegation";
+import { ensureAgentSession, mintAgentSessionViaFreshSignIn } from "../lib/agentDelegation";
 import type React from "react";
 
 export type AgentCapability = "probing" | "unavailable" | "available" | "enabled";
@@ -133,11 +133,11 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
         backendUrl,
         getToken: () => sessionStore.getToken(),
         roomId: activeThreadIdRef.current ?? undefined,
-        // Mint via a fresh, plain sign-in (no app manifest) so create() issues a
-        // session-key UCAN JWT the agent accepts — not the app session's wallet
-        // CACAO. See mintAgentDelegationViaFreshSignIn.
+        // Mint via an isolated sign-in with the exact agent consent manifest so
+        // create() issues a session-key UCAN JWT the agent accepts — not the app
+        // session's wallet CACAO. See mintAgentSessionViaFreshSignIn.
         _mint: () =>
-          mintAgentDelegationViaFreshSignIn({ appName, openkeyHost, tinycloudHosts }),
+          mintAgentSessionViaFreshSignIn({ appName, openkeyHost, tinycloudHosts, roomId: activeThreadIdRef.current ?? undefined }),
       });
       if (status === "active") {
         agentEnabledRef.current = true;

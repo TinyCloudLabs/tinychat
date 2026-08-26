@@ -21,10 +21,12 @@
 // The dynamic web-sdk import reuses the app's ALREADY-loaded copy (a single
 // custom-element registration, no collision) and never runs under bun test (the
 // real mint is stubbed via `_mint`). The DOM-bound types below are type-only.
-import type { Delegation, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
 
-/** The frozen agent identity all users delegate to (Layer-1 contract §2). */
-export const AGENT_DID = "did:pkh:eip155:1:0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
+/** Production agent identity (Layer-1 contract §2). Local E2E may override it. */
+const DEFAULT_AGENT_DID = "did:pkh:eip155:1:0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
+const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+export const AGENT_DID = viteEnv?.VITE_AGENT_DID?.trim() || DEFAULT_AGENT_DID;
 
 /** The agent's memory db handle — FIXED (the space varies per user, the path does not). */
 export const AGENT_MEMORY_PATH = "xyz.tinycloud.eliza/memory";
@@ -38,6 +40,44 @@ const SQL_ACTIONS = [
   "tinycloud.sql/admin",
   "tinycloud.capabilities/read",
 ];
+
+const AGENT_MEMORY_SPACE = "default";
+const TINYCHAT_DATA_SPACE = "applications";
+
+/** Exact separate delegation for the transcript action; never combine with memory. */
+export const TRANSCRIPT_PERMISSIONS: PermissionEntry[] = [
+  { service: "tinycloud.sql", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/connectors", actions: ["read"], skipPrefix: true },
+  { service: "tinycloud.kv", space: TINYCHAT_DATA_SPACE, path: "xyz.tinycloud.tinychat/connectors/", actions: ["get", "list"], skipPrefix: true },
+];
+
+/** Exact permissions the isolated consent session must hold before it can sub-delegate. */
+export const AGENT_CONSENT_MANIFEST: Manifest = {
+  manifest_version: 1,
+  app_id: "xyz.tinycloud.tinychat.private-agent",
+  name: "TinyCloud Chat private agent",
+  description: "Authorize the private agent to remember conversations and read meeting transcripts.",
+  defaults: false,
+  includePublicSpace: false,
+  space: TINYCHAT_DATA_SPACE,
+  prefix: "",
+  expiry: "7d",
+  permissions: [
+    {
+      service: "tinycloud.sql",
+      space: AGENT_MEMORY_SPACE,
+      path: AGENT_MEMORY_PATH,
+      actions: ["read", "write", "admin"],
+      skipPrefix: true,
+    },
+    ...TRANSCRIPT_PERMISSIONS,
+  ],
+};
+
+export interface AgentSessionEnvelope {
+  version: 2;
+  roomId?: string;
+  delegations: { memory: string; transcripts: string };
+}
 
 const DEFAULT_HOST = "https://node.tinycloud.xyz";
 const CSRF_HEADER = "X-Requested-With";
@@ -139,7 +179,7 @@ export async function mintAgentDelegation(
   const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_HOST;
   const expiryMs = options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS;
 
-  const space = tcw.space("default");
+  const space = tcw.space(AGENT_MEMORY_SPACE);
   const expiry = new Date(Date.now() + expiryMs);
   const result = await space.delegations.create({
     delegateDID,
@@ -162,6 +202,33 @@ export async function mintAgentDelegation(
   return completeSerializedActions(portable, serializeDelegation);
 }
 
+/** Mint the fixed multi-resource transcript delegation through TinyCloudWeb.delegateTo. */
+export async function mintTranscriptDelegation(
+  tcw: TinyCloudWeb,
+  options: Pick<MintAgentDelegationOptions, "delegateDID" | "host" | "expiryMs"> = {},
+): Promise<string> {
+  const delegateDID = options.delegateDID ?? AGENT_DID;
+  const host = options.host ?? tcw.hosts?.[0] ?? DEFAULT_HOST;
+  const result = await tcw.delegateTo(delegateDID, TRANSCRIPT_PERMISSIONS, {
+    expiry: options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS,
+  });
+  const portable = toPortableDelegation(result.delegation as unknown as Delegation, tcw.address() ?? "", tcw.chainId() ?? 1, host);
+  const { serializeDelegation } = await import("@tinycloud/web-sdk");
+  return completeSerializedActions(portable, serializeDelegation);
+}
+
+export async function mintAgentSessionDelegations(
+  tcw: TinyCloudWeb,
+  options: Pick<MintAgentDelegationOptions, "delegateDID" | "host" | "expiryMs" | "path"> & { roomId?: string } = {},
+): Promise<AgentSessionEnvelope> {
+  // Sequential, not concurrent: both grants are derived from the SAME signed
+  // parent session, and two overlapping derivations race that session's key/nonce
+  // state. One ceremony, two independently scoped grants.
+  const memory = await mintAgentDelegation(tcw, options);
+  const transcripts = await mintTranscriptDelegation(tcw, options);
+  return { version: 2, ...(options.roomId ? { roomId: options.roomId } : {}), delegations: { memory, transcripts } };
+}
+
 export interface FreshSignInMintOptions {
   /** OpenKey app name shown in the passkey prompt. */
   appName: string;
@@ -175,16 +242,16 @@ export interface FreshSignInMintOptions {
 }
 
 /**
- * Mint via a FRESH, plain sign-in — the live-proven `delegate-ui` flow.
+ * Mint via a FRESH, isolated sign-in — the live-proven `delegate-ui` flow.
  *
  * WHY: the app's own session signs in with the app manifest (tinycloud.kv on the
  * app space), so its session key does NOT hold a recap covering tinycloud.sql on
  * `xyz.tinycloud.eliza/memory`. `delegations.create()` then falls back to a
  * WALLET-signed CACAO (CBOR) whose Authorization is NOT a JWT — which the agent's
  * `decodeJwtPayload` normalizer rejects ("Authorization carries no signed
- * capability JWT"). A plain sign-in with NO manifest grants the session key the
- * SDK's broad default recap, so `create()` issues a SESSION-KEY UCAN (a signed
- * JWT in delegationHeader.Authorization) — exactly the proven on-disk shape.
+ * capability JWT"). A fresh sign-in with the exact agent consent manifest grants
+ * the session key the memory and transcript recap, so `create()` issues a
+ * SESSION-KEY UCAN (a signed JWT in delegationHeader.Authorization).
  *
  * The instance is EPHEMERAL: no `sessionStorage`, so it never overwrites the
  * app's persisted session for this address; torn down via `cleanup()` after mint.
@@ -205,10 +272,9 @@ export async function mintAgentDelegationViaFreshSignIn(
   // CRITICAL: isolate this sign-in's session storage. With NO sessionStorage the
   // SDK falls back to the shared localStorage-backed BrowserSessionStorage and
   // RESTORES the app's already-persisted session for this address — whose SIWE
-  // recap only covers the app manifest (tinycloud.kv). create() would then find
-  // SQL is not a subset of the recap and fall back to a wallet CACAO (CBOR) the
-  // agent rejects. An in-memory store has nothing to restore → signIn() performs
-  // a FRESH SIWE whose broad default recap includes tinycloud.sql, so create()
+  // recap does not cover agent memory. create() would then fall back to a wallet
+  // CACAO (CBOR) the agent rejects. An in-memory store has nothing to restore,
+  // so signIn() performs a fresh SIWE for AGENT_CONSENT_MANIFEST and create()
   // issues a session-key UCAN JWT. In-memory also means we never touch (clobber)
   // the app's persisted session.
   const memory = new Map<string, string>();
@@ -227,12 +293,13 @@ export async function mintAgentDelegationViaFreshSignIn(
     },
   };
 
-  // Match delegate-ui's minimal config: provider + hosts, NO manifest (→ broad
-  // default recap incl. tinycloud.sql → session-key UCAN JWT). Isolated, in-memory
-  // session storage prevents restoring/clobbering the app session (see above).
+  // The isolated session asks for the exact memory + transcript permissions it
+  // must sub-delegate. Without this manifest, the SDK's generic default recap
+  // does not cover the transcript resources and delegateTo() fails closed.
   const tcw = new TinyCloudWeb({
     providers: { web3: { driver: web3Provider } },
     ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}),
+    manifest: AGENT_CONSENT_MANIFEST,
     sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }),
   });
 
@@ -255,6 +322,22 @@ export async function mintAgentDelegationViaFreshSignIn(
   }
 }
 
+/** Fresh sign-in variant that mints both independently scoped grants in one ceremony. */
+export async function mintAgentSessionViaFreshSignIn(
+  options: FreshSignInMintOptions & { roomId?: string },
+): Promise<AgentSessionEnvelope> {
+  const { connectWallet } = await import("@tinyboilerplate/client");
+  const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
+  const { web3Provider } = await connectWallet({ appName: options.appName, host: options.openkeyHost });
+  const memory = new Map<string, string>();
+  const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
+  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }) });
+  try {
+    await tcw.signIn();
+    return await mintAgentSessionDelegations(tcw, { delegateDID: options.delegateDID, host: options.tinycloudHosts?.[0], expiryMs: options.expiryMs, roomId: options.roomId });
+  } finally { try { tcw.cleanup?.(); } catch { /* best effort */ } }
+}
+
 export interface EnsureAgentSessionDeps {
   tcw: TinyCloudWeb;
   backendUrl: string;
@@ -266,7 +349,7 @@ export interface EnsureAgentSessionDeps {
   /** Skip the liveness check and force a fresh mint (re-mint UX). */
   force?: boolean;
   /** Test-only seam: override the mint step (defaults to mintAgentDelegation). */
-  _mint?: (tcw: TinyCloudWeb) => Promise<string>;
+  _mint?: (tcw: TinyCloudWeb) => Promise<string | AgentSessionEnvelope>;
 }
 
 export type AgentSessionStatus = "active" | "expired" | "stale" | "none";
@@ -325,12 +408,14 @@ export async function ensureAgentSession(
   }
 
   // Mint (interactive passkey) + courier.
-  const mint = deps._mint ?? ((tcw: TinyCloudWeb) => mintAgentDelegation(tcw, { delegateDID: deps.delegateDID }));
-  const serialized = await mint(deps.tcw);
+  const mint = deps._mint ?? ((tcw: TinyCloudWeb) => mintAgentSessionDelegations(tcw, { delegateDID: deps.delegateDID, roomId: deps.roomId }));
+  const minted = await mint(deps.tcw);
   const res = await fetch(`${base}/api/agent/session`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({ serialized, ...(deps.roomId ? { roomId: deps.roomId } : {}) }),
+    body: JSON.stringify(typeof minted === "string"
+      ? { serialized: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }
+      : { session: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }),
   });
 
   if (!res.ok) {
