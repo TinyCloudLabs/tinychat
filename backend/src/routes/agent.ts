@@ -28,6 +28,10 @@ import {
   type PortableDelegationSet,
 } from "../portable-delegation.js";
 
+const TRANSCRIPT_SQL = "xyz.tinycloud.tinychat/connectors";
+const TRANSCRIPT_KV = `${TRANSCRIPT_SQL}/`;
+const MAX_TRANSCRIPT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface AgentRoutesConfig {
   /** The agent did:pkh all users delegate to (eliza-service's stable identity). */
   agentDid: string;
@@ -92,7 +96,9 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     const user = requireUser(req, res);
     if (!user) return;
 
-    const { serialized, roomId } = req.body ?? {};
+    const { serialized: legacySerialized, roomId, session } = req.body ?? {};
+    const isV2 = isSessionEnvelope(session);
+    const serialized = isV2 ? session.delegations.memory : legacySerialized;
     if (typeof serialized !== "string" || serialized.length === 0) {
       res.status(400).json({
         error: "invalid_body",
@@ -143,6 +149,18 @@ export function createAgentRouter(config: AgentRoutesConfig) {
       return;
     }
 
+    if (isV2) {
+      if (!signedOwnerMatches(session.delegations.memory, user.address)) {
+        res.status(400).json({ error: "wrong_delegator" });
+        return;
+      }
+      const transcript = validateSignedTranscript(session.delegations.transcripts, user.address, config.agentDid);
+      if (!transcript.ok) {
+        res.status(400).json({ error: transcript.error });
+        return;
+      }
+    }
+
     // Routing key the service registers and later routes on. Lowercase seed
     // (entity-id.ts) keeps checksummed and lowercase addresses aligned.
     const entityId = addressToEntityId(user.address, agentId);
@@ -151,8 +169,9 @@ export function createAgentRouter(config: AgentRoutesConfig) {
       const eliza = await callEliza("POST", "/sessions", {
         agentId,
         entityId,
-        serializedDelegation: serialized,
-        ...(roomId ? { roomId } : {}),
+        ...(isV2
+          ? { session: { ...session, ...(roomId ? { roomId } : {}) } }
+          : { serializedDelegation: serialized, ...(roomId ? { roomId } : {}) }),
       });
       // Pass through eliza-service's status + body (200 {entityId, status} or the
       // contract's error codes: 400 wrong_delegatee/delegation_expired/invalid_shape, 401/403).
@@ -189,6 +208,55 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   });
 
   return router;
+}
+
+function signedOwnerMatches(serialized: string, owner: string): boolean {
+  try {
+    const parsed = JSON.parse(serialized) as { delegationHeader?: { Authorization?: unknown } };
+    const auth = parsed.delegationHeader?.Authorization;
+    if (typeof auth !== "string") return false;
+    const payload = JSON.parse(Buffer.from(auth.replace(/^Bearer\s+/i, "").split(".")[1] ?? "", "base64url").toString("utf8")) as { att?: unknown };
+    if (!payload.att || typeof payload.att !== "object") return false;
+    const spaces = Object.keys(payload.att as Record<string, unknown>).map((uri) => uri.split("/")[0]);
+    return spaces.length > 0 && spaces.every((space) => normalizeAddress(space.split(":")[4] ?? "") === normalizeAddress(owner));
+  } catch { return false; }
+}
+
+function isSessionEnvelope(value: unknown): value is { version: 2; delegations: { memory: string; transcripts: string }; roomId?: string } {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as { version?: unknown; roomId?: unknown; delegations?: unknown };
+  if (!entry.delegations || typeof entry.delegations !== "object") return false;
+  const grants = entry.delegations as { memory?: unknown; transcripts?: unknown };
+  return entry.version === 2 && typeof grants.memory === "string" && typeof grants.transcripts === "string" && (entry.roomId === undefined || typeof entry.roomId === "string");
+}
+
+/** Decode the signed UCAN claim only to enforce our local courier ceiling. The node verifies it cryptographically on use. */
+function validateSignedTranscript(serialized: string, owner: string, agentDid: string): { ok: true } | { ok: false; error: string } {
+  try {
+    const parsed = JSON.parse(serialized) as { delegationHeader?: { Authorization?: unknown }; expiry?: unknown; delegateDID?: unknown };
+    if (typeof parsed.delegateDID !== "string" || normalizeDid(parsed.delegateDID) !== normalizeDid(agentDid)) return { ok: false, error: "wrong_delegatee" };
+    const expiry = new Date(parsed.expiry as string);
+    if (!Number.isFinite(expiry.getTime()) || expiry <= new Date()) return { ok: false, error: "delegation_expired" };
+    if (expiry.getTime() - Date.now() > MAX_TRANSCRIPT_EXPIRY_MS) return { ok: false, error: "delegation_expiry_too_long" };
+    const auth = parsed.delegationHeader?.Authorization;
+    if (typeof auth !== "string") return { ok: false, error: "malformed" };
+    const payload = JSON.parse(Buffer.from(auth.replace(/^Bearer\s+/i, "").split(".")[1] ?? "", "base64url").toString("utf8")) as { att?: unknown };
+    if (!payload.att || typeof payload.att !== "object") return { ok: false, error: "malformed" };
+    const grants = Object.entries(payload.att as Record<string, unknown>).map(([uri, abilities]) => ({ uri, actions: abilities && typeof abilities === "object" && !Array.isArray(abilities) ? Object.keys(abilities) : [] }));
+    const expected = new Map([[`tinycloud.sql/${TRANSCRIPT_SQL}`, new Set(["tinycloud.sql/read"])], [`tinycloud.kv/${TRANSCRIPT_KV}`, new Set(["tinycloud.kv/get", "tinycloud.kv/list"])] ]);
+    for (const grant of grants) {
+      const slash = grant.uri.indexOf("/"); const rest = slash >= 0 ? grant.uri.slice(slash + 1) : "";
+      const serviceSlash = rest.indexOf("/"); const key = serviceSlash >= 0 ? `tinycloud.${rest.slice(0, serviceSlash)}/${rest.slice(serviceSlash + 1)}` : "";
+      const allowed = expected.get(key);
+      if (!allowed || grant.actions.some((action) => !allowed.has(action))) return { ok: false, error: "transcript_policy_exceeded" };
+      expected.delete(key);
+      const address = grant.uri.split("/")[0].split(":")[4];
+      if (!address || normalizeAddress(address) !== normalizeAddress(owner)) return { ok: false, error: "wrong_delegator" };
+    }
+    return expected.size === 0 ? { ok: true } : { ok: false, error: "transcript_policy_exceeded" };
+  } catch {
+    return { ok: false, error: "malformed" };
+  }
 }
 
 function requireUser(req: Request, res: Response): { address: string } | null {

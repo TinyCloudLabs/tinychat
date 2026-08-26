@@ -79,6 +79,29 @@ function validDelegation(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function signedDelegation(resources: Record<string, string[]>, overrides: Record<string, unknown> = {}) {
+  const payload = Buffer.from(JSON.stringify({ att: Object.fromEntries(Object.entries(resources).map(([key, actions]) => [key, Object.fromEntries(actions.map((action) => [action, []]))])) })).toString("base64url");
+  return validDelegation({
+    expiry: new Date(Date.now() + 60_000).toISOString(),
+    delegationHeader: { Authorization: `Bearer x.${payload}.x` },
+    ...overrides,
+  });
+}
+
+function v2Session(transcriptActions = ["tinycloud.sql/read"]) {
+  const space = `tinycloud:pkh:eip155:1:${TEST_ADDRESS}:default`;
+  return {
+    version: 2 as const,
+    delegations: {
+      memory: signedDelegation({ [`${space}/sql/xyz.tinycloud.eliza/memory`]: ["tinycloud.sql/read"] }),
+      transcripts: signedDelegation({
+        [`${space}/sql/xyz.tinycloud.tinychat/connectors`]: transcriptActions,
+        [`${space}/kv/xyz.tinycloud.tinychat/connectors/`]: ["tinycloud.kv/get", "tinycloud.kv/list"],
+      }),
+    },
+  };
+}
+
 describe("agent delegation courier", () => {
   it("couriers a valid delegation to eliza /sessions with the derived entityId + credential", async () => {
     const { app, calls } = createApp();
@@ -152,6 +175,22 @@ describe("agent delegation courier", () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "delegation_expired" });
+  });
+
+  it("couriers the versioned two-grant session only when the signed transcript att is exact", async () => {
+    const { app, calls } = createApp();
+    const session = v2Session();
+    const res = await request(app, "/api/agent/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session }) });
+    expect(res.status).toBe(200);
+    expect((calls[0].body as { session?: unknown }).session).toEqual(session);
+  });
+
+  it("rejects an extra signed transcript action before couriering", async () => {
+    const { app, calls } = createApp();
+    const res = await request(app, "/api/agent/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session: v2Session(["tinycloud.sql/read", "tinycloud.sql/write"]) }) });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("transcript_policy_exceeded");
+    expect(calls).toHaveLength(0);
   });
 
   it("returns 502 when eliza-service is unreachable", async () => {
