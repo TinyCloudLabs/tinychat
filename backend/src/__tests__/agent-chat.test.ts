@@ -8,6 +8,7 @@ import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import {
   accumulateToolCalls,
   buildCleanSynthesisMessages,
+  buildMeetingAgentGuidance,
   createAgentChatHandler,
   orchestrateToolCalling,
   parseInlineToolCalls,
@@ -231,6 +232,46 @@ describe("parseSseJson", () => {
 });
 
 describe("orchestrateToolCalling", () => {
+  it("offers the composable meeting toolkit with local-calendar agent guidance", async () => {
+    let body: Record<string, unknown> | null = null;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(init!.body as string) as Record<string, unknown>;
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream([dataFrame({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })]),
+      } as unknown as Response;
+    }) as typeof fetch;
+    await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What was my last meeting?" }],
+      entityId: "e",
+      turnContext: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
+      write: () => {},
+    });
+    const names = (body!.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name);
+    expect(names).toEqual([
+      "web_search",
+      "tinycloud_find_meetings",
+      "tinycloud_read_meeting",
+      "tinycloud_search_transcripts",
+      "tinycloud_list_meeting_actions",
+    ]);
+    const system = (body!.messages as ChatMsg[])[0]?.content ?? "";
+    expect(system).toContain("2026-08-26");
+    expect(system).toContain("tinycloud_find_meetings");
+    expect(system).toContain("never substitute web search");
+    expect(system).toContain("Citations are required answer syntax");
+    expect(system).toContain("what next?");
+    expect(system).toContain("citation such as [M1] is never a meetingRef");
+    expect(system).toContain("never use it for an immediate follow-up");
+    expect(system).toContain("tools are read-only");
+  });
+
+  it("requires a concrete date when no local calendar context is available", () => {
+    expect(buildMeetingAgentGuidance()).toContain("ask for a concrete date");
+  });
   it("streams a plain answer through when the model emits no tool calls", async () => {
     const fetchImpl = (async () => ({
         ok: true,
@@ -316,6 +357,7 @@ describe("orchestrateToolCalling", () => {
       messages: [{ role: "user", content: "capital of France?" }],
       entityId: "entity-7",
       roomId: "thread-3",
+      turnContext: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
       write: (f) => frames.push(f),
     });
 
@@ -327,6 +369,7 @@ describe("orchestrateToolCalling", () => {
       args: { query: "capital of France" },
       entityId: "entity-7",
       roomId: "thread-3",
+      context: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
     });
 
     // The final answer streamed through, and a tool_activity frame was emitted.
@@ -342,6 +385,95 @@ describe("orchestrateToolCalling", () => {
     expect(text).toBe("The capital is Paris.");
     expect(frames.some((f) => f.includes("tool_activity"))).toBe(true);
     expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+  });
+
+  it("chains metadata selection to a selected-meeting read before synthesis", async () => {
+    const dispatched: Array<{ name: string; args: Record<string, unknown> }> = [];
+    let round = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        const name = String(url).split("/").at(-1)!;
+        const body = JSON.parse(init!.body as string) as { args: Record<string, unknown> };
+        dispatched.push({ name, args: body.args });
+        const result = name === "tinycloud_find_meetings"
+          ? { text: "Found one.", data: { meetings: [{ meetingRef: "meeting-1", citation: "[M1]", title: "Latest" }] } }
+          : { text: "Read actions.", data: { actionItems: [{ citation: "[M1:A1]", text: "Sam will send the memo." }] } };
+        return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
+      }
+      round += 1;
+      if (round === 1) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
+          delta: { tool_calls: [{ index: 0, id: "find-1", function: { name: "tinycloud_find_meetings", arguments: '{"sort":"newest","selectFirst":true}' } }] },
+          finish_reason: "tool_calls",
+        }] })]) } as unknown as Response;
+      }
+      if (round === 2) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
+          delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"actions"}' } }] },
+          finish_reason: "tool_calls",
+        }] })]) } as unknown as Response;
+      }
+      return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{ delta: { content: "Sam will send the memo. [M1:A1]" }, finish_reason: "stop" }] })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What are we going to do next after my last meeting?" }],
+      entityId: "entity-1",
+      roomId: "thread-1",
+      write: (frame) => frames.push(frame),
+    });
+    expect(dispatched).toEqual([
+      { name: "tinycloud_find_meetings", args: { sort: "newest", selectFirst: true } },
+      { name: "tinycloud_read_meeting", args: { focus: "actions" } },
+    ]);
+    expect(forwardedContent(frames)).toContain("[M1:A1]");
+  });
+
+  it("buffers an uncited meeting draft and repairs it with clean synthesis", async () => {
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    let round = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          result: { text: "Found one.", data: { summary: { citation: "[M1:S]", text: "Latest" } } },
+        }), { status: 200 });
+      }
+      upstreamBodies.push(JSON.parse(init!.body as string) as Record<string, unknown>);
+      round += 1;
+      if (round === 1) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
+          delta: { tool_calls: [{ index: 0, id: "find-1", function: { name: "tinycloud_find_meetings", arguments: '{"sort":"newest","selectFirst":true}' } }] },
+          finish_reason: "tool_calls",
+        }] })]) } as unknown as Response;
+      }
+      if (round === 2) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
+          delta: { content: "Your latest meeting was Latest." }, finish_reason: "stop",
+        }] })]) } as unknown as Response;
+      }
+      return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
+        delta: { content: "Your latest meeting was Latest [M1:S]." }, finish_reason: "stop",
+      }] })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    await orchestrateToolCalling({
+      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What was my last meeting?" }],
+      entityId: "entity-1",
+      roomId: "thread-1",
+      write: (frame) => frames.push(frame),
+    });
+
+    expect(upstreamBodies).toHaveLength(3);
+    expect(upstreamBodies[2].tools).toBeUndefined();
+    expect(forwardedContent(frames)).toBe("Your latest meeting was Latest [M1:S].");
+    expect(forwardedContent(frames)).not.toContain("Your latest meeting was Latest.Your");
   });
 
   // Leaked-markup guard: a single GLM-style inline tool_call in delta.content

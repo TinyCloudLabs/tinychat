@@ -20,6 +20,12 @@ function labelForActivity(activity: ToolActivity): string {
         : isError
           ? "Transcript search needs reconnection"
           : "Searching your transcripts…";
+    case "tinycloud_find_meetings":
+      return isDone ? "Found your meetings" : isError ? "Meeting lookup failed" : "Finding your meetings…";
+    case "tinycloud_read_meeting":
+      return isDone ? "Read your meeting" : isError ? "Meeting read needs reconnection" : "Reading your meeting…";
+    case "tinycloud_list_meeting_actions":
+      return isDone ? "Reviewed meeting actions" : isError ? "Meeting action lookup failed" : "Reviewing meeting actions…";
     default:
       return isDone ? "Tool done" : isError ? "Tool failed" : "Running tool…";
   }
