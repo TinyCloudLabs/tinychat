@@ -233,8 +233,20 @@ export function buildCleanSynthesisMessages(question: string, results: string): 
   ];
 }
 
+/** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
+const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired"]);
+
+export interface ToolDispatchOutcome {
+  /** The role:"tool" content handed back to the model. */
+  text: string;
+  /** Drives the tool_activity frame the browser renders. */
+  status: "done" | "error";
+  /** Set only for a delegation failure the user must act on. */
+  code?: string;
+}
+
 /**
- * Dispatch one tool call to eliza-service POST /tools/:name and return its result text.
+ * Dispatch one tool call to eliza-service POST /tools/:name and return its result.
  * web_search needs no delegation; entityId/roomId are passed for tools that do.
  */
 async function dispatchTool(
@@ -243,7 +255,7 @@ async function dispatchTool(
   call: AccumulatedToolCall,
   entityId: string,
   roomId: string | undefined,
-): Promise<string> {
+): Promise<ToolDispatchOutcome> {
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
@@ -266,7 +278,21 @@ async function dispatchTool(
     error?: string;
   };
   if (!res.ok) {
-    return `(tool ${call.name} failed: ${body.error ?? res.status})`;
+    const code = typeof body.error === "string" ? body.error : String(res.status);
+    if (DELEGATION_ERROR_CODES.has(code)) {
+      // The user has not granted (or has revoked/expired) transcript access.
+      // Say so explicitly instead of letting the model quietly substitute a web
+      // search, which would make the delegated path look healthy when it is not.
+      return {
+        status: "error",
+        code,
+        text: `(tool ${call.name} could not run: ${code}. The user has not granted this agent access `
+          + "to their private TinyCloud transcripts, or that access has expired. Tell the user you "
+          + "cannot read their transcripts and that they need to reconnect transcript access. Do NOT "
+          + "answer from a web search, from memory, or from any other source, and do not guess.",
+      };
+    }
+    return { status: "error", code, text: `(tool ${call.name} failed: ${code})` };
   }
   // Forward the one-line summary and the structured result. Tool output is
   // intentionally generic: transcript citations are not web URLs, and future
@@ -274,10 +300,10 @@ async function dispatchTool(
   const summary = body.result?.text ?? "";
   if (call.name !== "web_search") {
     const data = body.result?.data ? JSON.stringify(body.result.data) : "";
-    return summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data;
+    return { status: "done", text: summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data };
   }
   const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
-  if (results.length === 0) return summary;
+  if (results.length === 0) return { status: "done", text: summary };
   const sources = results
     .map((r, i) => {
       const parts = [`[${i + 1}] ${r.title ?? "(untitled)"}`];
@@ -286,7 +312,7 @@ async function dispatchTool(
       return parts.join("\n");
     })
     .join("\n");
-  return summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}`;
+  return { status: "done", text: summary ? `${summary}\n\nSources:\n${sources}` : `Sources:\n${sources}` };
 }
 
 export interface OrchestrateParams {
@@ -498,15 +524,14 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
       });
       for (const call of calls) {
         write(toolActivityFrame(call.name, "running"));
-        let text: string;
+        let outcome: ToolDispatchOutcome;
         try {
-          text = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId);
-          write(toolActivityFrame(call.name, "done"));
+          outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId);
         } catch {
-          text = `(tool ${call.name} unreachable)`;
-          write(toolActivityFrame(call.name, "error"));
+          outcome = { status: "error", text: `(tool ${call.name} unreachable)` };
         }
-        convo.push({ role: "tool", tool_call_id: call.id, content: text });
+        write(toolActivityFrame(call.name, outcome.status));
+        convo.push({ role: "tool", tool_call_id: call.id, content: outcome.text });
       }
       continue; // loop for the model's answer using the tool results
     }

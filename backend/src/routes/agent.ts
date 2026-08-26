@@ -210,53 +210,148 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   return router;
 }
 
-function signedOwnerMatches(serialized: string, owner: string): boolean {
-  try {
-    const parsed = JSON.parse(serialized) as { delegationHeader?: { Authorization?: unknown } };
-    const auth = parsed.delegationHeader?.Authorization;
-    if (typeof auth !== "string") return false;
-    const payload = JSON.parse(Buffer.from(auth.replace(/^Bearer\s+/i, "").split(".")[1] ?? "", "base64url").toString("utf8")) as { att?: unknown };
-    if (!payload.att || typeof payload.att !== "object") return false;
-    const spaces = Object.keys(payload.att as Record<string, unknown>).map((uri) => uri.split("/")[0]);
-    return spaces.length > 0 && spaces.every((space) => normalizeAddress(space.split(":")[4] ?? "") === normalizeAddress(owner));
-  } catch { return false; }
-}
-
+/**
+ * Decode the (unverified) UCAN payload carried by a serialized delegation.
+ *
+ * The node verifies the signature on use; decoding here only lets the courier
+ * read the SIGNED capability claim instead of the forgeable top-level
+ * `resources`/`actions`/`expiry` summary. Never echo any part of it.
+ */
 function isSessionEnvelope(value: unknown): value is { version: 2; delegations: { memory: string; transcripts: string }; roomId?: string } {
   if (!value || typeof value !== "object") return false;
   const entry = value as { version?: unknown; roomId?: unknown; delegations?: unknown };
   if (!entry.delegations || typeof entry.delegations !== "object") return false;
   const grants = entry.delegations as { memory?: unknown; transcripts?: unknown };
-  return entry.version === 2 && typeof grants.memory === "string" && typeof grants.transcripts === "string" && (entry.roomId === undefined || typeof entry.roomId === "string");
+  return entry.version === 2
+    && typeof grants.memory === "string"
+    && typeof grants.transcripts === "string"
+    && (entry.roomId === undefined || typeof entry.roomId === "string");
 }
 
-/** Decode the signed UCAN claim only to enforce our local courier ceiling. The node verifies it cryptographically on use. */
-function validateSignedTranscript(serialized: string, owner: string, agentDid: string): { ok: true } | { ok: false; error: string } {
+function signedPayload(serialized: string): { att: Record<string, unknown>; exp: number | null } | null {
   try {
-    const parsed = JSON.parse(serialized) as { delegationHeader?: { Authorization?: unknown }; expiry?: unknown; delegateDID?: unknown };
-    if (typeof parsed.delegateDID !== "string" || normalizeDid(parsed.delegateDID) !== normalizeDid(agentDid)) return { ok: false, error: "wrong_delegatee" };
-    const expiry = new Date(parsed.expiry as string);
-    if (!Number.isFinite(expiry.getTime()) || expiry <= new Date()) return { ok: false, error: "delegation_expired" };
-    if (expiry.getTime() - Date.now() > MAX_TRANSCRIPT_EXPIRY_MS) return { ok: false, error: "delegation_expiry_too_long" };
+    const parsed = JSON.parse(serialized) as { delegationHeader?: { Authorization?: unknown } };
     const auth = parsed.delegationHeader?.Authorization;
-    if (typeof auth !== "string") return { ok: false, error: "malformed" };
-    const payload = JSON.parse(Buffer.from(auth.replace(/^Bearer\s+/i, "").split(".")[1] ?? "", "base64url").toString("utf8")) as { att?: unknown };
-    if (!payload.att || typeof payload.att !== "object") return { ok: false, error: "malformed" };
-    const grants = Object.entries(payload.att as Record<string, unknown>).map(([uri, abilities]) => ({ uri, actions: abilities && typeof abilities === "object" && !Array.isArray(abilities) ? Object.keys(abilities) : [] }));
-    const expected = new Map([[`tinycloud.sql/${TRANSCRIPT_SQL}`, new Set(["tinycloud.sql/read"])], [`tinycloud.kv/${TRANSCRIPT_KV}`, new Set(["tinycloud.kv/get", "tinycloud.kv/list"])] ]);
-    for (const grant of grants) {
-      const slash = grant.uri.indexOf("/"); const rest = slash >= 0 ? grant.uri.slice(slash + 1) : "";
-      const serviceSlash = rest.indexOf("/"); const key = serviceSlash >= 0 ? `tinycloud.${rest.slice(0, serviceSlash)}/${rest.slice(serviceSlash + 1)}` : "";
-      const allowed = expected.get(key);
-      if (!allowed || grant.actions.some((action) => !allowed.has(action))) return { ok: false, error: "transcript_policy_exceeded" };
-      expected.delete(key);
-      const address = grant.uri.split("/")[0].split(":")[4];
-      if (!address || normalizeAddress(address) !== normalizeAddress(owner)) return { ok: false, error: "wrong_delegator" };
-    }
-    return expected.size === 0 ? { ok: true } : { ok: false, error: "transcript_policy_exceeded" };
+    if (typeof auth !== "string") return null;
+    const segment = auth.replace(/^Bearer\s+/i, "").split(".")[1];
+    if (!segment) return null;
+    const payload = JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as { att?: unknown; exp?: unknown };
+    if (!payload.att || typeof payload.att !== "object" || Array.isArray(payload.att)) return null;
+    return {
+      att: payload.att as Record<string, unknown>,
+      exp: typeof payload.exp === "number" && Number.isFinite(payload.exp) ? payload.exp : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Split a UCAN att resource URI into its parts.
+ *
+ * The canonical form is `<space>/<serviceShort>/<path...>`, where `<space>` is
+ * the colon-form space id (`tinycloud:pkh:eip155:1:0x...:default`). A path may
+ * itself contain slashes, so only the first two segments are positional.
+ */
+function parseAttUri(uri: string): { owner: string; service: string; path: string } | null {
+  const segments = uri.split("/");
+  const space = segments[0] ?? "";
+  const service = segments[1] ?? "";
+  const owner = space.split(":")[4] ?? "";
+  if (!service || !owner) return null;
+  return { owner, service, path: segments.slice(2).join("/") };
+}
+
+function attGrants(att: Record<string, unknown>): Array<{ owner: string; service: string; path: string; actions: string[] }> | null {
+  const grants: Array<{ owner: string; service: string; path: string; actions: string[] }> = [];
+  for (const [uri, abilities] of Object.entries(att)) {
+    if (!abilities || typeof abilities !== "object" || Array.isArray(abilities)) return null;
+    const actions = Object.keys(abilities as Record<string, unknown>);
+    if (actions.length === 0) continue;
+    const parsed = parseAttUri(uri);
+    if (!parsed) return null;
+    grants.push({ ...parsed, actions });
+  }
+  return grants;
+}
+
+function signedOwnerMatches(serialized: string, owner: string): boolean {
+  const payload = signedPayload(serialized);
+  if (!payload) return false;
+  const grants = attGrants(payload.att);
+  if (!grants || grants.length === 0) return false;
+  return grants.every((grant) => normalizeAddress(grant.owner) === normalizeAddress(owner));
+}
+
+/**
+ * The exact transcript ceiling this backend will courier.
+ *
+ * Every entry is required except `capabilities`, which the SDK mints as part of
+ * its own capability chain at a path it chooses. That entry is read-only and
+ * conveys no user data, so it is permitted at any path; every user-data
+ * resource stays pinned to an exact service/path/action set.
+ */
+const TRANSCRIPT_CEILING: Array<{ service: string; path: string | null; actions: Set<string>; required: boolean }> = [
+  { service: "sql", path: TRANSCRIPT_SQL, actions: new Set(["tinycloud.sql/read"]), required: true },
+  { service: "kv", path: TRANSCRIPT_KV, actions: new Set(["tinycloud.kv/get", "tinycloud.kv/list"]), required: true },
+  { service: "capabilities", path: null, actions: new Set(["tinycloud.capabilities/read"]), required: false },
+];
+
+/**
+ * Enforce the local courier ceiling from the SIGNED capability claim only.
+ *
+ * TinyChat never activates this grant; the node verifies it cryptographically
+ * on use. What this gate guarantees is that a grant TinyChat forwards was
+ * signed by the authenticated user, names the configured agent, expires inside
+ * seven days, and carries nothing beyond the transcript ceiling.
+ */
+function validateSignedTranscript(serialized: string, owner: string, agentDid: string): { ok: true } | { ok: false; error: string } {
+  let parsed: { delegateDID?: unknown; expiry?: unknown };
+  try {
+    parsed = JSON.parse(serialized) as { delegateDID?: unknown; expiry?: unknown };
   } catch {
     return { ok: false, error: "malformed" };
   }
+  if (typeof parsed.delegateDID !== "string" || normalizeDid(parsed.delegateDID) !== normalizeDid(agentDid)) {
+    return { ok: false, error: "wrong_delegatee" };
+  }
+  const summaryExpiry = new Date(parsed.expiry as string);
+  if (!Number.isFinite(summaryExpiry.getTime()) || summaryExpiry <= new Date()) {
+    return { ok: false, error: "delegation_expired" };
+  }
+
+  const payload = signedPayload(serialized);
+  if (!payload) return { ok: false, error: "malformed" };
+
+  // The ceiling is measured against the SIGNED `exp` when the token carries one:
+  // a short unsigned `expiry` summary must not launder a long-lived signed grant.
+  const signedExpiryMs = payload.exp === null ? null : payload.exp * 1_000;
+  const effectiveExpiryMs = signedExpiryMs === null
+    ? summaryExpiry.getTime()
+    : Math.max(summaryExpiry.getTime(), signedExpiryMs);
+  if (signedExpiryMs !== null && signedExpiryMs <= Date.now()) return { ok: false, error: "delegation_expired" };
+  if (effectiveExpiryMs - Date.now() > MAX_TRANSCRIPT_EXPIRY_MS) {
+    return { ok: false, error: "delegation_expiry_too_long" };
+  }
+
+  const grants = attGrants(payload.att);
+  if (!grants || grants.length === 0) return { ok: false, error: "malformed" };
+
+  const seen = new Set<string>();
+  for (const grant of grants) {
+    if (normalizeAddress(grant.owner) !== normalizeAddress(owner)) return { ok: false, error: "wrong_delegator" };
+    const allowed = TRANSCRIPT_CEILING.find((entry) =>
+      entry.service === grant.service && (entry.path === null || entry.path === grant.path));
+    if (!allowed || seen.has(allowed.service)) return { ok: false, error: "transcript_policy_exceeded" };
+    if (grant.actions.some((action) => !allowed.actions.has(action))) {
+      return { ok: false, error: "transcript_policy_exceeded" };
+    }
+    seen.add(allowed.service);
+  }
+  if (TRANSCRIPT_CEILING.some((entry) => entry.required && !seen.has(entry.service))) {
+    return { ok: false, error: "transcript_policy_exceeded" };
+  }
+  return { ok: true };
 }
 
 function requireUser(req: Request, res: Response): { address: string } | null {

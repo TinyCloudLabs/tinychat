@@ -642,6 +642,101 @@ describe("orchestrateToolCalling", () => {
     expect(frames.at(-1)).toBe("data: [DONE]\n\n");
   });
 
+  describe("transcript tool delegation failures", () => {
+    function transcriptTurn(toolStatus: number, toolBody: unknown) {
+      const upstreamBodies: unknown[] = [];
+      let round = 0;
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        if (String(url).includes("/tools/")) {
+          return new Response(JSON.stringify(toolBody), { status: toolStatus });
+        }
+        upstreamBodies.push(JSON.parse(init!.body as string));
+        round += 1;
+        if (round === 1) {
+          return {
+            ok: true, status: 200,
+            body: sseStream([dataFrame({
+              choices: [{
+                delta: { tool_calls: [{ index: 0, id: "call_t", function: { name: "tinycloud_search_transcripts", arguments: '{"query":"cobalt"}' } }] },
+                finish_reason: "tool_calls",
+              }],
+            })]),
+          } as unknown as Response;
+        }
+        return {
+          ok: true, status: 200,
+          body: sseStream([dataFrame({ choices: [{ delta: { content: "You need to reconnect transcript access." }, finish_reason: "stop" }] })]),
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+      return { fetchImpl, upstreamBodies };
+    }
+
+    function activityFrames(frames: string[]) {
+      return frames.flatMap((frame) => {
+        try {
+          const activity = JSON.parse(frame.replace(/^data: /, "").trim())?.tool_activity;
+          return activity ? [activity as { name: string; status: string }] : [];
+        } catch { return []; }
+      });
+    }
+
+    for (const code of ["delegation_required", "delegation_expired"]) {
+      it(`reports ${code} as a tool error and forbids substituting another source`, async () => {
+        const { fetchImpl, upstreamBodies } = transcriptTurn(409, { error: code });
+        const frames: string[] = [];
+        await orchestrateToolCalling({
+          config: baseConfig(fetchImpl),
+          model: "phala/gpt-oss-120b",
+          messages: [{ role: "user", content: "what replaced cobalt in my meeting?" }],
+          entityId: "entity-9",
+          write: (f) => frames.push(f),
+        });
+
+        // The browser must see a failed transcript activity, not a completed one.
+        expect(activityFrames(frames)).toEqual([
+          { name: "tinycloud_search_transcripts", status: "running" },
+          { name: "tinycloud_search_transcripts", status: "error" },
+        ]);
+
+        // And the model must be told, in the tool result, not to fall back.
+        const toolMessage = (upstreamBodies[1] as { messages: Array<{ role: string; content: string }> })
+          .messages.find((message) => message.role === "tool");
+        expect(toolMessage?.content).toContain(code);
+        expect(toolMessage?.content).toContain("reconnect transcript access");
+        expect(toolMessage?.content).toContain("Do NOT");
+      });
+    }
+
+    it("forwards a successful transcript result's structured citations to synthesis", async () => {
+      const data = {
+        corpus: { candidateCount: 1, examinedCount: 1, matchedCount: 1, truncated: false, partial: false },
+        matches: [{
+          citation: "[T1]", source: "fireflies", sourceId: "canary-1", title: "Agent Retrieval Canary",
+          startedAt: "2026-08-26T10:00:00.000Z",
+          excerpts: [{ citation: "[T1:E1, Avery, 00:01:12]", speaker: "Avery", startSecs: 72, text: "the final choice is ember compass" }],
+        }],
+      };
+      const { fetchImpl, upstreamBodies } = transcriptTurn(200, {
+        ok: true, tool: "TINYCLOUD_SEARCH_TRANSCRIPTS",
+        result: { text: "Found cited evidence in 1 of 1 examined transcripts.", data },
+      });
+      const frames: string[] = [];
+      await orchestrateToolCalling({
+        config: baseConfig(fetchImpl),
+        model: "phala/gpt-oss-120b",
+        messages: [{ role: "user", content: "what replaced cobalt?" }],
+        entityId: "entity-9",
+        write: (f) => frames.push(f),
+      });
+
+      expect(activityFrames(frames).at(-1)).toEqual({ name: "tinycloud_search_transcripts", status: "done" });
+      const toolMessage = (upstreamBodies[1] as { messages: Array<{ role: string; content: string }> })
+        .messages.find((message) => message.role === "tool");
+      expect(toolMessage?.content).toContain("[T1:E1, Avery, 00:01:12]");
+      expect(toolMessage?.content).toContain("ember compass");
+    });
+  });
+
   describe("buildCleanSynthesisMessages", () => {
     it("inlines question + results into a system/user pair with no tool messages", () => {
       const msgs = buildCleanSynthesisMessages("Q?", "result A\n\nresult B");

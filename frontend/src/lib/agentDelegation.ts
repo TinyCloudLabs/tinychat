@@ -193,10 +193,11 @@ export async function mintAgentSessionDelegations(
   tcw: TinyCloudWeb,
   options: Pick<MintAgentDelegationOptions, "delegateDID" | "host" | "expiryMs" | "path"> & { roomId?: string } = {},
 ): Promise<AgentSessionEnvelope> {
-  const [memory, transcripts] = await Promise.all([
-    mintAgentDelegation(tcw, options),
-    mintTranscriptDelegation(tcw, options),
-  ]);
+  // Sequential, not concurrent: both grants are derived from the SAME signed
+  // parent session, and two overlapping derivations race that session's key/nonce
+  // state. One ceremony, two independently scoped grants.
+  const memory = await mintAgentDelegation(tcw, options);
+  const transcripts = await mintTranscriptDelegation(tcw, options);
   return { version: 2, ...(options.roomId ? { roomId: options.roomId } : {}), delegations: { memory, transcripts } };
 }
 
