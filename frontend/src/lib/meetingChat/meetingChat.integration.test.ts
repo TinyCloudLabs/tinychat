@@ -350,7 +350,7 @@ describe("seeded meeting-chat browser integration", () => {
     expect(fixture.maxActive).toBe(1);
   });
 
-  test("sends the unique canary only in the grounded plain-chat payload, including agent-enabled retry", async () => {
+  test("sends the unique canary only in the grounded plain-chat fallback payload", async () => {
     const transcriptKey = transcriptKvKey(SOURCE, "wire-canary");
     const transcriptPrefix = `${CONNECTORS_KV_PREFIX}/${SOURCE}/transcript/`;
     const fixture = seededRetriever({
@@ -386,7 +386,7 @@ describe("seeded meeting-chat browser integration", () => {
         sessionStore: { getToken: () => "token", isExpired: () => false, clear: () => {} } as never,
         modelRef: { current: "m1" } as never,
         activeThreadIdRef: { current: "wire-thread" } as never,
-        agentEnabledRef: { current: true } as never,
+        agentEnabledRef: { current: false } as never,
         offeredModelIdsRef: { current: new Set(["m1"]) } as never,
         meetingRetriever: fixture.retriever,
         meetingMessageRegistry,

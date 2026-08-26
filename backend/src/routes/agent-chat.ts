@@ -268,14 +268,13 @@ async function dispatchTool(
   if (!res.ok) {
     return `(tool ${call.name} failed: ${body.error ?? res.status})`;
   }
-  // Forward the one-line summary AND the structured results (title/url/snippet)
-  // so the synthesis model can cite real source URLs. Returning only
-  // `result.text` left every model without a URL — they then hallucinated
-  // citations or honestly declined to cite (P4 failure, all models).
+  // Forward the one-line summary and the structured result. Tool output is
+  // intentionally generic: transcript citations are not web URLs, and future
+  // fixed-policy tools must not require dispatcher changes to reach synthesis.
   const summary = body.result?.text ?? "";
-  if (call.name === "tinycloud_search_transcripts") {
-    const evidence = body.result?.data ? JSON.stringify(body.result.data) : "";
-    return summary && evidence ? `${summary}\n\nTranscript evidence:\n${evidence}` : summary || evidence;
+  if (call.name !== "web_search") {
+    const data = body.result?.data ? JSON.stringify(body.result.data) : "";
+    return summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data;
   }
   const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
   if (results.length === 0) return summary;

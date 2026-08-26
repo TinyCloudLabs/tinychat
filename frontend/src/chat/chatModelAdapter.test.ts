@@ -231,7 +231,8 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
     const { deps } = makeDeps({
       meetingRetriever: { retrieve } as never,
       contextTokensFor: () => 64_000,
-      agentEnabledRef: ref(true) as never,
+      // Browser grounding is the explicit private-agent-off fallback.
+      agentEnabledRef: ref(false) as never,
       getCheckpoint: async () => {
         events.push("checkpoint");
         return null;
@@ -288,7 +289,7 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
     const { deps, summarize } = makeDeps({
       meetingRetriever: { retrieve } as never,
       contextTokensFor: () => 5_000,
-      agentEnabledRef: ref(true) as never,
+      agentEnabledRef: ref(false) as never,
     });
 
     const result = await drain(
