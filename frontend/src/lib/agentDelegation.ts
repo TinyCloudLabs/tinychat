@@ -55,7 +55,7 @@ export const AGENT_CONSENT_MANIFEST: Manifest = {
   manifest_version: 1,
   app_id: "xyz.tinycloud.tinychat.private-agent",
   name: "TinyCloud Chat private agent",
-  description: "Authorize the private agent to remember conversations and read meeting transcripts.",
+  description: "Allow the private agent to remember useful context and read your synced meeting transcripts.",
   defaults: false,
   includePublicSpace: false,
   space: TINYCHAT_DATA_SPACE,
