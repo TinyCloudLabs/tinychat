@@ -157,6 +157,26 @@ describe("createChatModelAdapter — C1 branch selection", () => {
     const { chunks } = await drainAdapter(makeDeps(false));
     expect(chunks).toEqual(["Paris"]);
   });
+
+  it("forwards streamed delegation failures to the reconnect controller", async () => {
+    const encoder = new TextEncoder();
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'data: {"choices":[{"delta":{}}],"delegation_error":{"code":"delegation_expired"}}\n\n',
+        ));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+
+    const errors: string[] = [];
+    const deps = makeDeps(true);
+    deps.onAgentDelegationError = (code) => errors.push(code);
+    await drainAdapter(deps);
+
+    expect(errors).toEqual(["delegation_expired"]);
+  });
 });
 
 describe("createChatModelAdapter — C2 roomId threading", () => {

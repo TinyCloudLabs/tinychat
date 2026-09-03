@@ -176,6 +176,56 @@ describe("streamAgentChat", () => {
     expect(ids).toEqual(["cmpl-x"]);
   });
 
+  it("surfaces a streamed delegation failure for reconnect UI", async () => {
+    const errors: string[] = [];
+    globalThis.fetch = (async () =>
+      sseResponse([
+        df({ choices: [{ delta: {} }], delegation_error: { code: "delegation_expired" } }),
+        df({ choices: [{ delta: { content: "Reconnect access." } }] }),
+        "data: [DONE]\n\n",
+      ])) as typeof fetch;
+
+    const chunks: string[] = [];
+    for await (const text of streamAgentChat({
+      backendUrl: "https://api.test",
+      getToken: () => "tok",
+      messages: [{ role: "user", content: "last meeting?" }],
+      onDelegationError: (code) => errors.push(code),
+    })) {
+      chunks.push(text);
+    }
+
+    expect(errors).toEqual(["delegation_expired"]);
+    expect(chunks).toEqual(["Reconnect access."]);
+  });
+
+  it("ignores unknown delegation errors and swallows a throwing listener", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () =>
+      sseResponse([
+        df({ delegation_error: { code: "unknown" } }),
+        df({ delegation_error: { code: "delegation_required" } }),
+        df({ choices: [{ delta: { content: "Still streaming." } }] }),
+        "data: [DONE]\n\n",
+      ])) as typeof fetch;
+
+    const chunks: string[] = [];
+    for await (const text of streamAgentChat({
+      backendUrl: "https://api.test",
+      getToken: () => "tok",
+      messages: [{ role: "user", content: "last meeting?" }],
+      onDelegationError: () => {
+        calls += 1;
+        throw new Error("listener failed");
+      },
+    })) {
+      chunks.push(text);
+    }
+
+    expect(calls).toBe(1);
+    expect(chunks).toEqual(["Still streaming."]);
+  });
+
   it("swallows a throwing onUsage listener without breaking the stream", async () => {
     const chunks: string[] = [];
     globalThis.fetch = (async () =>

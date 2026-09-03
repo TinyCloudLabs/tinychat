@@ -227,6 +227,11 @@ function toolActivityFrame(name: string, status: "running" | "done" | "error"): 
   return `data: ${JSON.stringify({ choices: [{ delta: {} }], tool_activity: { name, status } })}\n\n`;
 }
 
+/** Tell the browser that private-agent access needs an interactive re-grant. */
+function delegationErrorFrame(code: string): string {
+  return `data: ${JSON.stringify({ choices: [{ delta: {} }], delegation_error: { code } })}\n\n`;
+}
+
 /** Emit the final answer round's completion id before the usage frame and [DONE]. */
 export function idFrame(id: string): string {
   return `data: ${JSON.stringify({ id })}\n\n`;
@@ -583,6 +588,12 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
           outcome = { status: "error", text: `(tool ${call.name} unreachable)` };
         }
         write(toolActivityFrame(call.name, outcome.status));
+        if (outcome.code && DELEGATION_ERROR_CODES.has(outcome.code)) {
+          // The response is already streaming, so this cannot become an HTTP
+          // status. Preserve it as a typed SSE frame instead of leaving the UI
+          // to infer expiry from the model's natural-language apology.
+          write(delegationErrorFrame(outcome.code));
+        }
         convo.push({ role: "tool", tool_call_id: call.id, content: outcome.text });
       }
       continue; // loop for the model's answer using the tool results

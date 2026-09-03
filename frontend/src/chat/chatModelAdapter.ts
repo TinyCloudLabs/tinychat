@@ -14,7 +14,7 @@ import {
   type ChatMessage,
   type UsageInfo,
 } from "../lib/chatApi";
-import { streamAgentChat } from "../lib/agentChatApi";
+import { streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
 import {
   clearToolActivity,
   setToolActivity,
@@ -119,6 +119,8 @@ export interface AdapterDeps {
   modelRef: React.MutableRefObject<string>;
   activeThreadIdRef: React.MutableRefObject<string | null>;
   agentEnabledRef: React.MutableRefObject<boolean>;
+  /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
+  onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /**
    * Live ref to the currently-offered model ids (from the loaded /models list).
    * Read at request time so the outgoing model is sanitized against the offered
@@ -428,6 +430,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
               abortSignal,
               onUsage,
               onCompletionId,
+              onDelegationError: deps.onAgentDelegationError,
               onToolActivity: unstable_assistantMessageId
                 ? (a) => setToolActivity(unstable_assistantMessageId, a)
                 : undefined,

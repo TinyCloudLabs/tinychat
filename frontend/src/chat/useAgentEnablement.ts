@@ -1,4 +1,4 @@
-// Agent enablement hook — capability probe + one-time "Enable agent memory & tools" affordance.
+// Agent enablement hook — capability probe plus enable/reconnect affordance.
 //
 // C3: on post-sign-in mount, probes GET /api/agent/session to decide whether the
 // route exists and whether a session is already active. Writes agentEnabledRef so
@@ -8,7 +8,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { ensureAgentSession, mintAgentSessionViaFreshSignIn } from "../lib/agentDelegation";
+import {
+  clearAgentSessionCache,
+  ensureAgentSession,
+  mintAgentSessionViaFreshSignIn,
+  type AgentSessionStatus,
+} from "../lib/agentDelegation";
+import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import type React from "react";
 
 export type AgentCapability = "probing" | "unavailable" | "available" | "enabled";
@@ -22,6 +28,10 @@ export interface UseAgentEnablementResult {
   enabling: boolean;
   /** Trigger the interactive ensureAgentSession mint + courier. */
   onEnable: () => Promise<void>;
+  /** Non-null when access failed during a tool call or the status probe. */
+  reconnectReason: AgentDelegationErrorCode | "delegation_stale" | null;
+  /** Marks the live session unusable so the banner offers an immediate re-grant. */
+  onDelegationError: (code: AgentDelegationErrorCode) => void;
   /** True briefly when the probe found an already-active session (auto-dismiss). */
   silentlyEnabled: boolean;
 }
@@ -54,6 +64,19 @@ export async function probeAgentCapability(
   backendUrl: string,
   token: string,
 ): Promise<AgentCapability> {
+  return (await probeAgentSession(backendUrl, token)).capability;
+}
+
+export interface AgentSessionProbe {
+  capability: AgentCapability;
+  status: AgentSessionStatus | null;
+}
+
+/** Probe both feature availability and the reason an existing grant is unusable. */
+export async function probeAgentSession(
+  backendUrl: string,
+  token: string,
+): Promise<AgentSessionProbe> {
   try {
     const res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/session`, {
       method: "GET",
@@ -65,17 +88,24 @@ export async function probeAgentCapability(
     if (!res.ok) {
       // 401 → route exists but token is stale; show the affordance so the
       // enable flow can re-authenticate. Any other non-2xx → route absent.
-      return res.status === 401 ? "available" : "unavailable";
+      return {
+        capability: res.status === 401 ? "available" : "unavailable",
+        status: null,
+      };
     }
     const body = (await res.json()) as { status?: string };
-    return body.status === "active" ? "enabled" : "available";
+    const status: AgentSessionStatus =
+      body.status === "active" || body.status === "expired" || body.status === "stale"
+        ? body.status
+        : "none";
+    return { capability: status === "active" ? "enabled" : "available", status };
   } catch {
-    return "unavailable";
+    return { capability: "unavailable", status: null };
   }
 }
 
 /**
- * Capability probe + one-time enablement for the agent (tool-calling) path.
+ * Capability probe, first-time enablement, and renewal for the agent path.
  *
  * On mount:
  *   GET /api/agent/session
@@ -95,6 +125,9 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
   const [enableError, setEnableError] = useState<string | null>(null);
   const [enabling, setEnabling] = useState(false);
   const [silentlyEnabled, setSilentlyEnabled] = useState(false);
+  const [reconnectReason, setReconnectReason] = useState<
+    AgentDelegationErrorCode | "delegation_stale" | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,14 +139,21 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
     }
 
     (async () => {
-      const result = await probeAgentCapability(backendUrl, token);
+      const result = await probeAgentSession(backendUrl, token);
       if (cancelled) return;
-      if (result === "enabled") {
+      if (result.capability === "enabled") {
         agentEnabledRef.current = true;
         setSilentlyEnabled(true);
         timer = setTimeout(() => setSilentlyEnabled(false), 5000);
       }
-      setCapability(result);
+      setReconnectReason(
+        result.status === "expired"
+          ? "delegation_expired"
+          : result.status === "stale"
+            ? "delegation_stale"
+            : null,
+      );
+      setCapability(result.capability);
     })();
 
     return () => {
@@ -124,6 +164,15 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
   // agentEnabledRef is a stable ref — omitting from deps is intentional.
   }, [backendUrl, sessionStore]);
 
+  const onDelegationError = useCallback((code: AgentDelegationErrorCode) => {
+    // ensureAgentSession's per-address cache may still say "active" after the
+    // remote grant expires. Invalidate it as soon as a tool reports the truth.
+    clearAgentSessionCache();
+    setSilentlyEnabled(false);
+    setReconnectReason(code);
+    setCapability("available");
+  }, []);
+
   const onEnable = useCallback(async () => {
     setEnableError(null);
     setEnabling(true);
@@ -133,6 +182,10 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
         backendUrl,
         getToken: () => sessionStore.getToken(),
         roomId: activeThreadIdRef.current ?? undefined,
+        // The user clicked an explicit authorization action after a completed
+        // status probe. Always re-mint: this is both correct for expiry and
+        // avoids a stale "active" cache turning Reconnect into a no-op.
+        force: true,
         // Mint via an isolated sign-in with the exact agent consent manifest so
         // create() issues a session-key UCAN JWT the agent accepts — not the app
         // session's wallet CACAO. See mintAgentSessionViaFreshSignIn.
@@ -141,23 +194,34 @@ export function useAgentEnablement(opts: UseAgentEnablementOptions): UseAgentEna
       });
       if (status === "active") {
         agentEnabledRef.current = true;
+        setReconnectReason(null);
         setCapability("enabled");
       }
     } catch (err) {
       console.warn("[agent] enablement failed:", err instanceof Error ? err.message : err);
       let msg: string;
       if (err instanceof DOMException && err.name === "NotAllowedError") {
-        msg = "Passkey sign was cancelled — tap Enable to try again.";
+        msg = `Passkey sign was cancelled — tap ${reconnectReason ? "Reconnect" : "Enable"} to try again.`;
       } else if (err instanceof TypeError) {
         msg = "Could not reach agent service. Please try again later.";
       } else {
-        msg = "Failed to enable agent tools. Please try again.";
+        msg = reconnectReason
+          ? "Failed to reconnect private agent access. Please try again."
+          : "Failed to enable agent tools. Please try again.";
       }
       setEnableError(msg);
     } finally {
       setEnabling(false);
     }
-  }, [tcw, backendUrl, sessionStore, agentEnabledRef, activeThreadIdRef, appName, openkeyHost, tinycloudHosts]);
+  }, [tcw, backendUrl, sessionStore, agentEnabledRef, activeThreadIdRef, appName, openkeyHost, tinycloudHosts, reconnectReason]);
 
-  return { capability, enableError, enabling, onEnable, silentlyEnabled };
+  return {
+    capability,
+    enableError,
+    enabling,
+    onEnable,
+    reconnectReason,
+    onDelegationError,
+    silentlyEnabled,
+  };
 }
