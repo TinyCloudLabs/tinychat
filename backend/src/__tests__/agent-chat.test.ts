@@ -812,6 +812,15 @@ describe("orchestrateToolCalling", () => {
       });
     }
 
+    function delegationErrorFrames(frames: string[]) {
+      return frames.flatMap((frame) => {
+        try {
+          const error = JSON.parse(frame.replace(/^data: /, "").trim())?.delegation_error;
+          return error ? [error as { code: string }] : [];
+        } catch { return []; }
+      });
+    }
+
     for (const code of ["delegation_required", "delegation_expired"]) {
       it(`reports ${code} as a tool error and forbids substituting another source`, async () => {
         const { fetchImpl, upstreamBodies } = transcriptTurn(409, { error: code });
@@ -829,6 +838,7 @@ describe("orchestrateToolCalling", () => {
           { name: "tinycloud_search_transcripts", status: "running" },
           { name: "tinycloud_search_transcripts", status: "error" },
         ]);
+        expect(delegationErrorFrames(frames)).toEqual([{ code }]);
 
         // And the model must be told, in the tool result, not to fall back.
         const toolMessage = (upstreamBodies[1] as { messages: Array<{ role: string; content: string }> })

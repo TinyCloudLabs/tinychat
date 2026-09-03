@@ -3,7 +3,7 @@
 // network error handling, and the 200+active→enabled / 200+other→available paths.
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { probeAgentCapability } from "./useAgentEnablement.js";
+import { probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -49,6 +49,19 @@ describe("probeAgentCapability", () => {
         headers: { "content-type": "application/json" },
       })) as typeof fetch;
     expect(await probeAgentCapability("https://api.test", "tok")).toBe("available");
+  });
+
+  it("preserves an expired status so the UI can offer Reconnect", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ status: "expired" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+
+    expect(await probeAgentSession("https://api.test", "tok")).toEqual({
+      capability: "available",
+      status: "expired",
+    });
   });
 
   it("strips trailing slash from backendUrl before calling /api/agent/session", async () => {

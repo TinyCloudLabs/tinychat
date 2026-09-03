@@ -142,6 +142,39 @@ describe("ensureAgentSession", () => {
     expect(mints).toBe(1);
   });
 
+  it("force re-mints even after the per-address cache recorded active", async () => {
+    let gets = 0;
+    let mints = 0;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      }
+      gets += 1;
+      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+    }) as typeof fetch;
+
+    const tcw = fakeTcw("0xSTALE_CACHE");
+    await ensureAgentSession({
+      tcw,
+      backendUrl: "https://api.test",
+      getToken: () => "tok",
+      _mint: async () => "unused",
+    });
+    await ensureAgentSession({
+      tcw,
+      backendUrl: "https://api.test",
+      getToken: () => "tok",
+      force: true,
+      _mint: async () => {
+        mints += 1;
+        return "renewed";
+      },
+    });
+
+    expect(gets).toBe(1);
+    expect(mints).toBe(1);
+  });
+
   it("throws without a token", async () => {
     await expect(
       ensureAgentSession({ tcw: fakeTcw(), backendUrl: "https://api.test", getToken: () => null }),

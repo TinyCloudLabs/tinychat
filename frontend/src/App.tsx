@@ -1196,6 +1196,27 @@ function ChatWorkspace(props: {
     [props.tcw, props.sessionStore],
   );
 
+  // C3: capability probe + affordance state. This must be created before the
+  // runtime deps so streamed delegation failures can drive the reconnect UI.
+  const {
+    capability,
+    enableError,
+    enabling,
+    onEnable,
+    reconnectReason,
+    onDelegationError,
+    silentlyEnabled,
+  } = useAgentEnablement({
+    backendUrl: BACKEND_URL,
+    sessionStore: props.sessionStore,
+    tcw: props.tcw,
+    agentEnabledRef,
+    activeThreadIdRef,
+    appName: APP_NAME,
+    openkeyHost: OPENKEY_HOST,
+    tinycloudHosts: props.tcw.hosts,
+  });
+
   const deps = useMemo(
     () => ({
       tcw: props.tcw,
@@ -1208,6 +1229,7 @@ function ChatWorkspace(props: {
       onMemoryUpdated: props.onMemoryUpdated,
       activeThreadIdRef,
       agentEnabledRef,
+      onAgentDelegationError: onDelegationError,
       meetingRetriever,
       meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
@@ -1266,6 +1288,7 @@ function ChatWorkspace(props: {
       props.onActiveThreadModel,
       props.onMemoryUpdated,
       props.contextTokensFor,
+      onDelegationError,
       meetingRetriever,
       meetingMessageRegistry,
       // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
@@ -1310,18 +1333,6 @@ function ChatWorkspace(props: {
     </Button>
   );
 
-  // C3: capability probe + affordance state.
-  const { capability, enableError, enabling, onEnable, silentlyEnabled } = useAgentEnablement({
-    backendUrl: BACKEND_URL,
-    sessionStore: props.sessionStore,
-    tcw: props.tcw,
-    agentEnabledRef,
-    activeThreadIdRef,
-    appName: APP_NAME,
-    openkeyHost: OPENKEY_HOST,
-    tinycloudHosts: props.tcw.hosts,
-  });
-
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="grid h-full grid-cols-1 md:grid-cols-[260px_1fr]">
@@ -1350,12 +1361,13 @@ function ChatWorkspace(props: {
           />
         </SheetContent>
       </Sheet>
-      {/* C3: one-time "Enable agent memory & tools" affordance (hidden when unavailable). */}
+      {/* C3: first-time enablement + expired-delegation reconnect affordance. */}
       <AgentEnablementBanner
         capability={capability}
         enableError={enableError}
         enabling={enabling}
         onEnable={onEnable}
+        reconnectReason={reconnectReason}
         silentlyEnabled={silentlyEnabled}
       />
     </AssistantRuntimeProvider>

@@ -62,6 +62,8 @@ export interface ToolActivity {
   status: "running" | "done" | "error";
 }
 
+export type AgentDelegationErrorCode = "delegation_required" | "delegation_expired";
+
 export interface StreamAgentChatOptions {
   backendUrl: string;
   getToken: () => string | null;
@@ -74,6 +76,8 @@ export interface StreamAgentChatOptions {
   abortSignal?: AbortSignal;
   /** Fired per tool_activity frame (e.g. to render "Searching the web…"). */
   onToolActivity?: (activity: ToolActivity) => void;
+  /** Fired when a private-data tool reports that its delegation needs renewal. */
+  onDelegationError?: (code: AgentDelegationErrorCode) => void;
   /**
    * Called once with the completion id from the first frame that carries one.
    * Byte-identical behaviour to chatApi.ts streamChat — guarded by idReported.
@@ -115,7 +119,18 @@ const CSRF_VALUE = "XMLHttpRequest";
 export async function* streamAgentChat(
   options: StreamAgentChatOptions,
 ): AsyncGenerator<string, void, unknown> {
-  const { backendUrl, getToken, model, messages, roomId, abortSignal, onToolActivity, onCompletionId, onUsage } = options;
+  const {
+    backendUrl,
+    getToken,
+    model,
+    messages,
+    roomId,
+    abortSignal,
+    onToolActivity,
+    onDelegationError,
+    onCompletionId,
+    onUsage,
+  } = options;
   const clientContext = options.clientContext ?? currentAgentClientContext();
 
   const token = getToken();
@@ -196,6 +211,17 @@ export async function* streamAgentChat(
             if (activity && onToolActivity && typeof activity.name === "string") {
               try {
                 onToolActivity({ name: activity.name, status: activity.status });
+              } catch {
+                // a listener throwing must not break the stream
+              }
+            }
+            const delegationCode = json?.delegation_error?.code;
+            if (
+              onDelegationError &&
+              (delegationCode === "delegation_required" || delegationCode === "delegation_expired")
+            ) {
+              try {
+                onDelegationError(delegationCode);
               } catch {
                 // a listener throwing must not break the stream
               }

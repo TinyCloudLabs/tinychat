@@ -13,6 +13,7 @@ import {
 import { createAssistantStream } from "assistant-stream";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
+import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import {
   completeChat,
@@ -147,6 +148,8 @@ export interface ChatRuntimeDeps {
    * Read by the adapter at request time to branch streamAgentChat vs streamChat.
    */
   agentEnabledRef: React.MutableRefObject<boolean>;
+  /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
+  onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /** One mounted, browser-only meeting retriever with ephemeral thread state. */
   meetingRetriever?: MeetingTurnRetriever;
   meetingMessageRegistry: MeetingMessageRegistry;
