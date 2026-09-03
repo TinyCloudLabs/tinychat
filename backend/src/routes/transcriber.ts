@@ -7,7 +7,25 @@ import {
   type TranscriptionMeeting,
 } from "../services/transcription-api.js";
 import type { TranscriberIndexStore } from "../services/transcriber-index.js";
+import type { TranscriberRecoveryConfig } from "../services/transcriber-recovery-config.js";
+import type { RecoveryRateLimiter } from "../rate-limits.js";
 import { redactedErrorMessage } from "../services/webhook-tokens.js";
+
+export interface TranscriberRecoveryLogEvent {
+  operation: "recover";
+  outcome: "started" | "already_active" | "already_completed" | "error";
+  statusClass: "2xx" | "4xx" | "5xx";
+  errorClass?:
+    | "invalid_request"
+    | "not_found"
+    | "conflict"
+    | "recording_absent"
+    | "rate_limited"
+    | "capability_unavailable"
+    | "configuration_unavailable"
+    | "upstream_unavailable";
+  correlation?: string;
+}
 
 /**
  * The TRANSCRIBER surface: send a bot to a meeting, watch it, read the transcript.
@@ -31,12 +49,32 @@ export interface TranscriberRouterOptions {
   index: TranscriberIndexStore;
   /** Bot display name when the caller does not give one. */
   defaultBotName?: string;
+  recovery?: Pick<TranscriberRecoveryConfig, "enabled" | "ready">;
+  recoveryLimiter?: RecoveryRateLimiter;
+  recoveryLogger?: (event: TranscriberRecoveryLogEvent) => void;
 }
 
 const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_URL_LENGTH = 2048;
 const MAX_BOT_NAME_LENGTH = 64;
 const LIST_CONCURRENCY = 8;
+const RECOVERY_ACTION_KEY = /^[\x21-\x7e]{1,128}$/;
+const TRANSCRIBER_CONTRACT_HEADER = "space-save-v2";
+
+export function shouldBypassGlobalJsonParserForTranscriberRecovery(method: string, path: string): boolean {
+  return method === "POST" && /^\/api\/transcriber\/meetings\/[^/]+\/recover\/?$/i.test(path);
+}
+
+function defaultRecoveryLogger(event: TranscriberRecoveryLogEvent): void {
+  const fields = [
+    `op=${event.operation}`,
+    `outcome=${event.outcome}`,
+    `status_class=${event.statusClass}`,
+    ...(event.errorClass === undefined ? [] : [`error_class=${event.errorClass}`]),
+    ...(event.correlation === undefined ? [] : [`correlation=${event.correlation}`]),
+  ];
+  console.log(`[transcriber-recovery] ${fields.join(" ")}`);
+}
 
 export function isValidMeetingUrl(raw: unknown): raw is string {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_URL_LENGTH) return false;
@@ -52,6 +90,9 @@ export function isValidMeetingUrl(raw: unknown): raw is string {
 export function createTranscriberRouter(options: TranscriberRouterOptions): Router {
   const { api, index } = options;
   const defaultBotName = options.defaultBotName ?? "TinyCloud Private Notetaker";
+  const recovery = options.recovery ?? { enabled: false, ready: false };
+  const recoveryLimiter = options.recoveryLimiter;
+  const recoveryLogger = options.recoveryLogger ?? defaultRecoveryLogger;
   const router = Router();
 
   function addressOf(req: Request, res: Response): string | null {
@@ -83,6 +124,31 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     }
     console.warn(`[transcriber] ${what} failed err=${redactedErrorMessage(error)}`);
     res.status(503).json({ error: "transcriber_unavailable" });
+  }
+
+  function recoveryFailure(res: Response, error: unknown): TranscriberRecoveryLogEvent["errorClass"] {
+    if (error instanceof TranscriptionApiError
+      && [400, 404, 409, 410, 429].includes(error.status)
+      && error.code !== null) {
+      if (error.status === 429 && error.retryAfterSeconds !== null) {
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+      }
+      res.status(error.status).json({ error: error.code });
+      if (error.status === 400) return "invalid_request";
+      if (error.status === 404) return "not_found";
+      if (error.status === 409) return "conflict";
+      if (error.status === 410) return "recording_absent";
+      return "rate_limited";
+    }
+    res.status(503).json({ error: "transcriber_recovery_unavailable" });
+    return "upstream_unavailable";
+  }
+
+  function requestCarriesBody(req: Request): boolean {
+    const contentLength = req.get("Content-Length");
+    return req.get("Content-Type") !== undefined
+      || req.get("Transfer-Encoding") !== undefined
+      || (contentLength !== undefined && contentLength !== "0");
   }
 
   async function owned(req: Request, res: Response): Promise<{ address: string; id: string } | null> {
@@ -174,8 +240,6 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         meeting_url: body.meeting_url,
         bot_name: botName,
         ...(language ? { language } : {}),
-        // Opaque, echoed back on every read; lets an operator attribute a meeting to a tenant.
-        metadata: { tinychat_address: address },
       });
     } catch (error) {
       upstreamFailure(res, error, "create");
@@ -223,6 +287,74 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
     }
   });
 
+  router.post("/:id/recover", async (req, res) => {
+    const own = await owned(req, res);
+    if (own === null) return;
+
+    const idempotencyKey = req.get("Idempotency-Key");
+    if (idempotencyKey === undefined || !RECOVERY_ACTION_KEY.test(idempotencyKey)
+      || requestCarriesBody(req)) {
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    if (!recovery.enabled || !recovery.ready || recoveryLimiter === undefined) {
+      recoveryLogger({
+        operation: "recover",
+        outcome: "error",
+        statusClass: "5xx",
+        errorClass: "configuration_unavailable",
+      });
+      res.status(503).json({ error: "transcriber_recovery_unavailable" });
+      return;
+    }
+    const limit = recoveryLimiter.consume(own.address);
+    if (!limit.allowed) {
+      if (limit.retryAfterSeconds !== null) {
+        res.setHeader("Retry-After", String(limit.retryAfterSeconds));
+      }
+      recoveryLogger({
+        operation: "recover",
+        outcome: "error",
+        statusClass: "4xx",
+        errorClass: "rate_limited",
+        correlation: limit.correlation,
+      });
+      res.status(429).json({ error: "recovery_rate_limited" });
+      return;
+    }
+    try {
+      const capability = await api.getCapabilities();
+      if (!capability.available) {
+        recoveryLogger({
+          operation: "recover",
+          outcome: "error",
+          statusClass: "5xx",
+          errorClass: "capability_unavailable",
+          correlation: limit.correlation,
+        });
+        res.status(503).json({ error: "transcriber_recovery_unavailable" });
+        return;
+      }
+      const result = await api.recoverMeeting(own.id, idempotencyKey);
+      recoveryLogger({
+        operation: "recover",
+        outcome: result.recovery.disposition,
+        statusClass: "2xx",
+        correlation: limit.correlation,
+      });
+      res.status(result.httpStatus).json({ status: result.status, recovery: result.recovery });
+    } catch (error) {
+      const errorClass = recoveryFailure(res, error);
+      recoveryLogger({
+        operation: "recover",
+        outcome: "error",
+        statusClass: error instanceof TranscriptionApiError && error.status < 500 ? "4xx" : "5xx",
+        errorClass,
+        correlation: limit.correlation,
+      });
+    }
+  });
+
   router.get("/:id/transcript", async (req, res) => {
     const own = await owned(req, res);
     if (own === null) return;
@@ -231,6 +363,27 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       if (result.pending) {
         res.status(202).json({ meeting_id: own.id, status: result.status });
         return;
+      }
+      const meeting = await api.getMeeting(own.id);
+      if (meeting.recovery === undefined || meeting.transcript_revision === undefined) {
+        res.status(503).json({ error: "transcriber_unavailable" });
+        return;
+      }
+      const meetingRevision = meeting.transcript_revision;
+      const transcriptRevision = result.transcript.transcript_revision;
+      const unrecovered = meetingRevision === 0
+        && (transcriptRevision === undefined || transcriptRevision === 0);
+      if (!unrecovered) {
+        if (req.get("X-TinyChat-Transcriber-Contract") !== TRANSCRIBER_CONTRACT_HEADER) {
+          res.status(409).json({ error: "client_upgrade_required" });
+          return;
+        }
+        if (!Number.isSafeInteger(meetingRevision) || (meetingRevision ?? 0) <= 0
+          || !Number.isSafeInteger(transcriptRevision) || (transcriptRevision ?? 0) <= 0
+          || meetingRevision !== transcriptRevision) {
+          res.status(503).json({ error: "transcriber_unavailable" });
+          return;
+        }
       }
       res.json(result.transcript);
     } catch (error) {

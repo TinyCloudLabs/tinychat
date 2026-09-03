@@ -130,10 +130,155 @@ describe("TinyChat OpenAPI spec", () => {
       "expiry",
       "permissions",
       "policyHash",
+      "provenance",
+      "transcriber_recovery",
     ]);
     expect(schemas.ServerInfo.properties.policyHash).toEqual({
       type: "string",
       pattern: "^[a-f0-9]{64}$",
+    });
+    expect(schemas.ServerInfo.properties.provenance).toEqual({
+      $ref: "#/components/schemas/BackendProvenance",
+    });
+    expect(schemas.ServerInfo.properties.transcriber_recovery).toEqual({
+      $ref: "#/components/schemas/TranscriberRecoveryVisibility",
+    });
+  });
+
+  test("pins the bodyless owner recovery contract and bounded response taxonomy", () => {
+    const operation = paths()["/api/transcriber/meetings/{id}/recover"]?.post as any;
+    expect(operation).toBeTruthy();
+    expect(operation?.security).toEqual([{ bearerAuth: [] }]);
+    expect(operation?.requestBody).toBeUndefined();
+    expect(operation?.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" },
+      }),
+      expect.objectContaining({
+        name: "Idempotency-Key",
+        in: "header",
+        required: true,
+        schema: { type: "string", pattern: "^[\\x21-\\x7e]{1,128}$" },
+      }),
+      expect.objectContaining({
+        name: "X-Requested-With",
+        in: "header",
+        required: true,
+        schema: { type: "string", const: "XMLHttpRequest" },
+      }),
+    ]));
+    expect(Object.keys(operation?.responses ?? {}).sort()).toEqual([
+      "200", "202", "400", "401", "403", "404", "409", "410", "429", "503",
+    ]);
+    expect(operation?.responses["200"].content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/TranscriberRecoveryResponse",
+    });
+    expect(operation?.responses["202"].content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/TranscriberRecoveryResponse",
+    });
+    expect(operation?.responses["429"].headers["Retry-After"].schema).toEqual({
+      type: "integer",
+      minimum: 1,
+      maximum: 86400,
+    });
+
+    const schemas = components().schemas as Record<string, Record<string, any>>;
+    expect(schemas.TranscriberCsrfError).toMatchObject({
+      additionalProperties: false,
+      required: ["error", "message"],
+      properties: {
+        error: { type: "string", const: "csrf_rejected" },
+        message: { type: "string", const: "Missing or invalid X-Requested-With header" },
+      },
+    });
+    expect(schemas.TranscriberRecoveryResponse.required).toEqual(["status", "recovery"]);
+    expect(schemas.TranscriberRecoveryResponse.properties).toEqual({
+      status: {
+        type: "string",
+        enum: ["processing", "completed", "failed", "cancelled"],
+      },
+      recovery: { $ref: "#/components/schemas/TranscriberRecoveryResult" },
+    });
+    expect(schemas.TranscriberRecoveryError.properties.error.enum).toEqual([
+      "invalid_request",
+      "not_found",
+      "idempotency_conflict",
+      "recovery_ineligible",
+      "provider_rejected",
+      "recording_undecodable",
+      "recording_silent",
+      "attestation_failed",
+      "coverage_incomplete",
+      "cancelled",
+      "recording_absent",
+      "recovery_cooldown",
+      "budget_exhausted",
+      "recovery_rate_limited",
+      "transcriber_recovery_unavailable",
+    ]);
+    const recoverySchemaText = JSON.stringify({
+      result: schemas.TranscriberRecoveryResult,
+      response: schemas.TranscriberRecoveryResponse,
+      error: schemas.TranscriberRecoveryError,
+    });
+    expect(recoverySchemaText).not.toMatch(/operation.?id|project.?id|credential|economics|attempt|"kind"|message/i);
+  });
+
+  test("documents recovery meeting fields and the conditional stale-client transcript fence", () => {
+    const schemas = components().schemas as Record<string, Record<string, any>>;
+    expect(schemas.TranscriberMeeting.properties.recovery).toEqual({
+      $ref: "#/components/schemas/TranscriberMeetingRecovery",
+    });
+    expect(schemas.TranscriberMeetingRecovery.properties.code).toEqual({
+      type: ["string", "null"],
+      enum: [
+        "provider_timeout",
+        "provider_unavailable",
+        "finalizer_interrupted",
+        "recording_fetch_transient",
+        "operation_deadline_exceeded",
+        "recording_absent",
+        "recording_undecodable",
+        "recording_silent",
+        "provider_rejected",
+        "attestation_failed",
+        "coverage_incomplete",
+        "budget_exhausted",
+        "persistence_failed",
+        "cancelled",
+        "deleted",
+        "validation_failed",
+        "authentication_failed",
+        null,
+      ],
+    });
+    expect(schemas.TranscriberMeeting.properties.transcript_revision).toMatchObject({
+      type: "integer",
+      minimum: 0,
+    });
+    expect(schemas.TranscriberTranscript.properties.transcript_revision).toMatchObject({
+      type: "integer",
+      minimum: 0,
+    });
+
+    const transcript = paths()["/api/transcriber/meetings/{id}/transcript"].get as any;
+    expect(transcript.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "X-TinyChat-Transcriber-Contract",
+        in: "header",
+        required: false,
+        schema: { type: "string", const: "space-save-v2" },
+      }),
+    ]));
+    expect(transcript.responses["409"].content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/TranscriberClientUpgradeError",
+    });
+    expect(schemas.TranscriberClientUpgradeError.properties.error).toEqual({
+      type: "string",
+      const: "client_upgrade_required",
     });
   });
 

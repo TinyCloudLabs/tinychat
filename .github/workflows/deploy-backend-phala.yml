@@ -171,7 +171,7 @@ jobs:
 
       - name: Pin deployed image tag
         run: |
-          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${GITHUB_SHA}|g" docker-compose.phala.yml
+          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}@${{ steps.build.outputs.digest }}|g" docker-compose.phala.yml
           sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${GITHUB_SHA}|g" docker-compose.phala.yml
 
       - name: Install Phala CLI
@@ -368,6 +368,18 @@ jobs:
           TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
           TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
           TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+          # Manual recovery ships dark. Bounds/version are public repo variables; the HMAC
+          # key is a dedicated secret and must not be the transcription provider credential.
+          TRANSCRIBER_RECOVERY_ENABLED: ${{ vars.TRANSCRIBER_RECOVERY_ENABLED || 'false' }}
+          TRANSCRIBER_RECOVERY_CONTRACT_VERSION: ${{ vars.TRANSCRIBER_RECOVERY_CONTRACT_VERSION }}
+          TRANSCRIBER_RECOVERY_CAPABILITY_CACHE_MS: ${{ vars.TRANSCRIBER_RECOVERY_CAPABILITY_CACHE_MS }}
+          TRANSCRIBER_RECOVERY_UPSTREAM_LEASE_MS: ${{ vars.TRANSCRIBER_RECOVERY_UPSTREAM_LEASE_MS }}
+          TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX: ${{ vars.TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX }}
+          TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS: ${{ vars.TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS }}
+          TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: ${{ secrets.TRANSCRIBER_RECOVERY_PSEUDONYM_KEY }}
+          # Immutable backend provenance comes from this run's build, not operator text.
+          TINYCHAT_BUILD_SHA: ${{ github.sha }}
+          TINYCHAT_BACKEND_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -383,9 +395,10 @@ jobs:
             printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
             printf '%s\n' "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"
             printf '%s\n' "CERTBOT_EMAIL=$CERTBOT_EMAIL"
-            printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${GITHUB_SHA}"
+            printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}@${TINYCHAT_BACKEND_IMAGE_DIGEST}"
             printf '%s\n' "TINYCHAT_INGRESS_IMAGE=${INGRESS_IMAGE}:ingress-$GITHUB_SHA"
-            printf '%s\n' "TINYCHAT_BUILD_SHA=$GITHUB_SHA"
+            printf '%s\n' "TINYCHAT_BUILD_SHA=$TINYCHAT_BUILD_SHA"
+            printf '%s\n' "TINYCHAT_BACKEND_IMAGE_DIGEST=$TINYCHAT_BACKEND_IMAGE_DIGEST"
             printf '%s\n' "TINYCHAT_DEPLOY_RUN_URL=$DEPLOY_RUN_URL"
             printf '%s\n' "PORT=3001"
             printf '%s\n' "PHALA_INGRESS_DOMAIN=$PHALA_INGRESS_DOMAIN"
@@ -427,6 +440,13 @@ jobs:
             printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
             printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
             printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_ENABLED=${TRANSCRIBER_RECOVERY_ENABLED:-false}"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_CONTRACT_VERSION=$TRANSCRIBER_RECOVERY_CONTRACT_VERSION"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_CAPABILITY_CACHE_MS=$TRANSCRIBER_RECOVERY_CAPABILITY_CACHE_MS"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_UPSTREAM_LEASE_MS=$TRANSCRIBER_RECOVERY_UPSTREAM_LEASE_MS"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX=$TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS=$TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS"
+            printf '%s\n' "TRANSCRIBER_RECOVERY_PSEUDONYM_KEY=$TRANSCRIBER_RECOVERY_PSEUDONYM_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

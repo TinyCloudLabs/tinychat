@@ -6,6 +6,8 @@ import {
   GOOGLE_OAUTH_LIMIT,
   GOOGLE_OAUTH_PATHS,
 } from "../rate-limits.js";
+import * as rateLimits from "../rate-limits.js";
+import { transcriberRecoveryConfigFromEnv } from "../services/transcriber-recovery-config.js";
 
 const realFetch = globalThis.fetch;
 
@@ -152,3 +154,93 @@ describe("google oauth rate limit bucket (WP-A)", () => {
     });
   });
 });
+
+describe("recovery-only HMAC limiter (C3)", () => {
+  function recoveryExports() {
+    expect(typeof (rateLimits as any).recoveryPseudonym).toBe("function");
+    expect(typeof (rateLimits as any).createRecoveryRateLimiter).toBe("function");
+    return rateLimits as typeof rateLimits & {
+      recoveryPseudonym(address: string, key: string): string;
+      createRecoveryRateLimiter(options: {
+        key: string;
+        limit: number;
+        windowMs: number;
+        now: () => number;
+      }): {
+        consume(address: string): {
+          allowed: boolean;
+          correlation: string;
+          retryAfterSeconds: number | null;
+        };
+      };
+    };
+  }
+
+  it("normalizes addresses and produces a bounded keyed pseudonym with no raw value", () => {
+    const { recoveryPseudonym } = recoveryExports();
+    const key = "correct-horse-battery-staple-key-material";
+    const lower = recoveryPseudonym(ADDRESS_FOR_LIMITER.toLowerCase(), key);
+    const mixed = recoveryPseudonym(ADDRESS_FOR_LIMITER, key);
+    expect(mixed).toBe(lower);
+    expect(mixed).toMatch(/^[0-9a-f]{32}$/);
+    expect(mixed).not.toContain(ADDRESS_FOR_LIMITER.toLowerCase());
+    expect(recoveryPseudonym(ADDRESS_FOR_LIMITER, `${key}-different`)).not.toBe(mixed);
+  });
+
+  it("shares the window across address casing, isolates another address, and resets by clock", () => {
+    const { createRecoveryRateLimiter } = recoveryExports();
+    let now = 1_000;
+    const limiter = createRecoveryRateLimiter({
+      key: "correct-horse-battery-staple-key-material",
+      limit: 2,
+      windowMs: 1_000,
+      now: () => now,
+    });
+    expect(limiter.consume(ADDRESS_FOR_LIMITER).allowed).toBe(true);
+    expect(limiter.consume(ADDRESS_FOR_LIMITER.toLowerCase()).allowed).toBe(true);
+    expect(limiter.consume(ADDRESS_FOR_LIMITER).allowed).toBe(false);
+    expect(limiter.consume(ADDRESS_FOR_LIMITER).retryAfterSeconds).toBe(1);
+    expect(limiter.consume("0xBBBBbbbbBBBBbbbbBBBBbbbbBBBBbbbbBBBBbbbb").allowed).toBe(true);
+    now += 1_001;
+    expect(limiter.consume(ADDRESS_FOR_LIMITER).allowed).toBe(true);
+  });
+
+  it("keeps enabled recovery unready for weak, placeholder, reused, or invalid limiter config", () => {
+    const base = {
+      TRANSCRIBER_RECOVERY_ENABLED: "true",
+      TRANSCRIBER_RECOVERY_CONTRACT_VERSION: "space-save-v2",
+      TRANSCRIBER_RECOVERY_CAPABILITY_CACHE_MS: "1000",
+      TRANSCRIBER_RECOVERY_UPSTREAM_LEASE_MS: "5000",
+      TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX: "2",
+      TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS: "60000",
+      TINYCHAT_BUILD_SHA: "a".repeat(40),
+      TINYCHAT_BACKEND_IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
+    };
+    for (const patch of [
+      {},
+      { TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: "short" },
+      { TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: "x".repeat(32) },
+      { TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: "correct-horse-battery-staple-key-material", TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX: "0" },
+      { TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: "correct-horse-battery-staple-key-material", TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS: "-1" },
+    ]) {
+      expect(transcriberRecoveryConfigFromEnv({ ...base, ...patch })).toMatchObject({ ready: false });
+    }
+    const reused = "correct-horse-battery-staple-key-material";
+    expect(transcriberRecoveryConfigFromEnv({
+      ...base,
+      TRANSCRIPTION_API_KEY: reused,
+      TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: reused,
+    })).toMatchObject({ ready: false, pseudonymKey: null });
+    expect(transcriberRecoveryConfigFromEnv({
+      ...base,
+      TRANSCRIPTION_API_KEY: `  ${reused}  `,
+      TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: reused,
+    })).toMatchObject({ ready: false, pseudonymKey: null });
+    expect(transcriberRecoveryConfigFromEnv({
+      ...base,
+      TRANSCRIBER_RECOVERY_PSEUDONYM_KEY: reused,
+    })).toMatchObject({ enabled: true, ready: true, pseudonymKey: reused });
+  });
+});
+
+const ADDRESS_FOR_LIMITER = "0xAaaaAAAAaaaaAAAAaaaaAAAAaaaaAAAAaaaaAAAA";

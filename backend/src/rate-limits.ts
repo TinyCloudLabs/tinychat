@@ -13,6 +13,7 @@
  */
 import rateLimit from "express-rate-limit";
 import type { Express } from "express";
+import { createHmac } from "node:crypto";
 
 const WINDOW_MS = 15 * 60 * 1000;
 export const GLOBAL_LIMIT = 120;
@@ -83,6 +84,67 @@ export const GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"] as const;
  */
 export const TRANSCRIBER_LIMIT = 600;
 export const TRANSCRIBER_PATHS = ["/api/transcriber"] as const;
+
+export interface RecoveryLimitResult {
+  allowed: boolean;
+  correlation: string;
+  retryAfterSeconds: number | null;
+}
+
+export interface RecoveryRateLimiter {
+  consume(normalizedAddress: string): RecoveryLimitResult;
+}
+
+export function isStrongRecoveryPseudonymKey(value: unknown): value is string {
+  if (typeof value !== "string" || value !== value.trim()
+    || Buffer.byteLength(value, "utf8") < 32 || value.length > 256) return false;
+  const lowered = value.toLowerCase();
+  if (["secret", "password", "changeme", "placeholder", "example", "test"].some((part) => lowered.includes(part))) {
+    return false;
+  }
+  return !/^(.)\1*$/.test(value);
+}
+
+export function recoveryPseudonym(address: string, key: string): string {
+  if (!isStrongRecoveryPseudonymKey(key)) throw new TypeError("invalid recovery pseudonym key");
+  return createHmac("sha256", key).update(address.trim().toLowerCase()).digest("hex").slice(0, 32);
+}
+
+export function createRecoveryRateLimiter(options: {
+  key: string;
+  limit: number;
+  windowMs: number;
+  now?: () => number;
+}): RecoveryRateLimiter {
+  if (!isStrongRecoveryPseudonymKey(options.key)
+    || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 1_000
+    || !Number.isSafeInteger(options.windowMs) || options.windowMs < 1_000
+    || options.windowMs > 86_400_000) {
+    throw new TypeError("invalid recovery limiter configuration");
+  }
+  const now = options.now ?? Date.now;
+  const windows = new Map<string, { count: number; resetAt: number }>();
+  return {
+    consume(address) {
+      const correlation = recoveryPseudonym(address, options.key);
+      const currentTime = now();
+      let window = windows.get(correlation);
+      if (window === undefined || currentTime >= window.resetAt) {
+        window = { count: 0, resetAt: currentTime + options.windowMs };
+        windows.set(correlation, window);
+      }
+      if (window.count >= options.limit) {
+        return {
+          allowed: false,
+          correlation,
+          retryAfterSeconds: Math.max(1, Math.ceil((window.resetAt - currentTime) / 1_000)),
+        };
+      }
+      window.count++;
+      return { allowed: true, correlation, retryAfterSeconds: null };
+    },
+  };
+}
 
 const DEDICATED_PATHS = [
   ...VERIFICATION_PATHS,

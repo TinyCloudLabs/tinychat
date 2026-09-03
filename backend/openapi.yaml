@@ -1441,6 +1441,104 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
+  /api/transcriber/meetings/{id}/recover:
+    post:
+      operationId: recoverTranscriberMeeting
+      summary: Manually retry a failed meeting for its signed-in owner
+      description: >-
+        Bodyless, manual-only recovery. Authentication, global CSRF, and the private
+        owner index are checked before request validation. The caller must reuse the
+        same action key after an ambiguous response; TinyChat forwards it unchanged
+        and never chooses a recovery kind or project. The route ships disabled and
+        fails closed unless its local config and the exact upstream capability agree.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,64}$"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Visible ASCII action key reused unchanged after an ambiguous response.
+          schema:
+            type: string
+            pattern: '^[\x21-\x7e]{1,128}$'
+        - name: X-Requested-With
+          in: header
+          required: true
+          description: Required by the global CSRF middleware.
+          schema:
+            type: string
+            const: XMLHttpRequest
+      responses:
+        "200":
+          description: The same action already converged to active or completed recovery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryResponse"
+        "202":
+          description: Recovery was accepted and started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryResponse"
+        "400":
+          description: The bodyless request or action key is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Global CSRF validation rejected the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberCsrfError"
+        "404":
+          description: No such meeting exists in the signed-in owner's private index.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryError"
+        "409":
+          description: Recovery is ineligible or conflicts with the supplied action key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryError"
+        "410":
+          description: The retained recording is absent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryError"
+        "429":
+          description: Local recovery limit, upstream cooldown, or upstream budget exhausted.
+          headers:
+            Retry-After:
+              description: Bounded whole seconds; omitted when no validated delay is available.
+              schema:
+                type: integer
+                minimum: 1
+                maximum: 86400
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryError"
+        "503":
+          description: Recovery config, capability, credentials, or upstream is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberRecoveryError"
+
   /api/transcriber/meetings/{id}/transcript:
     get:
       operationId: getTranscriberTranscript
@@ -1453,6 +1551,15 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-TinyChat-Transcriber-Contract
+          in: header
+          required: false
+          description: >-
+            Required with value space-save-v2 only to read a recovery-produced
+            transcript. Legacy initial transcripts remain readable without it.
+          schema:
+            type: string
+            const: space-save-v2
       responses:
         "200":
           description: The transcript
@@ -1476,6 +1583,12 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/TranscriberNotFound"
+        "409":
+          description: A recovery-produced transcript requires the current client contract.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriberClientUpgradeError"
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
@@ -1524,6 +1637,11 @@ components:
           type: [string, "null"]
         ended_at:
           type: [string, "null"]
+        recovery:
+          $ref: "#/components/schemas/TranscriberMeetingRecovery"
+        transcript_revision:
+          type: integer
+          minimum: 0
         error:
           type: [object, "null"]
           properties:
@@ -1533,6 +1651,47 @@ components:
               type: string
             message:
               type: string
+    TranscriberMeetingRecovery:
+      type: object
+      additionalProperties: false
+      required: [eligible, code, phase, next_eligible_at, manual_remaining, automatic_enabled]
+      properties:
+        eligible:
+          type: boolean
+        code:
+          type: [string, "null"]
+          enum:
+            - provider_timeout
+            - provider_unavailable
+            - finalizer_interrupted
+            - recording_fetch_transient
+            - operation_deadline_exceeded
+            - recording_absent
+            - recording_undecodable
+            - recording_silent
+            - provider_rejected
+            - attestation_failed
+            - coverage_incomplete
+            - budget_exhausted
+            - persistence_failed
+            - cancelled
+            - deleted
+            - validation_failed
+            - authentication_failed
+            - null
+        phase:
+          oneOf:
+            - $ref: "#/components/schemas/TranscriberRecoveryPhase"
+            - type: "null"
+        next_eligible_at:
+          type: [string, "null"]
+          format: date-time
+        manual_remaining:
+          type: [integer, "null"]
+          minimum: 0
+        automatic_enabled:
+          type: boolean
+          const: false
     TranscriberUnavailableMeeting:
       type: object
       required: [id, unavailable]
@@ -1583,6 +1742,79 @@ components:
                 type: string
         text:
           type: string
+        transcript_revision:
+          type: integer
+          minimum: 0
+    TranscriberRecoveryPhase:
+      type: string
+      enum: [queued, preflighting, chunking, transcribing, delayed, publishing, completed, failed, disabled]
+    TranscriberRecoveryResult:
+      type: object
+      additionalProperties: false
+      required: [disposition, phase, next_eligible_at]
+      properties:
+        disposition:
+          type: string
+          enum: [started, already_active, already_completed]
+        phase:
+          oneOf:
+            - $ref: "#/components/schemas/TranscriberRecoveryPhase"
+            - type: "null"
+        next_eligible_at:
+          type: [string, "null"]
+          format: date-time
+    TranscriberRecoveryResponse:
+      type: object
+      additionalProperties: false
+      required: [status, recovery]
+      properties:
+        status:
+          type: string
+          enum: [processing, completed, failed, cancelled]
+        recovery:
+          $ref: "#/components/schemas/TranscriberRecoveryResult"
+    TranscriberRecoveryError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - not_found
+            - idempotency_conflict
+            - recovery_ineligible
+            - provider_rejected
+            - recording_undecodable
+            - recording_silent
+            - attestation_failed
+            - coverage_incomplete
+            - cancelled
+            - recording_absent
+            - recovery_cooldown
+            - budget_exhausted
+            - recovery_rate_limited
+            - transcriber_recovery_unavailable
+    TranscriberCsrfError:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          const: csrf_rejected
+        message:
+          type: string
+          const: Missing or invalid X-Requested-With header
+    TranscriberClientUpgradeError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: client_upgrade_required
     TranscriberError:
       type: object
       required: [error]
@@ -1660,9 +1892,32 @@ components:
         description:
           type: string
 
+    BackendProvenance:
+      type: object
+      additionalProperties: false
+      required: [build_sha, backend_image_digest]
+      properties:
+        build_sha:
+          type: [string, "null"]
+          pattern: "^[a-f0-9]{40}([a-f0-9]{24})?$"
+        backend_image_digest:
+          type: [string, "null"]
+          pattern: "^sha256:[a-f0-9]{64}$"
+
+    TranscriberRecoveryVisibility:
+      type: object
+      additionalProperties: false
+      required: [proxy_enabled, contract_version]
+      properties:
+        proxy_enabled:
+          type: boolean
+        contract_version:
+          type: [string, "null"]
+          pattern: "^[A-Za-z0-9._:-]{1,64}$"
+
     ServerInfo:
       type: object
-      required: [did, status, name, expiry, permissions, policyHash]
+      required: [did, status, name, expiry, permissions, policyHash, provenance, transcriber_recovery]
       properties:
         did:
           type: string
@@ -1679,6 +1934,10 @@ components:
         policyHash:
           type: string
           pattern: "^[a-f0-9]{64}$"
+        provenance:
+          $ref: "#/components/schemas/BackendProvenance"
+        transcriber_recovery:
+          $ref: "#/components/schemas/TranscriberRecoveryVisibility"
 
     DelegationStatus:
       type: string

@@ -132,6 +132,7 @@ Repository **secrets**:
 | `CONNECTOR_CONTENT_MASTER` | W4 content-custody master (backend ingest). Same rules — its own value, survives redeploys; wraps every stored meeting. |
 | `FIREFLIES_OAUTH_CLIENT_ID` | Registered Fireflies OAuth app (custody branch b1). Required with the ingest flag armed. |
 | `FIREFLIES_OAUTH_CLIENT_SECRET` | Fireflies OAuth app secret. Required with the ingest flag armed. |
+| `TRANSCRIBER_RECOVERY_PSEUDONYM_KEY` | Dedicated HMAC key for recovery-only owner correlation and limiting. Required only when manual recovery is enabled; use a strong value distinct from `TRANSCRIPTION_API_KEY`. |
 
 Repository **variables** (all optional — defaults shown):
 
@@ -164,6 +165,18 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_API_URL` | _(empty — repo **variable**; the TinyCloud Private Transcription API base URL. With `TRANSCRIPTION_API_KEY` set, `/api/transcriber/meetings` mounts and Settings → Transcriber lights up; either empty ⇒ 404 and the card says it is not configured)_ |
 | `TRANSCRIPTION_API_KEY` | _(empty — repo **secret**; the `tc_live_…` project key minted with the transcription service's `create-key` CLI. Never reaches the browser)_ |
 | `TRANSCRIPTION_BOT_NAME` | `TinyCloud Private Notetaker` (repo variable; the bot's display name in the meeting) |
+| `TRANSCRIBER_RECOVERY_ENABLED` | `false` (manual recovery stays dark; incomplete or invalid companion config still fails closed) |
+| `TRANSCRIBER_RECOVERY_CONTRACT_VERSION` | _(empty — must exactly match the upstream recovery capability, for example `space-save-v2`)_ |
+| `TRANSCRIBER_RECOVERY_CAPABILITY_CACHE_MS` | _(empty — bounded positive milliseconds and strictly shorter than the upstream capability lease)_ |
+| `TRANSCRIBER_RECOVERY_UPSTREAM_LEASE_MS` | _(empty — bounded positive upstream capability lease in milliseconds)_ |
+| `TRANSCRIBER_RECOVERY_RATE_LIMIT_MAX` | _(empty — bounded recovery-only actions per owner window)_ |
+| `TRANSCRIBER_RECOVERY_RATE_LIMIT_WINDOW_MS` | _(empty — bounded recovery-only window in milliseconds)_ |
+
+The deploy workflow writes `TINYCHAT_BUILD_SHA` from the checked-out commit and
+`TINYCHAT_BACKEND_IMAGE_DIGEST` from `steps.build.outputs.digest`. The backend image
+reference submitted to Phala is `repository@sha256:…`; neither provenance value is a
+repository setting or a mutable operator-supplied tag. `/api/server-info` exposes only
+validated values, otherwise `null`, plus the static default-off recovery proxy state.
 
 > Any env var added to the deploy must land in **four** places or the CVM silently
 > drops it: the deploy step's `env:` block, the `printf` ENV_FILE block it writes

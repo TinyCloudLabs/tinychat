@@ -15,7 +15,7 @@ import {
   createNonceStore,
 } from "@tinyboilerplate/server";
 import { applySecurityDefaults } from "./security.js";
-import { applyRateLimiters } from "./rate-limits.js";
+import { applyRateLimiters, createRecoveryRateLimiter } from "./rate-limits.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
@@ -47,12 +47,16 @@ import {
 import { createConnectorCredentialRouter } from "./routes/connector-credentials.js";
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
-import { createTranscriberRouter } from "./routes/transcriber.js";
+import {
+  createTranscriberRouter,
+  shouldBypassGlobalJsonParserForTranscriberRecovery,
+} from "./routes/transcriber.js";
 import {
   createTranscriptionApiClient,
   transcriptionApiConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import { transcriberRecoveryConfigFromEnv } from "./services/transcriber-recovery-config.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -514,6 +518,12 @@ async function main() {
       next();
       return;
     }
+    // Recovery is deliberately bodyless. Leave its stream untouched so authentication and the
+    // owner index run before the route rejects any supplied body from bounded HTTP headers.
+    if (shouldBypassGlobalJsonParserForTranscriberRecovery(req.method, req.path)) {
+      next();
+      return;
+    }
     globalJsonParser(req, res, next);
   });
   app.use(createCsrfMiddleware());
@@ -807,6 +817,17 @@ async function main() {
   // only when TRANSCRIPTION_API_URL + TRANSCRIPTION_API_KEY are set — the project key stays in
   // this process, and the browser only ever talks to this authenticated, per-address proxy.
   const transcriptionConfig = transcriptionApiConfigFromEnv();
+  const transcriberRecoveryConfig = transcriberRecoveryConfigFromEnv();
+  const transcriberRecoveryLimiter = transcriberRecoveryConfig.ready
+    && transcriberRecoveryConfig.pseudonymKey !== null
+    && transcriberRecoveryConfig.rateLimitMax !== null
+    && transcriberRecoveryConfig.rateLimitWindowMs !== null
+    ? createRecoveryRateLimiter({
+        key: transcriberRecoveryConfig.pseudonymKey,
+        limit: transcriberRecoveryConfig.rateLimitMax,
+        windowMs: transcriberRecoveryConfig.rateLimitWindowMs,
+      })
+    : undefined;
   if (transcriptionConfig) {
     // §9.3 — writes to the backend's own space share ONE lane per process. Reuse the connector
     // lane when it exists; a process without connectors gets its own, single one.
@@ -815,8 +836,20 @@ async function main() {
       "/api/transcriber/meetings",
       authMiddleware,
       createTranscriberRouter({
-        api: createTranscriptionApiClient(transcriptionConfig),
+        api: createTranscriptionApiClient({
+          ...transcriptionConfig,
+          ...(transcriberRecoveryConfig.contractVersion === null
+            ? {}
+            : { recoveryContractVersion: transcriberRecoveryConfig.contractVersion }),
+          ...(transcriberRecoveryConfig.capabilityCacheMs === null
+            ? {}
+            : { recoveryCapabilityCacheMs: transcriberRecoveryConfig.capabilityCacheMs }),
+        }),
         index: new KvTranscriberIndexStore(node, transcriberStorageLane),
+        recovery: transcriberRecoveryConfig,
+        ...(transcriberRecoveryLimiter === undefined
+          ? {}
+          : { recoveryLimiter: transcriberRecoveryLimiter }),
         ...(process.env.TRANSCRIPTION_BOT_NAME
           ? { defaultBotName: process.env.TRANSCRIPTION_BOT_NAME }
           : {}),
