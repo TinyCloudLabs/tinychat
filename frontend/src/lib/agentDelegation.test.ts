@@ -199,7 +199,7 @@ describe("two-grant session envelope", () => {
     }
   });
 
-  it("signs the isolated consent session for only memory plus transcript access", () => {
+  it("consents to memory schema creation while keeping transcripts read-only", () => {
     expect(AGENT_CONSENT_MANIFEST).toMatchObject({
       defaults: false,
       includePublicSpace: false,
@@ -211,7 +211,7 @@ describe("two-grant session envelope", () => {
           service: "tinycloud.sql",
           space: "default",
           path: "xyz.tinycloud.eliza/memory",
-          actions: ["read", "write", "admin"],
+          actions: ["read", "write", "admin", "schema"],
           skipPrefix: true,
         },
         ...TRANSCRIPT_PERMISSIONS,
@@ -227,24 +227,30 @@ describe("two-grant session envelope", () => {
     shims.customElements ??= { define: () => undefined, get: () => undefined };
     const order: string[] = [];
     let inFlight = 0;
+    let memoryArgs: unknown;
+    let memorySpace: string | undefined;
     let delegateArgs: { did: string; permissions: unknown; options: { expiry?: number } } | null = null;
     const tcw = {
       address: () => "0xUSER",
       chainId: () => 1,
       hosts: ["https://node.tinycloud.xyz"],
-      space: () => ({
-        delegations: {
-          // Memory mint path (mintAgentDelegation).
-          async create() {
-            order.push("memory:start");
-            inFlight += 1;
-            await Promise.resolve();
-            inFlight -= 1;
-            order.push("memory:end");
-            return { ok: true, data: { cid: "memory", delegateDID: AGENT_DID, expiry: new Date() } };
+      space: (name: string) => {
+        memorySpace = name;
+        return {
+          delegations: {
+            // Memory mint path (mintAgentDelegation).
+            async create(args: unknown) {
+              memoryArgs = args;
+              order.push("memory:start");
+              inFlight += 1;
+              await Promise.resolve();
+              inFlight -= 1;
+              order.push("memory:end");
+              return { ok: true, data: { cid: "memory", delegateDID: AGENT_DID, expiry: new Date() } };
+            },
           },
-        },
-      }),
+        };
+      },
       async delegateTo(did: string, permissions: unknown, options: { expiry?: number }) {
         order.push("transcripts:start");
         // A concurrent mint would observe the memory derivation still running.
@@ -261,6 +267,13 @@ describe("two-grant session envelope", () => {
     expect(envelope.version).toBe(2);
     expect(envelope.roomId).toBe("thread-1");
     expect(envelope.delegations.memory).not.toBe(envelope.delegations.transcripts);
+    expect(memorySpace).toBe("default");
+    expect(memoryArgs).toEqual({
+      delegateDID: AGENT_DID,
+      path: "xyz.tinycloud.eliza/memory",
+      actions: ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/admin", "tinycloud.sql/schema", "tinycloud.capabilities/read"],
+      expiry: expect.any(Date),
+    });
     expect(delegateArgs!.did).toBe(AGENT_DID);
     expect(delegateArgs!.permissions).toEqual(TRANSCRIPT_PERMISSIONS);
     expect(delegateArgs!.options.expiry).toBe(AGENT_DELEGATION_EXPIRY_MS);

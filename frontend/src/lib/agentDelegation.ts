@@ -38,6 +38,8 @@ const SQL_ACTIONS = [
   "tinycloud.sql/read",
   "tinycloud.sql/write",
   "tinycloud.sql/admin",
+  // CREATE TABLE requires schema; admin remains required by Eliza's memory policy.
+  "tinycloud.sql/schema",
   "tinycloud.capabilities/read",
 ];
 
@@ -66,7 +68,7 @@ export const AGENT_CONSENT_MANIFEST: Manifest = {
       service: "tinycloud.sql",
       space: AGENT_MEMORY_SPACE,
       path: AGENT_MEMORY_PATH,
-      actions: ["read", "write", "admin"],
+      actions: ["read", "write", "admin", "schema"],
       skipPrefix: true,
     },
     ...TRANSCRIPT_PERMISSIONS,
