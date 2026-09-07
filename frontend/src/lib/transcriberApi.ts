@@ -27,6 +27,21 @@ export type TranscriberMeetingStatus =
   | "failed"
   | "cancelled";
 
+/** Optional: older recordings predate capture diagnostics. */
+export interface TranscriberCapture {
+  completion_reason?: string | null;
+  provider_status?: string;
+  exit_code?: number | null;
+  observed_at?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  silence_timeout_ms?: number;
+  stop_requested_at?: string;
+  stop_requested_by?: "user" | "join_deadline";
+  provider_record_missing_at?: string;
+  audio_activity?: "not_reported";
+}
+
 export interface TranscriberMeeting {
   id: string;
   status: TranscriberMeetingStatus;
@@ -38,6 +53,10 @@ export interface TranscriberMeeting {
   started_at?: string | null;
   ended_at?: string | null;
   error?: { type: string; code: string; message: string } | null;
+  capture?: TranscriberCapture;
+  transcript_provider?: string;
+  fallback_from?: string;
+  fallback_reason?: string | null;
 }
 
 /** A row whose upstream read failed this time round. It keeps its id so it can still be deleted. */
@@ -62,6 +81,10 @@ export interface TranscriberTranscript {
   status: TranscriberMeetingStatus;
   language?: string;
   duration_seconds?: number;
+  capture?: TranscriberCapture;
+  provider?: string;
+  fallback_from?: string;
+  fallback_reason?: string | null;
   speakers?: { id: string; name: string }[];
   segments?: TranscriberSegment[];
   text?: string;

@@ -85,3 +85,12 @@ describe("explorer registration", () => {
     expect(meetingSourceLabel(TRANSCRIBER_MEETING_SOURCE)).toBe("TinyCloud Transcriber");
   });
 });
+
+
+test("saving a transcript retains capture evidence and transcription provenance", () => {
+  const capture = { completion_reason: "evicted", provider_status: "completed", exit_code: 0 };
+  const { meeting: row } = normalizeTranscriberTranscript(meeting, {
+    ...transcript, capture, provider: "vexa", fallback_from: "tinfoil", fallback_reason: "no_usable_recording",
+  });
+  expect(row.metadata).toMatchObject({ capture, transcript_provider: "vexa", fallback_from: "tinfoil", fallback_reason: "no_usable_recording" });
+});
