@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
 import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
+import { offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import type { MeetingCandidate } from "../lib/meetingChat/types.js";
 
 const realFetch = globalThis.fetch;
@@ -39,7 +40,7 @@ function sseResponse(url: string, chunks: string[] = ["Hello"]): Response {
   void url;
 }
 
-function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): AdapterDeps {
+function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null, model = DEFAULT_MODEL): AdapterDeps {
   const threadId = activeThreadId ?? "thread-without-active-ref";
   const selection = {
     getView: () => ({ threadId }),
@@ -49,7 +50,7 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): 
       threadId,
       activation: 1,
       signal: new AbortController().signal,
-      model: DEFAULT_MODEL,
+      model,
       turnId,
     }),
     waitForAppend: async () => {},
@@ -276,15 +277,21 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
 });
 
 describe("turn binding across awaited work", () => {
-  it("a delayed checkpoint keeps both transports and receipts on their captured model and room", async () => {
+  it("a delayed checkpoint keeps Qwen 35B's context budget, both transports and receipts on their captured model and room", async () => {
+    const turnModel = "qwen/qwen3.6-35b-a3b";
     for (const agent of [false, true]) {
-      const deps = makeDeps(agent, "origin-room");
+      const deps = makeDeps(agent, "origin-room", turnModel);
       let release!: () => void;
       let entered!: () => void;
       const enteredGate = new Promise<void>((resolve) => { entered = resolve; });
       const held = new Promise<void>((resolve) => { release = resolve; });
       deps.getCheckpoint = async () => { entered(); await held; return null; };
-      deps.contextTokensFor = (model) => { expect(model).toBe(DEFAULT_MODEL); return 1_048_576; };
+      deps.contextTokensFor = (model) => {
+        expect(model).toBe(turnModel);
+        const contextTokens = offeredChatModelContextTokens(model);
+        expect(contextTokens).toBe(262_144);
+        return contextTokens!;
+      };
       deps.appendCompaction = async () => { throw new Error("unexpected compaction"); };
       deps.summarize = async () => { throw new Error("unexpected summary"); };
       const bodies: Array<Record<string, unknown>> = [];
@@ -295,9 +302,9 @@ describe("turn binding across awaited work", () => {
       release();
       const result = await running;
       expect(result.calledUrl.includes("/api/agent/chat")).toBe(agent);
-      expect(bodies[0].model).toBe(DEFAULT_MODEL);
+      expect(bodies[0].model).toBe(turnModel);
       if (agent) expect(bodies[0].roomId).toBe("origin-room");
-      expect(takePendingReceipt(`delayed-${agent}`)?.modelId).toBe(DEFAULT_MODEL);
+      expect(takePendingReceipt(`delayed-${agent}`)?.modelId).toBe(turnModel);
     }
   });
 });

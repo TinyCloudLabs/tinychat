@@ -9,6 +9,7 @@ export const OFFERED_CHAT_MODELS = [
   { id: "moonshotai/kimi-k3", contextTokens: 1_048_576 },
   { id: "z-ai/glm-5.3", contextTokens: 1_048_576 },
   { id: "z-ai/glm-5.2", contextTokens: 1_048_576 },
+  { id: "qwen/qwen3.6-35b-a3b", contextTokens: 262_144 },
 ] as const;
 
 export type OfferedModelId = (typeof OFFERED_CHAT_MODELS)[number]["id"];

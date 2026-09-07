@@ -103,15 +103,15 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
     await page.close();
   });
 
-  test("all-unhealthy blocks side effects until a manual choice resolves the same wait", async () => {
+  test("all-unhealthy blocks side effects until a manual fourth-model choice resolves the same wait", async () => {
     const page = await pageFor("unhealthy");
     await page.waitForFunction(() => document.querySelector("#phase")?.textContent === "needs-manual-choice");
     await page.evaluate(() => window.routerHarness!.send());
     await page.waitForTimeout(75);
     expect((await events(page)).some((event) => event.startsWith("append:"))).toBe(false);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[3].id);
     await page.waitForFunction(() => window.routerHarness!.events.some((event) => event.startsWith("append:")));
-    expect(requests).toContain(`chat:${OFFERED_CHAT_MODELS[1].id}`);
+    expect(requests).toContain(`chat:${OFFERED_CHAT_MODELS[3].id}`);
     await page.close();
   });
 

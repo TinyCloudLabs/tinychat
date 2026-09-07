@@ -1,0 +1,39 @@
+{
+  "startedAt": "2026-09-07T22:12:48.902Z",
+  "endpoint": "https://api.redpill.ai/v1",
+  "models": [
+    "qwen/qwen3.6-35b-a3b"
+  ],
+  "requestsPerModel": 12,
+  "waves": 2,
+  "interWavePauseMs": 30000,
+  "maxConcurrency": 1,
+  "requestTimeoutMs": 60000,
+  "maxTokens": 8192,
+  "defaultSampling": true,
+  "synthesisReasoningEffort": "low",
+  "circuitBreaker": "Stop after two transport failures for a model; honor Retry-After. No immediate retries.",
+  "meetingPrompt": "From these meeting notes, return only JSON with keys actions (owner, task, due_date), pilot_target, pilot_confirmed, budget_approved, tentative_budget_eur, unresolved. Use null for unknown dates and YYYY-MM-DD for known dates. Include only explicitly committed actions. Notes recorded 2026-09-10: Maya: I will send the revised DPA to the vendor by September 12. Leo: I will finish SSO verification before the pilot, but I cannot commit to a date yet. Noor: An FAQ might help; let's decide next week who owns it. Maya: The pilot target is September 18, conditional on security approval. Leo: Security has not approved it yet. Maya: The budget is not approved; EUR 6,000 is only a tentative cap.",
+  "mathPrompt": "Estimate our chat workload using only these rates. We will run 1200 meeting summaries, each using 8000 input tokens and 600 output tokens, at USD 0.40 per million input tokens and USD 1.60 per million output tokens. We will also run 800 Q&A turns, each using 1500 input tokens and 300 output tokens, at USD 0.20 per million input tokens and USD 0.80 per million output tokens. Total budget is USD 6; there are no other fees. Additional Q&A turns have the same token usage and rates. Do not round intermediate calculations. Return only JSON with summary_input_tokens, summary_output_tokens, qa_input_tokens, qa_output_tokens, summary_cost_usd, qa_cost_usd, total_cost_usd, remaining_budget_usd, maximum_additional_whole_qa_turns.",
+  "mathGold": {
+    "summary_input_tokens": 9600000,
+    "summary_output_tokens": 720000,
+    "qa_input_tokens": 1200000,
+    "qa_output_tokens": 240000,
+    "summary_cost_usd": 4.992,
+    "qa_cost_usd": 0.432,
+    "total_cost_usd": 5.424,
+    "remaining_budget_usd": 0.576,
+    "maximum_additional_whole_qa_turns": 1066
+  },
+  "toolPrompt": "Use lookup_meeting to retrieve meeting M-204. Then return only JSON with decision_code, owner, due_date, approved, using the tool result exactly. Do not invent a decision before looking it up.",
+  "notes": [
+    "Synthetic public fixtures only; no user conversations.",
+    "First content time measures visible text, not hidden reasoning.",
+    "Transport success and exact fixture correctness are reported separately.",
+    "These short samples cannot establish long-term reliability or broad quality ranking.",
+    "Provider telemetry and price claims are snapshots, not measured request success.",
+    "Tools simulate a local lookup; this does not validate live Eliza authorization or dispatch.",
+    "No per-response attestation verification or large-context tests."
+  ]
+}

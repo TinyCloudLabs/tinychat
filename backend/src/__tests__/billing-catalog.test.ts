@@ -265,15 +265,16 @@ describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
 });
 
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
-  test("the allowlist is exactly Kimi K3 then GLM 5.3 then GLM 5.2", () => {
+  test("the allowlist is Kimi K3 then GLM 5.3 then GLM 5.2 then Qwen 35B", () => {
     expect([...PICKER_MODELS]).toEqual([
       "moonshotai/kimi-k3",
       "z-ai/glm-5.3",
       "z-ai/glm-5.2",
+      "qwen/qwen3.6-35b-a3b",
     ]);
   });
 
-  test("isOfferedModel accepts the three offered models and rejects retired candidates", () => {
+  test("isOfferedModel accepts the four offered models and rejects retired candidates", () => {
     for (const id of PICKER_MODELS) {
       expect(isOfferedModel(id)).toBe(true);
     }

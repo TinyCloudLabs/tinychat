@@ -3,9 +3,9 @@ import { DEFAULT_CHAT_MODEL, OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import { healPersistedModel, sanitizeModel } from "./sanitizeModel";
 
 describe("static offered-model sanitization", () => {
-  test("accepts the three remaining exact ids before and after pricing loads", () => {
+  test("accepts all four offered exact ids before and after pricing loads", () => {
     const pricingIds = new Set(["pricing/does-not-control-eligibility"]);
-    expect(OFFERED_CHAT_MODELS).toHaveLength(3);
+    expect(OFFERED_CHAT_MODELS).toHaveLength(4);
     for (const { id } of OFFERED_CHAT_MODELS) {
       expect(sanitizeModel(id, new Set())).toBe(id);
       expect(sanitizeModel(id, pricingIds)).toBe(id);

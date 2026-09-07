@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
+import { OFFERED_CHAT_MODELS, offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import { useChatRuntime } from "./runtime";
 import { Thread } from "./Thread";
 import type { SelectionView, ModelSelectionController } from "./modelSelection";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
+import { DEFAULT_CONTEXT_TOKENS } from "./compaction";
 
 declare global {
   interface Window {
@@ -179,7 +180,7 @@ function Harness() {
     getCheckpoint: async () => null,
     appendCompaction: async () => { throw new Error("unexpected compaction"); },
     summarize: async () => { throw new Error("unexpected summary"); },
-    contextTokensFor: () => 1_048_576,
+    contextTokensFor: (model: string) => offeredChatModelContextTokens(model) ?? DEFAULT_CONTEXT_TOKENS,
   }), [registry]));
 
   useEffect(() => {

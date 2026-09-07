@@ -111,7 +111,7 @@ export function contextLengthFor(modelId: string): number {
  * allowlist. Used by the offered-model gate on every relay/agent POST and to
  * filter the display catalog (see chat.ts). Replaces the older
  * `startsWith("phala/") && !isBlocklistedModel()` heuristic so only the curated
- * three are reachable.
+ * four are reachable.
  */
 export function isOfferedModel(id: string): boolean {
   return isOfferedChatModel(id);

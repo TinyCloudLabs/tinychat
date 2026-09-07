@@ -449,7 +449,7 @@ describe("POST /api/chat recording", () => {
 });
 
 describe("GET /api/chat/models annotation", () => {
-  test("only the three offered models are listed; allowed:true when paywall disabled; rates always present", async () => {
+  test("only the four offered models are listed; allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
     // The multiplier anchor is the default model (z-ai/glm-5.2). Price
     // it at the MINI baseline so it anchors multiplier 1. The non-TEE
@@ -464,6 +464,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "deepseek/deepseek-v4-flash-0731", pricing: MINI_PRICING },
         { id: "z-ai/glm-5.2", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
         { id: "moonshotai/kimi-k3", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.6-35b-a3b", pricing: MINI_PRICING },
         { id: "qwen/qwen3.6-27b", pricing: MINI_PRICING },
         { id: "google/gemma-4-31b-it", pricing: MINI_PRICING },
       ],
@@ -499,7 +500,7 @@ describe("GET /api/chat/models annotation", () => {
     }
   });
 
-  test("the model list returns the three-model ladder even when catalog entries are missing", async () => {
+  test("the model list returns the four-model ladder even when catalog entries are missing", async () => {
     process.env.PAYWALL_ENABLED = "false";
     // Upstream catalog: the single offered id plus a bunch of extras (non-TEE,
     // non-allowlisted phala/*, and formerly-offered models). The list must return
@@ -524,6 +525,7 @@ describe("GET /api/chat/models annotation", () => {
         "moonshotai/kimi-k3",
         "z-ai/glm-5.3",
         "z-ai/glm-5.2",
+        "qwen/qwen3.6-35b-a3b",
       ]);
       expect(body.models.find((m: any) => m.id === "z-ai/glm-5.3").creditsPerKInput).toBeUndefined();
     } finally {
@@ -545,6 +547,7 @@ describe("GET /api/chat/models annotation", () => {
         { id: "deepseek/deepseek-v4-flash-0731", pricing: MINI_PRICING },
         { id: "z-ai/glm-5.2", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
         { id: "moonshotai/kimi-k3", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.6-35b-a3b", pricing: MINI_PRICING },
         { id: "qwen/qwen3.6-27b", pricing: MINI_PRICING },
         { id: "google/gemma-4-31b-it", pricing: MINI_PRICING },
       ],
@@ -600,6 +603,7 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
     "moonshotai/kimi-k3",
     "z-ai/glm-5.3",
     "z-ai/glm-5.2",
+    "qwen/qwen3.6-35b-a3b",
   ];
 
   test("returns the curated allowlist (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
@@ -1189,7 +1193,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
   });
 });
 
-test("model selection is no-store, probes only the three offered models, and never loads pricing", async () => {
+test("model selection is no-store, probes only the four offered models, and never loads pricing", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   globalThis.fetch = (async (input, init) => {
@@ -1209,6 +1213,7 @@ test("model selection is no-store, probes only the three offered models, and nev
       "https://redpill.ai/api/models/moonshotai/kimi-k3/uptime",
       "https://redpill.ai/api/models/z-ai/glm-5.3/uptime",
       "https://redpill.ai/api/models/z-ai/glm-5.2/uptime",
+      "https://redpill.ai/api/models/qwen/qwen3.6-35b-a3b/uptime",
     ]);
   } finally { globalThis.fetch = originalFetch; }
 });

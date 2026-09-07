@@ -85,6 +85,7 @@ const TEE_CAPABLE_MODELS: ReadonlySet<string> = new Set([
   "z-ai/glm-5.2",
   "moonshotai/kimi-k3",
   "qwen/qwen3.6-27b",
+  "qwen/qwen3.6-35b-a3b",
   "google/gemma-4-31b-it",
   ...VERIFIABLE_MODELS,
 ]);

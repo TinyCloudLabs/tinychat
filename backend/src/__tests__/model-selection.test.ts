@@ -151,8 +151,8 @@ describe("ladder selection", () => {
       model: OFFERED_CHAT_MODELS[0].id,
       reason: "health-unverified",
     });
-    expect(calls).toBe(3);
-    expect(peak).toBe(3);
+    expect(calls).toBe(4);
+    expect(peak).toBe(4);
   });
 });
 
@@ -167,7 +167,7 @@ test("two-second deadline bounds both fetch and a body parser that ignores abort
     return { ok: true, json: () => new Promise(() => {}) };
   }) as typeof fetch;
   expect(await selectChatModel({ fetchImpl })).toEqual({ model: OFFERED_CHAT_MODELS[0].id, reason: "health-unverified" });
-  expect(calls).toBe(3);
+  expect(calls).toBe(4);
   expect(signals.every((signal) => signal.aborted)).toBe(true);
   expect(performance.now() - started).toBeLessThan(2600);
 });
