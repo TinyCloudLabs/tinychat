@@ -6,12 +6,9 @@
  * pricing endpoint has loaded (or when it is unavailable).
  */
 export const OFFERED_CHAT_MODELS = [
-  { id: "z-ai/glm-5.3", contextTokens: 1_048_576 },
-  { id: "deepseek/deepseek-v4-flash-0731", contextTokens: 1_048_576 },
-  { id: "z-ai/glm-5.2", contextTokens: 1_048_576 },
   { id: "moonshotai/kimi-k3", contextTokens: 1_048_576 },
-  { id: "qwen/qwen3.6-27b", contextTokens: 262_144 },
-  { id: "google/gemma-4-31b-it", contextTokens: 262_144 },
+  { id: "z-ai/glm-5.3", contextTokens: 1_048_576 },
+  { id: "z-ai/glm-5.2", contextTokens: 1_048_576 },
 ] as const;
 
 export type OfferedModelId = (typeof OFFERED_CHAT_MODELS)[number]["id"];

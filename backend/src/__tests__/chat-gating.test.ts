@@ -334,7 +334,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // is unoffered — the default must heal to the curated baseline.
       process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
       const value = defaultModel();
-      expect(value).toBe("z-ai/glm-5.3");
+      expect(value).toBe("moonshotai/kimi-k3");
       expect(isBlocklistedModel(value)).toBe(false);
       expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
     } finally {
@@ -349,7 +349,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
       process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
       expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
-      expect(defaultModel()).toBe("z-ai/glm-5.3");
+      expect(defaultModel()).toBe("moonshotai/kimi-k3");
     } finally {
       console.warn = originalWarn;
     }
@@ -363,7 +363,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // so it is no longer offered — the default must not resolve to it.
       process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-120b";
       expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
-      expect(defaultModel()).toBe("z-ai/glm-5.3");
+      expect(defaultModel()).toBe("moonshotai/kimi-k3");
     } finally {
       console.warn = originalWarn;
     }
@@ -449,7 +449,7 @@ describe("POST /api/chat recording", () => {
 });
 
 describe("GET /api/chat/models annotation", () => {
-  test("only the single offered model is listed (non-offered filtered out); allowed:true when paywall disabled; rates always present", async () => {
+  test("only the three offered models are listed; allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
     // The multiplier anchor is the default model (z-ai/glm-5.2). Price
     // it at the MINI baseline so it anchors multiplier 1. The non-TEE
@@ -476,6 +476,9 @@ describe("GET /api/chat/models annotation", () => {
       expect("openai/gpt-5-mini" in byId).toBe(false);
       expect("phala/gpt-oss-120b" in byId).toBe(false);
       expect("moonshotai/kimi-k2.6" in byId).toBe(false);
+      for (const id of ["deepseek/deepseek-v4-flash-0731", "qwen/qwen3.6-27b", "google/gemma-4-31b-it"]) {
+        expect(id in byId).toBe(false);
+      }
       expect(body.models.every((m: any) => isOfferedModel(m.id))).toBe(true);
       expect(body.models.every((m: any) => m.allowed === true)).toBe(true);
       expect(body.models.some((m: any) => "requiredTier" in m)).toBe(false);
@@ -496,7 +499,7 @@ describe("GET /api/chat/models annotation", () => {
     }
   });
 
-  test("the model list returns EXACTLY the single offered model (extras filtered out)", async () => {
+  test("the model list returns the three-model ladder even when catalog entries are missing", async () => {
     process.env.PAYWALL_ENABLED = "false";
     // Upstream catalog: the single offered id plus a bunch of extras (non-TEE,
     // non-allowlisted phala/*, and formerly-offered models). The list must return
@@ -518,12 +521,9 @@ describe("GET /api/chat/models annotation", () => {
       const body = (await res.json()) as any;
       const ids = body.models.map((m: any) => m.id);
       expect(ids).toEqual([
-        "z-ai/glm-5.3",
-        "deepseek/deepseek-v4-flash-0731",
-        "z-ai/glm-5.2",
         "moonshotai/kimi-k3",
-        "qwen/qwen3.6-27b",
-        "google/gemma-4-31b-it",
+        "z-ai/glm-5.3",
+        "z-ai/glm-5.2",
       ]);
       expect(body.models.find((m: any) => m.id === "z-ai/glm-5.3").creditsPerKInput).toBeUndefined();
     } finally {
@@ -597,12 +597,9 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
   }
 
   const CURATED_MODELS = [
-    "z-ai/glm-5.3",
-    "deepseek/deepseek-v4-flash-0731",
-    "z-ai/glm-5.2",
     "moonshotai/kimi-k3",
-    "qwen/qwen3.6-27b",
-    "google/gemma-4-31b-it",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.2",
   ];
 
   test("returns the curated allowlist (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
@@ -1192,7 +1189,7 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
   });
 });
 
-test("model selection is no-store, fetches six health endpoints, and never loads pricing", async () => {
+test("model selection is no-store, probes only the three offered models, and never loads pricing", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   globalThis.fetch = (async (input, init) => {
@@ -1207,7 +1204,11 @@ test("model selection is no-store, fetches six health endpoints, and never loads
     const response = await request(createApp(), "/api/chat/model-selection");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ model: "z-ai/glm-5.3", reason: "health-unverified" });
-    expect(new Set(calls).size).toBe(6);
+    expect(await response.json()).toEqual({ model: "moonshotai/kimi-k3", reason: "health-unverified" });
+    expect(calls).toEqual([
+      "https://redpill.ai/api/models/moonshotai/kimi-k3/uptime",
+      "https://redpill.ai/api/models/z-ai/glm-5.3/uptime",
+      "https://redpill.ai/api/models/z-ai/glm-5.2/uptime",
+    ]);
   } finally { globalThis.fetch = originalFetch; }
 });

@@ -1085,7 +1085,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
     })) as unknown as typeof fetch;
   }
 
-  it("all six exact offered IDs pass the agent gate without pricing", async () => {
+  it("all three exact offered IDs pass the agent gate without pricing", async () => {
     process.env.PAYWALL_ENABLED = "false";
     for (const { id } of OFFERED_CHAT_MODELS) {
       const { req, res } = makeReqRes();

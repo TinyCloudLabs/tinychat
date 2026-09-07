@@ -122,11 +122,11 @@ describe("per-thread model persistence FIFO", () => {
     await appendMessage(cloud, "rapid", message("u1"), OFFERED_CHAT_MODELS[0].id);
     await listThreads(cloud);
     const first = setThreadModel(cloud, "rapid", OFFERED_CHAT_MODELS[1].id);
-    const second = setThreadModel(cloud, "rapid", OFFERED_CHAT_MODELS[4].id);
+    const second = setThreadModel(cloud, "rapid", OFFERED_CHAT_MODELS[2].id);
     await Promise.all([first, second]);
-    expect(await model(service, "rapid")).toBe(OFFERED_CHAT_MODELS[4].id);
+    expect(await model(service, "rapid")).toBe(OFFERED_CHAT_MODELS[2].id);
     const index = JSON.parse(cache.get(`tinychat:index:${cloud.did}`) ?? "null");
-    expect(index.threads.find((thread: { id: string }) => thread.id === "rapid").model).toBe(OFFERED_CHAT_MODELS[4].id);
+    expect(index.threads.find((thread: { id: string }) => thread.id === "rapid").model).toBe(OFFERED_CHAT_MODELS[2].id);
   });
 
   test("a pick during first insertion queues behind the insert and later appends preserve it", async () => {
@@ -145,11 +145,11 @@ describe("per-thread model persistence FIFO", () => {
     };
     const insertion = appendMessage(cloud, "insert-race", message("u1"), OFFERED_CHAT_MODELS[0].id);
     await entered.promise;
-    const pick = setThreadModel(cloud, "insert-race", OFFERED_CHAT_MODELS[3].id);
+    const pick = setThreadModel(cloud, "insert-race", OFFERED_CHAT_MODELS[1].id);
     held.release();
     await Promise.all([insertion, pick]);
     await appendMessage(cloud, "insert-race", message("a1", "assistant"), OFFERED_CHAT_MODELS[0].id);
-    expect(await model(service, "insert-race")).toBe(OFFERED_CHAT_MODELS[3].id);
+    expect(await model(service, "insert-race")).toBe(OFFERED_CHAT_MODELS[1].id);
   });
 
   test("a committed model write with a lost response is reconciled as saved", async () => {
@@ -171,13 +171,13 @@ describe("per-thread model persistence FIFO", () => {
     await listThreads(cloud); // The response loss must affect the INSERT, not schema.
     service.uncertainBatch = true;
     const item = message("stable-message-id");
-    await expect(appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[5].id)).rejects.toThrow();
+    await expect(appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[1].id)).rejects.toThrow();
     expect(service.sqlite.query("SELECT COUNT(*) FROM messages").values()[0]![0]).toBe(1);
-    await expect(appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[5].id)).resolves.toBeUndefined();
+    await expect(appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[1].id)).resolves.toBeUndefined();
     expect(service.sqlite.query("SELECT COUNT(*) FROM messages WHERE thread_id = ?").values("uncertain-append")[0]![0]).toBe(1);
-    expect(await model(service, "uncertain-append")).toBe(OFFERED_CHAT_MODELS[5].id);
+    expect(await model(service, "uncertain-append")).toBe(OFFERED_CHAT_MODELS[1].id);
     const index = JSON.parse(cache.get(`tinychat:index:${cloud.did}`) ?? "null");
-    expect(index.threads.find((thread: { id: string }) => thread.id === "uncertain-append").model).toBe(OFFERED_CHAT_MODELS[5].id);
+    expect(index.threads.find((thread: { id: string }) => thread.id === "uncertain-append").model).toBe(OFFERED_CHAT_MODELS[1].id);
   });
 
   test("a model update against a missing row fails instead of claiming durability", async () => {
@@ -241,10 +241,10 @@ test("failed save blocks sends, rapid revisions settle SQL and view at the lates
   await until(() => selection.getView().saveFailed);
   expect(selection.getView().canSend).toBe(false);
   service.beforeExecute = null;
-  selection.pick(OFFERED_CHAT_MODELS[4].id);
-  selection.pick(OFFERED_CHAT_MODELS[5].id);
+  selection.pick(OFFERED_CHAT_MODELS[2].id);
+  selection.pick(OFFERED_CHAT_MODELS[1].id);
   await until(() => selection.getView().canSend);
-  expect((await selection.beginTurn("save", "next")).model).toBe(OFFERED_CHAT_MODELS[5].id);
+  expect((await selection.beginTurn("save", "next")).model).toBe(OFFERED_CHAT_MODELS[1].id);
   expect(await model(service, "save")).toBe(selection.getView().model);
   selection.dispose();
 });
@@ -258,7 +258,7 @@ test("late callbacks cannot reactivate an old thread and cancelled saves remain 
   await until(() => selection.getView().canSend);
   const held = gate();
   service.beforeExecute = () => held.promise;
-  selection.pick(OFFERED_CHAT_MODELS[3].id);
+  selection.pick(OFFERED_CHAT_MODELS[1].id);
   const oldTurn = selection.beginTurn("a", "obsolete").catch((error) => error);
   selection.activate("b", "existing");
   expect(await oldTurn).toBeInstanceOf(TurnCancelledError);
@@ -267,7 +267,7 @@ test("late callbacks cannot reactivate an old thread and cancelled saves remain 
   await Bun.sleep(10);
   expect(selection.getView().threadId).toBe("b");
   selection.activate("a", "existing");
-  expect((await selection.beginTurn("a", "fresh")).model).toBe(OFFERED_CHAT_MODELS[3].id);
+  expect((await selection.beginTurn("a", "fresh")).model).toBe(OFFERED_CHAT_MODELS[1].id);
   selection.dispose();
 });
 
@@ -288,7 +288,7 @@ test("client deadline includes a nonsettling body parser and never accepts its l
     expect(signal!.aborted).toBe(true);
     expect(origin.model).toBe(OFFERED_CHAT_MODELS[0].id);
     expect(selection.getView().reason).toBe("health-unverified");
-    release({ model: OFFERED_CHAT_MODELS[5].id, reason: "healthy" });
+    release({ model: OFFERED_CHAT_MODELS[1].id, reason: "healthy" });
     await Bun.sleep(10);
     expect(selection.getView().model).toBe(OFFERED_CHAT_MODELS[0].id);
   } finally {
@@ -327,8 +327,8 @@ test("a manual pick supersedes a resolved choice before its send continuation ru
   selection.activate("revision", "existing");
   await until(() => selection.getView().canSend);
   const turn = selection.beginTurn("revision", "new-turn");
-  selection.pick(OFFERED_CHAT_MODELS[5].id);
-  expect((await turn).model).toBe(OFFERED_CHAT_MODELS[5].id);
-  expect(await model(service, "revision")).toBe(OFFERED_CHAT_MODELS[5].id);
+  selection.pick(OFFERED_CHAT_MODELS[1].id);
+  expect((await turn).model).toBe(OFFERED_CHAT_MODELS[1].id);
+  expect(await model(service, "revision")).toBe(OFFERED_CHAT_MODELS[1].id);
   selection.dispose();
 });

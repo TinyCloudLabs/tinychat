@@ -109,9 +109,9 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
     await page.evaluate(() => window.routerHarness!.send());
     await page.waitForTimeout(75);
     expect((await events(page)).some((event) => event.startsWith("append:"))).toBe(false);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[3].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
     await page.waitForFunction(() => window.routerHarness!.events.some((event) => event.startsWith("append:")));
-    expect(requests).toContain(`chat:${OFFERED_CHAT_MODELS[3].id}`);
+    expect(requests).toContain(`chat:${OFFERED_CHAT_MODELS[1].id}`);
     await page.close();
   });
 
@@ -171,14 +171,14 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
     await page.evaluate(() => window.routerHarness!.send());
     await page.waitForFunction(() => window.routerHarness!.events.includes("insert-entered"));
     expect(await page.evaluate(() => window.routerHarness!.view().canPick)).toBe(true);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[4].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
     expect(requests.filter((entry) => entry.startsWith("chat:"))).toEqual([]);
     await page.evaluate(() => window.routerHarness!.releaseInsert());
     await page.waitForFunction(() => window.routerHarness!.events.some((event) => event.startsWith("append:")));
     expect(await page.evaluate(() => window.routerHarness!.view().canSend)).toBe(false);
     await page.evaluate(() => window.routerHarness!.releaseSave());
     await page.waitForFunction(() => window.routerHarness!.view().canSend);
-    expect(await page.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[4].id);
+    expect(await page.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[1].id);
     expect(requests).toContain(`chat:${OFFERED_CHAT_MODELS[0].id}`);
     await page.close();
   });
@@ -199,28 +199,28 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
     const page = await pageFor("reopen-save-fail");
     await page.evaluate(() => window.routerHarness!.switchExisting());
     await page.waitForFunction(() => window.routerHarness!.view().canSend);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[4].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
     await page.waitForFunction(() => window.routerHarness!.view().saveFailed);
     expect(await page.getByRole("textbox").isDisabled()).toBe(true);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[5].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[0].id);
     await page.waitForFunction(() => window.routerHarness!.view().canSend);
-    expect(await page.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[5].id);
+    expect(await page.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[0].id);
     await page.close();
   });
 
-  test("manual override supersedes a delayed restore; retired models correct SQL before send", async () => {
+  test("manual override supersedes a delayed restore; removed DeepSeek 0731 corrects SQL to Kimi before send", async () => {
     const page = await pageFor("reopen-retired-restore-delay");
     await page.evaluate(() => window.routerHarness!.switchExisting());
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[5].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
     await page.evaluate(() => window.routerHarness!.releaseRestore());
     await page.waitForFunction(() => window.routerHarness!.view().canSend);
-    expect(await page.evaluate(() => window.routerHarness!.view().model)).toBe(OFFERED_CHAT_MODELS[5].id);
-    expect(await page.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[5].id);
+    expect(await page.evaluate(() => window.routerHarness!.view().model)).toBe(OFFERED_CHAT_MODELS[1].id);
+    expect(await page.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[1].id);
     await page.close();
     const corrected = await pageFor("reopen-retired");
     await corrected.evaluate(() => window.routerHarness!.switchExisting());
     await corrected.waitForFunction(() => window.routerHarness!.view().threadId === "saved-thread" && window.routerHarness!.view().canSend);
-    expect(await corrected.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe(OFFERED_CHAT_MODELS[0].id);
+    expect(await corrected.evaluate(() => window.routerHarness!.rows()[0][1].model)).toBe("moonshotai/kimi-k3");
     await corrected.close();
   });
 
@@ -242,7 +242,7 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
     await page.waitForTimeout(50);
     await page.evaluate(() => window.routerHarness!.cancel());
     selectionReleases.splice(0).forEach((release) => release());
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[3].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
     await page.waitForTimeout(75);
     expect((await events(page)).filter((event) => event.startsWith("append:"))).toEqual([]);
     expect(requests.filter((entry) => entry.startsWith("chat:"))).toEqual([]);
@@ -263,18 +263,18 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
   test("delayed extraction keeps the completed turn model and exchange after navigation and a pick", async () => {
     const page = await pageFor("extraction-delay-reopen");
     await page.waitForFunction(() => window.routerHarness!.view().canSend);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[4].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[1].id);
     await page.evaluate(() => window.routerHarness!.send("ORIGIN_EXCHANGE"));
     await page.waitForFunction(() => window.routerHarness!.events.includes("extraction-waiting"));
     await page.evaluate(() => window.routerHarness!.switchExisting());
     await page.waitForFunction(() => window.routerHarness!.view().threadId === "saved-thread" && window.routerHarness!.view().canSend);
-    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[5].id);
+    await page.evaluate((model) => window.routerHarness!.pick(model), OFFERED_CHAT_MODELS[0].id);
     await page.evaluate(() => window.routerHarness!.releaseExtraction());
     await page.waitForTimeout(100);
     const extraction = chatBodies.find((body) => body.messages[0]?.content.includes("user_context"));
-    expect(extraction?.model).toBe(OFFERED_CHAT_MODELS[4].id);
+    expect(extraction?.model).toBe(OFFERED_CHAT_MODELS[1].id);
     expect(extraction?.messages[1]?.content).toContain("ORIGIN_EXCHANGE");
-    expect(await page.evaluate(() => window.routerHarness!.view().model)).toBe(OFFERED_CHAT_MODELS[5].id);
+    expect(await page.evaluate(() => window.routerHarness!.view().model)).toBe(OFFERED_CHAT_MODELS[0].id);
     await page.close();
   });
 

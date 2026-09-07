@@ -67,14 +67,13 @@ export function isBlocklistedModel(id: string): boolean {
 }
 
 /**
- * Canonical offered-model allowlist — the SINGLE model tinychat offers. The
- * product is single-model: there is no picker, so this list holds exactly one
- * id. It remains the single source of truth for both the model list
+ * Canonical offered-model allowlist, derived from the shared ordered ladder.
+ * It is the single source of truth for both the model list
  * (GET /api/chat/models) and the offered-model gate on every relay/agent POST.
  * A model NOT in this list is never listed, never proxied, and never reachable
  * by the agent tool path.
  *
- * The single offered model is confidential (TEE-hosted). Response-level
+ * The offered models are confidential (TEE-hosted). Response-level
  * verification remains capability-gated in frontend/completionStore.ts; do not
  * infer a flat per-message signature merely from catalog `is_tee` metadata.
  */
@@ -112,7 +111,7 @@ export function contextLengthFor(modelId: string): number {
  * allowlist. Used by the offered-model gate on every relay/agent POST and to
  * filter the display catalog (see chat.ts). Replaces the older
  * `startsWith("phala/") && !isBlocklistedModel()` heuristic so only the curated
- * six are reachable.
+ * three are reachable.
  */
 export function isOfferedModel(id: string): boolean {
   return isOfferedChatModel(id);

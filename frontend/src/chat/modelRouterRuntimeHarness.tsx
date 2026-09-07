@@ -37,7 +37,7 @@ const messages = new Map<string, string[]>();
 if (scenario.includes("reopen") || scenario.includes("restore") || scenario.includes("cancel-lookup")) {
   rows.set(savedId, {
     title: "Saved",
-    model: scenario.includes("retired") ? "deepseek/deepseek-v4-flash" : OFFERED_CHAT_MODELS[2].id,
+    model: scenario.includes("retired") ? "deepseek/deepseek-v4-flash-0731" : OFFERED_CHAT_MODELS[2].id,
     updatedAt: "2026-09-07T14:00:00.000Z",
   });
   messages.set(savedId, [JSON.stringify({
