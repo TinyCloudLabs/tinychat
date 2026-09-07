@@ -22,6 +22,14 @@ describe("catalog contextLengthFor", () => {
     for (const [id, tokens] of Object.entries(CONTEXT_TOKENS)) {
       expect(contextLengthFor(id)).toBe(tokens);
     }
+    expect(CONTEXT_TOKENS).toEqual({
+      "z-ai/glm-5.3": 1_048_576,
+      "deepseek/deepseek-v4-flash-0731": 1_048_576,
+      "z-ai/glm-5.2": 1_048_576,
+      "moonshotai/kimi-k3": 1_048_576,
+      "qwen/qwen3.6-27b": 262_144,
+      "google/gemma-4-31b-it": 262_144,
+    });
     // The production map is empty today, so exercise the known-model branch
     // explicitly by injecting a synthetic entry, asserting it resolves to its
     // mapped number, then restoring the map. This guards the non-fallback path

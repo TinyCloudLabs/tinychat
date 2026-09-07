@@ -80,7 +80,12 @@ const VERIFIABLE_MODEL_SET: ReadonlySet<string> = new Set(VERIFIABLE_MODELS);
  * response-signature path passes a real browser verification.
  */
 const TEE_CAPABLE_MODELS: ReadonlySet<string> = new Set([
+  "z-ai/glm-5.3",
+  "deepseek/deepseek-v4-flash-0731",
   "z-ai/glm-5.2",
+  "moonshotai/kimi-k3",
+  "qwen/qwen3.6-27b",
+  "google/gemma-4-31b-it",
   ...VERIFIABLE_MODELS,
 ]);
 

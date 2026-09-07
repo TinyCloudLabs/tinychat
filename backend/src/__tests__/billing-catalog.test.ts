@@ -265,11 +265,18 @@ describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
 });
 
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
-  test("the allowlist is exactly the single offered model", () => {
-    expect([...PICKER_MODELS]).toEqual(["z-ai/glm-5.2"]);
+  test("the allowlist is exactly the ordered six-model ladder", () => {
+    expect([...PICKER_MODELS]).toEqual([
+      "z-ai/glm-5.3",
+      "deepseek/deepseek-v4-flash-0731",
+      "z-ai/glm-5.2",
+      "moonshotai/kimi-k3",
+      "qwen/qwen3.6-27b",
+      "google/gemma-4-31b-it",
+    ]);
   });
 
-  test("isOfferedModel accepts the single offered model and nothing else", () => {
+  test("isOfferedModel accepts the six offered models and nothing else", () => {
     for (const id of PICKER_MODELS) {
       expect(isOfferedModel(id)).toBe(true);
     }

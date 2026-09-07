@@ -8,6 +8,12 @@
  * to the existing 500/502 contract.
  */
 
+import {
+  OFFERED_CHAT_MODELS,
+  isOfferedChatModel,
+  offeredChatModelContextTokens,
+} from "@tinyboilerplate/core";
+
 const REDPILL_BASE_URL = process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1";
 const CACHE_TTL_MS = 5 * 60 * 1000;
 // Hard ceiling on a single catalog fetch. RedPill's /models is "up" but its
@@ -72,19 +78,7 @@ export function isBlocklistedModel(id: string): boolean {
  * verification remains capability-gated in frontend/completionStore.ts; do not
  * infer a flat per-message signature merely from catalog `is_tee` metadata.
  */
-export const PICKER_MODELS = [
-  // deepseek-v4-pro was delisted from serving on 2026-07-17 (still in /models,
-  // but /chat/completions returns 404 "The model does not exist"). Its first
-  // replacement, deepseek-v3.2, turned out to be load-shedding (4/6 requests
-  // 429'd in a sequential burst), so the offered model moved to v4-flash the
-  // same day: 200s under burst, flat ECDSA signature path, tool-calling OK. It
-  // moved again after renewed serving flakiness in August 2026.
-  // Live RedPill catalog + availability check 2026-08-24: 1M context, text,
-  // reasoning, structured output, and tool calling; routed through TEE providers.
-  "z-ai/glm-5.2", // the single offered model
-] as const;
-
-const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
+export const PICKER_MODELS = OFFERED_CHAT_MODELS.map(({ id }) => id);
 
 /**
  * Static, in-code context-window map (tokens) used by the chat-compaction path.
@@ -100,11 +94,9 @@ const PICKER_MODEL_SET: ReadonlySet<string> = new Set(PICKER_MODELS);
  */
 export const DEFAULT_CONTEXT_TOKENS = 64000;
 
-export const CONTEXT_TOKENS: Record<string, number> = {
-  // Raw RedPill GET /v1/models `context_length` for z-ai/glm-5.2,
-  // checked by hand 2026-08-24 (1048576 = 1M).
-  "z-ai/glm-5.2": 1048576,
-};
+export const CONTEXT_TOKENS: Record<string, number> = Object.fromEntries(
+  OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => [id, contextTokens]),
+);
 
 /**
  * Context-window length (integer tokens) for a model id, from the static
@@ -112,7 +104,7 @@ export const CONTEXT_TOKENS: Record<string, number> = {
  * Pure and side-effect-free; no upstream dependency (§C.4c / §D.5).
  */
 export function contextLengthFor(modelId: string): number {
-  return CONTEXT_TOKENS[modelId] ?? DEFAULT_CONTEXT_TOKENS;
+  return CONTEXT_TOKENS[modelId] ?? offeredChatModelContextTokens(modelId) ?? DEFAULT_CONTEXT_TOKENS;
 }
 
 /**
@@ -123,7 +115,7 @@ export function contextLengthFor(modelId: string): number {
  * six are reachable.
  */
 export function isOfferedModel(id: string): boolean {
-  return PICKER_MODEL_SET.has(id);
+  return isOfferedChatModel(id);
 }
 
 /** Clear the in-memory catalog cache. Exposed for tests. */

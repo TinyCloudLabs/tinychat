@@ -1,0 +1,49 @@
+{
+  "checkedAt": "2026-09-07T15:14:49.724Z",
+  "endpoint": "https://api.redpill.ai/v1",
+  "releaseReady": false,
+  "candidates": [
+    {
+      "model": "z-ai/glm-5.3",
+      "streaming": "blocked",
+      "toolRoundTrip": "blocked",
+      "responseSignature": "not-proven",
+      "blocker": "REDPILL_API_KEY unavailable; no inference requests made"
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "streaming": "blocked",
+      "toolRoundTrip": "blocked",
+      "responseSignature": "not-proven",
+      "blocker": "REDPILL_API_KEY unavailable; no inference requests made"
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "streaming": "blocked",
+      "toolRoundTrip": "blocked",
+      "responseSignature": "not-proven",
+      "blocker": "REDPILL_API_KEY unavailable; no inference requests made"
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "streaming": "blocked",
+      "toolRoundTrip": "blocked",
+      "responseSignature": "not-proven",
+      "blocker": "REDPILL_API_KEY unavailable; no inference requests made"
+    },
+    {
+      "model": "qwen/qwen3.6-27b",
+      "streaming": "blocked",
+      "toolRoundTrip": "blocked",
+      "responseSignature": "not-proven",
+      "blocker": "REDPILL_API_KEY unavailable; no inference requests made"
+    },
+    {
+      "model": "google/gemma-4-31b-it",
+      "streaming": "blocked",
+      "toolRoundTrip": "blocked",
+      "responseSignature": "not-proven",
+      "blocker": "REDPILL_API_KEY unavailable; no inference requests made"
+    }
+  ]
+}

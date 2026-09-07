@@ -49,6 +49,38 @@ function sseResponse(): Response {
   return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
+function selection(threadId = "meeting-thread", model = "model") {
+  return {
+    beginActiveTurn: async (turnId: string) => ({
+      tcw: {} as never,
+      space: "space-1",
+      threadId,
+      activation: 1,
+      signal: new AbortController().signal,
+      model,
+      turnId,
+    }),
+    beginTurn: async (_threadId: string, turnId: string) => ({
+      tcw: {} as never,
+      space: "space-1",
+      threadId,
+      activation: 1,
+      signal: new AbortController().signal,
+      model,
+      turnId,
+    }),
+    waitForAppend: async () => {},
+    confirmAppend: () => {},
+    isAppendSaved: () => true,
+    captureCancel: () => () => {},
+    cancel: () => {},
+    assertActive: () => {},
+    setRunning: () => {},
+    needsFirstInsert: () => false,
+    markFirstAppend: () => {},
+  } as never;
+}
+
 describe("meeting-turn runtime privacy boundary", () => {
   test("keeps browser-fallback evidence only on the wire and suppresses runtime extraction across append retry", async () => {
     // runtime.tsx normally loads in the browser. Supply the tiny DOM surface
@@ -67,7 +99,7 @@ describe("meeting-turn runtime privacy boundary", () => {
     const logs: unknown[] = [];
     const tcw = historyTcw(sqlBatches);
     const meetingMessageRegistry = createMeetingMessageRegistry();
-    const history = createHistoryAdapter(tcw, "meeting-thread", (exchange, turn) => {
+    const history = createHistoryAdapter(tcw, "meeting-thread", selection(), (exchange, turn) => {
       onAssistantTurnCalls.push({ exchange, turn });
     }, undefined, meetingMessageRegistry);
     const item = {
@@ -96,9 +128,7 @@ describe("meeting-turn runtime privacy boundary", () => {
       const chat = createChatModelAdapter({
         backendUrl: "https://api.test",
         sessionStore: { getToken: () => "token", isExpired: () => false } as never,
-        modelRef: { current: "model" } as never,
-        offeredModelIdsRef: { current: new Set(["model"]) } as never,
-        activeThreadIdRef: { current: "meeting-thread" } as never,
+        selection: selection(),
         agentEnabledRef: { current: false } as never,
         meetingRetriever: {
           retrieve: async () => ({
@@ -167,9 +197,7 @@ describe("meeting-turn runtime privacy boundary", () => {
         const ordinary = createChatModelAdapter({
           backendUrl: "https://api.test",
           sessionStore: { getToken: () => "token", isExpired: () => false } as never,
-          modelRef: { current: "model" } as never,
-          offeredModelIdsRef: { current: new Set(["model"]) } as never,
-          activeThreadIdRef: { current: "meeting-thread" } as never,
+          selection: selection(),
           agentEnabledRef: { current: agentEnabled } as never,
           meetingRetriever: { retrieve: async () => ({ status: "not-applicable" as const }) },
           meetingMessageRegistry,
@@ -205,9 +233,7 @@ describe("meeting-turn runtime privacy boundary", () => {
       const deterministic = createChatModelAdapter({
         backendUrl: "https://api.test",
         sessionStore: { getToken: () => "token", isExpired: () => false } as never,
-        modelRef: { current: "model" } as never,
-        offeredModelIdsRef: { current: new Set(["model"]) } as never,
-        activeThreadIdRef: { current: "meeting-thread" } as never,
+        selection: selection(),
         // Deterministic browser retrieval outcomes exist only in fallback mode;
         // delegated turns always reach the agent tool path.
         agentEnabledRef: { current: false } as never,

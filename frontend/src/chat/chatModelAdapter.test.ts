@@ -86,10 +86,24 @@ function makeDeps(overrides: Partial<AdapterDeps> = {}): {
   const deps: AdapterDeps = {
     sessionStore,
     backendUrl: "http://backend.test",
-    modelRef: ref("m1") as never,
-    activeThreadIdRef: ref<string | null>("t1") as never,
+    selection: {
+      beginActiveTurn: async (turnId: string) => ({
+        tcw: {} as never,
+        space: "space-1",
+        threadId: "t1",
+        activation: 1,
+      signal: new AbortController().signal,
+        model: "m1",
+        turnId,
+      }),
+      waitForAppend: async () => {},
+    confirmAppend: () => {},
+    captureCancel: () => () => {},
+    cancel: () => {},
+    assertActive: () => {},
+      setRunning: () => {},
+    } as never,
     agentEnabledRef: ref(false) as never,
-    offeredModelIdsRef: ref<ReadonlySet<string>>(new Set(["m1"])) as never,
     meetingMessageRegistry: createMeetingMessageRegistry(),
     getCheckpoint: async () => null,
     appendCompaction: appendCompaction as never,
@@ -157,6 +171,7 @@ describe("chatModelAdapter reactive compaction", () => {
       adapter.run({
         messages: makeMessages(6),
         context: {},
+        abortSignal: new AbortController().signal,
         unstable_assistantMessageId: "a1",
       } as never) as never,
     );
@@ -179,6 +194,7 @@ describe("chatModelAdapter reactive compaction", () => {
       adapterB.run({
         messages: makeMessages(6),
         context: {},
+        abortSignal: new AbortController().signal,
         unstable_assistantMessageId: "b1",
       } as never) as never,
     );
@@ -358,6 +374,7 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
           messages: oneUserMessage(),
           abortSignal: new AbortController().signal,
           context: {},
+        abortSignal: new AbortController().signal,
           unstable_assistantMessageId: `meeting-${outcome.status}`,
         } as never) as never,
       );
@@ -412,6 +429,7 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
         messages: oneUserMessage("hello"),
         abortSignal: new AbortController().signal,
         context: {},
+        abortSignal: new AbortController().signal,
         unstable_assistantMessageId: "ordinary-1",
       } as never) as never,
     );

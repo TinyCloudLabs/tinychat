@@ -28,7 +28,6 @@ import {
   deleteThread,
   getMemory,
   getThread,
-  getThreadModel,
   getThreadTitle,
   isKnownThreadId,
   listThreads,
@@ -44,7 +43,7 @@ import {
 } from "../lib/threadStore";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { renderMemoryBlock, runExtraction } from "../lib/memory";
-import { pickExtractionModel as chooseExtractionModel } from "../lib/extractionModel";
+import { pickExtractionModel } from "../lib/extractionModel";
 import {
   aggregateTurnCredits,
   createBillingClient,
@@ -55,51 +54,17 @@ import {
   type RatesResponse,
 } from "../lib/billingApi";
 import { setCompletion } from "../lib/completionStore";
-import { healPersistedModel } from "../lib/sanitizeModel";
+import {
+  ModelSelectionCoordinator,
+  type ModelSelectionController,
+  type SelectionView,
+  type TurnOrigin,
+} from "./modelSelection";
 import {
   takePendingCompletion,
   takePendingReceipt,
   type MeetingMessageRegistry,
 } from "./pendingHandoff";
-
-/**
- * PREFERRED model id used for memory extraction. The extraction runs once per
- * assistant turn off the visible reply path. The id MUST be in the offered set
- * for the POST to pass the model gate; an unoffered id 403s with
- * `model_not_offered` and memory silently never updates (ST3). To survive
- * picker churn (the lineup has changed several times: gpt-5-mini → gpt-oss-20b
- * → qwen-2.5-7b → deepseek-v4-pro → deepseek-v3.2 → deepseek-v4-flash
- * → glm-5.2), this is now the *preferred* id only —
- * `pickExtractionModel` falls back to the current chat model, then the first
- * offered id, so extraction keeps working even if this preferred id drifts out
- * of the catalog.
- */
-const MEMORY_EXTRACTION_MODEL = "z-ai/glm-5.2";
-
-/**
- * Choose an extraction model that is guaranteed to be offered, so the
- * extraction POST can never 403 with `model_not_offered` (silent memory stop).
- * Preference order: configured preferred → current chat model → first offered.
- */
-function pickExtractionModel(d: ChatRuntimeDeps): string {
-  const choice = chooseExtractionModel(
-    MEMORY_EXTRACTION_MODEL,
-    d.offeredModelIdsRef.current,
-    d.modelRef.current,
-  );
-  if (choice.source === "chat") {
-    console.warn(
-      `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered; ` +
-        `falling back to current chat model ${choice.model}`,
-    );
-  } else if (choice.source === "first") {
-    console.warn(
-      `[memory] extraction model ${MEMORY_EXTRACTION_MODEL} not offered and chat ` +
-        `model unavailable; falling back to ${choice.model}`,
-    );
-  }
-  return choice.model;
-}
 
 /**
  * Per-call output cap on extraction. cl100k averages ~4 chars/token for
@@ -114,17 +79,9 @@ export interface ChatRuntimeDeps {
   tcw: TinyCloudWeb;
   sessionStore: SessionStore;
   backendUrl: string;
-  /** Live ref to the currently selected model id (set by the model picker). */
-  modelRef: React.MutableRefObject<string>;
-  /** Called when the active thread changes so the picker can sync its model. */
-  onActiveThreadModel?: (model: string) => void;
-  /**
-   * Live ref to the currently-offered model ids (from the loaded /models list).
-   * Read by the per-thread sync (to heal a stale thread-row model against the
-   * real catalog, not just the phala/ prefix gate) and by the adapter at request
-   * time. Empty before /models loads — sanitizeModel then uses the prefix gate.
-   */
-  offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
+  selectionControllerRef: React.MutableRefObject<ModelSelectionController | null>;
+  onSelectionView: (view: SelectionView) => void;
+  onSelectionAuthFailure?: () => void;
   /**
    * Live ref to the latest known memory doc for the active space. Read at
    * model-context request time so freshly-extracted memory shows up on the
@@ -346,6 +303,7 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
 export function createHistoryAdapter(
   tcw: TinyCloudWeb,
   threadId: string,
+  selection: ModelSelectionCoordinator,
   /**
    * Triggered fire-and-forget after every assistant-turn append. Carries the
    * turn's message ids so a background call's billed usage can be folded back
@@ -354,6 +312,7 @@ export function createHistoryAdapter(
   onAssistantTurn: (
     exchange: ChatMessage[],
     turn: { assistantMessageId?: string; userMessageId?: string },
+    origin: TurnOrigin,
   ) => void,
   /**
    * Computes the input/output split receipt for an assistant turn, applies it
@@ -372,10 +331,11 @@ export function createHistoryAdapter(
   // Per-thread rolling 2-item ring of the most recent user/assistant exchange.
   // Owned by the adapter (one ring per active thread instance) so a thread
   // switch can never feed extraction a stale exchange from a prior thread.
-  const lastExchange: ChatMessage[] = [];
+  const userTexts = new Map<string, string>();
   // Id of the most recently appended user message — paired with the assistant
   // message id below to register the split receipt (input vs. output share).
   let lastUserMessageId: string | undefined;
+  let lastOrigin: TurnOrigin | undefined;
   return {
     async load(): Promise<ExportedMessageRepository> {
       // Brand-new threads have nothing persisted, but the runtime still fires
@@ -424,7 +384,14 @@ export function createHistoryAdapter(
       // the post-await path never ran while the stream + ids were all ready.
       if (role === "user") {
         lastUserMessageId = typeof id === "string" ? id : undefined;
+        if (!lastUserMessageId) throw new Error("Cannot persist a user message without an id.");
+        lastOrigin = await selection.beginTurn(threadId, lastUserMessageId);
+        selection.assertActive(lastOrigin);
       }
+      const origin = lastOrigin;
+      // assistant-ui also appends its error reply after a blocked/cancelled
+      // run. Such a reply must not create the missing first row or extract.
+      if (role === "assistant" && (!origin || !selection.isAppendSaved(origin))) return;
       if (role === "assistant" && typeof id === "string" && computeReceipt) {
         // Compute the receipt (which also applies the live in-session store
         // footers + the single usage-bump emit) BEFORE persisting, so we can
@@ -434,7 +401,7 @@ export function createHistoryAdapter(
         // they just won't survive reload — acceptable). Rates are session-cached
         // after the first call, so this normally resolves in microseconds.
         const receipt = await Promise.race([
-          computeReceipt(id, lastUserMessageId).catch(() => null),
+          computeReceipt(id, origin?.turnId).catch(() => null),
           new Promise<null>((resolve) =>
             setTimeout(() => resolve(null), RECEIPT_COMPUTE_TIMEOUT_MS),
           ),
@@ -466,25 +433,38 @@ export function createHistoryAdapter(
         return;
       }
 
-      await appendMessage(tcw, threadId, item);
-
-      // Maintain a rolling 2-item ring of the most recent user/assistant
-      // exchange. Extraction only ever needs the last turn pair, NOT the full
-      // history — that's the cost optimization the plan calls for.
-      const text = storedItemText(item);
-      if ((role === "user" || role === "assistant") && text) {
-        lastExchange.push({ role, content: text });
-        if (lastExchange.length > 2) lastExchange.splice(0, lastExchange.length - 2);
+      if (!origin) throw new Error("Cannot persist a message without a captured turn origin.");
+      const firstInsert = role === "user" && selection.needsFirstInsert(origin);
+      const retryFirstInsert = firstInsert && origin
+        ? () => appendMessage(tcw, threadId, item, origin!.model)
+        : undefined;
+      if (firstInsert && origin) {
+        selection.markFirstAppend(origin, true, false, retryFirstInsert);
+      }
+      try {
+        await appendMessage(tcw, threadId, item, origin.model);
+        if (firstInsert) selection.markFirstAppend(origin, false);
+        if (role === "user") selection.confirmAppend(origin, true);
+      } catch (error) {
+        if (role === "user") selection.confirmAppend(origin, false);
+        if (firstInsert && origin) {
+          selection.markFirstAppend(origin, false, true, retryFirstInsert);
+        }
+        throw error;
       }
 
-      // Fire-and-forget extraction after an assistant turn — never await it
-      // into the append path or the next user message stalls behind it. Pass
-      // the turn ids so extraction's billed usage folds onto THIS reply's badge.
+      const text = storedItemText(item);
+      if (role === "user" && text) userTexts.set(origin.turnId, text);
       if (role === "assistant" && !meetingTurn) {
-        onAssistantTurn([...lastExchange], {
+        const userText = userTexts.get(origin.turnId);
+        const exchange: ChatMessage[] = [
+          ...(userText ? [{ role: "user" as const, content: userText }] : []),
+          ...(text ? [{ role: "assistant" as const, content: text }] : []),
+        ];
+        onAssistantTurn(exchange, {
           assistantMessageId: typeof id === "string" ? id : undefined,
-          userMessageId: lastUserMessageId,
-        });
+          userMessageId: origin.turnId,
+        }, origin);
       }
     },
   };
@@ -495,7 +475,10 @@ export function createHistoryAdapter(
 // `unstable_Provider` injects the per-thread history adapter for whichever
 // thread is currently active (read via `useAuiState`).
 
-function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
+function useThreadListAdapter(
+  deps: ChatRuntimeDeps,
+  selection: ModelSelectionCoordinator,
+): RemoteThreadListAdapter {
   const { tcw } = deps;
   const depsRef = useRef(deps);
   depsRef.current = deps;
@@ -514,12 +497,10 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
     (
       exchange: ChatMessage[],
       turn: { assistantMessageId?: string; userMessageId?: string },
+      origin: TurnOrigin,
     ) => {
       const d = depsRef.current;
-      // Resolve the extraction model ONCE so the usage fold re-derives credits
-      // against the same model id the POST billed (it may differ from the
-      // visible reply's model — pickExtractionModel falls through the catalog).
-      const extractionModel = pickExtractionModel(d);
+      const extractionModel = pickExtractionModel(origin.model);
       // One fold per background call — a double-fire guard so the meter/badge
       // can never count this extraction twice (edge case c).
       let folded = false;
@@ -539,16 +520,16 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
             },
           }),
         getDoc: async () => {
-          // Prefer the live ref (already reconciled by getMemory on mount) so
-          // we don't pay a SQL round-trip per assistant turn.
-          const ref = d.memoryRef.current;
-          if (ref !== null) return ref;
-          return getMemory(d.tcw);
+          // Read the originating space even if navigation or sign-out changed
+          // the shared UI memory ref while the assistant append was pending.
+          return getMemory(origin.tcw);
         },
         setDoc: async (next) => {
-          d.memoryRef.current = next;
-          d.onMemoryUpdated?.(next);
-          await setMemory(d.tcw, next);
+          await setMemory(origin.tcw, next);
+          if (depsRef.current.tcw === origin.tcw) {
+            depsRef.current.memoryRef.current = next;
+            depsRef.current.onMemoryUpdated?.(next);
+          }
         },
         writeGen: memoryWriteGen,
       });
@@ -616,21 +597,22 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
       const threadId = useAuiState(
         (s) => s.threadListItem.remoteId ?? s.threadListItem.id,
       ) as string;
+      const threadStatus = useAuiState((s) => s.threadListItem.status) as string;
+      const isMain = useAuiState((s) => s.threads.mainThreadId === s.threadListItem.id);
 
       // C2: write the active thread id into the shared ref so the adapter's
       // run() can read it as roomId. Mirror the fetcherTcwRef pattern: update
       // during render, no effect needed (the ref assignment is synchronous and
       // safe in render — not state, not a DOM side-effect).
-      depsRef.current.activeThreadIdRef.current = threadId;
+      if (isMain) depsRef.current.activeThreadIdRef.current = threadId;
 
       const activeTcw = depsRef.current.tcw;
-      const onActiveThreadModel = depsRef.current.onActiveThreadModel;
-
       const history = useMemo<ThreadHistoryAdapter>(
         () =>
           createHistoryAdapter(
             activeTcw,
             threadId,
+            selection,
             onAssistantTurn,
             computeReceipt,
             depsRef.current.meetingMessageRegistry,
@@ -638,33 +620,9 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
         [activeTcw, threadId, onAssistantTurn, computeReceipt],
       );
 
-      // Sync the model picker with the active thread's stored model.
-      useEffect(() => {
-        if (!threadId || !onActiveThreadModel) return;
-        let cancelled = false;
-        (async () => {
-          const model = await getThreadModel(activeTcw, threadId);
-          if (cancelled || !model) return;
-          // ST1 — a pre-PR thread row can carry a stale non-offered model id.
-          // Heal against the real offered catalog (Bug #1: the phala/ prefix gate
-          // alone passes a phala/ id that was later dropped from the lineup, e.g.
-          // gpt-oss-20b, which then overrides the picker and 403s). When the id
-          // was non-offered, heal the thread row so it does not recur next open.
-          const { model: corrected, healed } = healPersistedModel(
-            model,
-            depsRef.current.offeredModelIdsRef.current,
-          );
-          if (healed) {
-            void setThreadModel(activeTcw, threadId, corrected).catch(() => {
-              // Best-effort heal; the picker still shows the corrected value.
-            });
-          }
-          if (!cancelled) onActiveThreadModel(corrected);
-        })();
-        return () => {
-          cancelled = true;
-        };
-      }, [activeTcw, threadId, onActiveThreadModel]);
+      // Establish the activation/restoration barrier during render. This runs
+      // before effects and therefore also protects an immediate programmatic send.
+      if (isMain) selection.activate(threadId, threadStatus === "new" ? "new" : "existing");
 
       const adapters = useMemo(() => ({ history }), [history]);
       return <RuntimeAdapterProvider adapters={adapters}>{children}</RuntimeAdapterProvider>;
@@ -676,6 +634,7 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
     () => ({
       async list() {
         const summaries = await listThreads(tcw);
+        selection.setKnownThreadIds(summaries.map((thread) => thread.id));
         return {
           threads: summaries.map((t) => ({
             status: "regular" as const,
@@ -689,6 +648,7 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
         // orphan "New chat" entries (the runtime initializes a thread before
         // any message is sent). The KV doc is created lazily by appendMessage
         // on the first real message, so an empty thread never hits storage.
+        await selection.initialize(threadId);
         return { remoteId: threadId, externalId: undefined };
       },
       async rename(remoteId: string, newTitle: string) {
@@ -727,7 +687,7 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
       },
       unstable_Provider: Provider,
     }),
-    [tcw, Provider],
+    [tcw, Provider, selection],
   );
 }
 
@@ -735,39 +695,48 @@ function useThreadListAdapter(deps: ChatRuntimeDeps): RemoteThreadListAdapter {
  * Wires the chat model transport + per-thread KV persistence + sidebar list
  * into a single assistant-ui runtime.
  *
- * Model selection flows through `deps.modelRef`: the picker writes to it, the
- * ChatModelAdapter reads `modelRef.current` at request time, and the persisted
- * per-thread model is loaded back into the picker when a thread activates.
+ * One selection coordinator gates history and inference and captures each
+ * turn's model and origin. Only the committed main thread updates the picker.
  */
 export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
-  const adapter = useThreadListAdapter(deps);
   const depsRef = useRef(deps);
   depsRef.current = deps;
+  const selectionRef = useRef<ModelSelectionCoordinator | null>(null);
+  if (selectionRef.current === null) {
+    selectionRef.current = new ModelSelectionCoordinator({
+      tcw: deps.tcw,
+      backendUrl: deps.backendUrl,
+      sessionStore: deps.sessionStore,
+      onView: (view) => depsRef.current.onSelectionView(view),
+      onAuthFailure: () => depsRef.current.onSelectionAuthFailure?.(),
+    });
+  }
+  const selection = selectionRef.current;
+  deps.selectionControllerRef.current = selection;
+  const adapter = useThreadListAdapter(deps, selection);
 
-  // One-shot boot warning if the preferred extraction model is not in the
-  // offered catalog once it loads — makes the drift visible in dev instead of
-  // failing silently. Guarded by a ref so it never spams across renders.
-  const extractionDriftWarnedRef = useRef(false);
-  const offeredCatalogSize = deps.offeredModelIdsRef.current?.size ?? 0;
+  const mountGeneration = useRef(0);
   useEffect(() => {
-    if (extractionDriftWarnedRef.current) return;
-    const offered = depsRef.current.offeredModelIdsRef.current;
-    if (!offered || offered.size === 0) return;
-    if (!offered.has(MEMORY_EXTRACTION_MODEL)) {
-      extractionDriftWarnedRef.current = true;
-      console.warn(
-        `[memory] preferred extraction model ${MEMORY_EXTRACTION_MODEL} is NOT ` +
-          `in the offered catalog — pickExtractionModel will fall back at runtime.`,
-      );
-    } else {
-      extractionDriftWarnedRef.current = true;
-    }
-  }, [offeredCatalogSize]);
+    const generation = ++mountGeneration.current;
+    selection.resume();
+    depsRef.current.selectionControllerRef.current = selection;
+    return () => {
+      // React Strict Mode replays effects synchronously. Defer disposal one
+      // microtask so its replay shares the same lookup and deferred choice.
+      queueMicrotask(() => {
+        if (mountGeneration.current !== generation) return;
+        selection.dispose();
+        if (depsRef.current.selectionControllerRef.current === selection) {
+          depsRef.current.selectionControllerRef.current = null;
+        }
+      });
+    };
+  }, [selection]);
 
   const chatModel = useMemo(
-    () => createChatModelAdapter(depsRef.current),
+    () => createChatModelAdapter({ ...depsRef.current, selection }),
     // The adapter reads everything off depsRef at call time, so it is stable.
-    [],
+    [selection],
   );
 
   const runtime = useRemoteThreadListRuntime({
@@ -778,6 +747,20 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     },
     adapter,
   });
+
+  // assistant-ui retains inactive providers. Only the committed main thread
+  // owns activation; this subscription establishes the barrier synchronously
+  // before a switch promise resolves (including a return to a mounted thread).
+  useEffect(() => {
+    const activateMain = () => {
+      const item = runtime.threads.mainItem.getState();
+      const id = item.remoteId ?? item.id;
+      depsRef.current.activeThreadIdRef.current = id;
+      selection.activate(id, item.status === "new" ? "new" : "existing");
+    };
+    activateMain();
+    return runtime.threads.subscribe(activateMain);
+  }, [runtime, selection]);
 
   // Sidebar freshness + background history prefetch.
   //

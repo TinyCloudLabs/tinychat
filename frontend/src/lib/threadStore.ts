@@ -1,4 +1,5 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
 import { historyPrefetch } from "./historyPrefetch";
 import { MEMORY_TEMPLATE } from "./memory";
@@ -30,7 +31,7 @@ export const DEFAULT_TITLE = "New chat";
 // New-chat default — the backend's single offered confidential model. Keep it
 // in sync with backend PICKER_MODELS and REDPILL_DEFAULT_MODEL. Response-level
 // signature verification is capability-gated separately in completionStore.ts.
-export const DEFAULT_MODEL = "z-ai/glm-5.2";
+export const DEFAULT_MODEL = DEFAULT_CHAT_MODEL;
 
 /**
  * Db handle name. MUST be the full resolved path so the SQL invoke resource
@@ -252,14 +253,18 @@ export async function getThread(tcw: TinyCloudWeb, id: string): Promise<ThreadDo
 }
 
 /** Read just a thread's model (cheap — avoids loading the whole message list). */
-export async function getThreadModel(tcw: TinyCloudWeb, id: string): Promise<string | null> {
+export type ThreadModelRead =
+  | { status: "missing" }
+  | { status: "found"; model: string | null };
+
+export async function getThreadModel(tcw: TinyCloudWeb, id: string): Promise<ThreadModelRead> {
   await ensureSchema(tcw);
   const res = await store(tcw).query("SELECT model FROM threads WHERE id = ?", [id]);
   if (!res.ok) throw new SqlOpError(res.error, "getThreadModel");
   const rows = res.data.rows;
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return { status: "missing" };
   const model = rows[0][0];
-  return typeof model === "string" ? model : null;
+  return { status: "found", model: typeof model === "string" ? model : null };
 }
 
 /** Read just a thread's title (cheap — for the live sidebar title update). */
@@ -849,6 +854,32 @@ async function coldLoad(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
 
 // ── Mutations ────────────────────────────────────────────────────────
 
+// A queue is captured by account + thread at call entry. This serializes the
+// thread row, its ordered message positions, and the matching summary-cache
+// updates without ever retargeting work after navigation. A rejected operation
+// is observed by its caller but cannot poison the tail of the FIFO.
+const threadWriteQueues = new Map<string, Promise<void>>();
+
+function threadWriteKey(tcw: TinyCloudWeb, id: string): string {
+  const space =
+    (typeof tcw.spaceId === "string" && tcw.spaceId) ||
+    (typeof tcw.did === "string" && tcw.did) ||
+    "anonymous";
+  return `${space}\u0000${id}`;
+}
+
+function enqueueThreadWrite<T>(tcw: TinyCloudWeb, id: string, work: () => Promise<T>): Promise<T> {
+  const key = threadWriteKey(tcw, id);
+  const prior = threadWriteQueues.get(key) ?? Promise.resolve();
+  const operation = prior.catch(() => undefined).then(work);
+  const tail = operation.then(() => undefined, () => undefined);
+  threadWriteQueues.set(key, tail);
+  void tail.finally(() => {
+    if (threadWriteQueues.get(key) === tail) threadWriteQueues.delete(key);
+  });
+  return operation;
+}
+
 /**
  * Create an in-memory thread doc. Does NOT write — empty threads never hit
  * storage. The row is created lazily by appendMessage on the first message
@@ -892,37 +923,68 @@ export async function appendMessage(
   tcw: TinyCloudWeb,
   id: string,
   item: StoredMessageItem,
+  selectedModel: string = DEFAULT_MODEL,
 ): Promise<void> {
-  mutationGen++;
-  await ensureSchema(tcw);
+  return enqueueThreadWrite(tcw, id, async () => {
+    mutationGen++;
+    await ensureSchema(tcw);
 
-  // Read the current title (to know whether to derive one) and existing model.
-  const head = await store(tcw).query(
-    "SELECT title, model FROM threads WHERE id = ?",
-    [id],
-  );
-  if (!head.ok) throw new SqlOpError(head.error, "appendMessage(head)");
-  const exists = head.data.rows.length > 0;
-  const currentTitle = exists ? cellStr(head.data.rows[0], 0, DEFAULT_TITLE) : DEFAULT_TITLE;
-  const currentModel = exists ? cellStr(head.data.rows[0], 1, DEFAULT_MODEL) : DEFAULT_MODEL;
+    // Reconcile a prior uncertain batch before replaying. The message id is the
+    // idempotency key; if the server committed but the response was lost, the
+    // retry succeeds without appending a duplicate position.
+    const messageId = (item.message as { id?: unknown } | undefined)?.id;
+    if (typeof messageId === "string") {
+      const existing = await store(tcw).query(
+        "SELECT payload FROM messages WHERE thread_id = ? ORDER BY position",
+        [id],
+      );
+      if (!existing.ok) throw new SqlOpError(existing.error, "appendMessage(reconcile)");
+      const alreadyStored = existing.data.rows.some((row) => {
+        if (typeof row[0] !== "string") return false;
+        try {
+          return JSON.parse(row[0])?.message?.id === messageId;
+        } catch {
+          return false;
+        }
+      });
+      if (alreadyStored) {
+        // A lost batch response also skipped the cache update. Reconcile both
+        // durable identity and the sidebar before declaring the retry saved.
+        const doc = await getThread(tcw, id);
+        if (!doc) throw new Error("Saved message has no thread");
+        patchCacheEntry(tcw, { id, title: doc.title, model: doc.model, updatedAt: doc.updatedAt });
+        historyPrefetch.invalidate(id);
+        notifyThreadIndex(readCache(tcw) ?? []);
+        return;
+      }
+    }
+
+    // Read the current title (to know whether to derive one) and existing model.
+    const head = await store(tcw).query(
+      "SELECT title, model FROM threads WHERE id = ?",
+      [id],
+    );
+    if (!head.ok) throw new SqlOpError(head.error, "appendMessage(head)");
+    const exists = head.data.rows.length > 0;
+    const currentTitle = exists ? cellStr(head.data.rows[0], 0, DEFAULT_TITLE) : DEFAULT_TITLE;
+    const currentModel = exists ? cellStr(head.data.rows[0], 1, selectedModel) : selectedModel;
 
   // Derive a title from the first user message while still default.
-  let title = currentTitle;
-  if (title === DEFAULT_TITLE && item.message?.role === "user") {
-    const text = firstTextOf(item);
-    if (text) title = text.slice(0, 60);
-  }
+    let title = currentTitle;
+    if (title === DEFAULT_TITLE && item.message?.role === "user") {
+      const text = firstTextOf(item);
+      if (text) title = text.slice(0, 60);
+    }
 
-  const now = new Date().toISOString();
-  const payload = JSON.stringify(item);
+    const now = new Date().toISOString();
+    const payload = JSON.stringify(item);
 
-  const res = await store(tcw).batch([
+    const res = await store(tcw).batch([
     {
       sql: `INSERT INTO threads (id, title, model, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               title = excluded.title,
-              model = excluded.model,
               updated_at = excluded.updated_at`,
       params: [id, title, currentModel, now, now],
     },
@@ -931,20 +993,21 @@ export async function appendMessage(
             VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE thread_id = ?), ?, ?)`,
       params: [id, id, payload, now],
     },
-  ]);
-  if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
+    ]);
+    if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
 
-  patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
+    patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
   // The thread's stored messages changed — drop any prefetched doc so a later
   // open re-reads. And the list ordering/title may have changed: converge the
   // sidebar (the runtime gates this behind "no stream running").
-  historyPrefetch.invalidate(id);
-  notifyThreadIndex(readCache(tcw) ?? []);
+    historyPrefetch.invalidate(id);
+    notifyThreadIndex(readCache(tcw) ?? []);
+  });
 }
 
 /** Default model for imported (non-native) conversations — see spec §8. Must be
  * an offered picker model (backend PICKER_MODELS). */
-export const IMPORT_DEFAULT_MODEL = "phala/gpt-oss-20b";
+export const IMPORT_DEFAULT_MODEL = DEFAULT_CHAT_MODEL;
 
 /**
  * Write one normalized Claude conversation as a thread row + ordered message
@@ -1045,28 +1108,41 @@ export async function setThreadModel(
   id: string,
   model: string,
 ): Promise<void> {
-  mutationGen++;
-  await ensureSchema(tcw);
-  const now = new Date().toISOString();
-  const res = await store(tcw).execute(
-    "UPDATE threads SET model = ?, updated_at = ? WHERE id = ?",
-    [model, now, id],
-  );
-  if (!res.ok) throw new SqlOpError(res.error, "setThreadModel");
+  return enqueueThreadWrite(tcw, id, async () => {
+    mutationGen++;
+    await ensureSchema(tcw);
+    const now = new Date().toISOString();
+    const res = await store(tcw).execute(
+      "UPDATE threads SET model = ?, updated_at = ? WHERE id = ?",
+      [model, now, id],
+    );
+
+    // Always read back. This detects a no-row UPDATE and reconciles the
+    // uncertain case where SQL committed but the response was lost.
+    const confirmed = await store(tcw).query("SELECT model FROM threads WHERE id = ?", [id]);
+    if (!confirmed.ok) throw new SqlOpError(confirmed.error, "setThreadModel(confirm)");
+    if (confirmed.data.rows.length === 0) {
+      throw new Error(`setThreadModel: thread ${id} does not exist`);
+    }
+    if (cellStr(confirmed.data.rows[0], 0, "") !== model) {
+      if (!res.ok) throw new SqlOpError(res.error, "setThreadModel");
+      throw new Error(`setThreadModel: model write was not confirmed for ${id}`);
+    }
   // The summary cache doesn't carry the title here; patch only updatedAt+model
   // against the existing cached entry if present.
-  const cached = readCache(tcw);
-  if (cached) {
-    const prior = cached.find((s) => s.id === id);
-    patchCacheEntry(tcw, {
-      id,
-      title: prior?.title ?? DEFAULT_TITLE,
-      updatedAt: now,
-      model,
-    });
-  }
-  historyPrefetch.invalidate(id);
-  notifyThreadIndex(readCache(tcw) ?? []);
+    const cached = readCache(tcw);
+    if (cached) {
+      const prior = cached.find((s) => s.id === id);
+      patchCacheEntry(tcw, {
+        id,
+        title: prior?.title ?? DEFAULT_TITLE,
+        updatedAt: now,
+        model,
+      });
+    }
+    historyPrefetch.invalidate(id);
+    notifyThreadIndex(readCache(tcw) ?? []);
+  });
 }
 
 /** Delete a thread and its messages. */
