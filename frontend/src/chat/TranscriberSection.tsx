@@ -365,6 +365,7 @@ function MeetingRow(props: {
           {meeting.status === "failed" && meeting.error && (
             <span className="mt-0.5 block text-xs text-destructive">{meeting.error.message}</span>
           )}
+          <CaptureDetails meeting={meeting} />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {stoppable && (
@@ -408,6 +409,52 @@ function MeetingRow(props: {
         </div>
       </div>
       {open !== null && <TranscriptPanel open={open} />}
+    </div>
+  );
+}
+
+/** A completed transcript can still come from a bot that left unexpectedly. */
+export function departureMessage(meeting: TranscriberMeeting): string | null {
+  const capture = meeting.capture;
+  switch (capture?.completion_reason) {
+    case "left_alone":
+    case "startup_alone":
+      return "Bot reported an audio-silence timeout. This can also happen if audio capture stops.";
+    case "evicted": return "Bot reported being removed or disconnected from the call.";
+    case "max_bot_time_exceeded": return "Bot reached its meeting time limit.";
+    case "stopped": return "Bot was stopped.";
+    case "awaiting_admission_timeout": return "Bot timed out waiting to be admitted.";
+    case "awaiting_admission_rejected": return "Bot was not admitted to the call.";
+    case "join_failure":
+    case "auth_session_missing":
+    case "validation_error": return "Bot reported a connection or setup failure.";
+  }
+  if (capture?.provider_record_missing_at) return "The recording service lost track of this bot.";
+  if (capture?.provider_status === "failed") return "Bot capture failed; the departure reason was not reported.";
+  if (capture?.stop_requested_by === "join_deadline") return "Bot was asked to stop after waiting too long to join.";
+  if (capture?.stop_requested_by === "user") return "A stop was requested for this bot.";
+  if (["completed", "failed", "cancelled"].includes(meeting.status)) return "Departure reason unavailable for this recording.";
+  return null;
+}
+
+function CaptureDetails({ meeting }: { meeting: TranscriberMeeting }) {
+  const message = departureMessage(meeting);
+  if (!message) return null;
+  return (
+    <div className="mt-1 text-xs text-muted-foreground">
+      <p>{message}</p>
+      <details className="mt-1">
+        <summary className="cursor-pointer">Recording diagnostics</summary>
+        <dl className="mt-1 space-y-1 break-all">
+          <div><dt className="inline font-medium">Meeting ID: </dt><dd className="inline select-all">{meeting.id}</dd></div>
+          {meeting.capture?.completion_reason && <div><dt className="inline font-medium">Departure code: </dt><dd className="inline">{meeting.capture.completion_reason}</dd></div>}
+          {meeting.capture?.ended_at && <div><dt className="inline font-medium">Capture ended: </dt><dd className="inline">{meeting.capture.ended_at}</dd></div>}
+          {meeting.capture?.exit_code != null && <div><dt className="inline font-medium">Bot exit code: </dt><dd className="inline">{meeting.capture.exit_code}</dd></div>}
+          {meeting.transcript_provider && <div><dt className="inline font-medium">Transcription provider: </dt><dd className="inline">{meeting.transcript_provider}</dd></div>}
+          {meeting.fallback_from && <div><dt className="inline font-medium">Transcription fallback: </dt><dd className="inline">{meeting.fallback_from} → {meeting.transcript_provider ?? "unknown"}</dd></div>}
+          {meeting.capture?.audio_activity === "not_reported" && <div>Live audio health was not reported by the recording service.</div>}
+        </dl>
+      </details>
     </div>
   );
 }

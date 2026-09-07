@@ -331,3 +331,31 @@ describe("Connectors page wiring", () => {
     expect(section).toContain("saveTranscriberMeeting");
   });
 });
+
+
+describe("recording departure diagnostics", () => {
+  test("a salvaged completed transcript still shows its early departure reason", () => {
+    const html = render({ meetings: [meeting({ status: "completed", capture: { completion_reason: "left_alone", provider_status: "completed", audio_activity: "not_reported" }, transcript_provider: "tinfoil" })] });
+    expect(html).toContain("audio-silence timeout");
+    expect(html).toContain("audio capture stops");
+    expect(html).toContain("Recording diagnostics");
+    expect(html).toContain("mtg_1");
+    expect(html).toContain("tinfoil");
+    expect(html).toContain("Live audio health was not reported");
+    expect(html).toContain(">Transcript</button>");
+  });
+  test("a runtime failure exposes the exit code while a legacy row admits missing evidence", () => {
+    const failed = render({ meetings: [meeting({ status: "failed", capture: { provider_status: "failed", exit_code: 137 } })] });
+    expect(failed).toContain("departure reason was not reported");
+    expect(failed).toContain("137");
+    const legacy = render({ meetings: [meeting({ status: "completed" })] });
+    expect(legacy).toContain("Departure reason unavailable");
+    expect(legacy).not.toContain("audio-silence timeout");
+  });
+  test("active meetings do not claim departure; removal and stop requests stay distinct", () => {
+    expect(render({ meetings: [meeting({ status: "in_progress" })] })).not.toContain("Recording diagnostics");
+    const html = render({ meetings: [meeting({ status: "completed", capture: { completion_reason: "evicted", stop_requested_by: "user" } })] });
+    expect(html).toContain("removed or disconnected");
+    expect(html).not.toContain("Bot was stopped.");
+  });
+});
