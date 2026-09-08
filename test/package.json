@@ -6,7 +6,8 @@
     "install:browsers": "playwright install chromium",
     "install:browsers:ci": "playwright install --with-deps chromium",
     "real-auth": "bun real-auth-manual.ts",
-    "connectors:browser": "bun connectors/browser-lane.ts"
+    "connectors:browser": "bun connectors/browser-lane.ts",
+    "model-router:browser": "bun test model-router-runtime.e2e.test.ts"
   },
   "dependencies": {
     "playwright": "^1.50.0"

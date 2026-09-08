@@ -1,0 +1,598 @@
+{
+  "startedAt": "2026-09-07T21:18:10.001Z",
+  "finishedAt": "2026-09-07T21:18:10.952Z",
+  "scope": "Unauthenticated public model catalog and health GETs only. No inference requests.",
+  "notes": [
+    "Uptime is upstream provider telemetry, not this users authenticated inference success rate.",
+    "Empty supportedFeatures or supportedParameters arrays indicate missing catalog claims; they do not establish unsupported tool behavior.",
+    "isTeeCatalog is a metadata claim, not proof of per-response attestation or verification.",
+    "Latest/current hourly buckets are partial when still in progress. Aggregate is provider periodUptime for the supplied three-day window.",
+    "Catalog provider labels and health provider lists may differ; preserved as reported."
+  ],
+  "models": [
+    {
+      "model": "z-ai/glm-5.3",
+      "name": "Z.ai: GLM 5.3",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "catalogPresent": true,
+      "pricingUsdPerMillionTokens": {
+        "prompt": 1.4,
+        "completion": 4.4,
+        "input_cache_read": 0.26
+      },
+      "pricingRawUsdPerToken": {
+        "prompt": "0.0000014",
+        "completion": "0.0000044",
+        "input_cache_read": "0.00000026"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 131072,
+      "isTeeCatalog": true,
+      "catalogProviders": [
+        "phala"
+      ],
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportedFeatures": [
+        "json_mode",
+        "logprobs",
+        "reasoning",
+        "structured_outputs",
+        "tools"
+      ],
+      "supportedParameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_completion_tokens",
+        "max_tokens",
+        "min_p",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "quantization": null,
+      "huggingFaceId": "zai-org/GLM-5.3",
+      "health": {
+        "source": "https://redpill.ai/api/models/z-ai/glm-5.3/uptime",
+        "httpStatus": 200,
+        "checkedAt": "2026-09-07T21:18:10.668Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:17:16.632179Z",
+        "periodEnd": "2026-09-07T21:17:16.632179Z",
+        "providers": [
+          {
+            "provider": "phala",
+            "isSelf": true,
+            "periodUptime": 0.9979890141693942,
+            "ttftMs": 2080,
+            "tokensPerSecond": 76.1,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9997806055287407
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9997806055287407
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.9998621576916008
+            },
+            "bucketCount": 73
+          }
+        ]
+      }
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "name": "DeepSeek: DeepSeek V4 Flash 0731",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "catalogPresent": true,
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.44,
+        "completion": 1.32,
+        "input_cache_read": 0.028
+      },
+      "pricingRawUsdPerToken": {
+        "prompt": "0.00000044",
+        "completion": "0.00000132",
+        "input_cache_read": "0.000000028"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 393216,
+      "isTeeCatalog": true,
+      "catalogProviders": [
+        "phala"
+      ],
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportedFeatures": [],
+      "supportedParameters": [],
+      "quantization": null,
+      "huggingFaceId": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "health": {
+        "source": "https://redpill.ai/api/models/deepseek/deepseek-v4-flash-0731/uptime",
+        "httpStatus": 200,
+        "checkedAt": "2026-09-07T21:18:10.669Z",
+        "classification": "unhealthy",
+        "periodStart": "2026-09-04T21:17:17.597351Z",
+        "periodEnd": "2026-09-07T21:17:17.597351Z",
+        "providers": [
+          {
+            "provider": "phala",
+            "isSelf": true,
+            "periodUptime": 0.9419171017445562,
+            "ttftMs": 672,
+            "tokensPerSecond": 70.2,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.6215334420880914
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.6215334420880914
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.8411016949152542
+            },
+            "bucketCount": 73
+          }
+        ]
+      }
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "name": "Z.ai: GLM 5.2",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "catalogPresent": true,
+      "pricingUsdPerMillionTokens": {
+        "prompt": 1.26,
+        "completion": 3.0,
+        "input_cache_read": 0.22
+      },
+      "pricingRawUsdPerToken": {
+        "prompt": "0.00000126",
+        "completion": "0.000003",
+        "input_cache_read": "0.00000022"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 131072,
+      "isTeeCatalog": true,
+      "catalogProviders": [
+        "chutes",
+        "near-ai"
+      ],
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportedFeatures": [
+        "json_mode",
+        "reasoning",
+        "structured_outputs",
+        "tools"
+      ],
+      "supportedParameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "max_tokens",
+        "min_p",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "quantization": "fp8",
+      "huggingFaceId": "zai-org/GLM-5.2",
+      "health": {
+        "source": "https://redpill.ai/api/models/z-ai/glm-5.2/uptime",
+        "httpStatus": 200,
+        "checkedAt": "2026-09-07T21:18:10.656Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:17:17.578058Z",
+        "periodEnd": "2026-09-07T21:17:17.578058Z",
+        "providers": [
+          {
+            "provider": "phala",
+            "isSelf": true,
+            "periodUptime": 0.999229277022658,
+            "ttftMs": 1534,
+            "tokensPerSecond": 74.7,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9986893840104849
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9986893840104849
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.9997988736926791
+            },
+            "bucketCount": 73
+          },
+          {
+            "provider": "chutes",
+            "isSelf": false,
+            "periodUptime": 0.9873683229234641,
+            "ttftMs": 3173,
+            "tokensPerSecond": 44.9,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9047619047619048
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9047619047619048
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.9933333333333333
+            },
+            "bucketCount": 73
+          },
+          {
+            "provider": "near-ai",
+            "isSelf": false,
+            "periodUptime": 0.9965141336037521,
+            "ttftMs": 2337,
+            "tokensPerSecond": 44.9,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9931506849315068
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9931506849315068
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.9955947136563876
+            },
+            "bucketCount": 73
+          }
+        ]
+      }
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "name": "MoonshotAI: Kimi K3",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "catalogPresent": true,
+      "pricingUsdPerMillionTokens": {
+        "prompt": 3.0,
+        "completion": 15.0,
+        "input_cache_read": 0.3
+      },
+      "pricingRawUsdPerToken": {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "input_cache_read": "0.0000003"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 1048576,
+      "isTeeCatalog": true,
+      "catalogProviders": [
+        "chutes"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportedFeatures": [
+        "json_mode",
+        "logprobs",
+        "reasoning",
+        "structured_outputs",
+        "tools"
+      ],
+      "supportedParameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "quantization": null,
+      "huggingFaceId": "moonshotai/Kimi-K3",
+      "health": {
+        "source": "https://redpill.ai/api/models/moonshotai/kimi-k3/uptime",
+        "httpStatus": 200,
+        "checkedAt": "2026-09-07T21:18:10.950Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:18:10.762519Z",
+        "periodEnd": "2026-09-07T21:18:10.762519Z",
+        "providers": [
+          {
+            "provider": "phala",
+            "isSelf": true,
+            "periodUptime": 0.9992436996178501,
+            "ttftMs": 2585,
+            "tokensPerSecond": 46.2,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 1
+            },
+            "bucketCount": 73
+          },
+          {
+            "provider": "chutes",
+            "isSelf": false,
+            "periodUptime": 0.9917461955119938,
+            "ttftMs": 2014,
+            "tokensPerSecond": 25.4,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 1
+            },
+            "bucketCount": 73
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen/qwen3.6-27b",
+      "name": "Qwen: Qwen3.6 27B",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "catalogPresent": true,
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.32,
+        "completion": 2.7,
+        "input_cache_read": 0.15
+      },
+      "pricingRawUsdPerToken": {
+        "prompt": "0.00000032",
+        "completion": "0.0000027",
+        "input_cache_read": "0.00000015"
+      },
+      "contextTokens": 262144,
+      "maxOutputTokens": 262140,
+      "isTeeCatalog": true,
+      "catalogProviders": [
+        "chutes"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportedFeatures": [],
+      "supportedParameters": [],
+      "quantization": null,
+      "huggingFaceId": "Qwen/Qwen3.6-27B",
+      "health": {
+        "source": "https://redpill.ai/api/models/qwen/qwen3.6-27b/uptime",
+        "httpStatus": 200,
+        "checkedAt": "2026-09-07T21:18:10.819Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:18:10.767448Z",
+        "periodEnd": "2026-09-07T21:18:10.767448Z",
+        "providers": [
+          {
+            "provider": "phala",
+            "isSelf": true,
+            "periodUptime": 0.9890361041410283,
+            "ttftMs": 979,
+            "tokensPerSecond": 33.2,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9939393939393939
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9939393939393939
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 1
+            },
+            "bucketCount": 73
+          },
+          {
+            "provider": "chutes",
+            "isSelf": false,
+            "periodUptime": 0.9890361041410283,
+            "ttftMs": 979,
+            "tokensPerSecond": 33.2,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9939393939393939
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9939393939393939
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 1
+            },
+            "bucketCount": 73
+          }
+        ]
+      }
+    },
+    {
+      "model": "google/gemma-4-31b-it",
+      "name": "Google: Gemma 4 31B",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "catalogPresent": true,
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.15,
+        "completion": 0.46,
+        "input_cache_read": 0.075
+      },
+      "pricingRawUsdPerToken": {
+        "prompt": "0.00000015",
+        "completion": "0.00000046",
+        "input_cache_read": "0.000000075"
+      },
+      "contextTokens": 262144,
+      "maxOutputTokens": 262144,
+      "isTeeCatalog": true,
+      "catalogProviders": [
+        "chutes"
+      ],
+      "inputModalities": [
+        "image",
+        "text",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportedFeatures": [
+        "json_mode",
+        "reasoning",
+        "structured_outputs",
+        "tools"
+      ],
+      "supportedParameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_a",
+        "top_k",
+        "top_p"
+      ],
+      "quantization": null,
+      "huggingFaceId": "google/gemma-4-31B-it",
+      "health": {
+        "source": "https://redpill.ai/api/models/google/gemma-4-31b-it/uptime",
+        "httpStatus": 200,
+        "checkedAt": "2026-09-07T21:18:10.680Z",
+        "classification": "unhealthy",
+        "periodStart": "2026-09-04T21:05:16.290471Z",
+        "periodEnd": "2026-09-07T21:05:16.290471Z",
+        "providers": [
+          {
+            "provider": "phala",
+            "isSelf": true,
+            "periodUptime": 0.9870113650555764,
+            "ttftMs": 1331,
+            "tokensPerSecond": 27.8,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9523809523809523
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9523809523809523
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.975
+            },
+            "bucketCount": 73
+          },
+          {
+            "provider": "chutes",
+            "isSelf": false,
+            "periodUptime": 0.9870113650555764,
+            "ttftMs": 1331,
+            "tokensPerSecond": 27.8,
+            "latestBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9523809523809523
+            },
+            "currentHourBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0.9523809523809523
+            },
+            "previousHourBucket": {
+              "hour": "2026-09-07T20:00:00Z",
+              "uptime": 0.975
+            },
+            "bucketCount": 73
+          }
+        ]
+      }
+    }
+  ],
+  "catalogFetchedAt": "2026-09-07T21:17:38.748223+00:00"
+}

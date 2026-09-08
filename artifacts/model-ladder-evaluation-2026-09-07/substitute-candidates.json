@@ -1,0 +1,658 @@
+{
+  "createdAt": "2026-09-07T21:53:58.121916+00:00",
+  "fixedTopThree": [
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.2"
+  ],
+  "droppedModels": [
+    "deepseek/deepseek-v4-flash-0731",
+    "qwen/qwen3.6-27b",
+    "google/gemma-4-31b-it"
+  ],
+  "catalogFetchedAt": "2026-09-07T21:50:21.940646+00:00",
+  "healthFetchedAt": "2026-09-07T21:50:49.399Z",
+  "scope": "Public unauthenticated catalog, model-page and uptime GETs. No authenticated inference; none of the substitute candidates are proven by this research.",
+  "recommendedTestOrder": [
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.6-35b-a3b",
+    "qwen/qwen3.8-27b",
+    "meta/muse-glimmer-30b"
+  ],
+  "notes": [
+    "Use exact API model IDs. These are candidates to test, not an approved expanded production ladder.",
+    "All seven examined entries are marked is_tee=true by the current API catalog; this is not response-signature verification.",
+    "Public model pages describe capabilities and may have Beta/deprecation labels absent from the API metadata. Labels were verified with fresh direct HTML GETs.",
+    "Cached web rendering of Qwen3.8 showed stale input/cache pricing; fresh direct page and API agree on $0.30/$3.00 input/output and $0.05 cache read per million.",
+    "Current-hour uptime is a partial bucket. Aggregate values use upstream three-day period metrics, not this account serving success.",
+    "Reported first-token latency may include reasoning tokens; it does not establish time until visible answer text.",
+    "Catalog provider lists, Phala self-route health, and underlying provider health can differ; all are retained as reported.",
+    "Model pages now show tee.redpill.ai examples whereas Tinychat currently uses api.redpill.ai; perform actual acceptance tests against the application-configured API route.",
+    "Primary model-page claims do not prove tool calling, argument fidelity, final synthesis, context limits, or availability on the app route."
+  ],
+  "candidates": [
+    {
+      "model": "z-ai/glm-5.3-flash",
+      "recommendedTestOrder": null,
+      "recommendation": "Watchlist/test-only: attractive 1048576-token context and very low prices, explicit tools, current-hour uptime 100%, but reported three-day aggregate uptime is only 11.3559%. Beta. The cause of the low aggregate was not investigated; a current healthy bucket should not be treated as reliable fallback evidence.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": {
+        "source": "https://redpill.ai/models/z-ai/glm-5.3-flash",
+        "fetchedAt": "2026-09-07T21:51:49.655955+00:00",
+        "betaLabelPresent": true,
+        "deprecationLabelPresent": false
+      },
+      "catalog": {
+        "id": "z-ai/glm-5.3-flash",
+        "name": "Z.ai: GLM 5.3 Flash",
+        "is_tee": true,
+        "context_length": 1048576,
+        "max_output_length": 131072,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "phala"
+        ],
+        "supported_features": [
+          "json_mode",
+          "logprobs",
+          "reasoning",
+          "structured_outputs",
+          "tools"
+        ],
+        "supported_parameters": [
+          "frequency_penalty",
+          "include_reasoning",
+          "logprobs",
+          "max_completion_tokens",
+          "max_tokens",
+          "min_p",
+          "parallel_tool_calls",
+          "presence_penalty",
+          "reasoning",
+          "reasoning_effort",
+          "repetition_penalty",
+          "response_format",
+          "seed",
+          "stop",
+          "structured_outputs",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_logprobs",
+          "top_p"
+        ]
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.15,
+        "completion": 0.5,
+        "input_cache_read": 0.03
+      },
+      "toolClaim": "advertised by API supported_features/tools and parameters",
+      "health": {
+        "source": "https://redpill.ai/api/models/z-ai/glm-5.3-flash/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.326Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:44:38.254148Z",
+        "periodEnd": "2026-09-07T21:44:38.254148Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0.11355887875925143,
+            "ttftMs": 1180,
+            "tokensPerSecond": 64,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen/qwen3.8-27b",
+      "recommendedTestOrder": 3,
+      "recommendation": "Third test: newer Qwen option with explicit API tools and reasoning_effort support, 262144 context, and strong reported recent uptime. Beta. The poor behavior observed for Qwen3.6-27B is not evidence for or against this different exact model; measure visible-content latency under the app defaults.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": {
+        "source": "https://redpill.ai/models/qwen/qwen3.8-27b",
+        "fetchedAt": "2026-09-07T21:51:49.741804+00:00",
+        "betaLabelPresent": true,
+        "deprecationLabelPresent": false
+      },
+      "catalog": {
+        "id": "qwen/qwen3.8-27b",
+        "name": "Qwen: Qwen3.8 27B",
+        "is_tee": true,
+        "context_length": 262144,
+        "max_output_length": 262144,
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "chutes",
+          "phala"
+        ],
+        "supported_features": [
+          "json_mode",
+          "logprobs",
+          "reasoning",
+          "structured_outputs",
+          "tools"
+        ],
+        "supported_parameters": [
+          "frequency_penalty",
+          "include_reasoning",
+          "logit_bias",
+          "logprobs",
+          "max_tokens",
+          "presence_penalty",
+          "reasoning",
+          "reasoning_effort",
+          "repetition_penalty",
+          "response_format",
+          "seed",
+          "stop",
+          "structured_outputs",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_logprobs",
+          "top_p"
+        ]
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.3,
+        "completion": 3.0,
+        "input_cache_read": 0.05
+      },
+      "toolClaim": "advertised by API supported_features/tools and parameters",
+      "health": {
+        "source": "https://redpill.ai/api/models/qwen/qwen3.8-27b/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.397Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:50:49.139730Z",
+        "periodEnd": "2026-09-07T21:50:49.139730Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0.9978228690446561,
+            "ttftMs": 641,
+            "tokensPerSecond": 65.9,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          },
+          {
+            "name": "chutes",
+            "isSelf": false,
+            "aggregateUptime": 0.9931506849315068,
+            "ttftMs": 1788,
+            "tokensPerSecond": 41,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen/qwen3.6-35b-a3b",
+      "recommendedTestOrder": 2,
+      "recommendation": "Second test: inexpensive 262144-token option with healthy telemetry and reported throughput around 106 tokens/s. No Beta/deprecation label observed. Catalog capability arrays are empty, so run an actual tool call plus result synthesis before investing in broader tests.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": {
+        "source": "https://redpill.ai/models/qwen/qwen3.6-35b-a3b",
+        "fetchedAt": "2026-09-07T21:51:49.603468+00:00",
+        "betaLabelPresent": false,
+        "deprecationLabelPresent": false
+      },
+      "catalog": {
+        "id": "qwen/qwen3.6-35b-a3b",
+        "name": "Qwen: Qwen3.6 35B A3B",
+        "is_tee": true,
+        "context_length": 262144,
+        "max_output_length": 262144,
+        "input_modalities": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "near-ai"
+        ],
+        "supported_features": [],
+        "supported_parameters": []
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.2,
+        "completion": 1.27
+      },
+      "toolClaim": "unknown: API capability arrays empty; not evidence of unsupported tools",
+      "health": {
+        "source": "https://redpill.ai/api/models/qwen/qwen3.6-35b-a3b/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.308Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:44:36.113005Z",
+        "periodEnd": "2026-09-07T21:44:36.113005Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0.992853845443634,
+            "ttftMs": 1322,
+            "tokensPerSecond": 105.4,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          },
+          {
+            "name": "near-ai",
+            "isSelf": false,
+            "aggregateUptime": 0.992853845443634,
+            "ttftMs": 1313,
+            "tokensPerSecond": 106.4,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "model": "moonshotai/kimi-k2.6",
+      "recommendedTestOrder": null,
+      "recommendation": "Reserve: explicit tools and no Beta/deprecation label observed, but higher price, 262144-token context, and reported 5445ms first-token latency add less beside the fixed top three than the cheap diverse candidates.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": {
+        "source": "https://redpill.ai/models/moonshotai/kimi-k2.6",
+        "fetchedAt": "2026-09-07T21:51:49.859865+00:00",
+        "betaLabelPresent": false,
+        "deprecationLabelPresent": false
+      },
+      "catalog": {
+        "id": "moonshotai/kimi-k2.6",
+        "name": "MoonshotAI: Kimi K2.6",
+        "is_tee": true,
+        "context_length": 262144,
+        "max_output_length": 262144,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "chutes"
+        ],
+        "supported_features": [
+          "json_mode",
+          "logprobs",
+          "reasoning",
+          "structured_outputs",
+          "tools"
+        ],
+        "supported_parameters": [
+          "frequency_penalty",
+          "include_reasoning",
+          "logit_bias",
+          "logprobs",
+          "max_tokens",
+          "min_p",
+          "parallel_tool_calls",
+          "presence_penalty",
+          "reasoning",
+          "reasoning_effort",
+          "repetition_penalty",
+          "response_format",
+          "seed",
+          "stop",
+          "structured_outputs",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_logprobs",
+          "top_p"
+        ]
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 1.09,
+        "completion": 4.6,
+        "input_cache_read": 0.37
+      },
+      "toolClaim": "advertised by API supported_features/tools and parameters",
+      "health": {
+        "source": "https://redpill.ai/api/models/moonshotai/kimi-k2.6/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.226Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:50:49.068007Z",
+        "periodEnd": "2026-09-07T21:50:49.068007Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0.990057803468208,
+            "ttftMs": 5445,
+            "tokensPerSecond": 34.4,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          },
+          {
+            "name": "chutes",
+            "isSelf": false,
+            "aggregateUptime": 0.9912037037037037,
+            "ttftMs": 5445,
+            "tokensPerSecond": 34.4,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "model": "openai/gpt-oss-120b",
+      "recommendedTestOrder": 1,
+      "recommendation": "First test: substantially lower token prices, distinct model family, strong reported current and aggregate health, and explicit API tool claims. Smaller 131072-token window needs matching compaction budget. Recheck visible-content synthesis and no repeated tool loops with existing low-reasoning synthesis requests.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": {
+        "source": "https://redpill.ai/models/openai/gpt-oss-120b",
+        "fetchedAt": "2026-09-07T21:51:50.082639+00:00",
+        "betaLabelPresent": false,
+        "deprecationLabelPresent": false
+      },
+      "catalog": {
+        "id": "openai/gpt-oss-120b",
+        "name": "OpenAI: GPT OSS 120B",
+        "is_tee": true,
+        "context_length": 131072,
+        "max_output_length": 131072,
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "secretai",
+          "tinfoil"
+        ],
+        "supported_features": [
+          "json_mode",
+          "logprobs",
+          "reasoning",
+          "structured_outputs",
+          "tools"
+        ],
+        "supported_parameters": [
+          "frequency_penalty",
+          "include_reasoning",
+          "logit_bias",
+          "logprobs",
+          "max_tokens",
+          "min_p",
+          "presence_penalty",
+          "reasoning",
+          "reasoning_effort",
+          "repetition_penalty",
+          "response_format",
+          "seed",
+          "stop",
+          "structured_outputs",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_logprobs",
+          "top_p"
+        ]
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.15,
+        "completion": 0.6
+      },
+      "toolClaim": "advertised by API supported_features/tools and parameters",
+      "health": {
+        "source": "https://redpill.ai/api/models/openai/gpt-oss-120b/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.263Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:50:49.061523Z",
+        "periodEnd": "2026-09-07T21:50:49.061523Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0.9980322510714226,
+            "ttftMs": 353,
+            "tokensPerSecond": 128,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          },
+          {
+            "name": "secretai",
+            "isSelf": false,
+            "aggregateUptime": 0.8104631217838765,
+            "ttftMs": 551,
+            "tokensPerSecond": 129.3,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          },
+          {
+            "name": "tinfoil",
+            "isSelf": false,
+            "aggregateUptime": 0.9989419147694104,
+            "ttftMs": 186,
+            "tokensPerSecond": 165.2,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "model": "meta/muse-glimmer-30b",
+      "recommendedTestOrder": 4,
+      "recommendation": "Fourth test: adds another model family, low cost, explicit tool claims, and currently healthy telemetry with reported high throughput. Beta and 131072-token context; evidence here is provider metadata only.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": {
+        "source": "https://redpill.ai/models/meta/muse-glimmer-30b",
+        "fetchedAt": "2026-09-07T21:51:50.178265+00:00",
+        "betaLabelPresent": true,
+        "deprecationLabelPresent": false
+      },
+      "catalog": {
+        "id": "meta/muse-glimmer-30b",
+        "name": "Meta: Muse Glimmer 30B",
+        "is_tee": true,
+        "context_length": 131072,
+        "max_output_length": 131072,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "phala"
+        ],
+        "supported_features": [
+          "json_mode",
+          "logprobs",
+          "reasoning",
+          "structured_outputs",
+          "tools"
+        ],
+        "supported_parameters": [
+          "frequency_penalty",
+          "include_reasoning",
+          "logit_bias",
+          "logprobs",
+          "max_tokens",
+          "min_p",
+          "presence_penalty",
+          "reasoning",
+          "reasoning_effort",
+          "repetition_penalty",
+          "response_format",
+          "seed",
+          "stop",
+          "structured_outputs",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_logprobs",
+          "top_p"
+        ]
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.3,
+        "completion": 1.1,
+        "input_cache_read": 0.04
+      },
+      "toolClaim": "advertised by API supported_features/tools and parameters",
+      "health": {
+        "source": "https://redpill.ai/api/models/meta/muse-glimmer-30b/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.286Z",
+        "classification": "healthy",
+        "periodStart": "2026-09-04T21:50:49.066322Z",
+        "periodEnd": "2026-09-07T21:50:49.066322Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0.9951809215800347,
+            "ttftMs": 856,
+            "tokensPerSecond": 131.2,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen/qwen3-vl-30b-a3b-instruct",
+      "recommendedTestOrder": null,
+      "recommendation": "Do not prioritize now: explicit tool claims and low price, but both reported providers have 0% current-hour and aggregate uptime with no latency/speed data.",
+      "catalogSource": "https://api.redpill.ai/v1/models",
+      "modelPage": null,
+      "catalog": {
+        "id": "qwen/qwen3-vl-30b-a3b-instruct",
+        "name": "Qwen: Qwen3 VL 30B A3B Instruct",
+        "is_tee": true,
+        "context_length": 128000,
+        "max_output_length": 32768,
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "providers": [
+          "near-ai"
+        ],
+        "supported_features": [
+          "json_mode",
+          "structured_outputs",
+          "tools"
+        ],
+        "supported_parameters": [
+          "frequency_penalty",
+          "logit_bias",
+          "max_tokens",
+          "min_p",
+          "presence_penalty",
+          "repetition_penalty",
+          "response_format",
+          "seed",
+          "stop",
+          "structured_outputs",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_p"
+        ]
+      },
+      "pricingUsdPerMillionTokens": {
+        "prompt": 0.2,
+        "completion": 0.7
+      },
+      "toolClaim": "advertised by API supported_features/tools and parameters",
+      "health": {
+        "source": "https://redpill.ai/api/models/qwen/qwen3-vl-30b-a3b-instruct/uptime",
+        "status": 200,
+        "fetchedAt": "2026-09-07T21:50:49.192Z",
+        "classification": "unhealthy",
+        "periodStart": "2026-09-04T21:50:49.061039Z",
+        "periodEnd": "2026-09-07T21:50:49.061039Z",
+        "providers": [
+          {
+            "name": "phala",
+            "isSelf": true,
+            "aggregateUptime": 0,
+            "ttftMs": null,
+            "tokensPerSecond": null,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0
+            }
+          },
+          {
+            "name": "near-ai",
+            "isSelf": false,
+            "aggregateUptime": 0,
+            "ttftMs": null,
+            "tokensPerSecond": null,
+            "lastBucket": {
+              "hour": "2026-09-07T21:00:00Z",
+              "uptime": 0
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

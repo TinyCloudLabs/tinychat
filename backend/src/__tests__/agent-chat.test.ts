@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type Stripe from "stripe";
-import { _resetCatalogCache } from "../billing/catalog.js";
+import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
+import { isOfferedModel, _resetCatalogCache } from "../billing/catalog.js";
 import { _resetCreditsWarnings } from "../billing/credits.js";
 import { _resetCache, _setStripeClient } from "../billing/stripe.js";
 import { TIERS } from "../billing/tiers.js";
@@ -1083,6 +1084,25 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       ]),
     })) as unknown as typeof fetch;
   }
+
+  it("all four exact offered IDs pass the agent gate without pricing", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    for (const { id } of OFFERED_CHAT_MODELS) {
+      const { req, res } = makeReqRes();
+      req.body.model = id;
+      let called = false;
+      const handler = createAgentChatHandler({
+        ...baseConfig((async (...args: Parameters<typeof fetch>) => {
+          called = true;
+          expect(JSON.parse(args[1]!.body as string).model).toBe(id);
+          return makeCompletionFetch()(...args);
+        }) as typeof fetch),
+        isModelOffered: isOfferedModel,
+      });
+      await handler(req, res);
+      expect(called).toBe(true);
+    }
+  });
 
   it("A5c: recordUsage is called with summed credits when paywall is on", async () => {
     process.env.PAYWALL_ENABLED = "true";

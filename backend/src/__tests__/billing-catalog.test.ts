@@ -265,13 +265,21 @@ describe("getCatalog resilience (timeout / retry / serve-stale)", () => {
 });
 
 describe("PICKER_MODELS allowlist + isOfferedModel", () => {
-  test("the allowlist is exactly the single offered model", () => {
-    expect([...PICKER_MODELS]).toEqual(["z-ai/glm-5.2"]);
+  test("the allowlist is Kimi K3 then GLM 5.3 then GLM 5.2 then Qwen 35B", () => {
+    expect([...PICKER_MODELS]).toEqual([
+      "moonshotai/kimi-k3",
+      "z-ai/glm-5.3",
+      "z-ai/glm-5.2",
+      "qwen/qwen3.6-35b-a3b",
+    ]);
   });
 
-  test("isOfferedModel accepts the single offered model and nothing else", () => {
+  test("isOfferedModel accepts the four offered models and rejects retired candidates", () => {
     for (const id of PICKER_MODELS) {
       expect(isOfferedModel(id)).toBe(true);
+    }
+    for (const id of ["deepseek/deepseek-v4-flash-0731", "qwen/qwen3.6-27b", "google/gemma-4-31b-it"]) {
+      expect(isOfferedModel(id)).toBe(false);
     }
     // A valid TEE model that is NOT on the allowlist must be rejected (closes the
     // non-verifiable-model-reaching-agent-path gap).

@@ -1,0 +1,781 @@
+{
+  "startedAt": "2026-09-07T22:12:48.902Z",
+  "finishedAt": "2026-09-07T22:14:48.050Z",
+  "endpoint": "https://api.redpill.ai/v1",
+  "results": [
+    {
+      "sequence": 1,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-1/tool-call",
+      "startedAt": "2026-09-07T22:12:48.908Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use lookup_meeting to retrieve meeting M-204. Then return only JSON with decision_code, owner, due_date, approved, using the tool result exactly. Do not invent a decision before looking it up."
+          },
+          {
+            "role": "assistant",
+            "content": "\n\n",
+            "tool_calls": [
+              {
+                "id": "call_4d44beaccf65497892d53f4c",
+                "type": "function",
+                "function": {
+                  "name": "lookup_meeting",
+                  "arguments": "{\"meeting_id\": \"M-204\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_4d44beaccf65497892d53f4c",
+            "content": "{\"decision_code\":\"pilot-06029a53-0f11-4818-9ec4-8d6f7dd5aa60\",\"owner\":\"Maya\",\"due_date\":\"2026-09-18\",\"approved\":false}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_meeting",
+              "description": "Look up the recorded decision for one meeting ID. Use the returned facts when answering.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "meeting_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "meeting_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 43,
+      "firstEventMs": 1777,
+      "firstContentMs": 2348,
+      "firstToolMs": 2397,
+      "text": "\n\n",
+      "reasoningCharacters": 425,
+      "done": true,
+      "finishReason": "tool_calls",
+      "usage": {
+        "prompt_tokens": 341,
+        "completion_tokens": 154,
+        "total_tokens": 495,
+        "cost": 0.00026378
+      },
+      "calls": [
+        {
+          "id": "call_4d44beaccf65497892d53f4c",
+          "type": "function",
+          "function": {
+            "name": "lookup_meeting",
+            "arguments": "{\"meeting_id\": \"M-204\"}"
+          }
+        }
+      ],
+      "headersMs": 1770,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 2740,
+      "assessment": {
+        "pass": true
+      }
+    },
+    {
+      "sequence": 2,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-1/tool-result",
+      "startedAt": "2026-09-07T22:12:51.650Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use lookup_meeting to retrieve meeting M-204. Then return only JSON with decision_code, owner, due_date, approved, using the tool result exactly. Do not invent a decision before looking it up."
+          },
+          {
+            "role": "assistant",
+            "content": "\n\n",
+            "tool_calls": [
+              {
+                "id": "call_4d44beaccf65497892d53f4c",
+                "type": "function",
+                "function": {
+                  "name": "lookup_meeting",
+                  "arguments": "{\"meeting_id\": \"M-204\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_4d44beaccf65497892d53f4c",
+            "content": "{\"decision_code\":\"pilot-06029a53-0f11-4818-9ec4-8d6f7dd5aa60\",\"owner\":\"Maya\",\"due_date\":\"2026-09-18\",\"approved\":false}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_meeting",
+              "description": "Look up the recorded decision for one meeting ID. Use the returned facts when answering.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "meeting_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "meeting_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "reasoning_effort": "low"
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 65,
+      "firstEventMs": 1195,
+      "firstContentMs": 1789,
+      "firstToolMs": null,
+      "text": "\n\n```json\n{\n  \"decision_code\": \"pilot-06029a53-0f11-4818-9ec4-8d6f7dd5aa60\",\n  \"owner\": \"Maya\",\n  \"due_date\": \"2026-09-18\",\n  \"approved\": false\n}\n```",
+      "reasoningCharacters": 355,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 455,
+        "completion_tokens": 226,
+        "total_tokens": 681,
+        "prompt_tokens_details": {
+          "cached_tokens": 320
+        },
+        "cost": 0.00037802
+      },
+      "calls": [],
+      "headersMs": 1195,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 2439,
+      "assessment": {
+        "pass": false,
+        "expected": {
+          "decision_code": "pilot-06029a53-0f11-4818-9ec4-8d6f7dd5aa60",
+          "owner": "Maya",
+          "due_date": "2026-09-18",
+          "approved": false
+        },
+        "parsed": null
+      }
+    },
+    {
+      "sequence": 3,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-1/short-reply-1",
+      "startedAt": "2026-09-07T22:12:54.092Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reply exactly READY_731_1 and nothing else."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 71,
+      "firstEventMs": 1163,
+      "firstContentMs": 2360,
+      "firstToolMs": null,
+      "text": "\n\nREADY_731_1",
+      "reasoningCharacters": 792,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 228,
+        "total_tokens": 251,
+        "cost": 0.00029416
+      },
+      "calls": [],
+      "headersMs": 1163,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 2645,
+      "assessment": {
+        "pass": true
+      }
+    },
+    {
+      "sequence": 4,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-1/meeting",
+      "startedAt": "2026-09-07T22:12:56.738Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "From these meeting notes, return only JSON with keys actions (owner, task, due_date), pilot_target, pilot_confirmed, budget_approved, tentative_budget_eur, unresolved. Use null for unknown dates and YYYY-MM-DD for known dates. Include only explicitly committed actions. Notes recorded 2026-09-10: Maya: I will send the revised DPA to the vendor by September 12. Leo: I will finish SSO verification before the pilot, but I cannot commit to a date yet. Noor: An FAQ might help; let's decide next week who owns it. Maya: The pilot target is September 18, conditional on security approval. Leo: Security has not approved it yet. Maya: The budget is not approved; EUR 6,000 is only a tentative cap."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 948,
+      "firstEventMs": 1417,
+      "firstContentMs": 19602,
+      "firstToolMs": null,
+      "text": "\n\n{\n  \"actions\": [\n    {\n      \"owner\": \"Maya\",\n      \"task\": \"Send revised DPA to vendor\",\n      \"due_date\": \"2026-09-12\"\n    }\n  ],\n  \"pilot_target\": \"2026-09-18\",\n  \"pilot_confirmed\": false,\n  \"budget_approved\": false,\n  \"tentative_budget_eur\": 6000,\n  \"unresolved\": [\n    \"SSO verification date not committed\",\n    \"FAQ ownership to be decided next week\",\n    \"Pilot pending security approval\"\n  ]\n}",
+      "reasoningCharacters": 10760,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 181,
+        "completion_tokens": 3207,
+        "total_tokens": 3388,
+        "cost": 0.00410909
+      },
+      "calls": [],
+      "headersMs": 1416,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 20406,
+      "assessment": {
+        "pass": false,
+        "slots": {
+          "json": true,
+          "exactlyTwoActions": false,
+          "mayaCommitment": true,
+          "leoCommitment": false,
+          "pilotTarget": true,
+          "pilotNotConfirmed": true,
+          "budgetNotApproved": true,
+          "tentativeBudget": true,
+          "unresolvedSecurity": true,
+          "unresolvedBudget": false,
+          "unresolvedFaq": true,
+          "unresolvedSso": true
+        },
+        "parsed": {
+          "actions": [
+            {
+              "owner": "Maya",
+              "task": "Send revised DPA to vendor",
+              "due_date": "2026-09-12"
+            }
+          ],
+          "pilot_target": "2026-09-18",
+          "pilot_confirmed": false,
+          "budget_approved": false,
+          "tentative_budget_eur": 6000,
+          "unresolved": [
+            "SSO verification date not committed",
+            "FAQ ownership to be decided next week",
+            "Pilot pending security approval"
+          ]
+        }
+      }
+    },
+    {
+      "sequence": 5,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-1/budget",
+      "startedAt": "2026-09-07T22:13:17.147Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Estimate our chat workload using only these rates. We will run 1200 meeting summaries, each using 8000 input tokens and 600 output tokens, at USD 0.40 per million input tokens and USD 1.60 per million output tokens. We will also run 800 Q&A turns, each using 1500 input tokens and 300 output tokens, at USD 0.20 per million input tokens and USD 0.80 per million output tokens. Total budget is USD 6; there are no other fees. Additional Q&A turns have the same token usage and rates. Do not round intermediate calculations. Return only JSON with summary_input_tokens, summary_output_tokens, qa_input_tokens, qa_output_tokens, summary_cost_usd, qa_cost_usd, total_cost_usd, remaining_budget_usd, maximum_additional_whole_qa_turns."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 864,
+      "firstEventMs": 1214,
+      "firstContentMs": 14690,
+      "firstToolMs": null,
+      "text": "\n\n{\n  \"summary_input_tokens\": 9600000,\n  \"summary_output_tokens\": 720000,\n  \"qa_input_tokens\": 1200000,\n  \"qa_output_tokens\": 240000,\n  \"summary_cost_usd\": 4.992,\n  \"qa_cost_usd\": 0.432,\n  \"total_cost_usd\": 5.424,\n  \"remaining_budget_usd\": 0.576,\n  \"maximum_additional_whole_qa_turns\": 1066\n}",
+      "reasoningCharacters": 6943,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 203,
+        "completion_tokens": 3104,
+        "total_tokens": 3307,
+        "cost": 0.00398268
+      },
+      "calls": [],
+      "headersMs": 1213,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 15751,
+      "assessment": {
+        "pass": true,
+        "slots": {
+          "summary_input_tokens": true,
+          "summary_output_tokens": true,
+          "qa_input_tokens": true,
+          "qa_output_tokens": true,
+          "summary_cost_usd": true,
+          "qa_cost_usd": true,
+          "total_cost_usd": true,
+          "remaining_budget_usd": true,
+          "maximum_additional_whole_qa_turns": true
+        },
+        "parsed": {
+          "summary_input_tokens": 9600000,
+          "summary_output_tokens": 720000,
+          "qa_input_tokens": 1200000,
+          "qa_output_tokens": 240000,
+          "summary_cost_usd": 4.992,
+          "qa_cost_usd": 0.432,
+          "total_cost_usd": 5.424,
+          "remaining_budget_usd": 0.576,
+          "maximum_additional_whole_qa_turns": 1066
+        }
+      }
+    },
+    {
+      "sequence": 6,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-1/short-reply-2",
+      "startedAt": "2026-09-07T22:13:32.900Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reply exactly READY_946_1 and nothing else."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 72,
+      "firstEventMs": 1229,
+      "firstContentMs": 2117,
+      "firstToolMs": null,
+      "text": "\n\nREADY_946_1",
+      "reasoningCharacters": 774,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 218,
+        "total_tokens": 241,
+        "cost": 0.00028146
+      },
+      "calls": [],
+      "headersMs": 1228,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 2403,
+      "assessment": {
+        "pass": true
+      }
+    },
+    {
+      "sequence": 7,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-2/tool-call",
+      "startedAt": "2026-09-07T22:14:05.309Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use lookup_meeting to retrieve meeting M-204. Then return only JSON with decision_code, owner, due_date, approved, using the tool result exactly. Do not invent a decision before looking it up."
+          },
+          {
+            "role": "assistant",
+            "content": "\n\n",
+            "tool_calls": [
+              {
+                "id": "call_f86f0aae42c6415bb4c8ca86",
+                "type": "function",
+                "function": {
+                  "name": "lookup_meeting",
+                  "arguments": "{\"meeting_id\": \"M-204\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_f86f0aae42c6415bb4c8ca86",
+            "content": "{\"decision_code\":\"pilot-76a73a9c-a17c-4595-911d-bb74a34c606b\",\"owner\":\"Maya\",\"due_date\":\"2026-09-18\",\"approved\":false}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_meeting",
+              "description": "Look up the recorded decision for one meeting ID. Use the returned facts when answering.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "meeting_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "meeting_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 107,
+      "firstEventMs": 451,
+      "firstContentMs": 924,
+      "firstToolMs": 968,
+      "text": "\n\n",
+      "reasoningCharacters": 367,
+      "done": true,
+      "finishReason": "tool_calls",
+      "usage": {
+        "prompt_tokens": 341,
+        "completion_tokens": 134,
+        "total_tokens": 475,
+        "cost": 0.00023838
+      },
+      "calls": [
+        {
+          "id": "call_f86f0aae42c6415bb4c8ca86",
+          "type": "function",
+          "function": {
+            "name": "lookup_meeting",
+            "arguments": "{\"meeting_id\": \"M-204\"}"
+          }
+        }
+      ],
+      "headersMs": 448,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 1099,
+      "assessment": {
+        "pass": true
+      }
+    },
+    {
+      "sequence": 8,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-2/tool-result",
+      "startedAt": "2026-09-07T22:14:06.409Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Use lookup_meeting to retrieve meeting M-204. Then return only JSON with decision_code, owner, due_date, approved, using the tool result exactly. Do not invent a decision before looking it up."
+          },
+          {
+            "role": "assistant",
+            "content": "\n\n",
+            "tool_calls": [
+              {
+                "id": "call_f86f0aae42c6415bb4c8ca86",
+                "type": "function",
+                "function": {
+                  "name": "lookup_meeting",
+                  "arguments": "{\"meeting_id\": \"M-204\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_f86f0aae42c6415bb4c8ca86",
+            "content": "{\"decision_code\":\"pilot-76a73a9c-a17c-4595-911d-bb74a34c606b\",\"owner\":\"Maya\",\"due_date\":\"2026-09-18\",\"approved\":false}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_meeting",
+              "description": "Look up the recorded decision for one meeting ID. Use the returned facts when answering.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "meeting_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "meeting_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "reasoning_effort": "low"
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 26,
+      "firstEventMs": 570,
+      "firstContentMs": 581,
+      "firstToolMs": null,
+      "text": "\n\n```json\n{\n  \"decision_code\": \"pilot-76a73a9c-a17c-4595-911d-bb74a34c606b\",\n  \"owner\": \"Maya\",\n  \"due_date\": \"2026-09-18\",\n  \"approved\": false\n}\n```",
+      "reasoningCharacters": 0,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 456,
+        "completion_tokens": 89,
+        "total_tokens": 545,
+        "prompt_tokens_details": {
+          "cached_tokens": 320
+        },
+        "cost": 0.00020423
+      },
+      "calls": [],
+      "headersMs": 569,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 923,
+      "assessment": {
+        "pass": false,
+        "expected": {
+          "decision_code": "pilot-76a73a9c-a17c-4595-911d-bb74a34c606b",
+          "owner": "Maya",
+          "due_date": "2026-09-18",
+          "approved": false
+        },
+        "parsed": null
+      }
+    },
+    {
+      "sequence": 9,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-2/short-reply-1",
+      "startedAt": "2026-09-07T22:14:07.333Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reply exactly READY_731_2 and nothing else."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 51,
+      "firstEventMs": 545,
+      "firstContentMs": 1196,
+      "firstToolMs": null,
+      "text": "\n\nREADY_731_2",
+      "reasoningCharacters": 538,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 161,
+        "total_tokens": 184,
+        "cost": 0.00020907
+      },
+      "calls": [],
+      "headersMs": 545,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 1240,
+      "assessment": {
+        "pass": true
+      }
+    },
+    {
+      "sequence": 10,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-2/meeting",
+      "startedAt": "2026-09-07T22:14:08.575Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "From these meeting notes, return only JSON with keys actions (owner, task, due_date), pilot_target, pilot_confirmed, budget_approved, tentative_budget_eur, unresolved. Use null for unknown dates and YYYY-MM-DD for known dates. Include only explicitly committed actions. Notes recorded 2026-09-10: Maya: I will send the revised DPA to the vendor by September 12. Leo: I will finish SSO verification before the pilot, but I cannot commit to a date yet. Noor: An FAQ might help; let's decide next week who owns it. Maya: The pilot target is September 18, conditional on security approval. Leo: Security has not approved it yet. Maya: The budget is not approved; EUR 6,000 is only a tentative cap."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 2931,
+      "firstEventMs": 531,
+      "firstContentMs": 15812,
+      "firstToolMs": null,
+      "text": "\n\n{\n  \"actions\": [\n    {\n      \"owner\": \"Maya\",\n      \"task\": \"Send revised DPA to vendor\",\n      \"due_date\": \"2026-09-12\"\n    },\n    {\n      \"owner\": \"Leo\",\n      \"task\": \"Finish SSO verification before the pilot\",\n      \"due_date\": null\n    }\n  ],\n  \"pilot_target\": \"2026-09-18\",\n  \"pilot_confirmed\": false,\n  \"budget_approved\": false,\n  \"tentative_budget_eur\": 6000,\n  \"unresolved\": [\n    \"Security approval for pilot\",\n    \"FAQ ownership and creation\",\n    \"SSO verification completion date\",\n    \"Budget approval\"\n  ]\n}",
+      "reasoningCharacters": 9751,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 181,
+        "completion_tokens": 2934,
+        "total_tokens": 3115,
+        "cost": 0.00376238
+      },
+      "calls": [],
+      "headersMs": 531,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 16891,
+      "assessment": {
+        "pass": true,
+        "slots": {
+          "json": true,
+          "exactlyTwoActions": true,
+          "mayaCommitment": true,
+          "leoCommitment": true,
+          "pilotTarget": true,
+          "pilotNotConfirmed": true,
+          "budgetNotApproved": true,
+          "tentativeBudget": true,
+          "unresolvedSecurity": true,
+          "unresolvedBudget": true,
+          "unresolvedFaq": true,
+          "unresolvedSso": true
+        },
+        "parsed": {
+          "actions": [
+            {
+              "owner": "Maya",
+              "task": "Send revised DPA to vendor",
+              "due_date": "2026-09-12"
+            },
+            {
+              "owner": "Leo",
+              "task": "Finish SSO verification before the pilot",
+              "due_date": null
+            }
+          ],
+          "pilot_target": "2026-09-18",
+          "pilot_confirmed": false,
+          "budget_approved": false,
+          "tentative_budget_eur": 6000,
+          "unresolved": [
+            "Security approval for pilot",
+            "FAQ ownership and creation",
+            "SSO verification completion date",
+            "Budget approval"
+          ]
+        }
+      }
+    },
+    {
+      "sequence": 11,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-2/budget",
+      "startedAt": "2026-09-07T22:14:25.469Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Estimate our chat workload using only these rates. We will run 1200 meeting summaries, each using 8000 input tokens and 600 output tokens, at USD 0.40 per million input tokens and USD 1.60 per million output tokens. We will also run 800 Q&A turns, each using 1500 input tokens and 300 output tokens, at USD 0.20 per million input tokens and USD 0.80 per million output tokens. Total budget is USD 6; there are no other fees. Additional Q&A turns have the same token usage and rates. Do not round intermediate calculations. Return only JSON with summary_input_tokens, summary_output_tokens, qa_input_tokens, qa_output_tokens, summary_cost_usd, qa_cost_usd, total_cost_usd, remaining_budget_usd, maximum_additional_whole_qa_turns."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 4118,
+      "firstEventMs": 476,
+      "firstContentMs": 19392,
+      "firstToolMs": null,
+      "text": "\n\n{\n  \"summary_input_tokens\": 9600000,\n  \"summary_output_tokens\": 720000,\n  \"qa_input_tokens\": 1200000,\n  \"qa_output_tokens\": 240000,\n  \"summary_cost_usd\": 4.992,\n  \"qa_cost_usd\": 0.432,\n  \"total_cost_usd\": 5.424,\n  \"remaining_budget_usd\": 0.576,\n  \"maximum_additional_whole_qa_turns\": 1066\n}",
+      "reasoningCharacters": 8893,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 203,
+        "completion_tokens": 4117,
+        "total_tokens": 4320,
+        "cost": 0.00526919
+      },
+      "calls": [],
+      "headersMs": 475,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 20088,
+      "assessment": {
+        "pass": true,
+        "slots": {
+          "summary_input_tokens": true,
+          "summary_output_tokens": true,
+          "qa_input_tokens": true,
+          "qa_output_tokens": true,
+          "summary_cost_usd": true,
+          "qa_cost_usd": true,
+          "total_cost_usd": true,
+          "remaining_budget_usd": true,
+          "maximum_additional_whole_qa_turns": true
+        },
+        "parsed": {
+          "summary_input_tokens": 9600000,
+          "summary_output_tokens": 720000,
+          "qa_input_tokens": 1200000,
+          "qa_output_tokens": 240000,
+          "summary_cost_usd": 4.992,
+          "qa_cost_usd": 0.432,
+          "total_cost_usd": 5.424,
+          "remaining_budget_usd": 0.576,
+          "maximum_additional_whole_qa_turns": 1066
+        }
+      }
+    },
+    {
+      "sequence": 12,
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "wave-2/short-reply-2",
+      "startedAt": "2026-09-07T22:14:45.559Z",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reply exactly READY_946_2 and nothing else."
+          }
+        ]
+      },
+      "httpStatus": 200,
+      "transportPass": true,
+      "frames": 80,
+      "firstEventMs": 762,
+      "firstContentMs": 2432,
+      "firstToolMs": null,
+      "text": "\n\nREADY_946_2",
+      "reasoningCharacters": 777,
+      "done": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 234,
+        "total_tokens": 257,
+        "cost": 0.00030178
+      },
+      "calls": [],
+      "headersMs": 761,
+      "retryAfter": null,
+      "returnedModel": "qwen/qwen3.6-35b-a3b",
+      "durationMs": 2490,
+      "assessment": {
+        "pass": true
+      }
+    }
+  ]
+}

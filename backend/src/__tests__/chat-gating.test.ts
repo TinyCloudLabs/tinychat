@@ -334,7 +334,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // is unoffered — the default must heal to the curated baseline.
       process.env.REDPILL_DEFAULT_MODEL = "openai/gpt-5-mini";
       const value = defaultModel();
-      expect(value).toBe("z-ai/glm-5.2");
+      expect(value).toBe("moonshotai/kimi-k3");
       expect(isBlocklistedModel(value)).toBe(false);
       expect(warnings.some((w) => w.includes("REDPILL_DEFAULT_MODEL"))).toBe(true);
     } finally {
@@ -349,7 +349,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // phala/glm-4.7 is on the mislabeled blocklist (see ST7 tests below).
       process.env.REDPILL_DEFAULT_MODEL = "phala/glm-4.7";
       expect(isBlocklistedModel("phala/glm-4.7")).toBe(true);
-      expect(defaultModel()).toBe("z-ai/glm-5.2");
+      expect(defaultModel()).toBe("moonshotai/kimi-k3");
     } finally {
       console.warn = originalWarn;
     }
@@ -363,7 +363,7 @@ describe("defaultModel() override validation (ST11)", () => {
       // so it is no longer offered — the default must not resolve to it.
       process.env.REDPILL_DEFAULT_MODEL = "phala/gpt-oss-120b";
       expect(isBlocklistedModel("phala/gpt-oss-120b")).toBe(false);
-      expect(defaultModel()).toBe("z-ai/glm-5.2");
+      expect(defaultModel()).toBe("moonshotai/kimi-k3");
     } finally {
       console.warn = originalWarn;
     }
@@ -449,7 +449,7 @@ describe("POST /api/chat recording", () => {
 });
 
 describe("GET /api/chat/models annotation", () => {
-  test("only the single offered model is listed (non-offered filtered out); allowed:true when paywall disabled; rates always present", async () => {
+  test("only the four offered models are listed; allowed:true when paywall disabled; rates always present", async () => {
     process.env.PAYWALL_ENABLED = "false";
     // The multiplier anchor is the default model (z-ai/glm-5.2). Price
     // it at the MINI baseline so it anchors multiplier 1. The non-TEE
@@ -460,7 +460,13 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5-mini", pricing: MINI_PRICING }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
         { id: "moonshotai/kimi-k2.6", pricing: OPUS_PRICING }, // formerly offered, now unoffered (filtered out)
+        { id: "z-ai/glm-5.3", pricing: MINI_PRICING },
+        { id: "deepseek/deepseek-v4-flash-0731", pricing: MINI_PRICING },
         { id: "z-ai/glm-5.2", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
+        { id: "moonshotai/kimi-k3", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.6-35b-a3b", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.6-27b", pricing: MINI_PRICING },
+        { id: "google/gemma-4-31b-it", pricing: MINI_PRICING },
       ],
     });
     try {
@@ -471,6 +477,9 @@ describe("GET /api/chat/models annotation", () => {
       expect("openai/gpt-5-mini" in byId).toBe(false);
       expect("phala/gpt-oss-120b" in byId).toBe(false);
       expect("moonshotai/kimi-k2.6" in byId).toBe(false);
+      for (const id of ["deepseek/deepseek-v4-flash-0731", "qwen/qwen3.6-27b", "google/gemma-4-31b-it"]) {
+        expect(id in byId).toBe(false);
+      }
       expect(body.models.every((m: any) => isOfferedModel(m.id))).toBe(true);
       expect(body.models.every((m: any) => m.allowed === true)).toBe(true);
       expect(body.models.some((m: any) => "requiredTier" in m)).toBe(false);
@@ -491,7 +500,7 @@ describe("GET /api/chat/models annotation", () => {
     }
   });
 
-  test("the model list returns EXACTLY the single offered model (extras filtered out)", async () => {
+  test("the model list returns the four-model ladder even when catalog entries are missing", async () => {
     process.env.PAYWALL_ENABLED = "false";
     // Upstream catalog: the single offered id plus a bunch of extras (non-TEE,
     // non-allowlisted phala/*, and formerly-offered models). The list must return
@@ -512,7 +521,13 @@ describe("GET /api/chat/models annotation", () => {
       const res = await request(createApp(), "/api/chat/models");
       const body = (await res.json()) as any;
       const ids = body.models.map((m: any) => m.id);
-      expect(ids).toEqual(["z-ai/glm-5.2"]);
+      expect(ids).toEqual([
+        "moonshotai/kimi-k3",
+        "z-ai/glm-5.3",
+        "z-ai/glm-5.2",
+        "qwen/qwen3.6-35b-a3b",
+      ]);
+      expect(body.models.find((m: any) => m.id === "z-ai/glm-5.3").creditsPerKInput).toBeUndefined();
     } finally {
       restore();
     }
@@ -528,7 +543,13 @@ describe("GET /api/chat/models annotation", () => {
         { id: "openai/gpt-5", pricing: { prompt: "0.0000025", completion: "0.00002" } }, // non-TEE (filtered out)
         { id: "phala/gpt-oss-120b", pricing: MINI_PRICING }, // unoffered (filtered out)
         { id: "qwen/qwen-2.5-7b-instruct", pricing: MINI_PRICING }, // formerly offered (filtered out)
+        { id: "z-ai/glm-5.3", pricing: MINI_PRICING },
+        { id: "deepseek/deepseek-v4-flash-0731", pricing: MINI_PRICING },
         { id: "z-ai/glm-5.2", pricing: MINI_PRICING }, // the single offered model → baseline anchor (multiplier 1)
+        { id: "moonshotai/kimi-k3", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.6-35b-a3b", pricing: MINI_PRICING },
+        { id: "qwen/qwen3.6-27b", pricing: MINI_PRICING },
+        { id: "google/gemma-4-31b-it", pricing: MINI_PRICING },
       ],
     });
     try {
@@ -578,7 +599,12 @@ describe("GET /api/chat/models graceful degradation (catalog unavailable)", () =
     };
   }
 
-  const CURATED_MODELS = ["z-ai/glm-5.2"];
+  const CURATED_MODELS = [
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.6-35b-a3b",
+  ];
 
   test("returns the curated allowlist (allowed, no rate fields) as a 200 when the catalog is unavailable (paywall off)", async () => {
     process.env.PAYWALL_ENABLED = "false";
@@ -1165,4 +1191,29 @@ describe("POST /api/chat LEDGER_AUTHORITATIVE gate", () => {
     expect(body).not.toHaveProperty("usage");
     expect(body.source).toBe("config_outage");
   });
+});
+
+test("model selection is no-store, probes only the four offered models, and never loads pricing", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).startsWith("https://redpill.ai/api/models/")) {
+      calls.push(String(input));
+      return Response.json({});
+    }
+    if (String(input).startsWith("https://api.redpill.ai")) throw new Error("Unexpected pricing dependency");
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const response = await request(createApp(), "/api/chat/model-selection");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ model: "moonshotai/kimi-k3", reason: "health-unverified" });
+    expect(calls).toEqual([
+      "https://redpill.ai/api/models/moonshotai/kimi-k3/uptime",
+      "https://redpill.ai/api/models/z-ai/glm-5.3/uptime",
+      "https://redpill.ai/api/models/z-ai/glm-5.2/uptime",
+      "https://redpill.ai/api/models/qwen/qwen3.6-35b-a3b/uptime",
+    ]);
+  } finally { globalThis.fetch = originalFetch; }
 });

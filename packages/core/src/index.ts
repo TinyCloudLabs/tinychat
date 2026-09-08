@@ -99,6 +99,14 @@ export interface ApiError {
 
 export type StoreType = "kv" | "sql" | "duckdb";
 
+export {
+  DEFAULT_CHAT_MODEL,
+  OFFERED_CHAT_MODELS,
+  isOfferedChatModel,
+  offeredChatModelContextTokens,
+  type OfferedModelId,
+} from "./chatModels.js";
+
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Default delegation expiry: 1 year */

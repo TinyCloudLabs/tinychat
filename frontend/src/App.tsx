@@ -21,6 +21,10 @@ import {
   restoreTinyCloudWebSession,
   verifySession,
 } from "@tinyboilerplate/client";
+import {
+  OFFERED_CHAT_MODELS,
+  offeredChatModelContextTokens,
+} from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
@@ -31,12 +35,9 @@ import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
-  DEFAULT_MODEL,
   appendCompaction,
   getLatestCompaction,
-  getSetting,
   readMemoryCache,
-  setSetting,
 } from "./lib/threadStore";
 import { completeChat, type ChatMessage } from "./lib/chatApi";
 import { COMPACTION_SUMMARY_MAX_TOKENS, DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
@@ -98,11 +99,18 @@ import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
 import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
 import {
+  ChevronDownIcon,
   PanelLeftIcon,
   PlugIcon,
   SettingsIcon,
+  ShieldCheckIcon,
+  ShieldIcon,
 } from "lucide-react";
-import { healPersistedModel, sanitizeModel } from "./lib/sanitizeModel";
+import { isResponseVerifiableModel, isTeeCapableModel } from "./lib/completionStore";
+import type {
+  ModelSelectionController,
+  SelectionView,
+} from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
@@ -117,22 +125,6 @@ const BACKEND_URL =
 const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
   ? [import.meta.env.VITE_TINYCLOUD_HOST]
   : undefined;
-const MODEL_STORAGE_KEY = "xyz.tinycloud.tinychat:active-model";
-// Empty offered-set sentinel for the pre-/models-load sanitize path (ST1).
-const EMPTY_OFFERED: ReadonlySet<string> = new Set();
-
-function getInitialModel(): string {
-  if (typeof window === "undefined") return DEFAULT_MODEL;
-  try {
-    // ST1 — heal a stale persisted id on first paint. The /models list isn't
-    // loaded yet, so sanitizeModel falls back to the phala/ prefix gate (a
-    // non-phala legacy id is rejected; a phala id is kept for instant paint).
-    return sanitizeModel(window.localStorage.getItem(MODEL_STORAGE_KEY), EMPTY_OFFERED);
-  } catch {
-    return DEFAULT_MODEL;
-  }
-}
-
 export type AppState =
   | "booting"
   | "unauthenticated"
@@ -147,9 +139,9 @@ interface ModelOption {
   allowed?: boolean;
   requiredTier?: "plus" | "pro";
   /** Per-model credit rates (spec §5.4 — always present from /api/chat/models). */
-  creditsPerKInput: number;
-  creditsPerKOutput: number;
-  multiplier: number;
+  creditsPerKInput?: number;
+  creditsPerKOutput?: number;
+  multiplier?: number;
   /**
    * Context window in tokens (spec §D.4). Plumbed from /api/chat/models so the
    * adapter can size compaction; absent → DEFAULT_CONTEXT_TOKENS via
@@ -162,13 +154,12 @@ export function App() {
   // Track the visible viewport so the shell shrinks above the soft keyboard
   // instead of letting it cover the composer (iOS Safari `100dvh` does not).
   useVisualViewportFit();
-  const initialModel = getInitialModel();
   const initialShareToken = useMemo(() => readShareTokenFromLocation(), []);
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const openkeyRef = useRef<OpenKey | null>(null);
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
-  const modelRef = useRef<string>(initialModel);
+  const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
   // memory row. Held at App level (above useChatRuntime) so the MemoryPanel
@@ -180,16 +171,22 @@ export function App() {
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [model, setModel] = useState<string>(initialModel);
+  const [models, setModels] = useState<ModelOption[]>(() =>
+    OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })),
+  );
+  const [selectionView, setSelectionView] = useState<SelectionView>({
+    threadId: null,
+    phase: "choosing",
+    model: null,
+    revision: 0,
+    saving: false,
+    saveFailed: false,
+    canSend: false,
+    canPick: false,
+  });
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const offeredModelsRef = useRef<ModelOption[]>([]);
-  // Live set of offered model ids — the request-path/per-thread heal source of
-  // truth (Bug #1). Kept in sync with `models` alongside offeredModelsRef.
-  const offeredModelIdsRef = useRef<ReadonlySet<string>>(EMPTY_OFFERED);
-  const restoredActiveModelForTcwRef = useRef<TinyCloudWeb | null>(null);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -236,100 +233,21 @@ export function App() {
   }, []);
   const onMemoryUpdated = useCallback((_doc: string | null) => {}, []);
 
-  const setSelectedModel = useCallback((next: string) => {
-    modelRef.current = next;
-    setModel(next);
+  const pickModel = useCallback((next: string) => {
+    selectionControllerRef.current?.pick(next);
   }, []);
-
-  // localStorage is an instant-paint cache for the picker; the per-space SQL
-  // `settings` row (active_model) is the cross-device source of truth.
-  const writeLocalModel = useCallback((next: string) => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(MODEL_STORAGE_KEY, next);
-    } catch {
-      // localStorage full/disabled — the cache is optional.
-    }
-  }, []);
-
-  // Explicit dropdown pick: update state, cache locally (instant), and persist to
-  // the user's TinyCloud space (async, syncs across devices). The per-thread sync
-  // (onActiveThreadModel) uses setSelectedModel directly and does NOT overwrite
-  // this global default.
-  const pickModel = useCallback(
-    (next: string) => {
-      setSelectedModel(next);
-      writeLocalModel(next);
-      if (tcw) {
-        void setSetting(tcw, "active_model", next).catch((err) => {
-          console.warn("[App] failed to persist model selection to space", err);
-        });
-      }
-    },
-    [setSelectedModel, writeLocalModel, tcw],
-  );
-
-  useEffect(() => {
-    offeredModelsRef.current = models;
-    offeredModelIdsRef.current = new Set(models.map((m) => m.id));
-  }, [models]);
 
   // Context window (tokens) for a model id, read from the live offered catalog
   // (§D.4). Stable callback over a ref so it can be threaded into the runtime
   // deps without re-memoizing on every model-list change. Falls back to
   // DEFAULT_CONTEXT_TOKENS when the model carries no contextLength.
   const contextTokensFor = useCallback((modelId: string): number => {
-    const found = offeredModelsRef.current.find((m) => m.id === modelId);
-    return typeof found?.contextLength === "number" && found.contextLength > 0
-      ? found.contextLength
-      : DEFAULT_CONTEXT_TOKENS;
+    return offeredChatModelContextTokens(modelId) ?? DEFAULT_CONTEXT_TOKENS;
   }, []);
 
   const remediateUnavailableModel = useCallback(() => {
-    const offered = new Set(offeredModelsRef.current.map((m) => m.id));
-    const before = modelRef.current;
-    const corrected = sanitizeModel(before, offered);
-    if (corrected !== before) {
-      pickModel(corrected);
-      setBillingNotice("Switched to a verifiable model.");
-      return;
-    }
     setBillingNotice("That model is not available.");
-  }, [pickModel]);
-
-  // On sign-in, reconcile the picker with the cross-device default from the
-  // user's space (SQL is the source of truth). localStorage already painted the
-  // picker instantly; this updates it if another device changed the preference.
-  useEffect(() => {
-    if (state !== "ready" || !tcw) return;
-    if (restoredActiveModelForTcwRef.current === tcw) return;
-    restoredActiveModelForTcwRef.current = tcw;
-    let cancelled = false;
-    (async () => {
-      try {
-        const saved = await getSetting(tcw, "active_model");
-        if (cancelled || !saved) return;
-        // ST1 — validate the restored value against the offered catalog. A stale
-        // non-offered id heals to DEFAULT_MODEL and the correction is persisted
-        // back (SQL + localStorage) via pickModel so it does NOT recur next
-        // sign-in — even when the corrected value already matches the picker.
-        const offered = new Set(offeredModelsRef.current.map((m) => m.id));
-        const { model: corrected, healed } = healPersistedModel(saved, offered);
-        if (healed) {
-          pickModel(corrected);
-        } else if (saved !== modelRef.current) {
-          setSelectedModel(saved);
-          writeLocalModel(saved);
-        }
-      } catch (err) {
-        // AUTH_UNAUTHORIZED or unset — keep the localStorage/default value.
-        console.warn("[App] failed to load model selection from space", err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [state, tcw, pickModel, setSelectedModel, writeLocalModel]);
+  }, []);
 
   // Seed memoryRef from the localStorage cache as soon as we have a tcw —
   // before the first chat turn — so the very first injection paints from
@@ -596,20 +514,12 @@ export function App() {
       try {
         const result = await api.get<{ models: ModelOption[] }>("/api/chat/models");
         if (cancelled) return;
-        const list = result.models ?? [];
-        setModels(list);
-        if (list.length > 0) {
-          // ST1 — validate the active id against the freshly-loaded offered list
-          // and heal a stale value, persisting the correction back (SQL +
-          // localStorage) via pickModel so it does not recur. Keep DEFAULT_MODEL
-          // when present, otherwise the first available model.
-          const offered = new Set(list.map((m) => m.id));
-          const fallback = list.find((m) => m.id === DEFAULT_MODEL)?.id ?? list[0]!.id;
-          const corrected = sanitizeModel(modelRef.current, offered, fallback);
-          if (corrected !== modelRef.current) {
-            pickModel(corrected);
-          }
-        }
+        const enrichment = new Map((result.models ?? []).map((entry) => [entry.id, entry]));
+        setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({
+          id,
+          contextLength: contextTokens,
+          ...enrichment.get(id),
+        })));
       } catch {
         // Models endpoint optional for chatting; default model still works.
       }
@@ -617,7 +527,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [state, pickModel]);
+  }, [state]);
 
   const signIn = useCallback(async () => {
     setError(null);
@@ -714,22 +624,14 @@ export function App() {
       // leaving, and the next user must never inherit them. ONLY the record —
       // this page load's attempt/dark latches are about the page, not the user.
       clearBackgroundDrainRecord();
-      if (typeof window !== "undefined") {
-        try {
-          window.localStorage.removeItem(MODEL_STORAGE_KEY);
-        } catch {
-          // localStorage disabled — nothing to clear.
-        }
-      }
-      modelRef.current = DEFAULT_MODEL;
-      restoredActiveModelForTcwRef.current = null;
+      selectionControllerRef.current = null;
       memoryRef.current = null;
-      setModel(DEFAULT_MODEL);
+      setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
       setTcw(null);
       setAddress(null);
       setDid(null);
       setSpaceId(null);
-      setModels([]);
+      setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
       setBillingStatus(null);
       setPricingOpen(false);
       setError(openKeyWarning);
@@ -844,11 +746,20 @@ export function App() {
             <span className="hidden sm:inline">TinyCloud Chat</span>
           </span>
           {isReady && (
+            <ModelPicker
+              model={selectionView.model}
+              models={models}
+              disabled={!selectionView.canPick}
+              status={selectionView.message}
+              onPick={pickModel}
+            />
+          )}
+          {isReady && selectionView.model && (
             // Intentionally hidden below the `sm` breakpoint: the header is
             // space-constrained on mobile and the per-message badge still
             // surfaces verification there. Desktop shows the model-level pill.
             <span className="hidden sm:inline-flex">
-              <ModelVerificationIndicator model={model} />
+              <ModelVerificationIndicator model={selectionView.model} />
             </span>
           )}
         </div>
@@ -911,10 +822,15 @@ export function App() {
                 key={importRefreshKey}
                 tcw={tcw}
                 sessionStore={sessionStoreRef.current}
-                modelRef={modelRef}
-                offeredModelIdsRef={offeredModelIdsRef}
+                selectionControllerRef={selectionControllerRef}
+                selectionView={selectionView}
                 memoryRef={memoryRef}
-                onActiveThreadModel={setSelectedModel}
+                onSelectionView={setSelectionView}
+                onSelectionAuthFailure={() => {
+                  sessionStoreRef.current.clear();
+                  setError("Your session expired. Sign in again to continue.");
+                  setState("recoverableError");
+                }}
                 onMemoryUpdated={onMemoryUpdated}
                 contextTokensFor={contextTokensFor}
                 sidebarOpen={sidebarOpen}
@@ -1043,6 +959,137 @@ export function App() {
 // date + a "How credits work" link to the rates table (spec §5.5). Renders
 // even before status loads (shows "Plans") so the entry point is always
 // present once the paywall is on.
+function ModelPicker(props: {
+  model: string | null;
+  models: ModelOption[];
+  disabled: boolean;
+  status?: string;
+  onPick: (id: string) => void;
+}) {
+  const { model, models, disabled, status, onPick } = props;
+  const [open, setOpen] = useState(false);
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || models.length === 0) return;
+    const active = Math.max(0, models.findIndex((entry) => entry.id === model));
+    setFocusedIndex(active);
+    queueMicrotask(() => optionRefs.current[active]?.focus());
+  }, [open, model, models]);
+
+  const select = (id: string) => {
+    onPick(id);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (models.length === 0) return;
+    let next = focusedIndex;
+    if (event.key === "ArrowDown") next = (focusedIndex + 1) % models.length;
+    else if (event.key === "ArrowUp") next = (focusedIndex - 1 + models.length) % models.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = models.length - 1;
+    else if ((event.key === "Enter" || event.key === " ") && models[focusedIndex]) {
+      event.preventDefault();
+      select(models[focusedIndex]!.id);
+      return;
+    } else return;
+    event.preventDefault();
+    setFocusedIndex(next);
+    optionRefs.current[next]?.focus();
+  };
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls="model-picker-popup"
+        aria-label="Model"
+        title={status}
+        className="flex h-11 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 md:h-8"
+      >
+        {model && isResponseVerifiableModel(model) ? (
+          <ShieldCheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        ) : model && isTeeCapableModel(model) ? (
+          <ShieldIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : null}
+        <span className="max-w-[7rem] truncate sm:max-w-[12rem]">
+          {model ?? status ?? "Choosing model…"}
+        </span>
+        <ChevronDownIcon className="size-3.5 text-muted-foreground" />
+      </button>
+      {open && (
+        <div
+          id="model-picker-popup"
+          role="listbox"
+          aria-label="Model"
+          onKeyDown={onListKeyDown}
+          className="absolute left-0 z-30 mt-1.5 max-h-72 w-80 max-w-[calc(100vw-6.5rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg"
+        >
+          {models.map((entry, index) => {
+            const active = entry.id === model;
+            return (
+              <button
+                key={entry.id}
+                ref={(element) => { optionRefs.current[index] = element; }}
+                type="button"
+                role="option"
+                aria-selected={active}
+                tabIndex={focusedIndex === index ? 0 : -1}
+                onClick={() => select(entry.id)}
+                onFocus={() => setFocusedIndex(index)}
+                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent focus:bg-accent focus:outline-none ${active ? "bg-accent/60" : ""}`}
+              >
+                <span className="flex-1 truncate">{entry.id}</span>
+                {isResponseVerifiableModel(entry.id) ? (
+                  <ShieldCheckIcon aria-label="Response verified" className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                ) : isTeeCapableModel(entry.id) ? (
+                  <ShieldIcon aria-label="TEE capable" className="size-3.5 text-muted-foreground" />
+                ) : null}
+                {typeof entry.multiplier === "number" ? (
+                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary tabular-nums">
+                    {Number.parseFloat(entry.multiplier.toFixed(1))}×
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">Rates unavailable</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {status && <div role="status" className="absolute left-0 top-full mt-0.5 whitespace-nowrap text-[10px] text-muted-foreground">{status}</div>}
+    </div>
+  );
+}
+
 function UsageIndicator(props: {
   status: BillingStatus | null;
   onClick: () => void;
@@ -1163,10 +1210,11 @@ function capitalize(s: string): string {
 function ChatWorkspace(props: {
   tcw: TinyCloudWeb;
   sessionStore: SessionStore;
-  modelRef: React.MutableRefObject<string>;
-  offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
+  selectionControllerRef: React.MutableRefObject<ModelSelectionController | null>;
+  selectionView: SelectionView;
   memoryRef: React.MutableRefObject<string | null>;
-  onActiveThreadModel: (model: string) => void;
+  onSelectionView: (view: SelectionView) => void;
+  onSelectionAuthFailure: () => void;
   onMemoryUpdated: (doc: string | null) => void;
   contextTokensFor: (modelId: string) => number;
   sidebarOpen: boolean;
@@ -1222,10 +1270,10 @@ function ChatWorkspace(props: {
       tcw: props.tcw,
       sessionStore: props.sessionStore,
       backendUrl: BACKEND_URL,
-      modelRef: props.modelRef,
-      offeredModelIdsRef: props.offeredModelIdsRef,
+      selectionControllerRef: props.selectionControllerRef,
+      onSelectionView: props.onSelectionView,
+      onSelectionAuthFailure: props.onSelectionAuthFailure,
       memoryRef: props.memoryRef,
-      onActiveThreadModel: props.onActiveThreadModel,
       onMemoryUpdated: props.onMemoryUpdated,
       activeThreadIdRef,
       agentEnabledRef,
@@ -1282,10 +1330,10 @@ function ChatWorkspace(props: {
     [
       props.tcw,
       props.sessionStore,
-      props.modelRef,
-      props.offeredModelIdsRef,
+      props.selectionControllerRef,
+      props.onSelectionView,
+      props.onSelectionAuthFailure,
       props.memoryRef,
-      props.onActiveThreadModel,
       props.onMemoryUpdated,
       props.contextTokensFor,
       onDelegationError,
@@ -1344,7 +1392,12 @@ function ChatWorkspace(props: {
         </aside>
         <section className="min-h-0">
           <div className={showConnectors ? "hidden" : "h-full"}>
-            <Thread tcw={props.tcw} />
+            <Thread
+              tcw={props.tcw}
+              selection={props.selectionView}
+              onRetrySelection={() => props.selectionControllerRef.current?.retry()}
+              onReload={() => props.selectionControllerRef.current?.reload()}
+            />
           </div>
           {showConnectors && props.connectorsSurface}
         </section>

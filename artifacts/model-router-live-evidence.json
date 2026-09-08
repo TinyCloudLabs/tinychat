@@ -1,0 +1,126 @@
+{
+  "checkedAt": "2026-09-07T15:35:33.324Z",
+  "endpoint": "https://api.redpill.ai/v1",
+  "releaseReady": false,
+  "candidates": [
+    {
+      "model": "z-ai/glm-5.3",
+      "streaming": "passed",
+      "toolRoundTrip": "passed",
+      "responseSignature": "not-proven",
+      "toolFrames": 38,
+      "streamFrames": 35
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "streaming": "failed",
+      "toolRoundTrip": "failed",
+      "responseSignature": "not-proven",
+      "streamingError": "Error: {\"httpStatus\":429,\"retryAfter\":null,\"detail\":\"{\\\"error\\\":{\\\"message\\\":\\\"Rate limit exceeded. Please retry after some time.\\\",\\\"type\\\":\\\"rate_limit_error\\\",\\\"code\\\":null,\\\"param\\\":null}}\"}",
+      "toolError": "Error: {\"httpStatus\":429,\"retryAfter\":null,\"detail\":\"{\\\"error\\\":{\\\"message\\\":\\\"Rate limit exceeded. Please retry after some time.\\\",\\\"type\\\":\\\"rate_limit_error\\\",\\\"code\\\":null,\\\"param\\\":null}}\"}"
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "streaming": "passed",
+      "toolRoundTrip": "passed",
+      "responseSignature": "not-proven",
+      "streamFrames": 32,
+      "toolFrames": 32
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "streaming": "passed",
+      "toolRoundTrip": "passed",
+      "responseSignature": "not-proven",
+      "streamFrames": 39,
+      "toolFrames": 137
+    },
+    {
+      "model": "qwen/qwen3.6-27b",
+      "streaming": "passed",
+      "toolRoundTrip": "passed",
+      "responseSignature": "not-proven",
+      "streamFrames": 22,
+      "toolFrames": 228
+    },
+    {
+      "model": "google/gemma-4-31b-it",
+      "streaming": "passed",
+      "toolRoundTrip": "passed",
+      "responseSignature": "not-proven",
+      "streamFrames": 5,
+      "toolFrames": 13
+    }
+  ],
+  "initialCheck": {
+    "checkedAt": "2026-09-07T15:33:23.074Z",
+    "candidates": [
+      {
+        "model": "z-ai/glm-5.3",
+        "streaming": "failed",
+        "toolRoundTrip": "passed",
+        "responseSignature": "not-proven",
+        "streamingError": "Error: HTTP 429",
+        "toolFrames": 38
+      },
+      {
+        "model": "deepseek/deepseek-v4-flash-0731",
+        "streaming": "failed",
+        "toolRoundTrip": "failed",
+        "responseSignature": "not-proven",
+        "streamingError": "Error: HTTP 429",
+        "toolError": "Error: HTTP 429"
+      },
+      {
+        "model": "z-ai/glm-5.2",
+        "streaming": "passed",
+        "toolRoundTrip": "passed",
+        "responseSignature": "not-proven",
+        "streamFrames": 32,
+        "toolFrames": 32
+      },
+      {
+        "model": "moonshotai/kimi-k3",
+        "streaming": "passed",
+        "toolRoundTrip": "passed",
+        "responseSignature": "not-proven",
+        "streamFrames": 39,
+        "toolFrames": 137
+      },
+      {
+        "model": "qwen/qwen3.6-27b",
+        "streaming": "passed",
+        "toolRoundTrip": "passed",
+        "responseSignature": "not-proven",
+        "streamFrames": 22,
+        "toolFrames": 228
+      },
+      {
+        "model": "google/gemma-4-31b-it",
+        "streaming": "passed",
+        "toolRoundTrip": "passed",
+        "responseSignature": "not-proven",
+        "streamFrames": 5,
+        "toolFrames": 13
+      }
+    ]
+  },
+  "followup": {
+    "reason": "One targeted retry of HTTP 429 failures after the initial sequential probe completed; previously passing checks were not rerun",
+    "attempts": [
+      {
+        "model": "z-ai/glm-5.3",
+        "checkedAt": "2026-09-07T15:35:23.611Z",
+        "streaming": "passed"
+      },
+      {
+        "model": "deepseek/deepseek-v4-flash-0731",
+        "checkedAt": "2026-09-07T15:35:26.843Z",
+        "streaming": "failed",
+        "streamingError": "Error: {\"httpStatus\":429,\"retryAfter\":null,\"detail\":\"{\\\"error\\\":{\\\"message\\\":\\\"Rate limit exceeded. Please retry after some time.\\\",\\\"type\\\":\\\"rate_limit_error\\\",\\\"code\\\":null,\\\"param\\\":null}}\"}",
+        "toolRoundTrip": "failed",
+        "toolError": "Error: {\"httpStatus\":429,\"retryAfter\":null,\"detail\":\"{\\\"error\\\":{\\\"message\\\":\\\"Rate limit exceeded. Please retry after some time.\\\",\\\"type\\\":\\\"rate_limit_error\\\",\\\"code\\\":null,\\\"param\\\":null}}\"}"
+      }
+    ]
+  }
+}

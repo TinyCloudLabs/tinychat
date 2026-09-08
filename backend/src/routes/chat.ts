@@ -39,6 +39,8 @@ import {
   ratesForModel,
   type ModelRates,
 } from "../billing/credits.js";
+import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
+import { selectChatModel } from "../modelSelection.js";
 
 // ── RedPill config ───────────────────────────────────────────────────────────
 // REDPILL_API_KEY is required at call time. Missing key returns 500 per-request
@@ -56,7 +58,7 @@ const CONTEXT_OVERFLOW_BODY_RE =
 // every tier instead of self-denying with a 402 (ST6). Response-level
 // verification is a separate frontend capability. Overridable via
 // REDPILL_DEFAULT_MODEL. Must stay an exact member of the picker allowlist.
-const DEFAULT_BASELINE_MODEL = "z-ai/glm-5.2";
+const DEFAULT_BASELINE_MODEL = DEFAULT_CHAT_MODEL;
 
 // ST11 — validate the REDPILL_DEFAULT_MODEL override. A stale value that isn't
 // in the offered allowlist (e.g. a pre-PR `openai/gpt-5-mini`, or a now-unoffered
@@ -68,7 +70,7 @@ let validatedDefault: { raw: string | undefined; value: string } | null = null;
 export function defaultModel(): string {
   const raw = process.env.REDPILL_DEFAULT_MODEL;
   if (validatedDefault && validatedDefault.raw === raw) return validatedDefault.value;
-  let value = DEFAULT_BASELINE_MODEL;
+  let value: string = DEFAULT_BASELINE_MODEL;
   if (raw) {
     if (isOfferedModel(raw)) {
       value = raw;
@@ -200,6 +202,11 @@ export function createChatRouter(options?: ChatRouterOptions) {
   const flusher = options?.flusher;
   const rehydrator = options?.rehydrator;
   const router = Router();
+
+  router.get("/model-selection", async (_req: Request, res: Response) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await selectChatModel());
+  });
 
   /**
    * POST /
@@ -651,24 +658,25 @@ export function createChatRouter(options?: ChatRouterOptions) {
     // (Billing still uses the full catalog above; the mislabeled-model blocklist
     // already pruned getCatalog.)
     const byCatalogId = new Map(catalog.map((m) => [m.id, m]));
-    const visible: CatalogModel[] = PICKER_MODELS.map((id) => byCatalogId.get(id)).filter(
-      (m): m is CatalogModel => m !== undefined,
-    );
-
-    const annotated = visible.map((m) => {
-      const modelRates = ratesForModel(m);
-      const rateFields = {
-        creditsPerKInput: modelRates.creditsPerKInput,
-        creditsPerKOutput: modelRates.creditsPerKOutput,
-        multiplier: multiplierFor(modelRates, baselineRates),
-      };
+    const annotated = PICKER_MODELS.map((id) => {
+      const catalogModel = byCatalogId.get(id);
+      const rateFields = catalogModel?.pricing
+        ? (() => {
+            const modelRates = ratesForModel(catalogModel);
+            return {
+              creditsPerKInput: modelRates.creditsPerKInput,
+              creditsPerKOutput: modelRates.creditsPerKOutput,
+              multiplier: multiplierFor(modelRates, baselineRates),
+            };
+          })()
+        : {};
       // contextLength (integer tokens) drives client-side compaction budgeting
       // (§C.4c). Static in-code map with a DEFAULT_CONTEXT_TOKENS fallback; does
       // not touch the tier/credit-rate fields above.
       return {
-        ...gateAnnotation(m.id, gating, tier),
+        ...gateAnnotation(id, gating, tier),
         ...rateFields,
-        contextLength: contextLengthFor(m.id),
+        contextLength: contextLengthFor(id),
       };
     });
 

@@ -39,8 +39,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import type React from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
-import { DEFAULT_MODEL } from "../lib/threadStore";
-import { sanitizeModel } from "../lib/sanitizeModel";
+import type { ModelSelectionCoordinator } from "./modelSelection";
 import { meetingSourceLabel } from "../lib/connectors/meetingExplorer";
 import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
@@ -116,8 +115,7 @@ export function subscribeThreadCompaction(cb: () => void): () => void {
 export interface AdapterDeps {
   sessionStore: SessionStore;
   backendUrl: string;
-  modelRef: React.MutableRefObject<string>;
-  activeThreadIdRef: React.MutableRefObject<string | null>;
+  selection: ModelSelectionCoordinator;
   agentEnabledRef: React.MutableRefObject<boolean>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
@@ -127,7 +125,6 @@ export interface AdapterDeps {
    * catalog — a stale persisted id (e.g. a model dropped from the lineup) can
    * never fire a request and 403, regardless of which restore path set it.
    */
-  offeredModelIdsRef: React.MutableRefObject<ReadonlySet<string>>;
   /**
    * Optional until the mounted workspace wires its one stable retriever. Its
    * absence preserves ordinary chat exactly; when present it runs once before
@@ -244,27 +241,44 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
           ? { role: "system", content: systemContent }
           : null;
 
-      const threadId = deps.activeThreadIdRef.current;
-      const convo: PayloadMsgWithId[] = [];
+      const rawConvo: PayloadMsgWithId[] = [];
       for (const m of messages) {
         if (m.role !== "user" && m.role !== "assistant" && m.role !== "system") continue;
         const content = messageText(m);
         if (!content) continue;
         const id = typeof (m as { id?: unknown }).id === "string" ? (m as { id: string }).id : "";
-        if (m.role === "assistant" && threadId && id && deps.meetingMessageRegistry.isClassified(threadId, id)) {
-          continue;
-        }
-        convo.push({ id, role: m.role, content });
+        rawConvo.push({ id, role: m.role, content });
       }
 
-      // Request-path heal (Bug #1): sanitize the selected id against the offered
-      // catalog before it can hit the wire. Any restore path (localStorage, space
-      // SQL active_model, per-thread row) can seed a stale non-offered id; this is
-      // the single choke point that guarantees no request fires with one.
-      const modelId = sanitizeModel(
-        deps.modelRef.current || DEFAULT_MODEL,
-        deps.offeredModelIdsRef.current,
+      const turnId = [...rawConvo].reverse().find((message) => message.role === "user")?.id;
+      if (!turnId) throw new Error("Cannot send without a stable user-message id.");
+      const cancel = deps.selection.captureCancel();
+      abortSignal.addEventListener("abort", cancel, { once: true });
+      let origin;
+      try {
+        if (abortSignal.aborted) throw new Error("Send cancelled.");
+        origin = await deps.selection.beginActiveTurn(turnId);
+        await deps.selection.waitForAppend(origin);
+      } finally {
+        abortSignal.removeEventListener("abort", cancel);
+      }
+      abortSignal = AbortSignal.any([abortSignal, origin.signal]);
+      deps.selection.assertActive(origin);
+      deps.selection.setRunning(origin, true);
+      const threadId = origin.threadId;
+      const modelId = origin.model;
+      const agentEnabled = deps.agentEnabledRef.current;
+      const assertTurn = () => {
+        deps.selection.assertActive(origin);
+        if (abortSignal.aborted) throw new Error("Send cancelled.");
+      };
+      const convo = rawConvo.filter(
+        (message) =>
+          message.role !== "assistant" ||
+          !message.id ||
+          !deps.meetingMessageRegistry.isClassified(origin.threadId, message.id),
       );
+      try {
 
       // Meeting retrieval is a single, ephemeral preflight. It must finish
       // before any checkpoint/storage compaction work, and its raw evidence
@@ -275,7 +289,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // The agent receives the ordinary question and performs any transcript read
       // through its separately delegated tool.  Keep the existing retriever only
       // for the non-agent fallback path.
-      if (!deps.agentEnabledRef.current && deps.meetingRetriever && threadId && latestQuestion !== undefined) {
+      if (!agentEnabled && deps.meetingRetriever && threadId && latestQuestion !== undefined) {
         let meetingOutcome: MeetingRetrievalOutcome;
         try {
           meetingOutcome = await deps.meetingRetriever.retrieve({
@@ -380,7 +394,9 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         patchCompaction(threadId, { compacting: true });
         try {
           const summaryMessages = buildSummarizationMessages(plan, activeCheckpoint?.summary);
+          assertTurn();
           const summary = await deps.summarize({ model: modelId, messages: summaryMessages });
+          assertTurn();
           const cp = await deps.appendCompaction(threadId, plan.coversThroughMessageId, summary);
           activeCheckpoint = cp;
           payload = assemble(cp);
@@ -416,11 +432,11 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const sendOnce = async function* (
         sendPayload: ChatMessage[],
       ): AsyncGenerator<{ content: { type: "text"; text: string }[] }, void, unknown> {
-        if (deps.agentEnabledRef.current && !meetingSystemBlock) {
-          // C2: read the active thread id from the ref written by the per-thread
-          // Provider so roomId is always current at call time.
-          const roomId = deps.activeThreadIdRef.current ?? undefined;
+        assertTurn();
+        if (agentEnabled && !meetingSystemBlock) {
+          const roomId = origin.threadId;
           try {
+            deps.selection.assertActive(origin);
             for await (const text of streamAgentChat({
               backendUrl: deps.backendUrl,
               getToken: () => deps.sessionStore.getToken(),
@@ -435,6 +451,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
                 ? (a) => setToolActivity(unstable_assistantMessageId, a)
                 : undefined,
             })) {
+              deps.selection.assertActive(origin);
               yield { content: [{ type: "text", text }] };
             }
           } finally {
@@ -444,6 +461,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
             }
           }
         } else {
+          deps.selection.assertActive(origin);
           for await (const text of streamChat({
             backendUrl: deps.backendUrl,
             sessionStore: deps.sessionStore,
@@ -453,6 +471,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
             onUsage,
             onCompletionId,
           })) {
+            deps.selection.assertActive(origin);
             yield { content: [{ type: "text", text }] };
           }
         }
@@ -500,6 +519,9 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         if (completionId) {
           setPendingCompletion(unstable_assistantMessageId, { completionId, model: modelId });
         }
+      }
+      } finally {
+        deps.selection.setRunning(origin, false);
       }
     },
   };

@@ -4,11 +4,14 @@ import {
   isResponseVerifiableModel,
   isTeeCapableModel,
 } from "./completionStore";
+import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 
 describe("model verification capabilities", () => {
-  test("GLM 5.2 is TEE-capable without claiming response signatures", () => {
-    expect(isTeeCapableModel("z-ai/glm-5.2")).toBe(true);
-    expect(isResponseVerifiableModel("z-ai/glm-5.2")).toBe(false);
+  test("all offered models are TEE-capable without inferred response signatures", () => {
+    for (const { id } of OFFERED_CHAT_MODELS) {
+      expect(isTeeCapableModel(id)).toBe(true);
+      expect(isResponseVerifiableModel(id)).toBe(false);
+    }
   });
 
   test("retains the previously confirmed DeepSeek response-signature capability", () => {

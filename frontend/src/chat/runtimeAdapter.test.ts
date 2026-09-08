@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
 import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
+import { offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import type { MeetingCandidate } from "../lib/meetingChat/types.js";
 
 const realFetch = globalThis.fetch;
@@ -39,7 +40,26 @@ function sseResponse(url: string, chunks: string[] = ["Hello"]): Response {
   void url;
 }
 
-function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): AdapterDeps {
+function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null, model = DEFAULT_MODEL): AdapterDeps {
+  const threadId = activeThreadId ?? "thread-without-active-ref";
+  const selection = {
+    getView: () => ({ threadId }),
+    beginActiveTurn: async (turnId: string) => ({
+      tcw: {} as never,
+      space: "space-1",
+      threadId,
+      activation: 1,
+      signal: new AbortController().signal,
+      model,
+      turnId,
+    }),
+    waitForAppend: async () => {},
+    confirmAppend: () => {},
+    captureCancel: () => () => {},
+    cancel: () => {},
+    assertActive: () => {},
+    setRunning: () => {},
+  } as never;
   return {
     backendUrl: "https://api.test",
     sessionStore: {
@@ -47,10 +67,8 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null): 
       isExpired: () => false,
       hasSession: () => true,
     } as AdapterDeps["sessionStore"],
-    modelRef: { current: DEFAULT_MODEL },
-    offeredModelIdsRef: { current: new Set() },
+    selection,
     agentEnabledRef: { current: agentEnabled },
-    activeThreadIdRef: { current: activeThreadId },
     meetingMessageRegistry: createMeetingMessageRegistry(),
   };
 }
@@ -90,7 +108,7 @@ async function drainAdapter(
   }) as typeof fetch;
 
   for await (const frame of adapter.run({
-    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] as Parameters<typeof adapter.run>[0]["messages"],
+    messages: [{ id: "user-turn", role: "user", content: [{ type: "text", text: "hi" }] }] as Parameters<typeof adapter.run>[0]["messages"],
     abortSignal: new AbortController().signal,
     context: {},
     unstable_assistantMessageId: msgId,
@@ -193,7 +211,7 @@ describe("createChatModelAdapter — C2 roomId threading", () => {
     expect(body.roomId).toBe("thread-room-42");
   });
 
-  it("omits roomId in agent path body when activeThreadIdRef is null", async () => {
+  it("always binds roomId to the captured turn even without an active-thread ref", async () => {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
       if (String(url).includes("agent")) {
@@ -203,24 +221,11 @@ describe("createChatModelAdapter — C2 roomId threading", () => {
     }) as typeof fetch;
 
     await drainAdapter(makeDeps(true, null));
-    expect(body.roomId).toBeUndefined();
+    expect(body.roomId).toBe("thread-without-active-ref");
   });
 });
 
-describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
-  // A stale persisted id that was dropped from the lineup (not in the offered
-  // membership set) must be sanitized to DEFAULT_MODEL before the request fires —
-  // otherwise the backend 403s model_not_offered. The product is single-model, so
-  // the offered set is exactly DEFAULT_MODEL.
-  const OFFERED = new Set([DEFAULT_MODEL]);
-
-  function staleDeps(agentEnabled: boolean): AdapterDeps {
-    const deps = makeDeps(agentEnabled, "thread-x");
-    deps.modelRef = { current: "phala/gpt-oss-20b" };
-    deps.offeredModelIdsRef = { current: OFFERED };
-    return deps;
-  }
-
+describe("createChatModelAdapter — immutable turn model", () => {
   async function captureBody(deps: AdapterDeps, agentPath: boolean): Promise<Record<string, unknown>> {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
@@ -232,23 +237,10 @@ describe("createChatModelAdapter — Bug #1 request-path model heal", () => {
     return body;
   }
 
-  it("heals a stale unoffered model to DEFAULT_MODEL on the agent path", async () => {
-    const body = await captureBody(staleDeps(true), true);
-    expect(body.model).toBe(DEFAULT_MODEL);
-    expect(body.model).not.toBe("phala/gpt-oss-20b");
-  });
-
-  it("heals a stale unoffered model to DEFAULT_MODEL on the plain relay path", async () => {
-    const body = await captureBody(staleDeps(false), false);
-    expect(body.model).toBe(DEFAULT_MODEL);
-  });
-
-  it("leaves an offered model unchanged", async () => {
+  it("uses the captured model on both transport paths", async () => {
     const deps = makeDeps(true, "thread-x");
-    deps.modelRef = { current: DEFAULT_MODEL };
-    deps.offeredModelIdsRef = { current: OFFERED };
-    const body = await captureBody(deps, true);
-    expect(body.model).toBe(DEFAULT_MODEL);
+    expect((await captureBody(deps, true)).model).toBe(DEFAULT_MODEL);
+    expect((await captureBody(makeDeps(false, "thread-x"), false)).model).toBe(DEFAULT_MODEL);
   });
 });
 
@@ -281,5 +273,38 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
     const receipt = takePendingReceipt(msgId);
     expect(receipt).not.toBeNull();
     expect(receipt?.usage).toEqual({ promptTokens: 1, completionTokens: 1 });
+  });
+});
+
+describe("turn binding across awaited work", () => {
+  it("a delayed checkpoint keeps Qwen 35B's context budget, both transports and receipts on their captured model and room", async () => {
+    const turnModel = "qwen/qwen3.6-35b-a3b";
+    for (const agent of [false, true]) {
+      const deps = makeDeps(agent, "origin-room", turnModel);
+      let release!: () => void;
+      let entered!: () => void;
+      const enteredGate = new Promise<void>((resolve) => { entered = resolve; });
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      deps.getCheckpoint = async () => { entered(); await held; return null; };
+      deps.contextTokensFor = (model) => {
+        expect(model).toBe(turnModel);
+        const contextTokens = offeredChatModelContextTokens(model);
+        expect(contextTokens).toBe(262_144);
+        return contextTokens!;
+      };
+      deps.appendCompaction = async () => { throw new Error("unexpected compaction"); };
+      deps.summarize = async () => { throw new Error("unexpected summary"); };
+      const bodies: Array<Record<string, unknown>> = [];
+      globalThis.fetch = (async (url, init) => { bodies.push(JSON.parse(init!.body as string)); return sseResponse(String(url)); }) as typeof fetch;
+      const running = drainAdapter(deps, `delayed-${agent}`);
+      await enteredGate;
+      deps.agentEnabledRef.current = !agent;
+      release();
+      const result = await running;
+      expect(result.calledUrl.includes("/api/agent/chat")).toBe(agent);
+      expect(bodies[0].model).toBe(turnModel);
+      if (agent) expect(bodies[0].roomId).toBe("origin-room");
+      expect(takePendingReceipt(`delayed-${agent}`)?.modelId).toBe(turnModel);
+    }
   });
 });

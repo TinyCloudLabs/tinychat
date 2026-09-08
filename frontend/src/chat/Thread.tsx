@@ -57,12 +57,16 @@ import {
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
+import type { SelectionView } from "./modelSelection";
 
 interface ThreadProps {
   tcw: TinyCloudWeb;
+  selection: SelectionView;
+  onRetrySelection: () => void;
+  onReload: () => void;
 }
 
-export const Thread: FC<ThreadProps> = ({ tcw }) => {
+export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload }) => {
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
@@ -70,10 +74,21 @@ export const Thread: FC<ThreadProps> = ({ tcw }) => {
           <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
               <CompactionIndicator />
+              {!selection.canSend && selection.message && (
+                <div role="status" className="flex items-center justify-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                  <span>{selection.message}</span>
+                  {(selection.saveFailed || selection.message.startsWith("Retry loading")) && (
+                    <Button type="button" variant="outline" size="sm" onClick={onRetrySelection}>Retry</Button>
+                  )}
+                  {selection.message === "Chat unavailable." && (
+                    <Button type="button" variant="outline" size="sm" onClick={onReload}>Reload</Button>
+                  )}
+                </div>
+              )}
               <ThreadBody />
             </div>
 
-            <Composer />
+            <Composer selection={selection} />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
       </ShareThreadProvider>
@@ -439,7 +454,7 @@ const WELCOME_SUGGESTIONS = [
   },
 ];
 
-const Composer: FC = () => {
+const Composer: FC<{ selection: SelectionView }> = ({ selection }) => {
   return (
     <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
       <div className="relative">
@@ -450,6 +465,7 @@ const Composer: FC = () => {
           autoFocus
           rows={1}
           placeholder="Message TinyCloud Chat…"
+          disabled={!selection.canSend}
           // text-base (16px) on mobile prevents iOS Safari from auto-zooming
           // the page when the field gains focus; desktop keeps the compact 14px.
           className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
@@ -457,9 +473,10 @@ const Composer: FC = () => {
         <ThreadPrimitive.If running={false}>
           <ComposerPrimitive.Send asChild>
             <TooltipIconButton
-              tooltip="Send"
+              tooltip={selection.canSend ? "Send" : (selection.message ?? "Choose a model before sending")}
               side="top"
               type="submit"
+              disabled={!selection.canSend}
               className="size-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 md:size-9"
             >
               <SendHorizontalIcon className="size-4" />
