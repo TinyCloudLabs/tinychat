@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { EventEmitter } from "node:events";
 import type Stripe from "stripe";
 import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import { isOfferedModel, _resetCatalogCache } from "../billing/catalog.js";
@@ -26,11 +27,13 @@ const ADDR = "0xabc";
 process.env.LEDGER_EXPOSE_SOURCE = "true";
 const ORIGINAL_ENV = { ...process.env };
 
+/** Successful provider fixtures explicitly end with the protocol terminal. */
 function sseStream(frames: string[]): AsyncIterable<Uint8Array> {
   const enc = new TextEncoder();
   return {
     async *[Symbol.asyncIterator]() {
       for (const f of frames) yield enc.encode(f);
+      if (!frames.some((f) => f.includes("data: [DONE]"))) yield enc.encode("data: [DONE]\n\n");
     },
   };
 }
@@ -55,6 +58,7 @@ function forwardedContent(frames: string[]): string {
 function baseConfig(fetchImpl: typeof fetch): AgentChatConfig {
   return {
     agentId: AGENT_ID,
+    streamPolicy: { heartbeatMs: 1000, turnTimeoutMs: 10000, drainGraceMs: 100 },
     entityIdFor: () => "entity-1",
     elizaServiceUrl: "https://eliza.test",
     elizaServiceSecret: "svc",
@@ -118,35 +122,40 @@ function makeReqRes(opts?: { body?: object; address?: string }) {
   const jsonResponses: Array<{ status: number; body: unknown }> = [];
   const writtenChunks: string[] = [];
   let ended = false;
+  let flushed = false;
 
-  const req = {
+  const req = Object.assign(new EventEmitter(), {
     user: { address },
     body,
-    on: (_evt: string, _fn: unknown) => {},
-  } as unknown as Request;
+  }) as unknown as Request;
 
-  const res = {
-    get statusCode() { return statusCode; },
+  const res = Object.assign(new EventEmitter(), {
+    destroyed: false,
+    destroy() { this.destroyed = true; this.emit("close"); return this; },
     status(code: number) { statusCode = code; return res; },
     json(responseBody: unknown) { jsonResponses.push({ status: statusCode, body: responseBody }); return res; },
     setHeader() { return res; },
-    flushHeaders() {},
-    write(chunk: string) { writtenChunks.push(chunk); return true; },
-    end() { ended = true; },
-    on(_evt: string, _fn: unknown) { return res; },
-    get writableEnded() { return ended; },
+    flushHeaders() { flushed = true; },
+    write(chunk: string | Uint8Array) { writtenChunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; },
+    end() { ended = true; this.emit("finish"); },
     // test helpers
-    get lastJson() { return jsonResponses[jsonResponses.length - 1]; },
-    get chunks() { return writtenChunks; },
-    get isEnded() { return ended; },
-    get lastStatus() { return statusCode; },
-  } as unknown as Response & {
+    chunks: writtenChunks,
+  }) as unknown as Response & {
     lastJson: { status: number; body: unknown } | undefined;
     chunks: string[];
     isEnded: boolean;
     lastStatus: number;
   };
 
+  Object.defineProperties(res, {
+    statusCode: { get: () => statusCode, configurable: true },
+    writableEnded: { get: () => ended, configurable: true },
+    writableFinished: { get: () => ended, configurable: true },
+    headersSent: { get: () => flushed, configurable: true },
+    lastJson: { get: () => jsonResponses[jsonResponses.length - 1], configurable: true },
+    isEnded: { get: () => ended, configurable: true },
+    lastStatus: { get: () => statusCode, configurable: true },
+  });
   return { req, res };
 }
 
@@ -302,7 +311,7 @@ describe("orchestrateToolCalling", () => {
       })
       .join("");
     expect(text).toBe("Hello world");
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   it("dispatches a tool call to eliza and loops back for the final answer", async () => {
@@ -385,7 +394,7 @@ describe("orchestrateToolCalling", () => {
       .join("");
     expect(text).toBe("The capital is Paris.");
     expect(frames.some((f) => f.includes("tool_activity"))).toBe(true);
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   it("chains metadata selection to a selected-meeting read before synthesis", async () => {
@@ -536,9 +545,9 @@ describe("orchestrateToolCalling", () => {
     // (c) the synthesized answer IS forwarded.
     const text = forwardedContent(frames);
     expect(text).toBe("Portugal won 2-0 today.");
-    // (d) usage/[DONE] frames still present.
-    expect(frames.some((f) => f.includes('"usage"'))).toBe(true);
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    // The lifecycle owner emits usage and terminal frames.
+    expect(frames.some((f) => f.includes('"usage"'))).toBe(false);
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   // Leaked-markup guard: two concatenated inline tool_calls are both dispatched.
@@ -586,7 +595,7 @@ describe("orchestrateToolCalling", () => {
     expect((elizaCalls[0].body as { args: { query: string } }).args.query).toBe("q1");
     expect((elizaCalls[1].body as { args: { query: string } }).args.query).toBe("q2");
     expect(forwardedContent(frames)).toBe("Both done.");
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   // Regression: a plain answer that does NOT lead with markup streams through with
@@ -620,7 +629,7 @@ describe("orchestrateToolCalling", () => {
     // The answer (incl. a non-leading mention of <tool_call>) is forwarded verbatim.
     expect(forwardedContent(frames)).toBe("You can use a <tool_call> if you want.");
     expect(elizaHit).toBe(false);
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   it("stops after maxRounds even if the model keeps requesting tools", async () => {
@@ -656,7 +665,7 @@ describe("orchestrateToolCalling", () => {
     });
 
     expect(redpillRounds).toBe(2);
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   // Issue B: on the forced final round with gathered tool results, issue a CLEAN
@@ -734,10 +743,10 @@ describe("orchestrateToolCalling", () => {
     // The final request must NOT carry any role:"tool" message (reshaped, not continued).
     expect(finalMessages.some((m) => m.role === "tool")).toBe(false);
 
-    // (b) the synthesized content is forwarded; (d) usage + [DONE] present.
+    // Synthesized content is forwarded; the owner controls terminal metadata.
     expect(forwardedContent(frames)).toBe("Lisbon (https://example.com/pt).");
-    expect(frames.some((f) => f.includes('"usage"'))).toBe(true);
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames.some((f) => f.includes('"usage"'))).toBe(false);
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   // Issue B regression: forced round reached with NO tool results (model answered
@@ -772,7 +781,7 @@ describe("orchestrateToolCalling", () => {
     expect(upstreamBodies).toHaveLength(1);
     expect(upstreamBodies[0].tools).toBeDefined();
     expect(forwardedContent(frames)).toBe("Direct answer.");
-    expect(frames.at(-1)).toBe("data: [DONE]\n\n");
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   describe("transcript tool delegation failures", () => {
@@ -894,8 +903,8 @@ describe("orchestrateToolCalling", () => {
     });
   });
 
-  // A1: the final answer round's completion id is forwarded via idFrame
-  it("A1: emits idFrame with the final round's completion id", async () => {
+  // A1: the final answer round's completion id is returned for terminal delivery
+  it("A1: returns the final round's completion id to its owner", async () => {
     const fetchImpl = (async () => ({
       ok: true,
       status: 200,
@@ -914,28 +923,16 @@ describe("orchestrateToolCalling", () => {
       write: (f) => frames.push(f),
     });
 
-    // An id frame must appear before [DONE]
-    const idFrame = frames.find((f) => {
-      try {
-        const parsed = JSON.parse(f.replace(/^data: /, "").trim()) as Record<string, unknown>;
-        return typeof parsed.id === "string" && parsed.id === "cmpl-abc123";
-      } catch {
-        return false;
-      }
-    });
-    expect(idFrame).toBeDefined();
-
-    // The id frame must come before [DONE]
-    const idFrameIdx = frames.indexOf(idFrame!);
-    const doneIdx = frames.indexOf("data: [DONE]\n\n");
-    expect(idFrameIdx).toBeLessThan(doneIdx);
+    // The owner receives the ID; orchestration does not write terminal metadata.
+    expect(frames.some((f) => f.startsWith('data: {"id":'))).toBe(false);
+    expect(frames).not.toContain("data: [DONE]\n\n");
 
     // A3: return value carries the completion id
     expect(result.completionId).toBe("cmpl-abc123");
   });
 
   // A1: tool-only rounds must NOT emit an id frame (only the answer round does)
-  it("A1: does not emit idFrame for tool-only round, only for the answer round", async () => {
+  it("A1: returns only the answer round completion id", async () => {
     let round = 0;
     const fetchImpl = (async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
@@ -970,7 +967,7 @@ describe("orchestrateToolCalling", () => {
       write: (f) => frames.push(f),
     });
 
-    // Only one id frame total, and it carries the ANSWER round's id (not the tool round's)
+    // Orchestration returns only the answer ID and emits no terminal metadata.
     const idFrames = frames.filter((f) => {
       try {
         const parsed = JSON.parse(f.replace(/^data: /, "").trim()) as Record<string, unknown>;
@@ -979,14 +976,12 @@ describe("orchestrateToolCalling", () => {
         return false;
       }
     });
-    expect(idFrames).toHaveLength(1);
-    const parsedId = JSON.parse(idFrames[0].replace(/^data: /, "").trim()) as { id: string };
-    expect(parsedId.id).toBe("cmpl-answer");
+    expect(idFrames).toHaveLength(0);
     expect(result.completionId).toBe("cmpl-answer");
   });
 
-  // A2: a summed usage frame is emitted covering all rounds
-  it("A2: emits a usageFrame with summed tokens across all rounds", async () => {
+  // A2: summed usage is returned covering all completed rounds
+  it("A2: returns summed tokens across all rounds to its owner", async () => {
     let round = 0;
     const fetchImpl = (async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
@@ -1029,20 +1024,10 @@ describe("orchestrateToolCalling", () => {
         return false;
       }
     });
-    expect(usageFrames).toHaveLength(1);
-
-    const usageData = (JSON.parse(usageFrames[0].replace(/^data: /, "").trim()) as { usage: { prompt_tokens: number; completion_tokens: number } }).usage;
-    expect(usageData.prompt_tokens).toBe(25);   // 10 + 15
-    expect(usageData.completion_tokens).toBe(8); // 3 + 5
-
-    // A3: return value has summed totals
+    expect(usageFrames).toHaveLength(0);
     expect(result.promptTokens).toBe(25);
     expect(result.completionTokens).toBe(8);
-
-    // Usage frame must appear before [DONE]
-    const usageFrameIdx = frames.indexOf(usageFrames[0]);
-    const doneIdx = frames.indexOf("data: [DONE]\n\n");
-    expect(usageFrameIdx).toBeLessThan(doneIdx);
+    expect(frames).not.toContain("data: [DONE]\n\n");
   });
 
   // A3: single-round return value carries correct totals
@@ -1103,6 +1088,125 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       expect(called).toBe(true);
     }
   });
+
+  for (const gate of ["auth", "input", "model"] as const) {
+    it(`preserves the pre-SSE ${gate} HTTP gate`, async () => {
+      process.env.PAYWALL_ENABLED = "false";
+      const { req, res } = makeReqRes();
+      if (gate === "auth") req.user = undefined;
+      if (gate === "input") req.body.messages = [];
+      let calls = 0;
+      await createAgentChatHandler({
+        ...baseConfig((async () => { calls++; throw new Error("Unexpected provider request"); }) as typeof fetch),
+        isModelOffered: () => gate !== "model",
+      })(req, res);
+      expect(calls).toBe(0);
+      expect(res.statusCode).toBe(gate === "auth" ? 401 : gate === "input" ? 400 : 403);
+      expect(res.headersSent).toBe(false);
+      expect(res.chunks).toHaveLength(0);
+    });
+  }
+
+  it("resolves entity identity before opening SSE", async () => {
+    process.env.PAYWALL_ENABLED = "false";
+    const { req, res } = makeReqRes();
+    const handler = createAgentChatHandler({ ...baseConfig(makeCompletionFetch()), entityIdFor: () => { throw new Error("synthetic identity setup failure"); } });
+    await expect(Promise.resolve(handler(req, res))).rejects.toThrow("synthetic identity setup failure");
+    expect(res.headersSent).toBe(false); expect(res.chunks).toHaveLength(0);
+  });
+
+  it("does not log raw failures in either post-stream accounting catch", async () => {
+    process.env.PAYWALL_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test";
+    _setStripeClient(mockStripe(null));
+    const restore = stubCatalogFetch();
+    const logged: unknown[] = [];
+    const error = spyOn(console, "error").mockImplementation((...args) => { logged.push(args); });
+    try {
+      const { req, res } = makeReqRes();
+      await createAgentChatHandler({
+        ...baseConfig(makeCompletionFetch()),
+        flusher: { enqueue: () => { throw new Error("sentinel-accounting-error-with-secret"); } } as AgentChatConfig["flusher"],
+      })(req, res);
+      expect(logged).toHaveLength(2);
+      expect(JSON.stringify(logged)).not.toContain("sentinel");
+      expect(res.chunks.join("").match(/data: \[DONE\]/g)).toHaveLength(1);
+    } finally { error.mockRestore(); restore(); }
+  });
+
+  for (const failure of ["content", "id", "usage", "done", "end"] as const) {
+    it(`keeps completed usage ineligible when ${failure} delivery throws`, async () => {
+      process.env.PAYWALL_ENABLED = "true";
+      process.env.STRIPE_SECRET_KEY = "sk_test";
+      _setStripeClient(mockStripe(null));
+      const restore = stubCatalogFetch();
+      try {
+        const { req, res } = makeReqRes();
+        const write = res.write.bind(res);
+        res.write = ((chunk: string | Uint8Array) => {
+          const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+          if ((failure === "content" && text.includes('"content"')) || (failure === "id" && text.includes('"id"')) || (failure === "usage" && text.includes('"usage"')) || (failure === "done" && text.includes("[DONE]"))) throw new Error("synthetic write exception");
+          return write(chunk);
+        }) as typeof res.write;
+        if (failure === "end") res.end = (() => { throw new Error("synthetic end exception"); }) as typeof res.end;
+        await createAgentChatHandler(baseConfig(makeCompletionFetch()))(req, res);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
+        expect(res.destroyed).toBe(true);
+      } finally { restore(); }
+    });
+  }
+
+  for (const transport of ["close", "backpressure"] as const) {
+    it(`retains completed-result accounting for terminal ${transport} without a write exception`, async () => {
+      process.env.PAYWALL_ENABLED = "true";
+      process.env.STRIPE_SECRET_KEY = "sk_test";
+      _setStripeClient(mockStripe(null));
+      const restore = stubCatalogFetch();
+      try {
+        const { req, res } = makeReqRes();
+        const write = res.write.bind(res);
+        res.write = ((chunk: string | Uint8Array) => {
+          const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+          const result = write(chunk);
+          if (text.includes('"id"')) {
+            if (transport === "close") res.destroy();
+            else { queueMicrotask(() => res.emit("drain")); return false; }
+          }
+          return result;
+        }) as typeof res.write;
+        await createAgentChatHandler(baseConfig(makeCompletionFetch()))(req, res);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
+      } finally { restore(); }
+    });
+  }
+
+  for (const secondRound of ["exception", "http-error"] as const) {
+    it(`preserves prior-round accounting disposition for ${secondRound}`, async () => {
+      process.env.PAYWALL_ENABLED = "true";
+      process.env.STRIPE_SECRET_KEY = "sk_test";
+      _setStripeClient(mockStripe(null));
+      const restore = stubCatalogFetch();
+      let rounds = 0;
+      const fetchImpl = (async (url: string) => {
+        if (url.includes("/tools/")) return new Response(JSON.stringify({ result: { text: "tool result" } }));
+        if (++rounds === 1) return {
+          ok: true, status: 200, body: sseStream([
+            dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] }),
+            dataFrame({ usage: { prompt_tokens: 10, completion_tokens: 3 } }),
+          ]),
+        };
+        if (secondRound === "exception") throw new Error("synthetic failure after observed usage");
+        return new Response("failed", { status: 503 });
+      }) as typeof fetch;
+      try {
+        const { req, res } = makeReqRes();
+        await createAgentChatHandler(baseConfig(fetchImpl))(req, res);
+        if (secondRound === "exception") expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
+        else expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
+        expect(res.chunks.join("")).toContain('"stream_error":{"code":"upstream_failed"}');
+      } finally { restore(); }
+    });
+  }
 
   it("A5c: recordUsage is called with summed credits when paywall is on", async () => {
     process.env.PAYWALL_ENABLED = "true";

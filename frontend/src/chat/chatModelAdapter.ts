@@ -14,7 +14,7 @@ import {
   type ChatMessage,
   type UsageInfo,
 } from "../lib/chatApi";
-import { streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
+import { AgentStreamError, streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
 import {
   clearToolActivity,
   setToolActivity,
@@ -489,6 +489,12 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
           yield* sendOnce(payload);
           break;
         } catch (err) {
+          if (err instanceof AgentStreamError && !abortSignal.aborted) {
+            // A status-only update preserves already yielded text in the local
+            // runtime and resolves the composer's otherwise unobserved promise.
+            yield { status: { type: "incomplete", reason: "error", error: err.message } };
+            return;
+          }
           if (err instanceof ContextOverflowError && canCompact && !reactiveRetried) {
             reactiveRetried = true;
             await runCompactionPass(RETRY_TARGET_RATIO);

@@ -1,8 +1,170 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
+import { pathToFileURL } from "node:url";
 
 const INDEX = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
+
+const AGENT_ENV = {
+  BACKEND_PRIVATE_KEY: "synthetic-private-key",
+  AGENT_DID: "synthetic-agent-did",
+  ELIZA_SERVICE_URL: "https://tools.invalid",
+  ELIZA_SERVICE_SECRET: "synthetic-tool-secret",
+  REDPILL_API_KEY: "synthetic-provider-key",
+};
+const STREAM_ENV = {
+  AGENT_STREAM_HEARTBEAT_MS: "17",
+  AGENT_STREAM_TURN_TIMEOUT_MS: "251",
+  AGENT_STREAM_DRAIN_GRACE_MS: "31",
+};
+
+// Execute the actual startup body with isolated imports and environment. Every side effect
+// is intercepted; stop at the agent-router factory, before any socket or external I/O.
+async function runIsolatedStartup(env: Record<string, string | undefined>) {
+  const indexPath = resolve(import.meta.dir, "../index.ts");
+  const build = await Bun.build({
+    entrypoints: [indexPath],
+    target: "node",
+    format: "cjs",
+    external: ["*"],
+    plugins: [{
+      name: "isolated-startup",
+      setup(builder) {
+        builder.onLoad({ filter: /\/index\.ts$/ }, () => ({
+          contents: INDEX.replaceAll("import.meta.url", JSON.stringify(pathToFileURL(indexPath).href))
+            + "\nexport { main as runMain };\n",
+          loader: "ts",
+        }));
+      },
+    }],
+  });
+  if (!build.success) throw new Error("Could not compile isolated startup fixture");
+  const calls: string[] = [];
+  const logs: string[] = [];
+  let agentConfig: any;
+  const stopped = new Error("synthetic-startup-stopped");
+  const noop = () => {};
+  const middleware = () => noop;
+  const fakeApp = {
+    set: noop,
+    use: () => { calls.push("mount"); },
+    post: () => { calls.push("mount"); },
+    get: () => { calls.push("mount"); },
+    listen: () => { calls.push("listen"); throw stopped; },
+  };
+  const express = Object.assign(() => fakeApp, { raw: middleware, json: middleware });
+  const moduleExports = {};
+  const load = createRequire(indexPath);
+  const known: Record<string, any> = {
+    fs: { existsSync: () => false },
+    path: load("node:path"),
+    url: load("node:url"),
+    express,
+    cors: middleware,
+    "./startup.js": {
+      createTinychatBackendIdentity: async () => {
+        calls.push("identity");
+        return { node: {}, did: "synthetic-backend-did" };
+      },
+    },
+    "./services/ingest-mode.js": { backendIngestEnabled: () => false },
+    "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
+    "./routes/agent.js": {
+      createAgentRouter: (config: unknown) => {
+        agentConfig = config;
+        calls.push("agent-router");
+        throw stopped;
+      },
+    },
+    "./routes/chat.js": {
+      defaultModel: "synthetic-model",
+      createChatRouter: () => { calls.push("plain-router"); throw stopped; },
+    },
+    "./billing/ledger-flusher.js": {
+      LedgerFlusher: class { start() { calls.push("background"); } },
+    },
+  };
+  const context = {
+    Error,
+    module: { exports: moduleExports },
+    exports: moduleExports,
+    process: {
+      env,
+      argv: [],
+      cwd: () => "/synthetic-startup",
+      exit: () => { calls.push("exit"); throw stopped; },
+    },
+    console: { error: (...args: unknown[]) => logs.push(args.join(" ")), log: noop, warn: noop },
+    require: (id: string) => {
+      if (id === "./agent-stream-policy.js") return load("./agent-stream-policy.ts");
+      if (id in known) return known[id];
+      // These import collaborators only register handlers or hold inert local state.
+      return new Proxy({}, { get: (_target, name) => {
+        if (name === "__esModule") return false;
+        return function () {};
+      } });
+    },
+  };
+  runInNewContext(await build.outputs[0]!.text(), context);
+  try {
+    await (context.module.exports as { runMain: () => Promise<void> }).runMain();
+  } catch (error) {
+    if (error !== stopped) logs.push(error instanceof Error ? error.message : String(error));
+  }
+  return { calls, logs, agentConfig };
+}
+
+describe("agent stream startup policy wiring", () => {
+  test("rejects missing policy before identity, background work, route mounting or listening", async () => {
+    const result = await runIsolatedStartup({
+      ...AGENT_ENV,
+      LEDGER_SERVICE_URL: "https://ledger.invalid",
+      LEDGER_SERVICE_SECRET: "synthetic-ledger-secret",
+    });
+    expect(result.logs.join(" ")).toContain("AGENT_STREAM_HEARTBEAT_MS");
+    expect(result.calls.filter((call) => call !== "exit")).toEqual([]);
+  });
+
+  test("passes the validated numeric values unchanged to the agent handler configuration", async () => {
+    const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV });
+    expect(result.logs).toEqual([]);
+    expect(result.agentConfig?.chat?.streamPolicy).toEqual({
+      heartbeatMs: 17,
+      turnTimeoutMs: 251,
+      drainGraceMs: 31,
+    });
+    expect(result.calls).toContain("agent-router");
+    expect(result.calls).not.toContain("listen");
+  });
+
+  test("rejects every malformed stream setting before any startup effects without logging values", async () => {
+    for (const setting of Object.keys(STREAM_ENV)) {
+      for (const value of [undefined, "", "synthetic-private-sentinel", "Infinity", "1.5", "0", "-1", "2147483648"]) {
+        const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, [setting]: value });
+        expect(result.logs).toEqual([`Invalid agent stream configuration: ${setting}`]);
+        expect(result.calls).toEqual(["exit"]);
+      }
+    }
+  });
+
+  test("leaves agent sessions available without requiring stream policy when chat is disabled", async () => {
+    const result = await runIsolatedStartup({ ...AGENT_ENV, REDPILL_API_KEY: undefined });
+    expect(result.logs).toEqual([]);
+    expect(result.agentConfig).toBeDefined();
+    expect(result.agentConfig.chat).toBeUndefined();
+  });
+
+  test("leaves the plain-chat startup path available when the agent is disabled", async () => {
+    for (const missing of ["AGENT_DID", "ELIZA_SERVICE_URL", "ELIZA_SERVICE_SECRET"]) {
+      const result = await runIsolatedStartup({ ...AGENT_ENV, [missing]: undefined });
+      expect(result.logs).toEqual([]);
+      expect(result.calls).toContain("plain-router");
+      expect(result.calls).not.toContain("agent-router");
+    }
+  });
+});
 
 describe("backend index middleware wiring", () => {
   test("CORS uses the web + Exo desktop origin allowlist", () => {

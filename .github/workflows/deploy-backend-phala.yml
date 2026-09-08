@@ -32,6 +32,10 @@ env:
   PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
   REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://api.redpill.ai/v1' }}
   REDPILL_DEFAULT_MODEL: ${{ vars.REDPILL_DEFAULT_MODEL || 'z-ai/glm-5.2' }}
+  # Reviewed application stream policy; unset values must fail validation, never default.
+  AGENT_STREAM_HEARTBEAT_MS: ${{ vars.AGENT_STREAM_HEARTBEAT_MS }}
+  AGENT_STREAM_TURN_TIMEOUT_MS: ${{ vars.AGENT_STREAM_TURN_TIMEOUT_MS }}
+  AGENT_STREAM_DRAIN_GRACE_MS: ${{ vars.AGENT_STREAM_DRAIN_GRACE_MS }}
 
 jobs:
   deploy:
@@ -111,7 +115,28 @@ jobs:
             exit 1
           fi
 
-          echo "All required deployment config is present."
+          # Match backend/src/agent-stream-policy.ts before building or changing the CVM.
+          # This deployment already requires all four agent-chat enablement settings above.
+          python3 - <<'PY' || exit 1
+          import os
+          import re
+          import sys
+
+          invalid = False
+          for setting in (
+              "AGENT_STREAM_HEARTBEAT_MS",
+              "AGENT_STREAM_TURN_TIMEOUT_MS",
+              "AGENT_STREAM_DRAIN_GRACE_MS",
+          ):
+              value = os.environ.get(setting, "")
+              digits = value.lstrip("0")
+              if not re.fullmatch(r"[0-9]+", value) or not digits or len(digits) > 10 or int(digits) > 2147483647:
+                  print(f"::error title=Invalid agent stream configuration::Invalid agent stream configuration: {setting}")
+                  invalid = True
+          sys.exit(1 if invalid else 0)
+          PY
+
+          echo "All required deployment config is present and valid."
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -381,6 +406,9 @@ jobs:
             printf '%s\n' "AGENT_DID=$AGENT_DID"
             printf '%s\n' "ELIZA_SERVICE_URL=$ELIZA_SERVICE_URL"
             printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
+            printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
+            printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
+            printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"
             printf '%s\n' "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"
             printf '%s\n' "CERTBOT_EMAIL=$CERTBOT_EMAIL"
             printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${GITHUB_SHA}"

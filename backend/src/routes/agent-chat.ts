@@ -12,6 +12,7 @@
 // extra `tool_activity` frames the consumer safely ignores.
 
 import type { Request, RequestHandler, Response } from "express";
+import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
@@ -58,6 +59,8 @@ export interface ChatMsg {
 
 export interface AgentChatConfig {
   agentId: string;
+  streamPolicy: AgentStreamPolicy;
+  streamRuntime?: AgentStreamRuntime;
   entityIdFor: (address: string) => string;
   elizaServiceUrl: string;
   elizaServiceSecret: string;
@@ -192,30 +195,54 @@ export function parseInlineToolCalls(content: string): Array<{ name: string; arg
   return calls;
 }
 
-/** Parse an SSE byte stream into successive JSON `data:` payloads ([DONE] ends it). */
+/** Parse provider LF SSE; only its explicit protocol terminal completes a round. */
 export async function* parseSseJson(
-  body: AsyncIterable<Uint8Array>,
+  body: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncGenerator<Record<string, unknown>, void, unknown> {
+  throwIfAborted(signal);
+  const reader = "getReader" in body ? body.getReader() : undefined;
+  const iterator = reader ? undefined : (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+  let cancelled = false;
+  const cancel = () => {
+    if (cancelled) return;
+    cancelled = true;
+    ignoreCleanup(() => reader ? reader.cancel() : iterator?.return?.());
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   const decoder = new TextDecoder();
   let buffer = "";
-  for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let sep: number;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      for (const rawLine of frame.split("\n")) {
-        const line = rawLine.trimStart();
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-        try {
-          yield JSON.parse(data) as Record<string, unknown>;
-        } catch {
-          // ignore malformed frame
+  try {
+    for (;;) {
+      throwIfAborted(signal);
+      let chunk: ReadableStreamReadResult<Uint8Array> | IteratorResult<Uint8Array>;
+      try { chunk = await withAbort(reader ? reader.read() : iterator!.next(), signal); }
+      catch (error) { throwIfAborted(signal); throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed"); }
+      throwIfAborted(signal);
+      if (chunk.done) throw new StreamFailure("upstream_incomplete");
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        for (const rawLine of frame.split("\n")) {
+          const line = rawLine.trimStart();
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") return;
+          if (!data) continue;
+          let value: unknown;
+          try { value = JSON.parse(data); } catch { throw new StreamFailure("upstream_incomplete"); }
+          if (!value || typeof value !== "object" || Array.isArray(value)) throw new StreamFailure("upstream_incomplete");
+          if ("error" in value) throw new StreamFailure("upstream_failed");
+          yield value as Record<string, unknown>;
         }
       }
     }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    cancel();
+    if (reader) { try { reader.releaseLock(); } catch { /* A noncompliant cancellation cannot hold the turn. */ } }
   }
 }
 
@@ -301,22 +328,59 @@ async function dispatchTool(
   entityId: string,
   roomId: string | undefined,
   turnContext?: AgentTurnContext,
+  signal?: AbortSignal,
 ): Promise<ToolDispatchOutcome> {
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
   } catch {
-    args = { query: call.args };
+    throw new StreamFailure("upstream_incomplete");
   }
-  const res = await fetchImpl(`${config.elizaServiceUrl}/tools/${encodeURIComponent(call.name)}`, {
+  throwIfAborted(signal);
+  const res = await fetchForTurn(fetchImpl, `${config.elizaServiceUrl}/tools/${encodeURIComponent(call.name)}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${config.elizaServiceSecret}`,
     },
     body: JSON.stringify({ args, entityId, ...(roomId ? { roomId } : {}), ...(turnContext ? { context: turnContext } : {}) }),
-  });
-  const body = (await res.json().catch(() => ({}))) as {
+  }, signal);
+  // Own the JSON reader so cancellation can release a pending body read, even
+  // when a supplied fetch implementation does not wire its response to signal.
+  const reader = res.body?.getReader();
+  let cancelled = false;
+  const cancel = () => {
+    if (cancelled) return;
+    cancelled = true;
+    if (reader) ignoreCleanup(() => reader.cancel());
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  let parsed: unknown;
+  try {
+    if (reader) {
+      const decoder = new TextDecoder();
+      let json = "";
+      for (;;) {
+        throwIfAborted(signal);
+        const chunk = await withAbort(reader.read(), signal);
+        throwIfAborted(signal);
+        if (chunk.done) break;
+        json += decoder.decode(chunk.value, { stream: true });
+      }
+      parsed = JSON.parse(json + decoder.decode());
+    } else {
+      parsed = await withAbort(res.json(), signal);
+    }
+    throwIfAborted(signal);
+  } catch {
+    throwIfAborted(signal);
+    parsed = {};
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    cancel();
+    if (reader) { try { reader.releaseLock(); } catch { /* Preserve the turn outcome. */ } }
+  }
+  const body = parsed as {
     result?: {
       text?: string;
       data?: Record<string, unknown>;
@@ -368,7 +432,9 @@ export interface OrchestrateParams {
   entityId: string;
   roomId?: string;
   turnContext?: AgentTurnContext;
-  write: (frame: string) => void;
+  write: (frame: string) => unknown | Promise<unknown>;
+  signal?: AbortSignal;
+  onPhase?: (phase: StreamPhase) => void;
   isAborted?: () => boolean;
 }
 
@@ -376,13 +442,15 @@ export interface OrchestrateResult {
   promptTokens: number;
   completionTokens: number;
   completionId: string;
+  /** Nonthrowing failures retain completed-round accounting eligibility. */
+  errorCode?: StreamErrorCode;
 }
 
 /**
  * Run the bounded tool-calling loop. Streams assistant content frames as they arrive;
  * on a tool_calls finish, dispatches each tool, appends results, and loops for the
- * model's final answer. Emits idFrame + usageFrame (summed across all rounds) before
- * the terminating `data: [DONE]` frame, satisfying the billing superset invariant.
+ * model's final answer. Returns final ID and summed usage to the lifecycle owner,
+ * which alone writes terminal metadata and the protocol terminal.
  */
 export async function orchestrateToolCalling(params: OrchestrateParams): Promise<OrchestrateResult> {
   const { config, model, write } = params;
@@ -401,9 +469,11 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let finalCompletionId = "";
+  let errorCode: StreamErrorCode | undefined;
+  let repairing = false;
 
   for (let round = 0; round < maxRounds; round++) {
-    if (params.isAborted?.()) break;
+    if (params.isAborted?.() || params.signal?.aborted) break;
 
     // Deterministic context guard (§C.11, NO LLM): before this round's upstream
     // fetch, first cap oversize role:"tool" results, then drop the oldest
@@ -438,7 +508,8 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     // lets us retry an uncited synthesis without leaking the invalid draft.
     const bufferMeetingAnswer = meetingCitations.length > 0;
 
-    const upstream = await fetchImpl(`${config.redpillBaseUrl}/chat/completions`, {
+    params.onPhase?.(repairing ? "repair" : isSynthesisRound ? "synthesis" : "model");
+    const upstream = await fetchForTurn(fetchImpl, `${config.redpillBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -467,10 +538,11 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
               stream_options: { include_usage: true },
             },
       ),
-    });
+    }, params.signal);
 
     if (!upstream.ok || !upstream.body) {
-      write(contentFrame(`(upstream error ${upstream.status})`));
+      if (upstream.body) ignoreCleanup(() => upstream.body!.cancel());
+      errorCode = "upstream_failed";
       break;
     }
 
@@ -493,14 +565,14 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     let decided = false;
     let leakMode = false;
 
-    const flushPending = () => {
+    const flushPending = async () => {
       if (pendingBuffer) {
-        if (!bufferMeetingAnswer) write(contentFrame(pendingBuffer));
+        if (!bufferMeetingAnswer) await write(contentFrame(pendingBuffer));
         pendingBuffer = "";
       }
     };
 
-    for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>)) {
+    for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>, params.signal)) {
       if (typeof obj.id === "string" && obj.id) currentRoundId = obj.id;
       const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
       if (usage) {
@@ -517,7 +589,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         if (leakMode) {
           // Already in leak mode: keep accumulating, forward nothing.
         } else if (decided) {
-          if (!bufferMeetingAnswer) write(contentFrame(delta.content));
+          if (!bufferMeetingAnswer) await write(contentFrame(delta.content));
         } else {
           pendingBuffer += delta.content;
           const trimmed = pendingBuffer.trimStart();
@@ -532,12 +604,22 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
             (trimmed.length > 0 && !LEAK_PREFIX.startsWith(trimmed))
           ) {
             decided = true;
-            flushPending();
+            await flushPending();
           }
           // else: still ambiguous (e.g. just "<too") — keep buffering.
         }
       }
       if (Array.isArray(delta?.tool_calls)) {
+        for (const call of delta.tool_calls) {
+          if (!call || typeof call !== "object" || Array.isArray(call)) throw new StreamFailure("upstream_incomplete");
+          if (call.index !== undefined && (typeof call.index !== "number" || !Number.isSafeInteger(call.index) || call.index < 0)) throw new StreamFailure("upstream_incomplete");
+          if (call.id !== undefined && typeof call.id !== "string") throw new StreamFailure("upstream_incomplete");
+          if (call.function !== undefined) {
+            if (!call.function || typeof call.function !== "object" || Array.isArray(call.function)) throw new StreamFailure("upstream_incomplete");
+            const fn = call.function as Record<string, unknown>;
+            if ((fn.name !== undefined && typeof fn.name !== "string") || (fn.arguments !== undefined && typeof fn.arguments !== "string")) throw new StreamFailure("upstream_incomplete");
+          }
+        }
         accumulateToolCalls(toolCalls, delta.tool_calls as Parameters<typeof accumulateToolCalls>[1]);
       }
       const fr = choice?.finish_reason;
@@ -560,16 +642,23 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         finish = "tool_calls"; // run the existing structured-dispatch path below
       } else {
         // False alarm (markup-led but unparseable): don't silently drop the answer.
-        flushPending();
+        await flushPending();
       }
     } else if (!leakMode) {
       // Stream ended while still buffering an ambiguous-but-short prefix (e.g. the
       // entire answer was "<3"): not a leak, so flush what we held.
-      flushPending();
+      await flushPending();
     }
 
-    if (finish === "tool_calls" && toolCalls.size > 0) {
+    if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete");
+    if (finish === "tool_calls") {
       const calls = [...toolCalls.values()];
+      if (!calls.length) throw new StreamFailure("upstream_incomplete");
+      for (const call of calls) {
+        let args: unknown;
+        try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete"); }
+        if (!call.id || !call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete");
+      }
       convo.push({
         role: "assistant",
         content: "",
@@ -580,19 +669,23 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         })),
       });
       for (const call of calls) {
-        write(toolActivityFrame(call.name, "running"));
+        throwIfAborted(params.signal);
+        params.onPhase?.("tool");
+        await write(toolActivityFrame(call.name, "running"));
         let outcome: ToolDispatchOutcome;
         try {
-          outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId, params.turnContext);
+          outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId, params.turnContext, params.signal);
         } catch {
+          throwIfAborted(params.signal);
           outcome = { status: "error", text: `(tool ${call.name} unreachable)` };
         }
-        write(toolActivityFrame(call.name, outcome.status));
+        throwIfAborted(params.signal);
+        await write(toolActivityFrame(call.name, outcome.status));
         if (outcome.code && DELEGATION_ERROR_CODES.has(outcome.code)) {
           // The response is already streaming, so this cannot become an HTTP
           // status. Preserve it as a typed SSE frame instead of leaving the UI
           // to infer expiry from the model's natural-language apology.
-          write(delegationErrorFrame(outcome.code));
+          await write(delegationErrorFrame(outcome.code));
         }
         convo.push({ role: "tool", tool_call_id: call.id, content: outcome.text });
       }
@@ -604,9 +697,10 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
       if (!hasSuppliedCitation && !forceAnswer) {
         // Give the final clean-synthesis round one chance to repair an uncited
         // meeting draft. The draft was buffered, so the browser never saw it.
+        repairing = true;
         continue;
       }
-      write(contentFrame(hasSuppliedCitation
+      await write(contentFrame(hasSuppliedCitation
         ? roundContent
         : "I found matching private meeting evidence, but could not produce a safely cited answer. Please try again."));
     }
@@ -615,18 +709,270 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     break; // finish_reason "stop" (or no tools) — content already streamed
   }
 
-  // A1: emit the final answer round's completion id (once, before usage + [DONE]).
-  if (finalCompletionId) {
-    write(idFrame(finalCompletionId));
-  }
-  // A2: emit a single summed usage frame covering all rounds.
-  write(usageFrame(totalPromptTokens, totalCompletionTokens));
-  write("data: [DONE]\n\n");
 
-  return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId };
+  return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
+}
+
+type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed";
+type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
+
+class StreamFailure extends Error {
+  constructor(readonly code: StreamErrorCode) { super(code); }
+}
+
+export interface AgentStreamSummary {
+  phase: StreamPhase;
+  elapsedMs: number;
+  lastWriteAgeMs: number;
+  maxWriteGapMs: number;
+  outcome: StreamErrorCode | "success" | "cancelled" | "transport_failed";
+  headersFlushed: boolean;
+  responseDestroyed: boolean;
+  responseEnded: boolean;
+  responseFinished: boolean;
+  backpressured: boolean;
+  applicationDoneWritten: boolean;
+}
+
+export interface AgentStreamRuntime {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+  log(summary: AgentStreamSummary): void;
+}
+
+const streamRuntime: AgentStreamRuntime = {
+  now: () => performance.now(),
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log: (summary) => console.info("[agent-chat] stream lifecycle", summary),
+};
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new Error("cancelled");
+}
+
+/** Detach noncompliant operations on abort while observing all late rejections. */
+function withAbort<T>(operation: PromiseLike<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return Promise.resolve(operation);
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => { signal.removeEventListener("abort", aborted); reject(signal.reason ?? new Error("cancelled")); };
+    signal.addEventListener("abort", aborted, { once: true });
+    Promise.resolve(operation).then(
+      (value) => { signal.removeEventListener("abort", aborted); if (signal.aborted) aborted(); else resolve(value); },
+      (error) => { signal.removeEventListener("abort", aborted); reject(signal.aborted ? signal.reason : error); },
+    );
+    if (signal.aborted) aborted();
+  });
+}
+
+function ignoreCleanup(cleanup: () => unknown): void {
+  try { void Promise.resolve(cleanup()).catch(() => {}); } catch { /* Cleanup cannot replace the primary outcome. */ }
+}
+
+async function fetchForTurn(fetchImpl: typeof fetch, url: string, init: RequestInit, signal?: AbortSignal): Promise<globalThis.Response> {
+  throwIfAborted(signal);
+  try {
+    const operation = fetchImpl(url, { ...init, signal });
+    // A test double or remote implementation may resolve after cancellation.
+    void operation.then((response) => {
+      if (signal?.aborted && response.body) ignoreCleanup(() => response.body!.cancel());
+    }, () => {});
+    return await withAbort(operation, signal);
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error instanceof StreamFailure ? error : new StreamFailure("upstream_failed");
+  }
+}
+
+/** One turn owns response admission, byte order, cancellation and terminal delivery. */
+class AgentStreamOwner {
+  readonly controller = new AbortController();
+  readonly signal = this.controller.signal;
+  private state: "opening" | "open" | "terminating" | "closed" = "opening";
+  private outcome: AgentStreamSummary["outcome"] | undefined;
+  private phase: StreamPhase = "model";
+  private heartbeat: unknown;
+  private deadline: unknown;
+  private grace: unknown;
+  private busy: Promise<void> | undefined;
+  private releaseBusy: (() => void) | undefined;
+  private drain: Promise<void> | undefined;
+  private releaseDrain: (() => void) | undefined;
+  private partialFrame = false;
+  private headersFlushed = false;
+  private backpressured = false;
+  private doneWritten = false;
+  private endAttempted = false;
+  private readonly started: number;
+  private lastWrite: number;
+  private maxWriteGap = 0;
+  private resolveClosed!: () => void;
+  private readonly closed = new Promise<void>((resolve) => { this.resolveClosed = resolve; });
+  deliveryException = false;
+
+  constructor(private req: Request, private res: Response, private policy: AgentStreamPolicy, private runtime: AgentStreamRuntime) {
+    this.started = this.lastWrite = runtime.now();
+  }
+
+  isOpen = () => this.state === "open";
+  setPhase = (phase: StreamPhase) => { if (this.isOpen()) this.phase = phase; };
+  private viable = () => !this.res.destroyed && !this.res.writableEnded && this.state !== "closed";
+  private onAborted = () => this.close("cancelled", true);
+  private onClose = () => this.close("transport_failed", true);
+  private onFinish = () => { if (this.endAttempted) this.close(this.outcome ?? "success", false); };
+  private onError = () => this.close("transport_failed", true);
+  private onDrain = () => { this.releaseDrain?.(); this.drain = undefined; this.releaseDrain = undefined; };
+
+  async open(): Promise<boolean> {
+    this.req.on("aborted", this.onAborted);
+    this.res.on("close", this.onClose);
+    this.res.on("error", this.onError);
+    this.res.on("finish", this.onFinish);
+    this.res.on("drain", this.onDrain);
+    if (this.req.aborted || !this.viable()) { this.close("cancelled", true); return false; }
+    try {
+      this.res.setHeader("Content-Type", "text/event-stream");
+      this.res.setHeader("Cache-Control", "no-cache");
+      this.res.setHeader("X-Accel-Buffering", "no");
+      this.res.flushHeaders?.();
+      this.headersFlushed = true;
+      if (!this.viable()) { this.close("transport_failed", true); return false; }
+      this.state = "open";
+      this.deadline = this.runtime.setTimeout(() => { void this.fail(new StreamFailure("turn_timeout")); }, this.policy.turnTimeoutMs);
+      await this.write(": keepalive\n\n");
+      this.scheduleHeartbeat();
+      return this.isOpen();
+    } catch {
+      if (this.state !== "terminating") this.close("transport_failed", true);
+      return false;
+    }
+  }
+
+  private scheduleHeartbeat(): void {
+    if (!this.isOpen()) return;
+    this.heartbeat = this.runtime.setTimeout(() => {
+      if (!this.isOpen()) return;
+      if (!this.busy) void this.write(": keepalive\n\n").catch(() => {});
+      this.scheduleHeartbeat();
+    }, this.policy.heartbeatMs);
+  }
+
+  /** No frame queue: the producer awaits this writer; heartbeat ticks skip it. */
+  write = async (frame: string): Promise<void> => {
+    if (!this.isOpen()) throw this.signal.reason ?? new Error("stream closed");
+    // Only a heartbeat can precede the serialized producer here.
+    if (this.busy) await withAbort(this.busy, this.signal);
+    if (!this.isOpen()) throw this.signal.reason ?? new Error("stream closed");
+    this.busy = new Promise<void>((resolve) => { this.releaseBusy = resolve; });
+    try { await this.writeBytes(frame, false); }
+    finally { this.releaseBusy?.(); this.busy = undefined; this.releaseBusy = undefined; }
+  };
+
+  private async writeBytes(frame: string, terminal: boolean): Promise<void> {
+    const bytes = new TextEncoder().encode(frame);
+    for (let offset = 0; offset < bytes.length; offset += 16_384) {
+      if (!this.viable() || (terminal ? this.state !== "terminating" : !this.isOpen())) throw this.signal.reason ?? new Error("stream closed");
+      const end = Math.min(offset + 16_384, bytes.length);
+      let accepted: boolean;
+      try { accepted = this.res.write(bytes.subarray(offset, end)); }
+      catch {
+        this.deliveryException = true;
+        this.close("transport_failed", true);
+        throw new Error("stream write failed");
+      }
+      const now = this.runtime.now();
+      this.maxWriteGap = Math.max(this.maxWriteGap, now - this.lastWrite);
+      this.lastWrite = now;
+      if (!terminal) this.partialFrame = end < bytes.length;
+      if (terminal && frame === "data: [DONE]\n\n" && end === bytes.length) this.doneWritten = true;
+      // write(false) accepted these bytes. Only its unsent suffix may be abandoned.
+      if (!accepted && this.viable()) {
+        this.backpressured = true;
+        this.drain ??= new Promise<void>((resolve) => { this.releaseDrain = resolve; });
+        if (terminal) await this.drain;
+        else await withAbort(this.drain, this.signal);
+      }
+      if (!this.viable() || (!terminal && !this.isOpen())) throw this.signal.reason ?? new Error("stream closed");
+    }
+  }
+
+  complete(result: OrchestrateResult): Promise<void> {
+    if (result.errorCode) return this.fail(new StreamFailure(result.errorCode));
+    if (this.claim("success")) void this.deliver(result);
+    return this.closed;
+  }
+
+  fail(error: unknown): Promise<void> {
+    const code = error instanceof StreamFailure ? error.code : "agent_failed";
+    if (this.claim(code)) {
+      // The terminal claim closes write admission BEFORE synchronous abort callbacks.
+      this.controller.abort(new StreamFailure(code));
+      void this.deliver(undefined, code);
+    }
+    return this.closed;
+  }
+
+  private claim(outcome: AgentStreamSummary["outcome"]): boolean {
+    if (!this.isOpen()) return false;
+    this.outcome = outcome;
+    this.state = "terminating";
+    this.phase = "terminal";
+    this.runtime.clearTimeout(this.heartbeat);
+    this.runtime.clearTimeout(this.deadline);
+    // One budget covers the prior drain, boundary separator and all terminal bytes.
+    this.grace = this.runtime.setTimeout(() => this.close("transport_failed", true), this.policy.drainGraceMs);
+    return true;
+  }
+
+  private async deliver(result?: OrchestrateResult, code?: StreamErrorCode): Promise<void> {
+    try {
+      if (this.busy) await this.busy;
+      if (this.drain) await this.drain;
+      if (!this.viable()) return;
+      if (this.partialFrame) await this.writeBytes("\n\n", true);
+      if (code) {
+        await this.writeBytes(`data: ${JSON.stringify({ stream_error: { code }, choices: [{ delta: { content: "\n\nThis reply was interrupted before it finished. Please try again." } }] })}\n\n`, true);
+      } else if (result) {
+        if (result.completionId) await this.writeBytes(idFrame(result.completionId), true);
+        await this.writeBytes(usageFrame(result.promptTokens, result.completionTokens), true);
+      }
+      await this.writeBytes("data: [DONE]\n\n", true);
+      if (!this.viable()) return;
+      this.endAttempted = true;
+      try { this.res.end(); }
+      catch { this.deliveryException = true; this.close("transport_failed", true); return; }
+      // end() accepts the final flush; finish (or the existing grace) owns closure.
+      if (this.res.writableFinished) this.onFinish();
+    } catch { this.close("transport_failed", true); }
+  }
+
+  private close(outcome: AgentStreamSummary["outcome"], destroy: boolean): void {
+    if (this.state === "closed") return;
+    this.outcome ??= outcome;
+    this.state = "closed";
+    this.runtime.clearTimeout(this.heartbeat);
+    this.runtime.clearTimeout(this.deadline);
+    this.runtime.clearTimeout(this.grace);
+    this.req.off?.("aborted", this.onAborted);
+    this.res.off?.("close", this.onClose);
+    this.res.off?.("error", this.onError);
+    this.res.off?.("finish", this.onFinish);
+    this.res.off?.("drain", this.onDrain);
+    this.onDrain();
+    if (!this.signal.aborted) this.controller.abort(new Error("stream closed"));
+    if (destroy && !this.res.destroyed && !this.res.writableFinished) ignoreCleanup(() => this.res.destroy());
+    const now = this.runtime.now();
+    try {
+      this.runtime.log({ phase: this.phase, elapsedMs: now - this.started, lastWriteAgeMs: now - this.lastWrite, maxWriteGapMs: this.maxWriteGap, outcome: this.outcome,
+        headersFlushed: this.headersFlushed, responseDestroyed: Boolean(this.res.destroyed), responseEnded: Boolean(this.res.writableEnded), responseFinished: Boolean(this.res.writableFinished), backpressured: this.backpressured, applicationDoneWritten: this.doneWritten });
+    } catch { /* Logging must not reopen or reject a completed stream. */ }
+    this.resolveClosed();
+  }
 }
 
 export function createAgentChatHandler(config: AgentChatConfig): RequestHandler {
+  const policy = validateAgentStreamPolicy(config.streamPolicy);
   return async (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
@@ -809,46 +1155,27 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
       }
     }
 
-    // Abort on the RESPONSE close with writableEnded=false. The REQUEST "close"
-    // event fires on Bun as soon as the request body is consumed (not on client
-    // disconnect), which aborts the upstream mid-stream and truncates the reply.
-    const controller = new AbortController();
-    res.on("close", () => {
-      if (!res.writableEnded) controller.abort();
-    });
-
-    // X-Accel-Buffering:no makes the dstack-ingress nginx stream frames straight
-    // to the HTTP/2 client instead of buffering the long response (a buffered SSE
-    // stream over HTTP/2 surfaces as ERR_HTTP2_PROTOCOL_ERROR / "network error"
-    // through the custom-domain ingress; the direct HTTP/1.1 gateway is unaffected,
-    // and localhost has no nginx — which is why this only reproduces on prod).
-    // No `Connection` header: it is a hop-by-hop header forbidden under HTTP/2 and
-    // managed by nginx on the app↔nginx hop, not something the app should assert.
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders?.();
-
+    // Resolve synchronous setup before opening the transport.
+    const entityId = config.entityIdFor(req.user.address);
+    const owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
     let orchestrateResult: OrchestrateResult | null = null;
-    try {
-      orchestrateResult = await orchestrateToolCalling({
-        config,
-        model: resolvedModel,
-        messages: messages as ChatMsg[],
-        entityId: config.entityIdFor(req.user.address),
-        roomId: typeof roomId === "string" ? roomId : undefined,
-        turnContext,
-        write: (frame) => res.write(frame),
-        isAborted: () => controller.signal.aborted,
-      });
-    } catch (error) {
-      console.error("[agent-chat] orchestration error:", error);
-      // Stream already open; surface a terminal content frame instead of a status code.
-      res.write(contentFrame("(agent error)"));
-      res.write("data: [DONE]\n\n");
-    } finally {
-      res.end();
+    if (await owner.open()) {
+      try {
+        orchestrateResult = await orchestrateToolCalling({
+          config, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
+          write: owner.write, signal: owner.signal, onPhase: owner.setPhase,
+        });
+        await owner.complete(orchestrateResult);
+      } catch (error) {
+        orchestrateResult = null;
+        await owner.fail(error);
+      }
+    } else {
+      await owner.fail(new StreamFailure("agent_failed"));
     }
+    // A completed result stays provisional through final writes and end().
+    if (owner.deliveryException) orchestrateResult = null;
 
     // A4: post-stream usage recording — mirrors chat.ts:335-372.
     // NEVER throw after bytes were served. Falls back to conservative rates on any failure.
@@ -881,8 +1208,8 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
             signed_token_count: null,
           });
         }
-      } catch (error) {
-        console.error("[agent-chat] failed to record post-stream usage:", error);
+      } catch {
+        console.error("[agent-chat] post-stream usage recording failed");
         try {
           const credits = creditsFor(
             FALLBACK_RECORDING_RATES,
@@ -909,8 +1236,8 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
               signed_token_count: null,
             });
           }
-        } catch (fallbackError) {
-          console.error("[agent-chat] fallback usage recording also failed:", fallbackError);
+        } catch {
+          console.error("[agent-chat] fallback usage recording failed");
         }
       }
     }
