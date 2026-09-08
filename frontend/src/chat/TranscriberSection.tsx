@@ -416,6 +416,8 @@ function MeetingRow(props: {
 /** A completed transcript can still come from a bot that left unexpectedly. */
 export function departureMessage(meeting: TranscriberMeeting): string | null {
   const capture = meeting.capture;
+  if (capture?.failure_reason === "browser_crashed") return "The bot’s browser crashed.";
+  if (capture?.failure_reason === "browser_closed") return "The bot’s browser closed unexpectedly.";
   switch (capture?.completion_reason) {
     case "left_alone":
     case "startup_alone":
@@ -448,6 +450,7 @@ function CaptureDetails({ meeting }: { meeting: TranscriberMeeting }) {
         <dl className="mt-1 space-y-1 break-all">
           <div><dt className="inline font-medium">Meeting ID: </dt><dd className="inline select-all">{meeting.id}</dd></div>
           {meeting.capture?.completion_reason && <div><dt className="inline font-medium">Departure code: </dt><dd className="inline">{meeting.capture.completion_reason}</dd></div>}
+          {meeting.capture?.failure_reason && <div><dt className="inline font-medium">Failure code: </dt><dd className="inline">{meeting.capture.failure_reason}</dd></div>}
           {meeting.capture?.ended_at && <div><dt className="inline font-medium">Capture ended: </dt><dd className="inline">{meeting.capture.ended_at}</dd></div>}
           {meeting.capture?.exit_code != null && <div><dt className="inline font-medium">Bot exit code: </dt><dd className="inline">{meeting.capture.exit_code}</dd></div>}
           {meeting.transcript_provider && <div><dt className="inline font-medium">Transcription provider: </dt><dd className="inline">{meeting.transcript_provider}</dd></div>}
