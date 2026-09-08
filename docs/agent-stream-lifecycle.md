@@ -49,11 +49,14 @@ Direct route construction validates the corresponding numeric policy too.
 Agent-disabled configurations need no stream settings.
 
 The Phala workflow validates the values before building or deploying and forwards
-them through compose. **Production values remain unselected.** Tests inject their
-own small values; these are fixture policy, never recommended production defaults.
-Before rollout, select cadence from measured response-idle boundaries and delivery
-jitter, and agree a finite turn maximum and drain allowance compatible with any
-absolute transport cap. No ingress change is included.
+them through compose. On September 8, the repository Actions variables were set
+and read back as **10,000 ms heartbeat, 300,000 ms turn timeout, and 5,000 ms drain
+grace**. The pinned ingress image's silent control failed at 60.2 seconds, while
+10-second comments traversed it for 75 seconds through DONE and actual HTTP EOF.
+The turn and grace bounds are explicit operational choices, not provider latency
+guarantees. These settings still need a live gateway canary. Tests' smaller timing
+values remain fixture policy, never application defaults. No ingress change is
+included. See the [rollout evidence](../artifacts/agent-stream-rollout-2026-09-08/README.md).
 
 ## Cancellation, accounting, and diagnostics
 
@@ -73,8 +76,9 @@ existing nonthrowing provider HTTP failure/boundary-cancellation returns retain
 their observed totals. Exceptions, including new interruptions of active fetches,
 and final write/end exceptions keep the existing no-result accounting behavior.
 New cancellation can therefore record less usage than previously uncancelled work.
-The maintainer must confirm this disposition before production enablement; this
-change does not estimate partial charges or change rates or ledger policy.
+The rollout recommendation is to retain this disposition and review its undercount
+tradeoff when authorizing production enablement. This change does not estimate
+partial charges or change rates or ledger policy; no earlier signoff is implied.
 
 The lifecycle emits one structured summary with fixed classes and numeric/boolean
 timing and transport fields. It excludes prompts, tool data, identifiers, credentials,
@@ -117,11 +121,19 @@ Full lint retains three errors reproduced on unchanged main: empty catches in th
 September 7 model-probe artifacts and an unused assignment in `frontend/src/App.tsx`.
 Changed implementation/test files pass scoped lint and `git diff --check`.
 
-## Promotion gates
+## Rollout follow-up and remaining gate
 
-Before merge/deployment, review the runtime update and explicit production policy,
-verify selected providers' usage-before-DONE contract, confirm accounting disposition,
-and refresh deployment/recovery identities. Measure actual heartbeat delivery through
-the production transport under an authorized bounded synthetic canary, including
-long-turn completion, HTTP termination, and Safari UI recovery. The exact incident
-closing boundary remains unproven. Local tests do not satisfy these production gates.
+The September 8 [rollout follow-up](../artifacts/agent-stream-rollout-2026-09-08/README.md)
+records eight successful live usage-before-DONE plain/tool probes across all four
+selected models, actual Safari 18.6 local recovery, matching local/ledger accounting
+dispositions, validation of the configured policy, and refreshed deployment/recovery
+identities. The recommendation is to retain the existing conservative accounting
+policy with its documented undercount tradeoff. Initial provider 429s are retained
+in the evidence; successful samples do not certify provider availability.
+
+A controlled production deployment and bounded live gateway canary remain. Verify
+heartbeat receipt, HTTP termination, and actual Safari success/Stop/recovery on the
+deployed build. Deterministic public-path stall testing requires an isolated canary
+seat; it must not replace global provider/tool configuration. The exact incident
+closing boundary remains unproven. No production deployment was performed during
+this follow-up.

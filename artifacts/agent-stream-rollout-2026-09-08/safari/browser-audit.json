@@ -1,0 +1,1088 @@
+{
+  "unhandled": 0,
+  "errors": 0,
+  "rejectionReasons": [],
+  "blocked": [],
+  "arrivals": [
+    {
+      "at": 29894.000000000004,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 29906.000000000004,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Finished successfully.\"}}]}\n\ndata: {\"id\":\"fixture-completion-1\"}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "at": 35908,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 35912,
+      "text": "data: {\"stream_error\":{\"code\":\"upstream_failed\"},\"choices\":[{\"delta\":{\"content\":\"\\n\\nThis reply was interrupted before it finished. Please try again.\"}}]}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "at": 63898,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 63903,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\n"
+    },
+    {
+      "at": 63948,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 63999,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 117236,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 117241,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\n"
+    },
+    {
+      "at": 117273,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 117324,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128170.99999999999,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128172,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\n"
+    },
+    {
+      "at": 128220,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128271.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128393,
+      "text": ": keepalive\n\n: keepalive\n\n"
+    },
+    {
+      "at": 128424,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128476,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128527.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128578,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128628.99999999999,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128680,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128732,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128782.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128834,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128884.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128940,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 128990.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129041,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129092.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129143,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129195,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129246.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129297,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129348.00000000001,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 129371.00000000001,
+      "text": "data: {\"stream_error\":{\"code\":\"turn_timeout\"},\"choices\":[{\"delta\":{\"content\":\"\\n\\nThis reply was interrupted before it finished. Please try again.\"}}]}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "at": 146757,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 146762,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\n"
+    },
+    {
+      "at": 146805,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 146856,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 146907,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 146961,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147012,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147062,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147113,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147164.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147215,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147266,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147316,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147367,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147418,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147470,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147521.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147572,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147623,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147674,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147725,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147776,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147827,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147879,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147933,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 147984,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148035,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148086,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148137,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148188.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148240,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148291,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148344,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148395,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148445,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148496,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148547,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148598,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148649,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148700.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148752,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148803,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148854,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148905,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 148958,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149009,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149061,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149111,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149162,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149214,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149265.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149315,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149368,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149420.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149470,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149521.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149573,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149623,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149674,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149725,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149776,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149827,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149878,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149936,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 149986,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150045.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150090,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150141,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150192,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150244,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150294,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150345,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150396.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150447,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150497,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150548,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150599,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150650,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 150702,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 166881,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 166932.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 166992,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167043,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167093,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167144,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167195,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167246,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167297,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167348,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167398,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167448,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167499,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 167538,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Finished successfully.\"}}]}\n\ndata: {\"id\":\"fixture-completion-7\"}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "at": 209913,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 209929,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\ndata: {\"choices\":[{\"delta\":{}}],\"tool_activity\":{\"name\":\"tinycloud_find_meetings\",\"status\":\"running\"}}\n\n"
+    },
+    {
+      "at": 209957,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210019,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210071,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210121,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210172,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210223,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210274,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210324,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210376,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210427,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210478,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210529,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210579,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 210582,
+      "text": "data: {\"choices\":[{\"delta\":{}}],\"tool_activity\":{\"name\":\"tinycloud_find_meetings\",\"status\":\"done\"}}\n\n"
+    },
+    {
+      "at": 210586,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic cited answer [M1]\"}}]}\n\ndata: {\"id\":\"fixture-completion-8\"}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "at": 229195,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229201,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\ndata: {\"choices\":[{\"delta\":{}}],\"tool_activity\":{\"name\":\"tinycloud_find_meetings\",\"status\":\"running\"}}\n\n"
+    },
+    {
+      "at": 229202,
+      "text": "data: {\"choices\":[{\"delta\":{}}],\"tool_activity\":{\"name\":\"tinycloud_find_meetings\",\"status\":\"done\"}}\n\n"
+    },
+    {
+      "at": 229240,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229291,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229343.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229394,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229445,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229496,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229547,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229598,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229650,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229701,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229752,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229803,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229854,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 229855.00000000003,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic cited answer [M1]\"}}]}\n\ndata: {\"id\":\"fixture-completion-9\"}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "at": 259704.99999999997,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 259706.00000000003,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic partial reply. \"}}]}\n\ndata: {\"choices\":[{\"delta\":{}}],\"tool_activity\":{\"name\":\"tinycloud_find_meetings\",\"status\":\"running\"}}\n\n"
+    },
+    {
+      "at": 259707,
+      "text": "data: {\"choices\":[{\"delta\":{}}],\"tool_activity\":{\"name\":\"tinycloud_find_meetings\",\"status\":\"done\"}}\n\n"
+    },
+    {
+      "at": 259754.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 259805,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 259856,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 259914,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 259963.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260013.00000000003,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260072,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260123,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260173,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260223,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260274,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260324,
+      "text": ": keepalive\n\n"
+    },
+    {
+      "at": 260358.99999999997,
+      "text": "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic cited answer [M1]\"}}]}\n\ndata: {\"id\":\"fixture-completion-10\"}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":10}}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "selection": {
+    "threadId": "__LOCALID_hVtfEDn",
+    "phase": "ready",
+    "model": "moonshotai/kimi-k3",
+    "reason": "healthy",
+    "revision": 1,
+    "saving": false,
+    "saveFailed": false,
+    "canSend": true,
+    "canPick": true
+  },
+  "isRunning": false,
+  "canSend": true,
+  "messages": [
+    {
+      "id": "2Cou2uT",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:success"
+        }
+      ],
+      "activity": null,
+      "receipt": {
+        "credits": 0,
+        "side": "input"
+      },
+      "completion": null
+    },
+    {
+      "id": "qrLwUdr",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. Finished successfully."
+        }
+      ],
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "activity": null,
+      "receipt": {
+        "credits": 1,
+        "side": "output"
+      },
+      "completion": {
+        "completionId": "fixture-completion-1",
+        "model": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "id": "U5Z5x5S",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:of"
+        }
+      ],
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "lutKX6m",
+      "role": "assistant",
+      "content": [],
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "The connection ended before the reply finished. You can try again."
+      },
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "8IoiAYK",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:eof"
+        }
+      ],
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "7Uz0fK2",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. "
+        }
+      ],
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "The connection ended before the reply finished. You can try again."
+      },
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "YvYXAtt",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:read"
+        }
+      ],
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "xTaOGVt",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. "
+        }
+      ],
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "The connection ended before the reply finished. You can try again."
+      },
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "bHCGDru",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:timeout"
+        }
+      ],
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "gVWhGEe",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. "
+        }
+      ],
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "This reply took too long to finish. You can try again."
+      },
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "5axu0na",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:stop"
+        }
+      ],
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "iggmfEX",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. "
+        }
+      ],
+      "status": {
+        "type": "incomplete",
+        "reason": "cancelled"
+      },
+      "activity": null,
+      "receipt": null,
+      "completion": null
+    },
+    {
+      "id": "1hiFhoO",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:model"
+        }
+      ],
+      "activity": null,
+      "receipt": {
+        "credits": 0,
+        "side": "input"
+      },
+      "completion": null
+    },
+    {
+      "id": "prRAHN9",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. Finished successfully."
+        }
+      ],
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "activity": null,
+      "receipt": {
+        "credits": 1,
+        "side": "output"
+      },
+      "completion": {
+        "completionId": "fixture-completion-7",
+        "model": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "id": "YHaiJ3C",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:tool"
+        }
+      ],
+      "activity": null,
+      "receipt": {
+        "credits": 0,
+        "side": "input"
+      },
+      "completion": null
+    },
+    {
+      "id": "HWmNsT9",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. Synthetic cited answer [M1]"
+        }
+      ],
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "activity": null,
+      "receipt": {
+        "credits": 1,
+        "side": "output"
+      },
+      "completion": {
+        "completionId": "fixture-completion-8",
+        "model": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "id": "YhBWTcZ",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:synthesis"
+        }
+      ],
+      "activity": null,
+      "receipt": {
+        "credits": 0,
+        "side": "input"
+      },
+      "completion": null
+    },
+    {
+      "id": "BQ0yaDd",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. Synthetic cited answer [M1]"
+        }
+      ],
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "activity": null,
+      "receipt": {
+        "credits": 1,
+        "side": "output"
+      },
+      "completion": {
+        "completionId": "fixture-completion-9",
+        "model": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "id": "4clI7zP",
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "fixture:repair"
+        }
+      ],
+      "activity": null,
+      "receipt": {
+        "credits": 0,
+        "side": "input"
+      },
+      "completion": null
+    },
+    {
+      "id": "a3bgSL3",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic partial reply. Synthetic cited answer [M1]"
+        }
+      ],
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "activity": null,
+      "receipt": {
+        "credits": 1,
+        "side": "output"
+      },
+      "completion": {
+        "completionId": "fixture-completion-10",
+        "model": "moonshotai/kimi-k3"
+      }
+    }
+  ],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
+}

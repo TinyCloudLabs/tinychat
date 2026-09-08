@@ -1,0 +1,1 @@
+[{"name":"AGENT_STREAM_DRAIN_GRACE_MS","updated_at":"2026-09-08T15:35:37Z","value":"5000"},{"name":"AGENT_STREAM_HEARTBEAT_MS","updated_at":"2026-09-08T15:35:36Z","value":"10000"},{"name":"AGENT_STREAM_TURN_TIMEOUT_MS","updated_at":"2026-09-08T15:35:36Z","value":"300000"}]
