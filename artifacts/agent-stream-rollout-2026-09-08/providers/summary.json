@@ -1,0 +1,224 @@
+{
+  "selectedModels": [
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.6-35b-a3b"
+  ],
+  "contractsPassed": 8,
+  "contractsRequired": 8,
+  "totalInferenceAttempts": 13,
+  "completedHttp429": 4,
+  "operatorInterruptedRequests": 1,
+  "completedSuccessfulRequests": 8,
+  "reportedCostUsdAcrossEightSuccesses": "0.00373910",
+  "allDoneMarkersWereFinalDataEvents": true,
+  "allStreamsReachedHttpEof": true,
+  "initialHttp429Cause": "unclassified; failure bodies were not retained; same diagnostic request then succeeded",
+  "initialAndDiagnosticRequestParametersEqual": true,
+  "actualDeployedCredentialCompared": false,
+  "successfulRows": [
+    {
+      "model": "moonshotai/kimi-k3",
+      "test": "plain",
+      "durationMs": 3877,
+      "finishReason": "stop",
+      "usageBeforeDone": true,
+      "dataEvents": 37,
+      "doneEvent": 37,
+      "finishEvents": [
+        35
+      ],
+      "usageEvents": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        36
+      ],
+      "usage": {
+        "promptTokens": 132,
+        "completionTokens": 46,
+        "totalTokens": 178,
+        "costUsd": 0.001086
+      }
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "test": "tool",
+      "durationMs": 4707,
+      "finishReason": "tool_calls",
+      "usageBeforeDone": true,
+      "dataEvents": 5,
+      "doneEvent": 5,
+      "finishEvents": [
+        3
+      ],
+      "usageEvents": [
+        2,
+        4
+      ],
+      "usage": {
+        "promptTokens": 150,
+        "completionTokens": 47,
+        "totalTokens": 197,
+        "costUsd": 0.001155
+      }
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "test": "plain",
+      "durationMs": 3692,
+      "finishReason": "stop",
+      "usageBeforeDone": true,
+      "dataEvents": 5,
+      "doneEvent": 5,
+      "finishEvents": [
+        3
+      ],
+      "usageEvents": [
+        4
+      ],
+      "usage": {
+        "promptTokens": 21,
+        "completionTokens": 5,
+        "totalTokens": 26,
+        "costUsd": 5.14e-05
+      }
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "test": "tool",
+      "durationMs": 1524,
+      "finishReason": "tool_calls",
+      "usageBeforeDone": true,
+      "dataEvents": 20,
+      "doneEvent": 20,
+      "finishEvents": [
+        18
+      ],
+      "usageEvents": [
+        19
+      ],
+      "usage": {
+        "promptTokens": 201,
+        "completionTokens": 47,
+        "totalTokens": 248,
+        "costUsd": 0.0004882
+      }
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "test": "plain",
+      "durationMs": 36931,
+      "finishReason": "stop",
+      "usageBeforeDone": true,
+      "dataEvents": 17,
+      "doneEvent": 17,
+      "finishEvents": [
+        15
+      ],
+      "usageEvents": [
+        16
+      ],
+      "usage": {
+        "promptTokens": 21,
+        "completionTokens": 30,
+        "totalTokens": 51,
+        "costUsd": 0.00011646
+      }
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "test": "tool",
+      "durationMs": 3684,
+      "finishReason": "tool_calls",
+      "usageBeforeDone": true,
+      "dataEvents": 9,
+      "doneEvent": 9,
+      "finishEvents": [
+        7
+      ],
+      "usageEvents": [
+        8
+      ],
+      "usage": {
+        "promptTokens": 195,
+        "completionTokens": 14,
+        "totalTokens": 209,
+        "costUsd": 0.0002877
+      }
+    },
+    {
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "plain",
+      "durationMs": 2316,
+      "finishReason": "stop",
+      "usageBeforeDone": true,
+      "dataEvents": 44,
+      "doneEvent": 44,
+      "finishEvents": [
+        42
+      ],
+      "usageEvents": [
+        43
+      ],
+      "usage": {
+        "promptTokens": 20,
+        "completionTokens": 130,
+        "totalTokens": 150,
+        "costUsd": 0.0001691
+      }
+    },
+    {
+      "model": "qwen/qwen3.6-35b-a3b",
+      "test": "tool",
+      "durationMs": 3540,
+      "finishReason": "tool_calls",
+      "usageBeforeDone": true,
+      "dataEvents": 92,
+      "doneEvent": 92,
+      "finishEvents": [
+        90
+      ],
+      "usageEvents": [
+        91
+      ],
+      "usage": {
+        "promptTokens": 326,
+        "completionTokens": 252,
+        "totalTokens": 578,
+        "costUsd": 0.00038524
+      }
+    }
+  ]
+}

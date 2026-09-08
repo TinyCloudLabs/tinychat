@@ -1,0 +1,30 @@
+{
+  "scope": "allowlisted-production-deployment-structure",
+  "status": "running",
+  "preLaunch": {
+    "present": true,
+    "sha256": "bf12939bc82c9bdd103b6b1226913e6da58ed7cfcfc7c7ae808ac0813715b9a8",
+    "lengthBytes": 13166,
+    "nginxMention": false,
+    "composeMention": true,
+    "ingressMention": false
+  },
+  "services": [
+    {
+      "service": "tinychat-backend",
+      "image": "ghcr.io/tinycloudlabs/tinychat-backend:abdab6c3db7665a3c7f43a3ad4122ca9a31972e0",
+      "configMountPresent": false,
+      "overridePresent": false
+    },
+    {
+      "service": "dstack-ingress",
+      "image": "ghcr.io/tinycloudlabs/tinychat-backend:ingress-abdab6c3db7665a3c7f43a3ad4122ca9a31972e0",
+      "configMountPresent": false,
+      "overridePresent": false
+    }
+  ],
+  "limitations": [
+    "Structural keyword checks do not prove script semantic behavior",
+    "Effective runtime nginx directives and production gateway caps were not extracted"
+  ]
+}

@@ -1,0 +1,72 @@
+[
+  {
+    "scenario": "success",
+    "localCredits": 1,
+    "outboxSize": 1,
+    "promptTokens": 30,
+    "completionTokens": 7
+  },
+  {
+    "scenario": "second_exception",
+    "localCredits": 0,
+    "outboxSize": 0,
+    "promptTokens": null,
+    "completionTokens": null
+  },
+  {
+    "scenario": "second_http_error",
+    "localCredits": 1,
+    "outboxSize": 1,
+    "promptTokens": 10,
+    "completionTokens": 3
+  },
+  {
+    "scenario": "second_eof",
+    "localCredits": 0,
+    "outboxSize": 0,
+    "promptTokens": null,
+    "completionTokens": null
+  },
+  {
+    "scenario": "second_timeout",
+    "localCredits": 0,
+    "outboxSize": 0,
+    "promptTokens": null,
+    "completionTokens": null
+  },
+  {
+    "scenario": "stop",
+    "localCredits": 0,
+    "outboxSize": 0,
+    "promptTokens": null,
+    "completionTokens": null
+  },
+  {
+    "scenario": "tool_timeout",
+    "localCredits": 0,
+    "outboxSize": 0,
+    "promptTokens": null,
+    "completionTokens": null
+  },
+  {
+    "scenario": "terminal_close",
+    "localCredits": 1,
+    "outboxSize": 1,
+    "promptTokens": 30,
+    "completionTokens": 7
+  },
+  {
+    "scenario": "terminal_grace",
+    "localCredits": 1,
+    "outboxSize": 1,
+    "promptTokens": 30,
+    "completionTokens": 7
+  },
+  {
+    "scenario": "end_throw",
+    "localCredits": 0,
+    "outboxSize": 0,
+    "promptTokens": null,
+    "completionTokens": null
+  }
+]

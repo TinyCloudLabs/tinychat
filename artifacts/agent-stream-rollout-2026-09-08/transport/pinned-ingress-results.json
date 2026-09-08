@@ -1,0 +1,49 @@
+{
+  "scope": "local-pinned-ingress-loopback-synthetic",
+  "network": "none",
+  "image": "dstacktee/dstack-ingress@sha256:40429d78060ef3066b5f93676bf3ba7c2e9ac47d4648440febfdda558aed4b32",
+  "nginxVersion": "1.27.4",
+  "sourceSha256": {
+    "entrypoint": "39c4124b7a5edae84b9540f40a523f195a7b36cdc04d4f9d5d2e594175bf5faa",
+    "nginxConf": "078266b9ee3e3c9c8ff30a342e089d7015c3e148bb9d1d41493d38615ae8adec"
+  },
+  "heartbeatMs": 10000,
+  "syntheticCompletionMs": 75000,
+  "results": [
+    {
+      "case": "idle-control",
+      "httpStatus": 200,
+      "httpVersion": 11,
+      "commentArrivalMs": [
+        147.95
+      ],
+      "maxCommentGapMs": null,
+      "doneArrivalMs": [],
+      "observedEof": false,
+      "readErrorClass": "IncompleteRead",
+      "elapsedMs": 60218.43
+    },
+    {
+      "case": "heartbeat",
+      "httpStatus": 200,
+      "httpVersion": 11,
+      "commentArrivalMs": [
+        148.05,
+        10152.57,
+        20153.73,
+        30159.43,
+        40153.63,
+        50156.33,
+        60161.31,
+        70159.89
+      ],
+      "maxCommentGapMs": 10005.7,
+      "doneArrivalMs": [
+        75152.21
+      ],
+      "observedEof": true,
+      "readErrorClass": null,
+      "elapsedMs": 75160.08
+    }
+  ]
+}

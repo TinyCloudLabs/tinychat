@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-FROM oven/bun:1.3.9 AS app
+# 1.4.0 restores response-close notification after a consumed POST body, which
+# agent-stream cancellation requires (covered by the real-socket regression).
+FROM oven/bun:1.4.0 AS app
 WORKDIR /app
 
 ENV HUSKY=0

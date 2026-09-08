@@ -1,0 +1,1212 @@
+{
+  "turns": [
+    {
+      "mode": "success",
+      "started": 1788881446232,
+      "rounds": 1,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": false,
+      "toolCancelled": false,
+      "commentsWritten": 1,
+      "doneWritten": 1,
+      "settledAt": 27
+    },
+    {
+      "mode": "of",
+      "started": 1788881452247,
+      "rounds": 0,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": false,
+      "toolCancelled": false,
+      "commentsWritten": 1,
+      "doneWritten": 1,
+      "settledAt": 18
+    },
+    {
+      "mode": "eof",
+      "started": 1788881480247,
+      "rounds": 1,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": true,
+      "toolCancelled": false,
+      "commentsWritten": 3,
+      "doneWritten": 0,
+      "settledAt": 109,
+      "providerCancelledAt": 109
+    },
+    {
+      "mode": "read",
+      "started": 1788881533559,
+      "rounds": 1,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": true,
+      "toolCancelled": false,
+      "commentsWritten": 3,
+      "doneWritten": 0,
+      "settledAt": 143,
+      "providerCancelledAt": 143
+    },
+    {
+      "mode": "timeout",
+      "started": 1788881544518,
+      "rounds": 1,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": true,
+      "toolCancelled": false,
+      "commentsWritten": 24,
+      "doneWritten": 1,
+      "settledAt": 1204,
+      "providerCancelledAt": 1205
+    },
+    {
+      "mode": "stop",
+      "started": 1788881563098,
+      "rounds": 1,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": true,
+      "toolCancelled": false,
+      "commentsWritten": 78,
+      "doneWritten": 0,
+      "settledAt": 3999,
+      "providerCancelledAt": 3999
+    },
+    {
+      "mode": "model",
+      "started": 1788881583231,
+      "rounds": 1,
+      "tools": 0,
+      "settled": true,
+      "providerCancelled": false,
+      "toolCancelled": false,
+      "commentsWritten": 13,
+      "doneWritten": 1,
+      "settledAt": 659
+    },
+    {
+      "mode": "tool",
+      "started": 1788881626250,
+      "rounds": 2,
+      "tools": 1,
+      "settled": true,
+      "providerCancelled": false,
+      "toolCancelled": false,
+      "commentsWritten": 14,
+      "doneWritten": 1,
+      "settledAt": 690
+    },
+    {
+      "mode": "synthesis",
+      "started": 1788881645531,
+      "rounds": 2,
+      "tools": 1,
+      "settled": true,
+      "providerCancelled": false,
+      "toolCancelled": false,
+      "commentsWritten": 14,
+      "doneWritten": 1,
+      "settledAt": 678
+    },
+    {
+      "mode": "repair",
+      "started": 1788881676054,
+      "rounds": 3,
+      "tools": 1,
+      "settled": true,
+      "providerCancelled": false,
+      "toolCancelled": false,
+      "commentsWritten": 13,
+      "doneWritten": 1,
+      "settledAt": 660
+    }
+  ],
+  "traffic": [
+    {
+      "path": "/api/chat/model-selection",
+      "method": "GET"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__audit",
+      "method": "GET"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/api/billing/rates",
+      "method": "GET"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__audit",
+      "method": "GET"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__audit",
+      "method": "GET"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/tools/tinycloud_find_meetings",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/tools/tinycloud_find_meetings",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__audit",
+      "method": "GET"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/agent/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/tools/tinycloud_find_meetings",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/__sql",
+      "method": "POST"
+    },
+    {
+      "path": "/api/chat",
+      "method": "POST"
+    },
+    {
+      "path": "/__audit",
+      "method": "GET"
+    }
+  ],
+  "persisted": [
+    {
+      "parentId": null,
+      "message": {
+        "id": "2Cou2uT",
+        "createdAt": "2026-09-08T15:30:46.089Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:success"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "2Cou2uT",
+      "message": {
+        "id": "qrLwUdr",
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "unknown"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. Finished successfully."
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:30:46.108Z"
+      },
+      "runConfig": {},
+      "receipt": {
+        "input": 0,
+        "output": 1,
+        "total": 1,
+        "userMessageId": "2Cou2uT",
+        "modelId": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "parentId": "qrLwUdr",
+      "message": {
+        "id": "U5Z5x5S",
+        "createdAt": "2026-09-08T15:30:52.092Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:of"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "U5Z5x5S",
+      "message": {
+        "id": "lutKX6m",
+        "role": "assistant",
+        "status": {
+          "type": "incomplete",
+          "reason": "error",
+          "error": "The connection ended before the reply finished. You can try again."
+        },
+        "content": [],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:30:52.093Z"
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "lutKX6m",
+      "message": {
+        "id": "8IoiAYK",
+        "createdAt": "2026-09-08T15:31:20.152Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:eof"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "8IoiAYK",
+      "message": {
+        "id": "7Uz0fK2",
+        "role": "assistant",
+        "status": {
+          "type": "incomplete",
+          "reason": "error",
+          "error": "The connection ended before the reply finished. You can try again."
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. "
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:31:20.155Z"
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "7Uz0fK2",
+      "message": {
+        "id": "YvYXAtt",
+        "createdAt": "2026-09-08T15:32:13.386Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:read"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "YvYXAtt",
+      "message": {
+        "id": "xTaOGVt",
+        "role": "assistant",
+        "status": {
+          "type": "incomplete",
+          "reason": "error",
+          "error": "The connection ended before the reply finished. You can try again."
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. "
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:32:13.389Z"
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "xTaOGVt",
+      "message": {
+        "id": "bHCGDru",
+        "createdAt": "2026-09-08T15:32:24.455Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:timeout"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "bHCGDru",
+      "message": {
+        "id": "gVWhGEe",
+        "role": "assistant",
+        "status": {
+          "type": "incomplete",
+          "reason": "error",
+          "error": "This reply took too long to finish. You can try again."
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. "
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:32:24.456Z"
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "gVWhGEe",
+      "message": {
+        "id": "5axu0na",
+        "createdAt": "2026-09-08T15:32:43.029Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:stop"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "5axu0na",
+      "message": {
+        "id": "iggmfEX",
+        "role": "assistant",
+        "status": {
+          "type": "incomplete",
+          "reason": "cancelled"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. "
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:32:43.029Z"
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "iggmfEX",
+      "message": {
+        "id": "1hiFhoO",
+        "createdAt": "2026-09-08T15:33:03.165Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:model"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "1hiFhoO",
+      "message": {
+        "id": "prRAHN9",
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "unknown"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. Finished successfully."
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:33:03.166Z"
+      },
+      "runConfig": {},
+      "receipt": {
+        "input": 0,
+        "output": 1,
+        "total": 1,
+        "userMessageId": "1hiFhoO",
+        "modelId": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "parentId": "prRAHN9",
+      "message": {
+        "id": "YHaiJ3C",
+        "createdAt": "2026-09-08T15:33:46.132Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:tool"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "YHaiJ3C",
+      "message": {
+        "id": "HWmNsT9",
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "unknown"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. Synthetic cited answer [M1]"
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:33:46.133Z"
+      },
+      "runConfig": {},
+      "receipt": {
+        "input": 0,
+        "output": 1,
+        "total": 1,
+        "userMessageId": "YHaiJ3C",
+        "modelId": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "parentId": "HWmNsT9",
+      "message": {
+        "id": "YhBWTcZ",
+        "createdAt": "2026-09-08T15:34:05.421Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:synthesis"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "YhBWTcZ",
+      "message": {
+        "id": "BQ0yaDd",
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "unknown"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. Synthetic cited answer [M1]"
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:34:05.421Z"
+      },
+      "runConfig": {},
+      "receipt": {
+        "input": 0,
+        "output": 1,
+        "total": 1,
+        "userMessageId": "YhBWTcZ",
+        "modelId": "moonshotai/kimi-k3"
+      }
+    },
+    {
+      "parentId": "BQ0yaDd",
+      "message": {
+        "id": "4clI7zP",
+        "createdAt": "2026-09-08T15:34:35.984Z",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture:repair"
+          }
+        ],
+        "attachments": [],
+        "metadata": {
+          "custom": {}
+        }
+      },
+      "runConfig": {}
+    },
+    {
+      "parentId": "4clI7zP",
+      "message": {
+        "id": "a3bgSL3",
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "unknown"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic partial reply. Synthetic cited answer [M1]"
+          }
+        ],
+        "metadata": {
+          "unstable_state": null,
+          "unstable_annotations": [],
+          "unstable_data": [],
+          "steps": [],
+          "custom": {}
+        },
+        "createdAt": "2026-09-08T15:34:35.984Z"
+      },
+      "runConfig": {},
+      "receipt": {
+        "input": 0,
+        "output": 1,
+        "total": 1,
+        "userMessageId": "4clI7zP",
+        "modelId": "moonshotai/kimi-k3"
+      }
+    }
+  ]
+}

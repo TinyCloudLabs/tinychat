@@ -19,6 +19,11 @@ services:
       AGENT_DID: ${AGENT_DID:-}
       ELIZA_SERVICE_URL: ${ELIZA_SERVICE_URL:-}
       ELIZA_SERVICE_SECRET: ${ELIZA_SERVICE_SECRET:-}
+      # Explicit stream policy is required when agent chat is enabled. Startup validates
+      # these settings; empty values keep agent-disabled deployments possible, with no defaults.
+      AGENT_STREAM_HEARTBEAT_MS: ${AGENT_STREAM_HEARTBEAT_MS:-}
+      AGENT_STREAM_TURN_TIMEOUT_MS: ${AGENT_STREAM_TURN_TIMEOUT_MS:-}
+      AGENT_STREAM_DRAIN_GRACE_MS: ${AGENT_STREAM_DRAIN_GRACE_MS:-}
       TINYCHAT_BUILD_SHA: ${TINYCHAT_BUILD_SHA:-}
       TINYCHAT_DEPLOY_RUN_URL: ${TINYCHAT_DEPLOY_RUN_URL:-}
       # Paywall / billing (see docs/stripe-setup.md). Defaults keep the paywall

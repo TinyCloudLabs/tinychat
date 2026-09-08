@@ -1,0 +1,46 @@
+{
+  "runtime": "Bun 1.4.0",
+  "candidate": {
+    "AGENT_STREAM_HEARTBEAT_MS": "10000",
+    "AGENT_STREAM_TURN_TIMEOUT_MS": "300000",
+    "AGENT_STREAM_DRAIN_GRACE_MS": "5000"
+  },
+  "parsedPolicy": {
+    "heartbeatMs": 10000,
+    "turnTimeoutMs": 300000,
+    "drainGraceMs": 5000
+  },
+  "preflightOutput": "All required deployment config is present and valid.",
+  "deployEnvFileAndComposeRoundTrip": "passed",
+  "tests": [
+    {
+      "name": "maintained_policy_and_deployment",
+      "command": [
+        "bun",
+        "--no-env-file",
+        "--no-install",
+        "test",
+        "backend/src/__tests__/agent-stream-policy.test.ts",
+        "backend/src/__tests__/agent-stream-deployment.test.ts"
+      ],
+      "passed": 89,
+      "failed": 0
+    },
+    {
+      "name": "maintained_accounting",
+      "command": [
+        "bun",
+        "--no-env-file",
+        "--no-install",
+        "test",
+        "backend/src/__tests__/agent-chat.test.ts",
+        "backend/src/__tests__/agent-chat-lifecycle.test.ts",
+        "-t",
+        "accounting|completed usage|completed-result|recordUsage|prior-round"
+      ],
+      "passed": 14,
+      "failed": 0
+    }
+  ],
+  "scope": "Offline validation with synthetic required config; no production values changed, no production timing measurement, and no policy approval inferred."
+}
