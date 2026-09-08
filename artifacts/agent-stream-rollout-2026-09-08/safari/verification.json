@@ -1,0 +1,137 @@
+{
+  "passed": true,
+  "requiredCasesPassed": 9,
+  "additionalMistypedFixtureCase": 1,
+  "totalRequests": 10,
+  "persistedMessages": 20,
+  "browserComments": 164,
+  "pageErrors": 0,
+  "unhandledRejections": 0,
+  "canSend": true,
+  "cases": [
+    {
+      "mode": "success",
+      "includedInNineCases": true,
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "commentsWritten": 1,
+      "providerCancelled": false,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 27
+    },
+    {
+      "mode": "of",
+      "includedInNineCases": false,
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "The connection ended before the reply finished. You can try again."
+      },
+      "commentsWritten": 1,
+      "providerCancelled": false,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 18
+    },
+    {
+      "mode": "eof",
+      "includedInNineCases": true,
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "The connection ended before the reply finished. You can try again."
+      },
+      "commentsWritten": 3,
+      "providerCancelled": true,
+      "doneWritten": 0,
+      "settledMsFromRequestStart": 109
+    },
+    {
+      "mode": "read",
+      "includedInNineCases": true,
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "The connection ended before the reply finished. You can try again."
+      },
+      "commentsWritten": 3,
+      "providerCancelled": true,
+      "doneWritten": 0,
+      "settledMsFromRequestStart": 143
+    },
+    {
+      "mode": "timeout",
+      "includedInNineCases": true,
+      "status": {
+        "type": "incomplete",
+        "reason": "error",
+        "error": "This reply took too long to finish. You can try again."
+      },
+      "commentsWritten": 24,
+      "providerCancelled": true,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 1204
+    },
+    {
+      "mode": "stop",
+      "includedInNineCases": true,
+      "status": {
+        "type": "incomplete",
+        "reason": "cancelled"
+      },
+      "commentsWritten": 78,
+      "providerCancelled": true,
+      "doneWritten": 0,
+      "settledMsFromRequestStart": 3999
+    },
+    {
+      "mode": "model",
+      "includedInNineCases": true,
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "commentsWritten": 13,
+      "providerCancelled": false,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 659
+    },
+    {
+      "mode": "tool",
+      "includedInNineCases": true,
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "commentsWritten": 14,
+      "providerCancelled": false,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 690
+    },
+    {
+      "mode": "synthesis",
+      "includedInNineCases": true,
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "commentsWritten": 14,
+      "providerCancelled": false,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 678
+    },
+    {
+      "mode": "repair",
+      "includedInNineCases": true,
+      "status": {
+        "type": "complete",
+        "reason": "unknown"
+      },
+      "commentsWritten": 13,
+      "providerCancelled": false,
+      "doneWritten": 1,
+      "settledMsFromRequestStart": 660
+    }
+  ]
+}

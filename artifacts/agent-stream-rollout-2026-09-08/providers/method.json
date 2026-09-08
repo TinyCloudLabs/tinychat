@@ -1,0 +1,47 @@
+{
+  "startedAt": "2026-09-08T15:30:36.482Z",
+  "endpoint": "https://api.redpill.ai/v1/chat/completions",
+  "models": [
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.6-35b-a3b"
+  ],
+  "source": "packages/core/src/chatModels.ts at 5e6550f52ff5c4075767e103eb3d06e5b0fee17b",
+  "maxRequests": 8,
+  "requestsPerModel": 2,
+  "concurrency": 1,
+  "maxTokens": 256,
+  "requestTimeoutMs": 60000,
+  "retries": 0,
+  "stopOnAuthenticationFailure": true,
+  "plainPrompt": "Reply exactly READY_67 and nothing else.",
+  "toolPrompt": "Call synthetic_echo with value PING_67. Do not answer directly. This is a synthetic test; the tool will not be executed.",
+  "tool": {
+    "type": "function",
+    "function": {
+      "name": "synthetic_echo",
+      "description": "A harmless synthetic echo tool used only to inspect tool-call JSON. It will not be executed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "notes": [
+    "Synthetic public fixtures only; no tool is executed.",
+    "Production sampling defaults; no reasoning override.",
+    "Reads through HTTP EOF (bounded by timeout) to detect usage after DONE.",
+    "No raw response headers, completion IDs, credentials, or hidden reasoning are persisted.",
+    "A small snapshot verifies observed event order, not a provider guarantee or sustained availability.",
+    "Direct RedPill requests do not validate TinyChat's production transport or browser recovery."
+  ]
+}

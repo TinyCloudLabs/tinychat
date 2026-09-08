@@ -64,6 +64,24 @@ export interface ToolActivity {
 
 export type AgentDelegationErrorCode = "delegation_required" | "delegation_expired";
 
+export type AgentStreamErrorCode =
+  | "transport"
+  | "incomplete"
+  | "turn_timeout"
+  | "upstream_incomplete"
+  | "upstream_failed"
+  | "agent_failed";
+
+/** Expected stream failures carry only bounded codes and safe display copy. */
+export class AgentStreamError extends Error {
+  constructor(readonly code: AgentStreamErrorCode) {
+    super(code === "turn_timeout"
+      ? "This reply took too long to finish. You can try again."
+      : "The connection ended before the reply finished. You can try again.");
+    this.name = "AgentStreamError";
+  }
+}
+
 export interface StreamAgentChatOptions {
   backendUrl: string;
   getToken: () => string | null;
@@ -136,16 +154,23 @@ export async function* streamAgentChat(
   const token = getToken();
   if (!token) throw new Error("Not authenticated. Please sign in.");
 
-  const res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/chat`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      [CSRF_HEADER]: CSRF_VALUE,
-    },
-    body: JSON.stringify({ ...(model ? { model } : {}), messages, ...(roomId ? { roomId } : {}), clientContext }),
-    signal: abortSignal,
-  });
+  abortSignal?.throwIfAborted();
+  let res: Response;
+  try {
+    res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/chat`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        [CSRF_HEADER]: CSRF_VALUE,
+      },
+      body: JSON.stringify({ ...(model ? { model } : {}), messages, ...(roomId ? { roomId } : {}), clientContext }),
+      signal: abortSignal,
+    });
+  } catch {
+    abortSignal?.throwIfAborted();
+    throw new AgentStreamError("transport");
+  }
 
   if (res.status === 401) throw new Error("Session expired. Please sign in again.");
   if (res.status === 402) {
@@ -173,7 +198,7 @@ export async function* streamAgentChat(
       throw new ModelSelectionError(modelPayload);
     }
   }
-  if (!res.ok || !res.body) {
+  if (!res.ok) {
     // Context-overflow (§C.12): 413 (incl. Wall-A non-JSON) or a JSON
     // error.code === "context_overflow" → typed ContextOverflowError, distinct
     // from the 401/402/403 branches above (§F.8). Reuses the plain-path
@@ -182,17 +207,39 @@ export async function* streamAgentChat(
     if (overflow) throw overflow;
     throw new Error(`Agent chat request failed (${res.status}): ${detail}`);
   }
+  if (!res.body) {
+    abortSignal?.throwIfAborted();
+    throw new AgentStreamError("incomplete");
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
   let idReported = false;
+  let cancelled = false;
+  const cancelReader = () => {
+    if (cancelled) return;
+    cancelled = true;
+    // Cancellation settles pending reads synchronously. Its underlying source
+    // cleanup may never settle, so handle it without delaying DONE or Stop.
+    void reader.cancel().catch(() => {});
+  };
+  abortSignal?.addEventListener("abort", cancelReader, { once: true });
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      abortSignal?.throwIfAborted();
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch {
+        abortSignal?.throwIfAborted();
+        throw new AgentStreamError("transport");
+      }
+      abortSignal?.throwIfAborted();
+      const { done, value } = result;
+      if (done) throw new AgentStreamError("incomplete");
       buffer += decoder.decode(value, { stream: true });
 
       let sep: number;
@@ -200,73 +247,87 @@ export async function* streamAgentChat(
         const frame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
         for (const rawLine of frame.split("\n")) {
+          abortSignal?.throwIfAborted();
           const line = rawLine.trimStart();
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (data === "[DONE]") return;
           if (!data) continue;
+          let json;
           try {
-            const json = JSON.parse(data);
-            const activity = json?.tool_activity;
-            if (activity && onToolActivity && typeof activity.name === "string") {
-              try {
-                onToolActivity({ name: activity.name, status: activity.status });
-              } catch {
-                // a listener throwing must not break the stream
-              }
-            }
-            const delegationCode = json?.delegation_error?.code;
-            if (
-              onDelegationError &&
-              (delegationCode === "delegation_required" || delegationCode === "delegation_expired")
-            ) {
-              try {
-                onDelegationError(delegationCode);
-              } catch {
-                // a listener throwing must not break the stream
-              }
-            }
-            // Surface the completion id from the first frame that carries one.
-            // Fired before the delta yield; a throwing listener is swallowed.
-            const completionId = json?.id;
-            if (onCompletionId && !idReported && typeof completionId === "string" && completionId) {
-              idReported = true;
-              try {
-                onCompletionId(completionId);
-              } catch {
-                // caller throwing must not break the stream
-              }
-            }
-            const chunk: string = json?.choices?.[0]?.delta?.content ?? "";
-            if (chunk) {
-              text += chunk;
-              yield text;
-              continue;
-            }
-            // Final usage frame: populated `usage`. Surface to the caller.
-            const usage = json?.usage;
-            if (
-              onUsage &&
-              usage &&
-              typeof usage.prompt_tokens === "number" &&
-              typeof usage.completion_tokens === "number"
-            ) {
-              try {
-                onUsage({
-                  promptTokens: usage.prompt_tokens,
-                  completionTokens: usage.completion_tokens,
-                });
-              } catch {
-                // caller throwing must not break the stream
-              }
-            }
+            json = JSON.parse(data);
           } catch {
-            // ignore malformed frame
+            // Ignore an incomplete/malformed event, including an abandoned
+            // partial frame separated from a later terminal error by LF/LF.
+            continue;
+          }
+          if (json?.stream_error) {
+            const code = json.stream_error.code;
+            throw new AgentStreamError(
+              code === "turn_timeout" || code === "upstream_incomplete" || code === "upstream_failed"
+                ? code : "agent_failed",
+            );
+          }
+          const activity = json?.tool_activity;
+          if (activity && onToolActivity && typeof activity.name === "string") {
+            try {
+              onToolActivity({ name: activity.name, status: activity.status });
+            } catch {
+              // a listener throwing must not break the stream
+            }
+          }
+          const delegationCode = json?.delegation_error?.code;
+          if (
+            onDelegationError &&
+            (delegationCode === "delegation_required" || delegationCode === "delegation_expired")
+          ) {
+            try {
+              onDelegationError(delegationCode);
+            } catch {
+              // a listener throwing must not break the stream
+            }
+          }
+          // Surface the completion id from the first frame that carries one.
+          // Fired before the delta yield; a throwing listener is swallowed.
+          const completionId = json?.id;
+          if (onCompletionId && !idReported && typeof completionId === "string" && completionId) {
+            idReported = true;
+            try {
+              onCompletionId(completionId);
+            } catch {
+              // caller throwing must not break the stream
+            }
+          }
+          const chunk: string = json?.choices?.[0]?.delta?.content ?? "";
+          abortSignal?.throwIfAborted();
+          if (chunk) {
+            text += chunk;
+            yield text;
+            continue;
+          }
+          // Final usage frame: populated `usage`. Surface to the caller.
+          const usage = json?.usage;
+          if (
+            onUsage &&
+            usage &&
+            typeof usage.prompt_tokens === "number" &&
+            typeof usage.completion_tokens === "number"
+          ) {
+            try {
+              onUsage({
+                promptTokens: usage.prompt_tokens,
+                completionTokens: usage.completion_tokens,
+              });
+            } catch {
+              // caller throwing must not break the stream
+            }
           }
         }
       }
     }
   } finally {
+    abortSignal?.removeEventListener("abort", cancelReader);
+    cancelReader();
     reader.releaseLock();
   }
 }

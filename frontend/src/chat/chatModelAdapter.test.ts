@@ -12,7 +12,8 @@ import {
   safeClarificationTitle,
   type AdapterDeps,
 } from "./chatModelAdapter";
-import { createMeetingMessageRegistry } from "./pendingHandoff";
+import { createMeetingMessageRegistry, takePendingCompletion, takePendingReceipt } from "./pendingHandoff";
+import { getToolActivity } from "../lib/toolActivityStore";
 import type { CompactionCheckpoint } from "./compaction";
 import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
 
@@ -203,6 +204,62 @@ describe("chatModelAdapter reactive compaction", () => {
     expect((resultB.thrown as Error).message).toBe(CONTEXT_OVERFLOW_MESSAGE);
     expect(callB).toBe(2); // initial + exactly one retry, then give up (§F.8)
   });
+});
+
+describe("chatModelAdapter agent interruption", () => {
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  for (const failure of ["fetch", "read", "eof", "turn_timeout"]) {
+    test(`${failure} yields status only, preserves text, and skips success handoff without replay`, async () => {
+      const messageId = `interrupted-${failure}`;
+      const running: boolean[] = [];
+      let requests = 0;
+      let reads = 0;
+      globalThis.fetch = (async () => {
+        requests += 1;
+        if (failure === "fetch") throw new TypeError("PRIVATE FETCH SENTINEL");
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (reads++ === 0) {
+              controller.enqueue(new TextEncoder().encode(
+                'data: {"tool_activity":{"name":"web_search","status":"running"}}\n\n' +
+                'data: {"id":"completion-1","choices":[{"delta":{"content":"Partial."}}]}\n\n' +
+                'data: {"usage":{"prompt_tokens":1,"completion_tokens":2}}\n\n',
+              ));
+            } else if (failure === "read") controller.error(new TypeError("PRIVATE READ SENTINEL"));
+            else {
+              if (failure === "turn_timeout") controller.enqueue(new TextEncoder().encode(
+                'data: {"stream_error":{"code":"turn_timeout"},"choices":[{"delta":{"content":"legacy notice"}}]}\n\ndata: [DONE]\n\n',
+              ));
+              controller.close();
+            }
+          },
+        }));
+      }) as typeof fetch;
+      const { deps } = makeDeps({ agentEnabledRef: ref(true), contextTokensFor: () => 64_000 });
+      deps.selection.setRunning = (_origin, value) => { running.push(value); };
+      const updates: unknown[] = [];
+      let thrown: unknown;
+      try {
+        for await (const update of createChatModelAdapter(deps).run({
+          messages: oneUserMessage(), context: {}, abortSignal: new AbortController().signal,
+          unstable_assistantMessageId: messageId,
+        } as never) as AsyncIterable<unknown>) updates.push(update);
+      } catch (error) { thrown = error; }
+      expect(thrown).toBeUndefined();
+      expect(updates).toEqual([
+        ...(failure === "fetch" ? [] : [{ content: [{ type: "text", text: "Partial." }] }]),
+        { status: { type: "incomplete", reason: "error", error: failure === "turn_timeout"
+          ? "This reply took too long to finish. You can try again."
+          : "The connection ended before the reply finished. You can try again." } },
+      ]);
+      expect(requests).toBe(1);
+      expect(takePendingCompletion(messageId)).toBeNull();
+      expect(takePendingReceipt(messageId)).toBeNull();
+      expect(getToolActivity(messageId)).toBeNull();
+      expect(running).toEqual([true, false]);
+    });
+  }
 });
 
 describe("chatModelAdapter meeting retrieval preflight", () => {

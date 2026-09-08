@@ -96,6 +96,7 @@ import { assertStrongSecret, WebhookTokenService } from "./services/webhook-toke
 import { APP_ID } from "./manifest.js";
 import { createTinychatBackendIdentity } from "./startup.js";
 import { appCorsOrigins } from "./cors-origins.js";
+import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://node.tinycloud.xyz";
@@ -229,6 +230,19 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const redpillApiKey = process.env.REDPILL_API_KEY;
+  let agentStreamPolicy: AgentStreamPolicy | undefined;
+  try {
+    agentStreamPolicy = agentStreamPolicyFromEnv(
+      process.env,
+      Boolean(AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET && redpillApiKey),
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Invalid agent stream configuration");
+    process.exit(1);
+    return;
+  }
+
   const ledgerStartupConfig = validateLedgerStartupConfig({
     LEDGER_AUTHORITATIVE: process.env.LEDGER_AUTHORITATIVE,
     LEDGER_SERVICE_URL,
@@ -749,7 +763,6 @@ async function main() {
 
   if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
     const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
-    const redpillApiKey = process.env.REDPILL_API_KEY;
     app.use(
       "/api/agent",
       createAgentRouter({
@@ -763,6 +776,7 @@ async function main() {
         ...(redpillApiKey
           ? {
               chat: {
+                streamPolicy: agentStreamPolicy!,
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
                 elizaServiceUrl,

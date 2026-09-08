@@ -2,7 +2,7 @@
   "name": "xyz-tinycloud-tinychat",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.9",
+  "packageManager": "bun@1.4.0",
   "workspaces": [
     "packages/*",
     "frontend",
