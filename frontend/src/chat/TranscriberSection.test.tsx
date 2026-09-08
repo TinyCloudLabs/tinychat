@@ -334,6 +334,14 @@ describe("Connectors page wiring", () => {
 
 
 describe("recording departure diagnostics", () => {
+  test("a salvaged transcript retains the browser crash rather than a silence explanation", () => {
+    const html = render({ meetings: [meeting({ status: "completed", capture: { failure_reason: "browser_crashed", provider_status: "failed", exit_code: 1 } })] });
+    expect(html).toContain("browser crashed");
+    expect(html).toContain("browser_crashed");
+    expect(html).not.toContain("audio-silence timeout");
+    expect(html).not.toContain("reason was not reported");
+    expect(html).toContain(">Transcript</button>");
+  });
   test("a salvaged completed transcript still shows its early departure reason", () => {
     const html = render({ meetings: [meeting({ status: "completed", capture: { completion_reason: "left_alone", provider_status: "completed", audio_activity: "not_reported" }, transcript_provider: "tinfoil" })] });
     expect(html).toContain("audio-silence timeout");

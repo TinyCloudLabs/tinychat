@@ -30,6 +30,7 @@ export type TranscriberMeetingStatus =
 /** Optional: older recordings predate capture diagnostics. */
 export interface TranscriberCapture {
   completion_reason?: string | null;
+  failure_reason?: "browser_crashed" | "browser_closed";
   provider_status?: string;
   exit_code?: number | null;
   observed_at?: string;
