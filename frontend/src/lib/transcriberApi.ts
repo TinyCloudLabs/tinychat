@@ -72,6 +72,7 @@ export interface TranscriberSegment {
   id: string;
   speaker_id: string;
   speaker_name: string;
+  attribution?: "identified" | "unknown" | "overlap";
   start: number;
   end: number;
   text: string;

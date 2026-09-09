@@ -505,7 +505,8 @@ function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
                     {formatClock(segment.start)}
                   </span>
                   <span className="min-w-0">
-                    <span className="font-medium">{segment.speaker_name}: </span>
+                    <span className="font-medium">{segment.attribution === "overlap" ? "Overlapping speech"
+                      : segment.attribution === "unknown" ? "Unknown speaker" : segment.speaker_name}: </span>
                     <span className="whitespace-pre-wrap">{segment.text}</span>
                   </span>
                 </li>
