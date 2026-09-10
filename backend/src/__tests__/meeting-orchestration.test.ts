@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { runMeetingTurn } from "../transcripts/meeting-turn.js";
 import { orchestrateToolCalling, type AgentChatConfig } from "../routes/agent-chat.js";
 
 function modelResponse(value: unknown, tool = false) {
@@ -102,7 +103,7 @@ test.each([
     ]);
   }) as typeof fetch;
   const result = await orchestrateToolCalling({ config: config(fetchImpl), model: "test-model", messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: () => {} });
-  expect(result.errorCode).toBe("interpretation_failed"); expect(requests).toBe(1);
+  expect(result.errorCode).toBe("upstream_incomplete"); expect(requests).toBe(1);
 });
 
 test("range recap reads all eight distinct exact references with concurrency at most three", async () => {
@@ -158,11 +159,11 @@ test("an exact read cannot supply evidence for a different reference", async () 
   const run = await scenario({ kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" }, () => wire([outcome("meeting-b")]));
   expect(run.text).not.toContain("green design"); expect(run.models).toBe(1); expect(run.result.errorCode).toBe("meeting_feature_unavailable");
 });
-test("revocation during fan-out stops scheduling and suppresses every private result", async () => {
+test.each(["success", "overflow"])("revocation during fan-out suppresses later %s", async late => {
   const run = await scenario({ kind: "meeting_content", scope: "range", purpose: "summary", evidenceRequirement: "overview" }, async (name, body) => {
     if (name === "tinycloud_find_meetings") return wire(Array.from({ length: 8 }, (_, i) => outcome(`meeting-${i}`, "metadata")), discovery(8));
     if (body.args.meetingRef === "meeting-0") return Response.json({ error: "delegation_expired" }, { status: 409 });
-    await new Promise(resolve => setTimeout(resolve, 10)); return wire([outcome(body.args.meetingRef)]);
+    await new Promise(resolve => setTimeout(resolve, 10)); return late === "overflow" ? new Response("x".repeat(16001)) : wire([outcome(body.args.meetingRef)]);
   });
   expect(run.tools.length).toBeLessThanOrEqual(4); expect(run.models).toBe(1); expect(run.text).not.toContain("green design"); expect(run.frames.some(frame => frame.includes('"delegation_error"'))).toBe(true);
 });
@@ -203,3 +204,140 @@ test("ordinary general deltas stream before the answer model finishes", async ()
   const run = orchestrateToolCalling({ config: config(fetchImpl), model: "test-model", messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: frame => { frames.push(frame); } });
   await new Promise(resolve => setTimeout(resolve, 5)); expect(output(frames)).toBe("Hello now."); release(); await run; expect(output(frames)).toBe("Hello now. Finished."); expect(models).toBe(2);
 });
+
+const failureSentinel = "PRIVATE PROVIDER FAILURE SENTINEL";
+test.each([
+  ["HTTP 429", () => new Response(failureSentinel, { status: 429 }), "upstream_failed", 0],
+  ["HTTP 503", () => new Response(failureSentinel, { status: 503 }), "upstream_failed", 0],
+  ["fetch rejection", () => { throw new Error(failureSentinel); }, "upstream_failed", 0],
+  ["provider error", () => new Response(`data: ${JSON.stringify({ error: { message: failureSentinel } })}\n\n`), "upstream_failed", 0],
+  ["reader rejection", () => new Response(new ReadableStream({ pull(c) { c.error(new Error(failureSentinel)); } })), "upstream_failed", 0],
+  ["EOF", () => new Response('data: {"usage":{"prompt_tokens":99}}\n\n'), "upstream_incomplete", 0],
+  ["malformed SSE", () => new Response('data: {broken\n\n'), "upstream_incomplete", 0],
+  ["malformed tool envelope", () => new Response('data: {"choices":[{"delta":{"tool_calls":{}},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
+  ["malformed choices", () => new Response('data: {"choices":{}}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
+  ["malformed choice", () => new Response('data: {"choices":["invalid"]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
+  ["null choice", () => new Response('data: {"choices":[null]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
+  ["malformed delta", () => new Response('data: {"choices":[{"delta":"invalid","finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
+  ["malformed content", () => new Response('data: {"choices":[{"delta":{"content":42},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
+  ["missing valid finish", () => new Response('data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 5],
+  ["provider output overflow", () => modelResponse(failureSentinel.repeat(600)), "result_size_limit", 0],
+] as const)("interpretation preserves bounded failure: %s", async (_name, response, code, promptTokens) => {
+  let requests = 0; const traces: unknown[] = [], frames: string[] = [];
+  const cfg = config((async () => { requests++; return response(); }) as typeof fetch);
+  cfg.meetingTrace = trace => { traces.push(trace); };
+  const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", write: frame => { frames.push(frame); } });
+  expect(result).toEqual({ errorCode: code, promptTokens, completionTokens: promptTokens ? 2 : 0, completionId: "" });
+  expect(requests).toBe(1); expect(traces).toHaveLength(1);
+  expect(traces[0]).toMatchObject({ terminal: code, tools: [] });
+  expect(JSON.stringify([traces, frames])).not.toContain(failureSentinel);
+  expect(output(frames)).not.toMatch(/specify|rephrase|meeting or dates/i);
+});
+
+test.each([
+  ["invalid schema", { kind: "meeting_content", scope: "selected", title: "conflicting filter", purpose: "summary", evidenceRequirement: "overview" }, "interpretation_failed"],
+  ["valid clarify", { kind: "clarify", question: "Which date range?" }, "clarify"],
+] as const)("interpretation traces its semantic outcome: %s", async (_name, plan, terminal) => {
+  const traces: unknown[] = []; let requests = 0;
+  const cfg = config((async () => { requests++; return modelResponse(plan, true); }) as typeof fetch);
+  cfg.meetingTrace = trace => { traces.push(trace); };
+  const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", write: () => {} });
+  expect(result.errorCode).toBe(terminal === "clarify" ? undefined : terminal);
+  expect(result.promptTokens).toBe(5); expect(requests).toBe(1); expect(traces[0]).toMatchObject({ terminal });
+});
+
+test("interpretation slice expiry cancels its reader while the parent remains active", async () => {
+  const parent = new AbortController(); let cancelled = 0, requests = 0; const traces: unknown[] = [];
+  const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(": waiting\n\n")); }, cancel() { cancelled++; } });
+  const cfg = config((async () => { requests++; return new Response(body); }) as typeof fetch);
+  cfg.meetingTrace = trace => { traces.push(trace); };
+  const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", signal: parent.signal, remainingMs: () => 0, write: () => {} });
+  expect(result).toEqual({ errorCode: "interpretation_timeout", promptTokens: 0, completionTokens: 0, completionId: "" });
+  expect(parent.signal.aborted).toBe(false); expect(cancelled).toBe(1); expect(body.locked).toBe(false); expect(requests).toBe(1);
+  expect(traces[0]).toMatchObject({ terminal: "interpretation_timeout" });
+}, 500);
+
+test.each(["unexpected", "parent abort", "incomplete result", "invalid JSON", "wrong tool", "preflight"])("interpretation direct boundary: %s", async mode => {
+  const parent = new AbortController(), reason = new Error(failureSentinel); const traces: unknown[] = []; let calls = 0;
+  const cfg = config((async () => { throw new Error("unexpected fetch"); }) as typeof fetch); cfg.meetingTrace = trace => { traces.push(trace); };
+  const run = runMeetingTurn({ config: cfg, model: "test-model", entityId: "entity", messages: [{ role: "user", content: "Summarize it" }], contextWindowTokens: mode === "preflight" ? 1 : 32000, signal: parent.signal,
+    modelCall: async () => { calls++; if (mode === "parent abort") parent.abort(reason); if (mode === "unexpected" || mode === "parent abort") throw reason;
+      return { content: "", calls: [{ id: "plan", name: mode === "wrong tool" ? "wrong" : "prepare_meeting_turn", args: mode === "invalid JSON" ? "{" : '{"kind":"general"}' }], inline: false, complete: mode !== "incomplete result", promptTokens: 5, completionTokens: 2, completionId: "private-id" }; },
+    streamErrorCode: () => undefined,
+    capability: async () => { throw new Error("unexpected capability"); }, dispatch: async () => { throw new Error("unexpected dispatch"); }, runGeneral: async () => { throw new Error("unexpected general"); },
+    contentFrame: text => text, toolActivityFrame: () => "", delegationErrorFrame: () => "", write: () => {},
+  });
+  if (mode === "parent abort") { await expect(run).rejects.toBe(reason); expect(traces[0]).toMatchObject({ terminal: "aborted" }); }
+  else {
+    const code = mode === "unexpected" ? "agent_failed" : mode === "incomplete result" ? "upstream_incomplete" : "interpretation_failed";
+    expect(await run).toMatchObject({ errorCode: code, completionId: "", promptTokens: mode === "unexpected" || mode === "preflight" ? 0 : 5 });
+    expect(traces[0]).toMatchObject({ terminal: code });
+  }
+  expect(calls).toBe(mode === "preflight" ? 0 : 1); expect(JSON.stringify(traces)).not.toContain(failureSentinel);
+});
+
+function sizedMeetingJson(size: number) {
+  const value = { result: { text: "OVERSIZED SENTINEL café 🦋", data: { contractVersion: 2, outcomes: [outcome()] } } };
+  value.result.text += "x".repeat(size - JSON.stringify(value).length);
+  const json = JSON.stringify(value); expect(json.length).toBe(size); return json;
+}
+
+test.each([
+  [16000, "crossing chunks"], [16001, "crossing chunks"],
+  [16000, "split UTF-8"], [16001, "split UTF-8"],
+  [16000, "bodyless"], [16001, "bodyless"],
+  [16000, "decoder flush"],
+] as const)("guarded tool JSON cap: %s characters via %s", async (size, transport) => {
+  const json = sizedMeetingJson(size), bytes = new TextEncoder().encode(json);
+  const response = () => {
+    if (transport === "bodyless") return { ok: true, status: 200, body: null, json: async () => JSON.parse(json) } as Response;
+    return new Response(new ReadableStream<Uint8Array>({ start(c) {
+      if (transport === "split UTF-8") { for (const byte of bytes) c.enqueue(Uint8Array.of(byte)); }
+      else { c.enqueue(bytes.slice(0, bytes.length - 1)); c.enqueue(bytes.slice(-1)); }
+      if (transport === "decoder flush") c.enqueue(Uint8Array.of(0xe2));
+      c.close();
+    } }));
+  };
+  const run = await scenario({ kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" }, response);
+  const overflow = size > 16000 || transport === "decoder flush";
+  expect(run.result.errorCode).toBe(overflow ? "result_size_limit" : undefined);
+  expect(run.models).toBe(overflow ? 1 : 3); expect(run.tools).toHaveLength(1);
+  expect(run.result.promptTokens).toBe(overflow ? 5 : 15); expect(run.result.completionId).toBe("");
+  if (overflow) expect(run.text).not.toContain("green design"); else expect(run.text).toContain("green design");
+  expect(run.text).not.toContain("OVERSIZED SENTINEL");
+});
+
+test("guarded overflow cancels active siblings, stops queued reads and discards earlier evidence", async () => {
+  const frames: string[] = [], traces: any[] = [], requests: any[] = [], reads: string[] = [];
+  let models = 0, overflowCancelled = 0, siblingCancelled = 0, releaseOverflow!: () => void;
+  const overflowReady = new Promise<void>(resolve => { releaseOverflow = resolve; });
+  const overflowBody = new ReadableStream<Uint8Array>({ async start(c) {
+    await overflowReady; c.enqueue(new TextEncoder().encode(sizedMeetingJson(16001)));
+  }, cancel() { overflowCancelled++; return new Promise(() => {}); } });
+  const siblings: ReadableStream<Uint8Array>[] = [];
+  const cfg = config((async (input, init) => {
+    const url = String(input), body = init?.body ? JSON.parse(String(init.body)) : {}; requests.push(body);
+    if (url.endsWith("/capabilities")) return Response.json({ meetingRetrieval: { contractVersion: 2 }, buildRevision: "fixture-v2" });
+    if (url.endsWith("/tinycloud_find_meetings")) return wire(Array.from({ length: 8 }, (_, i) => outcome(`meeting-${i}`, "metadata")), discovery(8));
+    if (url.includes("/tools/")) {
+      const ref = body.args.meetingRef; reads.push(ref);
+      if (ref === "meeting-0") return wire([outcome(ref)]);
+      if (ref === "meeting-1") return new Response(overflowBody);
+      const sibling = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode('{"result":')); }, cancel() { siblingCancelled++; } }); siblings.push(sibling);
+      if (ref === "meeting-3") releaseOverflow();
+      return new Response(sibling);
+    }
+    models++; return modelResponse({ kind: "meeting_content", scope: "range", purpose: "summary", evidenceRequirement: "overview" }, true);
+  }) as typeof fetch); cfg.meetingTrace = trace => { traces.push(trace); };
+  const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize meetings" }], entityId: "entity", write: frame => { frames.push(frame); } });
+  expect(result).toEqual({ errorCode: "result_size_limit", promptTokens: 5, completionTokens: 2, completionId: "" });
+  expect(reads).toEqual(["meeting-0", "meeting-1", "meeting-2", "meeting-3"]); expect(models).toBe(1);
+  expect(overflowCancelled).toBe(1); expect(siblingCancelled).toBe(2); expect(overflowBody.locked).toBe(false); expect(siblings.every(body => !body.locked)).toBe(true);
+  const activities = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).tool_activity ?? []; } catch { return []; } });
+  expect(activities.filter(a => a.status === "error")).toHaveLength(3);
+  for (const activity of activities.filter(a => a.status === "running")) expect(activities.filter(a => a.id === activity.id && a.status !== "running")).toHaveLength(1);
+  expect(traces[0]).toMatchObject({ terminal: "result_size_limit" });
+  expect(traces[0].tools.filter((tool: any) => tool.status === "error").every((tool: any) => tool.code === "result_size_limit")).toBe(true);
+  expect(JSON.stringify([requests, traces, frames])).not.toContain("OVERSIZED SENTINEL");
+  expect(output(frames)).not.toContain("green design"); expect(traces[0]).not.toHaveProperty("packageChars");
+}, 500);

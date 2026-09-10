@@ -76,6 +76,7 @@ async function scenario(options: {
     config, model: "synthetic-context-model", entityId: "synthetic-entity", roomId: "synthetic-room",
     turnContext: { localDate: "2026-09-09", timeZone: "Europe/Lisbon" },
     contextWindowTokens: options.contextWindowTokens,
+    streamErrorCode: () => undefined,
     messages: options.messages ?? [{ role: "user", content: "Summarize the meetings from September 1 to September 6." }],
     capability: async () => { capabilityCalls++; return { meetingRetrieval: { contractVersion: 2 }, buildRevision: "synthetic-fixture-v2" }; },
     runGeneral: async () => { throw new Error("A meeting request must not enter general chat"); },

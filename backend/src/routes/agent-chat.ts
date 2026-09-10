@@ -380,6 +380,7 @@ async function dispatchTool(
   // Own the JSON reader so cancellation can release a pending body read, even
   // when a supplied fetch implementation does not wire its response to signal.
   const reader = res.body?.getReader();
+  const maxChars = turnContext && "retrievalMode" in turnContext ? 16000 : 65536;
   let cancelled = false;
   const cancel = () => {
     if (cancelled) return;
@@ -398,12 +399,14 @@ async function dispatchTool(
         throwIfAborted(signal);
         if (chunk.done) break;
         json += decoder.decode(chunk.value, { stream: true });
-        if (json.length > (turnContext && "retrievalMode" in turnContext ? 16000 : 65536)) { cancel(); throw new StreamFailure("result_size_limit"); }
+        if (json.length > maxChars) { cancel(); throw new StreamFailure("result_size_limit"); }
       }
-      parsed = JSON.parse(json + decoder.decode());
+      json += decoder.decode();
+      if (json.length > maxChars) throw new StreamFailure("result_size_limit");
+      parsed = JSON.parse(json);
     } else {
       parsed = await withAbort(res.json(), signal);
-      if (turnContext && "retrievalMode" in turnContext && JSON.stringify(parsed).length > 16000) throw new StreamFailure("result_size_limit");
+      if (JSON.stringify(parsed).length > maxChars) throw new StreamFailure("result_size_limit");
     }
     throwIfAborted(signal);
   } catch (error) {
@@ -496,6 +499,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   return runMeetingTurn({
     ...params,
     contextWindowTokens: contextLengthFor(params.model),
+    streamErrorCode: error => error instanceof StreamFailure ? error.code : undefined,
     modelCall: request => bufferedMeetingModelCall(params, request),
     dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
     capability: async signal => {
@@ -530,8 +534,13 @@ async function bufferedMeetingModelCall(params: OrchestrateParams, request: Meet
     const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     if (typeof usage?.prompt_tokens === "number") promptTokens = usage.prompt_tokens;
     if (typeof usage?.completion_tokens === "number") completionTokens = usage.completion_tokens;
+    if (obj.choices != null && !Array.isArray(obj.choices)) throw new StreamFailure("upstream_incomplete");
     const choice = (obj.choices as Array<{ delta?: { content?: string; tool_calls?: Parameters<typeof accumulateToolCalls>[1] }; finish_reason?: unknown }> | undefined)?.[0];
+    if (choice !== undefined && (!choice || typeof choice !== "object" || Array.isArray(choice))) throw new StreamFailure("upstream_incomplete");
+    if (choice?.delta != null && (typeof choice.delta !== "object" || Array.isArray(choice.delta))) throw new StreamFailure("upstream_incomplete");
+    if (choice?.delta?.content != null && typeof choice.delta.content !== "string") throw new StreamFailure("upstream_incomplete");
     if (typeof choice?.delta?.content === "string") content += choice.delta.content;
+    if (choice?.delta?.tool_calls != null && !Array.isArray(choice.delta.tool_calls)) throw new StreamFailure("upstream_incomplete");
     if (Array.isArray(choice?.delta?.tool_calls)) {
       accumulateToolCalls(calls, normalizeToolCallDeltas(choice.delta.tool_calls));
     }
@@ -781,8 +790,12 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         let outcome: ToolDispatchOutcome;
         try {
           outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId, params.turnContext, params.signal, generalOnly ? ["web_search"] : undefined);
-        } catch {
+        } catch (error) {
           throwIfAborted(params.signal);
+          if (error instanceof StreamFailure && error.code === "result_size_limit") {
+            await write(toolActivityFrame(call.name, "error"));
+            return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: "", errorCode: "result_size_limit" };
+          }
           outcome = { status: "error", text: `(tool ${call.name} unreachable)` };
         }
         throwIfAborted(params.signal);
@@ -819,7 +832,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "meeting_feature_unavailable" | "result_size_limit";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "interpretation_timeout" | "meeting_feature_unavailable" | "result_size_limit";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {

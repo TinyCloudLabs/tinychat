@@ -54,6 +54,7 @@ describe("meeting controller shares the existing stream owner", () => {
   for (const phase of ["interpretation", "retrieval", "synthesis", "repair"] as const) {
     it(`overall timeout during ${phase} cancels pending work and delivers exactly one terminal`, async () => {
       const runtime = clock(); let models = 0, reads = 0, canceled = 0; const reached = deferred<void>(); let activeSignal: AbortSignal | undefined;
+      const traces: Record<string, unknown>[] = [];
       const pending = (signal: AbortSignal | undefined) => { activeSignal = signal; reached.resolve(); return new globalThis.Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(phase === "retrieval" ? '{"result":' : ": waiting\n\n")); }, cancel() { canceled++; } })); };
       const fetchImpl = (async (input, init) => {
         const url = String(input);
@@ -64,11 +65,13 @@ describe("meeting controller shares the existing stream owner", () => {
         if (phase === "repair" && models === 2) return provider(answer("INVALID DRAFT") + done);
         return pending(init?.signal as AbortSignal);
       }) as typeof fetch;
-      const cfg = { ...config(fetchImpl, runtime), meetingContentRetrievalEnabled: true, meetingTrace: () => {}, streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 1000, drainGraceMs: 20 } };
+      const cfg = { ...config(fetchImpl, runtime), meetingContentRetrievalEnabled: true, meetingTrace: (trace: Record<string, unknown>) => traces.push(trace), streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 1000, drainGraceMs: 20 } };
       const turn = run(cfg); await reached.promise; await flush(); await runtime.advance(1000); await turn.finished;
       expect(activeSignal?.aborted).toBe(true); expect(canceled).toBe(1); expect(turn.res.text().match(/data: \[DONE\]/g)).toHaveLength(1); expect(turn.res.endCount).toBe(1);
       expect(turn.res.text()).toContain('"turn_timeout"'); expect(turn.res.text()).not.toMatch(/UNDISPLAYED|INVALID DRAFT|Private green/); expect(runtime.tasks.size).toBe(0);
       expect(models).toBe(phase === "interpretation" || phase === "retrieval" ? 1 : phase === "synthesis" ? 2 : 3); expect(reads).toBe(phase === "interpretation" ? 0 : 1);
+      expect(traces).toEqual([expect.objectContaining({ terminal: "turn_timeout" })]);
+      expect(JSON.stringify(traces)).not.toMatch(/UNDISPLAYED|INVALID DRAFT|Private green/);
     });
   }
   it("disconnect during interpretation suppresses all late delivery", async () => {

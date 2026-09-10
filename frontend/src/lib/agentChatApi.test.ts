@@ -112,15 +112,24 @@ describe("agent stream lifecycle", () => {
     expect(body.locked).toBe(false);
   });
 
-  for (const code of ["turn_timeout", "upstream_incomplete", "upstream_failed", "agent_failed"]) {
+  for (const [code, message] of [
+    ["turn_timeout", "This reply took too long to finish. You can try again."],
+    ["upstream_incomplete", "The model service returned an incomplete reply. Please try again."],
+    ["upstream_failed", "The model service could not complete this request. Please try again later."],
+    ["interpretation_timeout", "Understanding this request took too long. Please try again."],
+    ["result_size_limit", "The response was too large to process safely. Try a smaller request or fewer meetings."],
+    ["agent_failed", interruptionMessage],
+  ] as const) {
     it(`handles ${code} before legacy text or any callbacks, after malformed data`, async () => {
       const callbacks: unknown[] = [];
       globalThis.fetch = (async () => sseResponse([
         df({ choices: [{ delta: { content: "Partial." } }] }),
         "data: {broken\n\n",
-        df({ stream_error: { code }, id: "must-not-publish", usage: { prompt_tokens: 1, completion_tokens: 2 },
+        df({ stream_error: { code, message: "PRIVATE ERROR SENTINEL" }, id: "must-not-publish", usage: { prompt_tokens: 1, completion_tokens: 2 },
           tool_activity: { name: "must-not-publish", status: "running" }, delegation_error: { code: "delegation_expired" },
           choices: [{ delta: { content: "Legacy interruption notice" } }] }),
+        df({ id: "must-not-publish-later", usage: { prompt_tokens: 3, completion_tokens: 4 },
+          choices: [{ delta: { content: "Must not resume after failure." } }] }),
         "data: [DONE]\n\n",
       ])) as typeof fetch;
       const result = await collectStream({ ...streamOptions,
@@ -128,8 +137,7 @@ describe("agent stream lifecycle", () => {
         onToolActivity: (value: unknown) => callbacks.push(value), onDelegationError: (value: unknown) => callbacks.push(value),
       });
       expect(result.chunks).toEqual(["Partial."]);
-      expect(result.error).toMatchObject({ name: "AgentStreamError", code,
-        message: code === "turn_timeout" ? "This reply took too long to finish. You can try again." : interruptionMessage });
+      expect(result.error).toMatchObject({ name: "AgentStreamError", code, message });
       expect(callbacks).toEqual([]);
     });
   }
