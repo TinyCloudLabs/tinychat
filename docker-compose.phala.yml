@@ -19,6 +19,10 @@ services:
       AGENT_DID: ${AGENT_DID:-}
       ELIZA_SERVICE_URL: ${ELIZA_SERVICE_URL:-}
       ELIZA_SERVICE_SECRET: ${ELIZA_SERVICE_SECRET:-}
+      # Optional meeting rollout; empty allowlists admit no accounts or models.
+      MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
+      MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}
+      MEETING_CONTENT_MODELS: ${MEETING_CONTENT_MODELS:-}
       # Explicit stream policy is required when agent chat is enabled. Startup validates
       # these settings; empty values keep agent-disabled deployments possible, with no defaults.
       AGENT_STREAM_HEARTBEAT_MS: ${AGENT_STREAM_HEARTBEAT_MS:-}
