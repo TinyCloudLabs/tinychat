@@ -183,6 +183,23 @@ describe("TranscriberView", () => {
     expect(html).toContain(">Hide<");
   });
 
+  test("uncertain transcript windows are visible without claiming a speaker identity", () => {
+    const html = render({ meetings: [meeting({ status: "completed" })], open: {
+      id: "mtg_1", status: "ready", transcript: {
+        meeting_id: "mtg_1", status: "completed", language: "en", duration_seconds: 4, speakers: [], text: "",
+        segments: [
+          { id: "a", speaker_id: "unknown", speaker_name: "Do not attribute", start: 0, end: 2, text: "Both voices.", attribution: "overlap" },
+          { id: "b", speaker_id: "unknown", speaker_name: "Do not attribute", start: 2, end: 4, text: "Uncertain voice.", attribution: "unknown" },
+        ],
+      },
+    } });
+    expect(html).toContain("Overlapping speech");
+    expect(html).toContain("Unknown speaker");
+    expect(html).not.toContain("Do not attribute");
+    expect(html).toContain("Both voices.");
+    expect(html).toContain("Uncertain voice.");
+  });
+
   test("save state is shown on the row", () => {
     expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "saved" } })).toContain(
       "Saved to your space",
