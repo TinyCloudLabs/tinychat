@@ -99,6 +99,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     console: { error: (...args: unknown[]) => logs.push(args.join(" ")), log: noop, warn: noop },
     require: (id: string) => {
       if (id === "./agent-stream-policy.js") return load("./agent-stream-policy.ts");
+      if (id === "./transcripts/meeting-rollout.js") return load("./transcripts/meeting-rollout.ts");
       if (id in known) return known[id];
       // These import collaborators only register handlers or hold inert local state.
       return new Proxy({}, { get: (_target, name) => {
@@ -137,6 +138,15 @@ describe("agent stream startup policy wiring", () => {
     });
     expect(result.calls).toContain("agent-router");
     expect(result.calls).not.toContain("listen");
+  });
+
+  test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
+    const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV });
+    expect(initial.agentConfig.chat.meetingContentRetrievalEnabled).toBe(false);
+    const enabled = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, MEETING_CONTENT_RETRIEVAL_ENABLED: "true", MEETING_CONTENT_TEST_ACCOUNTS: "0xabc", MEETING_CONTENT_MODELS: "phala/evaluated" });
+    expect(enabled.logs).toEqual([]); expect(enabled.agentConfig.chat.meetingContentRetrievalEnabled).toBe(true);
+    expect(enabled.agentConfig.chat.meetingContentAccountAllowed("0xabc")).toBe(true); expect(enabled.agentConfig.chat.meetingContentAccountAllowed("0xother")).toBe(false);
+    expect(enabled.agentConfig.chat.meetingContentModelAllowed("phala/evaluated")).toBe(true); expect(enabled.agentConfig.chat.meetingContentModelAllowed("phala/untested")).toBe(false);
   });
 
   test("rejects every malformed stream setting before any startup effects without logging values", async () => {

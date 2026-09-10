@@ -14,6 +14,8 @@
 import type { Request, RequestHandler, Response } from "express";
 import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
+import { runMeetingTurn, type BufferedMeetingModelResult, type MeetingModelRequest, type MeetingToolContext } from "../transcripts/meeting-turn.js";
+import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
@@ -74,6 +76,12 @@ export interface AgentChatConfig {
   fetchImpl?: typeof fetch;
   /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
+  /** Dedicated staged rollout gate; disabled unless explicitly configured. */
+  meetingContentRetrievalEnabled?: boolean;
+  meetingContentAccountAllowed?: (address: string) => boolean;
+  meetingContentModelAllowed?: (model: string) => boolean;
+  backendRevision?: string;
+  meetingTrace?: (trace: Record<string, unknown>) => void;
   /** §E.6 — shadow-push outbox (disabled when absent). */
   flusher?: LedgerFlusher;
   /** §E.7 — lazy rehydrator (disabled when absent). */
@@ -153,6 +161,27 @@ export function accumulateToolCalls(
     if (d.function?.arguments) entry.args += d.function.arguments;
     acc.set(index, entry);
   }
+}
+
+/** Providers can use null for omitted continuation fields; indexes still must be valid. */
+function normalizeToolCallDeltas(deltas: unknown[]): Parameters<typeof accumulateToolCalls>[1] {
+  return deltas.map(value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new StreamFailure("upstream_incomplete");
+    const call = value as Record<string, unknown>;
+    if (call.index !== undefined && (typeof call.index !== "number" || !Number.isSafeInteger(call.index) || call.index < 0)) throw new StreamFailure("upstream_incomplete");
+    if (call.id != null && typeof call.id !== "string") throw new StreamFailure("upstream_incomplete");
+    if (call.function != null && (typeof call.function !== "object" || Array.isArray(call.function))) throw new StreamFailure("upstream_incomplete");
+    const fn = call.function as Record<string, unknown> | null | undefined;
+    if ((fn?.name != null && typeof fn.name !== "string") || (fn?.arguments != null && typeof fn.arguments !== "string")) throw new StreamFailure("upstream_incomplete");
+    return {
+      ...(typeof call.index === "number" ? { index: call.index } : {}),
+      ...(typeof call.id === "string" ? { id: call.id } : {}),
+      ...(fn ? { function: {
+        ...(typeof fn.name === "string" ? { name: fn.name } : {}),
+        ...(typeof fn.arguments === "string" ? { arguments: fn.arguments } : {}),
+      } } : {}),
+    };
+  });
 }
 
 /**
@@ -250,8 +279,8 @@ function contentFrame(text: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 }
 
-function toolActivityFrame(name: string, status: "running" | "done" | "error"): string {
-  return `data: ${JSON.stringify({ choices: [{ delta: {} }], tool_activity: { name, status } })}\n\n`;
+function toolActivityFrame(name: string, status: "running" | "done" | "error", id?: string): string {
+  return `data: ${JSON.stringify({ choices: [{ delta: {} }], tool_activity: { name, status, ...(id ? { id } : {}) } })}\n\n`;
 }
 
 /** Tell the browser that private-agent access needs an interactive re-grant. */
@@ -306,7 +335,7 @@ function meetingCitationsIn(toolResults: ChatMsg[]): string[] {
 }
 
 /** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
-const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired"]);
+const DELEGATION_ERROR_CODES = new Set(["delegation_required", "delegation_expired", "delegation_revoked"]);
 
 export interface ToolDispatchOutcome {
   /** The role:"tool" content handed back to the model. */
@@ -315,6 +344,7 @@ export interface ToolDispatchOutcome {
   status: "done" | "error";
   /** Set only for a delegation failure the user must act on. */
   code?: string;
+  data?: NonNullable<ReturnType<typeof parseMeetingToolData>>;
 }
 
 /**
@@ -327,9 +357,11 @@ async function dispatchTool(
   call: AccumulatedToolCall,
   entityId: string,
   roomId: string | undefined,
-  turnContext?: AgentTurnContext,
+  turnContext?: AgentTurnContext | MeetingToolContext,
   signal?: AbortSignal,
+  allowedTools?: readonly string[],
 ): Promise<ToolDispatchOutcome> {
+  if (allowedTools && !allowedTools.includes(call.name)) throw new StreamFailure("routing_mismatch");
   let args: Record<string, unknown>;
   try {
     args = call.args ? (JSON.parse(call.args) as Record<string, unknown>) : {};
@@ -366,14 +398,17 @@ async function dispatchTool(
         throwIfAborted(signal);
         if (chunk.done) break;
         json += decoder.decode(chunk.value, { stream: true });
+        if (json.length > (turnContext && "retrievalMode" in turnContext ? 16000 : 65536)) { cancel(); throw new StreamFailure("result_size_limit"); }
       }
       parsed = JSON.parse(json + decoder.decode());
     } else {
       parsed = await withAbort(res.json(), signal);
+      if (turnContext && "retrievalMode" in turnContext && JSON.stringify(parsed).length > 16000) throw new StreamFailure("result_size_limit");
     }
     throwIfAborted(signal);
-  } catch {
+  } catch (error) {
     throwIfAborted(signal);
+    if (error instanceof StreamFailure) throw error;
     parsed = {};
   } finally {
     signal?.removeEventListener("abort", cancel);
@@ -410,7 +445,8 @@ async function dispatchTool(
   const summary = body.result?.text ?? "";
   if (call.name !== "web_search") {
     const data = body.result?.data ? JSON.stringify(body.result.data) : "";
-    return { status: "done", text: summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data };
+    const typed = parseMeetingToolData(body.result?.data);
+    return { status: "done", text: summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data, ...(typed ? { data: typed } : {}) };
   }
   const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
   if (results.length === 0) return { status: "done", text: summary };
@@ -436,6 +472,8 @@ export interface OrchestrateParams {
   signal?: AbortSignal;
   onPhase?: (phase: StreamPhase) => void;
   isAborted?: () => boolean;
+  /** Remaining time on the existing SSE owner's deadline. */
+  remainingMs?: () => number;
 }
 
 export interface OrchestrateResult {
@@ -453,13 +491,68 @@ export interface OrchestrateResult {
  * which alone writes terminal metadata and the protocol terminal.
  */
 export async function orchestrateToolCalling(params: OrchestrateParams): Promise<OrchestrateResult> {
+  if (!params.config.meetingContentRetrievalEnabled) return orchestrateExistingLoop(params);
+  const fetchImpl = params.config.fetchImpl ?? fetch;
+  return runMeetingTurn({
+    ...params,
+    contextWindowTokens: contextLengthFor(params.model),
+    modelCall: request => bufferedMeetingModelCall(params, request),
+    dispatch: (name, args, context, signal, id) => dispatchTool(params.config, fetchImpl, { name, args: JSON.stringify(args), id }, params.entityId, params.roomId, context, signal),
+    capability: async signal => {
+      const response = await fetchForTurn(fetchImpl, `${params.config.elizaServiceUrl}/capabilities`, { headers: { authorization: `Bearer ${params.config.elizaServiceSecret}` } }, signal);
+      if (!response.ok) { if (response.body) ignoreCleanup(() => response.body!.cancel()); return null; }
+      // This content-free response has a small independent transport bound.
+      const reader = response.body?.getReader();
+      if (!reader) return null;
+      let bytes = 0; let text = ""; const decoder = new TextDecoder();
+      try {
+        for (;;) { const chunk = await withAbort(reader.read(), signal); if (chunk.done) break; bytes += chunk.value.byteLength; if (bytes > 4096) return null; text += decoder.decode(chunk.value, { stream: true }); }
+        return JSON.parse(text + decoder.decode());
+      } finally { ignoreCleanup(() => reader.cancel()); try { reader.releaseLock(); } catch { /* Preserve the capability outcome. */ } }
+    },
+    runGeneral: () => orchestrateExistingLoop(params, true),
+    contentFrame, toolActivityFrame, delegationErrorFrame,
+  });
+}
+
+async function bufferedMeetingModelCall(params: OrchestrateParams, request: MeetingModelRequest): Promise<BufferedMeetingModelResult> {
+  const maxChars = request.maxOutputTokens === 1024 ? 12288 : 24576;
+  params.onPhase?.(request.phase);
+  const upstream = await fetchForTurn(params.config.fetchImpl ?? fetch, `${params.config.redpillBaseUrl}/chat/completions`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.config.redpillApiKey}` },
+    body: JSON.stringify({ model: params.model, messages: request.messages, ...(request.tool ? { tools: [request.tool], tool_choice: { type: "function", function: { name: "prepare_meeting_turn" } }, reasoning: { enabled: false } } : { reasoning_effort: "low" }), max_tokens: request.maxOutputTokens, stream: true, stream_options: { include_usage: true } }),
+  }, request.signal);
+  if (!upstream.ok || !upstream.body) { if (upstream.body) ignoreCleanup(() => upstream.body!.cancel()); throw new StreamFailure("upstream_failed"); }
+  let content = "", completionId = "", promptTokens = 0, completionTokens = 0, finish: unknown;
+  const calls = new Map<number, AccumulatedToolCall>();
+  for await (const obj of parseSseJson(upstream.body as unknown as AsyncIterable<Uint8Array>, request.signal)) {
+    if (typeof obj.id === "string") completionId = obj.id;
+    const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    if (typeof usage?.prompt_tokens === "number") promptTokens = usage.prompt_tokens;
+    if (typeof usage?.completion_tokens === "number") completionTokens = usage.completion_tokens;
+    const choice = (obj.choices as Array<{ delta?: { content?: string; tool_calls?: Parameters<typeof accumulateToolCalls>[1] }; finish_reason?: unknown }> | undefined)?.[0];
+    if (typeof choice?.delta?.content === "string") content += choice.delta.content;
+    if (Array.isArray(choice?.delta?.tool_calls)) {
+      accumulateToolCalls(calls, normalizeToolCallDeltas(choice.delta.tool_calls));
+    }
+    if (content.length + [...calls.values()].reduce((n, call) => n + call.args.length + call.name.length, 0) > maxChars || calls.size > 8) throw new StreamFailure("result_size_limit");
+    if (choice?.finish_reason != null) finish = choice.finish_reason;
+  }
+  let inline = false;
+  if (calls.size === 0 && content.includes("<tool_call>")) {
+    parseInlineToolCalls(content).forEach((call, i) => calls.set(i, { id: `inline_${i}`, ...call })); inline = calls.size > 0;
+  }
+  return { content, calls: [...calls.values()], inline, complete: finish === "stop" || finish === "tool_calls", completionId, promptTokens, completionTokens };
+}
+
+async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = false): Promise<OrchestrateResult> {
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
-  const maxRounds = config.maxRounds ?? 3;
+  const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
   let convo: ChatMsg[] = [
     {
       role: "system",
-      content: buildMeetingAgentGuidance(params.turnContext),
+      content: generalOnly ? "You are a helpful assistant. Use web_search for public web questions when needed. Answer ordinary conversation directly." : buildMeetingAgentGuidance(params.turnContext),
     },
     ...params.messages,
   ];
@@ -503,7 +596,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     // never searched, fall through to the normal (tool-enabled) request.
     const toolResults = convo.filter((m) => m.role === "tool");
     const cleanSynthesis = forceAnswer && toolResults.length > 0;
-    const meetingCitations = meetingCitationsIn(toolResults);
+    const meetingCitations = generalOnly ? [] : meetingCitationsIn(toolResults);
     // Meeting answers are held until their citation contract is validated. This
     // lets us retry an uncited synthesis without leaking the invalid draft.
     const bufferMeetingAnswer = meetingCitations.length > 0;
@@ -519,7 +612,10 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         cleanSynthesis
           ? {
               model,
-              messages: buildCleanSynthesisMessages(
+              messages: generalOnly ? [
+                { role: "system", content: "Answer the user's question using the supplied public-web results. Cite source links for factual claims supported by those results." },
+                { role: "user", content: `Question: ${lastUserQuestion}\n\nPublic-web results:\n${toolResults.map(message => message.content).join("\n\n")}` },
+              ] : buildCleanSynthesisMessages(
                 lastUserQuestion,
                 toolResults.map((m) => m.content).join("\n\n"),
               ),
@@ -531,7 +627,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
           : {
               model,
               messages: convo,
-              tools: [WEB_SEARCH_TOOL, ...TINYCLOUD_MEETING_TOOLS],
+              tools: generalOnly ? [WEB_SEARCH_TOOL] : [WEB_SEARCH_TOOL, ...TINYCLOUD_MEETING_TOOLS],
               tool_choice: forceAnswer ? "none" : "auto",
               ...(isSynthesisRound ? { reasoning_effort: "low" } : {}),
               stream: true,
@@ -564,6 +660,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
     let pendingBuffer = "";
     let decided = false;
     let leakMode = false;
+    let generalPending = "";
 
     const flushPending = async () => {
       if (pendingBuffer) {
@@ -586,7 +683,24 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         | undefined;
       if (typeof delta?.content === "string" && delta.content) {
         roundContent += delta.content;
-        if (leakMode) {
+        if (generalOnly) {
+          // Hold only a possible markup prefix; ordinary deltas still stream.
+          // This also catches inline calls emitted after already-delivered prose.
+          if (!leakMode) {
+            generalPending += delta.content;
+            const marker = generalPending.indexOf(LEAK_PREFIX);
+            if (marker >= 0) {
+              if (marker) await write(contentFrame(generalPending.slice(0, marker)));
+              generalPending = ""; leakMode = true;
+            } else {
+              let held = Math.min(LEAK_PREFIX.length - 1, generalPending.length);
+              while (held > 0 && !LEAK_PREFIX.startsWith(generalPending.slice(-held))) held--;
+              const ready = generalPending.slice(0, generalPending.length - held);
+              generalPending = held ? generalPending.slice(-held) : "";
+              if (ready) await write(contentFrame(ready));
+            }
+          }
+        } else if (leakMode) {
           // Already in leak mode: keep accumulating, forward nothing.
         } else if (decided) {
           if (!bufferMeetingAnswer) await write(contentFrame(delta.content));
@@ -610,17 +724,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         }
       }
       if (Array.isArray(delta?.tool_calls)) {
-        for (const call of delta.tool_calls) {
-          if (!call || typeof call !== "object" || Array.isArray(call)) throw new StreamFailure("upstream_incomplete");
-          if (call.index !== undefined && (typeof call.index !== "number" || !Number.isSafeInteger(call.index) || call.index < 0)) throw new StreamFailure("upstream_incomplete");
-          if (call.id !== undefined && typeof call.id !== "string") throw new StreamFailure("upstream_incomplete");
-          if (call.function !== undefined) {
-            if (!call.function || typeof call.function !== "object" || Array.isArray(call.function)) throw new StreamFailure("upstream_incomplete");
-            const fn = call.function as Record<string, unknown>;
-            if ((fn.name !== undefined && typeof fn.name !== "string") || (fn.arguments !== undefined && typeof fn.arguments !== "string")) throw new StreamFailure("upstream_incomplete");
-          }
-        }
-        accumulateToolCalls(toolCalls, delta.tool_calls as Parameters<typeof accumulateToolCalls>[1]);
+        accumulateToolCalls(toolCalls, normalizeToolCallDeltas(delta.tool_calls));
       }
       const fr = choice?.finish_reason;
       if (typeof fr === "string") finish = fr;
@@ -628,6 +732,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
 
     totalPromptTokens += roundPromptTokens;
     totalCompletionTokens += roundCompletionTokens;
+    if (generalOnly && !leakMode && generalPending) await write(contentFrame(generalPending));
 
     // Leaked-markup guard: if the round leaked native tool-call markup into content
     // (leakMode, or a `stop` finish whose content still contains a `<tool_call>`),
@@ -650,6 +755,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
       await flushPending();
     }
 
+    if (generalOnly && [...toolCalls.values()].some(call => call.name !== "web_search")) { errorCode = "routing_mismatch"; break; }
     if (toolCalls.size > 0 && finish !== "tool_calls") throw new StreamFailure("upstream_incomplete");
     if (finish === "tool_calls") {
       const calls = [...toolCalls.values()];
@@ -674,7 +780,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         await write(toolActivityFrame(call.name, "running"));
         let outcome: ToolDispatchOutcome;
         try {
-          outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId, params.turnContext, params.signal);
+          outcome = await dispatchTool(config, fetchImpl, call, params.entityId, params.roomId, params.turnContext, params.signal, generalOnly ? ["web_search"] : undefined);
         } catch {
           throwIfAborted(params.signal);
           outcome = { status: "error", text: `(tool ${call.name} unreachable)` };
@@ -713,7 +819,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
   return { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, completionId: finalCompletionId, ...(errorCode ? { errorCode } : {}) };
 }
 
-type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed";
+export type StreamErrorCode = "turn_timeout" | "upstream_incomplete" | "upstream_failed" | "agent_failed" | "routing_mismatch" | "interpretation_failed" | "meeting_feature_unavailable" | "result_size_limit";
 type StreamPhase = "model" | "tool" | "synthesis" | "repair" | "terminal";
 
 class StreamFailure extends Error {
@@ -816,6 +922,7 @@ class AgentStreamOwner {
   }
 
   isOpen = () => this.state === "open";
+  remainingMs = () => Math.max(0, this.policy.turnTimeoutMs - (this.runtime.now() - this.started));
   setPhase = (phase: StreamPhase) => { if (this.isOpen()) this.phase = phase; };
   private viable = () => !this.res.destroyed && !this.res.writableEnded && this.state !== "closed";
   private onAborted = () => this.close("cancelled", true);
@@ -1162,9 +1269,9 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
     if (await owner.open()) {
       try {
         orchestrateResult = await orchestrateToolCalling({
-          config, model: resolvedModel, messages: messages as ChatMsg[], entityId,
+          config: { ...config, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,
-          write: owner.write, signal: owner.signal, onPhase: owner.setPhase,
+          write: owner.write, signal: owner.signal, onPhase: owner.setPhase, remainingMs: owner.remainingMs,
         });
         await owner.complete(orchestrateResult);
       } catch (error) {

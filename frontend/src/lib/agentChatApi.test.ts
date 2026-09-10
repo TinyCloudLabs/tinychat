@@ -134,6 +134,25 @@ describe("agent stream lifecycle", () => {
     });
   }
 
+  it("preserves clarification text and reports interpretation failure even when DONE follows", async () => {
+    const clarification = "Please specify the meeting or dates and what you would like to know.";
+    const callbacks: unknown[] = [];
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: clarification } }] }),
+      df({ stream_error: { code: "interpretation_failed" }, id: "must-not-publish",
+        usage: { prompt_tokens: 1, completion_tokens: 2 },
+        choices: [{ delta: { content: "Legacy interruption notice" } }] }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+    const result = await collectStream({ ...streamOptions,
+      onCompletionId: (value) => callbacks.push(value), onUsage: (value) => callbacks.push(value),
+    });
+    expect(result.chunks).toEqual([clarification]);
+    expect(result.error).toMatchObject({ name: "AgentStreamError", code: "interpretation_failed",
+      message: "I could not interpret that request. Please rephrase it and try again." });
+    expect(callbacks).toEqual([]);
+  });
+
   it("uses a bounded error class for unknown terminal codes", async () => {
     globalThis.fetch = (async () => sseResponse([
       df({ stream_error: { code: "PRIVATE UNKNOWN SENTINEL" }, choices: [{ delta: { content: "legacy" } }] }),
@@ -272,6 +291,25 @@ describe("agent stream client compatibility", () => {
 });
 
 describe("streamAgentChat", () => {
+  it("preserves optional call ids across interleaved activities without changing legacy events", async () => {
+    const events = [
+      { name: "tinycloud_read_meeting", status: "running", id: "read-1" },
+      { name: "tinycloud_read_meeting", status: "running", id: "read-2" },
+      { name: "tinycloud_read_meeting", status: "done", id: "read-1" },
+      { name: "tinycloud_read_meeting", status: "error", id: "read-2" },
+      { name: "web_search", status: "running" },
+    ];
+    const activity: ToolActivity[] = [];
+    globalThis.fetch = (async () => sseResponse([
+      ...events.map((tool_activity) => df({ tool_activity })),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+
+    expect(await collectStream({ ...streamOptions, onToolActivity: (value) => activity.push(value) }))
+      .toEqual({ chunks: [], error: undefined });
+    expect(activity).toEqual(events);
+  });
+
   it("yields cumulative text and surfaces tool activity", async () => {
     const activity: ToolActivity[] = [];
     globalThis.fetch = (async () =>
@@ -426,11 +464,11 @@ describe("streamAgentChat", () => {
     expect(ids).toEqual(["cmpl-x"]);
   });
 
-  it("surfaces a streamed delegation failure for reconnect UI", async () => {
+  it.each(["delegation_expired", "delegation_revoked"])("surfaces %s for reconnect UI", async (code) => {
     const errors: string[] = [];
     globalThis.fetch = (async () =>
       sseResponse([
-        df({ choices: [{ delta: {} }], delegation_error: { code: "delegation_expired" } }),
+        df({ choices: [{ delta: {} }], delegation_error: { code } }),
         df({ choices: [{ delta: { content: "Reconnect access." } }] }),
         "data: [DONE]\n\n",
       ])) as typeof fetch;
@@ -445,7 +483,7 @@ describe("streamAgentChat", () => {
       chunks.push(text);
     }
 
-    expect(errors).toEqual(["delegation_expired"]);
+    expect(errors).toEqual([code]);
     expect(chunks).toEqual(["Reconnect access."]);
   });
 

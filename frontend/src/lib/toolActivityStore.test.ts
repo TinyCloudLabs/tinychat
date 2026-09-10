@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
   clearToolActivity,
   getToolActivity,
+  getToolActivities,
   onToolActivityChange,
   setToolActivity,
   type ToolActivity,
@@ -20,6 +21,22 @@ function track(id: string): string {
 }
 
 describe("toolActivityStore", () => {
+  it("keeps same-name concurrent calls visible when one completes", () => {
+    const id = track("msg-concurrent");
+    const first = { name: "tinycloud_read_meeting", status: "running" as const, id: "read-1" };
+    const second = { name: "tinycloud_read_meeting", status: "running" as const, id: "read-2" };
+    const visible = () => getToolActivities(id);
+    setToolActivity(id, first);
+    setToolActivity(id, second);
+    expect(visible()).toEqual([first, second]);
+    setToolActivity(id, { ...first, status: "done" });
+    expect(visible()).toEqual([second]);
+    setToolActivity(id, { ...second, status: "error" });
+    expect(visible()).toEqual([{ ...second, status: "error" }]);
+    clearToolActivity(id);
+    expect(visible()).toEqual([]);
+  });
+
   it("getToolActivity returns null when no entry exists", () => {
     expect(getToolActivity("msg-unknown")).toBeNull();
   });

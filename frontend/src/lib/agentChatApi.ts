@@ -60,9 +60,11 @@ export interface AgentChatMessage {
 export interface ToolActivity {
   name: string;
   status: "running" | "done" | "error";
+  /** Distinguishes concurrent calls to the same tool; absent on legacy frames. */
+  id?: string;
 }
 
-export type AgentDelegationErrorCode = "delegation_required" | "delegation_expired";
+export type AgentDelegationErrorCode = "delegation_required" | "delegation_expired" | "delegation_revoked";
 
 export type AgentStreamErrorCode =
   | "transport"
@@ -70,6 +72,7 @@ export type AgentStreamErrorCode =
   | "turn_timeout"
   | "upstream_incomplete"
   | "upstream_failed"
+  | "interpretation_failed"
   | "agent_failed";
 
 /** Expected stream failures carry only bounded codes and safe display copy. */
@@ -77,7 +80,9 @@ export class AgentStreamError extends Error {
   constructor(readonly code: AgentStreamErrorCode) {
     super(code === "turn_timeout"
       ? "This reply took too long to finish. You can try again."
-      : "The connection ended before the reply finished. You can try again.");
+      : code === "interpretation_failed"
+        ? "I could not interpret that request. Please rephrase it and try again."
+        : "The connection ended before the reply finished. You can try again.");
     this.name = "AgentStreamError";
   }
 }
@@ -264,14 +269,18 @@ export async function* streamAgentChat(
           if (json?.stream_error) {
             const code = json.stream_error.code;
             throw new AgentStreamError(
-              code === "turn_timeout" || code === "upstream_incomplete" || code === "upstream_failed"
+              code === "turn_timeout" || code === "upstream_incomplete" || code === "upstream_failed" || code === "interpretation_failed"
                 ? code : "agent_failed",
             );
           }
           const activity = json?.tool_activity;
           if (activity && onToolActivity && typeof activity.name === "string") {
             try {
-              onToolActivity({ name: activity.name, status: activity.status });
+              onToolActivity({
+                name: activity.name,
+                status: activity.status,
+                ...(typeof activity.id === "string" && activity.id ? { id: activity.id } : {}),
+              });
             } catch {
               // a listener throwing must not break the stream
             }
@@ -279,7 +288,7 @@ export async function* streamAgentChat(
           const delegationCode = json?.delegation_error?.code;
           if (
             onDelegationError &&
-            (delegationCode === "delegation_required" || delegationCode === "delegation_expired")
+            (delegationCode === "delegation_required" || delegationCode === "delegation_expired" || delegationCode === "delegation_revoked")
           ) {
             try {
               onDelegationError(delegationCode);

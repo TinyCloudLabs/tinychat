@@ -154,6 +154,8 @@ jobs:
         with:
           context: .
           file: backend/Dockerfile
+          build-args: |
+            BUILD_REVISION=${{ github.sha }}
           platforms: linux/amd64
           push: true
           no-cache: true

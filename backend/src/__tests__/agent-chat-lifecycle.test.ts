@@ -48,6 +48,37 @@ function run(cfg: AgentChatConfig, pair = response()) {
 }
 function provider(content: string) { return new globalThis.Response(content, { headers: { "content-type": "text/event-stream" } }); }
 
+describe("meeting controller shares the existing stream owner", () => {
+  const interpretation = () => provider(frame({ id: "interpretation-id", choices: [{ delta: { content: "UNDISPLAYED INTERPRETATION", tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify({ kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" }) } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 3, completion_tokens: 2 } }) + done);
+  const evidence = () => globalThis.Response.json({ result: { data: { contractVersion: 2, outcomes: [{ meetingRef: "meeting-a", source: "google-meet", meeting: { meetingRef: "meeting-a", source: "google-meet", title: "Private title", startedAt: null, participants: [], organizerEmail: null }, state: "read", body: { state: "not_requested" }, search: { state: "not_requested", storedFieldsExamined: false, bodyExamined: false, examinedMatches: 0, retainedMatches: 0 }, evidence: [{ id: "summary", meetingRef: "meeting-a", source: "google-meet", kind: "summary", text: "Private green decision", truncated: false }], coverage: { purpose: "summary", overviewPresent: true, actionsPresent: false, bodyAttempted: false, bodyRequired: false, evidenceRetained: 1, omittedEvidenceCount: 0, omissionReasons: [], support: "sufficient" } }] } } });
+  for (const phase of ["interpretation", "retrieval", "synthesis", "repair"] as const) {
+    it(`overall timeout during ${phase} cancels pending work and delivers exactly one terminal`, async () => {
+      const runtime = clock(); let models = 0, reads = 0, canceled = 0; const reached = deferred<void>(); let activeSignal: AbortSignal | undefined;
+      const pending = (signal: AbortSignal | undefined) => { activeSignal = signal; reached.resolve(); return new globalThis.Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(phase === "retrieval" ? '{"result":' : ": waiting\n\n")); }, cancel() { canceled++; } })); };
+      const fetchImpl = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/capabilities")) return globalThis.Response.json({ meetingRetrieval: { contractVersion: 2 }, buildRevision: "fixture-v2" });
+        if (url.includes("/tools/")) { reads++; return phase === "retrieval" ? pending(init?.signal as AbortSignal) : evidence(); }
+        models++;
+        if (models === 1) return phase === "interpretation" ? pending(init?.signal as AbortSignal) : interpretation();
+        if (phase === "repair" && models === 2) return provider(answer("INVALID DRAFT") + done);
+        return pending(init?.signal as AbortSignal);
+      }) as typeof fetch;
+      const cfg = { ...config(fetchImpl, runtime), meetingContentRetrievalEnabled: true, meetingTrace: () => {}, streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 1000, drainGraceMs: 20 } };
+      const turn = run(cfg); await reached.promise; await flush(); await runtime.advance(1000); await turn.finished;
+      expect(activeSignal?.aborted).toBe(true); expect(canceled).toBe(1); expect(turn.res.text().match(/data: \[DONE\]/g)).toHaveLength(1); expect(turn.res.endCount).toBe(1);
+      expect(turn.res.text()).toContain('"turn_timeout"'); expect(turn.res.text()).not.toMatch(/UNDISPLAYED|INVALID DRAFT|Private green/); expect(runtime.tasks.size).toBe(0);
+      expect(models).toBe(phase === "interpretation" || phase === "retrieval" ? 1 : phase === "synthesis" ? 2 : 3); expect(reads).toBe(phase === "interpretation" ? 0 : 1);
+    });
+  }
+  it("disconnect during interpretation suppresses all late delivery", async () => {
+    const runtime = clock(); const waiting = deferred<globalThis.Response>(); let signal: AbortSignal | undefined;
+    const cfg = { ...config((async (_url, init) => { signal = init?.signal as AbortSignal; return waiting.promise; }) as typeof fetch, runtime), meetingContentRetrievalEnabled: true, meetingTrace: () => {} };
+    const turn = run(cfg); await flush(); const previous = turn.res.text(); turn.res.destroy(); await turn.finished;
+    waiting.resolve(interpretation()); await flush(); expect(signal?.aborted).toBe(true); expect(turn.res.text()).toBe(previous); expect(turn.res.text()).not.toContain(done); expect(runtime.tasks.size).toBe(0);
+  });
+});
+
 describe("agent stream lifecycle", () => {
   it("writes immediate and periodic invisible comments while waiting for provider headers, then one terminal", async () => {
     const runtime = clock(); const pending = deferred<globalThis.Response>(); let signal: AbortSignal | undefined;
