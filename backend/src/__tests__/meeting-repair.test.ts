@@ -9,6 +9,7 @@ function response(value: unknown, tool = false) {
 async function run(draft: unknown, metadata = false) {
   const requests: Array<{ messages: Array<{ role: string; content: string }>; max_tokens: number; reasoning?: { enabled: boolean }; reasoning_effort?: string }> = [];
   const frames: string[] = [];
+  const traces: Array<Record<string, unknown>> = [];
   const meeting = { meetingRef: "meeting-a", source: "fireflies", title: "Design", startedAt: "2026-09-01T12:00:00Z", participants: ["Ava", "Ben"], organizerEmail: "ava@example.invalid" };
   const good = { claims: [{ text: metadata ? "Ava and Ben attended." : "The team approved the cobalt rollout.", meetingIds: ["M1"], evidenceIds: ["M1:E1"] }] };
   const fetchImpl = (async (input, init) => {
@@ -24,10 +25,10 @@ async function run(draft: unknown, metadata = false) {
     if (requests.length === 1) return response(metadata ? { kind: "meeting_metadata", scope: "selected" } : { kind: "meeting_content", scope: "selected", purpose: "summary", evidenceRequirement: "overview" }, true);
     return response(requests.length === 2 ? draft : good);
   }) as typeof fetch;
-  const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: () => {}, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
+  const config: AgentChatConfig = { agentId: "agent", entityIdFor: () => "entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "test", redpillApiKey: "test", redpillBaseUrl: "https://model.test", defaultModel: () => "test-model", isModelOffered: () => true, fetchImpl, meetingTrace: trace => { traces.push(trace); }, meetingContentRetrievalEnabled: true, streamPolicy: { heartbeatMs: 100, turnTimeoutMs: 30000, drainGraceMs: 100 } };
   await orchestrateToolCalling({ config, model: "test-model", messages: [{ role: "user", content: metadata ? "Who attended it?" : "Summarize it." }], entityId: "entity", roomId: "room", write: frame => { frames.push(frame); } });
   const answer = frames.flatMap(frame => { try { return JSON.parse(frame.slice(6)).choices?.[0]?.delta?.content ?? ""; } catch { return ""; } }).join("");
-  return { requests, answer };
+  return { requests, answer, traces };
 }
 
 test("repair identifies the observed empty evidence IDs without delivering the invalid metadata introduction", async () => {
@@ -75,4 +76,22 @@ test("only interpretation disables reasoning while synthesis and repair retain t
     expect(request.reasoning_effort).toBe("low");
   }
   expect(result.requests.map(request => request.max_tokens)).toEqual([1024, 2048, 2048]);
+});
+
+
+test("rejected draft traces retain only bounded validator codes, never generated prose or identifiers", async () => {
+  const result = await run({ claims: Array.from({ length: 24 }, (_, i) => ({
+    text: `Untrusted private-like marker ${i}`,
+    meetingIds: [`private-meeting-${i}`], evidenceIds: [`private-evidence-${i}`],
+  })) });
+  expect(result.traces).toHaveLength(1);
+  const trace = result.traces[0];
+  expect(trace.draftErrorCodes).toEqual(Array.from({ length: 6 }, (_, i) => [
+    `claim_${i}:unknown_evidence`, `claim_${i}:meeting_mismatch`,
+  ]).flat());
+  expect(trace.repairErrorCodes).toEqual([]);
+  const retained = JSON.stringify(trace);
+  for (const marker of ["Untrusted private-like", "private-meeting-", "private-evidence-", "meeting-a", "cobalt rollout"]) {
+    expect(retained).not.toContain(marker);
+  }
 });

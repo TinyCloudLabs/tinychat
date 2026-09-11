@@ -83,7 +83,7 @@ export class AgentStreamError extends Error {
     super(code === "turn_timeout"
       ? "This reply took too long to finish. You can try again."
       : code === "interpretation_failed"
-        ? "I could not interpret that request. Please rephrase it and try again."
+        ? "The model could not prepare a valid meeting request. Please try again."
         : code === "interpretation_timeout"
           ? "Understanding this request took too long. Please try again."
           : code === "upstream_failed"

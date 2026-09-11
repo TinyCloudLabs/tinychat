@@ -231,6 +231,13 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const diagnosticUrl = process.env.MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL;
+  const diagnosticKey = process.env.MEETING_DIAGNOSTIC_FOREGROUND_API_KEY;
+  if ((diagnosticUrl !== undefined || diagnosticKey !== undefined) && (!diagnosticUrl?.trim() || !diagnosticKey?.trim())) {
+    console.error("Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither");
+    process.exit(1);
+    return;
+  }
   const redpillApiKey = process.env.REDPILL_API_KEY;
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
@@ -787,8 +794,8 @@ async function main() {
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
                 elizaServiceUrl,
                 elizaServiceSecret: ELIZA_SERVICE_SECRET,
-                redpillApiKey,
-                redpillBaseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
+                redpillApiKey: diagnosticKey ?? redpillApiKey,
+                redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
                 flusher: ledgerFlusher,

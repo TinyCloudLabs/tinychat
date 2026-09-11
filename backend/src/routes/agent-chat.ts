@@ -495,6 +495,9 @@ export interface OrchestrateResult {
  */
 export async function orchestrateToolCalling(params: OrchestrateParams): Promise<OrchestrateResult> {
   if (!params.config.meetingContentRetrievalEnabled) return orchestrateExistingLoop(params);
+  // Model admission applies before interpretation: an unqualified interpreter
+  // must not block ordinary chat or gain access to private meeting tools.
+  if (params.config.meetingContentModelAllowed?.(params.model) === false) return orchestrateExistingLoop(params, true);
   const fetchImpl = params.config.fetchImpl ?? fetch;
   return runMeetingTurn({
     ...params,
@@ -514,7 +517,7 @@ export async function orchestrateToolCalling(params: OrchestrateParams): Promise
         return JSON.parse(text + decoder.decode());
       } finally { ignoreCleanup(() => reader.cancel()); try { reader.releaseLock(); } catch { /* Preserve the capability outcome. */ } }
     },
-    runGeneral: () => orchestrateExistingLoop(params, true),
+    runGeneral: maxRounds => orchestrateExistingLoop({ ...params, config: { ...params.config, maxRounds: Math.min(params.config.maxRounds ?? 3, maxRounds) } }, true),
     contentFrame, toolActivityFrame, delegationErrorFrame,
   });
 }
@@ -558,10 +561,13 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
+  const meetingUnavailable = generalOnly && config.meetingContentModelAllowed?.(model) === false;
   let convo: ChatMsg[] = [
     {
       role: "system",
-      content: generalOnly ? "You are a helpful assistant. Use web_search for public web questions when needed. Answer ordinary conversation directly." : buildMeetingAgentGuidance(params.turnContext),
+      content: generalOnly ? "You are a helpful assistant. Use web_search for public web questions when needed. Answer ordinary conversation directly."
+        + (meetingUnavailable ? " Private meeting retrieval is unavailable for this model. For private meeting questions, explain that limitation and ask the user to choose a supported model. Do not infer private meeting facts or use public web search to find private meeting information." : "")
+        : buildMeetingAgentGuidance(params.turnContext),
     },
     ...params.messages,
   ];

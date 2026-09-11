@@ -142,11 +142,11 @@ describe("agent stream lifecycle", () => {
     });
   }
 
-  it("preserves clarification text and reports interpretation failure even when DONE follows", async () => {
-    const clarification = "Please specify the meeting or dates and what you would like to know.";
+  it("reports invalid model output without asking the user to rephrase, even when DONE follows", async () => {
+    const failureText = "The model could not prepare a valid meeting request. Please try again.";
     const callbacks: unknown[] = [];
     globalThis.fetch = (async () => sseResponse([
-      df({ choices: [{ delta: { content: clarification } }] }),
+      df({ choices: [{ delta: { content: failureText } }] }),
       df({ stream_error: { code: "interpretation_failed" }, id: "must-not-publish",
         usage: { prompt_tokens: 1, completion_tokens: 2 },
         choices: [{ delta: { content: "Legacy interruption notice" } }] }),
@@ -155,10 +155,20 @@ describe("agent stream lifecycle", () => {
     const result = await collectStream({ ...streamOptions,
       onCompletionId: (value) => callbacks.push(value), onUsage: (value) => callbacks.push(value),
     });
-    expect(result.chunks).toEqual([clarification]);
+    expect(result.chunks).toEqual([failureText]);
     expect(result.error).toMatchObject({ name: "AgentStreamError", code: "interpretation_failed",
-      message: "I could not interpret that request. Please rephrase it and try again." });
+      message: "The model could not prepare a valid meeting request. Please try again." });
     expect(callbacks).toEqual([]);
+  });
+
+  it("delivers a genuine meeting clarification as normal content without an error", async () => {
+    const clarification = "Which meeting would you like me to summarize?";
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: clarification } }] }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+
+    expect(await collectStream()).toEqual({ chunks: [clarification], error: undefined });
   });
 
   it("uses a bounded error class for unknown terminal codes", async () => {

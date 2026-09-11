@@ -1239,7 +1239,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
           flusher: { enqueue: entry => entries.push(entry) } as AgentChatConfig["flusher"],
         })(req, res);
         const text = res.chunks.join("");
-        expect(models).toBe(1);
+        const rounds = failure === "invalid-plan" ? 2 : 1;
+        expect(models).toBe(rounds);
         expect(dispatches).toBe(failure === "tool-overflow" ? 1 : 0);
         expect(text.match(/"stream_error":/g)).toHaveLength(1);
         expect(text).toContain(`"stream_error":{"code":"${code}"}`);
@@ -1251,8 +1252,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         if (failure !== "tool-overflow") expect(traces).toEqual([expect.objectContaining({ terminal: code })]);
         expect(JSON.stringify({ logs, traces })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
         expect(entries).toHaveLength(completed ? 1 : 0);
-        expect(getUsage(ADDR, TIERS.free, null).used).toBe(completed ? 1 : 0);
-        if (completed) expect(entries[0]).toMatchObject({ prompt_tokens: 17, completion_tokens: 5, credits: 1 });
+        expect(getUsage(ADDR, TIERS.free, null).used).toBe(completed ? rounds : 0);
+        if (completed) expect(entries[0]).toMatchObject({ prompt_tokens: 17 * rounds, completion_tokens: 5 * rounds, credits: rounds });
       } finally { restore(); }
     });
   }

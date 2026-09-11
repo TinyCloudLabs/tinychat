@@ -243,7 +243,8 @@ test.each([
   cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", write: () => {} });
   expect(result.errorCode).toBe(terminal === "clarify" ? undefined : terminal);
-  expect(result.promptTokens).toBe(5); expect(requests).toBe(1); expect(traces[0]).toMatchObject({ terminal });
+  const rounds = terminal === "clarify" ? 1 : 2;
+  expect(result.promptTokens).toBe(5 * rounds); expect(requests).toBe(rounds); expect(traces[0]).toMatchObject({ terminal });
 });
 
 test("interpretation slice expiry cancels its reader while the parent remains active", async () => {
@@ -251,7 +252,7 @@ test("interpretation slice expiry cancels its reader while the parent remains ac
   const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(": waiting\n\n")); }, cancel() { cancelled++; } });
   const cfg = config((async () => { requests++; return new Response(body); }) as typeof fetch);
   cfg.meetingTrace = trace => { traces.push(trace); };
-  const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", signal: parent.signal, remainingMs: () => 0, write: () => {} });
+  const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", signal: parent.signal, remainingMs: () => 100, write: () => {} });
   expect(result).toEqual({ errorCode: "interpretation_timeout", promptTokens: 0, completionTokens: 0, completionId: "" });
   expect(parent.signal.aborted).toBe(false); expect(cancelled).toBe(1); expect(body.locked).toBe(false); expect(requests).toBe(1);
   expect(traces[0]).toMatchObject({ terminal: "interpretation_timeout" });
@@ -270,10 +271,10 @@ test.each(["unexpected", "parent abort", "incomplete result", "invalid JSON", "w
   if (mode === "parent abort") { await expect(run).rejects.toBe(reason); expect(traces[0]).toMatchObject({ terminal: "aborted" }); }
   else {
     const code = mode === "unexpected" ? "agent_failed" : mode === "incomplete result" ? "upstream_incomplete" : "interpretation_failed";
-    expect(await run).toMatchObject({ errorCode: code, completionId: "", promptTokens: mode === "unexpected" || mode === "preflight" ? 0 : 5 });
+    expect(await run).toMatchObject({ errorCode: code, completionId: "", promptTokens: mode === "unexpected" || mode === "preflight" ? 0 : mode === "invalid JSON" || mode === "wrong tool" ? 10 : 5 });
     expect(traces[0]).toMatchObject({ terminal: code });
   }
-  expect(calls).toBe(mode === "preflight" ? 0 : 1); expect(JSON.stringify(traces)).not.toContain(failureSentinel);
+  expect(calls).toBe(mode === "preflight" ? 0 : mode === "invalid JSON" || mode === "wrong tool" ? 2 : 1); expect(JSON.stringify(traces)).not.toContain(failureSentinel);
 });
 
 function sizedMeetingJson(size: number) {

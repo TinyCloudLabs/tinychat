@@ -23,40 +23,68 @@ export type MeetingPlan =
   | (ScopedPlan & { kind: "meeting_content"; purpose: MeetingPurpose; evidenceRequirement: "overview" | "body"; query?: string; speaker?: string; assignee?: string });
 
 const relativeDates = ["today", "yesterday", "last_week", "this_week", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const commonPlanFields = ["kind", "scope", "meetingRef", "title", "participant", "from", "to", "source", "sort", "selectFirst", "relativeDate", "timeZone"];
+const contentPlanFields = ["purpose", "evidenceRequirement", "query", "speaker", "assignee"];
 export const PREPARE_MEETING_TURN_TOOL = {
   type: "function",
   function: {
     name: "prepare_meeting_turn",
-    description: "Interpret the turn exactly once. Select its intent and scope; do not answer or choose retrieval budgets.",
+    description: "Return exactly one interpretation per response. Select intent and scope; do not answer or choose retrieval budgets. Correct a rejected plan only when the server requests it.",
     parameters: {
       type: "object",
       properties: {
         kind: { type: "string", enum: ["general", "meeting_metadata", "meeting_content", "clarify"] },
-        scope: { type: "string", enum: ["selected", "exact", "single", "range"] },
-        purpose: { type: "string", enum: ["summary", "actions", "decisions", "speaker", "topic"] },
-        evidenceRequirement: { type: "string", enum: ["overview", "body"] },
+        scope: { type: "string", enum: ["selected", "exact", "single", "range"], description: "Required for both meeting kinds. selected/exact omit all discovery filters, sort and selectFirst; selected also omits meetingRef." },
+        purpose: { type: "string", enum: ["summary", "actions", "decisions", "speaker", "topic"], description: "Required for meeting_content only. speaker requires speaker; topic requires query." },
+        evidenceRequirement: { type: "string", enum: ["overview", "body"], description: "Required for every meeting_content plan, including actions, decisions and selected follow-ups. body is required for transcript/detail/quotation requests." },
         ...FILTER_PROPERTIES,
+        title: { ...FILTER_PROPERTIES.title, minLength: 1, pattern: "\\S" },
+        participant: { ...FILTER_PROPERTIES.participant, minLength: 1, pattern: "\\S" },
         sort: { type: "string", enum: ["newest", "oldest"] },
         selectFirst: { type: "boolean" },
-        meetingRef: { type: "string", minLength: 1, maxLength: 128, description: "Opaque storage reference from structured tool context only. M1, M1:E1, and bracketed citations are display labels, never meeting references. For a follow-up about the previously selected meeting, use scope selected and omit meetingRef." },
-        query: { type: "string", minLength: 1, maxLength: 500 },
-        speaker: { type: "string", minLength: 1, maxLength: 160 },
-        assignee: { type: "string", minLength: 1, maxLength: 160 },
+        meetingRef: { type: "string", minLength: 1, maxLength: 128, pattern: "^(?![Mm]\\d+(?::.*)?$)[A-Za-z0-9][A-Za-z0-9_.:-]*$", description: "Required only for exact scope: an opaque storage reference from structured tool context. M1, M1:E1, and bracketed citations are display labels, never references. selected omits this field." },
+        query: { type: "string", minLength: 1, maxLength: 500, pattern: "\\S" },
+        speaker: { type: "string", minLength: 1, maxLength: 160, pattern: "\\S" },
+        assignee: { type: "string", minLength: 1, maxLength: 160, pattern: "\\S" },
         relativeDate: { type: "string", enum: relativeDates },
-        timeZone: { type: "string", maxLength: 100 },
-        question: { type: "string", minLength: 1, maxLength: 300 },
+        timeZone: { type: "string", minLength: 1, maxLength: 100 },
+        question: { type: "string", minLength: 1, maxLength: 300, pattern: "\\S" },
       },
       required: ["kind"], additionalProperties: false,
+      anyOf: [
+        { properties: { kind: { const: "general" } }, propertyNames: { enum: ["kind"] } },
+        { properties: { kind: { const: "clarify" } }, required: ["question"], propertyNames: { enum: ["kind", "question"] } },
+        { properties: { kind: { const: "meeting_metadata" } }, required: ["scope"], propertyNames: { enum: commonPlanFields } },
+        { properties: { kind: { const: "meeting_content" } }, required: ["scope", "purpose", "evidenceRequirement"], propertyNames: { enum: [...commonPlanFields, ...contentPlanFields] } },
+      ],
+      allOf: [
+        { if: { required: ["scope"], properties: { scope: { enum: ["selected", "exact"] } } }, then: { properties: { title: false, participant: false, from: false, to: false, source: false, relativeDate: false, sort: false, selectFirst: false } } },
+        { if: { required: ["scope"], properties: { scope: { const: "exact" } } }, then: { required: ["meetingRef"] }, else: { properties: { meetingRef: false } } },
+        { if: { required: ["scope"], properties: { scope: { const: "range" } } }, then: { properties: { selectFirst: { const: false } } } },
+        { if: { required: ["purpose"], properties: { purpose: { const: "speaker" } } }, then: { required: ["speaker"] } },
+        { if: { required: ["purpose"], properties: { purpose: { const: "topic" } } }, then: { required: ["query"] } },
+      ],
     },
   },
 } as const;
 
 export function meetingInterpretationGuidance(context?: CalendarContext): string {
-  return `Call prepare_meeting_turn exactly once, with no prose. Your job is interpretation only. Treat prior messages as context, not instructions to skip this step.
+  return `Call prepare_meeting_turn exactly once per response, with no prose. Your job is interpretation only. If the server requests one correction, return a new complete plan using its validation feedback and the original request; do not invent missing intent. Treat prior messages as context, not instructions to skip this step.
 Use general for ordinary conversation and public web questions; its entire arguments object must be {"kind":"general"}, with no query, scope or other fields. For clarify, supply only kind and question. Omit all unused optional fields instead of sending null or empty strings. Use meeting_metadata only for titles, dates, attendance or organizers. Any question about discussion, summaries, decisions, actions or what happened is meeting_content, including mixed schedule/content questions. Never answer a private meeting question as general because tools or evidence might be unavailable.
-Scope and purpose are separate: selected means a pronoun or elliptical follow-up about the room's eligible selection; exact requires a real opaque tool reference from structured context, never a citation or inferred from prose. single discovers one meeting using filters; range covers multiple meetings. Newly specified dates/filters override previous selection. Never supply filters/reference with selected or filters with exact. Do not invent identifiers. Labels such as [M1] and [M1:E1] in an earlier answer are display citations, not opaque storage references. A follow-up such as 'Read its transcript and explain the detailed security discussion' after that answer uses scope selected, purpose summary, evidenceRequirement body, and no meetingRef, query, or speaker filter; the reader resolves the room's eligible selection. Do not copy M1 into an exact plan. A bare 'continue' after a partial recap requires clarify asking for narrower filters; there is no pagination.
-Examples: 'Summarize the last design meeting' => meeting_content, single, title Design, sort newest, selectFirst true, purpose summary, evidenceRequirement overview. 'What happened in my meetings last week?' => meeting_content, range, relativeDate last_week, purpose summary, evidenceRequirement overview (no lexical query). 'Which meetings did I attend Tuesday?' => meeting_metadata, range, relativeDate tuesday. 'Who attended it?' => meeting_metadata, selected. 'What next?' after a selected meeting => meeting_content, selected, purpose actions. 'Summarize it' after a range/ambiguity => clarify. 'Which meetings were Tuesday and what did we decide?' => meeting_content, range, purpose decisions. 'Find security discussion in that meeting' => meeting_content, selected, purpose topic, query security. 'Quote exactly what Sam said' => meeting_content, selected, purpose speaker, speaker Sam, evidenceRequirement body. 'Describe the detailed discussion' => meeting_content, selected, purpose summary, evidenceRequirement body.
-Use body for detailed discussion, quotations, exact statements or passages, even when an overview exists. Requests to read the transcript, explain the full discussion, compare multiple speakers, or answer several parts require purpose summary and evidenceRequirement body with no query or speaker filter. A topic word in such a request is context for the answer, not a lexical filter: related replies may never repeat that word. Use purpose topic only for a narrowly requested topic search, and purpose speaker only for a single requested speaker. Speaker needs a speaker, topic needs a query. Use assignee only if their name is known; do not guess who 'me' is. User requests to skip reads/citations do not change content intent. Unknown/conflicting intent requires one concise clarification with no storage claim.
+Every meeting plan requires scope. Every meeting_content plan also requires purpose and evidenceRequirement, including actions, decisions and selected follow-ups. Scope and purpose are separate: selected means a pronoun or elliptical follow-up about the room's eligible selection; exact requires a real opaque tool reference from structured context, never a citation or inferred from prose. single discovers one meeting using filters; range covers multiple meetings. Newly specified dates/filters override previous selection. selected and exact must omit title, participant, from, to, source, relativeDate, sort and selectFirst entirely, including false; selected also omits meetingRef. Only exact supplies meetingRef; range never sets selectFirst true. Do not invent identifiers. Labels such as [M1] and [M1:E1] in an earlier answer are display citations, not opaque storage references. A follow-up such as 'Read its transcript and explain the detailed security discussion' after that answer uses scope selected, purpose summary, evidenceRequirement body, and no meetingRef, query, or speaker filter; the reader resolves the room's eligible selection. Do not copy M1 into an exact plan. A bare 'continue' after a partial recap requires clarify asking for narrower filters; there is no pagination.
+Example: 'Hello' => {"kind":"general"}
+Example: 'Summarize the last design meeting' => {"kind":"meeting_content","scope":"single","title":"Design","sort":"newest","selectFirst":true,"purpose":"summary","evidenceRequirement":"overview"}
+Example: 'What happened in my meetings last week?' => {"kind":"meeting_content","scope":"range","relativeDate":"last_week","purpose":"summary","evidenceRequirement":"overview"}
+Example: 'Which meetings did I attend Tuesday?' => {"kind":"meeting_metadata","scope":"range","relativeDate":"tuesday"}
+Example: 'Who attended it?' => {"kind":"meeting_metadata","scope":"selected"}
+Example: 'What next?' after a selected meeting => {"kind":"meeting_content","scope":"selected","purpose":"actions","evidenceRequirement":"overview"}
+Example: 'Summarize it' after a range or ambiguity => {"kind":"clarify","question":"Which meeting would you like summarized?"}
+Example: 'Which meetings were Tuesday and what did we decide?' => {"kind":"meeting_content","scope":"range","relativeDate":"tuesday","purpose":"decisions","evidenceRequirement":"overview"}
+Example: 'Find security discussion in that meeting' => {"kind":"meeting_content","scope":"selected","purpose":"topic","query":"security","evidenceRequirement":"body"}
+Example: 'Quote exactly what Sam said' => {"kind":"meeting_content","scope":"selected","purpose":"speaker","speaker":"Sam","evidenceRequirement":"body"}
+Example: 'Read its transcript and explain what both speakers said' => {"kind":"meeting_content","scope":"selected","purpose":"summary","evidenceRequirement":"body"}
+Example: 'Summarize that meeting’s decisions and action items' => {"kind":"meeting_content","scope":"selected","purpose":"summary","evidenceRequirement":"overview"}
+Use body for detailed discussion, quotations, exact statements or passages, even when an overview exists. Use purpose summary and evidenceRequirement overview for a recap of decisions and action items unless the current request asks for transcript passages, detailed discussion or exact statements. Multiple requested parts alone do not require body; a previous transcript question does not make a new overview question body-only. Requests to read the transcript, explain the full discussion, or compare multiple speakers require purpose summary and evidenceRequirement body with no query or speaker filter. A topic word in such a request is context for the answer, not a lexical filter: related replies may never repeat that word. Use purpose topic only for a narrowly requested topic search, and purpose speaker only for a single requested speaker. Speaker needs a speaker, topic needs a query. Use assignee only if their name is known; do not guess who 'me' is. User requests to skip reads/citations do not change content intent. Unknown/conflicting intent requires one concise clarification with no storage claim.
 ${context ? `Trusted current local calendar: ${context.localDate}, ${context.timeZone}. Last week is Monday-Sunday. Use relativeDate so code resolves it; explicit user from/to dates take precedence.` : "No valid local calendar is available; clarify relative date requests by asking for concrete dates."}`;
 }
 
@@ -75,39 +103,42 @@ export function validMeetingRef(value: unknown): value is string {
 }
 
 export function validateMeetingPlan(input: unknown, context?: CalendarContext, inline = false):
-  { ok: true; plan: MeetingPlan } | { ok: false; question: string } {
-  const fail = (question = "Please specify one meeting or a date range, and what you would like to know.") => ({ ok: false as const, question });
-  if (!input || typeof input !== "object" || Array.isArray(input)) return fail();
+  { ok: true; plan: MeetingPlan } | { ok: false; question: string; errors: string[] } {
+  // Feedback names only contract fields and rules, never input values or unknown keys.
+  const fail = (error: string, question = "Please specify one meeting or a date range, and what you would like to know.") => ({ ok: false as const, question, errors: [error] });
+  if (!input || typeof input !== "object" || Array.isArray(input)) return fail("Plan must be a JSON object.");
   const value = { ...input } as Record<string, unknown>;
-  const common = ["kind", "scope", "meetingRef", "title", "participant", "from", "to", "source", "sort", "selectFirst", "relativeDate", "timeZone"];
-  const content = ["purpose", "evidenceRequirement", "query", "speaker", "assignee"];
-  const allowed = value.kind === "general" ? ["kind"] : value.kind === "clarify" ? ["kind", "question"] : value.kind === "meeting_metadata" ? common : value.kind === "meeting_content" ? [...common, ...content] : [];
-  if (!allowed.length || Object.keys(value).some(key => !allowed.includes(key))) return fail();
+  const allowed = value.kind === "general" ? ["kind"] : value.kind === "clarify" ? ["kind", "question"] : value.kind === "meeting_metadata" ? commonPlanFields : value.kind === "meeting_content" ? [...commonPlanFields, ...contentPlanFields] : [];
+  if (!allowed.length) return fail("kind is required and must be general, clarify, meeting_metadata or meeting_content.");
+  if (Object.keys(value).some(key => !allowed.includes(key))) return fail("Plan contains unsupported fields for its kind. general permits only kind; clarify only kind and question; meeting_metadata omits content fields; meeting_content omits question.");
+  const required = value.kind === "clarify" ? ["question"] : value.kind === "meeting_metadata" ? ["scope"] : value.kind === "meeting_content" ? ["scope", "purpose", "evidenceRequirement"] : [];
+  const missing = required.filter(key => value[key] === undefined);
+  if (missing.length) return fail(`Missing required fields: ${missing.join(", ")}. Return a complete plan based on the original request.`);
   if (value.kind === "general") return { ok: true, plan: { kind: "general" } };
   if (value.kind === "clarify") {
-    if (typeof value.question !== "string" || !value.question.trim() || value.question.length > 300) return fail();
+    if (typeof value.question !== "string" || !value.question.trim() || value.question.length > 300) return fail("question must be a nonblank string of at most 300 characters.");
     return { ok: true, plan: { kind: "clarify", question: value.question.trim() } };
   }
-  if (!["selected", "exact", "single", "range"].includes(String(value.scope))) return fail();
+  if (typeof value.scope !== "string" || !["selected", "exact", "single", "range"].includes(value.scope)) return fail("scope must be selected, exact, single or range.");
   if (inline && typeof value.selectFirst === "string") {
-    if (!["true", "false"].includes(value.selectFirst)) return fail();
+    if (!["true", "false"].includes(value.selectFirst)) return fail("Inline selectFirst must be true or false.");
     value.selectFirst = value.selectFirst === "true";
   }
-  if (value.selectFirst !== undefined && typeof value.selectFirst !== "boolean") return fail();
-  if (value.sort !== undefined && value.sort !== "newest" && value.sort !== "oldest") return fail();
-  if (value.source !== undefined && !["fireflies", "google-meet", "tinycloud-transcriber"].includes(String(value.source))) return fail();
+  if (value.selectFirst !== undefined && typeof value.selectFirst !== "boolean") return fail("selectFirst must be a boolean when supplied; selected and exact omit it entirely.");
+  if (value.sort !== undefined && value.sort !== "newest" && value.sort !== "oldest") return fail("sort must be newest or oldest when supplied; selected and exact omit it entirely.");
+  if (value.source !== undefined && (typeof value.source !== "string" || !["fireflies", "google-meet", "tinycloud-transcriber"].includes(value.source))) return fail("source must be fireflies, google-meet or tinycloud-transcriber.");
   for (const key of ["title", "participant", "query", "speaker", "assignee"]) {
     const item = value[key];
-    if (item !== undefined && (typeof item !== "string" || !item.trim() || item.length > (key === "query" ? 500 : 160))) return fail();
+    if (item !== undefined && (typeof item !== "string" || !item.trim() || item.length > (key === "query" ? 500 : 160))) return fail(`${key} must be a nonblank string of at most ${key === "query" ? 500 : 160} characters, or omitted.`);
   }
-  for (const key of ["from", "to"]) if (value[key] !== undefined && !validCalendarDate(value[key])) return fail("Please provide valid calendar dates in YYYY-MM-DD format.");
-  if (value.timeZone !== undefined && !validTimeZone(value.timeZone)) return fail("Please provide a valid time zone.");
-  if (value.relativeDate !== undefined && !relativeDates.includes(String(value.relativeDate))) return fail();
+  for (const key of ["from", "to"]) if (value[key] !== undefined && !validCalendarDate(value[key])) return fail(`${key} must be a valid calendar date in YYYY-MM-DD format.`, "Please provide valid calendar dates in YYYY-MM-DD format.");
+  if (value.timeZone !== undefined && !validTimeZone(value.timeZone)) return fail("timeZone must be a valid time zone of at most 100 characters.", "Please provide a valid time zone.");
+  if (value.relativeDate !== undefined && (typeof value.relativeDate !== "string" || !relativeDates.includes(value.relativeDate))) return fail("relativeDate must be one of the documented calendar intervals or weekdays.");
   const zone = value.timeZone as string | undefined ?? (validTimeZone(context?.timeZone) ? context!.timeZone : undefined);
   const filters: MeetingFilters = {};
   for (const key of ["title", "participant", "from", "to", "source"] as const) if (value[key] !== undefined) filters[key] = String(value[key]).trim();
   if (value.relativeDate && !filters.from && !filters.to) {
-    if (!validCalendarDate(context?.localDate) || !validTimeZone(context?.timeZone)) return fail("Please provide concrete start and end dates for that interval.");
+    if (!validCalendarDate(context?.localDate) || !validTimeZone(context?.timeZone)) return fail("relativeDate requires valid trusted local calendar context; otherwise clarify concrete dates.", "Please provide concrete start and end dates for that interval.");
     const day = new Date(`${context!.localDate}T12:00:00Z`);
     const shift = (n: number) => new Date(day.getTime() + n * 86400000).toISOString().slice(0, 10);
     const weekday = (day.getUTCDay() + 6) % 7;
@@ -118,16 +149,19 @@ export function validateMeetingPlan(input: unknown, context?: CalendarContext, i
       filters.from = filters.to = shift(offset);
     }
   }
-  if (filters.from && filters.to && filters.from > filters.to) return fail("The start date must be on or before the end date.");
-  if ((filters.from || filters.to) && !zone) return fail("Please specify the time zone for those calendar dates.");
-  if (value.scope === "selected" && (value.meetingRef !== undefined || Object.keys(filters).length || value.sort !== undefined || value.selectFirst !== undefined)) return fail();
-  if (value.scope === "exact" && (!validMeetingRef(value.meetingRef) || Object.keys(filters).length || value.sort !== undefined || value.selectFirst !== undefined)) return fail();
-  if ((value.scope === "single" || value.scope === "range") && value.meetingRef !== undefined) return fail();
-  if (value.scope === "range" && value.selectFirst) return fail();
+  if (filters.from && filters.to && filters.from > filters.to) return fail("from must be on or before to.", "The start date must be on or before the end date.");
+  if ((filters.from || filters.to) && !zone) return fail("Calendar date filters require timeZone or valid trusted local calendar context.", "Please specify the time zone for those calendar dates.");
+  if (value.scope === "selected" && (value.meetingRef !== undefined || Object.keys(filters).length || value.sort !== undefined || value.selectFirst !== undefined)) return fail("selected must omit meetingRef, title, participant, from, to, source, relativeDate, sort and selectFirst. Use single or range if the user supplies new filters.");
+  if (value.scope === "exact" && !validMeetingRef(value.meetingRef)) return fail("exact requires a valid opaque meetingRef from structured tool context, never M1 or a citation. A selected-meeting follow-up uses selected without meetingRef.");
+  if (value.scope === "exact" && (Object.keys(filters).length || value.sort !== undefined || value.selectFirst !== undefined)) return fail("exact must omit title, participant, from, to, source, relativeDate, sort and selectFirst.");
+  if ((value.scope === "single" || value.scope === "range") && value.meetingRef !== undefined) return fail("single and range must omit meetingRef; only exact uses a structured opaque reference.");
+  if (value.scope === "range" && value.selectFirst) return fail("range must omit selectFirst or set it to false; selection is only for single.");
   const base: ScopedPlan = { scope: value.scope as ScopedPlan["scope"], filters, timeZone: zone, sort: value.sort === "oldest" ? "oldest" : "newest", selectFirst: value.selectFirst === true, ...(value.scope === "exact" ? { meetingRef: value.meetingRef as string } : {}) };
   if (value.kind === "meeting_metadata") return { ok: true, plan: { kind: "meeting_metadata", ...base } };
-  if (!["summary", "actions", "decisions", "speaker", "topic"].includes(String(value.purpose)) || !["overview", "body"].includes(String(value.evidenceRequirement))) return fail();
-  if ((value.purpose === "speaker" && !value.speaker) || (value.purpose === "topic" && !value.query)) return fail();
+  if (typeof value.purpose !== "string" || !["summary", "actions", "decisions", "speaker", "topic"].includes(value.purpose)) return fail("purpose must be summary, actions, decisions, speaker or topic.");
+  if (typeof value.evidenceRequirement !== "string" || !["overview", "body"].includes(value.evidenceRequirement)) return fail("evidenceRequirement must be overview or body for every meeting_content plan.");
+  if (value.purpose === "speaker" && !value.speaker) return fail("purpose speaker requires speaker; requests covering multiple speakers use summary and body without a speaker filter.");
+  if (value.purpose === "topic" && !value.query) return fail("purpose topic requires query; detailed transcript requests use summary and body without a query filter.");
   return { ok: true, plan: { kind: "meeting_content", ...base, purpose: value.purpose as MeetingPurpose, evidenceRequirement: value.evidenceRequirement as "overview" | "body", ...(value.query ? { query: value.query as string } : {}), ...(value.speaker ? { speaker: value.speaker as string } : {}), ...(value.assignee ? { assignee: value.assignee as string } : {}) } };
 }
 
@@ -151,7 +185,7 @@ interface MeetingTurnParams extends OrchestrateParams {
   modelCall(request: MeetingModelRequest): Promise<BufferedMeetingModelResult>;
   dispatch(name: string, args: Record<string, unknown>, context: MeetingToolContext, signal: AbortSignal, id: string): Promise<ToolDispatchOutcome>;
   capability(signal: AbortSignal): Promise<unknown>;
-  runGeneral(): Promise<OrchestrateResult>;
+  runGeneral(maxRounds: number): Promise<OrchestrateResult>;
   contentFrame(text: string): string;
   toolActivityFrame(name: string, status: "running" | "done" | "error", id?: string): string;
   delegationErrorFrame(code: string): string;
@@ -181,7 +215,7 @@ function failureOutcome(meeting: MeetingOutcome, purpose: MeetingOutcome["covera
   return { ...meeting, state: "not_read", body: { state: "not_requested", reasonCode: reason }, search: { state: "not_requested", storedFieldsExamined: false, bodyExamined: false, examinedMatches: 0, retainedMatches: 0 }, evidence: [], coverage: { purpose, overviewPresent: false, actionsPresent: false, bodyAttempted: false, bodyRequired: purpose !== "metadata", evidenceRetained: 0, omittedEvidenceCount: 0, omissionReasons: [reason], support: "none" } };
 }
 
-/** One interpretation and a deterministic retrieval phase under the existing stream owner. */
+/** Bounded interpretation and deterministic retrieval under the existing stream owner. */
 export async function runMeetingTurn(params: MeetingTurnParams): Promise<OrchestrateResult> {
   const started = Date.now();
   const localDeadline = started + params.config.streamPolicy.turnTimeoutMs;
@@ -195,30 +229,54 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
     const calendar = validCalendarDate(params.turnContext?.localDate) && validTimeZone(params.turnContext?.timeZone) ? params.turnContext : undefined;
     const interpretationMessages = trimConvoToBudget(truncateToolResults([{ role: "system", content: meetingInterpretationGuidance(calendar) }, ...params.messages]), params.contextWindowTokens) as ChatMsg[];
     if (JSON.stringify({ messages: interpretationMessages, tools: [PREPARE_MEETING_TURN_TOOL] }).length > params.contextWindowTokens * 4 * 0.7) return await deliver("Please shorten the conversation or specify a narrower meeting request.", "interpretation_failed");
-    let interpreted: BufferedMeetingModelResult;
+    const interpretationDeadline = Date.now() + remaining() * 0.2;
     const interpretationTimeout = new Error("interpretation_timeout");
-    try { interpreted = await inSlice(remaining() * 0.2, params.signal, interpretationTimeout, signal => params.modelCall({ messages: interpretationMessages, tool: PREPARE_MEETING_TURN_TOOL, phase: "model", maxOutputTokens: 1024, signal })); }
-    catch (error) {
-      abortCheck(params.signal);
-      const code = error === interpretationTimeout ? "interpretation_timeout" : params.streamErrorCode(error) ?? "agent_failed";
-      const text = code === "interpretation_timeout" ? "Understanding this request took too long. Please try again."
-        : code === "upstream_failed" ? "The model service could not complete this request. Please try again later."
-        : code === "upstream_incomplete" ? "The model service returned an incomplete reply. Please try again."
-        : code === "result_size_limit" ? "The response was too large to process safely. Try a smaller request or fewer meetings."
-        : "This request could not be completed. Please try again.";
-      return await deliver(text, code);
+    const invalidPlanMessage = "The model could not prepare a valid meeting request. Please try again.";
+    let plan: MeetingPlan | undefined;
+    let interpretationCalls = 0;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let interpreted: BufferedMeetingModelResult;
+      try {
+        abortCheck(params.signal);
+        const budget = Math.min(remaining(), interpretationDeadline - Date.now());
+        if (budget <= 0) throw interpretationTimeout;
+        trace.interpretationCalls = ++interpretationCalls;
+        interpreted = await inSlice(budget, params.signal, interpretationTimeout,
+          signal => params.modelCall({ messages: interpretationMessages, tool: PREPARE_MEETING_TURN_TOOL, phase: "model", maxOutputTokens: 1024, signal }));
+      } catch (error) {
+        abortCheck(params.signal);
+        const code = error === interpretationTimeout ? "interpretation_timeout" : params.streamErrorCode(error) ?? "agent_failed";
+        const text = code === "interpretation_timeout" ? "Understanding this request took too long. Please try again."
+          : code === "upstream_failed" ? "The model service could not complete this request. Please try again later."
+          : code === "upstream_incomplete" ? "The model service returned an incomplete reply. Please try again."
+          : code === "result_size_limit" ? "The response was too large to process safely. Try a smaller request or fewer meetings."
+          : "This request could not be completed. Please try again.";
+        return await deliver(text, code);
+      }
+      account(interpreted);
+      if (!interpreted.complete) return await deliver("The model service returned an incomplete reply. Please try again.", "upstream_incomplete");
+      let errors: string[];
+      if (interpreted.calls.length !== 1 || interpreted.calls[0].name !== "prepare_meeting_turn") {
+        errors = ["Return exactly one prepare_meeting_turn call."];
+      } else {
+        let raw: unknown;
+        try { raw = JSON.parse(interpreted.calls[0].args); }
+        catch { /* The validator reports an invalid object without retaining raw output. */ }
+        const parsed = validateMeetingPlan(raw, params.turnContext, interpreted.inline);
+        if (parsed.ok) { plan = parsed.plan; break; }
+        errors = raw === undefined ? ["Tool arguments must be a JSON object."] : parsed.errors;
+      }
+      // Only validator-authored feedback is retained, never model arguments or user data.
+      trace[attempt ? "correctionErrors" : "interpretationErrors"] = errors;
+      if (attempt === 1) break;
+      interpretationMessages.push({ role: "system", content: `The previous model plan was invalid: ${errors.join(" ")}. Correct it with exactly one prepare_meeting_turn call using the original conversation. Preserve the user's intent and scope; do not invent missing intent or identifiers. If the user request itself is ambiguous, return a valid clarify plan. Omit unused fields. No prose.` });
+      if (JSON.stringify({ messages: interpretationMessages, tools: [PREPARE_MEETING_TURN_TOOL] }).length > params.contextWindowTokens * 4 * 0.7) break;
     }
-    account(interpreted);
-    if (!interpreted.complete) return await deliver("The model service returned an incomplete reply. Please try again.", "upstream_incomplete");
-    if (interpreted.calls.length !== 1 || interpreted.calls[0].name !== "prepare_meeting_turn") return await deliver("Please specify the meeting or dates and what you would like to know.", "interpretation_failed");
-    let raw: unknown; try { raw = JSON.parse(interpreted.calls[0].args); } catch { return await deliver("Please specify the meeting or dates and what you would like to know.", "interpretation_failed"); }
-    const parsed = validateMeetingPlan(raw, params.turnContext, interpreted.inline);
-    if (!parsed.ok) return await deliver(parsed.question, "interpretation_failed");
-    const plan = parsed.plan;
+    if (!plan) return await deliver(invalidPlanMessage, "interpretation_failed");
     trace.intent = plan.kind;
     if (plan.kind === "clarify") { trace.terminal = "clarify"; return await deliver(plan.question); }
     if (plan.kind === "general") {
-      const general = await params.runGeneral(); account(general); trace.terminal = general.errorCode ?? "general";
+      const general = await params.runGeneral(4 - interpretationCalls); account(general); trace.terminal = general.errorCode ?? "general";
       return { ...general, promptTokens: total.promptTokens, completionTokens: total.completionTokens };
     }
     trace.scope = plan.scope;
@@ -341,12 +399,16 @@ export async function runMeetingTurn(params: MeetingTurnParams): Promise<Orchest
     trace.planned = outcomes.length; trace.retained = packed.meetings.length; trace.packageChars = packed.serialized.length; trace.estimatedTokens = packed.estimatedTokens;
     if (packed.limit || !hasUsableMeetingEvidence(packed, request)) { trace.terminal = packed.limit?.code ?? "no_usable_evidence"; return await deliver(renderMeetingEvidenceFallback(packed, request)); }
     const messages: ChatMsg[] = [{ role: "system", content: ANSWER_INSTRUCTIONS }, { role: "user", content: JSON.stringify({ question, request, evidence: JSON.parse(packed.serialized) }) }];
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // A plan correction spends the same third model call as answer repair.
+    for (let attempt = 0; attempt < 3 - interpretationCalls; attempt++) {
       abortCheck(params.signal); if (remaining() <= 0) break;
       const reply = await params.modelCall({ messages, phase: attempt ? "repair" : "synthesis", maxOutputTokens: 2048, signal: params.signal }); account(reply);
       let draft: unknown; try { draft = JSON.parse(reply.content); } catch { draft = null; }
       const validation = validateMeetingDraft(reply.complete && reply.calls.length === 0 ? draft : null, packed, request);
       trace[attempt ? "repairValid" : "draftValid"] = validation.valid;
+      // Persist validator codes only; never retain rejected prose or source identifiers.
+      trace[attempt ? "repairErrorCodes" : "draftErrorCodes"] = validation.valid ? [] : validation.errors
+        .filter(code => /^(?:draft_size_limit|invalid_json|invalid_draft_shape|claim_(?:[0-9]|1[0-9]|2[0-3]):(?:invalid_shape|server_owned_coverage|unknown_evidence|wrong_evidence_kind|meeting_mismatch))$/.test(code)).slice(0, 12);
       if (validation.valid) { total.completionId = reply.completionId; trace.terminal = "validated_answer"; return await deliver(renderMeetingAnswer(validation.draft, packed, request)); }
       if (attempt === 0) {
         // Error codes are generated by the validator, never copied from draft text.
