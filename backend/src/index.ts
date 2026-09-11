@@ -20,6 +20,7 @@ import { createAuthMiddleware } from "./middleware/auth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createDelegationRouter } from "./routes/delegations.js";
 import { createAgentRouter } from "./routes/agent.js";
+import { meetingRolloutFromEnv } from "./transcripts/meeting-rollout.js";
 import { createManifestRouter } from "./routes/manifest.js";
 import { createChatRouter, defaultModel } from "./routes/chat.js";
 import { LedgerFlusher } from "./billing/ledger-flusher.js";
@@ -230,6 +231,13 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const diagnosticUrl = process.env.MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL;
+  const diagnosticKey = process.env.MEETING_DIAGNOSTIC_FOREGROUND_API_KEY;
+  if ((diagnosticUrl !== undefined || diagnosticKey !== undefined) && (!diagnosticUrl?.trim() || !diagnosticKey?.trim())) {
+    console.error("Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither");
+    process.exit(1);
+    return;
+  }
   const redpillApiKey = process.env.REDPILL_API_KEY;
   let agentStreamPolicy: AgentStreamPolicy | undefined;
   try {
@@ -763,6 +771,7 @@ async function main() {
 
   if (AGENT_DID && ELIZA_SERVICE_URL && ELIZA_SERVICE_SECRET) {
     const elizaServiceUrl = ELIZA_SERVICE_URL.replace(/\/$/, "");
+    const meetingRollout = meetingRolloutFromEnv(process.env);
     app.use(
       "/api/agent",
       createAgentRouter({
@@ -777,12 +786,16 @@ async function main() {
           ? {
               chat: {
                 streamPolicy: agentStreamPolicy!,
+                meetingContentRetrievalEnabled: meetingRollout.enabled,
+                meetingContentAccountAllowed: meetingRollout.accountAllowed,
+                meetingContentModelAllowed: meetingRollout.modelAllowed,
+                backendRevision: process.env.BUILD_REVISION ?? process.env.GIT_SHA ?? "unknown",
                 agentId: TINYCHAT_AGENT_ID,
                 entityIdFor: (address: string) => addressToEntityId(address, TINYCHAT_AGENT_ID),
                 elizaServiceUrl,
                 elizaServiceSecret: ELIZA_SERVICE_SECRET,
-                redpillApiKey,
-                redpillBaseUrl: process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
+                redpillApiKey: diagnosticKey ?? redpillApiKey,
+                redpillBaseUrl: diagnosticUrl ?? process.env.REDPILL_BASE_URL ?? "https://api.redpill.ai/v1",
                 defaultModel,
                 isModelOffered: (m: string) => isOfferedModel(m),
                 flusher: ledgerFlusher,

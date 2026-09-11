@@ -3,7 +3,7 @@ const SOURCE_SCHEMA = {
   enum: ["fireflies", "google-meet", "tinycloud-transcriber"],
 } as const;
 
-const FILTER_PROPERTIES = {
+export const FILTER_PROPERTIES = {
   title: { type: "string", maxLength: 160, description: "Optional meeting-title substring." },
   participant: { type: "string", maxLength: 160, description: "Optional participant name, email, or email-domain substring." },
   from: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Inclusive YYYY-MM-DD lower bound in the user's local calendar." },
@@ -26,6 +26,8 @@ export const TINYCLOUD_FIND_MEETINGS_TOOL = {
         ...FILTER_PROPERTIES,
         sort: { type: "string", enum: ["newest", "oldest"], description: "Result order. Defaults to newest." },
         selectFirst: { type: "boolean", description: "Remember the first result as this room's selected meeting for follow-up prompts." },
+        limit: { type: "integer", minimum: 1, maximum: 12, description: "Maximum metadata records to return; defaults to five." },
+        meetingRef: { type: "string", maxLength: 128, description: "Exact opaque meeting reference for metadata lookup." },
       },
       additionalProperties: false,
     },
@@ -52,6 +54,8 @@ export const TINYCLOUD_READ_MEETING_TOOL = {
         focus: { type: "string", enum: ["summary", "actions", "decisions", "speaker", "transcript"] },
         query: { type: "string", minLength: 1, maxLength: 500, description: "Optional topic or phrase used to select bounded transcript evidence." },
         speaker: { type: "string", minLength: 1, maxLength: 160, description: "Required for focus=speaker; filters evidence to that attributed speaker." },
+        assignee: { type: "string", maxLength: 160, description: "Optional explicit assignee filter for stored action items." },
+        includeBody: { type: "boolean", description: "Read body evidence even when a stored overview or actions exist." },
       },
       required: ["focus"],
       additionalProperties: false,
@@ -74,6 +78,7 @@ export const TINYCLOUD_SEARCH_TRANSCRIPTS_TOOL = {
         ...FILTER_PROPERTIES,
         speaker: { type: "string", maxLength: 160, description: "Optional attributed-speaker filter." },
         meetingRef: { type: "string", maxLength: 128, description: "Optional opaque reference that restricts search to one meeting." },
+        sort: { type: "string", enum: ["newest", "oldest"] },
       },
       required: ["query"],
       additionalProperties: false,
@@ -95,6 +100,8 @@ export const TINYCLOUD_LIST_MEETING_ACTIONS_TOOL = {
       properties: {
         ...FILTER_PROPERTIES,
         assignee: { type: "string", maxLength: 160, description: "Optional explicit assignee name to match in structured action items; do not pass 'me' unless the user's name is known." },
+        includeBody: { type: "boolean", description: "Read body evidence for every included meeting even when stored actions exist." },
+        sort: { type: "string", enum: ["newest", "oldest"] },
       },
       additionalProperties: false,
     },

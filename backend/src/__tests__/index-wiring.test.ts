@@ -99,6 +99,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     console: { error: (...args: unknown[]) => logs.push(args.join(" ")), log: noop, warn: noop },
     require: (id: string) => {
       if (id === "./agent-stream-policy.js") return load("./agent-stream-policy.ts");
+      if (id === "./transcripts/meeting-rollout.js") return load("./transcripts/meeting-rollout.ts");
       if (id in known) return known[id];
       // These import collaborators only register handlers or hold inert local state.
       return new Proxy({}, { get: (_target, name) => {
@@ -137,6 +138,15 @@ describe("agent stream startup policy wiring", () => {
     });
     expect(result.calls).toContain("agent-router");
     expect(result.calls).not.toContain("listen");
+  });
+
+  test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
+    const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV });
+    expect(initial.agentConfig.chat.meetingContentRetrievalEnabled).toBe(false);
+    const enabled = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, MEETING_CONTENT_RETRIEVAL_ENABLED: "true", MEETING_CONTENT_TEST_ACCOUNTS: "0xabc", MEETING_CONTENT_MODELS: "phala/evaluated" });
+    expect(enabled.logs).toEqual([]); expect(enabled.agentConfig.chat.meetingContentRetrievalEnabled).toBe(true);
+    expect(enabled.agentConfig.chat.meetingContentAccountAllowed("0xabc")).toBe(true); expect(enabled.agentConfig.chat.meetingContentAccountAllowed("0xother")).toBe(false);
+    expect(enabled.agentConfig.chat.meetingContentModelAllowed("phala/evaluated")).toBe(true); expect(enabled.agentConfig.chat.meetingContentModelAllowed("phala/untested")).toBe(false);
   });
 
   test("rejects every malformed stream setting before any startup effects without logging values", async () => {
@@ -406,4 +416,28 @@ describe("backend index middleware wiring", () => {
       'app.use("/api/nras-proxy", authMiddleware, express.json({ limit: "4mb" }), createNrasProxyRouter())',
     );
   });
+});
+
+test("diagnostic foreground override isolates agent sends while unset startup preserves provider defaults", async () => {
+  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background" });
+  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://background.invalid/background");
+  expect(initial.agentConfig.chat.redpillApiKey).toBe("synthetic-provider-key");
+  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background",
+    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
+  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://gateway.invalid/foreground");
+  expect(diagnostic.agentConfig.chat.redpillApiKey).toBe("synthetic-foreground-key");
+  expect(diagnostic.logs).toEqual([]);
+});
+
+test("partial or empty diagnostic endpoint credentials fail before startup effects and never log values", async () => {
+  for (const partial of [
+    { MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground" },
+    { MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-sensitive-marker" },
+    { MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-sensitive-marker" },
+    { MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "" },
+  ]) {
+    const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...partial });
+    expect(result.calls).toEqual(["exit"]);
+    expect(result.logs).toEqual(["Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither"]);
+  }
 });

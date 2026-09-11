@@ -6,6 +6,8 @@ FROM oven/bun:1.4.0 AS app
 WORKDIR /app
 
 ENV HUSKY=0
+ARG BUILD_REVISION=unknown
+ENV BUILD_REVISION=${BUILD_REVISION}
 
 # tinychat's root `postinstall` shells out to `node`
 # (packages/client/scripts/fix-web-wasm-init.mjs and

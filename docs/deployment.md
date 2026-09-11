@@ -153,6 +153,9 @@ Repository **variables** (all optional — defaults shown):
 | `CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR` | `20` (per address, rolling hour) |
 | `AGENT_DID` | _(required — no default; the workflow's config check fails fast if unset)_ — the backend agent's DID (agent triad; the deploy's `/api/agent/session` probe asserts the mount) |
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
+| `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
+| `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
+| `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
 | `PAYWALL_ENABLED` | `false`. This and every Stripe/credit/ledger row below may live as a repo **secret** or **variable** — secrets win (`docs/stripe-setup.md`). |
 | `STRIPE_PRICE_PLUS_MONTHLY` / `STRIPE_PRICE_PLUS_YEARLY` / `STRIPE_PRICE_PRO_MONTHLY` / `STRIPE_PRICE_PRO_YEARLY` | _(empty — Stripe price ids `price_…`; see `docs/stripe-setup.md`)_ |
 | `CREDIT_BUDGET_FREE` / `CREDIT_BUDGET_PLUS_WEEKLY` / `CREDIT_BUDGET_PRO_WEEKLY` | _(empty — code defaults in `backend/src/billing/tiers.ts`)_ |
@@ -165,12 +168,35 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_API_KEY` | _(empty — repo **secret**; the `tc_live_…` project key minted with the transcription service's `create-key` CLI. Never reaches the browser)_ |
 | `TRANSCRIPTION_BOT_NAME` | `TinyCloud Private Notetaker` (repo variable; the bot's display name in the meeting) |
 
+Meeting content retrieval stays off for a missing, empty or nonliteral enable flag.
+A literal `true` with no accounts admits nobody. An admitted account with no
+models keeps controller routing but gets content-unavailable responses. Emptying
+the model list later withdraws content; disabling the flag restores legacy routing.
+All three settings are optional deployment inputs. The committed defaults are
+`false`, empty and empty. Comma-separated formats are illustrated only with
+commented synthetic examples; these identify no admitted account or qualified model:
+
+```dotenv
+# MEETING_CONTENT_TEST_ACCOUNTS=0xabc,0xdef
+# MEETING_CONTENT_MODELS=phala/example-model-a,phala/example-model-b
+```
+
+The deploy writes all three keys even when lists are empty. The existing
+`Sync CVM allowed_envs` step reads that same env file and uses
+`.github/scripts/phala-sync-allowed-envs.mjs` to add missing names and verify the
+result. Plain `phala deploy` does not update an existing CVM's registered allowlist.
+Before separately authorized enablement, an operator must verify all three exact
+names above on the actual existing target, the sync outcome and the intended
+deployed defaults. Edited YAML or a successful build does not supply that evidence.
+If names remain absent, keep enablement blocked and investigate the supported target
+update path; never recreate the CVM automatically.
+
 > Any env var added to the deploy must land in **four** places or the CVM silently
 > drops it: the deploy step's `env:` block, the `printf` ENV_FILE block it writes
 > (this is what `allowed_envs` is derived from — there is no static list), the
 > `environment:` map in `docker-compose.phala.yml`, and `backend/.env.example` +
-> these tables. `webhook-deploy-env.test.ts` and `ledger-deploy-env.test.ts` pin
-> the first three; missing the second one is what unmounted `/api/agent` in
+> these tables. `webhook-deploy-env.test.ts`, `ledger-deploy-env.test.ts` and
+> `meeting-rollout.test.ts` pin this wiring; missing the second one is what unmounted `/api/agent` in
 > production on 2026-07-07.
 
 > `PHALA_CVM_ID` is read as a repo **variable** (not a secret) so it can be

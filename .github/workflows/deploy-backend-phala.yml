@@ -154,6 +154,8 @@ jobs:
         with:
           context: .
           file: backend/Dockerfile
+          build-args: |
+            BUILD_REVISION=${{ github.sha }}
           platforms: linux/amd64
           push: true
           no-cache: true
@@ -304,6 +306,10 @@ jobs:
           AGENT_DID: ${{ vars.AGENT_DID }}
           ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
           ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
+          # Optional meeting rollout; defaults keep controller routing disabled.
+          MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
+          MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
+          MEETING_CONTENT_MODELS: ${{ vars.MEETING_CONTENT_MODELS }}
           # Paywall / billing (docs/stripe-setup.md). Each value may live as a
           # repo SECRET or a repo VARIABLE (secrets win) — all optional until
           # go-live; unset values deploy with the paywall off.
@@ -406,6 +412,9 @@ jobs:
             printf '%s\n' "AGENT_DID=$AGENT_DID"
             printf '%s\n' "ELIZA_SERVICE_URL=$ELIZA_SERVICE_URL"
             printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
+            printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
+            printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
+            printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
             printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
             printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
             printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"

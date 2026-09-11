@@ -112,15 +112,24 @@ describe("agent stream lifecycle", () => {
     expect(body.locked).toBe(false);
   });
 
-  for (const code of ["turn_timeout", "upstream_incomplete", "upstream_failed", "agent_failed"]) {
+  for (const [code, message] of [
+    ["turn_timeout", "This reply took too long to finish. You can try again."],
+    ["upstream_incomplete", "The model service returned an incomplete reply. Please try again."],
+    ["upstream_failed", "The model service could not complete this request. Please try again later."],
+    ["interpretation_timeout", "Understanding this request took too long. Please try again."],
+    ["result_size_limit", "The response was too large to process safely. Try a smaller request or fewer meetings."],
+    ["agent_failed", interruptionMessage],
+  ] as const) {
     it(`handles ${code} before legacy text or any callbacks, after malformed data`, async () => {
       const callbacks: unknown[] = [];
       globalThis.fetch = (async () => sseResponse([
         df({ choices: [{ delta: { content: "Partial." } }] }),
         "data: {broken\n\n",
-        df({ stream_error: { code }, id: "must-not-publish", usage: { prompt_tokens: 1, completion_tokens: 2 },
+        df({ stream_error: { code, message: "PRIVATE ERROR SENTINEL" }, id: "must-not-publish", usage: { prompt_tokens: 1, completion_tokens: 2 },
           tool_activity: { name: "must-not-publish", status: "running" }, delegation_error: { code: "delegation_expired" },
           choices: [{ delta: { content: "Legacy interruption notice" } }] }),
+        df({ id: "must-not-publish-later", usage: { prompt_tokens: 3, completion_tokens: 4 },
+          choices: [{ delta: { content: "Must not resume after failure." } }] }),
         "data: [DONE]\n\n",
       ])) as typeof fetch;
       const result = await collectStream({ ...streamOptions,
@@ -128,11 +137,39 @@ describe("agent stream lifecycle", () => {
         onToolActivity: (value: unknown) => callbacks.push(value), onDelegationError: (value: unknown) => callbacks.push(value),
       });
       expect(result.chunks).toEqual(["Partial."]);
-      expect(result.error).toMatchObject({ name: "AgentStreamError", code,
-        message: code === "turn_timeout" ? "This reply took too long to finish. You can try again." : interruptionMessage });
+      expect(result.error).toMatchObject({ name: "AgentStreamError", code, message });
       expect(callbacks).toEqual([]);
     });
   }
+
+  it("reports invalid model output without asking the user to rephrase, even when DONE follows", async () => {
+    const failureText = "The model could not prepare a valid meeting request. Please try again.";
+    const callbacks: unknown[] = [];
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: failureText } }] }),
+      df({ stream_error: { code: "interpretation_failed" }, id: "must-not-publish",
+        usage: { prompt_tokens: 1, completion_tokens: 2 },
+        choices: [{ delta: { content: "Legacy interruption notice" } }] }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+    const result = await collectStream({ ...streamOptions,
+      onCompletionId: (value) => callbacks.push(value), onUsage: (value) => callbacks.push(value),
+    });
+    expect(result.chunks).toEqual([failureText]);
+    expect(result.error).toMatchObject({ name: "AgentStreamError", code: "interpretation_failed",
+      message: "The model could not prepare a valid meeting request. Please try again." });
+    expect(callbacks).toEqual([]);
+  });
+
+  it("delivers a genuine meeting clarification as normal content without an error", async () => {
+    const clarification = "Which meeting would you like me to summarize?";
+    globalThis.fetch = (async () => sseResponse([
+      df({ choices: [{ delta: { content: clarification } }] }),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+
+    expect(await collectStream()).toEqual({ chunks: [clarification], error: undefined });
+  });
 
   it("uses a bounded error class for unknown terminal codes", async () => {
     globalThis.fetch = (async () => sseResponse([
@@ -272,6 +309,25 @@ describe("agent stream client compatibility", () => {
 });
 
 describe("streamAgentChat", () => {
+  it("preserves optional call ids across interleaved activities without changing legacy events", async () => {
+    const events = [
+      { name: "tinycloud_read_meeting", status: "running", id: "read-1" },
+      { name: "tinycloud_read_meeting", status: "running", id: "read-2" },
+      { name: "tinycloud_read_meeting", status: "done", id: "read-1" },
+      { name: "tinycloud_read_meeting", status: "error", id: "read-2" },
+      { name: "web_search", status: "running" },
+    ];
+    const activity: ToolActivity[] = [];
+    globalThis.fetch = (async () => sseResponse([
+      ...events.map((tool_activity) => df({ tool_activity })),
+      "data: [DONE]\n\n",
+    ])) as typeof fetch;
+
+    expect(await collectStream({ ...streamOptions, onToolActivity: (value) => activity.push(value) }))
+      .toEqual({ chunks: [], error: undefined });
+    expect(activity).toEqual(events);
+  });
+
   it("yields cumulative text and surfaces tool activity", async () => {
     const activity: ToolActivity[] = [];
     globalThis.fetch = (async () =>
@@ -426,11 +482,11 @@ describe("streamAgentChat", () => {
     expect(ids).toEqual(["cmpl-x"]);
   });
 
-  it("surfaces a streamed delegation failure for reconnect UI", async () => {
+  it.each(["delegation_expired", "delegation_revoked"])("surfaces %s for reconnect UI", async (code) => {
     const errors: string[] = [];
     globalThis.fetch = (async () =>
       sseResponse([
-        df({ choices: [{ delta: {} }], delegation_error: { code: "delegation_expired" } }),
+        df({ choices: [{ delta: {} }], delegation_error: { code } }),
         df({ choices: [{ delta: { content: "Reconnect access." } }] }),
         "data: [DONE]\n\n",
       ])) as typeof fetch;
@@ -445,7 +501,7 @@ describe("streamAgentChat", () => {
       chunks.push(text);
     }
 
-    expect(errors).toEqual(["delegation_expired"]);
+    expect(errors).toEqual([code]);
     expect(chunks).toEqual(["Reconnect access."]);
   });
 

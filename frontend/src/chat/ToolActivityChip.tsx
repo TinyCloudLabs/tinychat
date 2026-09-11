@@ -1,7 +1,7 @@
 import { useEffect, useState, type FC } from "react";
 import { useMessage } from "@assistant-ui/react";
 import {
-  getToolActivity,
+  getToolActivities,
   onToolActivityChange,
   type ToolActivity,
 } from "../lib/toolActivityStore";
@@ -32,26 +32,26 @@ function labelForActivity(activity: ToolActivity): string {
 }
 
 /**
- * Inline status chip for the active tool call on an assistant message.
+ * Inline status chips for active tool calls on an assistant message.
  * Reads toolActivityStore keyed by the message id; clears automatically when
  * the turn ends (clearToolActivity in run()). Styled with existing receipt-chip
  * tokens — no new aesthetic introduced.
  */
 export const ToolActivityChip: FC = () => {
   const messageId = useMessage((m) => m.id);
-  const [activity, setActivity] = useState<ToolActivity | null>(
-    () => getToolActivity(messageId),
+  const [activities, setActivities] = useState<ToolActivity[]>(
+    () => getToolActivities(messageId),
   );
 
   useEffect(() => {
     // Re-check on mount in case the activity arrived between render + effect.
-    setActivity(getToolActivity(messageId));
-    return onToolActivityChange((id, a) => {
-      if (id === messageId) setActivity(a);
+    setActivities(getToolActivities(messageId));
+    return onToolActivityChange((id) => {
+      if (id === messageId) setActivities(getToolActivities(id));
     });
   }, [messageId]);
 
-  if (!activity) return null;
+  if (!activities.length) return null;
 
   return (
     <div
@@ -60,7 +60,11 @@ export const ToolActivityChip: FC = () => {
       aria-atomic="true"
       className="mt-1 text-[11px] leading-none text-muted-foreground/70"
     >
-      {labelForActivity(activity)}
+      {activities.map((activity) => (
+        <div key={activity.id ?? "legacy"} className="mt-1">
+          {labelForActivity(activity)}
+        </div>
+      ))}
     </div>
   );
 };

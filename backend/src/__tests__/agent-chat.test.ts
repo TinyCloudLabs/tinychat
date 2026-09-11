@@ -42,6 +42,12 @@ function dataFrame(obj: unknown): string {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
 
+function sizedToolJson(length: number): string {
+  const prefix = "OVERSIZED PRIVATE SENTINEL 🦋";
+  const framing = JSON.stringify({ result: { text: "" } }).length;
+  return JSON.stringify({ result: { text: prefix + "x".repeat(length - framing - prefix.length) } });
+}
+
 /** Concatenate every forwarded delta.content across frames. */
 function forwardedContent(frames: string[]): string {
   return frames
@@ -242,6 +248,148 @@ describe("parseSseJson", () => {
 });
 
 describe("orchestrateToolCalling", () => {
+  describe("legacy result size limits", () => {
+    for (const adapter of ["stream", "bodyless"] as const) {
+      for (const length of [65536, 65537]) {
+        it(`${adapter} accepts 65536 characters and rejects one over (${length})`, async () => {
+          const json = sizedToolJson(length);
+          expect(json.length).toBe(length);
+          const bytes = new TextEncoder().encode(json);
+          expect(bytes.length).toBeGreaterThan(length);
+          let models = 0, dispatches = 0;
+          const requests: string[] = [], frames: string[] = [];
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              // Split inside the butterfly, then cross the decoded-character cap.
+              const multibyteSplit = bytes.indexOf(0xf0) + 2;
+              const capSplit = new TextEncoder().encode(json.slice(0, 65536)).length;
+              controller.enqueue(bytes.slice(0, multibyteSplit));
+              controller.enqueue(bytes.slice(multibyteSplit, capSplit));
+              if (capSplit < bytes.length) controller.enqueue(bytes.slice(capSplit));
+              controller.close();
+            },
+          });
+          const fetchImpl = (async (url, init) => {
+            if (String(url).includes("/tools/")) {
+              dispatches++;
+              return adapter === "stream" ? new Response(body) : { ok: true, status: 200, body: null, json: async () => JSON.parse(json) };
+            }
+            requests.push(init!.body as string);
+            models++;
+            return { ok: true, body: sseStream([
+              models === 1
+                ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "size", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
+                : dataFrame({ id: "answer-id", choices: [{ delta: { content: "Safe answer." }, finish_reason: "stop" }] }),
+              dataFrame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }),
+            ]) };
+          }) as typeof fetch;
+          const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: (f) => frames.push(f) });
+          expect(dispatches).toBe(1);
+          expect(body.locked).toBe(false);
+          if (length === 65536) {
+            expect(result).toEqual({ completionId: "answer-id", promptTokens: 14, completionTokens: 6 });
+            expect(models).toBe(2);
+            expect(forwardedContent(frames)).toBe("Safe answer.");
+          } else {
+            expect(result).toEqual({ completionId: "", promptTokens: 7, completionTokens: 3, errorCode: "result_size_limit" });
+            expect(models).toBe(1);
+            expect(JSON.stringify({ requests, frames })).not.toContain("OVERSIZED PRIVATE SENTINEL");
+            expect(forwardedContent(frames)).toBe("");
+            expect(frames.filter(f => f.includes('"status":"done"'))).toHaveLength(0);
+          }
+        });
+      }
+    }
+
+    it("checks the final decoder flush before parsing tool JSON", async () => {
+      const json = sizedToolJson(65536);
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(json));
+        // Incomplete UTF-8 contributes one replacement character only on flush.
+        controller.enqueue(Uint8Array.of(0xf0));
+        controller.close();
+      } });
+      let models = 0;
+      const frames: string[] = [];
+      const fetchImpl = (async (url) => {
+        if (String(url).includes("/tools/")) return new Response(body);
+        models++;
+        return { ok: true, body: sseStream([models === 1
+          ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "flush", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
+          : dataFrame({ choices: [{ delta: { content: "Must not synthesize." }, finish_reason: "stop" }] }),
+        ]) };
+      }) as typeof fetch;
+      const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: f => frames.push(f) });
+      expect(result.errorCode).toBe("result_size_limit");
+      expect(result.completionId).toBe("");
+      expect(models).toBe(1);
+      expect(body.locked).toBe(false);
+      expect(forwardedContent(frames)).toBe("");
+    });
+
+    for (const cleanup of ["reject", "pending"] as const) {
+      it(`stops after overflow without reusing prior results or dispatching queued tools (${cleanup} cleanup)`, async () => {
+        let cancelled = 0, models = 0;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(new TextEncoder().encode(sizedToolJson(65537))); },
+          cancel() { cancelled++; return cleanup === "reject" ? Promise.reject(new Error("PRIVATE CLEANUP SENTINEL")) : new Promise<void>(() => {}); },
+        });
+        const dispatches: string[] = [], requests: string[] = [], frames: string[] = [];
+        const fetchImpl = (async (url, init) => {
+          if (String(url).includes("/tools/")) {
+            const name = String(url).split("/").at(-1)!;
+            dispatches.push(name);
+            return name === "tinycloud_read_meeting" ? new Response(body) : Response.json({ result: { text: "EARLIER PRIVATE SENTINEL" } });
+          }
+          requests.push(init!.body as string);
+          if (++models > 1) return { ok: true, body: sseStream([dataFrame({ id: "unwanted-answer", choices: [{ delta: { content: "Must not synthesize." }, finish_reason: "stop" }] })]) };
+          return { ok: true, body: sseStream([
+            dataFrame({ id: "tool-round", choices: [{ delta: { content: "Already streamed partial text.", tool_calls: [
+              { index: 0, id: "first", function: { name: "web_search", arguments: "{" } },
+              { index: 1, id: "overflow", function: { name: "tinycloud_read_meeting", arguments: "{}" } },
+              { index: 2, id: "queued", function: { name: "tinycloud_find_meetings", arguments: "{}" } },
+            ] } }] }),
+            dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: null, type: null, function: { name: null, arguments: "}" } }] }, finish_reason: "tool_calls" }] }),
+            dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } }),
+          ]) };
+        }) as typeof fetch;
+        const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: f => frames.push(f) });
+        expect(result).toEqual({ completionId: "", promptTokens: 17, completionTokens: 5, errorCode: "result_size_limit" });
+        expect(models).toBe(1);
+        expect(dispatches).toEqual(["web_search", "tinycloud_read_meeting"]);
+        expect(cancelled).toBe(1);
+        expect(body.locked).toBe(false);
+        expect(forwardedContent(frames)).toBe("Already streamed partial text.");
+        expect(frames.filter(f => f.includes("tool_activity")).map(f => JSON.parse(f.slice(6)).tool_activity)).toEqual([
+          { name: "web_search", status: "running" }, { name: "web_search", status: "done" },
+          { name: "tinycloud_read_meeting", status: "running" }, { name: "tinycloud_read_meeting", status: "error" },
+        ]);
+        expect(JSON.stringify({ requests, frames })).not.toMatch(/OVERSIZED PRIVATE|EARLIER PRIVATE|PRIVATE CLEANUP/);
+      }, 500);
+    }
+
+    it("keeps a genuine unreachable tool eligible for the existing bounded continuation", async () => {
+      let models = 0, dispatches = 0;
+      const requests: string[] = [], frames: string[] = [];
+      const fetchImpl = (async (url, init) => {
+        if (String(url).includes("/tools/")) { dispatches++; throw new TypeError("PRIVATE FETCH SENTINEL"); }
+        requests.push(init!.body as string);
+        return { ok: true, body: sseStream([++models === 1
+          ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "unreachable", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
+          : dataFrame({ id: "safe-answer", choices: [{ delta: { content: "Search is unavailable." }, finish_reason: "stop" }] }),
+        ]) };
+      }) as typeof fetch;
+      const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: f => frames.push(f) });
+      expect(result.errorCode).toBeUndefined();
+      expect(result.completionId).toBe("safe-answer");
+      expect(models).toBe(2);
+      expect(dispatches).toBe(1);
+      expect(requests[1]).toContain("(tool web_search unreachable)");
+      expect(JSON.stringify({ requests, frames })).not.toContain("PRIVATE FETCH SENTINEL");
+      expect(forwardedContent(frames)).toBe("Search is unavailable.");
+    });
+  });
+
   it("offers the composable meeting toolkit with local-calendar agent guidance", async () => {
     let body: Record<string, unknown> | null = null;
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
@@ -1055,6 +1203,61 @@ describe("orchestrateToolCalling", () => {
 });
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
+  for (const [failure, code, completed] of [
+    ["invalid-plan", "interpretation_failed", true],
+    ["incomplete-finish", "upstream_incomplete", true],
+    ["provider-error", "upstream_failed", false],
+    ["incomplete-read", "upstream_incomplete", false],
+    ["tool-overflow", "result_size_limit", true],
+  ] as const) {
+    it(`returns one terminal for ${failure} and accounts only completed rounds exactly once`, async () => {
+      process.env.PAYWALL_ENABLED = "true";
+      process.env.STRIPE_SECRET_KEY = "sk_test";
+      _setStripeClient(mockStripe(null));
+      const restore = stubCatalogFetch();
+      let models = 0, dispatches = 0, endCount = 0;
+      const entries: unknown[] = [], logs: unknown[] = [], traces: unknown[] = [];
+      const fetchImpl = (async (url) => {
+        if (String(url).includes("/tools/")) { dispatches++; return new Response(sizedToolJson(65537)); }
+        if (String(url).endsWith("/capabilities")) throw new Error("Unexpected capability request");
+        models++;
+        if (failure === "provider-error") return new Response("PRIVATE PROVIDER SENTINEL", { status: 429 });
+        const name = failure === "tool-overflow" ? "web_search" : "prepare_meeting_turn";
+        const argumentsJson = failure === "invalid-plan" ? "{invalid JSON" : "{}";
+        const round = dataFrame({ id: "private-completion-id", choices: [{ delta: { tool_calls: [{ index: 0, id: "call", function: { name, arguments: argumentsJson } }] }, finish_reason: failure === "incomplete-finish" ? "length" : "tool_calls" }] })
+          + dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } });
+        return new Response(round + (failure === "incomplete-read" ? "" : "data: [DONE]\n\n"));
+      }) as typeof fetch;
+      try {
+        const { req, res } = makeReqRes();
+        const end = res.end.bind(res);
+        res.end = (() => { endCount++; end(); return res; }) as typeof res.end;
+        await createAgentChatHandler({
+          ...baseConfig(fetchImpl), meetingContentRetrievalEnabled: failure !== "tool-overflow",
+          meetingTrace: trace => traces.push(trace),
+          streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: summary => logs.push(summary) },
+          flusher: { enqueue: entry => entries.push(entry) } as AgentChatConfig["flusher"],
+        })(req, res);
+        const text = res.chunks.join("");
+        const rounds = failure === "invalid-plan" ? 2 : 1;
+        expect(models).toBe(rounds);
+        expect(dispatches).toBe(failure === "tool-overflow" ? 1 : 0);
+        expect(text.match(/"stream_error":/g)).toHaveLength(1);
+        expect(text).toContain(`"stream_error":{"code":"${code}"}`);
+        expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+        expect(endCount).toBe(1);
+        expect(text).not.toMatch(/"usage"|"id"|private-completion-id|PRIVATE PROVIDER|OVERSIZED PRIVATE/);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toMatchObject({ outcome: code });
+        if (failure !== "tool-overflow") expect(traces).toEqual([expect.objectContaining({ terminal: code })]);
+        expect(JSON.stringify({ logs, traces })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
+        expect(entries).toHaveLength(completed ? 1 : 0);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBe(completed ? rounds : 0);
+        if (completed) expect(entries[0]).toMatchObject({ prompt_tokens: 17 * rounds, completion_tokens: 5 * rounds, credits: rounds });
+      } finally { restore(); }
+    });
+  }
+
   function makeCompletionFetch(opts?: { id?: string; content?: string; promptTokens?: number; completionTokens?: number }): typeof fetch {
     const id = opts?.id ?? "cmpl-test";
     const content = opts?.content ?? "Hello";
