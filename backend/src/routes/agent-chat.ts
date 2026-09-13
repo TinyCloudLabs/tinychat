@@ -330,7 +330,9 @@ export function buildCleanSynthesisMessages(question: string, results: string): 
 
 function meetingCitationsIn(toolResults: ChatMsg[]): string[] {
   return [...new Set(toolResults.flatMap((message) =>
-    message.content.match(/\[M\d+(?::[A-Z]\d*)?(?:,[^\]\r\n]*)?\]/g) ?? [],
+    // Metadata/read tools use M labels; legacy transcript search uses T labels.
+    // Only exact tool-supplied bracketed strings become eligible citations.
+    message.content.match(/\[[MT]\d+(?::[A-Z]\d*)?(?:,[^\]\r\n]*)?\]/g) ?? [],
   ))];
 }
 
@@ -579,8 +581,16 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   let finalCompletionId = "";
   let errorCode: StreamErrorCode | undefined;
   let repairing = false;
+  // A provider can emit a private-tool preamble in standalone content deltas
+  // before the later tool_calls delta identifies it as private progress. Those
+  // bytes cannot be retracted, so carry a paragraph break into the next answer.
+  let privateProgressBoundaryPending = false;
+  // maxRounds bounds ordinary model/tool turns. A synthesis that fails citation
+  // validation gets one bounded clean-synthesis repair, extending the loop only
+  // when a two-hop find -> read flow consumed the default three-round budget.
+  let roundLimit = maxRounds;
 
-  for (let round = 0; round < maxRounds; round++) {
+  for (let round = 0; round < roundLimit; round++) {
     if (params.isAborted?.() || params.signal?.aborted) break;
 
     // Deterministic context guard (§C.11, NO LLM): before this round's upstream
@@ -594,7 +604,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     // round and exhaust maxRounds without ever emitting a content answer, leaving
     // the user with an empty reply. "none" makes the model summarize the tool
     // results it already has into a final answer.
-    const forceAnswer = round === maxRounds - 1;
+    const forceAnswer = round >= maxRounds - 1;
 
     // Synthesis rounds (round > 0 means a tool was already dispatched, so convo now
     // holds a role:"tool" result) need reasoning_effort:"low": harmony reasoning models
@@ -610,7 +620,9 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     // produces a real cited answer. Only reshape when results exist; if the model
     // never searched, fall through to the normal (tool-enabled) request.
     const toolResults = convo.filter((m) => m.role === "tool");
-    const cleanSynthesis = forceAnswer && toolResults.length > 0;
+    // Citation repair is always a no-tools synthesis, even when a caller allows
+    // more than the default three ordinary rounds.
+    const cleanSynthesis = (forceAnswer || repairing) && toolResults.length > 0;
     const meetingCitations = generalOnly ? [] : meetingCitationsIn(toolResults);
     // Meeting answers are held until their citation contract is validated. This
     // lets us retry an uncited synthesis without leaking the invalid draft.
@@ -676,10 +688,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     let decided = false;
     let leakMode = false;
     let generalPending = "";
+    let emittedRoundContent = false;
+
+    const writeMeetingContent = async (content: string) => {
+      await write(contentFrame(`${privateProgressBoundaryPending ? "\n\n" : ""}${content}`));
+      privateProgressBoundaryPending = false;
+      emittedRoundContent = true;
+    };
 
     const flushPending = async () => {
       if (pendingBuffer) {
-        if (!bufferMeetingAnswer) await write(contentFrame(pendingBuffer));
+        if (!bufferMeetingAnswer) await writeMeetingContent(pendingBuffer);
         pendingBuffer = "";
       }
     };
@@ -696,6 +715,11 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       const delta = choice?.delta as
         | { content?: string; tool_calls?: Array<Record<string, unknown>> }
         | undefined;
+      if (Array.isArray(delta?.tool_calls)) {
+        // Learn the round's routing before handling co-delivered prose. Private
+        // tool-call preambles belong to tool activity, not assistant content.
+        accumulateToolCalls(toolCalls, normalizeToolCallDeltas(delta.tool_calls));
+      }
       if (typeof delta?.content === "string" && delta.content) {
         roundContent += delta.content;
         if (generalOnly) {
@@ -717,8 +741,14 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
           }
         } else if (leakMode) {
           // Already in leak mode: keep accumulating, forward nothing.
+        } else if ([...toolCalls.values()].some(call => call.name.startsWith("tinycloud_"))
+          && ![...toolCalls.values()].some(call => call.name === "web_search")) {
+          // The current provider delta explicitly couples this text to a private
+          // meeting tool call. Typed tool_activity frames surface the progress.
+          pendingBuffer = "";
+          decided = true;
         } else if (decided) {
-          if (!bufferMeetingAnswer) await write(contentFrame(delta.content));
+          if (!bufferMeetingAnswer) await writeMeetingContent(delta.content);
         } else {
           pendingBuffer += delta.content;
           const trimmed = pendingBuffer.trimStart();
@@ -737,9 +767,6 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
           }
           // else: still ambiguous (e.g. just "<too") — keep buffering.
         }
-      }
-      if (Array.isArray(delta?.tool_calls)) {
-        accumulateToolCalls(toolCalls, normalizeToolCallDeltas(delta.tool_calls));
       }
       const fr = choice?.finish_reason;
       if (typeof fr === "string") finish = fr;
@@ -780,6 +807,11 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete"); }
         if (!call.id || !call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete");
       }
+      if (!generalOnly && emittedRoundContent
+        && calls.some(call => call.name.startsWith("tinycloud_"))
+        && !calls.some(call => call.name === "web_search")) {
+        privateProgressBoundaryPending = true;
+      }
       convo.push({
         role: "assistant",
         content: "",
@@ -819,15 +851,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
 
     if (bufferMeetingAnswer) {
       const hasSuppliedCitation = meetingCitations.some((citation) => roundContent.includes(citation));
-      if (!hasSuppliedCitation && !forceAnswer) {
-        // Give the final clean-synthesis round one chance to repair an uncited
-        // meeting draft. The draft was buffered, so the browser never saw it.
+      if (!hasSuppliedCitation && !repairing) {
+        // Give one clean-synthesis round a chance to repair an uncited meeting
+        // draft. If the first invalid draft already consumed the forced final
+        // round, extend only this validation repair -- never the tool budget.
         repairing = true;
+        if (round + 1 >= roundLimit) roundLimit = round + 2;
         continue;
       }
-      await write(contentFrame(hasSuppliedCitation
+      await writeMeetingContent(hasSuppliedCitation
         ? roundContent
-        : "I found matching private meeting evidence, but could not produce a safely cited answer. Please try again."));
+        : "I found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
     }
 
     finalCompletionId = currentRoundId;

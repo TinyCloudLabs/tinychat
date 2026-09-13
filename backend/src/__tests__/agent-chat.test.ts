@@ -488,6 +488,7 @@ describe("orchestrateToolCalling", () => {
               choices: [
                 {
                   delta: {
+                    content: "Searching the public web. ",
                     tool_calls: [
                       { index: 0, id: "call_1", function: { name: "web_search", arguments: '{"query":"capital of France"}' } },
                     ],
@@ -530,7 +531,8 @@ describe("orchestrateToolCalling", () => {
       context: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
     });
 
-    // The final answer streamed through, and a tool_activity frame was emitted.
+    // Public-web progress and the final answer each stream once, preserving the
+    // legacy cumulative content contract while private-tool preambles are hidden.
     const text = frames
       .map((f) => {
         try {
@@ -540,7 +542,7 @@ describe("orchestrateToolCalling", () => {
         }
       })
       .join("");
-    expect(text).toBe("The capital is Paris.");
+    expect(text).toBe("Searching the public web. The capital is Paris.");
     expect(frames.some((f) => f.includes("tool_activity"))).toBe(true);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
@@ -590,6 +592,83 @@ describe("orchestrateToolCalling", () => {
     expect(forwardedContent(frames)).toContain("[M1:A1]");
   });
 
+  it("separates standalone private-tool progress from a cited summary", async () => {
+    let round = 0;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes("/tools/")) {
+        return Response.json({ result: {
+          text: "Read the meeting.",
+          data: { summary: { citation: "[M1:S]", text: "The launch is Friday." } },
+        } });
+      }
+      round += 1;
+      if (round === 1) {
+        return { ok: true, body: sseStream([
+          dataFrame({ choices: [{ delta: { content: "I'll look up the meeting" } }] }),
+          dataFrame({ choices: [{ delta: { content: " and its summary." } }] }),
+          dataFrame({ choices: [{
+            delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"summary"}' } }] },
+            finish_reason: "tool_calls",
+          }] }),
+        ]) } as unknown as Response;
+      }
+      return { ok: true, body: sseStream([dataFrame({ id: "cited-summary", choices: [{
+        delta: { content: "The launch is Friday. [M1:S]" }, finish_reason: "stop",
+      }] })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    const result = await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "When is the launch?" }],
+      entityId: "entity-1",
+      write: frame => { frames.push(frame); },
+    });
+
+    expect(forwardedContent(frames)).toBe("I'll look up the meeting and its summary.\n\nThe launch is Friday. [M1:S]");
+    expect(result.completionId).toBe("cited-summary");
+  });
+
+  it("separates standalone private-tool progress from the safe fallback", async () => {
+    let round = 0;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes("/tools/")) {
+        return Response.json({ result: {
+          text: "Read the meeting.",
+          data: { summary: { citation: "[M1:S]", text: "Supported evidence." } },
+        } });
+      }
+      round += 1;
+      if (round === 1) {
+        return { ok: true, body: sseStream([
+          dataFrame({ choices: [{ delta: { content: "I'll check the meeting" } }] }),
+          dataFrame({ choices: [{ delta: { content: " before answering." } }] }),
+          dataFrame({ choices: [{
+            delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"summary"}' } }] },
+            finish_reason: "tool_calls",
+          }] }),
+        ]) } as unknown as Response;
+      }
+      return { ok: true, body: sseStream([dataFrame({ id: `uncited-${round}`, choices: [{
+        delta: { content: "An unsupported claim." }, finish_reason: "stop",
+      }] })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    const result = await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "What happened?" }],
+      entityId: "entity-1",
+      write: frame => { frames.push(frame); },
+    });
+
+    expect(round).toBe(3);
+    expect(forwardedContent(frames)).toBe("I'll check the meeting before answering.\n\nI found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
+    expect(result.completionId).toBe("uncited-3");
+  });
+
   it("buffers an uncited meeting draft and repairs it with clean synthesis", async () => {
     const upstreamBodies: Array<Record<string, unknown>> = [];
     let round = 0;
@@ -620,7 +699,7 @@ describe("orchestrateToolCalling", () => {
 
     const frames: string[] = [];
     await orchestrateToolCalling({
-      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
+      config: { ...baseConfig(fetchImpl), maxRounds: 4 },
       model: "phala/gpt-oss-120b",
       messages: [{ role: "user", content: "What was my last meeting?" }],
       entityId: "entity-1",
@@ -632,6 +711,146 @@ describe("orchestrateToolCalling", () => {
     expect(upstreamBodies[2].tools).toBeUndefined();
     expect(forwardedContent(frames)).toBe("Your latest meeting was Latest [M1:S].");
     expect(forwardedContent(frames)).not.toContain("Your latest meeting was Latest.Your");
+  });
+
+  it("repairs an uncited synthesis after find-to-read fan-out without publishing progress", async () => {
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    const dispatched: string[] = [];
+    let round = 0;
+    const meetings = Array.from({ length: 4 }, (_, index) => ({
+      meetingRef: `hunter-${index + 1}`,
+      citation: `[M${index + 1}]`,
+      title: `Hunter sync ${index + 1}`,
+    }));
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/tools/")) {
+        const name = String(url).split("/").at(-1)!;
+        const body = JSON.parse(String(init?.body)) as { args: { meetingRef?: string } };
+        dispatched.push(`${name}:${body.args.meetingRef ?? "range"}`);
+        if (name === "tinycloud_find_meetings") {
+          return Response.json({ result: { text: "Found 4 meetings with Hunter from Sep 4–10.", data: { meetings } } });
+        }
+        const index = meetings.findIndex((meeting) => meeting.meetingRef === body.args.meetingRef);
+        const citation = `[M${index + 1}:S]`;
+        return Response.json({ result: { text: `Read ${meetings[index].title}.`, data: { summary: { citation, text: `Summary ${index + 1}` } } } });
+      }
+      upstreamBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      round += 1;
+      if (round === 1) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ usage: { prompt_tokens: 10, completion_tokens: 2 }, choices: [{
+          delta: {
+            content: "I'll find your meetings with Hunter from last week (Sep 4–10), then pull each summary.",
+            tool_calls: [{ index: 0, id: "find", function: { name: "tinycloud_find_meetings", arguments: '{"participant":"Hunter","from":"2026-09-04","to":"2026-09-10"}' } }],
+          },
+          finish_reason: "tool_calls",
+        }] })]) } as unknown as Response;
+      }
+      if (round === 2) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ usage: { prompt_tokens: 20, completion_tokens: 4 }, choices: [{
+          delta: {
+            content: "Found 4 meetings with Hunter from Sep 4–10. Let me pull up the summaries for each.",
+            tool_calls: meetings.map((meeting, index) => ({ index, id: `read-${index + 1}`, function: { name: "tinycloud_read_meeting", arguments: JSON.stringify({ meetingRef: meeting.meetingRef, focus: "summary" }) } })),
+          },
+          finish_reason: "tool_calls",
+        }] })]) } as unknown as Response;
+      }
+      if (round === 3) {
+        return { ok: true, status: 200, body: sseStream([dataFrame({ id: "uncited", usage: { prompt_tokens: 30, completion_tokens: 6 }, choices: [{
+          delta: { content: "Hunter covered four project updates." }, finish_reason: "stop",
+        }] })]) } as unknown as Response;
+      }
+      return { ok: true, status: 200, body: sseStream([dataFrame({ id: "cited", usage: { prompt_tokens: 40, completion_tokens: 8 }, choices: [{
+        delta: { content: meetings.map((meeting, index) => `${meeting.title}: Summary ${index + 1} [M${index + 1}:S].`).join("\n") }, finish_reason: "stop",
+      }] })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    const result = await orchestrateToolCalling({
+      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "summarize the last week meetings with Hunter" }],
+      entityId: "entity-1",
+      roomId: "thread-1",
+      turnContext: { localDate: "2026-09-11", timeZone: "UTC" },
+      write: frame => { frames.push(frame); },
+    });
+
+    expect(upstreamBodies).toHaveLength(4);
+    expect(upstreamBodies.slice(2).every(body => body.tools === undefined)).toBe(true);
+    expect(dispatched).toEqual([
+      "tinycloud_find_meetings:range",
+      ...meetings.map(meeting => `tinycloud_read_meeting:${meeting.meetingRef}`),
+    ]);
+    expect(forwardedContent(frames)).toBe(meetings.map((meeting, index) => `${meeting.title}: Summary ${index + 1} [M${index + 1}:S].`).join("\n"));
+    expect(result).toEqual({ promptTokens: 100, completionTokens: 20, completionId: "cited" });
+  });
+
+  it("still rejects unsupported multi-meeting synthesis after its bounded repair", async () => {
+    let round = 0;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes("/tools/")) {
+        return Response.json({ result: { text: "Found one meeting.", data: { summary: { citation: "[M1:S]", text: "Supported fact" } } } });
+      }
+      round += 1;
+      if (round <= 2) {
+        const name = round === 1 ? "tinycloud_find_meetings" : "tinycloud_read_meeting";
+        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
+          delta: { content: `progress ${round}`, tool_calls: [{ index: 0, id: `call-${round}`, function: { name, arguments: "{}" } }] },
+          finish_reason: "tool_calls",
+        }], usage: { prompt_tokens: round * 10, completion_tokens: round * 2 } })]) } as unknown as Response;
+      }
+      return { ok: true, status: 200, body: sseStream([dataFrame({ id: round === 3 ? "unsupported-draft" : "unsupported-repair", choices: [{
+        delta: { content: "An unsupported claim without a citation." }, finish_reason: "stop",
+      }], usage: { prompt_tokens: round * 10, completion_tokens: round * 2 } })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    const result = await orchestrateToolCalling({
+      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "Summarize my meetings" }],
+      entityId: "entity-1",
+      write: frame => { frames.push(frame); },
+    });
+
+    expect(round).toBe(4);
+    expect(forwardedContent(frames)).toBe("I found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
+    expect(result).toEqual({ promptTokens: 100, completionTokens: 20, completionId: "unsupported-repair" });
+  });
+
+  it("does not start the extended citation repair after cancellation at its round boundary", async () => {
+    let round = 0;
+    let boundaries = 0;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes("/tools/")) {
+        return Response.json({ result: { text: "Private evidence [M1:S]." } });
+      }
+      round += 1;
+      if (round <= 2) {
+        const name = round === 1 ? "tinycloud_find_meetings" : "tinycloud_read_meeting";
+        return { ok: true, body: sseStream([dataFrame({ choices: [{
+          delta: { tool_calls: [{ index: 0, id: `call-${round}`, function: { name, arguments: "{}" } }] },
+          finish_reason: "tool_calls",
+        }], usage: { prompt_tokens: round * 10, completion_tokens: round * 2 } })]) } as unknown as Response;
+      }
+      return { ok: true, body: sseStream([dataFrame({ id: "uncited-draft", choices: [{
+        delta: { content: "Unsupported uncited draft." }, finish_reason: "stop",
+      }], usage: { prompt_tokens: 30, completion_tokens: 6 } })]) } as unknown as Response;
+    }) as typeof fetch;
+
+    const frames: string[] = [];
+    const result = await orchestrateToolCalling({
+      config: baseConfig(fetchImpl),
+      model: "phala/gpt-oss-120b",
+      messages: [{ role: "user", content: "Summarize my meetings" }],
+      entityId: "entity-1",
+      write: frame => { frames.push(frame); },
+      isAborted: () => ++boundaries >= 4,
+    });
+
+    expect(round).toBe(3);
+    expect(forwardedContent(frames)).toBe("");
+    expect(result).toEqual({ promptTokens: 60, completionTokens: 12, completionId: "" });
   });
 
   // Leaked-markup guard: a single GLM-style inline tool_call in delta.content
@@ -1034,6 +1253,46 @@ describe("orchestrateToolCalling", () => {
         .messages.find((message) => message.role === "tool");
       expect(toolMessage?.content).toContain("[T1:E1, Avery, 00:01:12]");
       expect(toolMessage?.content).toContain("ember compass");
+    });
+
+    it("repairs an uncited legacy transcript answer with the exact supplied T citation", async () => {
+      const upstreamBodies: Array<Record<string, unknown>> = [];
+      let round = 0;
+      const citation = "[T1:E1, Avery, 00:01:12]";
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        if (String(url).includes("/tools/")) {
+          return Response.json({ result: {
+            text: "Found cited transcript evidence.",
+            data: { matches: [{ citation: "[T1]", excerpts: [{ citation, speaker: "Avery", startSecs: 72, text: "the final choice is ember compass" }] }] },
+          } });
+        }
+        upstreamBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        round += 1;
+        if (round === 1) {
+          return { ok: true, body: sseStream([dataFrame({ choices: [{
+            delta: { tool_calls: [{ index: 0, id: "search", function: { name: "tinycloud_search_transcripts", arguments: '{"query":"cobalt"}' } }] },
+            finish_reason: "tool_calls",
+          }] })]) } as unknown as Response;
+        }
+        const content = round === 2
+          ? "Avery chose ember compass."
+          : `Avery chose ember compass ${citation}.`;
+        return { ok: true, body: sseStream([dataFrame({ id: `transcript-${round}`, choices: [{ delta: { content }, finish_reason: "stop" }] })]) } as unknown as Response;
+      }) as typeof fetch;
+
+      const frames: string[] = [];
+      const result = await orchestrateToolCalling({
+        config: baseConfig(fetchImpl),
+        model: "phala/gpt-oss-120b",
+        messages: [{ role: "user", content: "what replaced cobalt?" }],
+        entityId: "entity-9",
+        write: frame => { frames.push(frame); },
+      });
+
+      expect(upstreamBodies).toHaveLength(3);
+      expect(upstreamBodies[2].tools).toBeUndefined();
+      expect(forwardedContent(frames)).toBe(`Avery chose ember compass ${citation}.`);
+      expect(result.completionId).toBe("transcript-3");
     });
   });
 
