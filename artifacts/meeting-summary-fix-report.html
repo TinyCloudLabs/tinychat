@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TinyCloud Chat meeting-summary citation fix</title>
+  <title>TinyCloud Chat meeting evidence, citations, and date scope</title>
   <style>
     :root { color-scheme: light dark; --bg:#f6f7fb; --panel:#fff; --text:#182033; --muted:#59647a; --line:#dce1eb; --accent:#3157d5; --ok:#147a50; --warn:#9a6110; --code:#eef1f7; }
     @media (prefers-color-scheme: dark) { :root { --bg:#111522; --panel:#181e2d; --text:#eef2ff; --muted:#aeb8cc; --line:#31394b; --accent:#8fa8ff; --ok:#62d9a6; --warn:#f1bc66; --code:#222a3c; } }
@@ -37,77 +37,79 @@
 <body>
 <main>
   <header>
-    <h1>Meeting summaries get a real citation-repair chance</h1>
-    <p class="lede">Regression tests reproduce a legacy-loop failure matching the Sep 11 report: finding meetings and reading summaries consumes the three-round budget before an uncited synthesis can receive citation repair. No deployment, merge, production request, or live private meeting read was performed.</p>
-    <span class="status">Local patch verified</span>
+    <h1>Preserve meeting evidence, citations, and date scope</h1>
+    <p class="lede">The legacy meeting-agent route now retains bounded cited evidence before context truncation, validates every recognized closed citation token, and carries trusted last-week bounds through discovery and synthesis.</p>
+    <p class="limit">September 14, 2026: focused validation passed; live acceptance is partial across offered models.</p>
     <div class="grid">
-      <div class="metric"><strong>4 meetings</strong><span>realistic find → parallel read fixture</span></div>
-      <div class="metric"><strong>1 repair</strong><span>bounded, tool-free citation retry</span></div>
-      <div class="metric"><strong>71 pass</strong><span>final focused agent-chat regression file</span></div>
+      <div class="metric"><strong>171 passed</strong><span>677 assertions across four focused test files</span></div>
+      <div class="metric"><strong>1 repair</strong><span>bounded synthesis retry without tools</span></div>
+      <div class="metric"><strong>12 attempts</strong><span>real browser comparison, including two blocked-model retries</span></div>
     </div>
   </header>
 
   <section>
-    <h2>Demonstrated cause</h2>
-    <div class="flow" aria-label="Request flow">
-      <div class="node"><strong>Round 1</strong><br>find meetings</div><div class="arrow">→</div>
-      <div class="node"><strong>Round 2</strong><br>read four summaries</div><div class="arrow">→</div>
-      <div class="node"><strong>Round 3</strong><br>first clean synthesis drops citations</div><div class="arrow">→</div>
-      <div class="node"><strong>Before</strong><br>safe fallback, no repair budget</div>
-    </div>
-    <p>The legacy loop (used when the newer structured meeting controller is not enabled) treated <code>maxRounds: 3</code> as both the tool/retrieval budget and the complete synthesis budget. A one-hop request already had a repair opportunity, but a two-hop <code>find_meetings → read_meeting(s)</code> request consumed both preliminary rounds. If its forced clean synthesis omitted the exact supplied citation, the final presence check correctly rejected the draft but had no remaining round in which to repair it.</p>
-    <p>The pre-fix regression run demonstrated this directly: both new cases failed because only three model requests occurred where the successful path required four.</p>
+    <h2>Problem and resulting behavior</h2>
+    <p>A find → read → synthesize request can exhaust its ordinary rounds before an invalid citation draft gets a repair. Raw version-2 tool results can also lose their useful evidence under the generic head-only context cap. This PR projects cited summaries, actions, and excerpts into bounded valid JSON with source references and coverage metadata before that cap, then allows one clean citation repair when needed.</p>
+    <p>The citation gate expands a shortened token only when it uniquely identifies a supplied citation, then requires every recognized closed uppercase <code>[M…]</code>/<code>[T…]</code> token to be supplied. Invalid drafts remain hidden; a failed repair uses the existing safe fallback. Public-web and ordinary streaming, accounting, completion identity, and cancellation retain their existing paths.</p>
+    <p>Simple, unambiguous last-week summary requests derive the previous Monday–Sunday interval from the browser's trusted local date and timezone. Discovery arguments are normalized before recording and dispatch, and the same scope reaches clean synthesis and citation repair. Explicit dates, selected reads, and unsupported or ambiguous phrasing retain existing behavior. The matcher is intentionally conservative.</p>
+    <p>Validated participants and organizer email are retained when they fit. Budget pressure omits whole names or addresses, records omission counts/flags and a metadata-budget reason, and marks coverage limited. This avoids presenting a shortened identity as a complete value.</p>
+    <p>Final and repair guidance instruct the model to disclose partial/truncated evidence and distinguish matched meetings from complete transcript coverage. Citation membership remains a syntax check, not an independent factual audit.</p>
   </section>
 
   <section>
-    <h2>Focused change</h2>
-    <ul>
-      <li>A synthesis that fails exact-citation presence validation gets at most one clean-synthesis repair. It is always requested without tools; when the failed draft used the last ordinary round, only that single repair extends the limit.</li>
-      <li>If that one repair still omits the supplied citations, its draft stays hidden and the existing safe fallback is emitted after any already-streamed progress. The exact-citation presence check remains in place; no citation is fabricated.</li>
-      <li>The legacy citation gate now recognizes both meeting/read <code>[M…]</code> citations and transcript-search <code>[T…]</code> citations, preserving the full exact bracketed value supplied by the tool.</li>
-      <li>Tool-call metadata is accumulated before co-delivered content. Prose attached only to a private <code>tinycloud_*</code> call is treated as progress and omitted from assistant content; the existing typed <code>tool_activity</code> SSE frames remain the progress channel.</li>
-      <li>When a provider instead sends private-tool preamble text as standalone deltas <em>before</em> its later <code>tool_calls</code> metadata, already-emitted text is retained and the eventual validated summary or safe fallback is prefixed with a paragraph boundary. No protocol change or broad buffering was added.</li>
-      <li>Public-web progress and ordinary chat continue to stream exactly once. Mixed web/private failure behavior, delegation errors, usage summation, final completion identity, terminal delivery, abort handling, and the existing context truncation guards retain their established paths.</li>
-    </ul>
-  </section>
-
-  <section>
-    <h2>Regression evidence</h2>
+    <h2>Validation</h2>
     <table>
-      <thead><tr><th>Check</th><th>Outcome</th><th>What it establishes</th></tr></thead>
+      <thead><tr><th>Check</th><th>Result</th><th>Boundary</th></tr></thead>
       <tbody>
-        <tr><td>Screenshot-shaped regression</td><td class="pass">passed</td><td>Four cited summaries publish after one no-tools repair; co-delivered private progress is absent; all four rounds’ usage and the repair completion ID are preserved.</td></tr>
-        <tr><td>Standalone-delta cited-summary regression</td><td class="pass">passed</td><td>Two private preamble deltas emitted before later <code>tool_calls</code> remain visible, followed by exactly one paragraph boundary before the cited summary.</td></tr>
-        <tr><td>Standalone-delta fallback regression</td><td class="pass">passed</td><td>The same pre-metadata progress is separated from the safe fallback after the one bounded no-tools repair; uncited drafts remain hidden.</td></tr>
-        <tr><td>Unsupported-output regression</td><td class="pass">passed</td><td>Two uncited syntheses still publish only the safe fallback, while retaining the completed retry’s tokens and completion identity.</td></tr>
-        <tr><td><code>[T…]</code>, early repair, and public streaming</td><td class="pass">passed</td><td>Exact transcript citations trigger repair; a repair is tool-free even with <code>maxRounds: 4</code>; public-web progress and final text each appear once.</td></tr>
-        <tr><td><code>agent-chat.test.ts</code></td><td class="pass">71 passed</td><td>Final focused run: legacy/public-web routing, access failures, result limits, accounting, IDs, co-delivered suppression, standalone-delta paragraph separation, cancellation, and clean synthesis.</td></tr>
-        <tr><td>Prior focused combined suite</td><td class="limit">228 passed / 2 socket failures</td><td>Previously reviewed evidence; not rerun for this narrowly scoped follow-up. The two failures are independently confirmed baseline failures below.</td></tr>
-        <tr><td>Prior workspace package build</td><td class="pass">3 packages built</td><td>Previously reviewed local evidence for core, client, and server workspace types; not rerun.</td></tr>
-        <tr><td>Backend TypeScript</td><td class="pass">passed</td><td><code>tsc --noEmit</code> completed with no errors.</td></tr>
-        <tr><td>Focused ESLint + diff check</td><td class="pass">passed</td><td>No lint findings or whitespace errors in changed TypeScript.</td></tr>
-        <tr><td>Prior full backend suite</td><td class="limit">1,582 passed / 2 failed</td><td>Final persisted review output from run <code>oneshot-mtx2ztyb-35dd684d</code>; not rerun for the paragraph-boundary follow-up. The same two loopback socket failures are independently reproduced on pristine baseline under Bun 1.3.9, so the suite is not reported green.</td></tr>
+        <tr><td>Route, socket, date-scope, and meeting-turn regressions</td><td class="pass">171 passed; 0 failed; 677 assertions</td><td>Bun 1.4.0. Includes three metadata-retention regressions (34 assertions), first observed failing and then passing after the review correction.</td></tr>
+        <tr><td>Backend typecheck and frontend build</td><td class="pass">Passed</td><td>Backend typecheck rerun after the final metadata correction. Earlier frontend build passed using the existing preview environment; frontend source did not change.</td></tr>
+        <tr><td>Scoped ESLint and diff checks</td><td class="pass">Passed</td><td>Changed source/test files; final patch whitespace checked again before publication.</td></tr>
+        <tr><td>Temporary observer fixtures</td><td class="pass">Passed</td><td>Response bytes, reader identity, cancellation, split citations/tool arguments, privacy sentinels, source joins, and timing. Observers were removed after testing.</td></tr>
+        <tr><td>Earlier full backend suite</td><td class="limit">1,582 passed; 2 failed</td><td>Historical Bun 1.3.9 socket failures were reproduced on pristine baseline. The full suite was not rerun; the current focused socket suite passed on Bun 1.4.0.</td></tr>
       </tbody>
     </table>
   </section>
 
   <section>
-    <h2>Files changed</h2>
+    <h2>Browser baseline before the metadata-retention correction</h2>
+    <p>The matrix below was collected before the final review correction that retains participants and organizer email. That correction passed focused regression tests; the browser matrix was not repeated afterward.</p>
+    <p>The same preview, legacy route, account, provider configuration, and corpus were used. Each independent case started in a fresh room with the actual request model verified. Ordinal cases used their own model's completed parent answer. The structured controller remained disabled.</p>
+    <table>
+      <thead><tr><th>Model</th><th>Explicit dates</th><th>Paired ordinal</th><th>Last week</th><th>No match</th></tr></thead>
+      <tbody>
+        <tr><td>GLM-5.2</td><td>Pass, 111.507s</td><td>Fail, 37.342s</td><td>Fail, 300.306s</td><td>Pass after internal tool retry, 35.047s</td></tr>
+        <tr><td>Kimi K3</td><td>Pass, 172.311s</td><td>Pass, 137.854s</td><td>Pass, 174.351s</td><td>Pass, 22.591s</td></tr>
+        <tr><td>GLM-5.3</td><td>Provider 503 on two attempts</td><td colspan="3">Not run after continuing availability block</td></tr>
+        <tr><td>Qwen</td><td>Provider 400 on two attempts</td><td colspan="3">Not run after request-format incompatibility</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Pass</strong> means functional discovery/content retrieval and cited delivery, including correct target selection for the ordinal. It does not establish claim-by-claim accuracy, unique attribution across reused citation labels, or full transcript coverage. No successful case was repeated; global account memory changed between portions of the sequence. These are descriptive acceptance observations, not statistical reliability estimates or a model-quality ranking.</p>
+    <p>Completed positive drafts used exact supplied closed citation tokens without repair or fallback. Both available models dispatched the correct explicit and previous-week intervals. GLM-5.2's no-match case recovered from discovery HTTP 504 within one browser attempt. Its last-week case had one transcript-body timeout and ultimately reached the application's five-minute turn timeout during final synthesis.</p>
+    <p>Timings start at visible-agent dispatch and end at application completion. They exclude room/model/message persistence before dispatch and background memory extraction. No manual test cutoff was needed.</p>
+  </section>
+
+  <section>
+    <h2>Known remaining issues</h2>
     <ul>
-      <li><code>backend/src/routes/agent-chat.ts</code> — bounded no-tools citation repair, <code>[M…]</code>/<code>[T…]</code> eligibility, private tool-preamble separation, and a pending paragraph boundary after standalone private progress.</li>
-      <li><code>backend/src/__tests__/agent-chat.test.ts</code> — realistic four-meeting success, co-delivered and standalone-delta progress separation, transcript citations, public-web compatibility, usage/identity accounting, and unsupported-output rejection.</li>
-      <li><code>artifacts/meeting-summary-fix-report.html</code> — this self-contained report.</li>
+      <li><strong>Ordinal context:</strong> GLM-5.2 correctly resolved and read the second displayed meeting, but clean synthesis received only the current question and current-turn results. It then treated a single-meeting result as lacking a second meeting. Kimi rediscovered the full list before its target read and completed the summary. Preserve the parent answer or resolved ordinal identity through synthesis/repair; narrow the blanket instruction to omit a reference for room follow-ups.</li>
+      <li><strong>Qwen request format:</strong> the route prepends its own system guidance to existing browser system context. Synthetic requests with the same tool schemas reproduced provider 400 for two consecutive system messages: <code>System message must be at the beginning.</code> Combining the same synthetic content into one system message returned 200. Successful probe streams were cancelled at headers; this establishes request admission, not a repaired browser flow. No fix is included for this incompatibility.</li>
+      <li><strong>Availability and latency:</strong> GLM-5.3's provider returned 503 before tools, including one retry. Provider reasoning time and intermittent transcript-service failures remain material; they are distinct from selection or citation failures.</li>
+      <li><strong>Evidence limits:</strong> the legacy gate does not validate every claim, intended target, or completeness assertion. Citation labels may repeat across separate tool results, and the conservative date matcher is not a general natural-language parser.</li>
     </ul>
   </section>
 
   <section>
-    <h2>Verification limits</h2>
-    <p>The exact production provider completion and chunk ordering were not available, so this report does not claim a live production root cause. The round-budget failure, co-delivered suppression, and earlier standalone-delta presentation defect are covered by realistic local SSE fixtures. Earlier standalone content cannot be retracted without changing the existing cumulative SSE contract; this patch preserves it and inserts a readable boundary only after later metadata identifies that round as private-tool progress.</p>
-    <p>Baseline evidence was independently gathered without rerunning it here: pristine detached <code>fcc6ae5</code> in <code>/tmp/tinychat-meeting-summary-baseline</code>, with separately installed frozen dependencies under Bun 1.3.9. <code>bun test backend/src/__tests__/agent-chat-sockets.test.ts -t 'client Stop aborts provider work|a nonreading socket bounds writes'</code> failed both exactly as in the patched full-suite evidence: client Stop timed out at line 200 at about 521 ms, and the nonreading socket expected bytes below 8,388,637 but received 8,388,987 at line 436. These failures pre-exist this patch in this runtime; neither production completion/chunk ordering nor deployed behavior was verified.</p>
-    <p>No deployment, merge, production request, or live private meeting read was performed.</p>
+    <h2>Files and scope</h2>
+    <ul>
+      <li><code>backend/src/routes/agent-chat.ts</code> — evidence projection, strict token validation, bounded repair, progress separation, and authoritative date/coverage guidance.</li>
+      <li><code>backend/src/transcripts/legacy-meeting-projection.ts</code> — bounded cited evidence, attendee/organizer metadata, and coverage projection.</li>
+      <li><code>backend/src/transcripts/legacy-meeting-date-scope.ts</code> and <code>meeting-turn.ts</code> — conservative request recognition and shared calendar arithmetic.</li>
+      <li><code>backend/src/__tests__/agent-chat.test.ts</code> and <code>legacy-meeting-date-scope.test.ts</code> — regression coverage.</li>
+      <li><code>artifacts/meeting-summary-fix-report.html</code> — this report, containing no private meeting content or credentials.</li>
+    </ul>
+    <p>No identity, environment, package, or lockfile changes. The existing preview was restored without tracing. No merge or production deployment was performed.</p>
   </section>
-
-  <footer>Generated from the local <code>fix/meeting-summary-citations</code> worktree on 2026-09-11.</footer>
+  <footer>Implementation and validation checkpoint: September 14, 2026. Earlier PR evidence remains in git history.</footer>
 </main>
 </body>
 </html>

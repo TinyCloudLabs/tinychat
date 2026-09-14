@@ -18,6 +18,8 @@ import {
   type AgentChatConfig,
 } from "../routes/agent-chat.js";
 import type { Request, Response } from "express";
+import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
+import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 
 const AGENT_ID = "92361e74-91ed-43a2-9656-5cc37ff3a07a";
 const ADDR = "0xabc";
@@ -768,7 +770,7 @@ describe("orchestrateToolCalling", () => {
     const result = await orchestrateToolCalling({
       config: { ...baseConfig(fetchImpl), maxRounds: 3 },
       model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "summarize the last week meetings with Hunter" }],
+      messages: [{ role: "user", content: "Summarize my meetings with Hunter from September 4 through September 10, 2026." }],
       entityId: "entity-1",
       roomId: "thread-1",
       turnContext: { localDate: "2026-09-11", timeZone: "UTC" },
@@ -1962,5 +1964,315 @@ describe("createAgentChatHandler LEDGER_AUTHORITATIVE gate", () => {
     };
     expect(body).not.toHaveProperty("usage");
     expect(body.source).toBe("config_outage");
+  });
+});
+
+
+describe("legacy meeting projection under the tool context cap", () => {
+  function v2Result(refs: string[], read = false) {
+    const outcomes = refs.map((meetingRef, index) => {
+      const meeting = { meetingRef, source: "fireflies", title: `Synthetic meeting ${index + 1}`, startedAt: "2026-09-08T12:00:00Z", participants: Array.from({ length: 8 }, (_, n) => `Synthetic attendee ${n} with a bounded display name`), organizerEmail: null };
+      const text = read ? `Supported finding for ${meetingRef}. ` + "Synthetic detail. ".repeat(210) : "Synthetic metadata only.";
+      return { meetingRef, source: "fireflies", meeting, state: read ? "read" : "metadata",
+        body: { state: "not_requested" }, search: { state: "not_requested", storedFieldsExamined: read, bodyExamined: false, examinedMatches: 0, retainedMatches: 0 },
+        evidence: [{ id: read ? "summary" : "metadata", meetingRef, source: "fireflies", kind: read ? "summary" : "metadata", text, truncated: false, ...(!read ? { metadata: meeting } : {}) }],
+        coverage: { purpose: read ? "summary" : "metadata", overviewPresent: read, actionsPresent: false, bodyAttempted: false, bodyRequired: false, evidenceRetained: 1, omittedEvidenceCount: 0, omissionReasons: [], support: "sufficient" },
+      };
+    });
+    const projected = outcomes.map((outcome, index) => ({ ...outcome.meeting, citation: `[M${index + 1}]` }));
+    return { result: { text: read ? "Retrieved one purpose-supported meeting outcome." : `Found ${refs.length} matching meetings; returned ${refs.length} metadata records.`, data: {
+      contractVersion: 2, outcomes,
+      ...(!read ? { discovery: { matchedCount: refs.length, countKind: "exact", returnedCount: refs.length, scanLimited: false, excludedUndatedCount: 0, orderProven: true, interval: { from: "2026-09-04", to: "2026-09-10", timeZone: "Europe/Lisbon" }, observedAt: "2026-09-13T12:00:00Z", omittedMeetingRefs: [] } } : {}),
+      meeting: projected[0], meetings: read ? [] : projected,
+      summary: read ? { citation: "[M1:S]", text: outcomes[0].evidence[0].text } : null,
+      actionItems: [], excerpts: [], matches: [],
+      corpus: { candidateCount: refs.length, returnedCount: refs.length, transcriptRead: false, truncated: false, partial: false },
+    } } };
+  }
+
+
+  it("preserves validated attendee and organizer metadata when it fits", () => {
+    const fixture = v2Result(["metadata-fixture"]);
+    const typed = parseMeetingToolData(fixture.result.data)!;
+    typed.outcomes[0].meeting.participants = ["Synthetic Alice", "Synthetic Bob"];
+    typed.outcomes[0].meeting.organizerEmail = "synthetic-organizer@example.test";
+    fixture.result.data.meetings[0].participants = ["UNSUPPORTED_PARTICIPANT_SENTINEL"];
+    const text = compactLegacyMeetingResult(fixture.result.data, typed)!;
+    const meeting = JSON.parse(text).meetings[0];
+    expect(text.length).toBeLessThanOrEqual(4000);
+    expect(meeting.participants).toEqual(typed.outcomes[0].meeting.participants);
+    expect(meeting.organizerEmail).toBe("synthetic-organizer@example.test");
+    expect(meeting.citation).toBe("[M1]");
+    expect(meeting.coverage).toMatchObject({ support: "sufficient", contextTruncated: false, omittedParticipantCount: 0, organizerEmailOmitted: false });
+    expect(text).not.toContain("UNSUPPORTED_PARTICIPANT_SENTINEL");
+  });
+
+  it("omits whole oversized metadata values with explicit coverage while retaining cited evidence", () => {
+    const fixture = v2Result(["oversized-metadata-fixture"], true);
+    const typed = parseMeetingToolData(fixture.result.data)!;
+    const oversizedName = 'Synthetic "quoted" \\ attendee 😃 '.repeat(300);
+    typed.outcomes[0].meeting.participants = ["Synthetic Alice", oversizedName, "Synthetic Bob"];
+    typed.outcomes[0].meeting.organizerEmail = "synthetic".repeat(1500) + "@example.test";
+    const text = compactLegacyMeetingResult(fixture.result.data, typed)!;
+    const meeting = JSON.parse(text).meetings[0];
+    expect(text.length).toBeLessThanOrEqual(4000);
+    expect(meeting.participants).toEqual(["Synthetic Alice", "Synthetic Bob"]);
+    expect(meeting.organizerEmail).toBeNull();
+    expect(meeting.summary.citation).toBe("[M1:S]");
+    expect(meeting.summary.text).toContain("Supported finding for oversized-metadata-fixture.");
+    expect(meeting.coverage).toMatchObject({ support: "limited", contextTruncated: true, omittedParticipantCount: 1, organizerEmailOmitted: true });
+    expect(meeting.coverage.omissionReasons).toContain("metadata_budget");
+    expect(text).not.toContain('Synthetic \\"quoted\\"');
+  });
+
+  it("budgets attendee metadata before dropping discovery meeting references", () => {
+    const refs = ["metadata-1", "metadata-2", "metadata-3", "metadata-4"];
+    const fixture = v2Result(refs);
+    const typed = parseMeetingToolData(fixture.result.data)!;
+    for (const outcome of typed.outcomes) outcome.meeting.participants = Array.from({ length: 12 }, (_, index) => `Synthetic attendee ${index} ${"with a long bounded display name ".repeat(3)}`);
+    const text = compactLegacyMeetingResult(fixture.result.data, typed)!;
+    const data = JSON.parse(text);
+    expect(text.length).toBeLessThanOrEqual(4000);
+    expect(data.omittedMeetingCount).toBe(0);
+    expect(data.meetings.map((meeting: { meetingRef: string }) => meeting.meetingRef)).toEqual(refs);
+    expect(data.meetings.some((meeting: { coverage: { omittedParticipantCount: number } }) => meeting.coverage.omittedParticipantCount > 0)).toBe(true);
+    for (const [index, meeting] of data.meetings.entries()) {
+      expect(meeting.citation).toBe(`[M${index + 1}]`);
+      expect(meeting.participants.length + meeting.coverage.omittedParticipantCount).toBe(12);
+      if (meeting.coverage.omittedParticipantCount) {
+        expect(meeting.coverage).toMatchObject({ support: "limited", contextTruncated: true });
+        expect(meeting.coverage.omissionReasons).toContain("metadata_budget");
+      }
+    }
+  });
+
+  it("keeps four discovery references and associated summary citations in bounded valid synthesis JSON", async () => {
+    const refs = ["fixture-1", "fixture-2", "fixture-3", "fixture-4"];
+    const providerBodies: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const fetchImpl = (async (url, init) => {
+      if (String(url).includes("/tools/")) {
+        const args = JSON.parse(String(init?.body)).args;
+        return Response.json(v2Result(args.meetingRef ? [args.meetingRef] : refs, Boolean(args.meetingRef)));
+      }
+      providerBodies.push(JSON.parse(String(init?.body)));
+      const round = providerBodies.length;
+      const calls = round === 1 ? [{ index: 0, id: "find", function: { name: "tinycloud_find_meetings", arguments: "{}" } }]
+        : refs.map((meetingRef, index) => ({ index, id: `read-${index}`, function: { name: "tinycloud_read_meeting", arguments: JSON.stringify({ meetingRef, focus: "summary" }) } }));
+      return new Response(dataFrame({ choices: [{ delta: round < 3 ? { tool_calls: calls } : { content: round === 3 ? "An uncited synthetic draft." : "Supported findings [M1:S]." }, finish_reason: round < 3 ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
+    }) as typeof fetch;
+    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize four synthetic meetings." }], entityId: "fixture", write: () => {} });
+    expect(providerBodies).toHaveLength(4);
+    expect(providerBodies[3].messages).toEqual(providerBodies[2].messages);
+    expect(providerBodies[2].messages[0].content).toContain("Disclose partial or truncated coverage");
+    expect(providerBodies[2].messages[0].content).toContain("complete transcript coverage");
+    const discovered = providerBodies[1].messages.find(message => message.role === "tool")!.content;
+    for (const [index, ref] of refs.entries()) { expect(discovered).toContain(ref); expect(discovered).toContain(`[M${index + 1}]`); }
+    const synthesis = providerBodies[2].messages[1].content.split("\n\nTool results:\n")[1].split("\n\nAnswer concisely")[0];
+    expect(synthesis).toContain("[M1:S]");
+    for (const ref of refs) expect(synthesis).toContain(`Supported finding for ${ref}.`);
+    const packed = synthesis.split("\n\n");
+    expect(packed).toHaveLength(5);
+    for (const text of packed) { expect(text.length).toBeLessThanOrEqual(4000); expect(() => JSON.parse(text)).not.toThrow(); expect(text).not.toContain("[...truncated...]"); }
+    const discovery = JSON.parse(packed[0]);
+    expect(discovery.discovery).toMatchObject({ matchedCount: 4, returnedCount: 4, countKind: "exact", scanLimited: false, interval: { from: "2026-09-04", to: "2026-09-10" } });
+    for (const text of packed.slice(1)) {
+      const meeting = JSON.parse(text).meetings[0];
+      expect(meeting.summary.citation).toBe("[M1:S]");
+      expect(meeting.summary.text.length).toBeGreaterThan(80);
+      expect(meeting.coverage).toMatchObject({ bodyAttempted: false, bodyState: "not_requested", contextTruncated: true, support: "limited" });
+    }
+  });
+
+  it("preserves reader coverage flags and rejects unsupported legacy evidence text", () => {
+    const fixture = v2Result(["paired-fixture"], true);
+    fixture.result.data.outcomes[0].coverage.bodyRequired = true;
+    fixture.result.data.outcomes[0].coverage.actionsPresent = true;
+    const typed = parseMeetingToolData(fixture.result.data)!;
+    typed.outcomes[0].body.reasonCode = "body_unavailable";
+    fixture.result.data.summary!.text = "UNSUPPORTED_PROJECTION_SENTINEL";
+    const projected = JSON.parse(compactLegacyMeetingResult(fixture.result.data, typed)!);
+    expect(projected.meetings[0].coverage).toMatchObject({ overviewPresent: true, actionsPresent: true, bodyRequired: true, bodyReasonCode: "body_unavailable", support: "none", evidenceRetained: 0, omittedEvidenceCount: 1 });
+    expect(projected.meetings[0].summary).toBeUndefined();
+    expect(JSON.stringify(projected)).not.toContain("UNSUPPORTED_PROJECTION_SENTINEL");
+    expect(JSON.stringify(projected)).not.toContain("[M1:S]");
+    const found = v2Result(["ordered-fixture"]);
+    expect(JSON.parse(compactLegacyMeetingResult(found.result.data, parseMeetingToolData(found.result.data)!)!).discovery.orderProven).toBe(true);
+  });
+
+  it("budgets escaped metadata without discarding all cited supporting text", () => {
+    const fixture = v2Result(["escaped-fixture"], true);
+    fixture.result.data.outcomes[0].meeting.title = 'Synthetic "quoted" \\ title 😃 '.repeat(400);
+    const projected = compactLegacyMeetingResult(fixture.result.data, parseMeetingToolData(fixture.result.data)!)!;
+    expect(projected.length).toBeLessThanOrEqual(4000);
+    const data = JSON.parse(projected);
+    expect(data.meetings[0].summary.citation).toBe("[M1:S]");
+    expect(data.meetings[0].summary.text).toContain("Supported finding for escaped-fixture.");
+    expect(data.meetings[0].coverage.contextTruncated).toBe(true);
+  });
+
+  it.each(["context", "omission"])("never upgrades unavailable decision support for %s", (cause) => {
+    const fixture = v2Result(["unsupported-decisions"], true);
+    const outcome = fixture.result.data.outcomes[0];
+    outcome.coverage.purpose = "decisions";
+    outcome.coverage.bodyRequired = true;
+    outcome.coverage.support = "none";
+    outcome.body.state = "missing";
+    if (cause === "omission") {
+      fixture.result.data.summary!.text = outcome.evidence[0].text = "Stored overview without decision evidence. ".repeat(4);
+      outcome.evidence.push({ ...outcome.evidence[0], id: "action", kind: "action", text: "A stored task does not establish a decision." });
+      outcome.coverage.evidenceRetained = 2;
+    }
+    const projected = JSON.parse(compactLegacyMeetingResult(fixture.result.data, parseMeetingToolData(fixture.result.data)!)!);
+    expect(projected.meetings[0].coverage.contextTruncated).toBe(true);
+    expect(projected.meetings[0].summary.text.length).toBeGreaterThan(80);
+    expect(projected.meetings[0].coverage.support).toBe("none");
+  });
+
+  it("retains full typed evidence for the structured controller", async () => {
+    const fixture = v2Result(["structured-fixture"], true);
+    const sourceText = fixture.result.data.outcomes[0].evidence[0].text;
+    const upstreamBodies: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    const fetchImpl = (async (url, init) => {
+      if (String(url).endsWith("/capabilities")) return Response.json({ meetingRetrieval: { contractVersion: 2 }, buildRevision: "synthetic-compatible-reader" });
+      if (String(url).includes("/tools/")) return Response.json(fixture);
+      upstreamBodies.push(JSON.parse(String(init?.body)));
+      const first = upstreamBodies.length === 1;
+      return new Response(dataFrame({ choices: [{ delta: first ? { tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify({ kind: "meeting_content", scope: "exact", meetingRef: "structured-fixture", purpose: "summary", evidenceRequirement: "overview" }) } }] } : { content: JSON.stringify({ claims: [{ text: "Supported finding.", meetingIds: ["M1"], evidenceIds: ["M1:E1"] }] }) }, finish_reason: first ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
+    }) as typeof fetch;
+    await orchestrateToolCalling({ config: { ...baseConfig(fetchImpl), meetingContentRetrievalEnabled: true, meetingTrace: () => {} }, model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: () => {} });
+    expect(upstreamBodies).toHaveLength(2);
+    expect(upstreamBodies[1].messages[1].content).toContain(sourceText);
+  });
+});
+
+
+describe("every meeting citation must match supplied evidence", () => {
+  const fullCitation = "[M1:E1, Synthetic Speaker, 00:01:12]";
+  function mixedCitationScenario(invalid: string, repairValid: boolean, extraCitation?: string) {
+    const providerBodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (url, init) => {
+      if (String(url).includes("/tools/")) return Response.json({ result: { data: {
+        summary: { citation: "[M1:S]", text: "Supported synthetic summary." },
+        excerpts: [{ citation: fullCitation, text: "Supported synthetic quotation." }, ...(extraCitation ? [{ citation: extraCitation, text: "Another supported synthetic quotation." }] : [])],
+      } } });
+      providerBodies.push(JSON.parse(String(init?.body)));
+      const round = providerBodies.length;
+      const content = `Supported summary [M1:S]. Supported quotation ${round === 3 && repairValid ? fullCitation : invalid}.`;
+      return new Response(dataFrame({ choices: [{ delta: round === 1 ? { tool_calls: [{ index: 0, id: "read", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"summary"}' } }] } : { content }, finish_reason: round === 1 ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
+    }) as typeof fetch;
+    return { fetchImpl, providerBodies };
+  }
+  it("expands a uniquely supplied abbreviated citation without another model round", async () => {
+    const { fetchImpl, providerBodies } = mixedCitationScenario("[M1:E1]", false);
+    const frames: string[] = [];
+    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
+    expect(providerBodies).toHaveLength(2);
+    expect(forwardedContent(frames)).toBe(`Supported summary [M1:S]. Supported quotation ${fullCitation}.`);
+  });
+  it("keeps an already exact supplied citation even when a longer attributed form also exists", async () => {
+    const { fetchImpl, providerBodies } = mixedCitationScenario("[M1:E1]", false, "[M1:E1]");
+    const frames: string[] = [];
+    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
+    expect(providerBodies).toHaveLength(2);
+    expect(forwardedContent(frames)).toBe("Supported summary [M1:S]. Supported quotation [M1:E1].");
+  });
+  it.each(["[M1:E1]", "[T99:E1]", "[M1:invalid]"])("hides mixed valid and unsupported citation %s before exact repair", async (invalid) => {
+    const { fetchImpl, providerBodies } = mixedCitationScenario(invalid, true, invalid === "[M1:E1]" ? "[M1:E1, Another Speaker, 00:02:00]" : undefined);
+    const frames: string[] = [];
+    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
+    expect(providerBodies).toHaveLength(3);
+    expect(providerBodies[2].tools).toBeUndefined();
+    expect(forwardedContent(frames)).toBe(`Supported summary [M1:S]. Supported quotation ${fullCitation}.`);
+    expect(forwardedContent(frames)).not.toContain(invalid);
+  });
+  it("falls back after the one repair still mixes a known citation with a shortened citation", async () => {
+    const { fetchImpl, providerBodies } = mixedCitationScenario("[M1:E1]", false, "[M1:E1, Another Speaker, 00:02:00]");
+    const frames: string[] = [];
+    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
+    expect(providerBodies).toHaveLength(3);
+    expect(providerBodies[2].tools).toBeUndefined();
+    expect(forwardedContent(frames)).toBe("I found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
+  });
+});
+
+
+describe("legacy authoritative last-week scope", () => {
+  async function scenario(question: string, localDate: string, tool = "tinycloud_find_meetings", extraArgs: Record<string, unknown> = {}) {
+    const providerBodies: Array<{ messages: Array<{ role: string; content: string; tool_calls?: Array<{ function: { name: string; arguments: string } }> }>; tools?: unknown }> = [];
+    const dispatched: Array<{ name: string; args: Record<string, unknown>; context: unknown }> = [];
+    const staleArgs = { from: "2026-09-04", to: "2026-09-10", participant: "Hunter", title: "Sync", source: "fireflies", ...extraArgs };
+    const fetchImpl = (async (url, init) => {
+      if (String(url).includes("/tools/")) {
+        dispatched.push({ name: String(url).split("/").at(-1)!, ...JSON.parse(String(init?.body)) });
+        return Response.json({ result: { data: { summary: { citation: "[M1:S]", text: "Supported synthetic summary." }, coverage: { contextTruncated: true, bodyAttempted: false } } } });
+      }
+      providerBodies.push(JSON.parse(String(init?.body)));
+      const round = providerBodies.length;
+      const delta = round === 1 ? { tool_calls: [{ index: 0, id: "find", function: { name: tool, arguments: JSON.stringify(staleArgs) } }] }
+        : round === 2 ? { tool_calls: [{ index: 0, id: "read", function: { name: "tinycloud_read_meeting", arguments: '{"meetingRef":"synthetic-selected","focus":"summary"}' } }] }
+        : { content: round === 3 ? "An uncited draft." : "Supported synthetic summary [M1:S]." };
+      return new Response(dataFrame({ choices: [{ delta, finish_reason: round < 3 ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
+    }) as typeof fetch;
+    const frames: string[] = [];
+    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b",
+      messages: [
+        { role: "system", content: "Historical synthetic memory: last week was September 4 through September 10, 2026." },
+        { role: "user", content: "Previously summarize my meetings last week." },
+        { role: "assistant", content: "Historical synthetic interval: 2026-09-04 through 2026-09-10." },
+        { role: "user", content: question },
+      ], entityId: "fixture", roomId: "fixture-room", turnContext: { localDate, timeZone: "Europe/Lisbon" }, write: frame => { frames.push(frame); },
+    });
+    return { providerBodies, dispatched, staleArgs, output: forwardedContent(frames) };
+  }
+
+  it.each([
+    ["2026-09-13", "2026-08-31", "2026-09-06"],
+    ["2026-09-14", "2026-09-07", "2026-09-13"],
+  ])("dispatches trusted last-week bounds on %s and carries them through final and repair", async (localDate, from, to) => {
+    const result = await scenario("Summarize my meetings with Hunter last week.", localDate);
+    expect(result.dispatched[0].args).toEqual({ ...result.staleArgs, from, to });
+    expect(result.dispatched[0].context).toEqual({ localDate, timeZone: "Europe/Lisbon" });
+    const recorded = result.providerBodies[1].messages.find(message => message.tool_calls)?.tool_calls?.[0];
+    expect(JSON.parse(recorded!.function.arguments)).toEqual(result.dispatched[0].args);
+    expect(result.dispatched[1].args).toEqual({ meetingRef: "synthetic-selected", focus: "summary" });
+    expect(result.providerBodies).toHaveLength(4);
+    for (const index of [0, 2, 3]) {
+      const guidance = result.providerBodies[index].messages[0].content;
+      expect(guidance).toContain(`Authoritative date scope for this request: ${from} through ${to}`);
+      expect(guidance).toContain("Europe/Lisbon");
+    }
+    for (const body of result.providerBodies.slice(2)) {
+      expect(body.tools).toBeUndefined();
+      expect(body.messages[0].content).toContain("Disclose partial or truncated coverage");
+      expect(body.messages[0].content).toContain("complete transcript coverage");
+    }
+    expect(result.output).toBe("Supported synthetic summary [M1:S].");
+  });
+
+  it.each(["tinycloud_search_transcripts", "tinycloud_list_meeting_actions"])("normalizes range dates on %s without changing filters", async tool => {
+    const result = await scenario("Summarize my meetings with Hunter last week.", "2026-09-14", tool, { query: "synthetic topic" });
+    expect(result.dispatched[0].args).toEqual({ ...result.staleArgs, from: "2026-09-07", to: "2026-09-13" });
+  });
+
+  it.each([
+    "Summarize my meetings with Hunter from September 4 through September 10, 2026.",
+    "Summarize my meetings about last week.",
+    'Summarize my meetings titled "Last Week".',
+    "Summarize my meetings last week and September 4 through September 10, 2026.",
+    "Summarize the second meeting.",
+  ])("does not derive a new interval from memory or ambiguous current wording: %s", async question => {
+    const result = await scenario(question, "2026-09-14");
+    expect(result.dispatched[0].args).toEqual(result.staleArgs);
+    expect(result.providerBodies[0].messages[0].content).not.toContain("Authoritative date scope for this request:");
+  });
+
+  it.each([null, "", "   "])("does not treat an empty reference %s as a selected meeting", async meetingRef => {
+    const result = await scenario("Summarize my meetings with Hunter last week.", "2026-09-14", "tinycloud_find_meetings", { meetingRef });
+    expect(result.dispatched[0].args).toEqual({ ...result.staleArgs, from: "2026-09-07", to: "2026-09-13" });
+  });
+
+  it.each(["tinycloud_find_meetings", "tinycloud_search_transcripts", "tinycloud_read_meeting"])("preserves scoped %s arguments", async tool => {
+    const result = await scenario("Summarize my meetings with Hunter last week.", "2026-09-14", tool, { meetingRef: "synthetic-selected" });
+    expect(result.dispatched[0].args).toEqual(result.staleArgs);
   });
 });

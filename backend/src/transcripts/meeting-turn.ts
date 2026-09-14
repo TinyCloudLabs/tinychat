@@ -102,6 +102,18 @@ export function validMeetingRef(value: unknown): value is string {
     && /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value) && !/^M\d+(?::.*)?$/i.test(value);
 }
 
+/** Calendar arithmetic uses the supplied local day, independent of DST offsets. */
+export function resolveMeetingRelativeDates(relativeDate: string, context?: CalendarContext): { from: string; to: string } | undefined {
+  if (!relativeDates.includes(relativeDate) || !validCalendarDate(context?.localDate) || !validTimeZone(context?.timeZone)) return undefined;
+  const day = new Date(`${context!.localDate}T12:00:00Z`);
+  const shift = (n: number) => new Date(day.getTime() + n * 86400000).toISOString().slice(0, 10);
+  const weekday = (day.getUTCDay() + 6) % 7;
+  if (relativeDate === "last_week") return { from: shift(-weekday - 7), to: shift(-weekday - 1) };
+  if (relativeDate === "this_week") return { from: shift(-weekday), to: shift(6 - weekday) };
+  const offset = relativeDate === "today" ? 0 : relativeDate === "yesterday" ? -1 : -((weekday - (relativeDates.indexOf(relativeDate) - 4) + 7) % 7);
+  return { from: shift(offset), to: shift(offset) };
+}
+
 export function validateMeetingPlan(input: unknown, context?: CalendarContext, inline = false):
   { ok: true; plan: MeetingPlan } | { ok: false; question: string; errors: string[] } {
   // Feedback names only contract fields and rules, never input values or unknown keys.
@@ -138,16 +150,10 @@ export function validateMeetingPlan(input: unknown, context?: CalendarContext, i
   const filters: MeetingFilters = {};
   for (const key of ["title", "participant", "from", "to", "source"] as const) if (value[key] !== undefined) filters[key] = String(value[key]).trim();
   if (value.relativeDate && !filters.from && !filters.to) {
-    if (!validCalendarDate(context?.localDate) || !validTimeZone(context?.timeZone)) return fail("relativeDate requires valid trusted local calendar context; otherwise clarify concrete dates.", "Please provide concrete start and end dates for that interval.");
-    const day = new Date(`${context!.localDate}T12:00:00Z`);
-    const shift = (n: number) => new Date(day.getTime() + n * 86400000).toISOString().slice(0, 10);
-    const weekday = (day.getUTCDay() + 6) % 7;
-    if (value.relativeDate === "last_week") { filters.from = shift(-weekday - 7); filters.to = shift(-weekday - 1); }
-    else if (value.relativeDate === "this_week") { filters.from = shift(-weekday); filters.to = shift(6 - weekday); }
-    else {
-      const offset = value.relativeDate === "today" ? 0 : value.relativeDate === "yesterday" ? -1 : -((weekday - (relativeDates.indexOf(String(value.relativeDate)) - 4) + 7) % 7);
-      filters.from = filters.to = shift(offset);
-    }
+    const bounds = resolveMeetingRelativeDates(String(value.relativeDate), context);
+    if (!bounds) return fail("relativeDate requires valid trusted local calendar context; otherwise clarify concrete dates.", "Please provide concrete start and end dates for that interval.");
+    filters.from = bounds.from;
+    filters.to = bounds.to;
   }
   if (filters.from && filters.to && filters.from > filters.to) return fail("from must be on or before to.", "The start date must be on or before the end date.");
   if ((filters.from || filters.to) && !zone) return fail("Calendar date filters require timeZone or valid trusted local calendar context.", "Please specify the time zone for those calendar dates.");
