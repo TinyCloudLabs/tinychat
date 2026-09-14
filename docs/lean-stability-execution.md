@@ -10,7 +10,7 @@ Implementation is isolated in `workspaces/tinychat-lean-stability-20260914` of t
 | --- | --- | --- | --- |
 | TinyChat | `Codex/roman/tinychat-lean-stability-20260914` | `bad9c0e00acb6634fdb9a96d4bdfea2e2fa7c132` | See implementation commit containing this record. |
 | tinycloud-agents | `Codex/roman/tinychat-lean-stability-20260914` | `7068737` (includes renewal fix `1374c12`) | `63a2c041721dc6b9d9e033e019aae3b7078c5c2a` |
-| tinycloud-node | `workspace/tinychat-publication-v3-20260914` | `458137c97178365faa41009aa10a54bd03e4a7ac` | `74173f9d0fbf04fdc21473ae91130503a1e73829`; final SDK transport integration is recorded in workspace evidence. |
+| tinycloud-node | `workspace/tinychat-publication-v3-20260914` | `458137c97178365faa41009aa10a54bd03e4a7ac` | `f48c020e9e5e428b3988533789b589564fcbc05d` |
 
 Workspace receipts live in sibling `../evidence/` and contain synthetic identities only. `provider-gate.md`, `publication-completion.md`, `node-publication-findings.md`, `evaluation-synthetic.json`, and the test logs distinguish observations from unperformed deployment claims.
 
@@ -59,6 +59,10 @@ The frontend claims one terminal outcome, closes answer admission before cancell
 Use the declared Bun 1.4 runtime. Bun 1.3.9 locally failed the native HTTP Stop reproduction; Bun 1.4 passes the actual route/socket control. This is a runtime requirement, not proof of upstream compute cancellation.
 
 New checkpoints use the `ordinary-v3:` ID provenance marker; legacy rows remain stored but are excluded from reuse. An executable admitted-provider evaluator is available as `bun backend/scripts/meeting-eval.ts <output.json> --admitted-provider`; it fails before network work until the same reviewed receipt loader admits the provider. Composite fault injections and actual upstream HTTP requests are counted separately, and complete synthetic result outputs are retained for human review.
+
+Final integrated checks passed 1,424 backend tests (one optional asset test skipped, covered separately), 1,036 frontend tests, 147 shared-package tests and 15 actual browser tests. Backend/frontend TypeScript, scoped production lint, diff checks and the production frontend build passed. Companion passed all 690 tests (275 client, 214 memory, 201 service). Native node passed 299 core and 353 server tests.
+
+The final real SDK/native/companion gate passed all 12 cases against TinyChat code commit `7b25517454470e7209d8ec257ca0cb046ce95fe6`, companion `63a2c041721dc6b9d9e033e019aae3b7078c5c2a` and native `f48c020e9e5e428b3988533789b589564fcbc05d`. Earlier attempts remain in evidence: the first failed before activation on the SDK's SQL ability, and the second passed 11/12, exposing idempotent cleanup of an absent legacy body. The exact reserved command now uses the SDK's existing `db.execute`/SQL-write capability. Final binary SHA256 is `3b078ad11559bdb5e700944574af4bf8447ac5375ee40abfaf73cc38c4f8ac83`. Only the isolated node on port 8017 was stopped; the original node on 8000 was preserved.
 
 The exact commands and final totals are retained in the workspace execution record and evidence logs. The fixed 12-scenario corpus runs three interleaved attempts via the actual loopback route with synthetic stores/provider faults. Every attempt is retained; there is no retry-until-success scoring. Marker support and required-point recall are reported separately from status/citation checks. This screen is not human semantic evaluation or evidence of 99% reliability.
 
