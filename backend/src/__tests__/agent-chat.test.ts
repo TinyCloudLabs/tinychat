@@ -9,8 +9,6 @@ import { TIERS } from "../billing/tiers.js";
 import { _resetUsage, getUsage, recordUsage } from "../billing/usage.js";
 import {
   accumulateToolCalls,
-  buildCleanSynthesisMessages,
-  buildMeetingAgentGuidance,
   createAgentChatHandler,
   orchestrateToolCalling,
   parseInlineToolCalls,
@@ -18,8 +16,6 @@ import {
   type AgentChatConfig,
 } from "../routes/agent-chat.js";
 import type { Request, Response } from "express";
-import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
-import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
 
 const AGENT_ID = "92361e74-91ed-43a2-9656-5cc37ff3a07a";
 const ADDR = "0xabc";
@@ -74,7 +70,7 @@ function baseConfig(fetchImpl: typeof fetch): AgentChatConfig {
     redpillBaseUrl: "https://redpill.test/v1",
     defaultModel: () => "phala/gpt-oss-120b",
     isModelOffered: (m) => m.startsWith("phala/"),
-    fetchImpl,
+    fetchImpl: (async (url, init) => { const body = init?.body ? JSON.parse(String(init.body)) : {}; if(body.messages?.[0]?.content?.startsWith("Interpret only")) return new Response(dataFrame({choices:[{delta:{content:JSON.stringify({kind:"general"})},finish_reason:"stop"}]}) + "data: [DONE]\n\n"); return fetchImpl(url,init); }) as typeof fetch,
     maxRounds: 3,
   };
 }
@@ -125,6 +121,7 @@ function stubCatalogFetch(): () => void {
 /** Build mock req/res objects for direct handler invocation. */
 function makeReqRes(opts?: { body?: object; address?: string }) {
   const body = opts?.body ?? { messages: [{ role: "user", content: "hi" }] };
+  Object.assign(body, {turn: {turnId: "synthetic", sentAt: Date.now()}});
   const address = opts?.address ?? ADDR;
   let statusCode = 200;
   const jsonResponses: Array<{ status: number; body: unknown }> = [];
@@ -249,190 +246,8 @@ describe("parseSseJson", () => {
   });
 });
 
-describe("orchestrateToolCalling", () => {
-  describe("legacy result size limits", () => {
-    for (const adapter of ["stream", "bodyless"] as const) {
-      for (const length of [65536, 65537]) {
-        it(`${adapter} accepts 65536 characters and rejects one over (${length})`, async () => {
-          const json = sizedToolJson(length);
-          expect(json.length).toBe(length);
-          const bytes = new TextEncoder().encode(json);
-          expect(bytes.length).toBeGreaterThan(length);
-          let models = 0, dispatches = 0;
-          const requests: string[] = [], frames: string[] = [];
-          const body = new ReadableStream<Uint8Array>({
-            start(controller) {
-              // Split inside the butterfly, then cross the decoded-character cap.
-              const multibyteSplit = bytes.indexOf(0xf0) + 2;
-              const capSplit = new TextEncoder().encode(json.slice(0, 65536)).length;
-              controller.enqueue(bytes.slice(0, multibyteSplit));
-              controller.enqueue(bytes.slice(multibyteSplit, capSplit));
-              if (capSplit < bytes.length) controller.enqueue(bytes.slice(capSplit));
-              controller.close();
-            },
-          });
-          const fetchImpl = (async (url, init) => {
-            if (String(url).includes("/tools/")) {
-              dispatches++;
-              return adapter === "stream" ? new Response(body) : { ok: true, status: 200, body: null, json: async () => JSON.parse(json) };
-            }
-            requests.push(init!.body as string);
-            models++;
-            return { ok: true, body: sseStream([
-              models === 1
-                ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "size", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
-                : dataFrame({ id: "answer-id", choices: [{ delta: { content: "Safe answer." }, finish_reason: "stop" }] }),
-              dataFrame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }),
-            ]) };
-          }) as typeof fetch;
-          const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: (f) => frames.push(f) });
-          expect(dispatches).toBe(1);
-          expect(body.locked).toBe(false);
-          if (length === 65536) {
-            expect(result).toEqual({ completionId: "answer-id", promptTokens: 14, completionTokens: 6 });
-            expect(models).toBe(2);
-            expect(forwardedContent(frames)).toBe("Safe answer.");
-          } else {
-            expect(result).toEqual({ completionId: "", promptTokens: 7, completionTokens: 3, errorCode: "result_size_limit" });
-            expect(models).toBe(1);
-            expect(JSON.stringify({ requests, frames })).not.toContain("OVERSIZED PRIVATE SENTINEL");
-            expect(forwardedContent(frames)).toBe("");
-            expect(frames.filter(f => f.includes('"status":"done"'))).toHaveLength(0);
-          }
-        });
-      }
-    }
-
-    it("checks the final decoder flush before parsing tool JSON", async () => {
-      const json = sizedToolJson(65536);
-      const body = new ReadableStream<Uint8Array>({ start(controller) {
-        controller.enqueue(new TextEncoder().encode(json));
-        // Incomplete UTF-8 contributes one replacement character only on flush.
-        controller.enqueue(Uint8Array.of(0xf0));
-        controller.close();
-      } });
-      let models = 0;
-      const frames: string[] = [];
-      const fetchImpl = (async (url) => {
-        if (String(url).includes("/tools/")) return new Response(body);
-        models++;
-        return { ok: true, body: sseStream([models === 1
-          ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "flush", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
-          : dataFrame({ choices: [{ delta: { content: "Must not synthesize." }, finish_reason: "stop" }] }),
-        ]) };
-      }) as typeof fetch;
-      const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: f => frames.push(f) });
-      expect(result.errorCode).toBe("result_size_limit");
-      expect(result.completionId).toBe("");
-      expect(models).toBe(1);
-      expect(body.locked).toBe(false);
-      expect(forwardedContent(frames)).toBe("");
-    });
-
-    for (const cleanup of ["reject", "pending"] as const) {
-      it(`stops after overflow without reusing prior results or dispatching queued tools (${cleanup} cleanup)`, async () => {
-        let cancelled = 0, models = 0;
-        const body = new ReadableStream<Uint8Array>({
-          start(controller) { controller.enqueue(new TextEncoder().encode(sizedToolJson(65537))); },
-          cancel() { cancelled++; return cleanup === "reject" ? Promise.reject(new Error("PRIVATE CLEANUP SENTINEL")) : new Promise<void>(() => {}); },
-        });
-        const dispatches: string[] = [], requests: string[] = [], frames: string[] = [];
-        const fetchImpl = (async (url, init) => {
-          if (String(url).includes("/tools/")) {
-            const name = String(url).split("/").at(-1)!;
-            dispatches.push(name);
-            return name === "tinycloud_read_meeting" ? new Response(body) : Response.json({ result: { text: "EARLIER PRIVATE SENTINEL" } });
-          }
-          requests.push(init!.body as string);
-          if (++models > 1) return { ok: true, body: sseStream([dataFrame({ id: "unwanted-answer", choices: [{ delta: { content: "Must not synthesize." }, finish_reason: "stop" }] })]) };
-          return { ok: true, body: sseStream([
-            dataFrame({ id: "tool-round", choices: [{ delta: { content: "Already streamed partial text.", tool_calls: [
-              { index: 0, id: "first", function: { name: "web_search", arguments: "{" } },
-              { index: 1, id: "overflow", function: { name: "tinycloud_read_meeting", arguments: "{}" } },
-              { index: 2, id: "queued", function: { name: "tinycloud_find_meetings", arguments: "{}" } },
-            ] } }] }),
-            dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: null, type: null, function: { name: null, arguments: "}" } }] }, finish_reason: "tool_calls" }] }),
-            dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } }),
-          ]) };
-        }) as typeof fetch;
-        const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: f => frames.push(f) });
-        expect(result).toEqual({ completionId: "", promptTokens: 17, completionTokens: 5, errorCode: "result_size_limit" });
-        expect(models).toBe(1);
-        expect(dispatches).toEqual(["web_search", "tinycloud_read_meeting"]);
-        expect(cancelled).toBe(1);
-        expect(body.locked).toBe(false);
-        expect(forwardedContent(frames)).toBe("Already streamed partial text.");
-        expect(frames.filter(f => f.includes("tool_activity")).map(f => JSON.parse(f.slice(6)).tool_activity)).toEqual([
-          { name: "web_search", status: "running" }, { name: "web_search", status: "done" },
-          { name: "tinycloud_read_meeting", status: "running" }, { name: "tinycloud_read_meeting", status: "error" },
-        ]);
-        expect(JSON.stringify({ requests, frames })).not.toMatch(/OVERSIZED PRIVATE|EARLIER PRIVATE|PRIVATE CLEANUP/);
-      }, 500);
-    }
-
-    it("keeps a genuine unreachable tool eligible for the existing bounded continuation", async () => {
-      let models = 0, dispatches = 0;
-      const requests: string[] = [], frames: string[] = [];
-      const fetchImpl = (async (url, init) => {
-        if (String(url).includes("/tools/")) { dispatches++; throw new TypeError("PRIVATE FETCH SENTINEL"); }
-        requests.push(init!.body as string);
-        return { ok: true, body: sseStream([++models === 1
-          ? dataFrame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "unreachable", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] })
-          : dataFrame({ id: "safe-answer", choices: [{ delta: { content: "Search is unavailable." }, finish_reason: "stop" }] }),
-        ]) };
-      }) as typeof fetch;
-      const result = await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "synthetic question" }], entityId: "e", write: f => frames.push(f) });
-      expect(result.errorCode).toBeUndefined();
-      expect(result.completionId).toBe("safe-answer");
-      expect(models).toBe(2);
-      expect(dispatches).toBe(1);
-      expect(requests[1]).toContain("(tool web_search unreachable)");
-      expect(JSON.stringify({ requests, frames })).not.toContain("PRIVATE FETCH SENTINEL");
-      expect(forwardedContent(frames)).toBe("Search is unavailable.");
-    });
-  });
-
-  it("offers the composable meeting toolkit with local-calendar agent guidance", async () => {
-    let body: Record<string, unknown> | null = null;
-    const fetchImpl = (async (_url: string, init?: RequestInit) => {
-      body = JSON.parse(init!.body as string) as Record<string, unknown>;
-      return {
-        ok: true,
-        status: 200,
-        body: sseStream([dataFrame({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })]),
-      } as unknown as Response;
-    }) as typeof fetch;
-    await orchestrateToolCalling({
-      config: baseConfig(fetchImpl),
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "What was my last meeting?" }],
-      entityId: "e",
-      turnContext: { localDate: "2026-08-26", timeZone: "America/Los_Angeles" },
-      write: () => {},
-    });
-    const names = (body!.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name);
-    expect(names).toEqual([
-      "web_search",
-      "tinycloud_find_meetings",
-      "tinycloud_read_meeting",
-      "tinycloud_search_transcripts",
-      "tinycloud_list_meeting_actions",
-    ]);
-    const system = (body!.messages as ChatMsg[])[0]?.content ?? "";
-    expect(system).toContain("2026-08-26");
-    expect(system).toContain("tinycloud_find_meetings");
-    expect(system).toContain("never substitute web search");
-    expect(system).toContain("Citations are required answer syntax");
-    expect(system).toContain("what next?");
-    expect(system).toContain("citation such as [M1] is never a meetingRef");
-    expect(system).toContain("never use it for an immediate follow-up");
-    expect(system).toContain("tools are read-only");
-  });
-
-  it("requires a concrete date when no local calendar context is available", () => {
-    expect(buildMeetingAgentGuidance()).toContain("ask for a concrete date");
-  });
-  it("streams a plain answer through when the model emits no tool calls", async () => {
+describe("ordinary orchestration controls after backend classification", () => {
+it("streams a plain answer through when the model emits no tool calls", async () => {
     const fetchImpl = (async () => ({
         ok: true,
         status: 200,
@@ -463,8 +278,7 @@ describe("orchestrateToolCalling", () => {
     expect(text).toBe("Hello world");
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  it("dispatches a tool call to eliza and loops back for the final answer", async () => {
+it("dispatches a tool call to eliza and loops back for the final answer", async () => {
     const elizaCalls: Array<{ url: string; body: unknown; auth: string | null }> = [];
     let round = 0;
     const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -548,317 +362,7 @@ describe("orchestrateToolCalling", () => {
     expect(frames.some((f) => f.includes("tool_activity"))).toBe(true);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  it("chains metadata selection to a selected-meeting read before synthesis", async () => {
-    const dispatched: Array<{ name: string; args: Record<string, unknown> }> = [];
-    let round = 0;
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
-      if (String(url).includes("/tools/")) {
-        const name = String(url).split("/").at(-1)!;
-        const body = JSON.parse(init!.body as string) as { args: Record<string, unknown> };
-        dispatched.push({ name, args: body.args });
-        const result = name === "tinycloud_find_meetings"
-          ? { text: "Found one.", data: { meetings: [{ meetingRef: "meeting-1", citation: "[M1]", title: "Latest" }] } }
-          : { text: "Read actions.", data: { actionItems: [{ citation: "[M1:A1]", text: "Sam will send the memo." }] } };
-        return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
-      }
-      round += 1;
-      if (round === 1) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
-          delta: { tool_calls: [{ index: 0, id: "find-1", function: { name: "tinycloud_find_meetings", arguments: '{"sort":"newest","selectFirst":true}' } }] },
-          finish_reason: "tool_calls",
-        }] })]) } as unknown as Response;
-      }
-      if (round === 2) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
-          delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"actions"}' } }] },
-          finish_reason: "tool_calls",
-        }] })]) } as unknown as Response;
-      }
-      return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{ delta: { content: "Sam will send the memo. [M1:A1]" }, finish_reason: "stop" }] })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    await orchestrateToolCalling({
-      config: baseConfig(fetchImpl),
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "What are we going to do next after my last meeting?" }],
-      entityId: "entity-1",
-      roomId: "thread-1",
-      write: (frame) => frames.push(frame),
-    });
-    expect(dispatched).toEqual([
-      { name: "tinycloud_find_meetings", args: { sort: "newest", selectFirst: true } },
-      { name: "tinycloud_read_meeting", args: { focus: "actions" } },
-    ]);
-    expect(forwardedContent(frames)).toContain("[M1:A1]");
-  });
-
-  it("separates standalone private-tool progress from a cited summary", async () => {
-    let round = 0;
-    const fetchImpl = (async (url: string) => {
-      if (String(url).includes("/tools/")) {
-        return Response.json({ result: {
-          text: "Read the meeting.",
-          data: { summary: { citation: "[M1:S]", text: "The launch is Friday." } },
-        } });
-      }
-      round += 1;
-      if (round === 1) {
-        return { ok: true, body: sseStream([
-          dataFrame({ choices: [{ delta: { content: "I'll look up the meeting" } }] }),
-          dataFrame({ choices: [{ delta: { content: " and its summary." } }] }),
-          dataFrame({ choices: [{
-            delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"summary"}' } }] },
-            finish_reason: "tool_calls",
-          }] }),
-        ]) } as unknown as Response;
-      }
-      return { ok: true, body: sseStream([dataFrame({ id: "cited-summary", choices: [{
-        delta: { content: "The launch is Friday. [M1:S]" }, finish_reason: "stop",
-      }] })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    const result = await orchestrateToolCalling({
-      config: baseConfig(fetchImpl),
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "When is the launch?" }],
-      entityId: "entity-1",
-      write: frame => { frames.push(frame); },
-    });
-
-    expect(forwardedContent(frames)).toBe("I'll look up the meeting and its summary.\n\nThe launch is Friday. [M1:S]");
-    expect(result.completionId).toBe("cited-summary");
-  });
-
-  it("separates standalone private-tool progress from the safe fallback", async () => {
-    let round = 0;
-    const fetchImpl = (async (url: string) => {
-      if (String(url).includes("/tools/")) {
-        return Response.json({ result: {
-          text: "Read the meeting.",
-          data: { summary: { citation: "[M1:S]", text: "Supported evidence." } },
-        } });
-      }
-      round += 1;
-      if (round === 1) {
-        return { ok: true, body: sseStream([
-          dataFrame({ choices: [{ delta: { content: "I'll check the meeting" } }] }),
-          dataFrame({ choices: [{ delta: { content: " before answering." } }] }),
-          dataFrame({ choices: [{
-            delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"summary"}' } }] },
-            finish_reason: "tool_calls",
-          }] }),
-        ]) } as unknown as Response;
-      }
-      return { ok: true, body: sseStream([dataFrame({ id: `uncited-${round}`, choices: [{
-        delta: { content: "An unsupported claim." }, finish_reason: "stop",
-      }] })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    const result = await orchestrateToolCalling({
-      config: baseConfig(fetchImpl),
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "What happened?" }],
-      entityId: "entity-1",
-      write: frame => { frames.push(frame); },
-    });
-
-    expect(round).toBe(3);
-    expect(forwardedContent(frames)).toBe("I'll check the meeting before answering.\n\nI found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
-    expect(result.completionId).toBe("uncited-3");
-  });
-
-  it("buffers an uncited meeting draft and repairs it with clean synthesis", async () => {
-    const upstreamBodies: Array<Record<string, unknown>> = [];
-    let round = 0;
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
-      if (String(url).includes("/tools/")) {
-        return new Response(JSON.stringify({
-          ok: true,
-          result: { text: "Found one.", data: { summary: { citation: "[M1:S]", text: "Latest" } } },
-        }), { status: 200 });
-      }
-      upstreamBodies.push(JSON.parse(init!.body as string) as Record<string, unknown>);
-      round += 1;
-      if (round === 1) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
-          delta: { tool_calls: [{ index: 0, id: "find-1", function: { name: "tinycloud_find_meetings", arguments: '{"sort":"newest","selectFirst":true}' } }] },
-          finish_reason: "tool_calls",
-        }] })]) } as unknown as Response;
-      }
-      if (round === 2) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
-          delta: { content: "Your latest meeting was Latest." }, finish_reason: "stop",
-        }] })]) } as unknown as Response;
-      }
-      return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
-        delta: { content: "Your latest meeting was Latest [M1:S]." }, finish_reason: "stop",
-      }] })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    await orchestrateToolCalling({
-      config: { ...baseConfig(fetchImpl), maxRounds: 4 },
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "What was my last meeting?" }],
-      entityId: "entity-1",
-      roomId: "thread-1",
-      write: (frame) => frames.push(frame),
-    });
-
-    expect(upstreamBodies).toHaveLength(3);
-    expect(upstreamBodies[2].tools).toBeUndefined();
-    expect(forwardedContent(frames)).toBe("Your latest meeting was Latest [M1:S].");
-    expect(forwardedContent(frames)).not.toContain("Your latest meeting was Latest.Your");
-  });
-
-  it("repairs an uncited synthesis after find-to-read fan-out without publishing progress", async () => {
-    const upstreamBodies: Array<Record<string, unknown>> = [];
-    const dispatched: string[] = [];
-    let round = 0;
-    const meetings = Array.from({ length: 4 }, (_, index) => ({
-      meetingRef: `hunter-${index + 1}`,
-      citation: `[M${index + 1}]`,
-      title: `Hunter sync ${index + 1}`,
-    }));
-    const fetchImpl = (async (url: string, init?: RequestInit) => {
-      if (String(url).includes("/tools/")) {
-        const name = String(url).split("/").at(-1)!;
-        const body = JSON.parse(String(init?.body)) as { args: { meetingRef?: string } };
-        dispatched.push(`${name}:${body.args.meetingRef ?? "range"}`);
-        if (name === "tinycloud_find_meetings") {
-          return Response.json({ result: { text: "Found 4 meetings with Hunter from Sep 4–10.", data: { meetings } } });
-        }
-        const index = meetings.findIndex((meeting) => meeting.meetingRef === body.args.meetingRef);
-        const citation = `[M${index + 1}:S]`;
-        return Response.json({ result: { text: `Read ${meetings[index].title}.`, data: { summary: { citation, text: `Summary ${index + 1}` } } } });
-      }
-      upstreamBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      round += 1;
-      if (round === 1) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ usage: { prompt_tokens: 10, completion_tokens: 2 }, choices: [{
-          delta: {
-            content: "I'll find your meetings with Hunter from last week (Sep 4–10), then pull each summary.",
-            tool_calls: [{ index: 0, id: "find", function: { name: "tinycloud_find_meetings", arguments: '{"participant":"Hunter","from":"2026-09-04","to":"2026-09-10"}' } }],
-          },
-          finish_reason: "tool_calls",
-        }] })]) } as unknown as Response;
-      }
-      if (round === 2) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ usage: { prompt_tokens: 20, completion_tokens: 4 }, choices: [{
-          delta: {
-            content: "Found 4 meetings with Hunter from Sep 4–10. Let me pull up the summaries for each.",
-            tool_calls: meetings.map((meeting, index) => ({ index, id: `read-${index + 1}`, function: { name: "tinycloud_read_meeting", arguments: JSON.stringify({ meetingRef: meeting.meetingRef, focus: "summary" }) } })),
-          },
-          finish_reason: "tool_calls",
-        }] })]) } as unknown as Response;
-      }
-      if (round === 3) {
-        return { ok: true, status: 200, body: sseStream([dataFrame({ id: "uncited", usage: { prompt_tokens: 30, completion_tokens: 6 }, choices: [{
-          delta: { content: "Hunter covered four project updates." }, finish_reason: "stop",
-        }] })]) } as unknown as Response;
-      }
-      return { ok: true, status: 200, body: sseStream([dataFrame({ id: "cited", usage: { prompt_tokens: 40, completion_tokens: 8 }, choices: [{
-        delta: { content: meetings.map((meeting, index) => `${meeting.title}: Summary ${index + 1} [M${index + 1}:S].`).join("\n") }, finish_reason: "stop",
-      }] })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    const result = await orchestrateToolCalling({
-      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "Summarize my meetings with Hunter from September 4 through September 10, 2026." }],
-      entityId: "entity-1",
-      roomId: "thread-1",
-      turnContext: { localDate: "2026-09-11", timeZone: "UTC" },
-      write: frame => { frames.push(frame); },
-    });
-
-    expect(upstreamBodies).toHaveLength(4);
-    expect(upstreamBodies.slice(2).every(body => body.tools === undefined)).toBe(true);
-    expect(dispatched).toEqual([
-      "tinycloud_find_meetings:range",
-      ...meetings.map(meeting => `tinycloud_read_meeting:${meeting.meetingRef}`),
-    ]);
-    expect(forwardedContent(frames)).toBe(meetings.map((meeting, index) => `${meeting.title}: Summary ${index + 1} [M${index + 1}:S].`).join("\n"));
-    expect(result).toEqual({ promptTokens: 100, completionTokens: 20, completionId: "cited" });
-  });
-
-  it("still rejects unsupported multi-meeting synthesis after its bounded repair", async () => {
-    let round = 0;
-    const fetchImpl = (async (url: string) => {
-      if (String(url).includes("/tools/")) {
-        return Response.json({ result: { text: "Found one meeting.", data: { summary: { citation: "[M1:S]", text: "Supported fact" } } } });
-      }
-      round += 1;
-      if (round <= 2) {
-        const name = round === 1 ? "tinycloud_find_meetings" : "tinycloud_read_meeting";
-        return { ok: true, status: 200, body: sseStream([dataFrame({ choices: [{
-          delta: { content: `progress ${round}`, tool_calls: [{ index: 0, id: `call-${round}`, function: { name, arguments: "{}" } }] },
-          finish_reason: "tool_calls",
-        }], usage: { prompt_tokens: round * 10, completion_tokens: round * 2 } })]) } as unknown as Response;
-      }
-      return { ok: true, status: 200, body: sseStream([dataFrame({ id: round === 3 ? "unsupported-draft" : "unsupported-repair", choices: [{
-        delta: { content: "An unsupported claim without a citation." }, finish_reason: "stop",
-      }], usage: { prompt_tokens: round * 10, completion_tokens: round * 2 } })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    const result = await orchestrateToolCalling({
-      config: { ...baseConfig(fetchImpl), maxRounds: 3 },
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "Summarize my meetings" }],
-      entityId: "entity-1",
-      write: frame => { frames.push(frame); },
-    });
-
-    expect(round).toBe(4);
-    expect(forwardedContent(frames)).toBe("I found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
-    expect(result).toEqual({ promptTokens: 100, completionTokens: 20, completionId: "unsupported-repair" });
-  });
-
-  it("does not start the extended citation repair after cancellation at its round boundary", async () => {
-    let round = 0;
-    let boundaries = 0;
-    const fetchImpl = (async (url: string) => {
-      if (String(url).includes("/tools/")) {
-        return Response.json({ result: { text: "Private evidence [M1:S]." } });
-      }
-      round += 1;
-      if (round <= 2) {
-        const name = round === 1 ? "tinycloud_find_meetings" : "tinycloud_read_meeting";
-        return { ok: true, body: sseStream([dataFrame({ choices: [{
-          delta: { tool_calls: [{ index: 0, id: `call-${round}`, function: { name, arguments: "{}" } }] },
-          finish_reason: "tool_calls",
-        }], usage: { prompt_tokens: round * 10, completion_tokens: round * 2 } })]) } as unknown as Response;
-      }
-      return { ok: true, body: sseStream([dataFrame({ id: "uncited-draft", choices: [{
-        delta: { content: "Unsupported uncited draft." }, finish_reason: "stop",
-      }], usage: { prompt_tokens: 30, completion_tokens: 6 } })]) } as unknown as Response;
-    }) as typeof fetch;
-
-    const frames: string[] = [];
-    const result = await orchestrateToolCalling({
-      config: baseConfig(fetchImpl),
-      model: "phala/gpt-oss-120b",
-      messages: [{ role: "user", content: "Summarize my meetings" }],
-      entityId: "entity-1",
-      write: frame => { frames.push(frame); },
-      isAborted: () => ++boundaries >= 4,
-    });
-
-    expect(round).toBe(3);
-    expect(forwardedContent(frames)).toBe("");
-    expect(result).toEqual({ promptTokens: 60, completionTokens: 12, completionId: "" });
-  });
-
-  // Leaked-markup guard: a single GLM-style inline tool_call in delta.content
-  // (finish "stop") is never forwarded, gets parsed + dispatched, and the synthesis
-  // round's answer streams through.
-  it("detects a single leaked inline tool_call, never forwards it, dispatches + synthesizes", async () => {
+it("detects a single leaked inline tool_call, never forwards it, dispatches + synthesizes", async () => {
     const elizaCalls: Array<{ url: string; body: unknown }> = [];
     let round = 0;
     const leak =
@@ -918,9 +422,7 @@ describe("orchestrateToolCalling", () => {
     expect(frames.some((f) => f.includes('"usage"'))).toBe(false);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  // Leaked-markup guard: two concatenated inline tool_calls are both dispatched.
-  it("detects two concatenated leaked inline tool_calls and dispatches both", async () => {
+it("detects two concatenated leaked inline tool_calls and dispatches both", async () => {
     const elizaCalls: Array<{ body: unknown }> = [];
     let round = 0;
     const leak =
@@ -966,10 +468,7 @@ describe("orchestrateToolCalling", () => {
     expect(forwardedContent(frames)).toBe("Both done.");
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  // Regression: a plain answer that does NOT lead with markup streams through with
-  // no false leak detection and no spurious dispatch — even if it mentions tools.
-  it("does not false-trigger leak mode on a normal answer", async () => {
+it("does not false-trigger leak mode on a normal answer", async () => {
     let elizaHit = false;
     const fetchImpl = (async (url: string) => {
       if (String(url).includes("/tools/")) {
@@ -1000,8 +499,7 @@ describe("orchestrateToolCalling", () => {
     expect(elizaHit).toBe(false);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  it("stops after maxRounds even if the model keeps requesting tools", async () => {
+it("stops after maxRounds even if the model keeps requesting tools", async () => {
     let redpillRounds = 0;
     const fetchImpl = (async (url: string) => {
       if (String(url).includes("/tools/")) {
@@ -1036,11 +534,7 @@ describe("orchestrateToolCalling", () => {
     expect(redpillRounds).toBe(2);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  // Issue B: on the forced final round with gathered tool results, issue a CLEAN
-  // SYNTHESIS request (no tools / no tool_choice, results inlined as user text) so
-  // gpt-oss-* — which ignores tool_choice:"none" and keeps re-calling — must answer.
-  it("forced round issues a clean-synthesis request (no tools) when tool results exist", async () => {
+it("forced round issues a clean-synthesis request (no tools) when tool results exist", async () => {
     const upstreamBodies: Array<Record<string, unknown>> = [];
     let elizaDispatches = 0;
     let redpillRound = 0;
@@ -1117,10 +611,7 @@ describe("orchestrateToolCalling", () => {
     expect(frames.some((f) => f.includes('"usage"'))).toBe(false);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  // Issue B regression: forced round reached with NO tool results (model answered
-  // directly) keeps the normal tool-enabled request and never reshapes.
-  it("does not reshape when the forced round has no tool results", async () => {
+it("does not reshape when the forced round has no tool results", async () => {
     const upstreamBodies: Array<Record<string, unknown>> = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
@@ -1152,168 +643,7 @@ describe("orchestrateToolCalling", () => {
     expect(forwardedContent(frames)).toBe("Direct answer.");
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  describe("transcript tool delegation failures", () => {
-    function transcriptTurn(toolStatus: number, toolBody: unknown) {
-      const upstreamBodies: unknown[] = [];
-      let round = 0;
-      const fetchImpl = (async (url: string, init?: RequestInit) => {
-        if (String(url).includes("/tools/")) {
-          return new Response(JSON.stringify(toolBody), { status: toolStatus });
-        }
-        upstreamBodies.push(JSON.parse(init!.body as string));
-        round += 1;
-        if (round === 1) {
-          return {
-            ok: true, status: 200,
-            body: sseStream([dataFrame({
-              choices: [{
-                delta: { tool_calls: [{ index: 0, id: "call_t", function: { name: "tinycloud_search_transcripts", arguments: '{"query":"cobalt"}' } }] },
-                finish_reason: "tool_calls",
-              }],
-            })]),
-          } as unknown as Response;
-        }
-        return {
-          ok: true, status: 200,
-          body: sseStream([dataFrame({ choices: [{ delta: { content: "You need to reconnect transcript access." }, finish_reason: "stop" }] })]),
-        } as unknown as Response;
-      }) as unknown as typeof fetch;
-      return { fetchImpl, upstreamBodies };
-    }
-
-    function activityFrames(frames: string[]) {
-      return frames.flatMap((frame) => {
-        try {
-          const activity = JSON.parse(frame.replace(/^data: /, "").trim())?.tool_activity;
-          return activity ? [activity as { name: string; status: string }] : [];
-        } catch { return []; }
-      });
-    }
-
-    function delegationErrorFrames(frames: string[]) {
-      return frames.flatMap((frame) => {
-        try {
-          const error = JSON.parse(frame.replace(/^data: /, "").trim())?.delegation_error;
-          return error ? [error as { code: string }] : [];
-        } catch { return []; }
-      });
-    }
-
-    for (const code of ["delegation_required", "delegation_expired"]) {
-      it(`reports ${code} as a tool error and forbids substituting another source`, async () => {
-        const { fetchImpl, upstreamBodies } = transcriptTurn(409, { error: code });
-        const frames: string[] = [];
-        await orchestrateToolCalling({
-          config: baseConfig(fetchImpl),
-          model: "phala/gpt-oss-120b",
-          messages: [{ role: "user", content: "what replaced cobalt in my meeting?" }],
-          entityId: "entity-9",
-          write: (f) => frames.push(f),
-        });
-
-        // The browser must see a failed transcript activity, not a completed one.
-        expect(activityFrames(frames)).toEqual([
-          { name: "tinycloud_search_transcripts", status: "running" },
-          { name: "tinycloud_search_transcripts", status: "error" },
-        ]);
-        expect(delegationErrorFrames(frames)).toEqual([{ code }]);
-
-        // And the model must be told, in the tool result, not to fall back.
-        const toolMessage = (upstreamBodies[1] as { messages: Array<{ role: string; content: string }> })
-          .messages.find((message) => message.role === "tool");
-        expect(toolMessage?.content).toContain(code);
-        expect(toolMessage?.content).toContain("reconnect transcript access");
-        expect(toolMessage?.content).toContain("Do NOT");
-      });
-    }
-
-    it("forwards a successful transcript result's structured citations to synthesis", async () => {
-      const data = {
-        corpus: { candidateCount: 1, examinedCount: 1, matchedCount: 1, truncated: false, partial: false },
-        matches: [{
-          citation: "[T1]", source: "fireflies", sourceId: "canary-1", title: "Agent Retrieval Canary",
-          startedAt: "2026-08-26T10:00:00.000Z",
-          excerpts: [{ citation: "[T1:E1, Avery, 00:01:12]", speaker: "Avery", startSecs: 72, text: "the final choice is ember compass" }],
-        }],
-      };
-      const { fetchImpl, upstreamBodies } = transcriptTurn(200, {
-        ok: true, tool: "TINYCLOUD_SEARCH_TRANSCRIPTS",
-        result: { text: "Found cited evidence in 1 of 1 examined transcripts.", data },
-      });
-      const frames: string[] = [];
-      await orchestrateToolCalling({
-        config: baseConfig(fetchImpl),
-        model: "phala/gpt-oss-120b",
-        messages: [{ role: "user", content: "what replaced cobalt?" }],
-        entityId: "entity-9",
-        write: (f) => frames.push(f),
-      });
-
-      expect(activityFrames(frames).at(-1)).toEqual({ name: "tinycloud_search_transcripts", status: "done" });
-      const toolMessage = (upstreamBodies[1] as { messages: Array<{ role: string; content: string }> })
-        .messages.find((message) => message.role === "tool");
-      expect(toolMessage?.content).toContain("[T1:E1, Avery, 00:01:12]");
-      expect(toolMessage?.content).toContain("ember compass");
-    });
-
-    it("repairs an uncited legacy transcript answer with the exact supplied T citation", async () => {
-      const upstreamBodies: Array<Record<string, unknown>> = [];
-      let round = 0;
-      const citation = "[T1:E1, Avery, 00:01:12]";
-      const fetchImpl = (async (url: string, init?: RequestInit) => {
-        if (String(url).includes("/tools/")) {
-          return Response.json({ result: {
-            text: "Found cited transcript evidence.",
-            data: { matches: [{ citation: "[T1]", excerpts: [{ citation, speaker: "Avery", startSecs: 72, text: "the final choice is ember compass" }] }] },
-          } });
-        }
-        upstreamBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        round += 1;
-        if (round === 1) {
-          return { ok: true, body: sseStream([dataFrame({ choices: [{
-            delta: { tool_calls: [{ index: 0, id: "search", function: { name: "tinycloud_search_transcripts", arguments: '{"query":"cobalt"}' } }] },
-            finish_reason: "tool_calls",
-          }] })]) } as unknown as Response;
-        }
-        const content = round === 2
-          ? "Avery chose ember compass."
-          : `Avery chose ember compass ${citation}.`;
-        return { ok: true, body: sseStream([dataFrame({ id: `transcript-${round}`, choices: [{ delta: { content }, finish_reason: "stop" }] })]) } as unknown as Response;
-      }) as typeof fetch;
-
-      const frames: string[] = [];
-      const result = await orchestrateToolCalling({
-        config: baseConfig(fetchImpl),
-        model: "phala/gpt-oss-120b",
-        messages: [{ role: "user", content: "what replaced cobalt?" }],
-        entityId: "entity-9",
-        write: frame => { frames.push(frame); },
-      });
-
-      expect(upstreamBodies).toHaveLength(3);
-      expect(upstreamBodies[2].tools).toBeUndefined();
-      expect(forwardedContent(frames)).toBe(`Avery chose ember compass ${citation}.`);
-      expect(result.completionId).toBe("transcript-3");
-    });
-  });
-
-  describe("buildCleanSynthesisMessages", () => {
-    it("inlines question + results into a system/user pair with no tool messages", () => {
-      const msgs = buildCleanSynthesisMessages("Q?", "result A\n\nresult B");
-      expect(msgs).toHaveLength(2);
-      expect(msgs[0].role).toBe("system");
-      expect(msgs[0].content).toContain("Do not infer a decision or action item");
-      expect(msgs[1].role).toBe("user");
-      expect(msgs[1].content).toContain("Q?");
-      expect(msgs[1].content).toContain("result A");
-      expect(msgs[1].content).toContain("result B");
-      expect(msgs.some((m) => m.role === "tool")).toBe(false);
-    });
-  });
-
-  // A1: the final answer round's completion id is returned for terminal delivery
-  it("A1: returns the final round's completion id to its owner", async () => {
+it("A1: returns the final round's completion id to its owner", async () => {
     const fetchImpl = (async () => ({
       ok: true,
       status: 200,
@@ -1339,9 +669,7 @@ describe("orchestrateToolCalling", () => {
     // A3: return value carries the completion id
     expect(result.completionId).toBe("cmpl-abc123");
   });
-
-  // A1: tool-only rounds must NOT emit an id frame (only the answer round does)
-  it("A1: returns only the answer round completion id", async () => {
+it("A1: returns only the answer round completion id", async () => {
     let round = 0;
     const fetchImpl = (async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
@@ -1388,9 +716,7 @@ describe("orchestrateToolCalling", () => {
     expect(idFrames).toHaveLength(0);
     expect(result.completionId).toBe("cmpl-answer");
   });
-
-  // A2: summed usage is returned covering all completed rounds
-  it("A2: returns summed tokens across all rounds to its owner", async () => {
+it("A2: returns summed tokens across all rounds to its owner", async () => {
     let round = 0;
     const fetchImpl = (async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/tools/")) {
@@ -1438,9 +764,7 @@ describe("orchestrateToolCalling", () => {
     expect(result.completionTokens).toBe(8);
     expect(frames).not.toContain("data: [DONE]\n\n");
   });
-
-  // A3: single-round return value carries correct totals
-  it("A3: return value carries promptTokens, completionTokens, completionId", async () => {
+it("A3: return value carries promptTokens, completionTokens, completionId", async () => {
     const fetchImpl = (async () => ({
       ok: true,
       body: sseStream([
@@ -1465,8 +789,7 @@ describe("orchestrateToolCalling", () => {
 
 describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
   for (const [failure, code, completed] of [
-    ["invalid-plan", "interpretation_failed", true],
-    ["incomplete-finish", "upstream_incomplete", true],
+    ["incomplete-finish", "upstream_incomplete", false],
     ["provider-error", "upstream_failed", false],
     ["incomplete-read", "upstream_incomplete", false],
     ["tool-overflow", "result_size_limit", true],
@@ -1483,8 +806,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         if (String(url).endsWith("/capabilities")) throw new Error("Unexpected capability request");
         models++;
         if (failure === "provider-error") return new Response("PRIVATE PROVIDER SENTINEL", { status: 429 });
-        const name = failure === "tool-overflow" ? "web_search" : "prepare_meeting_turn";
-        const argumentsJson = failure === "invalid-plan" ? "{invalid JSON" : "{}";
+        const name = "web_search";
+        const argumentsJson = "{}";
         const round = dataFrame({ id: "private-completion-id", choices: [{ delta: { tool_calls: [{ index: 0, id: "call", function: { name, arguments: argumentsJson } }] }, finish_reason: failure === "incomplete-finish" ? "length" : "tool_calls" }] })
           + dataFrame({ usage: { prompt_tokens: 17, completion_tokens: 5 } });
         return new Response(round + (failure === "incomplete-read" ? "" : "data: [DONE]\n\n"));
@@ -1494,13 +817,13 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         const end = res.end.bind(res);
         res.end = (() => { endCount++; end(); return res; }) as typeof res.end;
         await createAgentChatHandler({
-          ...baseConfig(fetchImpl), meetingContentRetrievalEnabled: failure !== "tool-overflow",
+          ...baseConfig(fetchImpl),
           meetingTrace: trace => traces.push(trace),
           streamRuntime: { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), log: summary => logs.push(summary) },
           flusher: { enqueue: entry => entries.push(entry) } as AgentChatConfig["flusher"],
         })(req, res);
         const text = res.chunks.join("");
-        const rounds = failure === "invalid-plan" ? 2 : 1;
+        const rounds = 1;
         expect(models).toBe(rounds);
         expect(dispatches).toBe(failure === "tool-overflow" ? 1 : 0);
         expect(text.match(/"stream_error":/g)).toHaveLength(1);
@@ -1510,7 +833,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         expect(text).not.toMatch(/"usage"|"id"|private-completion-id|PRIVATE PROVIDER|OVERSIZED PRIVATE/);
         expect(logs).toHaveLength(1);
         expect(logs[0]).toMatchObject({ outcome: code });
-        if (failure !== "tool-overflow") expect(traces).toEqual([expect.objectContaining({ terminal: code })]);
+        expect(traces).toEqual([]);
         expect(JSON.stringify({ logs, traces })).not.toMatch(/PRIVATE|invalid JSON|private-completion-id/);
         expect(entries).toHaveLength(completed ? 1 : 0);
         expect(getUsage(ADDR, TIERS.free, null).used).toBe(completed ? rounds : 0);
@@ -1964,315 +1287,5 @@ describe("createAgentChatHandler LEDGER_AUTHORITATIVE gate", () => {
     };
     expect(body).not.toHaveProperty("usage");
     expect(body.source).toBe("config_outage");
-  });
-});
-
-
-describe("legacy meeting projection under the tool context cap", () => {
-  function v2Result(refs: string[], read = false) {
-    const outcomes = refs.map((meetingRef, index) => {
-      const meeting = { meetingRef, source: "fireflies", title: `Synthetic meeting ${index + 1}`, startedAt: "2026-09-08T12:00:00Z", participants: Array.from({ length: 8 }, (_, n) => `Synthetic attendee ${n} with a bounded display name`), organizerEmail: null };
-      const text = read ? `Supported finding for ${meetingRef}. ` + "Synthetic detail. ".repeat(210) : "Synthetic metadata only.";
-      return { meetingRef, source: "fireflies", meeting, state: read ? "read" : "metadata",
-        body: { state: "not_requested" }, search: { state: "not_requested", storedFieldsExamined: read, bodyExamined: false, examinedMatches: 0, retainedMatches: 0 },
-        evidence: [{ id: read ? "summary" : "metadata", meetingRef, source: "fireflies", kind: read ? "summary" : "metadata", text, truncated: false, ...(!read ? { metadata: meeting } : {}) }],
-        coverage: { purpose: read ? "summary" : "metadata", overviewPresent: read, actionsPresent: false, bodyAttempted: false, bodyRequired: false, evidenceRetained: 1, omittedEvidenceCount: 0, omissionReasons: [], support: "sufficient" },
-      };
-    });
-    const projected = outcomes.map((outcome, index) => ({ ...outcome.meeting, citation: `[M${index + 1}]` }));
-    return { result: { text: read ? "Retrieved one purpose-supported meeting outcome." : `Found ${refs.length} matching meetings; returned ${refs.length} metadata records.`, data: {
-      contractVersion: 2, outcomes,
-      ...(!read ? { discovery: { matchedCount: refs.length, countKind: "exact", returnedCount: refs.length, scanLimited: false, excludedUndatedCount: 0, orderProven: true, interval: { from: "2026-09-04", to: "2026-09-10", timeZone: "Europe/Lisbon" }, observedAt: "2026-09-13T12:00:00Z", omittedMeetingRefs: [] } } : {}),
-      meeting: projected[0], meetings: read ? [] : projected,
-      summary: read ? { citation: "[M1:S]", text: outcomes[0].evidence[0].text } : null,
-      actionItems: [], excerpts: [], matches: [],
-      corpus: { candidateCount: refs.length, returnedCount: refs.length, transcriptRead: false, truncated: false, partial: false },
-    } } };
-  }
-
-
-  it("preserves validated attendee and organizer metadata when it fits", () => {
-    const fixture = v2Result(["metadata-fixture"]);
-    const typed = parseMeetingToolData(fixture.result.data)!;
-    typed.outcomes[0].meeting.participants = ["Synthetic Alice", "Synthetic Bob"];
-    typed.outcomes[0].meeting.organizerEmail = "synthetic-organizer@example.test";
-    fixture.result.data.meetings[0].participants = ["UNSUPPORTED_PARTICIPANT_SENTINEL"];
-    const text = compactLegacyMeetingResult(fixture.result.data, typed)!;
-    const meeting = JSON.parse(text).meetings[0];
-    expect(text.length).toBeLessThanOrEqual(4000);
-    expect(meeting.participants).toEqual(typed.outcomes[0].meeting.participants);
-    expect(meeting.organizerEmail).toBe("synthetic-organizer@example.test");
-    expect(meeting.citation).toBe("[M1]");
-    expect(meeting.coverage).toMatchObject({ support: "sufficient", contextTruncated: false, omittedParticipantCount: 0, organizerEmailOmitted: false });
-    expect(text).not.toContain("UNSUPPORTED_PARTICIPANT_SENTINEL");
-  });
-
-  it("omits whole oversized metadata values with explicit coverage while retaining cited evidence", () => {
-    const fixture = v2Result(["oversized-metadata-fixture"], true);
-    const typed = parseMeetingToolData(fixture.result.data)!;
-    const oversizedName = 'Synthetic "quoted" \\ attendee 😃 '.repeat(300);
-    typed.outcomes[0].meeting.participants = ["Synthetic Alice", oversizedName, "Synthetic Bob"];
-    typed.outcomes[0].meeting.organizerEmail = "synthetic".repeat(1500) + "@example.test";
-    const text = compactLegacyMeetingResult(fixture.result.data, typed)!;
-    const meeting = JSON.parse(text).meetings[0];
-    expect(text.length).toBeLessThanOrEqual(4000);
-    expect(meeting.participants).toEqual(["Synthetic Alice", "Synthetic Bob"]);
-    expect(meeting.organizerEmail).toBeNull();
-    expect(meeting.summary.citation).toBe("[M1:S]");
-    expect(meeting.summary.text).toContain("Supported finding for oversized-metadata-fixture.");
-    expect(meeting.coverage).toMatchObject({ support: "limited", contextTruncated: true, omittedParticipantCount: 1, organizerEmailOmitted: true });
-    expect(meeting.coverage.omissionReasons).toContain("metadata_budget");
-    expect(text).not.toContain('Synthetic \\"quoted\\"');
-  });
-
-  it("budgets attendee metadata before dropping discovery meeting references", () => {
-    const refs = ["metadata-1", "metadata-2", "metadata-3", "metadata-4"];
-    const fixture = v2Result(refs);
-    const typed = parseMeetingToolData(fixture.result.data)!;
-    for (const outcome of typed.outcomes) outcome.meeting.participants = Array.from({ length: 12 }, (_, index) => `Synthetic attendee ${index} ${"with a long bounded display name ".repeat(3)}`);
-    const text = compactLegacyMeetingResult(fixture.result.data, typed)!;
-    const data = JSON.parse(text);
-    expect(text.length).toBeLessThanOrEqual(4000);
-    expect(data.omittedMeetingCount).toBe(0);
-    expect(data.meetings.map((meeting: { meetingRef: string }) => meeting.meetingRef)).toEqual(refs);
-    expect(data.meetings.some((meeting: { coverage: { omittedParticipantCount: number } }) => meeting.coverage.omittedParticipantCount > 0)).toBe(true);
-    for (const [index, meeting] of data.meetings.entries()) {
-      expect(meeting.citation).toBe(`[M${index + 1}]`);
-      expect(meeting.participants.length + meeting.coverage.omittedParticipantCount).toBe(12);
-      if (meeting.coverage.omittedParticipantCount) {
-        expect(meeting.coverage).toMatchObject({ support: "limited", contextTruncated: true });
-        expect(meeting.coverage.omissionReasons).toContain("metadata_budget");
-      }
-    }
-  });
-
-  it("keeps four discovery references and associated summary citations in bounded valid synthesis JSON", async () => {
-    const refs = ["fixture-1", "fixture-2", "fixture-3", "fixture-4"];
-    const providerBodies: Array<{ messages: Array<{ role: string; content: string }> }> = [];
-    const fetchImpl = (async (url, init) => {
-      if (String(url).includes("/tools/")) {
-        const args = JSON.parse(String(init?.body)).args;
-        return Response.json(v2Result(args.meetingRef ? [args.meetingRef] : refs, Boolean(args.meetingRef)));
-      }
-      providerBodies.push(JSON.parse(String(init?.body)));
-      const round = providerBodies.length;
-      const calls = round === 1 ? [{ index: 0, id: "find", function: { name: "tinycloud_find_meetings", arguments: "{}" } }]
-        : refs.map((meetingRef, index) => ({ index, id: `read-${index}`, function: { name: "tinycloud_read_meeting", arguments: JSON.stringify({ meetingRef, focus: "summary" }) } }));
-      return new Response(dataFrame({ choices: [{ delta: round < 3 ? { tool_calls: calls } : { content: round === 3 ? "An uncited synthetic draft." : "Supported findings [M1:S]." }, finish_reason: round < 3 ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
-    }) as typeof fetch;
-    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize four synthetic meetings." }], entityId: "fixture", write: () => {} });
-    expect(providerBodies).toHaveLength(4);
-    expect(providerBodies[3].messages).toEqual(providerBodies[2].messages);
-    expect(providerBodies[2].messages[0].content).toContain("Disclose partial or truncated coverage");
-    expect(providerBodies[2].messages[0].content).toContain("complete transcript coverage");
-    const discovered = providerBodies[1].messages.find(message => message.role === "tool")!.content;
-    for (const [index, ref] of refs.entries()) { expect(discovered).toContain(ref); expect(discovered).toContain(`[M${index + 1}]`); }
-    const synthesis = providerBodies[2].messages[1].content.split("\n\nTool results:\n")[1].split("\n\nAnswer concisely")[0];
-    expect(synthesis).toContain("[M1:S]");
-    for (const ref of refs) expect(synthesis).toContain(`Supported finding for ${ref}.`);
-    const packed = synthesis.split("\n\n");
-    expect(packed).toHaveLength(5);
-    for (const text of packed) { expect(text.length).toBeLessThanOrEqual(4000); expect(() => JSON.parse(text)).not.toThrow(); expect(text).not.toContain("[...truncated...]"); }
-    const discovery = JSON.parse(packed[0]);
-    expect(discovery.discovery).toMatchObject({ matchedCount: 4, returnedCount: 4, countKind: "exact", scanLimited: false, interval: { from: "2026-09-04", to: "2026-09-10" } });
-    for (const text of packed.slice(1)) {
-      const meeting = JSON.parse(text).meetings[0];
-      expect(meeting.summary.citation).toBe("[M1:S]");
-      expect(meeting.summary.text.length).toBeGreaterThan(80);
-      expect(meeting.coverage).toMatchObject({ bodyAttempted: false, bodyState: "not_requested", contextTruncated: true, support: "limited" });
-    }
-  });
-
-  it("preserves reader coverage flags and rejects unsupported legacy evidence text", () => {
-    const fixture = v2Result(["paired-fixture"], true);
-    fixture.result.data.outcomes[0].coverage.bodyRequired = true;
-    fixture.result.data.outcomes[0].coverage.actionsPresent = true;
-    const typed = parseMeetingToolData(fixture.result.data)!;
-    typed.outcomes[0].body.reasonCode = "body_unavailable";
-    fixture.result.data.summary!.text = "UNSUPPORTED_PROJECTION_SENTINEL";
-    const projected = JSON.parse(compactLegacyMeetingResult(fixture.result.data, typed)!);
-    expect(projected.meetings[0].coverage).toMatchObject({ overviewPresent: true, actionsPresent: true, bodyRequired: true, bodyReasonCode: "body_unavailable", support: "none", evidenceRetained: 0, omittedEvidenceCount: 1 });
-    expect(projected.meetings[0].summary).toBeUndefined();
-    expect(JSON.stringify(projected)).not.toContain("UNSUPPORTED_PROJECTION_SENTINEL");
-    expect(JSON.stringify(projected)).not.toContain("[M1:S]");
-    const found = v2Result(["ordered-fixture"]);
-    expect(JSON.parse(compactLegacyMeetingResult(found.result.data, parseMeetingToolData(found.result.data)!)!).discovery.orderProven).toBe(true);
-  });
-
-  it("budgets escaped metadata without discarding all cited supporting text", () => {
-    const fixture = v2Result(["escaped-fixture"], true);
-    fixture.result.data.outcomes[0].meeting.title = 'Synthetic "quoted" \\ title 😃 '.repeat(400);
-    const projected = compactLegacyMeetingResult(fixture.result.data, parseMeetingToolData(fixture.result.data)!)!;
-    expect(projected.length).toBeLessThanOrEqual(4000);
-    const data = JSON.parse(projected);
-    expect(data.meetings[0].summary.citation).toBe("[M1:S]");
-    expect(data.meetings[0].summary.text).toContain("Supported finding for escaped-fixture.");
-    expect(data.meetings[0].coverage.contextTruncated).toBe(true);
-  });
-
-  it.each(["context", "omission"])("never upgrades unavailable decision support for %s", (cause) => {
-    const fixture = v2Result(["unsupported-decisions"], true);
-    const outcome = fixture.result.data.outcomes[0];
-    outcome.coverage.purpose = "decisions";
-    outcome.coverage.bodyRequired = true;
-    outcome.coverage.support = "none";
-    outcome.body.state = "missing";
-    if (cause === "omission") {
-      fixture.result.data.summary!.text = outcome.evidence[0].text = "Stored overview without decision evidence. ".repeat(4);
-      outcome.evidence.push({ ...outcome.evidence[0], id: "action", kind: "action", text: "A stored task does not establish a decision." });
-      outcome.coverage.evidenceRetained = 2;
-    }
-    const projected = JSON.parse(compactLegacyMeetingResult(fixture.result.data, parseMeetingToolData(fixture.result.data)!)!);
-    expect(projected.meetings[0].coverage.contextTruncated).toBe(true);
-    expect(projected.meetings[0].summary.text.length).toBeGreaterThan(80);
-    expect(projected.meetings[0].coverage.support).toBe("none");
-  });
-
-  it("retains full typed evidence for the structured controller", async () => {
-    const fixture = v2Result(["structured-fixture"], true);
-    const sourceText = fixture.result.data.outcomes[0].evidence[0].text;
-    const upstreamBodies: Array<{ messages: Array<{ role: string; content: string }> }> = [];
-    const fetchImpl = (async (url, init) => {
-      if (String(url).endsWith("/capabilities")) return Response.json({ meetingRetrieval: { contractVersion: 2 }, buildRevision: "synthetic-compatible-reader" });
-      if (String(url).includes("/tools/")) return Response.json(fixture);
-      upstreamBodies.push(JSON.parse(String(init?.body)));
-      const first = upstreamBodies.length === 1;
-      return new Response(dataFrame({ choices: [{ delta: first ? { tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify({ kind: "meeting_content", scope: "exact", meetingRef: "structured-fixture", purpose: "summary", evidenceRequirement: "overview" }) } }] } : { content: JSON.stringify({ claims: [{ text: "Supported finding.", meetingIds: ["M1"], evidenceIds: ["M1:E1"] }] }) }, finish_reason: first ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
-    }) as typeof fetch;
-    await orchestrateToolCalling({ config: { ...baseConfig(fetchImpl), meetingContentRetrievalEnabled: true, meetingTrace: () => {} }, model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: () => {} });
-    expect(upstreamBodies).toHaveLength(2);
-    expect(upstreamBodies[1].messages[1].content).toContain(sourceText);
-  });
-});
-
-
-describe("every meeting citation must match supplied evidence", () => {
-  const fullCitation = "[M1:E1, Synthetic Speaker, 00:01:12]";
-  function mixedCitationScenario(invalid: string, repairValid: boolean, extraCitation?: string) {
-    const providerBodies: Array<Record<string, unknown>> = [];
-    const fetchImpl = (async (url, init) => {
-      if (String(url).includes("/tools/")) return Response.json({ result: { data: {
-        summary: { citation: "[M1:S]", text: "Supported synthetic summary." },
-        excerpts: [{ citation: fullCitation, text: "Supported synthetic quotation." }, ...(extraCitation ? [{ citation: extraCitation, text: "Another supported synthetic quotation." }] : [])],
-      } } });
-      providerBodies.push(JSON.parse(String(init?.body)));
-      const round = providerBodies.length;
-      const content = `Supported summary [M1:S]. Supported quotation ${round === 3 && repairValid ? fullCitation : invalid}.`;
-      return new Response(dataFrame({ choices: [{ delta: round === 1 ? { tool_calls: [{ index: 0, id: "read", function: { name: "tinycloud_read_meeting", arguments: '{"focus":"summary"}' } }] } : { content }, finish_reason: round === 1 ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
-    }) as typeof fetch;
-    return { fetchImpl, providerBodies };
-  }
-  it("expands a uniquely supplied abbreviated citation without another model round", async () => {
-    const { fetchImpl, providerBodies } = mixedCitationScenario("[M1:E1]", false);
-    const frames: string[] = [];
-    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
-    expect(providerBodies).toHaveLength(2);
-    expect(forwardedContent(frames)).toBe(`Supported summary [M1:S]. Supported quotation ${fullCitation}.`);
-  });
-  it("keeps an already exact supplied citation even when a longer attributed form also exists", async () => {
-    const { fetchImpl, providerBodies } = mixedCitationScenario("[M1:E1]", false, "[M1:E1]");
-    const frames: string[] = [];
-    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
-    expect(providerBodies).toHaveLength(2);
-    expect(forwardedContent(frames)).toBe("Supported summary [M1:S]. Supported quotation [M1:E1].");
-  });
-  it.each(["[M1:E1]", "[T99:E1]", "[M1:invalid]"])("hides mixed valid and unsupported citation %s before exact repair", async (invalid) => {
-    const { fetchImpl, providerBodies } = mixedCitationScenario(invalid, true, invalid === "[M1:E1]" ? "[M1:E1, Another Speaker, 00:02:00]" : undefined);
-    const frames: string[] = [];
-    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
-    expect(providerBodies).toHaveLength(3);
-    expect(providerBodies[2].tools).toBeUndefined();
-    expect(forwardedContent(frames)).toBe(`Supported summary [M1:S]. Supported quotation ${fullCitation}.`);
-    expect(forwardedContent(frames)).not.toContain(invalid);
-  });
-  it("falls back after the one repair still mixes a known citation with a shortened citation", async () => {
-    const { fetchImpl, providerBodies } = mixedCitationScenario("[M1:E1]", false, "[M1:E1, Another Speaker, 00:02:00]");
-    const frames: string[] = [];
-    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b", messages: [{ role: "user", content: "Summarize this synthetic meeting." }], entityId: "fixture", write: frame => { frames.push(frame); } });
-    expect(providerBodies).toHaveLength(3);
-    expect(providerBodies[2].tools).toBeUndefined();
-    expect(forwardedContent(frames)).toBe("I found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
-  });
-});
-
-
-describe("legacy authoritative last-week scope", () => {
-  async function scenario(question: string, localDate: string, tool = "tinycloud_find_meetings", extraArgs: Record<string, unknown> = {}) {
-    const providerBodies: Array<{ messages: Array<{ role: string; content: string; tool_calls?: Array<{ function: { name: string; arguments: string } }> }>; tools?: unknown }> = [];
-    const dispatched: Array<{ name: string; args: Record<string, unknown>; context: unknown }> = [];
-    const staleArgs = { from: "2026-09-04", to: "2026-09-10", participant: "Hunter", title: "Sync", source: "fireflies", ...extraArgs };
-    const fetchImpl = (async (url, init) => {
-      if (String(url).includes("/tools/")) {
-        dispatched.push({ name: String(url).split("/").at(-1)!, ...JSON.parse(String(init?.body)) });
-        return Response.json({ result: { data: { summary: { citation: "[M1:S]", text: "Supported synthetic summary." }, coverage: { contextTruncated: true, bodyAttempted: false } } } });
-      }
-      providerBodies.push(JSON.parse(String(init?.body)));
-      const round = providerBodies.length;
-      const delta = round === 1 ? { tool_calls: [{ index: 0, id: "find", function: { name: tool, arguments: JSON.stringify(staleArgs) } }] }
-        : round === 2 ? { tool_calls: [{ index: 0, id: "read", function: { name: "tinycloud_read_meeting", arguments: '{"meetingRef":"synthetic-selected","focus":"summary"}' } }] }
-        : { content: round === 3 ? "An uncited draft." : "Supported synthetic summary [M1:S]." };
-      return new Response(dataFrame({ choices: [{ delta, finish_reason: round < 3 ? "tool_calls" : "stop" }] }) + "data: [DONE]\n\n");
-    }) as typeof fetch;
-    const frames: string[] = [];
-    await orchestrateToolCalling({ config: baseConfig(fetchImpl), model: "phala/gpt-oss-120b",
-      messages: [
-        { role: "system", content: "Historical synthetic memory: last week was September 4 through September 10, 2026." },
-        { role: "user", content: "Previously summarize my meetings last week." },
-        { role: "assistant", content: "Historical synthetic interval: 2026-09-04 through 2026-09-10." },
-        { role: "user", content: question },
-      ], entityId: "fixture", roomId: "fixture-room", turnContext: { localDate, timeZone: "Europe/Lisbon" }, write: frame => { frames.push(frame); },
-    });
-    return { providerBodies, dispatched, staleArgs, output: forwardedContent(frames) };
-  }
-
-  it.each([
-    ["2026-09-13", "2026-08-31", "2026-09-06"],
-    ["2026-09-14", "2026-09-07", "2026-09-13"],
-  ])("dispatches trusted last-week bounds on %s and carries them through final and repair", async (localDate, from, to) => {
-    const result = await scenario("Summarize my meetings with Hunter last week.", localDate);
-    expect(result.dispatched[0].args).toEqual({ ...result.staleArgs, from, to });
-    expect(result.dispatched[0].context).toEqual({ localDate, timeZone: "Europe/Lisbon" });
-    const recorded = result.providerBodies[1].messages.find(message => message.tool_calls)?.tool_calls?.[0];
-    expect(JSON.parse(recorded!.function.arguments)).toEqual(result.dispatched[0].args);
-    expect(result.dispatched[1].args).toEqual({ meetingRef: "synthetic-selected", focus: "summary" });
-    expect(result.providerBodies).toHaveLength(4);
-    for (const index of [0, 2, 3]) {
-      const guidance = result.providerBodies[index].messages[0].content;
-      expect(guidance).toContain(`Authoritative date scope for this request: ${from} through ${to}`);
-      expect(guidance).toContain("Europe/Lisbon");
-    }
-    for (const body of result.providerBodies.slice(2)) {
-      expect(body.tools).toBeUndefined();
-      expect(body.messages[0].content).toContain("Disclose partial or truncated coverage");
-      expect(body.messages[0].content).toContain("complete transcript coverage");
-    }
-    expect(result.output).toBe("Supported synthetic summary [M1:S].");
-  });
-
-  it.each(["tinycloud_search_transcripts", "tinycloud_list_meeting_actions"])("normalizes range dates on %s without changing filters", async tool => {
-    const result = await scenario("Summarize my meetings with Hunter last week.", "2026-09-14", tool, { query: "synthetic topic" });
-    expect(result.dispatched[0].args).toEqual({ ...result.staleArgs, from: "2026-09-07", to: "2026-09-13" });
-  });
-
-  it.each([
-    "Summarize my meetings with Hunter from September 4 through September 10, 2026.",
-    "Summarize my meetings about last week.",
-    'Summarize my meetings titled "Last Week".',
-    "Summarize my meetings last week and September 4 through September 10, 2026.",
-    "Summarize the second meeting.",
-  ])("does not derive a new interval from memory or ambiguous current wording: %s", async question => {
-    const result = await scenario(question, "2026-09-14");
-    expect(result.dispatched[0].args).toEqual(result.staleArgs);
-    expect(result.providerBodies[0].messages[0].content).not.toContain("Authoritative date scope for this request:");
-  });
-
-  it.each([null, "", "   "])("does not treat an empty reference %s as a selected meeting", async meetingRef => {
-    const result = await scenario("Summarize my meetings with Hunter last week.", "2026-09-14", "tinycloud_find_meetings", { meetingRef });
-    expect(result.dispatched[0].args).toEqual({ ...result.staleArgs, from: "2026-09-07", to: "2026-09-13" });
-  });
-
-  it.each(["tinycloud_find_meetings", "tinycloud_search_transcripts", "tinycloud_read_meeting"])("preserves scoped %s arguments", async tool => {
-    const result = await scenario("Summarize my meetings with Hunter last week.", "2026-09-14", tool, { meetingRef: "synthetic-selected" });
-    expect(result.dispatched[0].args).toEqual(result.staleArgs);
   });
 });

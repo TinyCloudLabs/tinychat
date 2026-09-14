@@ -15,6 +15,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useAuiState,
+  useThreadRuntime,
   useMessage,
 } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -57,6 +58,7 @@ import {
 import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapter";
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
+import { messageTurnOutcome } from "./pendingHandoff";
 import type { SelectionView } from "./modelSelection";
 
 interface ThreadProps {
@@ -528,12 +530,31 @@ const AssistantMessage: FC = () => (
         <ErrorPrimitive.Message className="leading-relaxed" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
+    <MeetingResultReceipt />
     <AssistantActionBar />
     <div className="pl-7">
       <ModelVerificationBadge />
     </div>
   </MessagePrimitive.Root>
 );
+
+/** Product status and Continue are restored from the persisted terminal record. */
+const MeetingResultReceipt: FC = () => {
+  const message = useMessage();
+  const thread = useThreadRuntime();
+  const running = useAuiState(s => s.thread.isRunning);
+  const result = messageTurnOutcome(message)?.result;
+  if (!result) return null;
+  return <div className="ml-7 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-meeting-status={result.status}>
+    <span>{result.status.replaceAll('_', ' ')}</span>
+    <span>{result.sources.length} source{result.sources.length === 1 ? '' : 's'}</span>
+    {result.continuation && (!result.continuation.exhausted || result.continuation.pending?.length > 0) && <Button type="button" variant="outline" size="sm" disabled={running} onClick={() => thread.append({
+      role: 'user', content: [{ type: 'text', text: 'Continue' }], startRun: true,
+      metadata: { custom: { meetingTurn: { continuation: result.continuation, parentMessageId: message.id,
+        parent: { messageId: message.id, turnId: result.turnId, sources: result.sources } } } },
+    })}>Continue</Button>}
+  </div>;
+};
 
 // Three-way phase for the running assistant message — exactly one of the two
 // indicators below matches each phase, so the handoff is mutually exclusive.

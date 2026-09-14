@@ -1,3 +1,5 @@
+import type { MeetingTurnInput, MeetingResult } from '@tinyboilerplate/core';
+import type { CompactionCheckpoint } from '../chat/compaction';
 // Frontend SSE adapter for the agent (tool-calling) chat path (Milestone E, §5).
 //
 // Mirrors lib/chatApi.ts streamChat (cumulative-text yield contract for the
@@ -53,6 +55,7 @@ function emitAgentModelSelectionError(payload: ModelSelectionErrorPayload): void
 }
 
 export interface AgentChatMessage {
+  id?: string;
   role: "user" | "assistant" | "system";
   content: string;
 }
@@ -75,12 +78,13 @@ export type AgentStreamErrorCode =
   | "interpretation_failed"
   | "interpretation_timeout"
   | "result_size_limit"
-  | "agent_failed";
+  | "agent_failed"
+  | "upgrade_required";
 
 /** Expected stream failures carry only bounded codes and safe display copy. */
 export class AgentStreamError extends Error {
   constructor(readonly code: AgentStreamErrorCode) {
-    super(code === "turn_timeout"
+    super(code === "upgrade_required" ? "This chat needs a compatible update before it can continue. Reload the app." : code === "turn_timeout"
       ? "This reply took too long to finish. You can try again."
       : code === "interpretation_failed"
         ? "The model could not prepare a valid meeting request. Please try again."
@@ -104,6 +108,11 @@ export interface StreamAgentChatOptions {
   messages: AgentChatMessage[];
   /** tinychat thread id bound to this turn (session-summary room key). */
   roomId?: string;
+  turn?: MeetingTurnInput;
+  publicTools?: boolean;
+  preparation?: { checkpoint: CompactionCheckpoint | null; memory: string };
+  onMeetingResult?: (result: MeetingResult) => void;
+  onCompactionCheckpoint?: (checkpoint: { coversThroughMessageId: string; summary: string }) => void;
   /** Injectable for tests; normal browser turns derive this from the local clock. */
   clientContext?: AgentClientContext;
   abortSignal?: AbortSignal;
@@ -179,7 +188,7 @@ export async function* streamAgentChat(
         "Content-Type": "application/json",
         [CSRF_HEADER]: CSRF_VALUE,
       },
-      body: JSON.stringify({ ...(model ? { model } : {}), messages, ...(roomId ? { roomId } : {}), clientContext }),
+      body: JSON.stringify({ ...(model ? { model } : {}), messages, ...(roomId ? { roomId } : {}), clientContext, turn: options.turn, publicTools: options.publicTools, preparation: options.preparation }),
       signal: abortSignal,
     });
   } catch {
@@ -187,6 +196,7 @@ export async function* streamAgentChat(
     throw new AgentStreamError("transport");
   }
 
+  if (res.status === 426) throw new AgentStreamError("upgrade_required");
   if (res.status === 401) throw new Error("Session expired. Please sign in again.");
   if (res.status === 402) {
     let payload: PaywallErrorPayload;
@@ -228,11 +238,14 @@ export async function* streamAgentChat(
   }
 
   const reader = res.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   let text = "";
   let idReported = false;
   let cancelled = false;
+  let malformed = false;
+  let receivedMeetingResult = false;
+  let receivedCheckpoint = false;
   const cancelReader = () => {
     if (cancelled) return;
     cancelled = true;
@@ -255,7 +268,8 @@ export async function* streamAgentChat(
       abortSignal?.throwIfAborted();
       const { done, value } = result;
       if (done) throw new AgentStreamError("incomplete");
-      buffer += decoder.decode(value, { stream: true });
+      try { buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n"); }
+      catch { throw new AgentStreamError("incomplete"); }
 
       let sep: number;
       while ((sep = buffer.indexOf("\n\n")) !== -1) {
@@ -266,15 +280,34 @@ export async function* streamAgentChat(
           const line = rawLine.trimStart();
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
-          if (data === "[DONE]") return;
+          if (data === "[DONE]") { if (malformed) throw new AgentStreamError("incomplete"); return; }
           if (!data) continue;
           let json;
           try {
             json = JSON.parse(data);
           } catch {
-            // Ignore an incomplete/malformed event, including an abandoned
-            // partial frame separated from a later terminal error by LF/LF.
+            // Preserve a subsequent explicit terminal error, but a damaged
+            // result frame must never turn private content into ordinary success.
+            malformed = true;
             continue;
+          }
+          if (!json || typeof json !== "object" || Array.isArray(json)) { malformed = true; continue; }
+          if (Object.hasOwn(json, "meeting_result")) {
+            const result = json.meeting_result as MeetingResult;
+            if (!result || typeof result !== "object" || receivedMeetingResult || receivedCheckpoint || result.version !== 3 || result.private !== true || result.turnId !== options.turn?.turnId
+              || typeof result.text !== 'string' || !Array.isArray(result.sources) || !Array.isArray(result.citations)
+              || !Array.isArray(result.obligations) || !Array.isArray(result.limitations) || !Array.isArray(result.coverage) || !result.receipts
+              || !['completed', 'partial', 'unavailable', 'failed', 'cancelled', 'clarification_required'].includes(result.status)) {
+              throw new AgentStreamError('incomplete');
+            }
+            receivedMeetingResult = true;
+            options.onMeetingResult?.(result);
+          }
+          if (Object.hasOwn(json, "compaction_checkpoint")) {
+            const cp = json.compaction_checkpoint;
+            if (!cp || typeof cp !== 'object' || receivedMeetingResult || receivedCheckpoint || typeof cp.coversThroughMessageId !== 'string' || !cp.coversThroughMessageId || typeof cp.summary !== 'string') throw new AgentStreamError('incomplete');
+            receivedCheckpoint = true;
+            options.onCompactionCheckpoint?.(cp);
           }
           if (json?.stream_error) {
             const code = json.stream_error.code;
@@ -318,7 +351,8 @@ export async function* streamAgentChat(
               // caller throwing must not break the stream
             }
           }
-          const chunk: string = json?.choices?.[0]?.delta?.content ?? "";
+          const chunk: unknown = json?.choices?.[0]?.delta?.content ?? "";
+          if (typeof chunk !== "string") throw new AgentStreamError("incomplete");
           abortSignal?.throwIfAborted();
           if (chunk) {
             text += chunk;

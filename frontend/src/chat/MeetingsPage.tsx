@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
 import { copyText } from "@/lib/copyText";
 import {
-  listMeetings,
+  listMeetingsResult,
   meetingSourceLabel,
   readTranscript,
   transcriptCopyText,
@@ -46,7 +46,7 @@ const COPIED_DURATION = 1500;
  * read and copy behaviour below is unchanged — only its placement moved.
  */
 export function MeetingsPage({ tcw }: MeetingsPageProps) {
-  const [phase, setPhase] = useState<"loading" | "ready">("loading");
+  const [phase, setPhase] = useState<"loading" | "ready" | "unavailable">("loading");
   const [meetings, setMeetings] = useState<MeetingListItem[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
@@ -74,20 +74,17 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      // One read across every browsable source (meetingExplorer's
-      // EXPLORER_MEETING_SOURCES default), merged newest-first. listMeetings is
-      // tolerant (a failed Result reads as "no meetings"); the catch is for the
-      // transport itself, so a storage hiccup lands on the empty state rather
-      // than an error page.
-      const items = await listMeetings(tcw).catch(() => [] as MeetingListItem[]);
+      setPhase("loading");
+      setOpenId(null);
+      const result = await listMeetingsResult(tcw);
       if (cancelled) return;
-      setMeetings(items);
-      setPhase("ready");
+      setMeetings(result.status === "ok" ? result.meetings : []);
+      setPhase(result.status === "ok" ? "ready" : "unavailable");
     })();
     return () => {
       cancelled = true;
     };
-  }, [tcw]);
+  }, [tcw, tcw.spaceId]);
 
   const resetCopy = useCallback(() => {
     if (copyTimerRef.current) {
@@ -97,15 +94,12 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
     setCopyState("idle");
   }, []);
 
-  // Only a SETTLED read is cached. `ok` and `absent` are durable answers — the
-  // store has spoken, and re-reading would say the same thing. A `failed` read
-  // is a transient miss (transport, expired session, storage hiccup) and is
-  // never allowed to stick: it is refetched on the next expand, so
-  // collapse-and-reopen is the retry path instead of the row being pinned on a
-  // wrong "nothing here" for the life of the page.
-  const needsFetch = useCallback((id: string) => {
-    const entry = cacheRef.current.get(id);
-    return entry === undefined || entry.status === "failed";
+  // Only verified successful reads are reused. Missing or failed bodies retry
+  // on reopen; a changed revision/readiness uses a different cache entry.
+  const cacheKey = useCallback((meeting: MeetingListItem) => JSON.stringify([tcw.spaceId, meeting.source, meeting.id, meeting.revision, meeting.readiness]), [tcw.spaceId]);
+  const needsFetch = useCallback((key: string) => {
+    const entry = cacheRef.current.get(key);
+    return entry === undefined || entry.status !== "ok";
   }, []);
 
   const onToggle = useCallback(
@@ -113,39 +107,41 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
       // The copy affordance belongs to whichever transcript is open.
       resetCopy();
       const { id, source, sourceId } = meeting;
+      const key = cacheKey(meeting);
       const willOpen = openId !== id;
       setOpenId(willOpen ? id : null);
-      if (!willOpen || !needsFetch(id)) return;
+      if (!willOpen || !needsFetch(key)) return;
 
       // Drop a previous failure before retrying so the panel reads "loading"
       // rather than restating an error a fresh read may be about to clear.
-      cacheRef.current.delete(id);
+      cacheRef.current.delete(key);
 
       const fetchOne = async () => {
-        if (!needsFetch(id)) return;
+        if (!needsFetch(key)) return;
         // Both halves of the identity: the transcript key is source-scoped, so
         // a Meet meeting read under the Fireflies prefix is a guaranteed miss.
-        const read = await readTranscript(tcw, source, sourceId).catch(
+        const read = await readTranscript(tcw, source, sourceId, meeting.revision).catch(
           (): TranscriptRead => ({ status: "failed" }),
         );
         // Cache-write-only: a completion that lands after the row was closed
         // (or another row opened) is still a valid cache entry, so there is no
         // stale-result race to arbitrate.
-        cacheRef.current.set(id, read);
+        cacheRef.current.set(key, read);
         if (mountedRef.current) setRevision((n) => n + 1);
       };
       // Sequential by construction: each fetch waits for the previous one,
       // whether it resolved or rejected.
       chainRef.current = chainRef.current.then(fetchOne, fetchOne);
     },
-    [needsFetch, openId, resetCopy, tcw],
+    [cacheKey, needsFetch, openId, resetCopy, tcw],
   );
 
   const openRead = useMemo(() => {
     if (!openId) return undefined;
     void revision;
-    return cacheRef.current.get(openId);
-  }, [openId, revision]);
+    const meeting = meetings.find((item) => item.id === openId);
+    return meeting ? cacheRef.current.get(cacheKey(meeting)) : undefined;
+  }, [cacheKey, meetings, openId, revision]);
 
   // One string for both the rendered block and the clipboard, computed once per
   // open meeting so scrolling a long transcript never re-joins it.
@@ -182,6 +178,8 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
             />
           ))}
         </div>
+      ) : phase === "unavailable" ? (
+        <p role="status" className="text-xs text-muted-foreground">Your meeting catalog is unavailable. Reconnect your space or run a sync after the publication service is upgraded.</p>
       ) : count === 0 ? (
         // Names the cause for each way this list can be legitimately
         // empty, so nobody re-runs a sync waiting for a transcript that
@@ -297,7 +295,7 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
                               <span>
                                 {copyState === "copied"
                                   ? "Copied"
-                                  : "Copy transcript"}
+                                  : openRead.status === "ok" && openRead.basis === "notes" ? "Copy notes" : "Copy transcript"}
                               </span>
                             </Button>
                             {copyState === "failed" && (

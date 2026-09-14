@@ -68,6 +68,14 @@ class FakeStore implements TargetedIngestStore {
 
   constructor(private readonly log: Log) {}
 
+  async publishConnectorMeeting(tcw: TinyCloudWeb, identity: { source: string; sourceId: string }, fetchCurrent: () => Promise<import("./connectorStore").PublicationInput>) {
+    try {
+      const value = await fetchCurrent();
+      const result = await this.upsertMeeting(tcw, value.meeting, value.sentences);
+      return result.ok ? ok({ ...result.data, revision: "test-revision" }) : result;
+    } catch (error) { return { ok: false as const, error: { code: "PUBLICATION_FETCH_FAILED", message: String(error) } }; }
+  }
+
   async upsertMeeting(
     _tcw: TinyCloudWeb,
     meeting: NormalizedMeeting,

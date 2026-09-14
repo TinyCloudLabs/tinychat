@@ -677,14 +677,12 @@ interface AutoTranscriptionState {
  *  here rather than at the first sync (same shape `useGmeetSessionSync` builds). */
 const GMEET_STORE: GmeetSyncStore = {
   getConnection: connectorStore.getConnection,
-  putTranscriptBody: connectorStore.putTranscriptBody,
-  upsertMeeting: connectorStore.upsertMeeting,
+  publishConnectorMeeting: connectorStore.publishConnectorMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
   getDriveCursor: connectorStore.getDriveCursor,
   putDriveCursor: connectorStore.putDriveCursor,
   findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
-  attachGmeetNotes: connectorStore.attachGmeetNotes,
   removeGmeetNotes: connectorStore.removeGmeetNotes,
 };
 

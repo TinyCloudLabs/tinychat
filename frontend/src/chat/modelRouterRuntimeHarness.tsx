@@ -1,12 +1,12 @@
+import 'reflect-metadata';
+import { OFFERED_CHAT_MODELS } from '@tinyboilerplate/core';
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { OFFERED_CHAT_MODELS, offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import { useChatRuntime } from "./runtime";
 import { Thread } from "./Thread";
 import type { SelectionView, ModelSelectionController } from "./modelSelection";
-import { createMeetingMessageRegistry } from "./pendingHandoff";
-import { DEFAULT_CONTEXT_TOKENS } from "./compaction";
+import { createTurnOutcomeStore } from "./pendingHandoff";
 
 declare global {
   interface Window {
@@ -20,6 +20,7 @@ declare global {
       releaseSave: () => void;
       releaseExtraction: () => void;
       rows: () => Array<[string, { model: string }]>;
+      messages: () => Array<[string, string[]]>;
       pick: (model: string) => void;
       retry: () => void;
       releaseRestore: () => void;
@@ -35,6 +36,14 @@ const events: string[] = [];
 const savedId = "saved-thread";
 const rows = new Map<string, { title: string; model: string; updatedAt: string }>();
 const messages = new Map<string, string[]>();
+if (scenario.includes('lean-private')) {
+  const saved = sessionStorage.getItem('lean-private-fixture');
+  if (saved) {
+    const value = JSON.parse(saved);
+    for (const [id, row] of value.rows) rows.set(id, row);
+    for (const [id, payloads] of value.messages) messages.set(id, payloads);
+  }
+}
 if (scenario.includes("reopen") || scenario.includes("restore") || scenario.includes("cancel-lookup")) {
   rows.set(savedId, {
     title: "Saved",
@@ -124,6 +133,7 @@ const sql = {
         updatedAt: String(threadInsert.params?.[4]),
       });
       messages.set(id, [...(messages.get(id) ?? []), payload]);
+      if (scenario.includes('lean-private')) sessionStorage.setItem('lean-private-fixture', JSON.stringify({ rows: [...rows], messages: [...messages] }));
       events.push(`append:${id}:${model}:${JSON.parse(payload).message.id}`);
       if (JSON.parse(payload).message.role === "assistant") events.push("assistant-stored");
     }
@@ -162,7 +172,7 @@ function Harness() {
   const activeThreadIdRef = useRef<string | null>(null);
   const agentEnabledRef = useRef(false);
   const memoryRef = useRef<string | null>(null);
-  const registry = useMemo(() => createMeetingMessageRegistry(), []);
+  const registry = useMemo(() => createTurnOutcomeStore(), []);
   const runtime = useChatRuntime(useMemo(() => ({
     tcw,
     sessionStore,
@@ -176,11 +186,9 @@ function Harness() {
     memoryRef,
     activeThreadIdRef,
     agentEnabledRef,
-    meetingMessageRegistry: registry,
+    turnOutcomes: registry,
     getCheckpoint: async () => null,
     appendCompaction: async () => { throw new Error("unexpected compaction"); },
-    summarize: async () => { throw new Error("unexpected summary"); },
-    contextTokensFor: (model: string) => offeredChatModelContextTokens(model) ?? DEFAULT_CONTEXT_TOKENS,
   }), [registry]));
 
   useEffect(() => {
@@ -198,6 +206,7 @@ function Harness() {
       releaseSave,
       releaseExtraction,
       rows: () => [...rows],
+      messages: () => [...messages],
       pick: (model) => controllerRef.current?.pick(model),
       retry: () => controllerRef.current?.retry(),
       releaseRestore: () => {

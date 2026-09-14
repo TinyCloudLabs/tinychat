@@ -210,11 +210,11 @@ describe("meeting text extraction", () => {
 describe("MeetingsSection wiring", () => {
   const SECTION = readFileSync(join(import.meta.dir, "MeetingsSection.tsx"), "utf8");
 
-  test("holds no key material and no storage handle — a session is all it takes", () => {
+  test("uses optional storage read grants without provider key material", () => {
     expect(SECTION).toContain("createConnectorMeetingsClient");
     expect(SECTION).not.toContain("connectorSecrets");
     expect(SECTION).not.toContain("FirefliesClient");
-    expect(SECTION).not.toContain("TinyCloudWeb");
+    expect(SECTION).toContain("TinyCloudWeb");
     expect(SECTION).not.toContain("localStorage");
     // No identifier reaches the browser console from this surface (§6.3's browser half).
     expect(SECTION).not.toContain("console.");
@@ -234,12 +234,12 @@ describe("App.tsx wiring", () => {
   const APP = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
   const CONNECTORS = readFileSync(join(import.meta.dir, "ConnectorsPage.tsx"), "utf8");
 
-  test("App constructs the meetings view with a session and a backend URL only", () => {
+  test("App supplies grants for published connectors alongside archive authentication", () => {
     expect(APP).toContain("MeetingsSection");
     expect(APP).toMatch(/<MeetingsSection[\s\S]{0,240}backendUrl=\{BACKEND_URL\}/);
     expect(APP).toMatch(/<MeetingsSection[\s\S]{0,240}sessionStore=\{sessionStoreRef\.current\}/);
     // The point of the read API: it works on a device with no vault.
-    expect(APP).not.toMatch(/<MeetingsSection[\s\S]{0,240}tcw=\{/);
+    expect(APP).toMatch(/<MeetingsSection[\s\S]{0,240}tcw=\{/);
   });
 
   test("ConnectorsPage renders the slot App hands it", () => {

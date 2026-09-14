@@ -14,7 +14,7 @@ const frame = (value: unknown) => encoder.encode(`data: ${JSON.stringify(value)}
 const done = encoder.encode("data: [DONE]\n\n");
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const providerUrl = "https://provider.invalid/v1/chat/completions";
-const toolUrl = "https://eliza.invalid/tools/tinycloud_find_meetings";
+const toolUrl = "https://eliza.invalid/tools/web_search";
 type Phase = "model" | "tool" | "synthesis" | "repair";
 
 function response(body: AsyncIterable<Uint8Array>) {
@@ -26,8 +26,9 @@ function config(fetchImpl: typeof fetch, timeoutMs = 2_000): AgentChatConfig {
     agentId: "synthetic-agent", entityIdFor: () => "synthetic-entity",
     elizaServiceUrl: "https://eliza.invalid", elizaServiceSecret: "synthetic-placeholder",
     redpillApiKey: "synthetic-placeholder", redpillBaseUrl: "https://provider.invalid/v1",
-    defaultModel: () => "moonshotai/kimi-k3", isModelOffered: () => true,
-    fetchImpl, maxRounds: 3,
+    defaultModel: () => "z-ai/glm-5.3", isModelOffered: () => true,
+    meetingProvider: {model:'z-ai/glm-5.3',admitted:true,contextTokens:1048576,countInputTokens:()=>100},
+    fetchImpl: (async (url,init) => {const body=init?.body?JSON.parse(String(init.body)):{};if(!(fetchImpl as any).privateMode&&body.messages?.[0]?.content?.startsWith('Interpret only'))return new Response(new TextDecoder().decode(frame({choices:[{delta:{content:JSON.stringify({kind:'general'})},finish_reason:'stop'}]}))+new TextDecoder().decode(done));return fetchImpl(url,init);}) as typeof fetch, maxRounds: 3,
     streamPolicy: { heartbeatMs: HEARTBEAT_MS, turnTimeoutMs: timeoutMs, drainGraceMs: 100 },
     streamRuntime: {
       now: () => performance.now(),
@@ -39,43 +40,26 @@ function config(fetchImpl: typeof fetch, timeoutMs = 2_000): AgentChatConfig {
 }
 
 function syntheticProvider(phase: Phase) {
-  let round = 0;
-  const signals: (AbortSignal | null | undefined)[] = [];
-  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    expect([providerUrl, toolUrl]).toContain(url);
-    signals.push(init?.signal);
-    if (url === toolUrl) {
-      if (phase === "tool") await pause(SILENCE_MS);
-      return new Response(JSON.stringify({ result: { text: "Synthetic evidence [M1]", data: { citation: "[M1]" } } }));
+  let round=0;
+  const signals:(AbortSignal|null|undefined)[]=[];
+  const reference={source:'fireflies',sourceId:'a',meetingRef:'a',revision:'a'.repeat(64)};
+  const json=(content:unknown)=>new Response(new TextDecoder().decode(frame({choices:[{delta:{content:JSON.stringify(content)},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:5}}))+new TextDecoder().decode(done));
+  const fetchImpl=(async(input:unknown,init?:RequestInit)=>{
+    const url=String(input);signals.push(init?.signal);
+    if(url.endsWith('/capabilities'))return Response.json({meetingRetrieval:{contractVersion:3},buildRevision:'fixture'});
+    if(url.endsWith('/tinycloud_read_meeting')){
+      if(phase==='tool')await pause(SILENCE_MS);
+      return Response.json({result:{data:{contractVersion:3,kind:'evidence',reference,basis:'transcript',state:'complete',metadata:{title:'Synthetic meeting',startedAt:null,organizerEmail:null,participants:[],metadata:{}},original:{digest:'d'.repeat(64),byteLength:22,recordCount:1,extent:'known',captureComplete:null},coverage:{fetched:true,decodedRecords:1,totalRecords:1,suppliedRecords:1,processedRecords:null},spans:[{text:'Synthetic cited answer',recordIndex:0,start:0,end:22}],omissions:[],overviewProvenance:null}}});
     }
+    const body=JSON.parse(String(init?.body));
+    if(body.messages[0].content.startsWith('Interpret only')){if(phase==='model')await pause(SILENCE_MS);return json({kind:'meeting',intent:{mode:'analysis',parts:[{id:'summary',question:'Summarize'}],references:[reference]}});}
     round++;
-    expect(round).toBeLessThanOrEqual(3);
-    if (round === 1) {
-      if (phase === "model") await pause(SILENCE_MS);
-      return response({ async *[Symbol.asyncIterator]() {
-        yield frame({ choices: [{ delta: { content: "Synthetic lookup started." } }] });
-        if (phase !== "model") {
-          yield frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "synthetic-call", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] });
-        } else yield frame({ choices: [{ delta: {}, finish_reason: "stop" }] });
-        yield done;
-      } });
-    }
-    const thisRound = round;
-    return response({ async *[Symbol.asyncIterator]() {
-      const pieces = phase === "repair" && thisRound === 2
-        ? ["UNCHECKED_DRAFT_MUST_STAY_PRIVATE"]
-        : ["Synthetic ", "cited ", "answer [M1]"];
-      for (const piece of pieces) {
-        if (phase === "synthesis" || (phase === "repair" && thisRound === 3)) await pause(SILENCE_MS / pieces.length);
-        yield frame({ choices: [{ delta: { content: piece } }] });
-      }
-      yield frame({ choices: [{ delta: {}, finish_reason: "stop" }] });
-      yield frame({ usage: { prompt_tokens: 4, completion_tokens: 5 } });
-      yield done;
-    } });
+    if(phase==='repair'&&round===1)return json({answers:[{text:'UNCHECKED_DRAFT_MUST_STAY_PRIVATE',citationIds:[]}]});
+    if(phase==='synthesis'||phase==='repair')await pause(SILENCE_MS);
+    return json({answers:[{obligationId:'M1:summary',text:'Synthetic cited answer',citationIds:['M1:E1']}]});
   }) as typeof fetch;
-  return { fetchImpl, signals };
+  (fetchImpl as any).privateMode=true;
+  return {fetchImpl,signals};
 }
 
 async function listen(server: Server | ReturnType<typeof createTcpServer>) {
@@ -188,7 +172,7 @@ async function consume(port: number, stopAfterFirstChunk = false) {
     });
     client.on("error", reject);
     client.setTimeout(3_000, () => client.destroy(new Error("Loopback fixture timed out")));
-    client.end(JSON.stringify({ messages: [{ role: "user", content: "Summarize the synthetic fixture." }] }));
+    client.end(JSON.stringify({ turn: {turnId:"synthetic",sentAt:Date.now()}, messages: [{ role: "user", content: "Summarize the synthetic fixture." }] }));
   });
   return { body, bytes: Buffer.concat(chunks), ended, readError, arrivals };
 }
@@ -226,7 +210,7 @@ describe("agent stream over real loopback sockets", () => {
         expect(received.readError).toBe(false);
         expect(provider.signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
         expect(received.body).not.toContain("UNCHECKED_DRAFT_MUST_STAY_PRIVATE");
-        if (phase !== "model") expect(received.body).toContain("answer [M1]");
+        if (phase !== "model") expect(received.body).toContain("answer [M1:E1]");
       } finally { await run.close(); }
     });
   }
@@ -321,7 +305,7 @@ describe("agent stream over real loopback sockets", () => {
         if (stall === "provider_headers") return;
         if (stall === "tool_json" && req.url === "/provider") {
           res.setHeader("Content-Type", "text/event-stream");
-          res.write(frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "synthetic-call", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] }));
+          res.write(frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "synthetic-call", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] }));
           res.end(done);
           return;
         }
@@ -359,7 +343,7 @@ describe("agent stream over real loopback sockets", () => {
     });
   }
 
-  test("both client versions decode the actual partial-frame timeout bytes", async () => {
+  test("legacy client decodes the timeout while v3 rejects the preceding incomplete UTF8", async () => {
     // Put a multibyte scalar across the first 16KiB transport slice, inside an
     // intentionally abandoned JSON event. Earlier complete text must survive.
     const prefixBytes = encoder.encode('data: {"choices":[{"delta":{"content":"').length;
@@ -393,7 +377,7 @@ describe("agent stream over real loopback sockets", () => {
         for await (const text of streamAgentChat({ backendUrl: "https://synthetic.invalid", getToken: () => "synthetic", messages: [] })) modern.push(text);
       } catch (error) { failure = error; }
       expect(failure).toBeInstanceOf(AgentStreamError);
-      expect((failure as AgentStreamError).code).toBe("turn_timeout");
+      expect((failure as AgentStreamError).code).toBe("incomplete");
       expect(modern).toEqual(["Earlier answer."]);
       const legacy: string[] = [];
       for await (const text of streamChat({
@@ -407,13 +391,13 @@ describe("agent stream over real loopback sockets", () => {
 
   test("a nonreading socket bounds writes of a large citation-validated answer", async () => {
     let calls = 0;
-    const largeAnswer = "Synthetic cited answer [M1]. " + "x".repeat(8 * 1024 * 1024);
+    const largeAnswer = "Synthetic cited answer [M1:E1]. " + "x".repeat(8 * 1024 * 1024);
     const fetchImpl = (async (input: unknown) => {
       expect([providerUrl, toolUrl]).toContain(String(input));
       if (String(input) === toolUrl) return new Response(JSON.stringify({ result: { text: "Evidence [M1]" } }));
       calls++;
       if (calls === 1) return response({ async *[Symbol.asyncIterator]() {
-        yield frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "synthetic", function: { name: "tinycloud_find_meetings", arguments: "{}" } }] }, finish_reason: "tool_calls" }] });
+        yield frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "synthetic", function: { name: "web_search", arguments: "{}" } }] }, finish_reason: "tool_calls" }] });
         yield done;
       } });
       return response({ async *[Symbol.asyncIterator]() {
@@ -428,7 +412,7 @@ describe("agent stream over real loopback sockets", () => {
     client.pause();
     try {
       await new Promise<void>((resolve) => client.on("connect", resolve));
-      const body = JSON.stringify({ messages: [{ role: "user", content: "Synthetic question." }] });
+      const body = JSON.stringify({ turn: {turnId:"synthetic",sentAt:Date.now()}, messages: [{ role: "user", content: "Synthetic question." }] });
       client.write(`POST /api/agent/chat HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
       await within(run.settled, 2_000);
       expect(run.backpressuredWrites).toBeGreaterThan(0);

@@ -125,14 +125,12 @@ type RowSyncOutcome =
  *  drift in connectorStore fails at compile time rather than at the first sync. */
 const GMEET_STORE: GmeetSyncStore = {
   getConnection: connectorStore.getConnection,
-  putTranscriptBody: connectorStore.putTranscriptBody,
-  upsertMeeting: connectorStore.upsertMeeting,
+  publishConnectorMeeting: connectorStore.publishConnectorMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
   getDriveCursor: connectorStore.getDriveCursor,
   putDriveCursor: connectorStore.putDriveCursor,
   findGmeetNotesAssociation: connectorStore.findGmeetNotesAssociation,
-  attachGmeetNotes: connectorStore.attachGmeetNotes,
   removeGmeetNotes: connectorStore.removeGmeetNotes,
 };
 

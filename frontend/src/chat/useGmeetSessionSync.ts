@@ -45,12 +45,10 @@ import {
   getDriveCursor,
   putDriveCursor,
   findGmeetNotesAssociation,
-  attachGmeetNotes,
   removeGmeetNotes,
   getConnection as storeGetConnection,
-  putTranscriptBody,
+  publishConnectorMeeting,
   updateSyncState,
-  upsertMeeting,
   type StoreResult,
 } from "@/lib/connectors/connectorStore";
 import {
@@ -141,14 +139,12 @@ export interface GmeetSessionSyncOptions {
  *  fails at compile time rather than at the first sync. */
 const DEFAULT_STORE: GmeetSyncStore = {
   getConnection: storeGetConnection,
-  putTranscriptBody,
-  upsertMeeting,
+  publishConnectorMeeting,
   updateSyncState,
   countMeetings,
   getDriveCursor,
   putDriveCursor,
   findGmeetNotesAssociation,
-  attachGmeetNotes,
   removeGmeetNotes,
 };
 

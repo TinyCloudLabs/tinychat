@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { OFFERED_CHAT_MODELS } from "../packages/core/src/chatModels";
 
 let browser: Browser;
@@ -10,15 +12,19 @@ let requests: string[] = [];
 let chatBodies: Array<{ model: string; messages: Array<{ content: string }> }> = [];
 
 beforeAll(async () => {
-  const built = await Bun.build({
-    entrypoints: [new URL("../frontend/src/chat/modelRouterRuntimeHarness.tsx", import.meta.url).pathname],
-    root: new URL("../frontend", import.meta.url).pathname,
-    target: "browser",
-    minify: false,
-    define: { "import.meta.env": "{}" },
+  const frontendRequire = createRequire(new URL('../frontend/package.json', import.meta.url));
+  const { build } = await import(new URL('./dist/node/index.js', pathToFileURL(frontendRequire.resolve('vite/package.json'))).href);
+  const built = await build({
+    configFile: false, logLevel: 'error',
+    root: new URL('../frontend', import.meta.url).pathname,
+    define: { 'import.meta.env': '{}' },
+    resolve: { alias: { '@': new URL('../frontend/src', import.meta.url).pathname } },
+    build: { write: false, minify: false, rollupOptions: {
+      input: new URL('../frontend/src/chat/modelRouterRuntimeHarness.tsx', import.meta.url).pathname,
+      output: { inlineDynamicImports: true },
+    } },
   });
-  if (!built.success) throw new Error(built.logs.join("\n"));
-  bundle = await built.outputs[0]!.text();
+  bundle = (Array.isArray(built) ? built[0] : built).output.find((item: any) => item.type === 'chunk').code;
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -38,10 +44,18 @@ beforeAll(async () => {
         }
         return Response.json({ model: OFFERED_CHAT_MODELS[0].id, reason: "healthy" });
       }
-      if (url.pathname === "/api/chat") {
+      if (url.pathname === "/api/chat" || url.pathname === "/api/agent/chat") {
         const body = await request.json() as { model: string; messages: Array<{ content: string }> };
         chatBodies.push(body);
         requests.push(`chat:${body.model}`);
+        if (body.messages.at(-1)?.content.startsWith('LEAN_PRIVATE') || body.messages.at(-1)?.content === 'Continue') {
+          const wire = body as any;
+          const sources = ['C', 'A', 'B'].map(id => ({ source: 'fireflies', sourceId: id, meetingRef: id, revision: `r-${id}` }));
+          const continued = !!wire.turn.continuation;
+          const result = { version: 3, private: true, turnId: wire.turn.turnId, status: continued ? 'completed' : 'partial', text: continued ? 'Scan continued.' : 'Synthetic private answer.', sources, citations: [], obligations: [], limitations: [], coverage: [], receipts: { modelCalls: 1, ioAttempts: 3, recovery: 'none', elapsedMs: 2 },
+            ...(!continued ? { continuation: { version: 3, cursor: 'C', pending: [{ source: 'fireflies', sourceId: 'D', meetingRef: 'D', revision: 'd'.repeat(64) }], encountered: sources, examinedSources: 3, matchedSources: 3, exhausted: true, intent: { mode: 'search', parts: [{ id: 'p', question: 'literal' }], terms: ['literal'] } } } : {}) };
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: result.text } }] })}\n\ndata: ${JSON.stringify({ meeting_result: result })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+        }
         return new Response(
           'data: {"id":"completion-1","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
           { headers: { "content-type": "text/event-stream" } },
@@ -53,7 +67,7 @@ beforeAll(async () => {
     },
   });
   browser = await chromium.launch({ headless: true });
-});
+}, 30000);
 
 afterAll(async () => {
   await browser?.close();
@@ -76,6 +90,29 @@ async function events(page: Page): Promise<string[]> {
 }
 
 describe.serial("mounted real useChatRuntime lifecycle", () => {
+  test('private Send persists status and ordered refs through browser reload and Continue', async () => {
+    const page = await pageFor('lean-private');
+    await page.waitForFunction(() => window.routerHarness!.view().canSend);
+    await page.evaluate(() => window.routerHarness!.send('LEAN_PRIVATE search'));
+    await page.waitForFunction(() => window.routerHarness!.events.includes('assistant-stored'));
+    await page.locator('[data-meeting-status="partial"]').waitFor();
+    const threadId = await page.evaluate(() => window.routerHarness!.view().threadId!);
+    const saved = await page.evaluate(() => window.routerHarness!.messages().flatMap(([, payloads]) => payloads.map(JSON.parse)));
+    expect(saved.at(-1).turn.result.sources.map((source: any) => source.sourceId)).toEqual(['C', 'A', 'B']);
+    await page.reload();
+    await page.waitForFunction(() => Boolean(window.routerHarness));
+    await page.evaluate(id => window.routerHarness!.switchTo(id), threadId);
+    await page.locator('[data-meeting-status="partial"]').waitFor();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click({ timeout: 1000 });
+    await page.locator('[data-meeting-status="completed"]').waitFor();
+    const continuationRequest = chatBodies.at(-1) as any;
+    expect(continuationRequest.turn.parent.sources.map((source: any) => source.sourceId)).toEqual(['C', 'A', 'B']);
+    expect(continuationRequest.turn.continuation.cursor).toBe('C');
+    expect(JSON.stringify(continuationRequest.messages)).not.toContain('Synthetic private answer');
+    expect(continuationRequest.publicTools).toBe(false);
+    await page.close();
+  });
+
   test("first send waits for automatic selection before append and inference", async () => {
     const page = await pageFor("first-wait");
     await page.evaluate(() => window.routerHarness!.send());

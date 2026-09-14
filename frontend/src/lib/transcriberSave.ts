@@ -1,7 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
-  upsertMeeting,
+  publishConnectorMeeting,
   listKnownSourceIds,
   type NormalizedMeeting,
   type StoreResult,
@@ -10,15 +10,7 @@ import {
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import type { TranscriberMeeting, TranscriberTranscript } from "./transcriberApi";
 
-/**
- * Save a TRANSCRIBER meeting into the user's OWN TinyCloud space, the way the Fireflies and
- * Google Meet connectors do: one `connector_meeting` row (SQL) plus the transcript body in KV
- * under the granted `connectors/` prefix, so the Meetings explorer lists it alongside the others.
- *
- * SIMPLE on purpose. The transcriber's transcript is mapped 1:1 onto the store's existing
- * sentence shape; a proper transcript-normalization step is being added separately by another
- * engineer and will slot in between `transcript()` and `upsertMeeting` here.
- */
+/** Publish the current original transcriber artifact under the shared fenced catalog. */
 
 /** `connector_meeting.source` for every meeting this module writes. */
 export const TRANSCRIBER_MEETING_SOURCE = "tinycloud-transcriber";
@@ -98,11 +90,22 @@ export function normalizeTranscriberTranscript(
 /** Write (or refresh) the meeting in the user's space. Idempotent by `(source, sourceId)`. */
 export async function saveTranscriberMeeting(
   tcw: TinyCloudWeb,
-  meeting: TranscriberMeeting,
-  transcript: TranscriberTranscript,
+  sourceId: string,
+  fetchCurrent: () => Promise<{ meeting: TranscriberMeeting; transcript: TranscriberTranscript }>,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
-  const normalized = normalizeTranscriberTranscript(meeting, transcript);
-  return upsertMeeting(tcw, normalized.meeting, normalized.sentences);
+  return publishConnectorMeeting(tcw, { source: TRANSCRIBER_MEETING_SOURCE, sourceId }, async () => {
+    const { meeting, transcript } = await fetchCurrent();
+    if (meeting.id !== sourceId || transcript.meeting_id !== sourceId) throw new Error("Transcriber identity mismatch");
+    const capture = transcript.capture ?? meeting.capture;
+    const interruption = capture?.failure_reason ?? (capture?.completion_reason === "evicted" ? "evicted" : null)
+      ?? (capture?.stop_requested_by === "join_deadline" ? "join_deadline" : null)
+      ?? (capture?.provider_record_missing_at ? "provider_record_missing" : null);
+    return { ...normalizeTranscriberTranscript(meeting, transcript), body: {
+      basis: "transcript", schema: "json-records", raw: JSON.stringify(transcript.segments ?? []),
+      originalExtent: "known", captureComplete: interruption ? false : null,
+      omissions: interruption ? [{ code: "upstream_capture_incomplete", detail: interruption }] : [],
+    } };
+  });
 }
 
 /** The transcriber meeting ids already saved in this space. */

@@ -10,11 +10,9 @@
 // `connectors/...` key fails AUTH_UNAUTHORIZED, exactly like db("connectors")
 // does (see the DB HANDLE CONVENTION note in threadStore.ts:16-22).
 //
-// TinyCloud SQLite authorizer restrictions (from listen): no CREATE INDEX,
-// no UNIQUE constraints, no REFERENCES. Dedup is app-level (SELECT before
-// INSERT). CREATE TABLE IF NOT EXISTS can return "not authorized" when the
-// table already exists — on that error, probe SELECT 1 FROM <table> LIMIT 1
-// and treat success as schema-ready.
+// The native publication command owns uniqueness, immutable snapshots and
+// conditional head updates. Old nodes are unsupported for canonical writes.
+// Legacy schema creation remains for connector state and pre-cutover discovery.
 //
 // Sequential writes only — TinyCloud drops concurrent responses.
 //
@@ -82,9 +80,7 @@ function fail(err: UnderlyingError, context: string): { ok: false; error: StoreE
   return { ok: false, error: { code, message: `${context}: [${code}] ${msg}` } };
 }
 
-/** Schema statements, executed one at a time so the "not authorized" fallback
- *  can probe per-table. Kept intentionally minimal — no CREATE INDEX / UNIQUE /
- *  REFERENCES (authorizer forbids them); dedup is app-level. */
+/** Legacy bootstrap; the native publication command upgrades and fences the catalog. */
 const SCHEMA: { sql: string; table: string }[] = [
   {
     table: "connector_state",
@@ -134,6 +130,207 @@ function cellNum(row: unknown[], idx: number, fallback: number | null): number |
   const v = row[idx];
   if (typeof v === "number") return v;
   return fallback;
+}
+
+// The node owns the conditional boundary. Generic SQL/KV writes cannot enforce
+// old-client fencing, so callers must never fall back when this command is absent.
+export const PUBLICATION_STATEMENT = "tinycloud.meetingPublication.v3";
+
+export interface PublicationInput {
+  meeting: NormalizedMeeting;
+  sentences: FirefliesSentence[];
+  aliases?: string[];
+  body?: {
+    basis: "transcript" | "notes";
+    schema: "text" | "json-records" | "google-docs";
+    raw: string;
+    originalExtent: "known" | "unknown";
+    captureComplete?: boolean | null;
+    omissions?: { code: string; detail?: string }[];
+  };
+}
+
+type PublicationReceipt = {
+  contractVersion: 3;
+  status?: string;
+  writerFencing?: boolean;
+  snapshotImmutability?: boolean;
+  digestVerification?: boolean;
+  operationId?: string;
+  generation?: number;
+  expectedHead?: string | null;
+  meetingRef?: string;
+  revision?: string;
+  snapshotKey?: string;
+  inserted?: boolean;
+  createdAt?: string;
+  previousMeeting?: NormalizedMeeting;
+  deletedCount?: number;
+};
+
+async function publicationCommand(
+  tcw: TinyCloudWeb,
+  command: Record<string, unknown>,
+): Promise<StoreResult<PublicationReceipt>> {
+  try {
+    const result = await store(tcw).execute(PUBLICATION_STATEMENT,
+      [JSON.stringify({ contractVersion: 3, ...command })]);
+    if (!result.ok) return fail(result.error, `publication(${command.operation})`);
+    const data = result.data as { columns?: unknown; rows?: unknown };
+    if (!Array.isArray(data.columns) || data.columns[0] !== "receipt" || !Array.isArray(data.rows)
+      || data.rows.length !== 1 || !Array.isArray(data.rows[0]) || typeof data.rows[0][0] !== "string") {
+      return fail({ code: "PUBLICATION_INVALID_RECEIPT", message: "Complete native publication receipt required" }, "publication");
+    }
+    const receipt = JSON.parse(data.rows[0][0]) as PublicationReceipt;
+    if (receipt?.contractVersion !== 3) return fail({ code: "PUBLICATION_INVALID_RECEIPT", message: "Unsupported contract" }, "publication");
+    return { ok: true, data: receipt };
+  } catch (error) {
+    return fail({ code: "PUBLICATION_TRANSPORT", message: error instanceof Error ? error.message : String(error) }, "publication");
+  }
+}
+
+export async function publicationSha256(raw: string): Promise<string> {
+  const bytes = new TextEncoder().encode(raw);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function snapshotKvKey(source: string, sourceId: string, revision: string): string {
+  return `${CONNECTORS_KV_PREFIX}/${source}/snapshot/${encodeURIComponent(sourceId)}/${revision}`;
+}
+
+function mergePublicationMeeting(next: NormalizedMeeting, previous?: NormalizedMeeting): NormalizedMeeting {
+  if (!previous) return next;
+  const owns = (field: string) => next.source === "google-meet"
+    && next.metadata.notes_association === "standalone" && next.metadata.notes_kind === "gemini"
+    && Array.isArray(next.metadata.notes_owned_fields) && next.metadata.notes_owned_fields.includes(field);
+  const acceptsDate = next.startedAt !== null && (previous.startedAt === null
+    || datetimeConfidence(next.metadata, true) >= datetimeConfidence(previous.metadata, true));
+  const metadata = { ...previous.metadata, ...next.metadata };
+  if (!acceptsDate) for (const field of ["datetime_source", "datetime_exact", "datetime_resolution_version"]) {
+    if (field in previous.metadata) metadata[field] = previous.metadata[field]; else delete metadata[field];
+  }
+  return { ...next, title: next.title ?? previous.title, startedAt: acceptsDate ? next.startedAt : previous.startedAt,
+    durationSecs: next.durationSecs ?? previous.durationSecs, organizerEmail: next.organizerEmail ?? previous.organizerEmail,
+    participants: next.participants.length ? next.participants : previous.participants,
+    summaryOverview: owns("summary_overview") ? next.summaryOverview : next.summaryOverview ?? previous.summaryOverview,
+    summaryActionItems: owns("summary_action_items") ? next.summaryActionItems : next.summaryActionItems ?? previous.summaryActionItems,
+    keywords: next.keywords ?? previous.keywords, meetingType: next.meetingType ?? previous.meetingType, metadata };
+}
+
+async function ensurePublicationReady(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  const capabilities = await publicationCommand(tcw, { operation: "capabilities" });
+  if (!capabilities.ok || capabilities.data.writerFencing !== true
+    || capabilities.data.snapshotImmutability !== true || capabilities.data.digestVerification !== true) {
+    return fail({ code: "PUBLICATION_UPGRADE_REQUIRED", message: "This space requires a node with fenced immutable meeting publication" }, "publication");
+  }
+  const ready = await publicationCommand(tcw, { operation: "activate" });
+  if (!ready.ok) return ready;
+  if (ready.data.status !== "ready") return fail({ code: "PUBLICATION_MIGRATION_REQUIRED", message: "Catalog identity inventory must be verified first" }, "publication");
+  return { ok: true, data: undefined };
+}
+
+/** Reserve once, then fetch current upstream data. Never re-reserve a cached payload. */
+export async function publishConnectorMeeting(
+  tcw: TinyCloudWeb,
+  identity: { source: string; sourceId: string },
+  fetchCurrent: () => Promise<PublicationInput>,
+  signal?: AbortSignal,
+): Promise<StoreResult<UpsertMeetingOutcome & { revision: string }>> {
+  const cancelled = () => signal?.aborted === true;
+  const cancel = () => fail({ code: "PUBLICATION_CANCELLED", message: "Publication cancelled" }, "publication");
+  if (cancelled()) return cancel();
+  if (!["fireflies", "google-meet", "tinycloud-transcriber"].includes(identity.source) || !identity.sourceId) {
+    return fail({ code: "PUBLICATION_INVALID_IDENTITY", message: "An enabled connector identity is required" }, "publication");
+  }
+  const ready = await ensurePublicationReady(tcw);
+  if (!ready.ok) return ready;
+  const operationId = crypto.randomUUID();
+  const reserved = await publicationCommand(tcw, { operation: "reserve", ...identity, operationId });
+  if (!reserved.ok) return reserved;
+  const reservation = reserved.data;
+  if (reservation.status !== "reserved" || reservation.operationId !== operationId
+    || typeof reservation.generation !== "number" || typeof reservation.meetingRef !== "string"
+    || !(reservation.expectedHead === null || typeof reservation.expectedHead === "string")) {
+    return fail({ code: "PUBLICATION_CONFLICT", message: "Reservation was not confirmed" }, "publication");
+  }
+  if (cancelled()) return cancel();
+  let input: PublicationInput;
+  try { input = await fetchCurrent(); } catch (error) {
+    return fail({ code: "PUBLICATION_FETCH_FAILED", message: error instanceof Error ? error.message : String(error) }, "publication");
+  }
+  if (cancelled()) return cancel();
+  const { sentences } = input;
+  const meeting = mergePublicationMeeting(input.meeting, reservation.previousMeeting);
+  if (meeting.source !== identity.source || meeting.sourceId !== identity.sourceId) {
+    return fail({ code: "PUBLICATION_IDENTITY_MISMATCH", message: "Fetched artifact does not match reserved identity" }, "publication");
+  }
+  const raw = input.body?.raw ?? JSON.stringify(sentences);
+  const originalBytes = new TextEncoder().encode(raw).byteLength;
+  if (originalBytes > 1_048_576) return fail({ code: "PUBLICATION_CAPACITY", message: "Original body exceeds 1 MiB" }, "publication");
+  let recordCount: number | null = null;
+  const bodySchema = input.body?.schema ?? "json-records";
+  if (bodySchema === "text") recordCount = 1;
+  if (bodySchema === "json-records") {
+    try { const original = JSON.parse(raw); if (Array.isArray(original)) recordCount = original.length; } catch { /* Decoder reports malformed original bytes. */ }
+  }
+  const snapshot = {
+    contractVersion: 3,
+    meetingRef: reservation.meetingRef,
+    ...identity,
+    operationId,
+    createdAt: new Date().toISOString(),
+    metadata: {
+      title: meeting.title,
+      startedAt: meeting.startedAt,
+      organizerEmail: meeting.organizerEmail,
+      participants: meeting.participants.map((p) => ({ name: p.name, ...(p.email === null ? {} : { email: p.email }) })),
+      metadata: { ...meeting.metadata, connector_fields: { durationSecs: meeting.durationSecs,
+        summaryActionItems: meeting.summaryActionItems, keywords: meeting.keywords, meetingType: meeting.meetingType } },
+    },
+    body: {
+      basis: input.body?.basis ?? (meeting.metadata.notes_kind ? "notes" : "transcript"),
+      encoding: "utf-8",
+      schema: input.body?.schema ?? "json-records",
+      raw,
+      original: { digest: await publicationSha256(raw), byteLength: originalBytes,
+        recordCount,
+        extent: input.body?.originalExtent ?? "unknown", captureComplete: input.body?.captureComplete ?? null },
+      omissions: input.body?.omissions ?? [],
+    },
+    overview: meeting.summaryOverview === null ? null : { text: meeting.summaryOverview,
+      provenance: { provider: identity.source, generatedAt: null, sourceDigest: null, freshness: "unknown" } },
+    aliases: input.aliases ?? [],
+  };
+  const snapshotRaw = JSON.stringify(snapshot);
+  const revision = await publicationSha256(snapshotRaw);
+  const snapshotKey = snapshotKvKey(identity.source, identity.sourceId, revision);
+  const command = { ...identity, operationId, generation: reservation.generation,
+    expectedHead: reservation.expectedHead, meetingRef: reservation.meetingRef, revision, snapshotKey };
+  // SQL transports the command as a JSON string parameter, so both escaping
+  // layers and the outer execute frame count toward the limit.
+  const stageCommand = { contractVersion: 3, operation: "stage", ...command, snapshotRaw };
+  const transport = { action: "execute", sql: PUBLICATION_STATEMENT, params: [JSON.stringify(stageCommand)] };
+  if (new TextEncoder().encode(JSON.stringify(transport)).byteLength > 2_097_152) {
+    return fail({ code: "PUBLICATION_CAPACITY", message: "Complete publication envelope exceeds 2 MiB" }, "publication");
+  }
+  const staged = await publicationCommand(tcw, { operation: "stage", ...command, snapshotRaw });
+  if (!staged.ok) return staged;
+  if (staged.data.status !== "staged" || staged.data.revision !== revision || staged.data.snapshotKey !== snapshotKey) {
+    return fail({ code: "PUBLICATION_DIGEST_MISMATCH", message: "Immutable snapshot was not verified" }, "publication");
+  }
+  if (cancelled()) return cancel();
+  let published = await publicationCommand(tcw, { operation: "publish", ...command });
+  if (!published.ok && ["PUBLICATION_TRANSPORT", "PUBLICATION_INVALID_RECEIPT", "NETWORK_ERROR", "TIMEOUT"].includes(published.error.code)) {
+    published = await publicationCommand(tcw, { operation: "inspect", ...identity, operationId });
+  }
+  if (!published.ok) return published;
+  if (published.data.status !== "published" || published.data.operationId !== operationId
+    || published.data.revision !== revision || published.data.meetingRef !== reservation.meetingRef) {
+    return fail({ code: "PUBLICATION_SUPERSEDED", message: "This operation is no longer the published head" }, "publication");
+  }
+  return { ok: true, data: { id: reservation.meetingRef, inserted: reservation.inserted === true,
+    createdAt: reservation.createdAt ?? snapshot.createdAt, revision } };
 }
 
 // ── Schema bootstrap (memoized per space, keyed by tcw.did) ─────────────
@@ -295,10 +492,15 @@ export async function listKnownSourceIds(
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const res = await store(tcw).query(
-    "SELECT source_id FROM connector_meeting WHERE source = ?",
+    "SELECT source_id FROM connector_meeting WHERE source = ? AND head_revision IS NOT NULL AND publication_state != 'deleted'",
     [source],
   );
-  if (!res.ok) return fail(res.error, "listKnownSourceIds");
+  if (!res.ok) {
+    // A pre-cutover catalog has no published identities. Let the first sync
+    // reach native activation, then reserve and re-fetch each original artifact.
+    if ((res.error.message ?? "").toLowerCase().includes("no such column: head_revision")) return { ok: true, data: [] };
+    return fail(res.error, "listKnownSourceIds");
+  }
   const ids: string[] = [];
   for (const row of res.data.rows) {
     const v = row[0];
@@ -313,10 +515,11 @@ export async function countMeetings(
 ): Promise<StoreResult<number>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
-  const res = await store(tcw).query(
-    "SELECT COUNT(*) FROM connector_meeting WHERE source = ?",
-    [source],
-  );
+  let res = await store(tcw).query(
+    "SELECT COUNT(*) FROM connector_meeting WHERE source = ? AND (publication_state IS NULL OR publication_state != 'deleted')", [source]);
+  if (!res.ok && /no such column: publication_state/i.test(res.error.message ?? "")) {
+    res = await store(tcw).query("SELECT COUNT(*) FROM connector_meeting WHERE source = ?", [source]);
+  }
   if (!res.ok) return fail(res.error, "countMeetings");
   const row = res.data.rows[0];
   if (!row) return { ok: true, data: 0 };
@@ -324,68 +527,6 @@ export async function countMeetings(
   const parsed = typeof n === "number" ? n : Number.parseInt(String(n ?? "0"), 10) || 0;
   return { ok: true, data: parsed };
 }
-
-/**
- * Insert a normalized meeting row, dedup'd on (source, source_id).
- * Returns true if inserted, false if a row for this (source, source_id) already
- * existed and the insert was skipped. Writes are sequential — SELECT-before-INSERT
- * is race-safe under the single-writer model.
- */
-export async function insertMeeting(
-  tcw: TinyCloudWeb,
-  meeting: NormalizedMeeting,
-): Promise<StoreResult<boolean>> {
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
-  const existing = await store(tcw).query(
-    "SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
-    [meeting.source, meeting.sourceId],
-  );
-  if (!existing.ok) return fail(existing.error, "insertMeeting(dedupSelect)");
-  if (existing.data.rows.length > 0) return { ok: true, data: false };
-
-  const now = new Date().toISOString();
-  const res = await insertMeetingRow(tcw, meeting, now, "insertMeeting(insert)");
-  if (!res.ok) return res;
-  return { ok: true, data: true };
-}
-
-/** Shared INSERT used by both the v1 sync path and the targeted upsert. */
-async function insertMeetingRow(
-  tcw: TinyCloudWeb,
-  meeting: NormalizedMeeting,
-  now: string,
-  context: string,
-): Promise<StoreResult<void>> {
-  const res = await store(tcw).execute(
-    `INSERT INTO connector_meeting
-      (id, source, source_id, title, started_at, duration_secs, organizer_email,
-       participants, summary_overview, summary_action_items, keywords, meeting_type,
-       metadata, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      meeting.id,
-      meeting.source,
-      meeting.sourceId,
-      meeting.title,
-      meeting.startedAt,
-      meeting.durationSecs,
-      meeting.organizerEmail,
-      JSON.stringify(meeting.participants),
-      meeting.summaryOverview,
-      meeting.summaryActionItems,
-      meeting.keywords === null ? null : JSON.stringify(meeting.keywords),
-      meeting.meetingType,
-      JSON.stringify(meeting.metadata),
-      now,
-      now,
-    ],
-  );
-  if (!res.ok) return fail(res.error, context);
-  return { ok: true, data: undefined };
-}
-
-// ── Targeted upsert (webhook queued-id ingest) ─────────────────────────
 
 export interface UpsertMeetingOutcome {
   /** The row id actually in the store — the PRE-EXISTING id when updated. */
@@ -413,10 +554,11 @@ export async function getMeetingDatetimeStats(
 ): Promise<StoreResult<MeetingDatetimeStats>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
-  const res = await store(tcw).query(
-    "SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ?",
-    [source],
-  );
+  let res = await store(tcw).query(
+    "SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ? AND (publication_state IS NULL OR publication_state != 'deleted')", [source]);
+  if (!res.ok && /no such column: publication_state/i.test(res.error.message ?? "")) {
+    res = await store(tcw).query("SELECT source_id, started_at, metadata FROM connector_meeting WHERE source = ?", [source]);
+  }
   if (!res.ok) return fail(res.error, "getMeetingDatetimeStats");
   const stats: MeetingDatetimeStats = {
     rows: res.data.rows.length, dated: 0, sourceMeet: 0, sourceDocs: 0,
@@ -446,11 +588,6 @@ export async function getMeetingDatetimeStats(
   return { ok: true, data: stats };
 }
 
-/** Columns the upsert lookup reads, in the order the merge below unpacks them. */
-const UPSERT_LOOKUP_COLUMNS =
-  "id, created_at, title, started_at, duration_secs, organizer_email, participants, "
-  + "summary_overview, summary_action_items, keywords, meeting_type, metadata";
-
 function parseJsonObject(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     return raw as Record<string, unknown>;
@@ -476,147 +613,6 @@ function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boo
     case "unavailable": return 0;
     default: return hasStartedAt ? 3 : 0;
   }
-}
-
-/**
- * Insert-or-update a meeting keyed on (source, source_id), then write/refresh
- * the transcript KV body.
- *
- * WHY this exists alongside `insertMeeting`: the v1 sync (`syncFireflies`)
- * lists newest-first and deliberately SKIPS ids it already has, so a
- * `meeting.summarized` webhook for an already-stored meeting would be
- * dropped forever. The webhook path supplies exact ids and must be able to
- * land late-arriving summary fields on the existing row. `insertMeeting`
- * keeps its skip semantics — v1 sync behaviour is unchanged.
- *
- * Merge rules (a re-delivery must never destroy data):
- *  - the existing row id and `created_at` are preserved; the throwaway
- *    `meeting.id` from normalize() is used only when inserting;
- *  - a `null` scalar in the new payload keeps the stored value — Fireflies
- *    summaries lag transcripts, so a later `meeting.transcribed` fetch with
- *    no summary must not erase one. The two fields explicitly owned by a
- *    standalone Notes by Gemini Doc are the exception: a later Doc revision
- *    can delete either section, which must clear the stored field;
- *  - an empty participants list / `null` keywords keep what's stored;
- *  - metadata is shallow-merged, new keys winning;
- *  - an empty sentence list on an UPDATE leaves the stored transcript body
- *    alone (on INSERT it is written, so the key always exists).
- *
- * All storage calls are sequential — TinyCloud drops concurrent responses on
- * one space. Every resolved `{ ok: false }` surfaces; nothing is swallowed.
- */
-export async function upsertMeeting(
-  tcw: TinyCloudWeb,
-  meeting: NormalizedMeeting,
-  sentences: FirefliesSentence[],
-): Promise<StoreResult<UpsertMeetingOutcome>> {
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
-
-  const existing = await store(tcw).query(
-    `SELECT ${UPSERT_LOOKUP_COLUMNS} FROM connector_meeting
-     WHERE source = ? AND source_id = ? LIMIT 1`,
-    [meeting.source, meeting.sourceId],
-  );
-  if (!existing.ok) return fail(existing.error, "upsertMeeting(lookup)");
-
-  const now = new Date().toISOString();
-  const row = existing.data.rows[0];
-
-  if (!row) {
-    const ins = await insertMeetingRow(tcw, meeting, now, "upsertMeeting(insert)");
-    if (!ins.ok) return ins;
-    const kv = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
-    if (!kv.ok) return kv;
-    return { ok: true, data: { id: meeting.id, inserted: true, createdAt: now } };
-  }
-
-  const existingId = cellStr(row, 0, null);
-  const createdAt = cellStr(row, 1, null);
-  if (existingId === null || createdAt === null) {
-    return {
-      ok: false,
-      error: {
-        code: "STORE_CORRUPT_ROW",
-        message: "upsertMeeting: existing row is missing id or created_at",
-      },
-    };
-  }
-
-  const keepStr = (next: string | null, idx: number): string | null =>
-    next !== null ? next : cellStr(row, idx, null);
-  const notesOwnedFields = meeting.metadata.notes_owned_fields;
-  const ownsStandaloneNotesField = (field: "summary_overview" | "summary_action_items") =>
-    meeting.source === "google-meet"
-    && meeting.metadata.notes_association === "standalone"
-    && meeting.metadata.notes_kind === "gemini"
-    && Array.isArray(notesOwnedFields)
-    && notesOwnedFields.includes(field);
-  const existingStartedAt = cellStr(row, 3, null);
-  const existingMetadata = parseJsonObject(row[11]);
-  const acceptsIncomingDatetime = meeting.startedAt !== null
-    && (existingStartedAt === null
-      || datetimeConfidence(meeting.metadata, true) >= datetimeConfidence(existingMetadata, true));
-  const mergedMetadata: Record<string, unknown> = {
-    ...existingMetadata,
-    ...meeting.metadata,
-  };
-  if (!acceptsIncomingDatetime) {
-    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
-      if (key in existingMetadata) mergedMetadata[key] = existingMetadata[key];
-      else delete mergedMetadata[key];
-    }
-  }
-
-  const upd = await store(tcw).execute(
-    `UPDATE connector_meeting SET
-       title = ?, started_at = ?, duration_secs = ?, organizer_email = ?,
-       participants = ?, summary_overview = ?, summary_action_items = ?,
-       keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
-     WHERE id = ?`,
-    [
-      keepStr(meeting.title, 2),
-      acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
-      meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
-      keepStr(meeting.organizerEmail, 5),
-      meeting.participants.length > 0
-        ? JSON.stringify(meeting.participants)
-        : (cellStr(row, 6, null) ?? "[]"),
-      ownsStandaloneNotesField("summary_overview")
-        ? meeting.summaryOverview
-        : keepStr(meeting.summaryOverview, 7),
-      ownsStandaloneNotesField("summary_action_items")
-        ? meeting.summaryActionItems
-        : keepStr(meeting.summaryActionItems, 8),
-      meeting.keywords !== null ? JSON.stringify(meeting.keywords) : cellStr(row, 9, null),
-      keepStr(meeting.meetingType, 10),
-      JSON.stringify(mergedMetadata),
-      now,
-      existingId,
-    ],
-  );
-  if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
-
-  if (sentences.length > 0) {
-    const kv = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
-    if (!kv.ok) return kv;
-  }
-
-  return { ok: true, data: { id: existingId, inserted: false, createdAt } };
-}
-
-// ── Transcript bodies (KV) ──────────────────────────────────────────────
-
-export async function putTranscriptBody(
-  tcw: TinyCloudWeb,
-  source: string,
-  sourceId: string,
-  sentences: FirefliesSentence[],
-): Promise<StoreResult<void>> {
-  const key = transcriptKvKey(source, sourceId);
-  const res = await tcw.kv.put(key, JSON.stringify(sentences));
-  if (!res.ok) return fail(res.error, "putTranscriptBody");
-  return { ok: true, data: undefined };
 }
 
 export async function getDriveCursor(
@@ -651,7 +647,8 @@ export interface GmeetNotesAssociation {
   sourceId: string;
   title: string | null;
   startedAt: string | null;
-  /** Read when a standalone Notes row must move onto a later conference. */
+  /** An exact provider link, kept separate from the independently owned notes. */
+  linkedMeetingSourceId?: string;
   summaryOverview: string | null;
   summaryActionItems: string | null;
   metadata: Record<string, unknown>;
@@ -672,10 +669,6 @@ export async function findGmeetNotesAssociation(
   if (!schema.ok) return schema;
   const terms = ["source_id = ?", "metadata LIKE ? ESCAPE '\\'"];
   const params: (string | null)[] = [source, fileId, `%${fileId.replace(/[\\%_]/g, "\\$&")}%`];
-  if (title !== null && startedAt !== null) {
-    terms.push("(title = ? AND started_at = ?)");
-    params.push(title, startedAt);
-  }
   const res = await store(tcw).query(
     `SELECT id, source_id, title, started_at, summary_overview, summary_action_items, metadata FROM connector_meeting
      WHERE source = ? AND (${terms.join(" OR ")})`,
@@ -688,21 +681,17 @@ export async function findGmeetNotesAssociation(
     summaryActionItems: cellStr(row, 5, null), metadata: parseJsonObject(row[6]),
   })).filter((row): row is GmeetNotesAssociation => row.id !== null && row.sourceId !== null);
   const candidates = excludeSourceId === undefined ? rows : rows.filter((row) => row.sourceId !== excludeSourceId);
-  // During a migration both the standalone row and its new conference target
-  // temporarily identify the same Drive file. The standalone source id wins so
-  // removal deletes its row/body instead of clearing the target's fresh notes.
-  const sourceMatch = candidates.find((row) => row.sourceId === fileId);
-  if (sourceMatch) return { ok: true, data: sourceMatch };
-  const idMatch = candidates.find((row) => row.metadata.drive_file_id === fileId);
-  if (idMatch) return { ok: true, data: idMatch };
-  const exportMatches = candidates.filter((row) => Array.isArray(row.metadata.docs_export_uris)
-    && row.metadata.docs_export_uris.some((uri) => typeof uri === "string" && extractDriveFileId(uri) === fileId));
-  if (exportMatches.length === 1) return { ok: true, data: exportMatches[0]! };
-  // A missing date/title is not an identity. Treating two nulls as "exact"
-  // would silently attach an arbitrary undated meeting Doc to an arbitrary row.
-  if (title === null || startedAt === null) return { ok: true, data: null };
-  const exact = candidates.filter((row) => row.title === title && row.startedAt === startedAt);
-  return { ok: true, data: exact.length === 1 ? exact[0]! : null };
+  const standalone = candidates.filter((row) => row.sourceId === fileId);
+  if (standalone.length > 1) return fail({ code: "PUBLICATION_IDENTITY_COLLISION", message: "Multiple catalog IDs identify this Notes document" }, "findGmeetNotesAssociation");
+  const conferences = candidates.filter((row) => row.sourceId !== fileId
+    && Array.isArray(row.metadata.docs_export_uris) && row.metadata.docs_export_uris.some((uri) => typeof uri === "string" && extractDriveFileId(uri) === fileId));
+  const linked = conferences.length === 1 ? conferences[0] : undefined;
+  if (standalone.length === 1) return { ok: true, data: { ...standalone[0]!, ...(linked ? { linkedMeetingSourceId: linked.sourceId } : {}) } };
+  if (linked) return { ok: true, data: { ...linked, linkedMeetingSourceId: linked.sourceId } };
+  // Earlier clients could infer drive_file_id from title/date. It is only a
+  // reason to re-fetch this document, never proof of a conference link.
+  const legacyCandidates = candidates.filter((row) => row.metadata.drive_file_id === fileId);
+  return { ok: true, data: legacyCandidates.length === 1 ? legacyCandidates[0]! : null };
 }
 
 function extractDriveFileId(uri: string): string | null {
@@ -710,144 +699,27 @@ function extractDriveFileId(uri: string): string | null {
   return match?.[1] ?? null;
 }
 
-/** Update only fields owned by one Notes document; never touch a Meet transcript KV body. */
-export async function attachGmeetNotes(
-  tcw: TinyCloudWeb,
-  row: GmeetNotesAssociation,
-  notes: Pick<NormalizedMeeting, "startedAt" | "summaryOverview" | "summaryActionItems" | "metadata">,
-): Promise<StoreResult<void>> {
-  const acceptsIncomingDatetime = notes.startedAt !== null
-    && (row.startedAt === null
-      || datetimeConfidence(notes.metadata, true) >= datetimeConfidence(row.metadata, true));
-  const metadata: Record<string, unknown> = { ...row.metadata, ...notes.metadata, notes_association: "conference" };
-  if (!acceptsIncomingDatetime) {
-    for (const key of ["datetime_source", "datetime_exact", "datetime_resolution_version"] as const) {
-      if (key in row.metadata) metadata[key] = row.metadata[key];
-      else delete metadata[key];
-    }
-  }
-  const res = await store(tcw).execute(
-    "UPDATE connector_meeting SET summary_overview = ?, summary_action_items = ?, started_at = ?, metadata = ?, updated_at = ? WHERE id = ?",
-    [notes.summaryOverview, notes.summaryActionItems,
-      acceptsIncomingDatetime ? notes.startedAt : row.startedAt,
-      JSON.stringify(metadata), new Date().toISOString(), row.id],
-  );
-  if (!res.ok) return fail(res.error, "attachGmeetNotes");
-  return { ok: true, data: undefined };
-}
-
-/** Delete a standalone notes row/body, or clear fields proven owned by an associated file. */
+/** Notes are independently identified; deleting them never destroys a conference. */
 export async function removeGmeetNotes(
-  tcw: TinyCloudWeb,
-  source: string,
-  fileId: string,
+  tcw: TinyCloudWeb, source: string, fileId: string,
 ): Promise<StoreResult<GmeetNotesRemovalOutcome>> {
-  const found = await findGmeetNotesAssociation(tcw, source, fileId, null, null);
-  if (!found.ok) return found;
-  if (!found.data) return { ok: true, data: "unchanged" };
-  const row = found.data;
-  if (row.sourceId === fileId) {
-    const kv = await tcw.kv.delete(transcriptKvKey(source, fileId));
-    if (!kv.ok && kv.error?.code !== "KV_NOT_FOUND") return fail(kv.error, "removeGmeetNotes(kv)");
-    const del = await store(tcw).execute("DELETE FROM connector_meeting WHERE id = ?", [row.id]);
-    if (!del.ok) return fail(del.error, "removeGmeetNotes(row)");
-    return { ok: true, data: "deleted" };
-  }
-  const owned = row.metadata.notes_owned_fields;
-  if (row.metadata.drive_file_id !== fileId || !Array.isArray(owned)
-    || !owned.includes("summary_overview") || !owned.includes("summary_action_items")) {
-    return { ok: true, data: "unchanged" };
-  }
-  const metadata = { ...row.metadata };
-  delete metadata.drive_file_id;
-  delete metadata.drive_modified_time;
-  delete metadata.notes_kind;
-  delete metadata.notes_owned_fields;
-  delete metadata.notes_association;
-  const clear = await store(tcw).execute(
-    "UPDATE connector_meeting SET summary_overview = NULL, summary_action_items = NULL, metadata = ?, updated_at = ? WHERE id = ?",
-    [JSON.stringify(metadata), new Date().toISOString(), row.id],
-  );
-  if (!clear.ok) return fail(clear.error, "removeGmeetNotes(clear)");
-  return { ok: true, data: "cleared" };
+  const ready = await ensurePublicationReady(tcw);
+  if (!ready.ok) return ready;
+  const result = await publicationCommand(tcw, { operation: "delete", source, sourceId: fileId, operationId: crypto.randomUUID() });
+  if (!result.ok) return result;
+  return result.data.status === "deleted" ? { ok: true, data: result.data.deletedCount === 0 ? "unchanged" : "deleted" }
+    : fail({ code: "PUBLICATION_DELETE_UNCONFIRMED", message: "Fenced deletion was not confirmed" }, "removeGmeetNotes");
 }
 
-// ── Purge ───────────────────────────────────────────────────────────────
-
-/** List one SDK-defined complete prefix response, failing closed before mutation. */
-async function listKvPrefix(
-  tcw: TinyCloudWeb,
-  path: string,
-): Promise<StoreResult<string[]>> {
-  let page: Awaited<ReturnType<typeof tcw.kv.list>>;
-  try {
-    page = await tcw.kv.list({ path });
-  } catch {
-    return fail({ code: "KV_LIST_TRANSPORT", message: "listing rejected" }, `purgeConnector(list:${path})`);
-  }
-  if (!page || page.ok !== true) return fail(page?.error, `purgeConnector(list:${path})`);
-  if (!page.data || typeof page.data !== "object" || Array.isArray(page.data) || !Array.isArray(page.data.keys)) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid list envelope" }, `purgeConnector(list:${path})`);
-  }
-  // Purge intentionally makes one bounded list request per complete source
-  // prefix. A continuation cursor means the complete set is unknown, so fail
-  // before deleting any key rather than report a partial purge as success.
-  const cursor = (page.data as { cursor?: unknown }).cursor;
-  if (cursor !== undefined && cursor !== null) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "unexpected list cursor" }, `purgeConnector(list:${path})`);
-  }
-  const keys: string[] = [];
-  for (const key of page.data.keys) {
-    if (typeof key !== "string" || !key.startsWith(path)) {
-      return fail({ code: "KV_LIST_MALFORMED", message: "unexpected listed key" }, `purgeConnector(list:${path})`);
-    }
-    keys.push(key);
-  }
-  return { ok: true, data: keys };
-}
-
-/**
- * Delete every source-scoped reconciled meeting and transcript KV record,
- * then the Drive cursor, SQL rows, and state row. Listing and deletion stay
- * sequential because TinyCloud drops concurrent responses on one space.
- */
-export async function purgeConnector(
-  tcw: TinyCloudWeb,
-  source: string,
-): Promise<StoreResult<void>> {
-  if (source.length === 0 || source.includes("/")) {
-    return fail({ code: "KV_LIST_MALFORMED", message: "invalid connector source" }, "purgeConnector(source)");
-  }
-  const schema = await ensureSchema(tcw);
-  if (!schema.ok) return schema;
-
-  // Enumerate both prefixes before mutating either. This both captures
-  // KV-only reconciled records and ensures a failed enumeration cannot report
-  // a partially completed purge as successful.
-  const meetingKeys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/meeting/`);
-  if (!meetingKeys.ok) return meetingKeys;
-  const transcriptKeys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/transcript/`);
-  if (!transcriptKeys.ok) return transcriptKeys;
-
-  for (const key of [...meetingKeys.data, ...transcriptKeys.data]) {
-    const del = await tcw.kv.delete(key);
-    if (!del.ok) {
-      // KV_NOT_FOUND is fine — nothing to remove. Anything else is a real
-      // failure and must surface.
-      const code = del.error?.code ?? "";
-      if (code !== "KV_NOT_FOUND") {
-        return fail(del.error, `purgeConnector(kv:${key})`);
-      }
-    }
-  }
-  const cursor = await tcw.kv.delete(driveCursorKvKey(source));
-  if (!cursor.ok && cursor.error?.code !== "KV_NOT_FOUND") return fail(cursor.error, "purgeConnector(cursor)");
-  const res = await store(tcw).batch([
-    { sql: "DELETE FROM connector_meeting WHERE source = ?", params: [source] },
-    { sql: "DELETE FROM connector_state WHERE connector_id = ?", params: [source] },
-  ]);
-  if (!res.ok) return fail(res.error, "purgeConnector(sql)");
-  return { ok: true, data: undefined };
+/** Purge is a fenced native operation, including snapshots and tombstones. */
+export async function purgeConnector(tcw: TinyCloudWeb, source: string): Promise<StoreResult<void>> {
+  if (!source || source.includes("/")) return fail({ code: "PUBLICATION_INVALID_IDENTITY", message: "Invalid source" }, "purgeConnector");
+  const ready = await ensurePublicationReady(tcw);
+  if (!ready.ok) return ready;
+  const result = await publicationCommand(tcw, { operation: "purge", source, operationId: crypto.randomUUID() });
+  if (!result.ok) return result;
+  return result.data.status === "purged" ? { ok: true, data: undefined }
+    : fail({ code: "PUBLICATION_PURGE_UNCONFIRMED", message: "Fenced purge was not confirmed" }, "purgeConnector");
 }
 
 // ── Normalization (Fireflies raw → NormalizedMeeting) ──────────────────

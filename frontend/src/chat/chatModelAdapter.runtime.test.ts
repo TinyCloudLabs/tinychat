@@ -9,7 +9,7 @@ test("installed composer recovers from agent failures with no unhandled rejectio
     import { strict as assert } from "node:assert";
     import { createRequire } from "node:module";
     import { createChatModelAdapter } from "./frontend/src/chat/chatModelAdapter.ts";
-    import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./frontend/src/chat/pendingHandoff.ts";
+    import { createTurnOutcomeStore, takePendingReceipt, takePendingCompletion } from "./frontend/src/chat/pendingHandoff.ts";
     import { getToolActivity } from "./frontend/src/lib/toolActivityStore.ts";
     const frontendRequire = createRequire(new URL("./frontend/package.json", import.meta.url));
     const reactRequire = createRequire(frontendRequire.resolve("@assistant-ui/react"));
@@ -57,7 +57,7 @@ test("installed composer recovers from agent failures with no unhandled rejectio
         const origin = { threadId: "synthetic-thread", model: "synthetic-model", turnId: "synthetic-turn", signal: new AbortController().signal };
         const adapter = createChatModelAdapter({
           sessionStore: { getToken: () => "synthetic-token" }, backendUrl: "https://synthetic.invalid",
-          agentEnabledRef: { current: true }, meetingMessageRegistry: createMeetingMessageRegistry(),
+          agentEnabledRef: { current: true }, turnOutcomes: createTurnOutcomeStore(),
           selection: { captureCancel: () => () => {}, beginActiveTurn: async () => origin,
             waitForAppend: async () => {}, assertActive: () => {}, setRunning: (_origin, value) => running.push(value) },
         });

@@ -4,6 +4,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import {
   appendMessage,
+  appendCompaction,
+  getLatestCompaction,
   createThread,
   getThreadModel,
   listThreads,
@@ -171,7 +173,7 @@ describe("per-thread model persistence FIFO", () => {
     await listThreads(cloud); // The response loss must affect the INSERT, not schema.
     service.uncertainBatch = true;
     const item = message("stable-message-id");
-    await expect(appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[1].id)).rejects.toThrow();
+    await appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[1].id);
     expect(service.sqlite.query("SELECT COUNT(*) FROM messages").values()[0]![0]).toBe(1);
     await expect(appendMessage(cloud, "uncertain-append", item, OFFERED_CHAT_MODELS[1].id)).resolves.toBeUndefined();
     expect(service.sqlite.query("SELECT COUNT(*) FROM messages WHERE thread_id = ?").values("uncertain-append")[0]![0]).toBe(1);
@@ -331,4 +333,49 @@ test("a manual pick supersedes a resolved choice before its send continuation ru
   expect((await turn).model).toBe(OFFERED_CHAT_MODELS[1].id);
   expect(await model(service, "revision")).toBe(OFFERED_CHAT_MODELS[1].id);
   selection.dispose();
+});
+
+test('insert-only append rejects a changed payload under a committed message ID', async () => {
+  localStorageWindow();
+  const service = new SqlService(); const client = tcw(service);
+  await appendMessage(client, 'immutable-thread', message('immutable-user'));
+  await expect(appendMessage(client, 'immutable-thread', {
+    message: { id: 'immutable-user', role: 'user', content: [{ type: 'text', text: 'replacement' }] },
+  } as never)).rejects.toThrow('payload');
+});
+
+test('concurrent writers cannot publish two payloads under one message ID', async () => {
+  localStorageWindow(); const service = new SqlService(); const a = tcw(service); const b = tcw(service);
+  await createThread(a, 'terminal-race'); await createThread(b, 'terminal-race');
+  const entered = gate(); const release = gate(); let batches = 0;
+  service.beforeBatch = async () => { if (++batches === 2) entered.release(); await release.promise; };
+  const first = appendMessage(a, 'terminal-race', message('shared-id', 'assistant'));
+  const second = appendMessage(b, 'terminal-race', { message: { id: 'shared-id', role: 'assistant', content: [{ type: 'text', text: 'different outcome' }] } } as never);
+  await entered.promise; release.release();
+  const outcomes = await Promise.allSettled([first, second]);
+  expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+  expect(service.sqlite.query('SELECT COUNT(*) FROM messages WHERE thread_id = ?').values('terminal-race')[0][0]).toBe(1);
+});
+
+test('append requires a durable nonempty message ID before writing', async () => {
+  localStorageWindow(); const service = new SqlService(); const client = tcw(service);
+  await expect(appendMessage(client, 'missing-id', { message: { role: 'assistant', content: [{ type: 'text', text: 'final' }] } } as never)).rejects.toThrow('Message requires a stable ID');
+  expect(service.sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
+});
+
+
+test('legacy checkpoints remain stored while ordinary-v3 checkpoints survive a fresh SQL read', async () => {
+  localStorageWindow(); const service = new SqlService(); const client = tcw(service);
+  await appendMessage(client, 'checkpoint-provenance', message('anchor'));
+  service.sqlite.query('INSERT INTO compactions VALUES (?, ?, ?, ?, ?)').run('legacy', 'checkpoint-provenance', 'anchor', 'PRIVATE LEGACY SUMMARY', '2099-01-01T00:00:00.000Z');
+  expect(await getLatestCompaction(client, 'checkpoint-provenance')).toBeNull();
+  const saved = await appendCompaction(client, 'checkpoint-provenance', 'anchor', 'Public-only summary');
+  expect(saved.id.startsWith('ordinary-v3:')).toBe(true);
+  let reads = 0; const query = service.query;
+  service.query = async (sql, params) => { if (sql.includes('FROM compactions')) reads++; return query(sql, params); };
+  const reloaded = await getLatestCompaction(tcw(service), 'checkpoint-provenance');
+  expect(reads).toBe(1);
+  expect(reloaded).toEqual(saved);
+  expect(service.sqlite.query('SELECT summary FROM compactions WHERE id = ?').values('legacy')[0][0]).toBe('PRIVATE LEGACY SUMMARY');
+  expect(service.sqlite.query('SELECT COUNT(*) FROM compactions WHERE thread_id = ?').values('checkpoint-provenance')[0][0]).toBe(2);
 });

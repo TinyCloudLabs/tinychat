@@ -110,6 +110,7 @@ describe("listMeetings", () => {
         sourceId: "src-1",
         title: "Standup",
         startedAt: "2026-08-01T10:00:00.000Z",
+        revision: null, readiness: "unverified",
       },
       {
         id: "row-2",
@@ -117,6 +118,7 @@ describe("listMeetings", () => {
         sourceId: "src-2",
         title: "Retro",
         startedAt: "2026-07-30T10:00:00.000Z",
+        revision: null, readiness: "unverified",
       },
     ]);
   });
@@ -185,7 +187,7 @@ describe("listMeetings", () => {
       sql: { ok: true, data: { rows: [["row-1", "fireflies", "src-1", null, 1723600000]] } },
     });
     expect(await listMeetings(tcw)).toEqual([
-      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null },
+      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null, revision: null, readiness: "unverified" },
     ]);
   });
 
@@ -215,6 +217,7 @@ describe("listMeetings", () => {
         sourceId: "conf-7",
         title: "Keeper",
         startedAt: null,
+        revision: null, readiness: "unverified",
       },
     ]);
   });
@@ -235,120 +238,7 @@ describe("listMeetings", () => {
   });
 });
 
-describe("readTranscript", () => {
-  const stored = [
-    sentence({ index: 0, speaker_name: "Ada", text: "Morning." }),
-    sentence({ index: 1, speaker_name: null, text: "Morning back." }),
-  ];
-
-  it("parses a JSON-stringified payload", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } },
-    });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({
-      status: "ok",
-      sentences: stored,
-    });
-  });
-
-  it("accepts an already-parsed array payload", async () => {
-    const { tcw } = fakeTcw({ kv: { ok: true, data: { data: stored, headers: {} } } });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({
-      status: "ok",
-      sentences: stored,
-    });
-  });
-
-  it("reads the fireflies-scoped key for a fireflies meeting", async () => {
-    const { tcw, kvKeys } = fakeTcw({
-      kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
-    });
-    await readTranscript(tcw, "fireflies", "src-9");
-    expect(kvKeys).toEqual([transcriptKvKey("fireflies", "src-9")]);
-  });
-
-  it("reads the google-meet-scoped key for a Meet meeting", async () => {
-    const { tcw, kvKeys } = fakeTcw({
-      kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
-    });
-    await readTranscript(tcw, "google-meet", "conf-9");
-    expect(kvKeys).toEqual([transcriptKvKey("google-meet", "conf-9")]);
-    // The Fireflies key for the same id must not be what was read — that miss
-    // would render as "not synced yet" forever.
-    expect(kvKeys).not.toContain(transcriptKvKey("fireflies", "conf-9"));
-  });
-
-  it("reports an empty stored transcript as ok, not absent", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: true, data: { data: JSON.stringify([]), headers: {} } },
-    });
-    expect(await readTranscript(tcw, "google-meet", "conf-1")).toEqual({
-      status: "ok",
-      sentences: [],
-    });
-  });
-
-  it("reports malformed JSON as absent (re-reading returns the same bytes)", async () => {
-    const { tcw } = fakeTcw({ kv: { ok: true, data: { data: "{not json", headers: {} } } });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "absent" });
-  });
-
-  it("reports a payload that is not an array as absent", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: true, data: { data: { sentences: [] }, headers: {} } },
-    });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "absent" });
-  });
-
-  it("reports a missing key as absent", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: false, error: { code: "KV_NOT_FOUND", message: "no key" } },
-    });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "absent" });
-  });
-
-  it("reports a non-missing store error as failed, so the caller can retry", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: false, error: { code: "AUTH_UNAUTHORIZED", message: "unauthorized" } },
-    });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({ status: "failed" });
-  });
-
-  it("reports an unlabelled store error as failed", async () => {
-    const { tcw } = fakeTcw({
-      kv: { ok: false, error: { code: "", message: "" } },
-    });
-    expect(await readTranscript(tcw, "google-meet", "conf-1")).toEqual({ status: "failed" });
-  });
-
-  it("reports a rejected read as failed and never throws", async () => {
-    await expect(readTranscript(throwingTcw(), "fireflies", "src-1")).resolves.toEqual({
-      status: "failed",
-    });
-  });
-
-  it("filters out entries without a string text", async () => {
-    const { tcw } = fakeTcw({
-      kv: {
-        ok: true,
-        data: {
-          data: JSON.stringify([
-            { index: 0, speaker_name: "Ada", text: "kept" },
-            { index: 1, speaker_name: "Ada" },
-            { index: 2, speaker_name: "Ada", text: 42 },
-            null,
-            "not an object",
-          ]),
-          headers: {},
-        },
-      },
-    });
-    expect(await readTranscript(tcw, "fireflies", "src-1")).toEqual({
-      status: "ok",
-      sentences: [{ index: 0, speaker_name: "Ada", text: "kept" } as FirefliesSentence],
-    });
-  });
-});
+// Exact snapshot reads, corruption, and publication status are exercised in publishedLibrary.test.ts.
 
 describe("meetingSourceLabel", () => {
   it("names each browsable source the way Settings does", () => {

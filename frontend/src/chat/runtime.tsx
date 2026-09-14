@@ -14,7 +14,6 @@ import { createAssistantStream } from "assistant-stream";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
-import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import {
   completeChat,
   emitReceipt,
@@ -63,7 +62,9 @@ import {
 import {
   takePendingCompletion,
   takePendingReceipt,
-  type MeetingMessageRegistry,
+  type TurnOutcomeStore,
+  type TurnOutcome,
+  messageTurnOutcome,
 } from "./pendingHandoff";
 
 /**
@@ -107,9 +108,7 @@ export interface ChatRuntimeDeps {
   agentEnabledRef: React.MutableRefObject<boolean>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
-  /** One mounted, browser-only meeting retriever with ephemeral thread state. */
-  meetingRetriever?: MeetingTurnRetriever;
-  meetingMessageRegistry: MeetingMessageRegistry;
+  turnOutcomes: TurnOutcomeStore;
   // ── Compaction deps (§D.3): injected so the adapter stays unit-testable. ──
   /** Latest chain-checkpoint for a thread (or null). */
   getCheckpoint: (threadId: string) => Promise<CompactionCheckpoint | null>;
@@ -119,10 +118,6 @@ export interface ChatRuntimeDeps {
     coversThroughMessageId: string,
     summary: string,
   ) => Promise<CompactionCheckpoint>;
-  /** Single-shot summarization wrapping the plain streamChat (max_tokens capped). */
-  summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
-  /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
-  contextTokensFor: (modelId: string) => number;
 }
 
 // ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──
@@ -268,7 +263,7 @@ const RECEIPT_COMPUTE_TIMEOUT_MS = 1500;
  * order so MessageRepository.import never throws "parent not found" on
  * partial/legacy data. Drop any item lacking a message id.
  */
-function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
+export function repositoryFromDoc(doc: ThreadDoc, outcomes?: TurnOutcomeStore): ExportedMessageRepository {
   const valid = doc.messages.filter(
     (it) => typeof (it.message as { id?: unknown })?.id === "string",
   );
@@ -279,6 +274,13 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
   // `receipt` field is ignored by MessageRepository.import (it only destructures
   // `message`/`parentId`), so we can leave it on the items handed back.
   for (const item of valid) {
+    const outcome = (item as { turn?: TurnOutcome }).turn ?? messageTurnOutcome(item.message);
+    if (outcome) {
+      const messageId = (item.message as { id: string }).id;
+      outcomes?.bind(doc.id, messageId, outcome);
+      const message = item.message as { metadata?: { custom?: Record<string, unknown> } };
+      message.metadata = { ...message.metadata, custom: { ...message.metadata?.custom, turn: outcome } };
+    }
     const receipt = (item as { receipt?: unknown }).receipt;
     if (!isPersistedReceipt(receipt)) continue;
     const assistantId = (item.message as { id: string }).id;
@@ -326,12 +328,15 @@ export function createHistoryAdapter(
     messageId: string,
     userMessageId?: string,
   ) => Promise<PersistedReceipt | null>,
-  meetingMessageRegistry?: MeetingMessageRegistry,
+  turnOutcomes?: TurnOutcomeStore,
 ): ThreadHistoryAdapter {
   // Per-thread rolling 2-item ring of the most recent user/assistant exchange.
   // Owned by the adapter (one ring per active thread instance) so a thread
   // switch can never feed extraction a stale exchange from a prior thread.
   const userTexts = new Map<string, string>();
+  const assistantPayloads = new Map<string, ExportedMessageRepositoryItem>();
+  const extracted = new Set<string>();
+  const origins = new Map<string, TurnOrigin>();
   // Id of the most recently appended user message — paired with the assistant
   // message id below to register the split receipt (input vs. output share).
   let lastUserMessageId: string | undefined;
@@ -353,7 +358,7 @@ export function createHistoryAdapter(
       const cached = historyPrefetch.get(threadId);
       if (cached) {
         void historyPrefetch.promote(threadId);
-        return repositoryFromDoc(cached);
+        return repositoryFromDoc(cached, turnOutcomes);
       }
       // Miss: promote to the front of the queue and await its fetch (the
       // HistorySkeleton shows meanwhile — acceptable and expected). The queue's
@@ -361,20 +366,28 @@ export function createHistoryAdapter(
       // through the single sequential pipe (concurrency-1 constraint).
       const doc = await historyPrefetch.promote(threadId);
       if (!doc) return { messages: [] };
-      return repositoryFromDoc(doc);
+      return repositoryFromDoc(doc, turnOutcomes);
     },
     async append(item: ExportedMessageRepositoryItem): Promise<void> {
       const role = item.message?.role;
       const id = (item.message as { id?: unknown })?.id;
-      // Peek before persistence so a failed append retains the classification
-      // for its retry. It never becomes part of `item`.
-      const meetingTurn = role === "assistant" && typeof id === "string" && meetingMessageRegistry
-        ? meetingMessageRegistry.resolveAssistant({
-            threadId,
-            assistantMessageId: id,
-            userMessageId: lastUserMessageId ?? "",
-          })
-        : false;
+      const terminal = role === 'assistant' && typeof id === 'string'
+        ? turnOutcomes?.forMessage(threadId, id) ?? messageTurnOutcome(item.message) ?? turnOutcomes?.get(threadId, lastUserMessageId ?? '')
+        : undefined;
+      const meetingTurn = terminal?.private === true;
+      if (role === 'assistant' && typeof id === 'string' && assistantPayloads.has(id)) {
+        item = structuredClone(assistantPayloads.get(id)!);
+      } else if (terminal) {
+        item = structuredClone(item);
+        (item as { turn?: TurnOutcome }).turn = terminal;
+        const message = item.message as unknown as { metadata?: { custom?: Record<string, unknown> }; content: unknown[]; status?: unknown };
+        message.metadata = { ...message.metadata, custom: { ...message.metadata?.custom, turn: terminal } };
+        if (terminal.status === 'cancelled') {
+          message.content = [{ type: 'text', text: 'Request cancelled.' }];
+          message.status = { type: 'incomplete', reason: 'cancelled' };
+        }
+        if (typeof id === 'string') turnOutcomes?.bind(threadId, id, terminal);
+      }
 
       // Receipt hooks run at ENTRY, before persistence. The receipt only needs
       // the message ids — and `await appendMessage` is the wrong thing to gate
@@ -387,8 +400,9 @@ export function createHistoryAdapter(
         if (!lastUserMessageId) throw new Error("Cannot persist a user message without an id.");
         lastOrigin = await selection.beginTurn(threadId, lastUserMessageId);
         selection.assertActive(lastOrigin);
+        origins.set(lastUserMessageId, lastOrigin);
       }
-      const origin = lastOrigin;
+      const origin = terminal ? origins.get(terminal.turnId) ?? lastOrigin : lastOrigin;
       // assistant-ui also appends its error reply after a blocked/cancelled
       // run. Such a reply must not create the missing first row or extract.
       if (role === "assistant" && (!origin || !selection.isAppendSaved(origin))) return;
@@ -426,14 +440,15 @@ export function createHistoryAdapter(
         }
       }
 
-      // A grounded reply can echo transcript evidence. Keep every applicable
-      // meeting reply transient so neither history nor later compaction can
-      // receive raw meeting text.
-      if (role === "assistant" && meetingTurn) {
-        return;
-      }
-
       if (!origin) throw new Error("Cannot persist a message without a captured turn origin.");
+      if (role === 'user') {
+        item = structuredClone(item);
+        (item as { turnId?: string }).turnId = origin.turnId;
+      }
+      if (role === 'assistant' && typeof id === 'string') {
+        if (!assistantPayloads.has(id)) assistantPayloads.set(id, structuredClone(item));
+        item = structuredClone(assistantPayloads.get(id)!);
+      }
       const firstInsert = role === "user" && selection.needsFirstInsert(origin);
       const retryFirstInsert = firstInsert && origin
         ? () => appendMessage(tcw, threadId, item, origin!.model)
@@ -455,7 +470,8 @@ export function createHistoryAdapter(
 
       const text = storedItemText(item);
       if (role === "user" && text) userTexts.set(origin.turnId, text);
-      if (role === "assistant" && !meetingTurn) {
+      if (role === "assistant" && !meetingTurn && terminal?.status === 'completed' && !extracted.has(origin.turnId)) {
+        extracted.add(origin.turnId);
         const userText = userTexts.get(origin.turnId);
         const exchange: ChatMessage[] = [
           ...(userText ? [{ role: "user" as const, content: userText }] : []),
@@ -525,7 +541,7 @@ function useThreadListAdapter(
           return getMemory(origin.tcw);
         },
         setDoc: async (next) => {
-          await setMemory(origin.tcw, next);
+              await setMemory(origin.tcw, next);
           if (depsRef.current.tcw === origin.tcw) {
             depsRef.current.memoryRef.current = next;
             depsRef.current.onMemoryUpdated?.(next);
@@ -615,7 +631,7 @@ function useThreadListAdapter(
             selection,
             onAssistantTurn,
             computeReceipt,
-            depsRef.current.meetingMessageRegistry,
+            depsRef.current.turnOutcomes,
           ),
         [activeTcw, threadId, onAssistantTurn, computeReceipt],
       );
