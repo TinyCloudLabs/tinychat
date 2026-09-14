@@ -16,6 +16,8 @@ import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stre
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { runMeetingTurn, type BufferedMeetingModelResult, type MeetingModelRequest, type MeetingToolContext } from "../transcripts/meeting-turn.js";
 import { parseMeetingToolData } from "../transcripts/meeting-evidence.js";
+import { compactLegacyMeetingResult } from "../transcripts/legacy-meeting-projection.js";
+import { resolveLegacyMeetingDateScope, type LegacyMeetingDateScope } from "../transcripts/legacy-meeting-date-scope.js";
 import { TIERS, isModelAllowed, requiredTierForModel, type TierId } from "../billing/tiers.js";
 import { paywallEnabled, resolveTier } from "../billing/stripe.js";
 import {
@@ -95,13 +97,19 @@ export interface AgentTurnContext {
   timeZone: string;
 }
 
-export function buildMeetingAgentGuidance(context?: AgentTurnContext): string {
+function meetingDateScopeGuidance(scope?: LegacyMeetingDateScope): string {
+  return scope
+    ? `Authoritative date scope for this request: ${scope.from} through ${scope.to}, inclusive in ${scope.timeZone}. Last week means the previous Monday through Sunday. Use these bounds for meeting discovery and the answer; historical messages or memory must not replace them. `
+    : "";
+}
+
+export function buildMeetingAgentGuidance(context?: AgentTurnContext, scope?: LegacyMeetingDateScope): string {
   const calendar = context
-    ? `The user's current local date is ${context.localDate} in ${context.timeZone}. Resolve today/day references from that date. `
-    : "No trusted user-local date was supplied; ask for a concrete date when a relative day would be ambiguous. ";
+    ? `The user's current local date is ${context.localDate} in ${context.timeZone}. Resolve relative day references from that date; last week means the previous Monday through Sunday. `
+    : "No trusted user-local date was supplied; ask for a concrete date or date range when a relative day or week would be ambiguous. ";
   return (
-    "You are a private meeting agent. " + calendar +
-    "Citations are required answer syntax: copy the exact bracketed citation supplied by a TinyCloud tool immediately after every meeting-derived factual claim. If no supporting citation was supplied, do not make the claim. " +
+    "You are a private meeting agent. " + calendar + meetingDateScopeGuidance(scope) +
+    "Citations are required answer syntax: copy the exact bracketed citation supplied by a TinyCloud tool immediately after every meeting-derived factual claim. Copy every character inside its brackets, including commas, speaker attribution, and timestamps; never shorten a citation. If no supporting citation was supplied, do not make the claim. " +
     "For the user's private meetings, use TinyCloud meeting tools and never substitute web search. " +
     "Use tinycloud_find_meetings for latest/last, title, participant, or date selection without reading transcripts. " +
     "For a clearly requested first/newest result set selectFirst=true so room follow-ups can reuse it. " +
@@ -308,17 +316,21 @@ export function usageFrame(promptTokens: number, completionTokens: number): stri
  * impossible to re-call the tool. Dropping `tools[]` while keeping the `role:"tool"`
  * messages does NOT work (still empty) — the results must be inlined as user text.
  */
-export function buildCleanSynthesisMessages(question: string, results: string): ChatMsg[] {
+export function buildCleanSynthesisMessages(question: string, results: string, scope?: LegacyMeetingDateScope): ChatMsg[] {
   return [
     {
       role: "system",
       content:
         "You are a helpful assistant. Answer the user's question using the tool results " +
         "provided below. CITATIONS ARE REQUIRED OUTPUT SYNTAX: copy the exact bracketed citation " +
-        "immediately after every factual claim it supports. Never omit, rename, or invent a citation. " +
+        "immediately after every factual claim it supports. Copy every character inside the complete brackets, " +
+        "including commas, speaker attribution, and timestamps; never shorten, rename, or invent a citation. " +
         "Do not infer a decision or action item from " +
         "evidence that does not state one; transcriptCandidates are evidence to inspect, not " +
         "automatically assigned todos. Say the evidence is insufficient instead. " +
+        "Disclose partial or truncated coverage using the supplied discovery and coverage fields. " +
+        "Distinguish meetings matched or returned from evidence actually read; stored overviews and excerpts do not establish complete transcript coverage. " +
+        meetingDateScopeGuidance(scope) +
         "Preserve citations and do not ask to call a tool again.",
     },
     {
@@ -330,8 +342,20 @@ export function buildCleanSynthesisMessages(question: string, results: string): 
 
 function meetingCitationsIn(toolResults: ChatMsg[]): string[] {
   return [...new Set(toolResults.flatMap((message) =>
-    message.content.match(/\[M\d+(?::[A-Z]\d*)?(?:,[^\]\r\n]*)?\]/g) ?? [],
+    // Metadata/read tools use M labels; legacy transcript search uses T labels.
+    // Only exact tool-supplied bracketed strings become eligible citations.
+    message.content.match(/\[[MT]\d+(?::[A-Z]\d*)?(?:,[^\]\r\n]*)?\]/g) ?? [],
   ))];
+}
+
+/** Restore omitted attribution only when one exact supplied citation identifies it. */
+function expandUnambiguousMeetingCitations(content: string, supplied: string[]): string {
+  return content.replace(/\[[MT]\d+(?::[A-Z]\d*)?\]/g, (label) => {
+    if (supplied.includes(label)) return label;
+    const prefix = `${label.slice(0, -1)},`;
+    const matches = supplied.filter(citation => citation.startsWith(prefix));
+    return matches.length === 1 ? matches[0] : label;
+  });
 }
 
 /** Stable eliza-service codes meaning "this user's grant is missing or unusable". */
@@ -449,7 +473,11 @@ async function dispatchTool(
   if (call.name !== "web_search") {
     const data = body.result?.data ? JSON.stringify(body.result.data) : "";
     const typed = parseMeetingToolData(body.result?.data);
-    return { status: "done", text: summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data, ...(typed ? { data: typed } : {}) };
+    // v2 returns uncited typed evidence before its duplicated citation-bearing
+    // legacy fields. Fit one complete cited projection before the 4k tool cap.
+    const compact = typed && !(turnContext && "retrievalMode" in turnContext)
+      ? compactLegacyMeetingResult(body.result!.data!, typed) : null;
+    return { status: "done", text: compact ?? (summary && data ? `${summary}\n\nTool data:\n${data}` : summary || data), ...(typed ? { data: typed } : {}) };
   }
   const results = (body.result?.data?.results as Array<{ title?: string; url?: string; snippet?: string }> | undefined) ?? [];
   if (results.length === 0) return { status: "done", text: summary };
@@ -562,25 +590,34 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
   const meetingUnavailable = generalOnly && config.meetingContentModelAllowed?.(model) === false;
+  // Only the current request can establish a new authoritative calendar scope.
+  const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+  const dateScope = generalOnly ? undefined : resolveLegacyMeetingDateScope(lastUserQuestion, params.turnContext);
   let convo: ChatMsg[] = [
     {
       role: "system",
       content: generalOnly ? "You are a helpful assistant. Use web_search for public web questions when needed. Answer ordinary conversation directly."
         + (meetingUnavailable ? " Private meeting retrieval is unavailable for this model. For private meeting questions, explain that limitation and ask the user to choose a supported model. Do not infer private meeting facts or use public web search to find private meeting information." : "")
-        : buildMeetingAgentGuidance(params.turnContext),
+        : buildMeetingAgentGuidance(params.turnContext, dateScope),
     },
     ...params.messages,
   ];
-  // The original question, for the clean-synthesis forced round (last user message).
-  const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let finalCompletionId = "";
   let errorCode: StreamErrorCode | undefined;
   let repairing = false;
+  // A provider can emit a private-tool preamble in standalone content deltas
+  // before the later tool_calls delta identifies it as private progress. Those
+  // bytes cannot be retracted, so carry a paragraph break into the next answer.
+  let privateProgressBoundaryPending = false;
+  // maxRounds bounds ordinary model/tool turns. A synthesis that fails citation
+  // validation gets one bounded clean-synthesis repair, extending the loop only
+  // when a two-hop find -> read flow consumed the default three-round budget.
+  let roundLimit = maxRounds;
 
-  for (let round = 0; round < maxRounds; round++) {
+  for (let round = 0; round < roundLimit; round++) {
     if (params.isAborted?.() || params.signal?.aborted) break;
 
     // Deterministic context guard (§C.11, NO LLM): before this round's upstream
@@ -594,7 +631,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     // round and exhaust maxRounds without ever emitting a content answer, leaving
     // the user with an empty reply. "none" makes the model summarize the tool
     // results it already has into a final answer.
-    const forceAnswer = round === maxRounds - 1;
+    const forceAnswer = round >= maxRounds - 1;
 
     // Synthesis rounds (round > 0 means a tool was already dispatched, so convo now
     // holds a role:"tool" result) need reasoning_effort:"low": harmony reasoning models
@@ -610,7 +647,9 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     // produces a real cited answer. Only reshape when results exist; if the model
     // never searched, fall through to the normal (tool-enabled) request.
     const toolResults = convo.filter((m) => m.role === "tool");
-    const cleanSynthesis = forceAnswer && toolResults.length > 0;
+    // Citation repair is always a no-tools synthesis, even when a caller allows
+    // more than the default three ordinary rounds.
+    const cleanSynthesis = (forceAnswer || repairing) && toolResults.length > 0;
     const meetingCitations = generalOnly ? [] : meetingCitationsIn(toolResults);
     // Meeting answers are held until their citation contract is validated. This
     // lets us retry an uncited synthesis without leaking the invalid draft.
@@ -633,6 +672,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
               ] : buildCleanSynthesisMessages(
                 lastUserQuestion,
                 toolResults.map((m) => m.content).join("\n\n"),
+                dateScope,
               ),
               // NO tools / tool_choice — the model literally cannot emit a tool call.
               reasoning_effort: "low",
@@ -676,10 +716,17 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     let decided = false;
     let leakMode = false;
     let generalPending = "";
+    let emittedRoundContent = false;
+
+    const writeMeetingContent = async (content: string) => {
+      await write(contentFrame(`${privateProgressBoundaryPending ? "\n\n" : ""}${content}`));
+      privateProgressBoundaryPending = false;
+      emittedRoundContent = true;
+    };
 
     const flushPending = async () => {
       if (pendingBuffer) {
-        if (!bufferMeetingAnswer) await write(contentFrame(pendingBuffer));
+        if (!bufferMeetingAnswer) await writeMeetingContent(pendingBuffer);
         pendingBuffer = "";
       }
     };
@@ -696,6 +743,11 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
       const delta = choice?.delta as
         | { content?: string; tool_calls?: Array<Record<string, unknown>> }
         | undefined;
+      if (Array.isArray(delta?.tool_calls)) {
+        // Learn the round's routing before handling co-delivered prose. Private
+        // tool-call preambles belong to tool activity, not assistant content.
+        accumulateToolCalls(toolCalls, normalizeToolCallDeltas(delta.tool_calls));
+      }
       if (typeof delta?.content === "string" && delta.content) {
         roundContent += delta.content;
         if (generalOnly) {
@@ -717,8 +769,14 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
           }
         } else if (leakMode) {
           // Already in leak mode: keep accumulating, forward nothing.
+        } else if ([...toolCalls.values()].some(call => call.name.startsWith("tinycloud_"))
+          && ![...toolCalls.values()].some(call => call.name === "web_search")) {
+          // The current provider delta explicitly couples this text to a private
+          // meeting tool call. Typed tool_activity frames surface the progress.
+          pendingBuffer = "";
+          decided = true;
         } else if (decided) {
-          if (!bufferMeetingAnswer) await write(contentFrame(delta.content));
+          if (!bufferMeetingAnswer) await writeMeetingContent(delta.content);
         } else {
           pendingBuffer += delta.content;
           const trimmed = pendingBuffer.trimStart();
@@ -737,9 +795,6 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
           }
           // else: still ambiguous (e.g. just "<too") — keep buffering.
         }
-      }
-      if (Array.isArray(delta?.tool_calls)) {
-        accumulateToolCalls(toolCalls, normalizeToolCallDeltas(delta.tool_calls));
       }
       const fr = choice?.finish_reason;
       if (typeof fr === "string") finish = fr;
@@ -779,6 +834,18 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
         let args: unknown;
         try { args = JSON.parse(call.args); } catch { throw new StreamFailure("upstream_incomplete"); }
         if (!call.id || !call.name || !args || typeof args !== "object" || Array.isArray(args)) throw new StreamFailure("upstream_incomplete");
+        // Normalize before recording tool_calls so provider history and dispatch
+        // agree. Scoped reads keep their existing room/meeting selection.
+        const hasMeetingRef = "meetingRef" in args && typeof args.meetingRef === "string" && args.meetingRef.trim().length > 0;
+        if (dateScope && !hasMeetingRef
+          && ["tinycloud_find_meetings", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions"].includes(call.name)) {
+          call.args = JSON.stringify({ ...args, from: dateScope.from, to: dateScope.to });
+        }
+      }
+      if (!generalOnly && emittedRoundContent
+        && calls.some(call => call.name.startsWith("tinycloud_"))
+        && !calls.some(call => call.name === "web_search")) {
+        privateProgressBoundaryPending = true;
       }
       convo.push({
         role: "assistant",
@@ -818,16 +885,23 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     }
 
     if (bufferMeetingAnswer) {
-      const hasSuppliedCitation = meetingCitations.some((citation) => roundContent.includes(citation));
-      if (!hasSuppliedCitation && !forceAnswer) {
-        // Give the final clean-synthesis round one chance to repair an uncited
-        // meeting draft. The draft was buffered, so the browser never saw it.
+      // Recognize every meeting-shaped bracket, including malformed/shortened
+      // labels, so one valid citation cannot hide another unsupported citation.
+      const citedContent = expandUnambiguousMeetingCitations(roundContent, meetingCitations);
+      const answerCitations = citedContent.match(/\[[MT]\d+[^\]\r\n]*\]/g) ?? [];
+      const hasOnlySuppliedCitations = answerCitations.length > 0
+        && answerCitations.every(citation => meetingCitations.includes(citation));
+      if (!hasOnlySuppliedCitations && !repairing) {
+        // Give one clean-synthesis round a chance to repair an uncited meeting
+        // draft. If the first invalid draft already consumed the forced final
+        // round, extend only this validation repair -- never the tool budget.
         repairing = true;
+        if (round + 1 >= roundLimit) roundLimit = round + 2;
         continue;
       }
-      await write(contentFrame(hasSuppliedCitation
-        ? roundContent
-        : "I found matching private meeting evidence, but could not produce a safely cited answer. Please try again."));
+      await writeMeetingContent(hasOnlySuppliedCitations
+        ? citedContent
+        : "I found matching private meeting evidence, but could not produce a safely cited answer. Please try again.");
     }
 
     finalCompletionId = currentRoundId;

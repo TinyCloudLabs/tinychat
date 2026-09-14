@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TinyCloud Chat meeting evidence, citations, and date scope</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f6f7fb; --panel:#fff; --text:#182033; --muted:#59647a; --line:#dce1eb; --accent:#3157d5; --ok:#147a50; --warn:#9a6110; --code:#eef1f7; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#111522; --panel:#181e2d; --text:#eef2ff; --muted:#aeb8cc; --line:#31394b; --accent:#8fa8ff; --ok:#62d9a6; --warn:#f1bc66; --code:#222a3c; } }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1040px,calc(100% - 32px)); margin:40px auto 64px; }
+    header, section { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:24px; margin:0 0 18px; box-shadow:0 8px 30px rgb(20 30 55 / .06); }
+    h1 { margin:0 0 8px; font-size:clamp(28px,4vw,42px); line-height:1.12; letter-spacing:-.03em; }
+    h2 { margin:0 0 14px; font-size:20px; }
+    p { margin:8px 0; }
+    .lede { color:var(--muted); font-size:17px; max-width:78ch; }
+    .status { display:inline-block; margin-top:14px; padding:5px 10px; border-radius:999px; color:var(--ok); background:color-mix(in srgb,var(--ok) 12%,transparent); font-weight:700; }
+    .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:20px; }
+    .metric { border:1px solid var(--line); border-radius:12px; padding:14px; }
+    .metric strong { display:block; color:var(--accent); font-size:23px; }
+    .metric span { color:var(--muted); }
+    .flow { display:grid; grid-template-columns:1fr auto 1fr auto 1fr auto 1fr; align-items:center; gap:8px; margin:18px 0; }
+    .node { min-height:82px; display:grid; place-items:center; text-align:center; border:1px solid var(--line); border-radius:12px; padding:10px; background:var(--code); }
+    .arrow { color:var(--accent); font-size:24px; }
+    code { background:var(--code); border-radius:5px; padding:2px 5px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border-bottom:1px solid var(--line); padding:10px 8px; text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.04em; }
+    .pass { color:var(--ok); font-weight:700; }
+    .limit { color:var(--warn); font-weight:700; }
+    ul { margin:8px 0 0; padding-left:22px; }
+    footer { color:var(--muted); text-align:center; margin-top:24px; font-size:13px; }
+    @media (max-width:760px) { .grid { grid-template-columns:1fr; } .flow { grid-template-columns:1fr; } .arrow { transform:rotate(90deg); text-align:center; } header,section { padding:18px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Preserve meeting evidence, citations, and date scope</h1>
+    <p class="lede">The legacy meeting-agent route now retains bounded cited evidence before context truncation, validates every recognized closed citation token, and carries trusted last-week bounds through discovery and synthesis.</p>
+    <p class="limit">September 14, 2026: focused validation passed; live acceptance is partial across offered models.</p>
+    <div class="grid">
+      <div class="metric"><strong>171 passed</strong><span>677 assertions across four focused test files</span></div>
+      <div class="metric"><strong>1 repair</strong><span>bounded synthesis retry without tools</span></div>
+      <div class="metric"><strong>12 attempts</strong><span>real browser comparison, including two blocked-model retries</span></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Problem and resulting behavior</h2>
+    <p>A find → read → synthesize request can exhaust its ordinary rounds before an invalid citation draft gets a repair. Raw version-2 tool results can also lose their useful evidence under the generic head-only context cap. This PR projects cited summaries, actions, and excerpts into bounded valid JSON with source references and coverage metadata before that cap, then allows one clean citation repair when needed.</p>
+    <p>The citation gate expands a shortened token only when it uniquely identifies a supplied citation, then requires every recognized closed uppercase <code>[M…]</code>/<code>[T…]</code> token to be supplied. Invalid drafts remain hidden; a failed repair uses the existing safe fallback. Public-web and ordinary streaming, accounting, completion identity, and cancellation retain their existing paths.</p>
+    <p>Simple, unambiguous last-week summary requests derive the previous Monday–Sunday interval from the browser's trusted local date and timezone. Discovery arguments are normalized before recording and dispatch, and the same scope reaches clean synthesis and citation repair. Explicit dates, selected reads, and unsupported or ambiguous phrasing retain existing behavior. The matcher is intentionally conservative.</p>
+    <p>Validated participants and organizer email are retained when they fit. Budget pressure omits whole names or addresses, records omission counts/flags and a metadata-budget reason, and marks coverage limited. This avoids presenting a shortened identity as a complete value.</p>
+    <p>Final and repair guidance instruct the model to disclose partial/truncated evidence and distinguish matched meetings from complete transcript coverage. Citation membership remains a syntax check, not an independent factual audit.</p>
+  </section>
+
+  <section>
+    <h2>Validation</h2>
+    <table>
+      <thead><tr><th>Check</th><th>Result</th><th>Boundary</th></tr></thead>
+      <tbody>
+        <tr><td>Route, socket, date-scope, and meeting-turn regressions</td><td class="pass">171 passed; 0 failed; 677 assertions</td><td>Bun 1.4.0. Includes three metadata-retention regressions (34 assertions), first observed failing and then passing after the review correction.</td></tr>
+        <tr><td>Backend typecheck and frontend build</td><td class="pass">Passed</td><td>Backend typecheck rerun after the final metadata correction. Earlier frontend build passed using the existing preview environment; frontend source did not change.</td></tr>
+        <tr><td>Scoped ESLint and diff checks</td><td class="pass">Passed</td><td>Changed source/test files; final patch whitespace checked again before publication.</td></tr>
+        <tr><td>Temporary observer fixtures</td><td class="pass">Passed</td><td>Response bytes, reader identity, cancellation, split citations/tool arguments, privacy sentinels, source joins, and timing. Observers were removed after testing.</td></tr>
+        <tr><td>Earlier full backend suite</td><td class="limit">1,582 passed; 2 failed</td><td>Historical Bun 1.3.9 socket failures were reproduced on pristine baseline. The full suite was not rerun; the current focused socket suite passed on Bun 1.4.0.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Browser baseline before the metadata-retention correction</h2>
+    <p>The matrix below was collected before the final review correction that retains participants and organizer email. That correction passed focused regression tests; the browser matrix was not repeated afterward.</p>
+    <p>The same preview, legacy route, account, provider configuration, and corpus were used. Each independent case started in a fresh room with the actual request model verified. Ordinal cases used their own model's completed parent answer. The structured controller remained disabled.</p>
+    <table>
+      <thead><tr><th>Model</th><th>Explicit dates</th><th>Paired ordinal</th><th>Last week</th><th>No match</th></tr></thead>
+      <tbody>
+        <tr><td>GLM-5.2</td><td>Pass, 111.507s</td><td>Fail, 37.342s</td><td>Fail, 300.306s</td><td>Pass after internal tool retry, 35.047s</td></tr>
+        <tr><td>Kimi K3</td><td>Pass, 172.311s</td><td>Pass, 137.854s</td><td>Pass, 174.351s</td><td>Pass, 22.591s</td></tr>
+        <tr><td>GLM-5.3</td><td>Provider 503 on two attempts</td><td colspan="3">Not run after continuing availability block</td></tr>
+        <tr><td>Qwen</td><td>Provider 400 on two attempts</td><td colspan="3">Not run after request-format incompatibility</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Pass</strong> means functional discovery/content retrieval and cited delivery, including correct target selection for the ordinal. It does not establish claim-by-claim accuracy, unique attribution across reused citation labels, or full transcript coverage. No successful case was repeated; global account memory changed between portions of the sequence. These are descriptive acceptance observations, not statistical reliability estimates or a model-quality ranking.</p>
+    <p>Completed positive drafts used exact supplied closed citation tokens without repair or fallback. Both available models dispatched the correct explicit and previous-week intervals. GLM-5.2's no-match case recovered from discovery HTTP 504 within one browser attempt. Its last-week case had one transcript-body timeout and ultimately reached the application's five-minute turn timeout during final synthesis.</p>
+    <p>Timings start at visible-agent dispatch and end at application completion. They exclude room/model/message persistence before dispatch and background memory extraction. No manual test cutoff was needed.</p>
+  </section>
+
+  <section>
+    <h2>Known remaining issues</h2>
+    <ul>
+      <li><strong>Ordinal context:</strong> GLM-5.2 correctly resolved and read the second displayed meeting, but clean synthesis received only the current question and current-turn results. It then treated a single-meeting result as lacking a second meeting. Kimi rediscovered the full list before its target read and completed the summary. Preserve the parent answer or resolved ordinal identity through synthesis/repair; narrow the blanket instruction to omit a reference for room follow-ups.</li>
+      <li><strong>Qwen request format:</strong> the route prepends its own system guidance to existing browser system context. Synthetic requests with the same tool schemas reproduced provider 400 for two consecutive system messages: <code>System message must be at the beginning.</code> Combining the same synthetic content into one system message returned 200. Successful probe streams were cancelled at headers; this establishes request admission, not a repaired browser flow. No fix is included for this incompatibility.</li>
+      <li><strong>Availability and latency:</strong> GLM-5.3's provider returned 503 before tools, including one retry. Provider reasoning time and intermittent transcript-service failures remain material; they are distinct from selection or citation failures.</li>
+      <li><strong>Evidence limits:</strong> the legacy gate does not validate every claim, intended target, or completeness assertion. Citation labels may repeat across separate tool results, and the conservative date matcher is not a general natural-language parser.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Files and scope</h2>
+    <ul>
+      <li><code>backend/src/routes/agent-chat.ts</code> — evidence projection, strict token validation, bounded repair, progress separation, and authoritative date/coverage guidance.</li>
+      <li><code>backend/src/transcripts/legacy-meeting-projection.ts</code> — bounded cited evidence, attendee/organizer metadata, and coverage projection.</li>
+      <li><code>backend/src/transcripts/legacy-meeting-date-scope.ts</code> and <code>meeting-turn.ts</code> — conservative request recognition and shared calendar arithmetic.</li>
+      <li><code>backend/src/__tests__/agent-chat.test.ts</code> and <code>legacy-meeting-date-scope.test.ts</code> — regression coverage.</li>
+      <li><code>artifacts/meeting-summary-fix-report.html</code> — this report, containing no private meeting content or credentials.</li>
+    </ul>
+    <p>No identity, environment, package, or lockfile changes. The existing preview was restored without tracing. No merge or production deployment was performed.</p>
+  </section>
+  <footer>Implementation and validation checkpoint: September 14, 2026. Earlier PR evidence remains in git history.</footer>
+</main>
+</body>
+</html>
