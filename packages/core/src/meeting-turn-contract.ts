@@ -54,6 +54,9 @@ export interface MeetingContinuation {
   examinedSources: number;
   matchedSources: number;
   exhausted: boolean;
+  /** Unresolved prior scope, without private prose. Codes are bounded to 64 × 128 chars.
+   * Older saved continuations omit this and must retain an explicit unknown-scope limitation. */
+  scope?: { codes: string[]; omittedMatches: number };
 }
 export interface MeetingTurnInput {
   turnId: string;

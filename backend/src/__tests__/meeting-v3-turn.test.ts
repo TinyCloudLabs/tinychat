@@ -1032,3 +1032,389 @@ test.each(["sentence_limit", "byte_limit"])(
     });
   },
 );
+
+const listingIntent = {
+  mode: "listing",
+  parts: [{ id: "list", question: "List" }],
+  scope: "observed",
+};
+function shortListingDispatch(omissions: Array<{ code: string }> = []) {
+  return (name: string, args: any) => {
+    if (name === "tinycloud_read_meeting")
+      return {
+        status: "done",
+        text: "",
+        data: {
+          ...evidence(args.reference, "overview"),
+          overviewProvenance: {
+            provider: null,
+            generatedAt: null,
+            sourceDigest: null,
+            freshness: "unknown",
+          },
+        },
+      };
+    const last = Boolean(args.after);
+    return {
+      status: "done",
+      text: "",
+      data: {
+        contractVersion: 3,
+        kind: "page",
+        rows: last
+          ? [catalogRow(101)]
+          : Array.from({ length: 100 }, (_, i) => catalogRow(i + 1)),
+        nextCursor: last ? "meeting-0101" : "meeting-0100",
+        exhausted: last,
+        examinedRows: last ? 1 : 100,
+        observedAt: "2026-09-14T12:00:00Z",
+        scope: "observed",
+        omissions: last ? omissions : [],
+      },
+    };
+  };
+}
+async function listingContinuation(omissions: Array<{ code: string }> = []) {
+  const first = await run({
+    dispatch: shortListingDispatch(omissions),
+    params: {
+      turn: { turnId: "first", sentAt: Date.now(), intent: listingIntent },
+    },
+  });
+  const continuation = JSON.parse(
+    JSON.stringify(first.result.meetingResult.continuation),
+  );
+  expect(continuation.exhausted).toBe(true);
+  expect(continuation.pending).toHaveLength(1);
+  return { first, continuation };
+}
+test("exhausted Continue retains earlier unresolved catalog scope after reload", async () => {
+  const { first, continuation } = await listingContinuation([
+    { code: "invalid_catalog_record" },
+  ]);
+  expect(first.result.meetingResult.limitations).toContainEqual({
+    code: "invalid_catalog_record",
+  });
+  const last = await run({
+    dispatch: shortListingDispatch(),
+    params: {
+      turn: { turnId: "last", sentAt: Date.now(), continuation },
+    },
+  });
+  expect(last.result.meetingResult.sources).toHaveLength(101);
+  expect(last.result.meetingResult.continuation).toBeUndefined();
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "invalid_catalog_record",
+  });
+});
+test("resolved listing pagination capacity does not permanently prevent completion", async () => {
+  const { continuation } = await listingContinuation();
+  const last = await run({
+    dispatch: shortListingDispatch(),
+    params: {
+      turn: { turnId: "last", sentAt: Date.now(), continuation },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("completed");
+  expect(last.result.meetingResult.limitations).toEqual([]);
+});
+test("Continue retains unresolved unpublished source obligations from prior catalog pages", async () => {
+  const dispatch = (name: string, args: any) => {
+    const response = shortListingDispatch()(name, args);
+    if (name === "tinycloud_find_meetings" && args.after) {
+      (response.data as any).rows.push({
+        ...catalogRow(102),
+        revision: null,
+        readiness: "unavailable",
+      });
+      (response.data as any).examinedRows++;
+    }
+    return response;
+  };
+  const first = await run({
+    dispatch,
+    params: {
+      turn: { turnId: "first", sentAt: Date.now(), intent: listingIntent },
+    },
+  });
+  expect(
+    first.result.meetingResult.obligations.some(
+      (o: any) => o.state === "unmet" && o.reason === "source_unavailable",
+    ),
+  ).toBe(true);
+  const last = await run({
+    dispatch,
+    params: {
+      turn: {
+        turnId: "last",
+        sentAt: Date.now(),
+        continuation: JSON.parse(
+          JSON.stringify(first.result.meetingResult.continuation),
+        ),
+      },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "source_unavailable",
+  });
+});
+test.each([false, true])(
+  "Continue recovers a pending read while preserving consumed evidence omissions: %s",
+  async (partial) => {
+    const first = await run({
+      params: {
+        turn: {
+          turnId: "first",
+          sentAt: Date.now(),
+          intent: {
+            mode: "search",
+            parts: [{ id: "search", question: "Find cobalt" }],
+            terms: ["cobalt"],
+            references: [ref(), ref("b")],
+          },
+        },
+      },
+      dispatch: (_name: string, args: any) => {
+        if (args.reference.sourceId === "b") throw Error("later read failed");
+        return {
+          status: "done",
+          text: "",
+          data: {
+            ...evidence(args.reference),
+            ...(partial
+              ? {
+                  state: "partial",
+                  omissions: [{ code: "unrecognized_record" }],
+                }
+              : {}),
+          },
+        };
+      },
+    });
+    const last = await run({
+      params: {
+        turn: {
+          turnId: "last",
+          sentAt: Date.now(),
+          continuation: JSON.parse(
+            JSON.stringify(first.result.meetingResult.continuation),
+          ),
+        },
+      },
+    });
+    expect(last.result.meetingResult.status).toBe(
+      partial ? "partial" : "completed",
+    );
+    expect(last.result.meetingResult.limitations).not.toContainEqual({
+      code: "retrieval_failed",
+    });
+    if (partial) {
+      expect(last.result.meetingResult.limitations).toContainEqual({
+        code: "unrecognized_record",
+      });
+      expect(last.result.meetingResult.limitations).toContainEqual({
+        code: "partial_scan",
+      });
+    }
+  },
+);
+test("Continue sums omitted literal matches across consumed artifacts", async () => {
+  const text = "Cobalt won. ".repeat(103);
+  const data = (reference: SourceReference) => ({
+    ...evidence(reference),
+    original: { ...evidence().original, byteLength: text.length },
+    spans: [{ text, recordIndex: 0, start: 0, end: text.length }],
+  });
+  const first = await run({
+    params: {
+      turn: {
+        turnId: "first",
+        sentAt: Date.now(),
+        intent: {
+          mode: "search",
+          parts: [{ id: "search", question: "Find cobalt" }],
+          terms: ["cobalt"],
+          references: [ref(), ref("b")],
+        },
+      },
+    },
+    dispatch: (_name: string, args: any) => {
+      if (args.reference.sourceId === "b") throw Error("later read failed");
+      return { status: "done", text: "", data: data(args.reference) };
+    },
+  });
+  expect(first.result.meetingResult.limitations).toContainEqual({
+    code: "omitted_matches:2",
+  });
+  const last = await run({
+    params: {
+      turn: {
+        turnId: "last",
+        sentAt: Date.now(),
+        continuation: JSON.parse(
+          JSON.stringify(first.result.meetingResult.continuation),
+        ),
+      },
+    },
+    dispatch: (_name: string, args: any) => ({
+      status: "done",
+      text: "",
+      data: data(args.reference),
+    }),
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "omitted_matches:4",
+  });
+  expect(last.result.meetingResult.limitations).not.toContainEqual({
+    code: "omitted_matches:2",
+  });
+});
+test("a consumed failed source stays unresolved after a later pending read recovers", async () => {
+  const first = await run({
+    params: {
+      turn: {
+        turnId: "first",
+        sentAt: Date.now(),
+        intent: {
+          mode: "search",
+          parts: [{ id: "search", question: "Find cobalt" }],
+          terms: ["cobalt"],
+          references: [ref(), ref("b")],
+        },
+      },
+    },
+    dispatch: (_name: string, args: any) => {
+      if (args.reference.sourceId === "b") throw Error("pending read failed");
+      return { status: "error", text: "", code: "execution_failed" };
+    },
+  });
+  const last = await run({
+    params: {
+      turn: {
+        turnId: "last",
+        sentAt: Date.now(),
+        continuation: JSON.parse(
+          JSON.stringify(first.result.meetingResult.continuation),
+        ),
+      },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "execution_failed",
+  });
+});
+test("consumed failure provenance survives more than one Continue", async () => {
+  const first = await run({
+    params: {
+      turn: {
+        turnId: "first",
+        sentAt: Date.now(),
+        intent: {
+          mode: "search",
+          parts: [{ id: "search", question: "Find cobalt" }],
+          terms: ["cobalt"],
+          references: [ref(), ref("b"), ref("c")],
+        },
+      },
+    },
+    dispatch: (_name: string, args: any) => {
+      if (args.reference.sourceId === "a")
+        return { status: "error", text: "", code: "execution_failed" };
+      throw Error("pending read failed");
+    },
+  });
+  const second = await run({
+    params: {
+      turn: {
+        turnId: "second",
+        sentAt: Date.now(),
+        continuation: JSON.parse(
+          JSON.stringify(first.result.meetingResult.continuation),
+        ),
+      },
+    },
+    dispatch: (_name: string, args: any) => {
+      if (args.reference.sourceId === "c")
+        throw Error("pending read failed again");
+      return { status: "done", text: "", data: evidence(args.reference) };
+    },
+  });
+  const last = await run({
+    params: {
+      turn: {
+        turnId: "last",
+        sentAt: Date.now(),
+        continuation: JSON.parse(
+          JSON.stringify(second.result.meetingResult.continuation),
+        ),
+      },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "execution_failed",
+  });
+});
+test("legacy continuation without scope provenance cannot imply complete scope", async () => {
+  const { continuation } = await listingContinuation();
+  delete continuation.scope;
+  const last = await run({
+    dispatch: shortListingDispatch(),
+    params: {
+      turn: { turnId: "last", sentAt: Date.now(), continuation },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "continuation_scope_unknown",
+  });
+});
+test.each([
+  null,
+  { codes: ["invalid_catalog_record"], omittedMatches: -1 },
+  {
+    codes: ["invalid_catalog_record"],
+    omittedMatches: Number.MAX_SAFE_INTEGER + 1,
+  },
+  { codes: Array(65).fill("invalid_catalog_record"), omittedMatches: 0 },
+  { codes: ["x".repeat(129)], omittedMatches: 0 },
+  { codes: ["private prose\nwith controls"], omittedMatches: 0 },
+])(
+  "malformed durable Continue scope is rejected before reading: %j",
+  async (scope) => {
+    const { continuation } = await listingContinuation();
+    continuation.scope = scope;
+    const last = await run({
+      dispatch: shortListingDispatch(),
+      params: {
+        turn: { turnId: "last", sentAt: Date.now(), continuation },
+      },
+    });
+    expect(last.result.meetingResult.status).toBe("clarification_required");
+    expect(last.result.meetingResult.limitations).toContainEqual({
+      code: "invalid_continuation",
+    });
+    expect(last.reads).toHaveLength(0);
+  },
+);
+test("bounded Continue omission provenance stays incomplete when distinct codes exceed capacity", async () => {
+  const { continuation } = await listingContinuation(
+    Array.from({ length: 100 }, (_, i) => ({ code: `missing_record_${i}` })),
+  );
+  expect(continuation.scope.codes.length).toBeLessThanOrEqual(64);
+  expect(continuation.scope.codes).toContain("continuation_scope_incomplete");
+  const last = await run({
+    dispatch: shortListingDispatch(),
+    params: {
+      turn: { turnId: "last", sentAt: Date.now(), continuation },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "continuation_scope_incomplete",
+  });
+});

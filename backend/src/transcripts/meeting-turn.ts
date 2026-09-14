@@ -9,6 +9,7 @@ import type {
   MeetingResult,
   MeetingTurnInput,
   MeetingRequestFilters,
+  MeetingContinuation,
 } from "@tinyboilerplate/core";
 import {
   citationsFor,
@@ -391,6 +392,57 @@ function limitation(s: TurnState, code: string) {
   if (!s.result.limitations.some((x) => x.code === code))
     s.result.limitations.push({ code });
 }
+// These failures leave the affected work pending; a later successful read resolves them.
+// Omissions from consumed artifacts/catalog rows must instead survive every Continue.
+const PENDING_SCOPE_CODES = new Set([
+  "continuation_required",
+  "unread_scope",
+  "retrieval_failed",
+  "retrieval_deadline",
+  "deadline",
+  "execution_failed",
+  "contract_mismatch",
+  "nonadvancing_cursor",
+]);
+const scopeCode = (code: unknown): code is string =>
+  typeof code === "string" && /^[a-zA-Z0-9_.:-]{1,128}$/.test(code);
+function continuationScope(
+  s: TurnState,
+): NonNullable<MeetingContinuation["scope"]> {
+  const reasons = [
+    ...(s.input.continuation?.scope?.codes ?? []),
+    ...s.result.limitations
+      .map((o) => o.code)
+      .filter((code) => !PENDING_SCOPE_CODES.has(code)),
+    // A consumed source with an unmet obligation cannot be retried by this cursor.
+    ...s.result.obligations
+      .filter(
+        (o) =>
+          o.state === "unmet" &&
+          (!o.source ||
+            s.encountered.some((reference) =>
+              sameReference(reference, o.source!),
+            )),
+      )
+      .map((o) => o.reason ?? "unresolved_obligation"),
+  ];
+  let codes = [
+    ...new Set(
+      reasons
+        .filter((code) => code !== `omitted_matches:${s.search.omitted}`)
+        .map((code) =>
+          scopeCode(code) ? code : "continuation_scope_incomplete",
+        ),
+    ),
+  ];
+  if (codes.length > 64) {
+    codes = codes
+      .filter((code) => code !== "continuation_scope_incomplete")
+      .slice(0, 63);
+    codes.push("continuation_scope_incomplete");
+  }
+  return { codes, omittedMatches: s.search.omitted };
+}
 async function callModel(
   s: TurnState,
   messages: ChatMsg[],
@@ -613,11 +665,24 @@ async function selectSources(s: TurnState): Promise<void> {
       c.examinedSources !== c.encountered.length ||
       !Number.isSafeInteger(c.matchedSources) ||
       c.matchedSources < 0 ||
-      c.matchedSources > c.examinedSources
+      c.matchedSources > c.examinedSources ||
+      (c.scope !== undefined &&
+        (!plain(c.scope) ||
+          !Array.isArray(c.scope.codes) ||
+          c.scope.codes.length > 64 ||
+          !c.scope.codes.every(scopeCode) ||
+          !Number.isSafeInteger(c.scope.omittedMatches) ||
+          c.scope.omittedMatches < 0))
     ) {
       throw new Error("invalid_continuation");
     }
     s.search.matchedSources = c.matchedSources;
+    if (c.scope === undefined) {
+      limitation(s, "continuation_scope_unknown");
+    } else {
+      for (const code of c.scope.codes) limitation(s, code);
+      s.search.omitted = c.scope.omittedMatches;
+    }
     s.pending = c.pending.map(referenceOnly);
     s.encountered = c.encountered.map(referenceOnly);
     s.cursor = c.cursor;
@@ -1126,6 +1191,7 @@ async function finish(s: TurnState): Promise<OrchestrateResult> {
           ? s.search.matchedSources
           : s.encountered.length,
       exhausted: s.exhausted,
+      scope: continuationScope(s),
     };
     if (s.result.status === "completed") s.result.status = "partial";
   }
