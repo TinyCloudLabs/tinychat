@@ -374,6 +374,7 @@ interface TurnState {
   cursor: string | null;
   exhausted: boolean;
   encountered: SourceReference[];
+  catalogOmissions: string[];
   catalog: Map<string, CatalogMeeting>;
   search: {
     matches: number;
@@ -403,6 +404,7 @@ const PENDING_SCOPE_CODES = new Set([
   "execution_failed",
   "contract_mismatch",
   "nonadvancing_cursor",
+  "upgrade_required",
 ]);
 const scopeCode = (code: unknown): code is string =>
   typeof code === "string" && /^[a-zA-Z0-9_.:-]{1,128}$/.test(code);
@@ -411,6 +413,8 @@ function continuationScope(
 ): NonNullable<MeetingContinuation["scope"]> {
   const reasons = [
     ...(s.input.continuation?.scope?.codes ?? []),
+    // These rows are already behind the cursor, regardless of their reason code.
+    ...s.catalogOmissions,
     ...s.result.limitations
       .map((o) => o.code)
       .filter((code) => !PENDING_SCOPE_CODES.has(code)),
@@ -715,7 +719,10 @@ async function nextPage(s: TurnState): Promise<void> {
     throw new Error("nonadvancing_cursor");
   s.cursor = data.nextCursor;
   s.exhausted = data.exhausted;
-  for (const omission of data.omissions) s.result.limitations.push(omission);
+  for (const omission of data.omissions) {
+    s.result.limitations.push(omission);
+    s.catalogOmissions.push(omission.code);
+  }
   for (const row of data.rows) {
     if (!matches(row, filters)) continue;
     if (row.readiness !== "published" || !validReference(row)) {
@@ -1259,6 +1266,7 @@ export async function runMeetingTurn(
     cursor: null,
     exhausted: false,
     encountered: [],
+    catalogOmissions: [],
     catalog: new Map(),
     search: {
       matches: 0,
@@ -1292,6 +1300,9 @@ export async function runMeetingTurn(
       return await finish(s);
     }
     s.retrievalDeadline = Math.min(s.deadline, Date.now() + 30000);
+    // Validate and restore frozen state before any fallible capability preflight.
+    // Restoring a continuation performs no data reads.
+    if (input.continuation) await selectSources(s);
     const capability = await inMeetingSlice(
       Math.min(10000, remaining(s)),
       params.signal,
@@ -1306,7 +1317,7 @@ export async function runMeetingTurn(
       result.status = "unavailable";
       return await finish(s);
     }
-    await selectSources(s);
+    if (!input.continuation) await selectSources(s);
     try {
       await readEvidence(s);
     } catch (error) {

@@ -1418,3 +1418,147 @@ test("bounded Continue omission provenance stays incomplete when distinct codes 
     code: "continuation_scope_incomplete",
   });
 });
+
+test.each(["failure", "upgrade", "deadline"])(
+  "Continue preserves frozen references and scope when capability preflight ends with %s",
+  async (outcome) => {
+    const { continuation } = await listingContinuation([
+      { code: "invalid_catalog_record" },
+    ]);
+    const resumed = await run({
+      params: {
+        turn: { turnId: "resume", sentAt: Date.now(), continuation },
+        ...(outcome === "deadline" ? { remainingMs: () => 0 } : {}),
+        capability: async () => {
+          if (outcome === "failure") throw Error("capability unavailable");
+          return {
+            meetingRetrieval: { contractVersion: 2 },
+            buildRevision: "older",
+          };
+        },
+      },
+    });
+    const result = resumed.result.meetingResult;
+    expect(result.status).toBe(
+      outcome === "upgrade" ? "unavailable" : "failed",
+    );
+    expect(resumed.reads).toHaveLength(0);
+    expect(result.continuation.pending).toEqual(continuation.pending);
+    expect(result.continuation.encountered).toEqual(continuation.encountered);
+    expect(result.continuation.cursor).toBe(continuation.cursor);
+    expect(result.continuation.exhausted).toBe(continuation.exhausted);
+    expect(result.continuation.scope.codes).toContain("invalid_catalog_record");
+  },
+);
+
+test("Continue keeps cumulative omitted match count when capability preflight fails", async () => {
+  const text = "Cobalt won. ".repeat(103);
+  const first = await run({
+    params: {
+      turn: {
+        turnId: "first",
+        sentAt: Date.now(),
+        intent: {
+          mode: "search",
+          parts: [{ id: "search", question: "Find cobalt" }],
+          terms: ["cobalt"],
+          references: [ref(), ref("b")],
+        },
+      },
+    },
+    dispatch: (_name: string, args: any) => {
+      if (args.reference.sourceId === "b") throw Error("later read failed");
+      return {
+        status: "done",
+        text: "",
+        data: {
+          ...evidence(args.reference),
+          original: { ...evidence().original, byteLength: text.length },
+          spans: [{ text, recordIndex: 0, start: 0, end: text.length }],
+        },
+      };
+    },
+  });
+  const continuation = JSON.parse(
+    JSON.stringify(first.result.meetingResult.continuation),
+  );
+  expect(continuation.scope.omittedMatches).toBe(2);
+  const resumed = await run({
+    params: {
+      turn: { turnId: "resume", sentAt: Date.now(), continuation },
+      capability: async () => {
+        throw Error("capability unavailable");
+      },
+    },
+  });
+  expect(resumed.result.meetingResult.continuation.scope.omittedMatches).toBe(
+    2,
+  );
+  expect(resumed.result.meetingResult.continuation.pending).toEqual([ref("b")]);
+  expect(resumed.result.meetingResult.limitations).toContainEqual({
+    code: "omitted_matches:2",
+  });
+});
+
+test("malformed Continue is rejected before capability failure can bypass validation", async () => {
+  const { continuation } = await listingContinuation();
+  continuation.scope = { codes: {}, omittedMatches: 0 };
+  let capabilityCalls = 0;
+  const resumed = await run({
+    params: {
+      turn: { turnId: "resume", sentAt: Date.now(), continuation },
+      capability: async () => {
+        capabilityCalls++;
+        throw Error("capability unavailable");
+      },
+    },
+  });
+  expect(resumed.result.meetingResult.status).toBe("clarification_required");
+  expect(resumed.result.meetingResult.limitations).toContainEqual({
+    code: "invalid_continuation",
+  });
+  expect(resumed.result.meetingResult.continuation).toBeUndefined();
+  expect(resumed.reads).toHaveLength(0);
+  expect(capabilityCalls).toBe(0);
+});
+
+test("Continue retains consumed catalog omissions even when their codes match transient failures", async () => {
+  const { continuation } = await listingContinuation([
+    { code: "contract_mismatch" },
+  ]);
+  const last = await run({
+    dispatch: shortListingDispatch(),
+    params: { turn: { turnId: "last", sentAt: Date.now(), continuation } },
+  });
+  expect(last.result.meetingResult.status).toBe("partial");
+  expect(last.result.meetingResult.limitations).toContainEqual({
+    code: "contract_mismatch",
+  });
+});
+
+test("a recovered capability upgrade requirement does not permanently prevent Continue completion", async () => {
+  const { continuation } = await listingContinuation();
+  const interrupted = await run({
+    params: {
+      turn: { turnId: "interrupted", sentAt: Date.now(), continuation },
+      capability: async () => ({
+        meetingRetrieval: { contractVersion: 2 },
+        buildRevision: "older",
+      }),
+    },
+  });
+  const last = await run({
+    dispatch: shortListingDispatch(),
+    params: {
+      turn: {
+        turnId: "last",
+        sentAt: Date.now(),
+        continuation: JSON.parse(
+          JSON.stringify(interrupted.result.meetingResult.continuation),
+        ),
+      },
+    },
+  });
+  expect(last.result.meetingResult.status).toBe("completed");
+  expect(last.result.meetingResult.limitations).toEqual([]);
+});
