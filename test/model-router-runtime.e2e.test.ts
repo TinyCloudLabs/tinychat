@@ -188,6 +188,28 @@ describe.serial("mounted real useChatRuntime lifecycle", () => {
     await page.close();
   });
 
+  test("New chat resumes automatic choice for an untouched draft left during its lookup", async () => {
+    const page = await pageFor("cancel-lookup-wait");
+    const draftId = await page.evaluate(() => window.routerHarness!.view().threadId!);
+    await page.evaluate(() => window.routerHarness!.switchExisting());
+    await page.waitForFunction(() => window.routerHarness!.view().threadId === "saved-thread" && window.routerHarness!.view().canSend);
+    selectionReleases.splice(0).forEach((release) => release());
+
+    await page.evaluate(() => window.routerHarness!.switchNew());
+    expect(await page.evaluate(() => window.routerHarness!.view().threadId)).toBe(draftId);
+    expect(await page.evaluate(() => window.routerHarness!.view().phase)).toBe("choosing");
+    for (let attempt = 0; attempt < 100 && requests.filter(entry => entry === "selection").length < 2; attempt++) {
+      await Bun.sleep(10);
+    }
+    expect(requests.filter(entry => entry === "selection")).toHaveLength(2);
+    selectionReleases.splice(0).forEach((release) => release());
+    await page.waitForFunction(() => window.routerHarness!.view().canSend);
+    expect(await page.evaluate(() => window.routerHarness!.view().reason)).toBe("healthy");
+    expect(await page.getByRole("textbox").isEnabled()).toBe(true);
+    expect((await events(page)).some(event => event.startsWith("append:"))).toBe(false);
+    await page.close();
+  });
+
   test("navigation during restoration cancels the old turn with no append or request", async () => {
     const page = await pageFor("reopen-restore-delay");
     await page.evaluate(() => window.routerHarness!.switchExisting());
