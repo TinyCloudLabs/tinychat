@@ -61,6 +61,7 @@ import {
 } from "./modelSelection";
 import {
   takePendingCompletion,
+  createTurnOutcomeStore,
   takePendingReceipt,
   type TurnOutcomeStore,
   type TurnOutcome,
@@ -337,6 +338,8 @@ export function createHistoryAdapter(
   const assistantPayloads = new Map<string, ExportedMessageRepositoryItem>();
   const extracted = new Set<string>();
   const origins = new Map<string, TurnOrigin>();
+  const outcomes = turnOutcomes ?? createTurnOutcomeStore();
+  const userWrites = new Map<string, { sentAt: number; settled: Promise<void> }>();
   // Id of the most recently appended user message — paired with the assistant
   // message id below to register the split receipt (input vs. output share).
   let lastUserMessageId: string | undefined;
@@ -371,9 +374,28 @@ export function createHistoryAdapter(
     async append(item: ExportedMessageRepositoryItem): Promise<void> {
       const role = item.message?.role;
       const id = (item.message as { id?: unknown })?.id;
-      const terminal = role === 'assistant' && typeof id === 'string'
-        ? turnOutcomes?.forMessage(threadId, id) ?? messageTurnOutcome(item.message) ?? turnOutcomes?.get(threadId, lastUserMessageId ?? '')
+      let settleUserWrite: (() => void) | undefined;
+      if (role === 'user' && typeof id === 'string' && !userWrites.has(id)) {
+        const createdAt = item.message.createdAt instanceof Date ? item.message.createdAt.getTime() : Date.now();
+        const sentAt = Number.isFinite(createdAt) ? Math.min(createdAt, Date.now()) : Date.now();
+        userWrites.set(id, { sentAt, settled: new Promise(resolve => { settleUserWrite = resolve; }) });
+        outcomes.begin(threadId, id, sentAt);
+      }
+      const userId = typeof item.parentId === 'string' ? item.parentId : lastUserMessageId;
+      const userWrite = userId ? userWrites.get(userId) : undefined;
+      // Stop may append the assistant before the in-flight user write settles.
+      // The coordinator below checks current durability, including explicit retries.
+      if (role === 'assistant' && userWrite) await userWrite.settled;
+      let terminal = role === 'assistant' && typeof id === 'string'
+        ? outcomes.forMessage(threadId, id) ?? outcomes.get(threadId, userId ?? '') ?? messageTurnOutcome(item.message)
         : undefined;
+      if (!terminal && role === 'assistant' && userId && userWrite &&
+        item.message.status?.type === 'incomplete' && item.message.status.reason === 'cancelled') {
+        // The runtime can cancel before the model adapter starts. Its cancelled
+        // status still competes through the same immutable terminal owner.
+        outcomes.claim(threadId, { turnId: userId, sentAt: userWrite.sentAt, status: 'cancelled', private: true });
+        terminal = outcomes.get(threadId, userId);
+      }
       const meetingTurn = terminal?.private === true;
       if (role === 'assistant' && typeof id === 'string' && assistantPayloads.has(id)) {
         item = structuredClone(assistantPayloads.get(id)!);
@@ -386,7 +408,7 @@ export function createHistoryAdapter(
           message.content = [{ type: 'text', text: 'Request cancelled.' }];
           message.status = { type: 'incomplete', reason: 'cancelled' };
         }
-        if (typeof id === 'string') turnOutcomes?.bind(threadId, id, terminal);
+        if (typeof id === 'string') outcomes.bind(threadId, id, terminal);
       }
 
       // Receipt hooks run at ENTRY, before persistence. The receipt only needs
@@ -398,8 +420,13 @@ export function createHistoryAdapter(
       if (role === "user") {
         lastUserMessageId = typeof id === "string" ? id : undefined;
         if (!lastUserMessageId) throw new Error("Cannot persist a user message without an id.");
-        lastOrigin = await selection.beginTurn(threadId, lastUserMessageId);
-        selection.assertActive(lastOrigin);
+        try {
+          lastOrigin = await selection.beginTurn(threadId, lastUserMessageId);
+          selection.assertActive(lastOrigin);
+        } catch (error) {
+          settleUserWrite?.();
+          throw error;
+        }
         origins.set(lastUserMessageId, lastOrigin);
       }
       const origin = terminal ? origins.get(terminal.turnId) ?? lastOrigin : lastOrigin;
@@ -451,7 +478,10 @@ export function createHistoryAdapter(
       }
       const firstInsert = role === "user" && selection.needsFirstInsert(origin);
       const retryFirstInsert = firstInsert && origin
-        ? () => appendMessage(tcw, threadId, item, origin!.model)
+        ? async () => {
+            await appendMessage(tcw, threadId, item, origin!.model);
+            selection.confirmAppend(origin!, true);
+          }
         : undefined;
       if (firstInsert && origin) {
         selection.markFirstAppend(origin, true, false, retryFirstInsert);
@@ -460,7 +490,9 @@ export function createHistoryAdapter(
         await appendMessage(tcw, threadId, item, origin.model);
         if (firstInsert) selection.markFirstAppend(origin, false);
         if (role === "user") selection.confirmAppend(origin, true);
+        settleUserWrite?.();
       } catch (error) {
+        settleUserWrite?.();
         if (role === "user") selection.confirmAppend(origin, false);
         if (firstInsert && origin) {
           selection.markFirstAppend(origin, false, true, retryFirstInsert);

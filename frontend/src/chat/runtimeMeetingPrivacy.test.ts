@@ -13,10 +13,12 @@ beforeAll(async () => {
 function fixture() {
   const db = new Database(':memory:');
   let loseAcknowledgement = false;
+  let failWrite = false;
   const execute = async (sql: string, params: any[] = []) => { db.query(sql).run(...params); return { ok: true, data: { rows: [] } }; };
   const sql = {
     query: async (sql: string, params: any[] = []) => ({ ok: true, data: { rows: db.query(sql).values(...params) } }), execute,
     batch: async (statements: Array<{ sql: string; params?: any[] }>) => {
+      if (failWrite) { failWrite = false; return { ok: false, error: { code: 'INSERT', message: 'synthetic write failure' } }; }
       db.transaction(() => { for (const statement of statements) db.query(statement.sql).run(...(statement.params ?? [])); })();
       if (loseAcknowledgement) { loseAcknowledgement = false; return { ok: false, error: { code: 'LOST_ACK', message: 'synthetic lost acknowledgment' } }; }
       return { ok: true, data: { rows: [] } };
@@ -25,7 +27,7 @@ function fixture() {
   const tcw = { did: `did:synthetic:${crypto.randomUUID()}`, sql: { db: () => sql } } as any;
   const origin = { turnId: 'u', threadId: 't', tcw, model: 'z-ai/glm-5.3', signal: new AbortController().signal };
   const selection = { beginTurn: async (_threadId: string, turnId: string) => ({ ...origin, turnId }), assertActive() {}, confirmAppend() {}, isAppendSaved: () => true, needsFirstInsert: () => false } as any;
-  return { tcw, selection, loseAck: () => { loseAcknowledgement = true; } };
+  return { tcw, selection, loseAck: () => { loseAcknowledgement = true; }, failWrite: () => { failWrite = true; } };
 }
 function item(id: string, role: 'user' | 'assistant', text: string) {
   return { parentId: role === 'user' ? null : 'u', message: { id, role, content: [{ type: 'text', text }], createdAt: new Date('2026-09-14T00:00:00Z') } } as any;
@@ -59,6 +61,39 @@ test('private result persists exactly once, survives reload and never enters fac
   expect(restored.forMessage('t', 'a')?.result?.continuation?.cursor).toBe('C');
   expect(extraction).toBe(0);
 });
+
+test.each(['history retry', 'manual retry', 'lost user ACK'])('user write %s preserves cancelled old turn and a subsequent new turn', async (mode) => {
+  const f = fixture(); const outcomes = createTurnOutcomeStore(); const exchanges: any[] = [];
+  const saved = new Set<string>(); let retry: (() => Promise<void>) | undefined;
+  f.selection.needsFirstInsert = () => true;
+  f.selection.markFirstAppend = (_origin: unknown, _pending: boolean, _failed: boolean, callback?: () => Promise<void>) => { if (callback) retry = callback; };
+  f.selection.confirmAppend = (origin: { turnId: string }, value: boolean) => { if (value) saved.add(origin.turnId); };
+  f.selection.isAppendSaved = (origin: { turnId: string }) => saved.has(origin.turnId);
+  const history = createHistoryAdapter(f.tcw, 't', f.selection, exchange => { exchanges.push(exchange); }, undefined, outcomes);
+  await getThread(f.tcw, 't'); // Fault the message INSERT, after schema creation.
+  const user = item('u', 'user', 'cancelled first send');
+  outcomes.claim('t', { turnId: 'u', sentAt: 1, status: 'cancelled', private: true });
+  if (mode === 'lost user ACK') {
+    f.loseAck();
+    await history.append(user);
+  } else {
+    f.failWrite();
+    await expect(history.append(user)).rejects.toThrow('synthetic write failure');
+    await history.append(item('a', 'assistant', 'must not create an unsaved first row'));
+    expect((await getThread(f.tcw, 't'))?.messages ?? []).toHaveLength(0);
+    if (mode === 'manual retry') await retry!();
+    else await history.append(user);
+  }
+  await history.append(item('a', 'assistant', 'late old turn'));
+  await history.append(item('u2', 'user', 'new send'));
+  outcomes.claim('t', { turnId: 'u2', sentAt: 2, status: 'completed', private: false });
+  await history.append({ ...item('a2', 'assistant', 'new answer'), parentId: 'u2' });
+  const doc = await getThread(f.tcw, 't');
+  expect(doc!.messages.map(message => message.message.id)).toEqual(['u', 'a', 'u2', 'a2']);
+  expect((doc!.messages[1] as any).turn).toMatchObject({ turnId: 'u', status: 'cancelled', private: true });
+  expect((doc!.messages[3] as any).turn).toMatchObject({ turnId: 'u2', status: 'completed', private: false });
+  expect(exchanges).toEqual([[{ role: 'user', content: 'new send' }, { role: 'assistant', content: 'new answer' }]]);
+});
 test('a claimed cancellation persists instead of late content and suppresses memory', async () => {
   const { tcw, selection } = fixture(); const outcomes = createTurnOutcomeStore(); let extraction = 0;
   const history = createHistoryAdapter(tcw, 't', selection, () => { extraction++; }, undefined, outcomes);
@@ -91,7 +126,7 @@ test('retrying an old assistant append after another Send cannot steal the new t
   await history.append(item('u2', 'user', 'second user'));
   outcomes.claim('t', { turnId: 'u2', sentAt: 2, status: 'completed', private: false });
   await history.append(item('a', 'assistant', 'first answer'));
-  await history.append(item('a2', 'assistant', 'second answer'));
+  await history.append({ ...item('a2', 'assistant', 'second answer'), parentId: 'u2' });
   expect(exchanges).toHaveLength(2);
   expect(exchanges[1].exchange).toEqual([{ role: 'user', content: 'second user' }, { role: 'assistant', content: 'second answer' }]);
 });

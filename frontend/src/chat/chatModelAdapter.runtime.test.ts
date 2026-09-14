@@ -131,3 +131,89 @@ test("installed composer recovers from agent failures with no unhandled rejectio
     }
   }
 }, 5000);
+
+
+test("Stop before request or adapter startup persists one cancelled terminal after the pending user write", async () => {
+  const script = String.raw`
+    import { createRequire } from "node:module";
+    import { Database } from "bun:sqlite";
+    import { createChatModelAdapter } from "./frontend/src/chat/chatModelAdapter.ts";
+    import { createTurnOutcomeStore } from "./frontend/src/chat/pendingHandoff.ts";
+    import { ModelSelectionCoordinator } from "./frontend/src/chat/modelSelection.ts";
+    import { getThread } from "./frontend/src/lib/threadStore.ts";
+    globalThis.HTMLElement ??= class {};
+    globalThis.customElements ??= { define() {}, get() {}, getName() {}, upgrade() {}, whenDefined: async () => {} };
+    const { createHistoryAdapter } = await import("./frontend/src/chat/runtime.tsx");
+    const frontendRequire = createRequire(new URL("./frontend/package.json", import.meta.url));
+    const reactRequire = createRequire(frontendRequire.resolve("@assistant-ui/react"));
+    const { LocalThreadRuntimeCore } = await import(reactRequire.resolve("@assistant-ui/core/internal"));
+    const pause = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+    const results = [];
+    for (const beforeAdapter of [false, true]) {
+      const db = new Database(":memory:");
+      const writeStarted = pause(), writeReady = pause(), adapterReady = pause();
+      let firstWrite = true, requests = 0, extraction = 0;
+      const sql = {
+        query: async (sql, params = []) => ({ ok: true, data: { rows: db.query(sql).values(...params) } }),
+        execute: async (sql, params = []) => { db.query(sql).run(...params); return { ok: true, data: { rows: [] } }; },
+        batch: async statements => {
+          if (firstWrite) { firstWrite = false; writeStarted.resolve(); await writeReady.promise; }
+          db.transaction(() => { for (const statement of statements) db.query(statement.sql).run(...(statement.params ?? [])); })();
+          return { ok: true, data: { rows: [] } };
+        },
+      };
+      const tcw = { did: "did:synthetic:" + crypto.randomUUID(), spaceId: "synthetic-space", sql: { db: () => sql } };
+      globalThis.fetch = async url => {
+        if (String(url).endsWith("/api/chat/model-selection")) return Response.json({ model: "z-ai/glm-5.3", reason: "healthy" });
+        requests++; throw Error("Unexpected chat request after Stop");
+      };
+      const sessionStore = { getToken: () => "synthetic-token" };
+      const selection = new ModelSelectionCoordinator({ tcw, backendUrl: "https://synthetic.invalid", sessionStore, onView() {} });
+      selection.activate("t", "new");
+      for (let i = 0; i < 100 && !selection.getView().canSend; i++) await Bun.sleep(2);
+      const outcomes = createTurnOutcomeStore();
+      const history = createHistoryAdapter(tcw, "t", selection, () => { extraction++; }, undefined, outcomes);
+      const adapter = createChatModelAdapter({ sessionStore, backendUrl: "https://synthetic.invalid", selection, agentEnabledRef: { current: false }, turnOutcomes: outcomes });
+      const delayed = { async *run(input) { if (beforeAdapter) await adapterReady.promise; yield* adapter.run(input); } };
+      let assistantAppend;
+      const runtime = new LocalThreadRuntimeCore({ getModelContext: () => ({}) }, { adapters: { chatModel: delayed, history: { load: async () => ({ messages: [] }), append: item => { const pending = history.append(item); if (item.message.role === "assistant") assistantAppend = pending; return pending; } } } });
+      runtime.composer.setText("Synthetic Stop before request");
+      await runtime.composer.send();
+      await writeStarted.promise;
+      runtime.cancelRun();
+      adapterReady.resolve();
+      await Bun.sleep(20);
+      writeReady.resolve();
+      for (let i = 0; i < 100 && !assistantAppend; i++) await Bun.sleep(2);
+      await assistantAppend;
+      await Bun.sleep(20);
+      const doc = await getThread(tcw, "t");
+      const terminal = doc?.messages.find(item => item.message.role === "assistant");
+      const message = runtime.messages.at(-1);
+      if (terminal) {
+        await history.append({ parentId: message.id, message: { ...message, content: [{ type: "text", text: "LATE_OVERWRITE" }] } });
+      }
+      const reloaded = await getThread(tcw, "t");
+      results.push({ beforeAdapter, requests, extraction, users: reloaded?.messages.filter(item => item.message.role === "user").length, assistants: reloaded?.messages.filter(item => item.message.role === "assistant").length, terminal: terminal?.turn, content: terminal?.message.content, lateOverwrite: JSON.stringify(reloaded).includes("LATE_OVERWRITE"), uiStatus: message.status });
+      selection.dispose();
+      db.close();
+    }
+    console.log(JSON.stringify(results));
+    process.exit(0);
+  `;
+  const child = Bun.spawn([process.execPath, "--no-env-file", "--no-install", "--eval", script], { cwd: new URL("../../..", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  const results = JSON.parse(stdout);
+  expect(results).toHaveLength(2);
+  for (const result of results) {
+    expect(result.requests).toBe(0);
+    expect(result.users).toBe(1);
+    expect(result.assistants).toBe(1);
+    expect(result.terminal).toMatchObject({ status: "cancelled", private: true });
+    expect(result.content).toEqual([{ type: "text", text: "Request cancelled." }]);
+    expect(result.lateOverwrite).toBe(false);
+    expect(result.extraction).toBe(0);
+    expect(result.uiStatus).toEqual({ type: "incomplete", reason: "cancelled" });
+  }
+}, 5000);

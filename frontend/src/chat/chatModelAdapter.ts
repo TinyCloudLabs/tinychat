@@ -107,7 +107,6 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       try {
         abortSignal.throwIfAborted();
         origin = await withinTurn(deps.selection.beginActiveTurn(turnId), abortSignal);
-        await withinTurn(deps.selection.waitForAppend(origin), abortSignal);
       } finally { abortSignal.removeEventListener('abort', cancelSelection); }
       abortSignal = AbortSignal.any([abortSignal, origin.signal, deadline]);
       const threadId = origin.threadId;
@@ -116,12 +115,14 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const cancel = () => outcomes.claim(threadId, { turnId, sentAt, status: deadline.aborted ? 'failed' : 'cancelled', private: true });
       abortSignal.addEventListener('abort', cancel, { once: true });
       const assertTurn = () => { abortSignal.throwIfAborted(); deps.selection.assertActive(origin); };
-      deps.selection.setRunning(origin, true);
       let lastUsage: UsageInfo | undefined;
       let completionId: string | undefined;
       let pendingCheckpoint: { coversThroughMessageId: string; summary: string } | undefined;
       try {
         assertTurn();
+        await withinTurn(deps.selection.waitForAppend(origin), abortSignal);
+        assertTurn();
+        deps.selection.setRunning(origin, true);
         const storedCheckpoint = deps.getCheckpoint ? await withinTurn(deps.getCheckpoint(threadId), abortSignal) : null;
         const checkpoint = typeof storedCheckpoint?.id === "string" && storedCheckpoint.id.startsWith("ordinary-v3:") ? storedCheckpoint : null;
         assertTurn();
