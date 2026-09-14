@@ -214,7 +214,14 @@ export async function mintTranscriptDelegation(
   const result = await tcw.delegateTo(delegateDID, TRANSCRIPT_PERMISSIONS, {
     expiry: options.expiryMs ?? AGENT_DELEGATION_EXPIRY_MS,
   });
-  const portable = toPortableDelegation(result.delegation as unknown as Delegation, tcw.address() ?? "", tcw.chainId() ?? 1, host);
+  // delegateTo already returns a PortableDelegation. Its signed multi-resource
+  // JWT lives in delegationHeader, not the authHeader used by space.create().
+  const portable: PortableDelegation = {
+    ...result.delegation,
+    ownerAddress: tcw.address() ?? "",
+    chainId: tcw.chainId() ?? 1,
+    host,
+  };
   const { serializeDelegation } = await import("@tinycloud/web-sdk");
   return completeSerializedActions(portable, serializeDelegation);
 }

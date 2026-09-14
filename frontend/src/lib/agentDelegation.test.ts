@@ -8,6 +8,7 @@ import {
   clearAgentSessionCache,
   ensureAgentSession,
   mintAgentSessionDelegations,
+  mintTranscriptDelegation,
   TRANSCRIPT_PERMISSIONS,
 } from "./agentDelegation.js";
 
@@ -187,6 +188,32 @@ describe("ensureAgentSession", () => {
 });
 
 describe("two-grant session envelope", () => {
+  it("preserves delegateTo's portable signed header and recovers all read-only transcript actions", async () => {
+    const shims = globalThis as { HTMLElement?: unknown; customElements?: unknown };
+    shims.HTMLElement ??= class {};
+    shims.customElements ??= { define: () => undefined, get: () => undefined };
+    const spaceId = "tinycloud:pkh:eip155:1:0xUSER:applications";
+    const authorization = jwtWithAtt({
+      [`${spaceId}/sql/xyz.tinycloud.tinychat/connectors`]: { "tinycloud.sql/read": [] },
+      [`${spaceId}/kv/xyz.tinycloud.tinychat/connectors/`]: { "tinycloud.kv/get": [], "tinycloud.kv/list": [] },
+    });
+    // web-sdk 2.5.1 delegateTo returns PortableDelegation, not Delegation:
+    // its signed JWT is in delegationHeader, and authHeader is absent.
+    const portable = {
+      cid: "transcript-cid", delegationHeader: { Authorization: authorization },
+      spaceId, path: "xyz.tinycloud.tinychat/connectors/", actions: ["tinycloud.kv/get", "tinycloud.kv/list"],
+      expiry: new Date(), delegateDID: AGENT_DID, ownerAddress: "0xUSER", chainId: 1, host: "https://node.tinycloud.xyz",
+    };
+    const tcw = { ...fakeTcw(), delegateTo: async () => ({ delegation: portable }) } as unknown as TinyCloudWeb;
+
+    const serialized = JSON.parse(await mintTranscriptDelegation(tcw));
+
+    expect(serialized.delegationHeader.Authorization).toBe(authorization);
+    expect(new Set(serialized.actions)).toEqual(new Set(["tinycloud.sql/read", "tinycloud.kv/get", "tinycloud.kv/list"]));
+    expect(serialized.spaceId).toBe(spaceId);
+    expect(portable.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list"]);
+  });
+
   it("scopes the transcript permissions to exactly read-only connector metadata and bodies", () => {
     expect(TRANSCRIPT_PERMISSIONS).toEqual([
       { service: "tinycloud.sql", space: "applications", path: "xyz.tinycloud.tinychat/connectors", actions: ["read"], skipPrefix: true },
