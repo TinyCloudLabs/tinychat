@@ -5,6 +5,9 @@ let lastRestoreAddress: string | undefined;
 let lastCleanupCalled = false;
 let lastClearPersistedSessionAddress: string | undefined;
 let lastSignInOptions: any;
+let restoredSpaceId: string | undefined;
+let persistedSession: any = null;
+let lastStorageLoadAddress: string | undefined;
 let restoreResult: any = { status: "restored", session: { address: "0xabc" } };
 const signInSession = {
   address: "0xabc",
@@ -16,10 +19,17 @@ const signInSession = {
 };
 
 mock.module("@tinycloud/web-sdk", () => ({
-  BrowserSessionStorage: class BrowserSessionStorage {},
+  BrowserSessionStorage: class BrowserSessionStorage {
+    async load(address: string) {
+      lastStorageLoadAddress = address;
+      return persistedSession;
+    }
+  },
   serializeDelegation: (delegation: any) => delegation.serialized ?? "serialized-delegation",
   TinyCloudWeb: class TinyCloudWeb {
     provider: unknown;
+
+    get spaceId() { return restoredSpaceId; }
 
     constructor(config: any) {
       lastTinyCloudConfig = config;
@@ -54,6 +64,9 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  restoredSpaceId = undefined;
+  persistedSession = null;
+  lastStorageLoadAddress = undefined;
 });
 
 describe("createTinyCloudWeb", () => {
@@ -135,6 +148,42 @@ describe("createAndSignIn", () => {
 });
 
 describe("restoreTinyCloudWebSession", () => {
+  test("returns the validated persisted space when the session-only SDK getter is absent", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    const spaceId = "tinycloud:pkh:eip155:1:0xabc:applications";
+    persistedSession = { tinycloudSession: { spaceId } };
+
+    const result = await restoreTinyCloudWebSession("0xabc");
+
+    expect(result.status).toBe("restored");
+    expect(result.tcw?.spaceId).toBeUndefined();
+    expect(result.spaceId).toBe(spaceId);
+    expect(lastStorageLoadAddress).toBe("0xabc");
+    expect(lastTinyCloudConfig.provider).toBeUndefined();
+  });
+
+  test("prefers the active SDK space over persisted display metadata", async () => {
+    restoreResult = { status: "restored", session: { address: "0xabc" } };
+    restoredSpaceId = "tinycloud:pkh:eip155:1:0xabc:active-space";
+    persistedSession = { tinycloudSession: { spaceId: "older-space" } };
+
+    const result = await restoreTinyCloudWebSession("0xabc");
+
+    expect(result.spaceId).toBe(restoredSpaceId);
+    expect(lastStorageLoadAddress).toBeUndefined();
+  });
+
+  test("does not expose persisted space metadata when SDK restore fails", async () => {
+    restoreResult = { status: "restore-failed", error: new Error("Invalid delegation") };
+    persistedSession = { tinycloudSession: { spaceId: "unaccepted-space" } };
+
+    const result = await restoreTinyCloudWebSession("0xabc");
+
+    expect(result.tcw).toBeNull();
+    expect(result.spaceId).toBeUndefined();
+    expect(lastStorageLoadAddress).toBeUndefined();
+  });
+
   test("restores a session-only TinyCloudWeb without a provider", async () => {
     restoreResult = { status: "restored", session: { address: "0xabc" } };
     lastRestoreAddress = undefined;

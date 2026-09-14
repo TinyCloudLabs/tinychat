@@ -329,7 +329,7 @@ export function App() {
         setTcw(restored.tcw);
         setAddress(storedAddress);
         setDid(restored.tcw.did ?? `did:pkh:eip155:1:${storedAddress}`);
-        setSpaceId(restored.tcw.spaceId ?? null);
+        setSpaceId(restored.spaceId ?? null);
         setState("ready");
       } catch (caught) {
         sessionStore.clear();
