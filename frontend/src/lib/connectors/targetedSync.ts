@@ -3,11 +3,8 @@
 // reuse, and the webhook handoff's "targeted queued-id ingest and durable
 // acknowledgement" section for the contract implemented here.
 //
-// WHY A SECOND ENGINE. `syncFireflies()` lists newest-first and stops at the
-// first id it already has. That is right for a manual catch-up and wrong for a
-// queue: a webhook hands us EXACT ids, and a `meeting.summarized` event is an
-// event about a meeting we usually already stored — the v1 engine would skip it
-// forever. So this engine never lists; it fetches the ids it was given.
+// Queue discovery supplies exact identities; manual sync uses provider listing.
+// Both routes use the same reserved publication boundary.
 //
 // OPTION C, RESTATED IN CODE. The backend queues `(meetingId, kind)` pairs and
 // nothing else. The Fireflies key is read HERE, in the browser, through the
@@ -21,7 +18,7 @@
 // write silently drop a meeting: the queue entry would be gone and nothing
 // would ever retry it. The inverse failure — write succeeded, ack response
 // lost — is safe and is the case this design accepts, because a retry re-fetches
-// the same id and `upsertMeeting` lands it on the SAME row (no duplicate), then
+// the same identity and the publisher confirms the current snapshot, then
 // re-acknowledges; the backend answers `alreadySettled`.
 //
 // NO SURPRISE PROMPTS. A locked vault or a missing key is a reported no-op, not
@@ -44,7 +41,7 @@ import {
   normalizeFirefliesTranscript,
   updateSyncState as storeUpdateSyncState,
   countMeetings as storeCountMeetings,
-  upsertMeeting as storeUpsertMeeting,
+  publishConnectorMeeting as storePublishConnectorMeeting,
   type NormalizedMeeting,
   type StoreError,
   type StoreResult,
@@ -78,14 +75,10 @@ export interface TargetedSyncClient {
   getTranscript(id: string): Promise<FirefliesResult<FirefliesTranscript>>;
 }
 
-/** Structural surface of `connectorStore`. `upsertMeeting` writes SQL and the
+/** Structural surface of `connectorStore`. Publication writes SQL and the
  *  KV body together and preserves the row id / creation time on an update. */
 export interface TargetedIngestStore {
-  upsertMeeting(
-    tcw: TinyCloudWeb,
-    meeting: NormalizedMeeting,
-    sentences: FirefliesSentence[],
-  ): Promise<StoreResult<UpsertMeetingOutcome>>;
+  publishConnectorMeeting: typeof storePublishConnectorMeeting;
   updateSyncState(tcw: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
 }
@@ -169,7 +162,7 @@ export interface IngestQueuedMeetingsOptions {
 }
 
 const defaultStore: TargetedIngestStore = {
-  upsertMeeting: storeUpsertMeeting,
+  publishConnectorMeeting: storePublishConnectorMeeting,
   updateSyncState: storeUpdateSyncState,
   countMeetings: storeCountMeetings,
 };
@@ -322,35 +315,21 @@ export async function ingestQueuedMeetings(
     if (signal?.aborted) break;
     const { meetingId, kinds } = groups[i];
 
-    const txRes = await client.getTranscript(meetingId);
-    if (!txRes.ok) {
-      if (isTerminal(txRes.error)) {
-        // A bad key stays bad and a rate limit needs a wait — stop fetching.
-        // What was already stored is still settled below.
-        terminal = fromFireflies(txRes.error);
-        break;
-      }
-      recordFailure(kinds, meetingId, "fetch", txRes.error.message);
+    let providerError: import("./firefliesClient").FirefliesError | undefined;
+    const published = await store.publishConnectorMeeting(tcw, { source, sourceId: meetingId }, async () => {
+      const txRes = await client.getTranscript(meetingId);
+      if (!txRes.ok) { providerError = txRes.error; throw new Error(txRes.error.message); }
+      return { ...normalizeFirefliesTranscript(txRes.data), body: { basis: "transcript", schema: "json-records",
+        raw: JSON.stringify(txRes.data.sentences ?? []), originalExtent: "known" } };
+    }, signal);
+    if (!published.ok) {
+      if (providerError && isTerminal(providerError)) { terminal = fromFireflies(providerError); break; }
+      recordFailure(kinds, meetingId, providerError ? "fetch" : "storage", published.error.message);
     } else {
-      try {
-        const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
-        const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
-        if (!upsertRes.ok) {
-          // The write did not happen, so this identity is NOT acknowledged and
-          // stays queued. This is the storage-before-ack rule doing its job.
-          recordFailure(kinds, meetingId, "storage", upsertRes.error.message);
-        } else {
-          stored += 1;
-          if (upsertRes.data.inserted) inserted += 1;
-          else updated += 1;
-          for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
-          onProgress?.({ phase: "storing", done: i + 1, total: groups.length });
-        }
-      } catch (err) {
-        // normalize() runs synchronously and can throw on a malformed payload —
-        // per item, never fatal to the batch.
-        recordFailure(kinds, meetingId, "storage", errorMessage(err));
-      }
+      stored += 1;
+      if (published.data.inserted) inserted += 1; else updated += 1;
+      for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
+      onProgress?.({ phase: "storing", done: i + 1, total: groups.length });
     }
 
     // Pace BETWEEN detail fetches, exactly as the v1 engine does. The targeted

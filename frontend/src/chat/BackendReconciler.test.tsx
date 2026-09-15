@@ -12,9 +12,8 @@
 //      TinyCloud drops concurrent responses on it;
 //   3. it never prompts and never logs — a locked vault is a quiet no-op, and a
 //      meeting id is an identifier that must not reach the console;
-//   4. the read-only meetings view is UNCHANGED: it still takes no `tcw`, so a
-//      device with no vault still sees its meetings (W5's whole point). The
-//      reconcile is a separate, additive mount;
+//   4. the meetings view uses optional space read grants for published revisions
+//      without provider keys or vault access. Reconcile remains a separate mount;
 //   5. App.tsx's drain-UX wiring is untouched.
 //
 // The frontend workspace has no DOM harness, so rendering goes through
@@ -217,12 +216,15 @@ describe("BackendReconciler wiring", () => {
     expect(usage).toContain("backendUrl={BACKEND_URL}");
   });
 
-  test("the read-only meetings view is untouched — still no vault, still no tcw", () => {
+  test("published Library receives space read grants without vault access or reconciliation writes", () => {
     const app = read("../App.tsx");
     const section = read("MeetingsSection.tsx");
-    // W5's contract: the meetings view works on a device that has no vault at all.
-    expect(app).not.toMatch(/<MeetingsSection[\s\S]{0,240}tcw=\{/);
-    expect(section).not.toContain("TinyCloudWeb");
+    // Space authorization does not require the connector secret vault.
+    expect(app).toMatch(/<MeetingsSection[\s\S]{0,240}tcw=\{/);
+    expect(section).toContain("readTranscript");
+    expect(section).not.toContain("connectorSecrets");
+    expect(section).not.toContain(".kv.put");
+    expect(section).not.toContain(".sql.execute");
     expect(section).not.toContain("markReconciled");
   });
 

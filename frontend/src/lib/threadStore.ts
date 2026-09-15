@@ -503,7 +503,7 @@ export async function appendCompaction(
   summary: string,
 ): Promise<CompactionCheckpoint> {
   await ensureSchema(tcw);
-  const id = crypto.randomUUID();
+  const id = `ordinary-v3:${crypto.randomUUID()}`;
   const createdAt = new Date().toISOString();
   const res = await store(tcw).execute(
     `INSERT INTO compactions (id, thread_id, covers_through_message_id, summary, created_at)
@@ -512,7 +512,7 @@ export async function appendCompaction(
   );
   if (!res.ok) throw new SqlOpError(res.error, "appendCompaction");
   const cp: CompactionCheckpoint = { id, threadId, coversThroughMessageId, summary, createdAt };
-  compactionCache.set(threadId, cp);
+  compactionCache.set(threadWriteKey(tcw, threadId), cp);
   return cp;
 }
 
@@ -521,7 +521,8 @@ export async function getLatestCompaction(
   tcw: TinyCloudWeb,
   threadId: string,
 ): Promise<CompactionCheckpoint | null> {
-  if (compactionCache.has(threadId)) return compactionCache.get(threadId) ?? null;
+  const key = threadWriteKey(tcw, threadId);
+  if (compactionCache.has(key)) return compactionCache.get(key) ?? null;
   await ensureSchema(tcw);
   const res = await store(tcw).query(
     "SELECT id, thread_id, covers_through_message_id, summary, created_at FROM compactions WHERE thread_id = ?",
@@ -535,8 +536,10 @@ export async function getLatestCompaction(
     summary: cellStr(row, 3, ""),
     createdAt: cellStr(row, 4, ""),
   }));
-  const latest = latestCompaction(rows);
-  compactionCache.set(threadId, latest);
+  // Pre-v3 summaries have no ordinary-only provenance. Preserve their rows,
+  // but never promote them into a model request or hide a newer safe checkpoint.
+  const latest = latestCompaction(rows.filter(row => row.id.startsWith("ordinary-v3:")));
+  compactionCache.set(key, latest);
   return latest;
 }
 
@@ -723,7 +726,7 @@ let lastDeliveredSig: string | null = null;
 
 function indexSignature(summaries: ThreadSummary[]): string {
   return sortSummaries(summaries)
-    .map((s) => `${s.id} ${s.title} ${s.updatedAt}`)
+    .map((s) => `${s.id}\0${s.title}\0${s.updatedAt}`)
     .join("");
 }
 
@@ -925,6 +928,9 @@ export async function appendMessage(
   item: StoredMessageItem,
   selectedModel: string = DEFAULT_MODEL,
 ): Promise<void> {
+  item = structuredClone(item);
+  const messageId = (item.message as { id?: unknown } | undefined)?.id;
+  if (typeof messageId !== "string" || !messageId) throw new Error("Message requires a stable ID");
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
     await ensureSchema(tcw);
@@ -932,8 +938,7 @@ export async function appendMessage(
     // Reconcile a prior uncertain batch before replaying. The message id is the
     // idempotency key; if the server committed but the response was lost, the
     // retry succeeds without appending a duplicate position.
-    const messageId = (item.message as { id?: unknown } | undefined)?.id;
-    if (typeof messageId === "string") {
+    {
       const existing = await store(tcw).query(
         "SELECT payload FROM messages WHERE thread_id = ? ORDER BY position",
         [id],
@@ -941,11 +946,11 @@ export async function appendMessage(
       if (!existing.ok) throw new SqlOpError(existing.error, "appendMessage(reconcile)");
       const alreadyStored = existing.data.rows.some((row) => {
         if (typeof row[0] !== "string") return false;
-        try {
-          return JSON.parse(row[0])?.message?.id === messageId;
-        } catch {
-          return false;
-        }
+        let saved;
+        try { saved = JSON.parse(row[0]); } catch { return false; }
+        if (saved?.message?.id !== messageId) return false;
+        if (JSON.stringify(saved) !== JSON.stringify(item)) throw new Error('Message ID already has a different immutable payload');
+        return true;
       });
       if (alreadyStored) {
         // A lost batch response also skipped the cache update. Reconcile both
@@ -990,11 +995,20 @@ export async function appendMessage(
     },
     {
       sql: `INSERT INTO messages (thread_id, position, payload, created_at)
-            VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE thread_id = ?), ?, ?)`,
-      params: [id, id, payload, now],
+            SELECT ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE thread_id = ?), ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ? AND json_extract(payload, '$.message.id') = ?)`,
+      params: [id, id, payload, now, id, messageId],
     },
     ]);
-    if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
+    // Confirm the exact immutable payload, including a lost acknowledgement or
+    // a concurrent writer winning the guarded INSERT. Never replace its outcome.
+    const check = await store(tcw).query("SELECT payload FROM messages WHERE thread_id = ? ORDER BY position", [id]);
+    const confirmed = check.ok && check.data.rows.some(row => typeof row[0] === "string" && row[0] === payload);
+    if (!confirmed) {
+      if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
+      if (!check.ok) throw new SqlOpError(check.error, "appendMessage(confirm)");
+      throw new Error('Message ID already has a different immutable payload');
+    }
 
     patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
   // The thread's stored messages changed — drop any prefetched doc so a later

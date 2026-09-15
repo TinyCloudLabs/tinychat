@@ -29,7 +29,7 @@ import {
   type BackendReconcileMeetingsClient,
   type ReconciledMeetingKvRecordV1,
 } from "./backendReconcile";
-import { meetingKvKey, transcriptKvKey } from "./connectorStore";
+import { CONNECTORS_KV_PREFIX, meetingKvKey } from "./connectorStore";
 import type {
   ConnectorMeetingContent,
   ConnectorMeetingList,
@@ -215,7 +215,7 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
 
     // KV only, under the granted `${APP_ID}/connectors/` prefix, both halves present.
     expect(kv.entries.has(meetingKvKey(SOURCE, "mtg-a"))).toBe(true);
-    expect(kv.entries.has(transcriptKvKey(SOURCE, "mtg-a"))).toBe(true);
+    expect(kv.entries.has(`${CONNECTORS_KV_PREFIX}/${SOURCE}/archive-copy/transcript/mtg-a`)).toBe(true);
     const record = JSON.parse(
       kv.entries.get(meetingKvKey(SOURCE, "mtg-a")) ?? "{}",
     ) as ReconciledMeetingKvRecordV1;
@@ -233,7 +233,7 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
       origin: "backend-ingest",
     });
     // The transcript body keeps Option C's shape, so the user's space stays one archive.
-    expect(JSON.parse(kv.entries.get(transcriptKvKey(SOURCE, "mtg-a")) ?? "[]")).toHaveLength(1);
+    expect(JSON.parse(kv.entries.get(`${CONNECTORS_KV_PREFIX}/${SOURCE}/archive-copy/transcript/mtg-a`) ?? "[]")).toHaveLength(1);
 
     // STORAGE BEFORE ACK — the stamp trails the write, never leads it.
     const putAt = tracker.order.findIndex((op) => op === `kv.put:${meetingKvKey(SOURCE, "mtg-a")}`);
@@ -450,7 +450,7 @@ describe("reconcileBackendMeetings — the user-space copy", () => {
     expect(res.data.reconciled).toBe(1);
     // No transcript half arrived, so no transcript key is written — an empty body would
     // overwrite a richer Option-C copy with nothing.
-    expect(kv.entries.has(transcriptKvKey(SOURCE, "mtg-partial"))).toBe(false);
+    expect(kv.entries.has(`${CONNECTORS_KV_PREFIX}/${SOURCE}/archive-copy/transcript/mtg-partial`)).toBe(false);
     const record = JSON.parse(kv.entries.get(meetingKvKey(SOURCE, "mtg-partial")) ?? "{}");
     expect(record.hasSummary).toBe(true);
     expect(record.hasTranscript).toBe(false);

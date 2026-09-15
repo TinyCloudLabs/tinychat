@@ -41,7 +41,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { isSecretsUnlocked } from "./connectorSecrets";
-import { meetingKvKey, transcriptKvKey } from "./connectorStore";
+import { CONNECTORS_KV_PREFIX, meetingKvKey } from "./connectorStore";
 import type {
   ConnectorMeetingContent,
   ConnectorMeetingList,
@@ -349,7 +349,7 @@ async function copyOne(
   const sentences = transcriptSentences(content.transcript);
   if (sentences !== null) {
     const body = await tcw.kv.put(
-      transcriptKvKey(source, sourceId),
+      `${CONNECTORS_KV_PREFIX}/${source}/archive-copy/transcript/${sourceId}`,
       JSON.stringify(sentences),
     );
     if (!body.ok) {

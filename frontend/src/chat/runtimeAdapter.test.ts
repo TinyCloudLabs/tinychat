@@ -7,10 +7,9 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "./chatModelAdapter.js";
-import { createMeetingMessageRegistry, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
+import { createTurnOutcomeStore, takePendingReceipt, takePendingCompletion } from "./pendingHandoff.js";
 import { DEFAULT_MODEL } from "../lib/threadStore.js";
 import { offeredChatModelContextTokens } from "@tinyboilerplate/core";
-import type { MeetingCandidate } from "../lib/meetingChat/types.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -69,27 +68,7 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null, m
     } as AdapterDeps["sessionStore"],
     selection,
     agentEnabledRef: { current: agentEnabled },
-    meetingMessageRegistry: createMeetingMessageRegistry(),
-  };
-}
-
-function meetingCandidate(): MeetingCandidate {
-  return {
-    source: "fireflies",
-    sourceId: "meeting-1",
-    title: "Planning",
-    startedAt: "2026-03-01T10:00:00.000Z",
-    participantNames: [],
-    participantEmails: [],
-    organizerEmail: null,
-    hasSqlSummary: false,
-    hasLocalRecord: false,
-    hasLocalTranscript: false,
-    hasServerSummary: false,
-    hasServerTranscript: false,
-    localRowId: null,
-    createdAt: null,
-    updatedAt: null,
+    turnOutcomes: createTurnOutcomeStore(),
   };
 }
 
@@ -121,46 +100,15 @@ async function drainAdapter(
 }
 
 describe("createChatModelAdapter — C1 branch selection", () => {
-  it("calls /api/chat when agentEnabledRef is false", async () => {
+  it("calls /api/agent/chat when public tools are disabled", async () => {
     globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
     const { calledUrl } = await drainAdapter(makeDeps(false));
-    expect(calledUrl).toContain("/api/chat");
-    expect(calledUrl).not.toContain("/api/agent");
+    expect(calledUrl).toContain("/api/agent/chat");
   });
 
   it("calls /api/agent/chat when agentEnabledRef is true", async () => {
     globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
     const { calledUrl } = await drainAdapter(makeDeps(true, "thread-x"));
-    expect(calledUrl).toContain("/api/agent/chat");
-  });
-
-  it("routes a transcript turn through /api/agent/chat without invoking the browser retriever", async () => {
-    globalThis.fetch = (async (url: string) => sseResponse(url)) as typeof fetch;
-    const deps = makeDeps(true, "thread-x");
-    let browserReads = 0;
-    deps.meetingRetriever = {
-      retrieve: async () => {
-        browserReads += 1;
-        return {
-          status: "grounded",
-          meeting: meetingCandidate(),
-          evidence: {
-            summary: null,
-            summaryLocator: null,
-            transcript: null,
-            transcriptLocator: null,
-            reads: 0,
-            partial: false,
-            unavailableLocators: [],
-          },
-          systemMessage: "UNTRUSTED MEETING EVIDENCE",
-          partial: false,
-        };
-      },
-    } as AdapterDeps["meetingRetriever"];
-
-    const { calledUrl } = await drainAdapter(deps);
-    expect(browserReads).toBe(0);
     expect(calledUrl).toContain("/api/agent/chat");
   });
 
@@ -229,7 +177,7 @@ describe("createChatModelAdapter — immutable turn model", () => {
   async function captureBody(deps: AdapterDeps, agentPath: boolean): Promise<Record<string, unknown>> {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
-      const match = agentPath ? String(url).includes("agent") : !String(url).includes("agent");
+      const match = String(url).includes("agent");
       if (match) body = JSON.parse((init?.body as string) ?? "{}");
       return sseResponse(String(url));
     }) as typeof fetch;
@@ -273,38 +221,5 @@ describe("createChatModelAdapter — C2 receipt+badge stashing on agent path", (
     const receipt = takePendingReceipt(msgId);
     expect(receipt).not.toBeNull();
     expect(receipt?.usage).toEqual({ promptTokens: 1, completionTokens: 1 });
-  });
-});
-
-describe("turn binding across awaited work", () => {
-  it("a delayed checkpoint keeps Qwen 35B's context budget, both transports and receipts on their captured model and room", async () => {
-    const turnModel = "qwen/qwen3.6-35b-a3b";
-    for (const agent of [false, true]) {
-      const deps = makeDeps(agent, "origin-room", turnModel);
-      let release!: () => void;
-      let entered!: () => void;
-      const enteredGate = new Promise<void>((resolve) => { entered = resolve; });
-      const held = new Promise<void>((resolve) => { release = resolve; });
-      deps.getCheckpoint = async () => { entered(); await held; return null; };
-      deps.contextTokensFor = (model) => {
-        expect(model).toBe(turnModel);
-        const contextTokens = offeredChatModelContextTokens(model);
-        expect(contextTokens).toBe(262_144);
-        return contextTokens!;
-      };
-      deps.appendCompaction = async () => { throw new Error("unexpected compaction"); };
-      deps.summarize = async () => { throw new Error("unexpected summary"); };
-      const bodies: Array<Record<string, unknown>> = [];
-      globalThis.fetch = (async (url, init) => { bodies.push(JSON.parse(init!.body as string)); return sseResponse(String(url)); }) as typeof fetch;
-      const running = drainAdapter(deps, `delayed-${agent}`);
-      await enteredGate;
-      deps.agentEnabledRef.current = !agent;
-      release();
-      const result = await running;
-      expect(result.calledUrl.includes("/api/agent/chat")).toBe(agent);
-      expect(bodies[0].model).toBe(turnModel);
-      if (agent) expect(bodies[0].roomId).toBe("origin-room");
-      expect(takePendingReceipt(`delayed-${agent}`)?.modelId).toBe(turnModel);
-    }
   });
 });

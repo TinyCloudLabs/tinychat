@@ -1,37 +1,9 @@
-// Meeting explorer reads — the browse-only half of the connectors store.
-//
-// CONTRACT (why this lives apart from connectorStore.ts):
-//
-//  - READ-ONLY. Never bootstraps the schema, never issues DDL, INSERT, UPDATE,
-//    DELETE or any KV write. Opening a list of meetings must not mutate the
-//    user's space, and DDL-on-mount is precisely what connectorStore's
-//    getConnection doc comment warns against.
-//
-//  - TOLERANT. Every failure reads as "nothing to show": a `{ ok: false }`
-//    Result, a `connector_meeting` table that does not exist yet (never
-//    connected, or a session predating the connectors permissions), a
-//    transport-level throw (SDK rejection, session torn down mid-call), or a
-//    malformed payload all return `[]` / a non-`ok` read. Nothing throws across
-//    the module boundary, so a storage hiccup can never render an error page —
-//    same posture as connectorStore.getConnection. Transcript reads still SAY
-//    which kind of nothing they hit (`absent` vs `failed`, see TranscriptRead)
-//    so a caller can cache the settled answer and retry the transient one.
-//
-//  - MULTI-SOURCE. The list spans every connector in EXPLORER_MEETING_SOURCES,
-//    merged newest-first; transcript reads are source-scoped because the KV key
-//    is. Fail-to-empty makes an unlisted source silently invisible, so this is
-//    the one place a new connector must be registered to be browsable.
-//
-//  - SEQUENTIAL storage calls only. TinyCloud drops concurrent responses on one
-//    space, so these never Promise.all over sql/kv calls.
-//
-//  - Paths come from connectorStore (CONNECTORS_SQL_DB_NAME, transcriptKvKey).
-//    The session is authorized against the full `${APP_ID}/connectors` string;
-//    a hand-built db name or key fails AUTH_UNAUTHORIZED.
+// Read-only catalog and immutable published-artifact reads under Library grants.
+// UI callers receive explicit unavailable states; diagnostics can use listMeetings.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore";
+import { CONNECTORS_SQL_DB_NAME, snapshotKvKey, publicationSha256 } from "./connectorStore";
 import type { FirefliesSentence } from "./firefliesClient";
 import { GMEET_MEETING_SOURCE } from "./gmeetNormalize";
 import {
@@ -73,6 +45,8 @@ export interface MeetingListItem {
   sourceId: string;
   title: string | null;
   startedAt: string | null;
+  revision: string | null;
+  readiness: "published" | "unverified" | "unavailable";
 }
 
 /**
@@ -107,22 +81,27 @@ function cellStr(row: unknown[], idx: number): string | null {
  * An empty `sources` runs no query at all: `source IN ()` is not valid SQL, and
  * "browse nothing" already has an answer.
  */
-export async function listMeetings(
+export type MeetingListRead = { status: "ok"; meetings: MeetingListItem[] } | { status: "unavailable" };
+
+export async function listMeetingsResult(
   tcw: TinyCloudWeb,
   sources: readonly string[] = EXPLORER_MEETING_SOURCES,
-): Promise<MeetingListItem[]> {
-  if (sources.length === 0) return [];
+): Promise<MeetingListRead> {
+  if (sources.length === 0) return { status: "ok", meetings: [] };
   const placeholders = sources.map(() => "?").join(", ");
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `SELECT id, source, source_id, title, started_at FROM connector_meeting
-       WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
+      `SELECT id, source, source_id, title, started_at, head_revision, publication_state FROM connector_meeting
+       WHERE source IN (${placeholders}) AND (publication_state IS NULL OR publication_state != 'deleted') ORDER BY started_at DESC`,
       [...sources],
     ),
   );
-  if (!res || !res.ok) return [];
+  if (!res || !res.ok) {
+    if (res && !res.ok && /no such table/i.test(res.error.message ?? "")) return { status: "ok", meetings: [] };
+    return { status: "unavailable" };
+  }
   const rows: unknown = res.data?.rows;
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(rows)) return { status: "unavailable" };
 
   const meetings: MeetingListItem[] = [];
   for (const row of rows as unknown[][]) {
@@ -140,9 +119,17 @@ export async function listMeetings(
       sourceId,
       title: cellStr(row, 3),
       startedAt: cellStr(row, 4),
+      revision: cellStr(row, 5),
+      readiness: cellStr(row, 5) ? "published" : cellStr(row, 6) === "unavailable" ? "unavailable" : "unverified",
     });
   }
-  return meetings;
+  return { status: "ok", meetings };
+}
+
+/** Tolerant count/diagnostic adapter; user-facing lists use listMeetingsResult. */
+export async function listMeetings(tcw: TinyCloudWeb, sources: readonly string[] = EXPLORER_MEETING_SOURCES): Promise<MeetingListItem[]> {
+  const result = await listMeetingsResult(tcw, sources);
+  return result.status === "ok" ? result.meetings : [];
 }
 
 /**
@@ -156,7 +143,7 @@ export async function listMeetings(
  */
 export type TranscriptRead =
   /** The read landed and the stored body parsed. May be empty. */
-  | { status: "ok"; sentences: FirefliesSentence[] }
+  | { status: "ok"; sentences: FirefliesSentence[]; revision: string; basis: "transcript" | "notes"; overview: string | null }
   /** The read landed; there is nothing readable stored under this key. */
   | { status: "absent" }
   /** The read itself did not land (transport, auth, unknown store error). */
@@ -168,53 +155,78 @@ function errorCode(res: unknown): string {
   return typeof err?.code === "string" ? err.code : "";
 }
 
-/**
- * The transcript body for one meeting, keyed by BOTH halves of its identity.
- *
- * `source` is required rather than defaulted: the KV key is source-scoped, and
- * a defaulted source silently reads the Fireflies key for a Google Meet
- * meeting — a miss that would render as "not synced yet" forever.
- *
- * The store writes a JSON-stringified `FirefliesSentence[]`, but the KV client
- * hands back either the parsed array or the raw string depending on the stored
- * content-type — so both are accepted. A body that landed but cannot be read
- * (malformed JSON, wrong shape) is `absent`, not `failed`: re-reading it will
- * return the same unusable bytes.
- */
+/** Verify exact immutable snapshot bytes and live catalog identity before display. */
 export async function readTranscript(
   tcw: TinyCloudWeb,
   source: string,
   sourceId: string,
+  requestedRevision?: string | null,
 ): Promise<TranscriptRead> {
-  const res = await tolerate(() => tcw.kv.get(transcriptKvKey(source, sourceId)));
-  if (!res) return { status: "failed" };
-  if (!res.ok) {
-    // A missing key is the ordinary "no transcript stored" answer; every other
-    // error (auth, transport, store) is a miss worth retrying.
-    return /NOT_FOUND/i.test(errorCode(res))
-      ? { status: "absent" }
-      : { status: "failed" };
-  }
-
-  let payload: unknown = res.data?.data;
-  if (typeof payload === "string") {
-    try {
-      payload = JSON.parse(payload);
-    } catch {
-      return { status: "absent" };
-    }
-  }
-  if (!Array.isArray(payload)) return { status: "absent" };
-
-  return {
-    status: "ok",
-    sentences: payload.filter(
-      (s): s is FirefliesSentence =>
-        typeof s === "object"
-        && s !== null
-        && typeof (s as { text?: unknown }).text === "string",
-    ),
-  };
+  try {
+    const head = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT id, head_revision, head_snapshot_key, publication_state FROM connector_meeting WHERE source = ? AND source_id = ?",
+      [source, sourceId]);
+    if (!head.ok) return { status: "failed" };
+    if (head.data.rows.length !== 1) return { status: head.data.rows.length === 0 ? "absent" : "failed" };
+    const [id, currentRevision, , state] = head.data.rows[0] as unknown as unknown[];
+    if (state === "deleted") return { status: "absent" };
+    const revision = requestedRevision ?? currentRevision;
+    if (typeof revision !== "string" || !/^[a-f0-9]{64}$/.test(revision)) return { status: "absent" };
+    const membership = async (): Promise<"ok" | "absent" | "failed"> => {
+      const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+        "SELECT s.revision FROM connector_publication_snapshot s JOIN connector_meeting m ON m.id = s.meeting_id WHERE s.revision = ? AND s.meeting_id = ? AND s.staged = 1 AND s.published = 1 AND m.source = ? AND m.source_id = ? AND m.publication_state IN ('published','reserved')",
+        [revision, id as string, source, sourceId]);
+      if (!result.ok) return "failed";
+      const rows = result.data.rows as unknown as unknown[][];
+      return rows.length === 1 && rows[0]?.[0] === revision ? "ok" : "absent";
+    };
+    const admitted = await membership();
+    if (admitted !== "ok") return { status: admitted };
+    const result = await tcw.kv.get(snapshotKvKey(source, sourceId, revision), { raw: true });
+    if (!result.ok) return /NOT_FOUND/i.test(errorCode(result)) ? { status: "absent" } : { status: "failed" };
+    const raw = result.data.data;
+    if (typeof raw !== "string" || new TextEncoder().encode(raw).byteLength > 2_097_152
+      || await publicationSha256(raw) !== revision) return { status: "failed" };
+    const snapshot = JSON.parse(raw);
+    if (snapshot.contractVersion !== 3 || snapshot.meetingRef !== id || snapshot.source !== source || snapshot.sourceId !== sourceId) return { status: "failed" };
+    const body = snapshot.body;
+    if (!body) return { status: "absent" };
+    if (typeof body.raw !== "string" || !["transcript", "notes"].includes(body.basis)
+      || new TextEncoder().encode(body.raw).byteLength !== body.original?.byteLength
+      || body.original.byteLength > 1_048_576 || await publicationSha256(body.raw) !== body.original.digest) return { status: "failed" };
+    let records: Array<Record<string, unknown>>;
+    if (body.schema === "text") records = [{ text: body.raw }];
+    else if (body.schema === "json-records") {
+      const parsed: unknown = JSON.parse(body.raw);
+      if (!Array.isArray(parsed) || parsed.some((item) => !item || typeof item !== "object" || typeof item.text !== "string")) return { status: "failed" };
+      records = parsed;
+    } else if (body.schema === "google-docs" && body.basis === "notes") {
+      const doc = JSON.parse(body.raw);
+      records = [];
+      const visit = (value: unknown): void => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value)) { for (const child of value) visit(child); return; }
+        const item = value as Record<string, unknown>;
+        if (item.textRun && typeof item.textRun === "object" && typeof (item.textRun as { content?: unknown }).content === "string") {
+          records.push({ text: (item.textRun as { content: string }).content }); return;
+        }
+        for (const child of Object.values(item)) visit(child);
+      };
+      visit(doc);
+    } else return { status: "failed" };
+    const originMs = Date.parse(snapshot.metadata?.startedAt ?? "");
+    const seconds = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value
+      : typeof value === "string" && Number.isFinite(originMs) && Number.isFinite(Date.parse(value)) ? (Date.parse(value) - originMs) / 1000 : 0;
+    const names = snapshot.metadata?.metadata?.participantNamesByResource ?? {};
+    const sentences = records.map((record, index) => ({ index, text: record.text as string,
+      speaker_name: typeof record.speaker_name === "string" ? record.speaker_name
+        : typeof record.participant === "string" && typeof names[record.participant] === "string" ? names[record.participant] : null,
+      start_time: seconds(record.start_time ?? record.start ?? record.startTime),
+      end_time: seconds(record.end_time ?? record.end ?? record.endTime) }));
+    const stillAdmitted = await membership();
+    if (stillAdmitted !== "ok") return { status: stillAdmitted };
+    return { status: "ok", sentences, revision, basis: body.basis, overview: snapshot.overview?.text ?? null };
+  } catch { return { status: "failed" }; }
 }
 
 /**

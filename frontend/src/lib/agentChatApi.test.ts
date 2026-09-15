@@ -297,7 +297,7 @@ describe("agent stream client compatibility", () => {
       const priorText = hasText ? "Earlier text." + (scenario === "complete_final_slice" ? " Final text." : "") : "";
       expect(current.chunks.at(-1) ?? "").toBe(priorText);
       if (scenario === "success") expect(current.error).toBeUndefined();
-      else expect(current.error).toMatchObject({ name: "AgentStreamError", code: "turn_timeout" });
+      else expect(current.error).toMatchObject({ name: "AgentStreamError", code: scenario === "partial_utf8_frame" ? "incomplete" : "turn_timeout" });
 
       let legacyText = "";
       for await (const text of streamChat({ ...streamOptions, sessionStore: legacySession as never, model: "synthetic" })) legacyText = text;
@@ -657,4 +657,18 @@ describe("streamAgentChat", () => {
     expect(emitted).toHaveLength(1);
     expect((emitted[0] as { error: string }).error).toBe("model_not_offered");
   });
+});
+
+it('incompatible releases surface upgrade-required without retrying or consuming a private stream', async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => { calls++; return Response.json({ error: 'upgrade_required' }, { status: 426 }); }) as typeof fetch;
+  const result = await collectStream();
+  expect(result.error).toMatchObject({ name: 'AgentStreamError', code: 'upgrade_required' });
+  expect(calls).toBe(1);
+});
+
+it('null structured result cannot be ignored as an ordinary successful turn', async () => {
+  globalThis.fetch = (async () => sseResponse([df({ meeting_result: null }), 'data: [DONE]\n\n'])) as typeof fetch;
+  const result = await collectStream();
+  expect(result.error).toMatchObject({ name: 'AgentStreamError', code: 'incomplete' });
 });

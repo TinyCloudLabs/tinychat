@@ -1,64 +1,15 @@
-// ── ChatModelAdapter factory (pure; no React hooks) ─────────────────
-//
-// Extracted from runtime.tsx so it can be tested without pulling in
-// @assistant-ui/react (which requires DOM). Runtime.tsx re-exports it.
-//
-// C1: branches between streamChat (plain relay) and streamAgentChat (agent
-// tool-calling path) based on deps.agentEnabledRef.current at call time.
-// C2: reads deps.activeThreadIdRef.current for roomId on the agent path.
-// C4: wires onToolActivity → toolActivityStore; clears at turn end.
+import type { ChatModelAdapter } from '@assistant-ui/react';
+import type React from 'react';
+import type { SessionStore } from '@tinyboilerplate/client';
+import type { MeetingTurnInput, MeetingResult } from '@tinyboilerplate/core';
+import { streamAgentChat, AgentStreamError, type AgentDelegationErrorCode } from '../lib/agentChatApi';
+import { ContextOverflowError, type UsageInfo } from '../lib/chatApi';
+import { clearToolActivity, setToolActivity } from '../lib/toolActivityStore';
+import { setPendingCompletion, setPendingReceipt, createTurnOutcomeStore, messageTurnOutcome, type TurnOutcomeStore } from './pendingHandoff';
+import type { CompactionCheckpoint } from './compaction';
+import type { ModelSelectionCoordinator } from './modelSelection';
 
-import {
-  streamChat,
-  ContextOverflowError,
-  type ChatMessage,
-  type UsageInfo,
-} from "../lib/chatApi";
-import { AgentStreamError, streamAgentChat, type AgentDelegationErrorCode } from "../lib/agentChatApi";
-import {
-  clearToolActivity,
-  setToolActivity,
-} from "../lib/toolActivityStore";
-import {
-  setPendingCompletion,
-  setPendingReceipt,
-  type MeetingMessageRegistry,
-} from "./pendingHandoff";
-import {
-  COMPACT_TRIGGER_RATIO,
-  COMPACT_TARGET_RATIO,
-  RETRY_TARGET_RATIO,
-  applyCheckpoint,
-  buildSummarizationMessages,
-  estimatePayloadTokens,
-  isCheckpointValid,
-  planCompaction,
-  type CompactionCheckpoint,
-  type PayloadMsgWithId,
-} from "./compaction";
-import type { ChatModelAdapter } from "@assistant-ui/react";
-import type React from "react";
-import type { SessionStore } from "@tinyboilerplate/client";
-import type { ModelSelectionCoordinator } from "./modelSelection";
-import { meetingSourceLabel } from "../lib/connectors/meetingExplorer";
-import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
-import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
-
-/**
- * User-facing copy shown when a conversation is still too long AFTER a
- * compact-and-retry (spec §C.13). Provider-agnostic and actionable — NEVER a
- * raw status string and NEVER naming a model/provider vendor (§F.12).
- */
-export const CONTEXT_OVERFLOW_MESSAGE =
-  "This conversation is too long for the model even after compaction. Start a new chat to continue.";
-
-export const MEETING_NO_MATCH_MESSAGE =
-  "I couldn't find a matching meeting. Try a meeting title, participant or email address, a YYYY-MM-DD date, today, or yesterday.";
-export const MEETING_NO_CONTENT_MESSAGE =
-  "I found the meeting, but it has no summary or transcript the chat can use. Try syncing again later or check whether transcription was enabled.";
-export const MEETING_STORAGE_ERROR_MESSAGE =
-  "I couldn't read your meeting data right now. Please try again.";
-export const MEETING_ABORTED_MESSAGE = "Meeting retrieval was canceled.";
+export const CONTEXT_OVERFLOW_MESSAGE = 'This conversation is too long for the model even after compaction. Start a new chat to continue.';
 
 // ── Compaction indicator store (subtle UX; §C.14) ────────────────────
 //
@@ -111,422 +62,145 @@ export function subscribeThreadCompaction(cb: () => void): () => void {
   };
 }
 
-/** Subset of ChatRuntimeDeps consumed by the adapter factory. */
 export interface AdapterDeps {
   sessionStore: SessionStore;
   backendUrl: string;
   selection: ModelSelectionCoordinator;
   agentEnabledRef: React.MutableRefObject<boolean>;
-  /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
-  /**
-   * Live ref to the currently-offered model ids (from the loaded /models list).
-   * Read at request time so the outgoing model is sanitized against the offered
-   * catalog — a stale persisted id (e.g. a model dropped from the lineup) can
-   * never fire a request and 403, regardless of which restore path set it.
-   */
-  /**
-   * Optional until the mounted workspace wires its one stable retriever. Its
-   * absence preserves ordinary chat exactly; when present it runs once before
-   * checkpoint loading or compaction.
-   */
-  meetingRetriever?: MeetingTurnRetriever;
-  meetingMessageRegistry: MeetingMessageRegistry;
-  // ── Compaction deps (injected so unit tests can stub them; §D.3) ─────
-  /** Latest checkpoint for a thread (or null). */
-  getCheckpoint: (threadId: string) => Promise<CompactionCheckpoint | null>;
-  /** Append a new checkpoint (INSERT-only) and return it. */
-  appendCompaction: (
-    threadId: string,
-    coversThroughMessageId: string,
-    summary: string,
-  ) => Promise<CompactionCheckpoint>;
-  /**
-   * Single-shot summarization — wraps the PLAIN streamChat with
-   * max_tokens = COMPACTION_SUMMARY_MAX_TOKENS. MUST NOT write to thread
-   * storage or the memory doc and MUST NOT trigger memory extraction (§C.9/§F.3);
-   * it bypasses the runtime exchange ring by construction.
-   */
-  summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
-  /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
-  contextTokensFor: (modelId: string) => number;
+  turnOutcomes?: TurnOutcomeStore;
+  getCheckpoint?: (threadId: string) => Promise<CompactionCheckpoint | null>;
+  appendCompaction?: (threadId: string, coversThroughMessageId: string, summary: string) => Promise<CompactionCheckpoint>;
 }
 
-const CLARIFICATION_TITLE_MAX_CHARS = 160;
-
-/** Keep untrusted metadata inside one harmless Markdown list line. */
-export function safeClarificationTitle(value: string | null): string {
-  const oneLine = [...(value ?? "Untitled meeting")]
-    .map((character) => character === "\r" || character === "\n" || character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
-      ? " "
-      : character)
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-  const bounded = oneLine.length > CLARIFICATION_TITLE_MAX_CHARS
-    ? `${oneLine.slice(0, CLARIFICATION_TITLE_MAX_CHARS - 1).trimEnd()}…`
-    : oneLine || "Untitled meeting";
-  // MarkdownText enables GFM. Escape every syntax delimiter that could turn a
-  // provider title into structure, a link, emphasis, or a quoted code span.
-  const markdownDelimiters = new Set(["\\", "`", "*", "_", "{", "}", "[", "]", "<", ">", "(", ")", "#", "+", "-", ".", "!", "|"]);
-  return [...bounded].map((character) => markdownDelimiters.has(character) ? `\\${character}` : character).join("");
-}
-
-/** A stable reply token shared with the retriever's YYYY-MM-DD grammar. */
-export function clarificationDateToken(value: string | null): string | null {
-  if (value === null) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return null;
-  return `${date.getFullYear().toString().padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-function choiceLabel(choice: MeetingCandidate, index: number): string {
-  const dateToken = clarificationDateToken(choice.startedAt);
-  const timestamp = dateToken === null
-    ? "date unavailable"
-    : `${new Date(choice.startedAt!).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })} [${dateToken}]`;
-  return `${index + 1}. ${safeClarificationTitle(choice.title)} — ${timestamp} (${safeClarificationTitle(meetingSourceLabel(choice.source))})`;
-}
-
-/** Render retrieval-only outcomes without passing a request to inference. */
-export function meetingOutcomeText(outcome: Exclude<MeetingRetrievalOutcome, { status: "not-applicable" } | { status: "grounded" }>): string {
-  switch (outcome.status) {
-    case "clarification":
-      return [
-        "Choose the meeting to use. Reply with an option number:",
-        ...outcome.choices.slice(0, 5).map((choice, index) => `- ${choiceLabel(choice, index)}`),
-        ...(outcome.partial || outcome.truncated
-          ? ["More or unavailable meetings may not be listed. Refine with a title, participant/email, or date."]
-          : []),
-      ].join("\n");
-    case "no-match":
-      return MEETING_NO_MATCH_MESSAGE;
-    case "no-content":
-      return outcome.partial
-        ? "I found the meeting, but some content could not be read right now. Please try again."
-        : outcome.transcriptRequired && outcome.summaryAvailable
-          ? "I found a summary, but no readable transcript is available for that request."
-        : MEETING_NO_CONTENT_MESSAGE;
-    case "storage-error":
-      return MEETING_STORAGE_ERROR_MESSAGE;
-    case "aborted":
-      return MEETING_ABORTED_MESSAGE;
-  }
-}
-
-/** Flatten an assistant-ui ThreadMessage's content parts into plain text. */
 export function messageText(message: { content: readonly unknown[] }): string {
-  return message.content
-    .map((part) => {
-      const p = part as { type?: string; text?: string };
-      return p.type === "text" && typeof p.text === "string" ? p.text : "";
-    })
-    .join("");
+  return message.content.map(part => {
+    const p = part as { type?: string; text?: string };
+    return p.type === 'text' && typeof p.text === 'string' ? p.text : '';
+  }).join('');
 }
 
-/**
- * Create the ChatModelAdapter. Reads all live values off refs at call time
- * (not at creation time), so the useMemo() can be stable for the component
- * lifetime. Exported for unit tests (runtimeAdapter.test.ts).
- */
+function withinTurn<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
+/** Every Send is classified by the backend before any model or compaction work. */
 export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
+  const outcomes = deps.turnOutcomes ?? createTurnOutcomeStore();
   return {
     async *run({ messages, abortSignal, context, unstable_assistantMessageId }) {
-      // Separate the memory system block (kept caller-side, prepended first so it
-      // lands at the least-context-rotted position) from the conversation
-      // messages (which compaction may fold into a summary checkpoint).
-      const systemContent = context?.system;
-      const memoryBlock: ChatMessage | null =
-        typeof systemContent === "string" && systemContent.length > 0
-          ? { role: "system", content: systemContent }
-          : null;
-
-      const rawConvo: PayloadMsgWithId[] = [];
-      for (const m of messages) {
-        if (m.role !== "user" && m.role !== "assistant" && m.role !== "system") continue;
-        const content = messageText(m);
-        if (!content) continue;
-        const id = typeof (m as { id?: unknown }).id === "string" ? (m as { id: string }).id : "";
-        rawConvo.push({ id, role: m.role, content });
-      }
-
-      const turnId = [...rawConvo].reverse().find((message) => message.role === "user")?.id;
-      if (!turnId) throw new Error("Cannot send without a stable user-message id.");
-      const cancel = deps.selection.captureCancel();
-      abortSignal.addEventListener("abort", cancel, { once: true });
+      const latestUser = [...messages].reverse().find(message => message.role === 'user');
+      if (!latestUser?.id) throw new Error('Cannot send without a stable user-message id.');
+      const turnId = latestUser.id;
+      const createdAt = latestUser.createdAt instanceof Date ? latestUser.createdAt.getTime() : Date.now();
+      const sentAt = Number.isFinite(createdAt) ? Math.min(createdAt, Date.now()) : Date.now();
+      const deadline = AbortSignal.timeout(Math.max(1, 120_000 - (Date.now() - sentAt)));
+      abortSignal = AbortSignal.any([abortSignal, deadline]);
+      const cancelSelection = deps.selection.captureCancel();
+      abortSignal.addEventListener('abort', cancelSelection, { once: true });
       let origin;
       try {
-        if (abortSignal.aborted) throw new Error("Send cancelled.");
-        origin = await deps.selection.beginActiveTurn(turnId);
-        await deps.selection.waitForAppend(origin);
-      } finally {
-        abortSignal.removeEventListener("abort", cancel);
-      }
-      abortSignal = AbortSignal.any([abortSignal, origin.signal]);
-      deps.selection.assertActive(origin);
-      deps.selection.setRunning(origin, true);
+        abortSignal.throwIfAborted();
+        origin = await withinTurn(deps.selection.beginActiveTurn(turnId), abortSignal);
+      } finally { abortSignal.removeEventListener('abort', cancelSelection); }
+      abortSignal = AbortSignal.any([abortSignal, origin.signal, deadline]);
       const threadId = origin.threadId;
-      const modelId = origin.model;
-      const agentEnabled = deps.agentEnabledRef.current;
-      const assertTurn = () => {
-        deps.selection.assertActive(origin);
-        if (abortSignal.aborted) throw new Error("Send cancelled.");
-      };
-      const convo = rawConvo.filter(
-        (message) =>
-          message.role !== "assistant" ||
-          !message.id ||
-          !deps.meetingMessageRegistry.isClassified(origin.threadId, message.id),
-      );
+      outcomes.begin(threadId, turnId, sentAt);
+      let result: MeetingResult | undefined;
+      const cancel = () => outcomes.claim(threadId, { turnId, sentAt, status: deadline.aborted ? 'failed' : 'cancelled', private: true });
+      abortSignal.addEventListener('abort', cancel, { once: true });
+      const assertTurn = () => { abortSignal.throwIfAborted(); deps.selection.assertActive(origin); };
+      let lastUsage: UsageInfo | undefined;
+      let completionId: string | undefined;
+      let pendingCheckpoint: { coversThroughMessageId: string; summary: string } | undefined;
       try {
-
-      // Meeting retrieval is a single, ephemeral preflight. It must finish
-      // before any checkpoint/storage compaction work, and its raw evidence
-      // remains only in this local outcome and the assembled inference payload.
-      const latestQuestion = [...convo].reverse().find((message) => message.role === "user")?.content;
-      let meetingSystemBlock: ChatMessage | null = null;
-      // A private-agent turn must never let the browser inspect connector storage.
-      // The agent receives the ordinary question and performs any transcript read
-      // through its separately delegated tool.  Keep the existing retriever only
-      // for the non-agent fallback path.
-      if (!agentEnabled && deps.meetingRetriever && threadId && latestQuestion !== undefined) {
-        let meetingOutcome: MeetingRetrievalOutcome;
-        try {
-          meetingOutcome = await deps.meetingRetriever.retrieve({
-            threadId,
-            question: latestQuestion,
-            signal: abortSignal,
-          });
-        } catch {
-          meetingOutcome = { status: "storage-error", partial: true };
+        assertTurn();
+        await withinTurn(deps.selection.waitForAppend(origin), abortSignal);
+        assertTurn();
+        deps.selection.setRunning(origin, true);
+        const storedCheckpoint = deps.getCheckpoint ? await withinTurn(deps.getCheckpoint(threadId), abortSignal) : null;
+        const checkpoint = typeof storedCheckpoint?.id === "string" && storedCheckpoint.id.startsWith("ordinary-v3:") ? storedCheckpoint : null;
+        assertTurn();
+        const parentMessage = [...messages].reverse().find(message => message.role === 'assistant');
+        const parentOutcome = parentMessage && (messageTurnOutcome(parentMessage) ?? outcomes.forMessage(threadId, parentMessage.id));
+        const custom = latestUser.metadata?.custom as { meetingTurn?: Partial<MeetingTurnInput> } | undefined;
+        const explicit = custom?.meetingTurn;
+        const turn: MeetingTurnInput = {
+          ...explicit, turnId, sentAt,
+          ...(parentMessage && !explicit?.parentMessageId ? { parentMessageId: parentMessage.id } : {}),
+          ...(parentOutcome?.result && parentMessage && !explicit?.parent ? { parent: { messageId: parentMessage.id, turnId: parentOutcome.turnId, sources: parentOutcome.result.sources } } : {}),
+          ...(!explicit?.continuation && /^continue[.!?]?$/i.test(messageText(latestUser).trim()) && parentOutcome?.result?.continuation ? { continuation: parentOutcome.result.continuation } : {}),
+        };
+        const privateUserIds = new Set<string>();
+        for (const message of messages) {
+          const prior = messageTurnOutcome(message) ?? outcomes.forMessage(threadId, message.id);
+          if (prior?.private) privateUserIds.add(prior.turnId);
         }
-
-        // Every applicable meeting outcome (including a deterministic reply)
-        // must skip the post-append memory pipeline. The flag is keyed only by
-        // the assistant message id and is consumed by the history adapter; no
-        // meeting evidence or provenance travels with the persisted item.
-        if (meetingOutcome.status !== "not-applicable") {
-          const userMessageId = [...convo].reverse().find((message) => message.role === "user")?.id;
-          const classified = deps.meetingMessageRegistry.classify({
-            threadId,
-            assistantMessageId:
-              typeof unstable_assistantMessageId === "string" ? unstable_assistantMessageId : undefined,
-            userMessageId: !unstable_assistantMessageId ? userMessageId : undefined,
-          });
-          // An applicable grounded response must never be emitted when there is
-          // no exact assistant id or thread/user correlation to classify it.
-          if (!classified && meetingOutcome.status === "grounded") {
-            yield { content: [{ type: "text", text: meetingOutcomeText({ status: "storage-error", partial: true }) }] };
-            return;
-          }
+        const payload = messages.filter(message => {
+          if (message.id === turnId) return true;
+          const prior = messageTurnOutcome(message) ?? outcomes.forMessage(threadId, message.id);
+          return !prior?.private && !privateUserIds.has(message.id);
+        }).filter(message => ['user', 'assistant', 'system'].includes(message.role)).map(message => ({
+          id: message.id, role: message.role as 'user' | 'assistant' | 'system', content: messageText(message),
+        }));
+        for await (const text of streamAgentChat({
+          backendUrl: deps.backendUrl, getToken: () => deps.sessionStore.getToken(), model: origin.model,
+          messages: payload, roomId: threadId, turn, publicTools: deps.agentEnabledRef.current,
+          preparation: { checkpoint, memory: typeof context?.system === 'string' ? context.system : '' },
+          abortSignal, onUsage: usage => { lastUsage = usage; }, onCompletionId: id => { completionId = id; },
+          onMeetingResult: value => { assertTurn(); if (pendingCheckpoint) throw new AgentStreamError('incomplete'); result = value; },
+          onCompactionCheckpoint: cp => {
+            assertTurn();
+            if (result || pendingCheckpoint || !payload.some(message => message.id === cp.coversThroughMessageId)) throw new AgentStreamError('incomplete');
+            // A later private/error/malformed frame must prevent fact promotion.
+            pendingCheckpoint = cp;
+          },
+          onDelegationError: deps.onAgentDelegationError,
+          onToolActivity: unstable_assistantMessageId ? activity => setToolActivity(unstable_assistantMessageId, activity) : undefined,
+        })) {
+          assertTurn();
+          yield { content: [{ type: 'text', text }] };
         }
-
-        if (meetingOutcome.status !== "not-applicable" && meetingOutcome.status !== "grounded") {
-          yield { content: [{ type: "text", text: meetingOutcomeText(meetingOutcome) }] };
+        if (pendingCheckpoint && deps.appendCompaction) {
+          assertTurn();
+          if (result) throw new AgentStreamError('incomplete');
+          const saved = await withinTurn(deps.appendCompaction(threadId, pendingCheckpoint.coversThroughMessageId, pendingCheckpoint.summary), abortSignal);
+          assertTurn();
+          patchCompaction(threadId, { summary: saved.summary, compacting: false });
+        }
+        assertTurn();
+        const terminal = { turnId, sentAt, status: result?.status ?? 'completed' as const, private: !!result, ...(result ? { result } : {}) };
+        if (!outcomes.claim(threadId, terminal)) return;
+        if (unstable_assistantMessageId) {
+          outcomes.bind(threadId, unstable_assistantMessageId, terminal);
+          if (lastUsage) setPendingReceipt(unstable_assistantMessageId, { usage: lastUsage, modelId: origin.model });
+          if (completionId) setPendingCompletion(unstable_assistantMessageId, { completionId, model: origin.model });
+        }
+        yield { metadata: { custom: { turn: terminal } } };
+      } catch (error) {
+        if (abortSignal.aborted) cancel();
+        else outcomes.claim(threadId, { turnId, sentAt, status: 'failed', private: true });
+        const terminal = outcomes.get(threadId, turnId)!;
+        if (unstable_assistantMessageId) outcomes.bind(threadId, unstable_assistantMessageId, terminal);
+        if (abortSignal.aborted) {
+          yield { metadata: { custom: { turn: terminal } }, status: terminal.status === 'cancelled'
+            ? { type: 'incomplete', reason: 'cancelled' }
+            : { type: 'incomplete', reason: 'error', error: 'This reply took too long to finish. You can try again.' } };
           return;
         }
-        if (meetingOutcome.status === "grounded") {
-          meetingSystemBlock = { role: "system", content: meetingOutcome.systemMessage };
+        if (error instanceof AgentStreamError || error instanceof ContextOverflowError) {
+          yield { metadata: { custom: { turn: terminal } }, status: { type: 'incomplete', reason: 'error', error: error instanceof ContextOverflowError ? CONTEXT_OVERFLOW_MESSAGE : error.message } };
+          return;
         }
-      }
-
-      // ── Compaction wiring (§D.3) ─────────────────────────────────────
-      // All compaction deps are injected together (App wires them). When any is
-      // absent — e.g. a unit harness that only exercises the transport branch —
-      // the adapter degrades to exact baseline behaviour: full history, no
-      // proactive/reactive compaction.
-      const canCompact =
-        !!threadId &&
-        typeof deps.contextTokensFor === "function" &&
-        typeof deps.getCheckpoint === "function" &&
-        typeof deps.summarize === "function" &&
-        typeof deps.appendCompaction === "function";
-      const contextTokens = canCompact ? deps.contextTokensFor(modelId) : 0;
-      // Memory and meeting context are fixed system blocks: both consume the
-      // inference budget but neither may be put into a compaction summary.
-      const fixedSystemBlockChars =
-        (memoryBlock?.content.length ?? 0) + (meetingSystemBlock?.content.length ?? 0);
-      const messageIds = convo.map((m) => m.id);
-
-      // (a) Load + chain-validate the latest checkpoint (§C.8). Never crash on a
-      // bad/stale checkpoint — an unreadable or invalid one just sends full
-      // history and the reactive path re-compacts if needed.
-      let activeCheckpoint: CompactionCheckpoint | null = null;
-      if (canCompact && threadId) {
-        try {
-          const loaded = await deps.getCheckpoint(threadId);
-          if (isCheckpointValid(loaded, messageIds)) activeCheckpoint = loaded;
-        } catch {
-          // An unreadable checkpoint is intentionally ignored.
-        }
-      }
-
-      const assemble = (cp: CompactionCheckpoint | null): ChatMessage[] => {
-        const body: ChatMessage[] = cp
-          ? (applyCheckpoint(convo, cp) as ChatMessage[])
-          : convo.map((m) => ({ role: m.role, content: m.content }));
-        return [
-          ...(memoryBlock ? [memoryBlock] : []),
-          ...(meetingSystemBlock ? [meetingSystemBlock] : []),
-          ...body,
-        ];
-      };
-
-      let payload = assemble(activeCheckpoint);
-      if (canCompact && threadId) {
-        patchCompaction(threadId, { summary: activeCheckpoint?.summary ?? null, compacting: false });
-      }
-
-      // Run a compaction pass at `targetRatio`: plan → summarize → append →
-      // re-apply. Returns true when a new checkpoint was created/applied. The
-      // summarization call bypasses the runtime exchange ring by construction
-      // (it never touches thread storage / memory / extraction) — §C.9/§F.3.
-      const runCompactionPass = async (targetRatio: number): Promise<boolean> => {
-        if (!canCompact || !threadId) return false;
-        const plan = planCompaction({
-          messages: convo,
-          fixedSystemBlockChars,
-          contextTokens,
-          targetRatio,
-          prevCheckpoint: activeCheckpoint,
-        });
-        if (!plan.needed || !plan.coversThroughMessageId) return false;
-        patchCompaction(threadId, { compacting: true });
-        try {
-          const summaryMessages = buildSummarizationMessages(plan, activeCheckpoint?.summary);
-          assertTurn();
-          const summary = await deps.summarize({ model: modelId, messages: summaryMessages });
-          assertTurn();
-          const cp = await deps.appendCompaction(threadId, plan.coversThroughMessageId, summary);
-          activeCheckpoint = cp;
-          payload = assemble(cp);
-          patchCompaction(threadId, { summary: cp.summary, compacting: false });
-          return true;
-        } finally {
-          patchCompaction(threadId, { compacting: false });
-        }
-      };
-
-      // (b) Proactive: pre-send estimate > 0.7 × context → compact first (§C.2).
-      if (canCompact && estimatePayloadTokens(payload) > COMPACT_TRIGGER_RATIO * contextTokens) {
-        await runCompactionPass(COMPACT_TARGET_RATIO);
-      }
-
-      let lastUsage: UsageInfo | null = null;
-      let completionId: string | null = null;
-
-      // Shared handlers — reused verbatim for both the plain relay and the agent
-      // path so the receipt + verification badge fire identically on every turn.
-      const onUsage = (u: UsageInfo) => {
-        lastUsage = u;
-      };
-      const onCompletionId = (id: string) => {
-        completionId = id;
-      };
-
-      // One transport attempt with the CURRENT payload. Grounded browser-meeting
-      // turns use the plain relay. Agent-enabled transcript turns never construct
-      // a browser grounding block and therefore use the delegated agent route.
-      // ContextOverflowError is thrown BEFORE any yield (pre-stream), so a
-      // reactive retry never double-emits text.
-      const sendOnce = async function* (
-        sendPayload: ChatMessage[],
-      ): AsyncGenerator<{ content: { type: "text"; text: string }[] }, void, unknown> {
-        assertTurn();
-        if (agentEnabled && !meetingSystemBlock) {
-          const roomId = origin.threadId;
-          try {
-            deps.selection.assertActive(origin);
-            for await (const text of streamAgentChat({
-              backendUrl: deps.backendUrl,
-              getToken: () => deps.sessionStore.getToken(),
-              model: modelId,
-              messages: sendPayload,
-              roomId,
-              abortSignal,
-              onUsage,
-              onCompletionId,
-              onDelegationError: deps.onAgentDelegationError,
-              onToolActivity: unstable_assistantMessageId
-                ? (a) => setToolActivity(unstable_assistantMessageId, a)
-                : undefined,
-            })) {
-              deps.selection.assertActive(origin);
-              yield { content: [{ type: "text", text }] };
-            }
-          } finally {
-            // C4: clear the chip at turn end — on clean completion and error/abort.
-            if (unstable_assistantMessageId) {
-              clearToolActivity(unstable_assistantMessageId);
-            }
-          }
-        } else {
-          deps.selection.assertActive(origin);
-          for await (const text of streamChat({
-            backendUrl: deps.backendUrl,
-            sessionStore: deps.sessionStore,
-            model: modelId,
-            messages: sendPayload,
-            abortSignal,
-            onUsage,
-            onCompletionId,
-          })) {
-            deps.selection.assertActive(origin);
-            yield { content: [{ type: "text", text }] };
-          }
-        }
-      };
-
-      // (c) Reactive: on a typed ContextOverflowError with NO prior retry this
-      // run, force-plan at RETRY_TARGET_RATIO, compact, and retry ONCE (§C.13).
-      // A second overflow surfaces the friendly, provider-agnostic error. At most
-      // one reactive retry per run() (§F.8). A 402/403 raised during the
-      // summarization call is NOT a ContextOverflowError — it bubbles through the
-      // existing typed emitters unchanged (§F.4).
-      let reactiveRetried = false;
-      for (;;) {
-        try {
-          yield* sendOnce(payload);
-          break;
-        } catch (err) {
-          if (err instanceof AgentStreamError && !abortSignal.aborted) {
-            // A status-only update preserves already yielded text in the local
-            // runtime and resolves the composer's otherwise unobserved promise.
-            yield { status: { type: "incomplete", reason: "error", error: err.message } };
-            return;
-          }
-          if (err instanceof ContextOverflowError && canCompact && !reactiveRetried) {
-            reactiveRetried = true;
-            await runCompactionPass(RETRY_TARGET_RATIO);
-            continue;
-          }
-          if (err instanceof ContextOverflowError) {
-            // Terminal overflow (retry exhausted, or compaction unavailable):
-            // always surface the vendor-agnostic friendly copy. The raw
-            // ContextOverflowError.message carries the upstream detail, which may
-            // name a model/provider — never render it verbatim (§C.13/§F.12).
-            throw new Error(CONTEXT_OVERFLOW_MESSAGE, { cause: err });
-          }
-          throw err;
-        }
-      }
-
-      // Stream completed cleanly. Stash the usage + completion id keyed by THIS
-      // assistant message id (ST4) so its `append()`/receipt hook consumes
-      // exactly its own handoff. Message ids are globally unique, so an
-      // interleaved finish on another thread can never overwrite ours (the
-      // module-slot race). `unstable_assistantMessageId` equals the id append()
-      // sees as `item.message.id`. If it is absent the handoff simply no-ops (no
-      // badge/receipt) — never a wrong one.
-      if (unstable_assistantMessageId) {
-        if (lastUsage) {
-          setPendingReceipt(unstable_assistantMessageId, { usage: lastUsage, modelId });
-        }
-        if (completionId) {
-          setPendingCompletion(unstable_assistantMessageId, { completionId, model: modelId });
-        }
-      }
+        throw error;
       } finally {
+        abortSignal.removeEventListener('abort', cancel);
+        if (unstable_assistantMessageId) clearToolActivity(unstable_assistantMessageId);
         deps.selection.setRunning(origin, false);
       }
     },

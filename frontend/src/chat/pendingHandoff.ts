@@ -26,64 +26,48 @@ export interface PendingCompletion {
 
 const pendingReceipts = new Map<string, PendingReceipt>();
 const pendingCompletions = new Map<string, PendingCompletion>();
-// Meeting-turn classification is intentionally a tiny, run→append-only handoff.
-// It must not travel with the persisted assistant item: M1-18 consumes it before
-// post-append memory work.
-export interface MeetingTurnCorrelation {
-  threadId: string;
-  userMessageId: string;
+export interface TurnOutcome {
+  turnId: string;
+  sentAt: number;
+  status: import('@tinyboilerplate/core').MeetingResultStatus;
+  private: boolean;
+  result?: import('@tinyboilerplate/core').MeetingResult;
 }
 
-export interface MeetingMessageRegistry {
-  classify(input: {
-    threadId: string;
-    assistantMessageId?: string;
-    userMessageId?: string;
-  }): boolean;
-  resolveAssistant(input: MeetingTurnCorrelation & { assistantMessageId: string }): boolean;
-  isClassified(threadId: string, assistantMessageId: string): boolean;
+/** A terminal handoff is persisted verbatim; reload restores it independently of history parents. */
+export interface TurnOutcomeStore {
+  begin(threadId: string, turnId: string, sentAt: number): void;
+  claim(threadId: string, outcome: TurnOutcome): boolean;
+  get(threadId: string, turnId: string): TurnOutcome | undefined;
+  forMessage(threadId: string, messageId: string): TurnOutcome | undefined;
+  bind(threadId: string, messageId: string, outcome: TurnOutcome): void;
 }
 
-function assistantKey(threadId: string, messageId: string): string {
-  return `${threadId}\u0000assistant\u0000${messageId}`;
-}
-
-function turnKey(threadId: string, userMessageId: string): string {
-  return `${threadId}\u0000user\u0000${userMessageId}`;
-}
-
-/**
- * Workspace-scoped, content-free classification for meeting assistant replies.
- * The owner discards this object when its mounted workspace changes/unmounts.
- */
-export function createMeetingMessageRegistry(): MeetingMessageRegistry {
-  const assistants = new Set<string>();
-  const pendingTurns = new Set<string>();
+export function createTurnOutcomeStore(): TurnOutcomeStore {
+  const turns = new Map<string, TurnOutcome | null>();
+  const messages = new Map<string, TurnOutcome>();
+  const key = (threadId: string, id: string) => JSON.stringify([threadId, id]);
   return {
-    classify({ threadId, assistantMessageId, userMessageId }) {
-      if (assistantMessageId) {
-        assistants.add(assistantKey(threadId, assistantMessageId));
-        return true;
-      }
-      if (userMessageId) {
-        pendingTurns.add(turnKey(threadId, userMessageId));
-        return true;
-      }
-      return false;
-    },
-    resolveAssistant({ threadId, userMessageId, assistantMessageId }) {
-      const resolvedKey = assistantKey(threadId, assistantMessageId);
-      if (assistants.has(resolvedKey)) return true;
-      const pendingKey = turnKey(threadId, userMessageId);
-      if (!pendingTurns.has(pendingKey)) return false;
-      pendingTurns.delete(pendingKey);
-      assistants.add(resolvedKey);
+    begin(threadId, turnId) { if (!turns.has(key(threadId, turnId))) turns.set(key(threadId, turnId), null); },
+    claim(threadId, outcome) {
+      const k = key(threadId, outcome.turnId);
+      if (turns.get(k)) return false;
+      turns.set(k, structuredClone(outcome));
       return true;
     },
-    isClassified(threadId, assistantMessageId) {
-      return assistants.has(assistantKey(threadId, assistantMessageId));
+    get(threadId, turnId) { return turns.get(key(threadId, turnId)) ?? undefined; },
+    forMessage(threadId, messageId) { return messages.get(key(threadId, messageId)); },
+    bind(threadId, messageId, outcome) {
+      const k = key(threadId, messageId);
+      if (!messages.has(k)) messages.set(k, structuredClone(outcome));
+      if (!turns.get(key(threadId, outcome.turnId))) turns.set(key(threadId, outcome.turnId), structuredClone(outcome));
     },
   };
+}
+
+export function messageTurnOutcome(message: unknown): TurnOutcome | undefined {
+  const turn = (message as { metadata?: { custom?: { turn?: TurnOutcome } } })?.metadata?.custom?.turn;
+  return turn && typeof turn.turnId === 'string' && ['completed', 'partial', 'unavailable', 'failed', 'cancelled', 'clarification_required'].includes(turn.status) ? turn : undefined;
 }
 
 /** Stash a message's pending receipt (run() at stream finish). */

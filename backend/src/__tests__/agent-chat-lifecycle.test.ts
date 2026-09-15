@@ -27,7 +27,7 @@ function clock() {
   };
 }
 function response() {
-  const req = Object.assign(new EventEmitter(), { user: { address: "sentinel-address" }, body: { messages: [{ role: "user", content: "sentinel-prompt" }] }, aborted: false });
+  const req = Object.assign(new EventEmitter(), { user: { address: "sentinel-address" }, body: { turn: {turnId: "synthetic", sentAt: Date.now()}, messages: [{ role: "user", content: "sentinel-prompt" }] }, aborted: false });
   const res = Object.assign(new EventEmitter(), {
     writableEnded: false, destroyed: false, headersSent: false, chunks: [] as Uint8Array[], endCount: 0, destroyCount: 0,
     setHeader() { return this; }, flushHeaders() { this.headersSent = true; },
@@ -38,8 +38,8 @@ function response() {
   });
   return { req, res };
 }
-function config(fetchImpl: typeof fetch, runtime = clock()): AgentChatConfig {
-  return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "phala/test", isModelOffered: () => true, fetchImpl, maxRounds: 3,
+function config(fetchImpl: typeof fetch, runtime = clock(), privateMode = false): AgentChatConfig {
+  return { agentId: "sentinel-agent", entityIdFor: () => "sentinel-entity", elizaServiceUrl: "https://eliza.test", elizaServiceSecret: "sentinel-secret", redpillApiKey: "sentinel-key", redpillBaseUrl: "https://provider.test", defaultModel: () => "phala/test", isModelOffered: () => true, fetchImpl: (async (url,init) => {const body=init?.body?JSON.parse(String(init.body)):{};if(!privateMode && body.messages?.[0]?.content?.startsWith("Interpret only"))return provider(answer(JSON.stringify({kind:"general"}))+done);return fetchImpl(url,init);}) as typeof fetch, maxRounds: 3,
     streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 100, drainGraceMs: 20 }, streamRuntime: runtime,
   } as AgentChatConfig;
 }
@@ -49,8 +49,9 @@ function run(cfg: AgentChatConfig, pair = response()) {
 function provider(content: string) { return new globalThis.Response(content, { headers: { "content-type": "text/event-stream" } }); }
 
 describe("meeting controller shares the existing stream owner", () => {
-  const interpretation = () => provider(frame({ id: "interpretation-id", choices: [{ delta: { content: "UNDISPLAYED INTERPRETATION", tool_calls: [{ index: 0, id: "plan", function: { name: "prepare_meeting_turn", arguments: JSON.stringify({ kind: "meeting_content", scope: "exact", meetingRef: "meeting-a", purpose: "summary", evidenceRequirement: "overview" }) } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 3, completion_tokens: 2 } }) + done);
-  const evidence = () => globalThis.Response.json({ result: { data: { contractVersion: 2, outcomes: [{ meetingRef: "meeting-a", source: "google-meet", meeting: { meetingRef: "meeting-a", source: "google-meet", title: "Private title", startedAt: null, participants: [], organizerEmail: null }, state: "read", body: { state: "not_requested" }, search: { state: "not_requested", storedFieldsExamined: false, bodyExamined: false, examinedMatches: 0, retainedMatches: 0 }, evidence: [{ id: "summary", meetingRef: "meeting-a", source: "google-meet", kind: "summary", text: "Private green decision", truncated: false }], coverage: { purpose: "summary", overviewPresent: true, actionsPresent: false, bodyAttempted: false, bodyRequired: false, evidenceRetained: 1, omittedEvidenceCount: 0, omissionReasons: [], support: "sufficient" } }] } } });
+  const reference = {source:'fireflies',sourceId:'meeting-a',meetingRef:'meeting-a',revision:'a'.repeat(64)};
+  const interpretation = () => provider(answer(JSON.stringify({kind:'meeting',intent:{mode:'analysis',parts:[{id:'summary',question:'Summary'}],references:[reference]}}))+done);
+  const evidence = () => globalThis.Response.json({result:{data:{contractVersion:3,kind:'evidence',reference,basis:'transcript',state:'complete',metadata:{title:'Synthetic meeting',startedAt:null,organizerEmail:null,participants:[],metadata:{}},original:{digest:'d'.repeat(64),byteLength:22,recordCount:1,extent:'known',captureComplete:null},coverage:{fetched:true,decodedRecords:1,totalRecords:1,suppliedRecords:1,processedRecords:null},spans:[{text:'Private green decision',recordIndex:0,start:0,end:22}],omissions:[],overviewProvenance:null}}});
   for (const phase of ["interpretation", "retrieval", "synthesis", "repair"] as const) {
     it(`overall timeout during ${phase} cancels pending work and delivers exactly one terminal`, async () => {
       const runtime = clock(); let models = 0, reads = 0, canceled = 0; const reached = deferred<void>(); let activeSignal: AbortSignal | undefined;
@@ -58,14 +59,14 @@ describe("meeting controller shares the existing stream owner", () => {
       const pending = (signal: AbortSignal | undefined) => { activeSignal = signal; reached.resolve(); return new globalThis.Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(phase === "retrieval" ? '{"result":' : ": waiting\n\n")); }, cancel() { canceled++; } })); };
       const fetchImpl = (async (input, init) => {
         const url = String(input);
-        if (url.endsWith("/capabilities")) return globalThis.Response.json({ meetingRetrieval: { contractVersion: 2 }, buildRevision: "fixture-v2" });
+        if (url.endsWith("/capabilities")) return globalThis.Response.json({ meetingRetrieval: { contractVersion: 3 }, buildRevision: "fixture-v3" });
         if (url.includes("/tools/")) { reads++; return phase === "retrieval" ? pending(init?.signal as AbortSignal) : evidence(); }
         models++;
         if (models === 1) return phase === "interpretation" ? pending(init?.signal as AbortSignal) : interpretation();
-        if (phase === "repair" && models === 2) return provider(answer("INVALID DRAFT") + done);
+        if (phase === "repair" && models === 2) return provider(answer("INVALID DRAFT") + frame({usage:{prompt_tokens:100,completion_tokens:5}}) + done);
         return pending(init?.signal as AbortSignal);
       }) as typeof fetch;
-      const cfg = { ...config(fetchImpl, runtime), meetingContentRetrievalEnabled: true, meetingTrace: (trace: Record<string, unknown>) => traces.push(trace), streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 1000, drainGraceMs: 20 } };
+      const cfg = { ...config(fetchImpl, runtime, true), defaultModel:()=>"z-ai/glm-5.3", meetingProvider:{model:"z-ai/glm-5.3" as const,admitted:true as const,contextTokens:1048576,countInputTokens:()=>100}, meetingTrace: (trace: Record<string, unknown>) => traces.push(trace), streamPolicy: { heartbeatMs: 10, turnTimeoutMs: 1000, drainGraceMs: 20 } };
       const turn = run(cfg); await reached.promise; await flush(); await runtime.advance(1000); await turn.finished;
       expect(activeSignal?.aborted).toBe(true); expect(canceled).toBe(1); expect(turn.res.text().match(/data: \[DONE\]/g)).toHaveLength(1); expect(turn.res.endCount).toBe(1);
       expect(turn.res.text()).toContain('"turn_timeout"'); expect(turn.res.text()).not.toMatch(/UNDISPLAYED|INVALID DRAFT|Private green/); expect(runtime.tasks.size).toBe(0);
@@ -76,7 +77,7 @@ describe("meeting controller shares the existing stream owner", () => {
   }
   it("disconnect during interpretation suppresses all late delivery", async () => {
     const runtime = clock(); const waiting = deferred<globalThis.Response>(); let signal: AbortSignal | undefined;
-    const cfg = { ...config((async (_url, init) => { signal = init?.signal as AbortSignal; return waiting.promise; }) as typeof fetch, runtime), meetingContentRetrievalEnabled: true, meetingTrace: () => {} };
+    const cfg = { ...config((async (_url, init) => { signal = init?.signal as AbortSignal; return waiting.promise; }) as typeof fetch, runtime, true), meetingTrace: () => {} };
     const turn = run(cfg); await flush(); const previous = turn.res.text(); turn.res.destroy(); await turn.finished;
     waiting.resolve(interpretation()); await flush(); expect(signal?.aborted).toBe(true); expect(turn.res.text()).toBe(previous); expect(turn.res.text()).not.toContain(done); expect(runtime.tasks.size).toBe(0);
   });
@@ -242,7 +243,7 @@ describe("orchestration accounting boundaries", () => {
   it("starts no operation for an already-aborted signal", async () => {
     let calls = 0; const controller = new AbortController(); controller.abort();
     const result = await orchestrateToolCalling({ config: config((async () => { calls++; return provider(answer() + done); }) as typeof fetch), model: "phala/test", messages: [{ role: "user", content: "q" }], entityId: "e", write: () => {}, signal: controller.signal });
-    expect(calls).toBe(0); expect(result).toEqual({ promptTokens: 0, completionTokens: 0, completionId: "" });
+    expect(calls).toBe(0); expect(result.meetingResult?.status).toBe("cancelled");
   });
 });
 

@@ -19,6 +19,8 @@
 // renders NOTHING — a non-cohort user must not learn it exists.
 
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { listMeetingsResult, readTranscript } from "@/lib/connectors/meetingExplorer";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { CalendarClockIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
@@ -31,6 +33,7 @@ import {
 import {
   DEFAULT_MEETINGS_SOURCE,
   applyListResult,
+  applyLocalMeetings,
   initialMeetingsViewState,
   summaryText,
   transcriptText,
@@ -281,6 +284,7 @@ function Notice(props: {
 }
 
 export interface MeetingsSectionProps {
+  tcw?: TinyCloudWeb;
   /** Passed down from App — the section constructs no globals of its own. */
   backendUrl: string;
   sessionStore: SessionStore;
@@ -292,10 +296,11 @@ export interface MeetingsSectionProps {
 
 /**
  * The stateful wrapper: one client, one read on mount, explicit paging. It holds
- * no key material and no storage handle — a session token is the whole
- * requirement, which is the point of the read API.
+ * no provider key material. Published connector reads use the supplied space
+ * grants; archive-only records retain the archive API.
  */
 export const MeetingsSection: FC<MeetingsSectionProps> = ({
+  tcw,
   backendUrl,
   sessionStore,
   source = DEFAULT_MEETINGS_SOURCE,
@@ -321,22 +326,24 @@ export const MeetingsSection: FC<MeetingsSectionProps> = ({
       );
       // Every result is folded, including the failures: a resolved non-`ok` is a
       // state the user is told about, never a silently empty list.
-      setState((current) => applyListResult(current, result));
+      const local = tcw ? await listMeetingsResult(tcw, [source]) : { status: "ok" as const, meetings: [] };
+      setState((current) => local.status === "ok" ? applyLocalMeetings(applyListResult(current, result), local.meetings) : { ...current, status: "unavailable", meetings: [] });
     },
-    [api, source],
+    [api, source, tcw],
   );
 
   useEffect(() => {
     let live = true;
     void (async () => {
       const result = await api.list({ source });
+      const local = tcw ? await listMeetingsResult(tcw, [source]) : { status: "ok" as const, meetings: [] };
       if (!live) return;
-      setState((current) => applyListResult(current, result));
+      setState((current) => local.status === "ok" ? applyLocalMeetings(applyListResult(current, result), local.meetings) : { ...current, status: "unavailable", meetings: [] });
     })();
     return () => {
       live = false;
     };
-  }, [api, source]);
+  }, [api, source, tcw]);
 
   const onRefresh = useCallback(() => {
     setOpen(null);
@@ -358,6 +365,16 @@ export const MeetingsSection: FC<MeetingsSectionProps> = ({
       }
       setOpen({ sourceId: meeting.sourceId, status: "loading" });
       void (async () => {
+        if (tcw && meeting.revision) {
+          const read = await readTranscript(tcw, meeting.source, meeting.sourceId, meeting.revision);
+          setOpen(read.status === "ok" ? { sourceId: meeting.sourceId, status: "ready", content: {
+            source: meeting.source, sourceId: meeting.sourceId,
+            meta: { sourceId: meeting.sourceId, title: meeting.title ?? undefined, ts: meeting.ts ?? undefined,
+              sizeBytes: 0, storedAt: "", updatedAt: "", hasTranscript: read.basis === "transcript", hasSummary: read.overview !== null },
+            content: { transcript: { sentences: read.sentences }, ...(read.overview ? { summary: { text: read.overview } } : {}) },
+          } } : { sourceId: meeting.sourceId, status: read.status === "absent" ? "missing" : "unavailable" });
+          return;
+        }
         const result = await api.read(meeting.source, meeting.sourceId);
         setOpen(
           result.status === "ok"
@@ -369,7 +386,7 @@ export const MeetingsSection: FC<MeetingsSectionProps> = ({
         );
       })();
     },
-    [api, open],
+    [api, open, tcw],
   );
 
   const onClose = useCallback(() => setOpen(null), []);

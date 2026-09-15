@@ -34,6 +34,17 @@ class FakeStore implements SyncStore {
   /** Optional hook so a test can throw at insertMeeting boundary (per-item error). */
   insertHook: ((m: NormalizedMeeting) => void) | null = null;
 
+  async publishConnectorMeeting(tcw: TinyCloudWeb, identity: { source: string; sourceId: string }, fetchCurrent: () => Promise<import("./connectorStore").PublicationInput>) {
+    try {
+      const value = await fetchCurrent();
+      const inserted = await this.insertMeeting(tcw, value.meeting);
+      if (!inserted.ok) return inserted;
+      const staged = await this.putTranscriptBody(tcw, identity.source, identity.sourceId, value.sentences);
+      if (!staged.ok) return staged;
+      return ok({ id: value.meeting.id, inserted: inserted.data, createdAt: "created-at", revision: "test-revision" });
+    } catch (error) { return { ok: false as const, error: { code: "PUBLICATION_FETCH_FAILED", message: String(error) } }; }
+  }
+
   async ensureSchema(_: TinyCloudWeb): Promise<StoreResult<void>> {
     this.schemaEnsured++;
     if (this.ensureSchemaError) {

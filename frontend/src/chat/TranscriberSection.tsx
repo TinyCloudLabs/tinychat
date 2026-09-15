@@ -538,8 +538,8 @@ export interface TranscriberSectionProps {
     listSaved: (tcw: TinyCloudWeb) => Promise<{ ok: boolean; data?: string[] }>;
     save: (
       tcw: TinyCloudWeb,
-      meeting: TranscriberMeeting,
-      transcript: TranscriberTranscript,
+      sourceId: string,
+      fetchCurrent: () => Promise<{ meeting: TranscriberMeeting; transcript: TranscriberTranscript }>,
     ) => Promise<{ ok: boolean }>;
   };
 }
@@ -668,11 +668,14 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     });
     void (async () => {
       for (const m of pending) {
-        const result = await api.transcript(m.id);
-        let ok = false;
-        if (result.status === "ok" && result.value.status === "ready") {
-          ok = (await saverRef.current.save(tcw, m, result.value.transcript)).ok;
-        }
+        const published = await saverRef.current.save(tcw, m.id, async () => {
+          const current = await api.get(m.id);
+          if (current.status !== "ok") throw new Error("Current meeting metadata unavailable");
+          const result = await api.transcript(m.id);
+          if (result.status !== "ok" || result.value.status !== "ready") throw new Error("Transcript unavailable");
+          return { meeting: current.value, transcript: result.value.transcript };
+        });
+        const ok = published.ok;
         setSaved((current) => ({ ...current, [m.id]: ok ? "saved" : "error" }));
       }
     })();

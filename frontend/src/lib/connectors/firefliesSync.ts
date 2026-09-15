@@ -49,13 +49,7 @@ export interface SyncClient {
 export interface SyncStore {
   ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>>;
   listKnownSourceIds(tcw: TinyCloudWeb, source: string): Promise<StoreResult<string[]>>;
-  insertMeeting(tcw: TinyCloudWeb, meeting: NormalizedMeeting): Promise<StoreResult<boolean>>;
-  putTranscriptBody(
-    tcw: TinyCloudWeb,
-    source: string,
-    sourceId: string,
-    sentences: FirefliesSentence[],
-  ): Promise<StoreResult<void>>;
+  publishConnectorMeeting: typeof import("./connectorStore").publishConnectorMeeting;
   updateSyncState(tcw: TinyCloudWeb, input: UpdateSyncStateInput): Promise<StoreResult<void>>;
   countMeetings(tcw: TinyCloudWeb, source: string): Promise<StoreResult<number>>;
 }
@@ -126,8 +120,8 @@ export function isTerminal(err: FirefliesError): boolean {
  * Flow (spec §8):
  *  1. ensureSchema, then read the ids already in the DB.
  *  2. Ask the client for new ids (newest-first, early-exit).
- *  3. Fetch OLDEST-first: getTranscript → normalize → insertMeeting +
- *     putTranscriptBody → sleep. Between-item abort check is graceful —
+ *  3. Process oldest-first: reserve → current provider detail → publish → sleep.
+ *     Between-item abort checks preserve the last confirmed published head —
  *     everything stored so far stays; state records the partial sync.
  *  4. Both ok and error paths call updateSyncState at the end (unless
  *     ensureSchema itself failed, in which case there's no DB to write to).
@@ -157,7 +151,7 @@ export async function syncFireflies(
     if (!knownRes.ok) {
       terminal = fromStore(knownRes.error, "listKnownSourceIds");
     } else {
-      const knownIds = knownRes.data;
+      const knownIds: string[] = []; // Revisit known identities so interrupted publication can recover.
 
       const listRes = await client.listNewTranscriptIds({ knownIds, onProgress });
       if (!listRes.ok) {
@@ -165,7 +159,7 @@ export async function syncFireflies(
       } else {
         // Newest-first from the client → reverse to oldest-first so an abort
         // preserves a contiguous history tail.
-        const idsOldestFirst = [...listRes.data].reverse();
+        const idsOldestFirst = [...new Set(listRes.data)].reverse();
         const total = idsOldestFirst.length;
         onProgress?.({ phase: "fetching", done: 0, total });
 
@@ -173,37 +167,22 @@ export async function syncFireflies(
           if (signal?.aborted) break;
 
           const id = idsOldestFirst[i];
-          const txRes = await client.getTranscript(id);
-          if (!txRes.ok) {
-            if (isTerminal(txRes.error)) {
-              terminal = fromFireflies(txRes.error);
-              break;
-            }
-            result.errors.push(`${id}: ${txRes.error.message}`);
+          let providerError: FirefliesError | undefined;
+          const published = await store.publishConnectorMeeting(tcw, { source: SOURCE, sourceId: id }, async () => {
+            const txRes = await client.getTranscript(id);
+            if (!txRes.ok) { providerError = txRes.error; throw new Error(txRes.error.message); }
+            const normalized = normalizeFirefliesTranscript(txRes.data);
+            return { ...normalized, body: { basis: "transcript", schema: "json-records",
+              raw: JSON.stringify(txRes.data.sentences ?? []), originalExtent: "known" } };
+          }, signal);
+          if (!published.ok) {
+            if (providerError && isTerminal(providerError)) { terminal = fromFireflies(providerError); break; }
+            result.errors.push(`${id}: ${published.error.message}`);
             continue;
           }
-
-          try {
-            const { meeting, sentences } = normalizeFirefliesTranscript(txRes.data);
-            const insertRes = await store.insertMeeting(tcw, meeting);
-            if (!insertRes.ok) {
-              result.errors.push(`${id}: ${insertRes.error.message}`);
-              continue;
-            }
-            const putRes = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
-            if (!putRes.ok) {
-              result.errors.push(`${id}: ${putRes.error.message}`);
-              continue;
-            }
-            if (insertRes.data) result.added += 1;
-            else result.skipped += 1;
-            onProgress?.({ phase: "storing", done: i + 1, total });
-          } catch (err) {
-            // normalizeFirefliesTranscript still runs synchronously — a raw
-            // throw from it (bad payload) is per-item, not terminal.
-            result.errors.push(`${id}: ${errorMessage(err)}`);
-            continue;
-          }
+          if (published.data.inserted) result.added += 1;
+          else result.skipped += 1;
+          onProgress?.({ phase: "storing", done: i + 1, total });
 
           // Sleep BETWEEN detail fetches (listen bug we're defending against —
           // it only slept in the LIST loop). Skip after the last item and skip

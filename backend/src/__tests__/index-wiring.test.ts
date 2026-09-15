@@ -71,6 +71,13 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     },
     "./services/ingest-mode.js": { backendIngestEnabled: () => false },
     "./services/google-oauth.js": { googleMeetOAuthEnabled: () => false },
+    "./transcripts/meeting-provider.js": {
+      loadAdmittedMeetingProvider: async (directory?: string, receipt?: string) => {
+        if (!directory && !receipt) return undefined;
+        throw new Error(directory && receipt ? "meeting_provider_gate_unverified" : "meeting_provider_configuration_incomplete");
+      },
+    },
+    "./routes/agent-chat.js": { createAgentChatHandler: (config: unknown) => { agentConfig={chat:config}; calls.push("agent-chat"); throw stopped; } },
     "./routes/agent.js": {
       createAgentRouter: (config: unknown) => {
         agentConfig = config;
@@ -99,7 +106,6 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     console: { error: (...args: unknown[]) => logs.push(args.join(" ")), log: noop, warn: noop },
     require: (id: string) => {
       if (id === "./agent-stream-policy.js") return load("./agent-stream-policy.ts");
-      if (id === "./transcripts/meeting-rollout.js") return load("./transcripts/meeting-rollout.ts");
       if (id in known) return known[id];
       // These import collaborators only register handlers or hold inert local state.
       return new Proxy({}, { get: (_target, name) => {
@@ -118,6 +124,11 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
 }
 
 describe("agent stream startup policy wiring", () => {
+  test("ordinary chat backend remains available without a companion deployment", async () => {
+    const result = await runIsolatedStartup({BACKEND_PRIVATE_KEY:'synthetic',REDPILL_API_KEY:'synthetic'});
+    expect(result.calls).toContain('agent-chat');
+    expect(result.agentConfig.chat.streamPolicy.turnTimeoutMs).toBe(120000);
+  });
   test("rejects missing policy before identity, background work, route mounting or listening", async () => {
     const result = await runIsolatedStartup({
       ...AGENT_ENV,
@@ -140,13 +151,11 @@ describe("agent stream startup policy wiring", () => {
     expect(result.calls).not.toContain("listen");
   });
 
-  test("wires explicit meeting account and evaluated-model allowlists with rollout off by default", async () => {
-    const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV });
-    expect(initial.agentConfig.chat.meetingContentRetrievalEnabled).toBe(false);
-    const enabled = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, MEETING_CONTENT_RETRIEVAL_ENABLED: "true", MEETING_CONTENT_TEST_ACCOUNTS: "0xabc", MEETING_CONTENT_MODELS: "phala/evaluated" });
-    expect(enabled.logs).toEqual([]); expect(enabled.agentConfig.chat.meetingContentRetrievalEnabled).toBe(true);
-    expect(enabled.agentConfig.chat.meetingContentAccountAllowed("0xabc")).toBe(true); expect(enabled.agentConfig.chat.meetingContentAccountAllowed("0xother")).toBe(false);
-    expect(enabled.agentConfig.chat.meetingContentModelAllowed("phala/evaluated")).toBe(true); expect(enabled.agentConfig.chat.meetingContentModelAllowed("phala/untested")).toBe(false);
+  test("legacy rollout flags cannot reopen removed private routing", async () => {
+    const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, MEETING_CONTENT_RETRIEVAL_ENABLED: "true" });
+    expect(result.logs).toEqual([]);
+    expect(result.agentConfig.chat.meetingContentRetrievalEnabled).toBeUndefined();
+    expect(result.agentConfig.chat.meetingProvider).toBeUndefined();
   });
 
   test("rejects every malformed stream setting before any startup effects without logging values", async () => {
@@ -166,12 +175,23 @@ describe("agent stream startup policy wiring", () => {
     expect(result.agentConfig.chat).toBeUndefined();
   });
 
-  test("leaves the plain-chat startup path available when the agent is disabled", async () => {
+  test("keeps classification available when the companion is disabled", async () => {
     for (const missing of ["AGENT_DID", "ELIZA_SERVICE_URL", "ELIZA_SERVICE_SECRET"]) {
       const result = await runIsolatedStartup({ ...AGENT_ENV, [missing]: undefined });
       expect(result.logs).toEqual([]);
-      expect(result.calls).toContain("plain-router");
+      expect(result.calls).toContain("agent-chat");
       expect(result.calls).not.toContain("agent-router");
+    }
+  });
+
+  test("rejects incomplete or unreviewed provider admission before startup effects", async () => {
+    for (const configuration of [
+      { MEETING_TOKENIZER_DIRECTORY: "/synthetic/tokenizer" },
+      { MEETING_TOKENIZER_DIRECTORY: "/synthetic/tokenizer", MEETING_PROVIDER_GATE_RECEIPT: "/synthetic/unreviewed.json" },
+    ]) {
+      const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...configuration });
+      expect(result.calls).toEqual(["exit"]);
+      expect(result.logs.join(" ")).toContain(configuration.MEETING_PROVIDER_GATE_RECEIPT ? "meeting_provider_gate_unverified" : "meeting_provider_configuration_incomplete");
     }
   });
 });
@@ -418,26 +438,9 @@ describe("backend index middleware wiring", () => {
   });
 });
 
-test("diagnostic foreground override isolates agent sends while unset startup preserves provider defaults", async () => {
-  const initial = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background" });
-  expect(initial.agentConfig.chat.redpillBaseUrl).toBe("https://background.invalid/background");
-  expect(initial.agentConfig.chat.redpillApiKey).toBe("synthetic-provider-key");
-  const diagnostic = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://background.invalid/background",
-    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-foreground-key" });
-  expect(diagnostic.agentConfig.chat.redpillBaseUrl).toBe("https://gateway.invalid/foreground");
-  expect(diagnostic.agentConfig.chat.redpillApiKey).toBe("synthetic-foreground-key");
-  expect(diagnostic.logs).toEqual([]);
-});
-
-test("partial or empty diagnostic endpoint credentials fail before startup effects and never log values", async () => {
-  for (const partial of [
-    { MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground" },
-    { MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-sensitive-marker" },
-    { MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "synthetic-sensitive-marker" },
-    { MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://gateway.invalid/foreground", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "" },
-  ]) {
-    const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...partial });
-    expect(result.calls).toEqual(["exit"]);
-    expect(result.logs).toEqual(["Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither"]);
-  }
+test("removed diagnostic overrides cannot select a competing provider path", async () => {
+  const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, REDPILL_BASE_URL: "https://provider.invalid",
+    MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL: "https://obsolete.invalid", MEETING_DIAGNOSTIC_FOREGROUND_API_KEY: "obsolete" });
+  expect(result.agentConfig.chat.redpillBaseUrl).toBe("https://provider.invalid");
+  expect(result.agentConfig.chat.redpillApiKey).toBe("synthetic-provider-key");
 });

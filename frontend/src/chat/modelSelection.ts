@@ -78,6 +78,7 @@ interface RecordState {
   abort?: AbortController;
   lookupStarted: boolean;
   restoreStarted: boolean;
+  hasSubmittedTurn: boolean;
   retryFirstAppend?: () => Promise<void>;
   firstAppendOrigin?: TurnOrigin;
 }
@@ -238,6 +239,7 @@ export class ModelSelectionCoordinator implements ModelSelectionController {
       choice: deferred(),
       lookupStarted: false,
       restoreStarted: false,
+      hasSubmittedTurn: false,
     };
     this.records.set(threadId, record);
     return record;
@@ -289,6 +291,7 @@ export class ModelSelectionCoordinator implements ModelSelectionController {
     if (this.activeThreadId !== threadId || this.disposed) throw new TurnCancelledError();
     const activation = this.activation;
     const record = this.records.get(threadId)!;
+    record.hasSubmittedTurn = true;
     let result: ChoiceResult;
     for (;;) {
       const choice = record.choice;
@@ -467,9 +470,14 @@ export class ModelSelectionCoordinator implements ModelSelectionController {
       }
     }
     if (record.kind === "new" && record.lookupStarted && !record.desired) {
-      record.phase = "needs-manual-choice";
-      record.message = "Automatic selection was cancelled. Choose a model to continue.";
-      record.lookupStarted = true;
+      // assistant-ui reuses the untouched draft for New chat. Navigation may
+      // interrupt its initial lookup before any Send; restart on reactivation.
+      // A cancelled submitted turn still requires an explicit manual choice.
+      record.phase = record.hasSubmittedTurn ? "needs-manual-choice" : "choosing";
+      record.message = record.hasSubmittedTurn
+        ? "Automatic selection was cancelled. Choose a model to continue."
+        : undefined;
+      record.lookupStarted = record.hasSubmittedTurn;
       record.choice = deferred();
     } else if (record.kind === "existing" && record.rowExists === null) {
       record.restoreStarted = false;

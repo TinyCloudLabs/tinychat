@@ -34,6 +34,8 @@ export interface RestoreTinyCloudWebSessionResult {
   tcw: TinyCloudWeb | null;
   status: SessionRestoreResult["status"];
   session?: ClientSession;
+  /** Accepted session's primary space, including wallet-free SDK restores. */
+  spaceId?: string;
   error?: Error;
 }
 
@@ -104,12 +106,13 @@ export async function restoreTinyCloudWebSession(
   config?: TinyCloudWebConfig,
 ): Promise<RestoreTinyCloudWebSessionResult> {
   const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
+  const sessionStorage = new BrowserSessionStorage();
   const tcwConfig: TinyCloudWebSdkConfig = {
     tinycloudHosts: config?.tinycloudHosts,
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
     tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? false,
-    sessionStorage: new BrowserSessionStorage(),
+    sessionStorage,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     manifest,
@@ -122,7 +125,11 @@ export async function restoreTinyCloudWebSession(
   try {
     const result = await tcw.restoreSession(address);
     if (result.status === "restored") {
-      return { tcw, status: result.status, session: result.session };
+      // SDK 2.5.1 restores storage correctly without a wallet, but its public
+      // spaceId getter reads only wallet auth state. Read display metadata
+      // through the SDK's validated persistence API after a successful restore.
+      const spaceId = tcw.spaceId ?? (await sessionStorage.load(address))?.tinycloudSession?.spaceId;
+      return { tcw, status: result.status, session: result.session, spaceId };
     }
 
     tcw.cleanup();

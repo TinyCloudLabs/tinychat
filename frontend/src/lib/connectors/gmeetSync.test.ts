@@ -67,6 +67,16 @@ class FakeStore implements GmeetSyncStore {
   /** Source ids whose KV write must fail (per-item storage error). */
   failBodyFor = new Set<string>();
 
+  async publishConnectorMeeting(tcw: TinyCloudWeb, identity: { source: string; sourceId: string }, fetchCurrent: () => Promise<import("./connectorStore").PublicationInput>) {
+    try {
+      const value = await fetchCurrent();
+      const staged = await this.putTranscriptBody(tcw, identity.source, identity.sourceId, value.sentences);
+      if (!staged.ok) return staged;
+      const result = await this.upsertMeeting(tcw, value.meeting, value.sentences);
+      return result.ok ? ok({ ...result.data, revision: "test-revision" }) : result;
+    } catch (error) { return { ok: false as const, error: { code: "PUBLICATION_FETCH_FAILED", message: String(error) } }; }
+  }
+
   async getConnection(
     _: TinyCloudWeb,
     connectorId: ConnectorId,
@@ -294,7 +304,7 @@ const DIAGNOSTIC_KEYS = [
   "drive_mode", "drive_diagnostics_complete", "drive_input_items", "drive_terminal_items",
   "drive_unprocessed_due_run_stop", "drive_missing_id", "drive_removed_or_trashed",
   "drive_non_google_doc", "drive_google_docs_discovered", "drive_metadata_non_candidate",
-  "drive_metadata_candidate", "drive_association_bypass", "drive_unchanged_associated",
+  "drive_metadata_candidate", "drive_association_bypass", "drive_unchanged_associated", "drive_duplicate_identity",
   "drive_docs_get_attempted", "drive_docs_get_succeeded", "drive_docs_get_failed_retryable",
   "drive_docs_get_failed_terminal", "drive_docs_get_aborted", "drive_parser_rejected_no_marker",
   "drive_parser_rejected_no_supported_section", "drive_parser_accepted",
@@ -312,7 +322,7 @@ const DIAGNOSTIC_KEYS = [
 
 const TERMINAL_KEYS = [
   "drive_missing_id", "drive_removed_or_trashed", "drive_non_google_doc",
-  "drive_metadata_non_candidate", "drive_unchanged_associated", "drive_docs_get_failed_retryable",
+  "drive_metadata_non_candidate", "drive_unchanged_associated", "drive_duplicate_identity", "drive_docs_get_failed_retryable",
   "drive_docs_get_failed_terminal", "drive_docs_get_aborted", "drive_parser_rejected_no_marker",
   "drive_parser_rejected_no_supported_section", "drive_accepted_standalone_created",
   "drive_accepted_standalone_updated", "drive_accepted_attached", "drive_accepted_migrated",
@@ -979,9 +989,8 @@ describe("Drive Notes by Gemini sync", () => {
     const result = await run(client, store, { driveMode: "snapshot" });
 
     expect(result.ok).toBe(true);
-    expect(identityCalls).toHaveLength(2);
+    expect(identityCalls).toHaveLength(1);
     expect(identityCalls).toEqual([
-      { title: null, startedAt: null },
       { title: null, startedAt: null },
     ]);
   });
@@ -1143,7 +1152,7 @@ describe("Drive Notes by Gemini sync", () => {
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
-    expect(documentReads).toBe(1);
+    expect(documentReads).toBe(2);
     expect(store.rows).toHaveLength(1);
     expect(store.rows[0]).toMatchObject({
       id: "stable-row", createdAt: "stable-created-at",
@@ -1292,7 +1301,7 @@ describe("Drive Notes by Gemini sync", () => {
     }
   });
 
-  test("migrates a Notes-first standalone row onto a later uniquely matching conference", async () => {
+  test("preserves Notes and conference identities even when title and date match", async () => {
     const diagnostics: Record<string, number | string>[] = [];
     const store = new FakeStore();
     const standalone: NormalizedMeeting = {
@@ -1364,14 +1373,14 @@ describe("Drive Notes by Gemini sync", () => {
     const result = await run(client, store, { onDiagnostics: (value) => diagnostics.push(value) });
 
     expect(result.ok).toBe(true);
-    expect(attachCalls).toEqual(["conference-1"]);
-    expect(store.rows.map((row) => row.meeting.sourceId)).toEqual(["conference-1"]);
-    expect(store.bodies.has("google-meet/notes-1")).toBe(false);
+    expect(attachCalls).toEqual([]);
+    expect(store.rows.map((row) => row.meeting.sourceId)).toEqual(["notes-1", "conference-1"]);
+    expect(store.bodies.has("google-meet/notes-1")).toBe(true);
     expect(store.bodies.get("google-meet/conference-1")?.[0]?.text).toBe("Meet transcript");
     expect(diagnostics[0]).toMatchObject({
       drive_mode: "incremental", drive_parser_accepted: 1,
-      drive_accepted_migrated: 1, drive_rows_deleted: 1,
-      persisted_item_count_before: 2, persisted_item_count_after: 1,
+      drive_accepted_standalone_updated: 1, drive_rows_deleted: 0,
+      persisted_item_count_before: 2, persisted_item_count_after: 2,
     });
   });
 
@@ -1522,7 +1531,7 @@ describe("Drive Notes by Gemini sync", () => {
     });
   });
 
-  test("reports unchanged incremental associations and commits only the count, never the cursor value", async () => {
+  test("refreshes known incremental associations and commits only the count, never the cursor value", async () => {
     const diagnostics: Record<string, number | string>[] = [];
     const client = Object.assign(new FakeClient([]), {
       async getDriveStartPageToken() { throw new Error("incremental only"); },
@@ -1531,7 +1540,7 @@ describe("Drive Notes by Gemini sync", () => {
         changes: [{ fileId: "unchanged", file: { id: "unchanged", name: "renamed", mimeType: "application/vnd.google-apps.document", modifiedTime: "same" } }],
         nextPageToken: null, newStartPageToken: "new-private-cursor",
       } }; },
-      async getDriveDocument() { throw new Error("unchanged association must not read Docs"); },
+      async getDriveDocument() { return { ok: true as const, data: snapshotDocument() }; },
     });
     const store = Object.assign(new FakeStore(), {
       async getDriveCursor() { return ok("old-private-cursor"); }, async putDriveCursor() { return ok(undefined); },
@@ -1550,7 +1559,7 @@ describe("Drive Notes by Gemini sync", () => {
 
     expect(diagnostics[0]).toMatchObject({
       drive_mode: "incremental", drive_input_items: 1, drive_terminal_items: 1,
-      drive_association_bypass: 1, drive_unchanged_associated: 1, drive_cursor_committed: 1,
+      drive_association_bypass: 1, drive_unchanged_associated: 0, drive_docs_get_attempted: 1, drive_cursor_committed: 1,
     });
     expect(JSON.stringify(diagnostics[0])).not.toContain("private-cursor");
   });
@@ -1650,4 +1659,17 @@ describe("Drive Notes by Gemini sync", () => {
       drive_cursor_committed: 0,
     });
   });
+});
+
+test('one sync attempts a repeated Drive identity only once, including after a failed attempt', async () => {
+  let reads = 0;
+  const client = Object.assign(new FakeClient([]), {
+    async getDriveStartPageToken() { return { ok: true as const, data: 'start' }; },
+    async listDriveFiles() { return { ok: true as const, data: [0, 1].map(() => ({ id: 'repeated', name: 'Notes by Gemini', mimeType: 'application/vnd.google-apps.document' })) }; },
+    async listDriveChangesPage() { throw Error('snapshot only'); },
+    async getDriveDocument() { reads++; return { ok: false as const, error: { kind: 'network' as const, status: null, message: 'offline' } }; },
+  });
+  const store = Object.assign(new FakeStore(), { async getDriveCursor() { return ok(null); }, async putDriveCursor() { return ok(undefined); }, async findGmeetNotesAssociation() { return ok(null); }, async removeGmeetNotes() { return ok('unchanged' as const); } });
+  await run(client, store, { driveMode: 'snapshot' });
+  expect(reads).toBe(1);
 });

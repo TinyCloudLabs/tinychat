@@ -9,6 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "0.2.0",
     "@scalar/express-api-reference": "^0.4.0",
     "@tinyboilerplate/core": "workspace:*",
     "@tinyboilerplate/server": "workspace:*",
