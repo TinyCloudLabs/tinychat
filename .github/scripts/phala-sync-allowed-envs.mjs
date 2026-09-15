@@ -11,7 +11,9 @@
 // env_keys (two-phase: a first call returns precondition_required with the
 // new compose_hash, the retry with that hash commits). This script performs
 // that dance with the exact same env file the deploy step just used, so
-// values are identical — only the whitelist changes.
+// values are identical — only the whitelist changes. Existing allowed names
+// are retained, but their values must still be present in the complete env file:
+// preserving a name cannot recover a value omitted from the encrypted payload.
 //
 // Env: PHALA_CLOUD_API_KEY, PHALA_CVM_ID, ENV_FILE (path to KEY=VALUE file).
 
@@ -49,6 +51,7 @@ const client = createClient({ apiKey });
 
 const compose = await getCvmComposeFile(client, { uuid: cvmId }, { schema: false });
 const allowed = new Set(compose?.allowed_envs ?? []);
+const nextAllowed = [...new Set([...allowed, ...envKeys])];
 const missing = envKeys.filter((k) => !allowed.has(k));
 if (missing.length === 0) {
   console.log(`allowed_envs already contains all ${envKeys.length} deploy env keys — nothing to do.`);
@@ -67,7 +70,7 @@ const encryptedEnv = await encryptEnvVars(envs, pubkey);
 
 let result = await updateCvmEnvs(
   client,
-  { uuid: cvmId, encrypted_env: encryptedEnv, env_keys: envKeys },
+  { uuid: cvmId, encrypted_env: encryptedEnv, env_keys: nextAllowed },
   { schema: false },
 );
 console.log("phase 1 response:", JSON.stringify(result));
@@ -78,7 +81,7 @@ if (result?.status === "precondition_required") {
     {
       uuid: cvmId,
       encrypted_env: encryptedEnv,
-      env_keys: envKeys,
+      env_keys: nextAllowed,
       compose_hash: result.compose_hash,
     },
     { schema: false },
@@ -117,7 +120,7 @@ for (let i = 0; i < 120; i++) {
 
 const after = await getCvmComposeFile(client, { uuid: cvmId }, { schema: false });
 const afterAllowed = new Set(after?.allowed_envs ?? []);
-const stillMissing = envKeys.filter((k) => !afterAllowed.has(k));
+const stillMissing = nextAllowed.filter((k) => !afterAllowed.has(k));
 if (stillMissing.length > 0) {
   console.error(`allowed_envs still missing after update: ${stillMissing.join(", ")}`);
   process.exit(1);

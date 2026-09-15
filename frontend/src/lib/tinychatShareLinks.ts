@@ -11,6 +11,7 @@ import {
   DEFAULT_TITLE,
   THREADS_SQL_DB_NAME,
   getThread,
+  isLocalThreadStorage,
   type ThreadDoc,
 } from "./threadStore";
 
@@ -194,6 +195,9 @@ export async function createTinychatShareLink(
   threadId: string,
   options: CreateTinychatShareOptions = {},
 ): Promise<{ link: string; payload: TinychatSharePayload; token: string }> {
+  if (isLocalThreadStorage(tcw)) {
+    throw new Error("Sharing is disabled during local validation");
+  }
   const thread = await getThread(tcw, threadId);
   if (!thread || thread.messages.length === 0) {
     throw new Error("Send a message before sharing this chat");

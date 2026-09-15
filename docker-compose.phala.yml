@@ -19,6 +19,9 @@ services:
       AGENT_DID: ${AGENT_DID:-}
       ELIZA_SERVICE_URL: ${ELIZA_SERVICE_URL:-}
       ELIZA_SERVICE_SECRET: ${ELIZA_SERVICE_SECRET:-}
+      # Task routing defaults off; enabled with an empty list admits all accounts.
+      ELIZA_TASKS_ENABLED: ${ELIZA_TASKS_ENABLED:-false}
+      ELIZA_TASKS_TEST_ACCOUNTS: ${ELIZA_TASKS_TEST_ACCOUNTS:-}
       # Optional meeting rollout; empty allowlists admit no accounts or models.
       MEETING_CONTENT_RETRIEVAL_ENABLED: ${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}
       MEETING_CONTENT_TEST_ACCOUNTS: ${MEETING_CONTENT_TEST_ACCOUNTS:-}

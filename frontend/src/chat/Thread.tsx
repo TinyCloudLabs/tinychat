@@ -49,6 +49,7 @@ import {
   type ReceiptEntry,
 } from "@/lib/billingApi";
 import { copyText } from "@/lib/copyText";
+import { isLocalThreadStorage } from "@/lib/threadStore";
 import {
   createTinychatShareLink,
   findStoredTinychatShareForThread,
@@ -213,7 +214,7 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
   // `visible` gates whether the share button renders at all — only once a
   // chat exchange exists (not empty, history loaded). `canShare` additionally
   // pauses actions while a share link is being created.
-  const visible = Boolean(threadId && !isEmpty && !isLoading);
+  const visible = Boolean(!isLocalThreadStorage(tcw) && threadId && !isEmpty && !isLoading);
   const canShare = Boolean(visible && !creating);
 
   const openShareDialog = useCallback(() => {

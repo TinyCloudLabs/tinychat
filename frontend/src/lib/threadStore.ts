@@ -126,6 +126,35 @@ export interface ThreadSummary {
   model: string;
 }
 
+// Opt-in per-session sink for the local real-data smoke test. Nothing in this
+// sink is hydrated from or persisted to the account's production chat store.
+const localStores = new WeakMap<TinyCloudWeb, {
+  threads: Map<string, ThreadDoc>;
+  settings: Map<string, string>;
+  memory: string | null;
+  compactions: Map<string, CompactionCheckpoint>;
+}>();
+
+export function useLocalThreadStorage(tcw: TinyCloudWeb): TinyCloudWeb {
+  if (!localStores.has(tcw)) localStores.set(tcw, {
+    threads: new Map(), settings: new Map(), memory: null, compactions: new Map(),
+  });
+  return tcw;
+}
+
+export function isLocalThreadStorage(tcw: TinyCloudWeb): boolean {
+  return localStores.has(tcw);
+}
+
+function localThreadSummaries(tcw: TinyCloudWeb): ThreadSummary[] {
+  return sortSummaries([...localStores.get(tcw)!.threads.values()].map(({ id, title, model, updatedAt }) => ({ id, title, model, updatedAt })));
+}
+
+function notifyLocalThreads(tcw: TinyCloudWeb, id: string): void {
+  historyPrefetch.invalidate(id);
+  notifyThreadIndex(localThreadSummaries(tcw));
+}
+
 /** Minimal structural view of a SQL service error (Result.error). */
 type SqlError = { code: string; message: string };
 
@@ -149,6 +178,7 @@ class SqlOpError extends Error {
 
 /** A SQL database handle bound to the granted per-space resource. */
 function store(tcw: TinyCloudWeb) {
+  if (localStores.has(tcw)) throw new Error("Local validation cannot access the production chat store");
   return tcw.sql.db(SQL_DB_NAME);
 }
 
@@ -214,6 +244,8 @@ function cellStr(row: unknown[], idx: number, fallback: string): string {
 
 /** Read a single thread row + its messages (ordered). Null if no thread. */
 export async function getThread(tcw: TinyCloudWeb, id: string): Promise<ThreadDoc | null> {
+  const local = localStores.get(tcw);
+  if (local) return structuredClone(local.threads.get(id) ?? null);
   await ensureSchema(tcw);
 
   const threadRes = await store(tcw).query(
@@ -258,6 +290,11 @@ export type ThreadModelRead =
   | { status: "found"; model: string | null };
 
 export async function getThreadModel(tcw: TinyCloudWeb, id: string): Promise<ThreadModelRead> {
+  const local = localStores.get(tcw);
+  if (local) {
+    const doc = local.threads.get(id);
+    return doc ? { status: "found", model: doc.model } : { status: "missing" };
+  }
   await ensureSchema(tcw);
   const res = await store(tcw).query("SELECT model FROM threads WHERE id = ?", [id]);
   if (!res.ok) throw new SqlOpError(res.error, "getThreadModel");
@@ -269,6 +306,8 @@ export async function getThreadModel(tcw: TinyCloudWeb, id: string): Promise<Thr
 
 /** Read just a thread's title (cheap — for the live sidebar title update). */
 export async function getThreadTitle(tcw: TinyCloudWeb, id: string): Promise<string | null> {
+  const local = localStores.get(tcw);
+  if (local) return local.threads.get(id)?.title ?? null;
   await ensureSchema(tcw);
   const res = await store(tcw).query("SELECT title FROM threads WHERE id = ?", [id]);
   if (!res.ok) throw new SqlOpError(res.error, "getThreadTitle");
@@ -285,6 +324,8 @@ export async function getThreadTitle(tcw: TinyCloudWeb, id: string): Promise<str
 
 /** Read a cross-device setting value from the user's space. Null if unset. */
 export async function getSetting(tcw: TinyCloudWeb, key: string): Promise<string | null> {
+  const local = localStores.get(tcw);
+  if (local) return local.settings.get(key) ?? null;
   await ensureSchema(tcw);
   const res = await store(tcw).query("SELECT value FROM settings WHERE key = ?", [key]);
   if (!res.ok) throw new SqlOpError(res.error, "getSetting");
@@ -294,6 +335,8 @@ export async function getSetting(tcw: TinyCloudWeb, key: string): Promise<string
 
 /** Upsert a cross-device setting value into the user's space. */
 export async function setSetting(tcw: TinyCloudWeb, key: string, value: string): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) { local.settings.set(key, value); return; }
   await ensureSchema(tcw);
   const res = await store(tcw).execute(
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -314,6 +357,8 @@ function memoryCacheKey(tcw: TinyCloudWeb): string | null {
 
 /** Read the cached memory doc (instant paint). Returns null if absent. */
 export function readMemoryCache(tcw: TinyCloudWeb): string | null {
+  const local = localStores.get(tcw);
+  if (local) return local.memory;
   const key = memoryCacheKey(tcw);
   if (!key) return null;
   try {
@@ -352,6 +397,8 @@ function removeMemoryCache(tcw: TinyCloudWeb): void {
  * the chat path.
  */
 export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
+  const local = localStores.get(tcw);
+  if (local) return local.memory;
   try {
     await ensureSchema(tcw);
     const res = await store(tcw).query(
@@ -407,6 +454,8 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
 
 /** Upsert the per-space user_context doc and refresh the localStorage cache. */
 export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) { _memoryWriteGen++; local.memory = content; return; }
   // Bump BEFORE SQL: any in-flight memory read will see a different counter
   // on completion and skip its ref assignment (see memoryWriteGen above).
   _memoryWriteGen++;
@@ -459,6 +508,8 @@ export async function resetMemoryToTemplate(tcw: TinyCloudWeb): Promise<string> 
  *  Also drops the last-known-good backup row so an explicit "Clear memory" is
  *  not resurrected by `getMemory`'s auto-restore. */
 export async function clearMemory(tcw: TinyCloudWeb): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) { _memoryWriteGen++; local.memory = null; return; }
   _memoryWriteGen++;
   await ensureSchema(tcw);
   const res = await store(tcw).batch([
@@ -502,6 +553,12 @@ export async function appendCompaction(
   coversThroughMessageId: string,
   summary: string,
 ): Promise<CompactionCheckpoint> {
+  const local = localStores.get(tcw);
+  if (local) {
+    const cp = { id: crypto.randomUUID(), threadId, coversThroughMessageId, summary, createdAt: new Date().toISOString() };
+    local.compactions.set(threadId, cp);
+    return cp;
+  }
   await ensureSchema(tcw);
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
@@ -521,6 +578,8 @@ export async function getLatestCompaction(
   tcw: TinyCloudWeb,
   threadId: string,
 ): Promise<CompactionCheckpoint | null> {
+  const local = localStores.get(tcw);
+  if (local) return local.compactions.get(threadId) ?? null;
   if (compactionCache.has(threadId)) return compactionCache.get(threadId) ?? null;
   await ensureSchema(tcw);
   const res = await store(tcw).query(
@@ -573,6 +632,8 @@ function cacheKey(tcw: TinyCloudWeb): string | null {
  * membership check is the reliable alternative.)
  */
 export function isKnownThreadId(tcw: TinyCloudWeb, id: string): boolean | null {
+  const local = localStores.get(tcw);
+  if (local) return local.threads.has(id);
   const cached = readCache(tcw);
   if (!cached || cached.length === 0) return null;
   return cached.some((s) => s.id === id);
@@ -655,6 +716,7 @@ function removeCacheEntry(tcw: TinyCloudWeb, id: string): void {
  * we'd rather pay one network round-trip than leave a partial cache.
  */
 export function clearThreadIndexCache(tcw: TinyCloudWeb): void {
+  if (localStores.has(tcw)) return;
   // Bump the gen so any in-flight revalidate's writeCache is dropped.
   mutationGen++;
   // A bulk change touched many rows — drop every prefetched doc and force the
@@ -792,6 +854,12 @@ async function fetchFromSql(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
  * and the cached value (or `[]`) is returned.
  */
 export async function listThreads(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
+  if (localStores.has(tcw)) {
+    const summaries = localThreadSummaries(tcw);
+    markIndexDelivered(summaries);
+    notifyThreadIndex(summaries);
+    return summaries;
+  }
   const cached = readCache(tcw);
   // Only treat a NON-EMPTY cache as a valid instant paint. An empty cached array
   // (e.g. written transiently before threads loaded, or after a failed read)
@@ -925,6 +993,19 @@ export async function appendMessage(
   item: StoredMessageItem,
   selectedModel: string = DEFAULT_MODEL,
 ): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) {
+    const now = new Date().toISOString();
+    const doc = local.threads.get(id) ?? { id, title: DEFAULT_TITLE, model: selectedModel, createdAt: now, updatedAt: now, messages: [] };
+    if (!doc.messages.some((prior) => prior.message.id === item.message.id)) {
+      doc.messages.push(structuredClone(item));
+      if (doc.title === DEFAULT_TITLE && item.message.role === "user") doc.title = firstTextOf(item).slice(0, 60) || DEFAULT_TITLE;
+      doc.updatedAt = now;
+      local.threads.set(id, doc);
+      notifyLocalThreads(tcw, id);
+    }
+    return;
+  }
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
     await ensureSchema(tcw);
@@ -1031,6 +1112,12 @@ export async function importThread(
     items: StoredMessageItem[];
   },
 ): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) {
+    local.threads.set(conv.id, { id: conv.id, title: conv.title, model: conv.model ?? IMPORT_DEFAULT_MODEL, createdAt: conv.createdAt, updatedAt: conv.updatedAt, messages: structuredClone(conv.items) });
+    notifyLocalThreads(tcw, conv.id);
+    return;
+  }
   mutationGen++;
   await ensureSchema(tcw);
 
@@ -1082,6 +1169,12 @@ export async function setThreadTitle(
   id: string,
   title: string,
 ): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) {
+    const doc = local.threads.get(id);
+    if (doc) { doc.title = title; doc.updatedAt = new Date().toISOString(); notifyLocalThreads(tcw, id); }
+    return;
+  }
   mutationGen++;
   await ensureSchema(tcw);
   const now = new Date().toISOString();
@@ -1108,6 +1201,15 @@ export async function setThreadModel(
   id: string,
   model: string,
 ): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) {
+    const doc = local.threads.get(id);
+    if (!doc) throw new Error(`setThreadModel: thread ${id} does not exist`);
+    doc.model = model;
+    doc.updatedAt = new Date().toISOString();
+    notifyLocalThreads(tcw, id);
+    return;
+  }
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
     await ensureSchema(tcw);
@@ -1147,6 +1249,13 @@ export async function setThreadModel(
 
 /** Delete a thread and its messages. */
 export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) {
+    local.threads.delete(id);
+    local.compactions.delete(id);
+    notifyLocalThreads(tcw, id);
+    return;
+  }
   // Bump BEFORE SQL: any listThreads() revalidate already in flight will see
   // a different mutationGen on completion and will not clobber the cache.
   mutationGen++;

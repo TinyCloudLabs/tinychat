@@ -22,6 +22,7 @@
 // custom-element registration, no collision) and never runs under bun test (the
 // real mint is stubbed via `_mint`). The DOM-bound types below are type-only.
 import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
+import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
 /** Production agent identity (Layer-1 contract §2). Local E2E may override it. */
 const DEFAULT_AGENT_DID = "did:pkh:eip155:1:0x83cD9777d4128012F878376aCbd6a092DcdDE01c";
@@ -300,12 +301,14 @@ export async function mintAgentDelegationViaFreshSignIn(
   // does not cover the transcript resources and delegateTo() fails closed.
   const tcw = new TinyCloudWeb({
     providers: { web3: { driver: web3Provider } },
+    ...(localValidationEnabled() ? { autoCreateSpace: false } : {}),
     ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}),
     manifest: AGENT_CONSENT_MANIFEST,
     sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }),
   });
 
   try {
+    if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
     return await mintAgentDelegation(tcw, {
       delegateDID: options.delegateDID,
@@ -333,8 +336,9 @@ export async function mintAgentSessionViaFreshSignIn(
   const { web3Provider } = await connectWallet({ appName: options.appName, host: options.openkeyHost });
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
-  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }) });
+  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }) });
   try {
+    if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
     return await mintAgentSessionDelegations(tcw, { delegateDID: options.delegateDID, host: options.tinycloudHosts?.[0], expiryMs: options.expiryMs, roomId: options.roomId });
   } finally { try { tcw.cleanup?.(); } catch { /* best effort */ } }

@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /** Opt-in local real-data validation; DEV and loopback page/backend only. */
+  readonly VITE_LOCAL_VALIDATION?: string;
   readonly VITE_OPENKEY_HOST?: string;
   readonly VITE_BACKEND_URL?: string;
   readonly VITE_TINYCLOUD_HOST?: string;
