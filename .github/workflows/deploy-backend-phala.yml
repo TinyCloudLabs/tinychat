@@ -306,6 +306,10 @@ jobs:
           AGENT_DID: ${{ vars.AGENT_DID }}
           ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
           ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
+          # Task routing defaults off. Set an explicit canary list before enabling;
+          # enabled with an empty list routes all authenticated accounts to tasks.
+          ELIZA_TASKS_ENABLED: ${{ vars.ELIZA_TASKS_ENABLED || 'false' }}
+          ELIZA_TASKS_TEST_ACCOUNTS: ${{ vars.ELIZA_TASKS_TEST_ACCOUNTS }}
           # Optional meeting rollout; defaults keep controller routing disabled.
           MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
           MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
@@ -412,6 +416,8 @@ jobs:
             printf '%s\n' "AGENT_DID=$AGENT_DID"
             printf '%s\n' "ELIZA_SERVICE_URL=$ELIZA_SERVICE_URL"
             printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
+            printf '%s\n' "ELIZA_TASKS_ENABLED=${ELIZA_TASKS_ENABLED:-false}"
+            printf '%s\n' "ELIZA_TASKS_TEST_ACCOUNTS=${ELIZA_TASKS_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
             printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
             printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"

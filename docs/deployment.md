@@ -153,6 +153,8 @@ Repository **variables** (all optional — defaults shown):
 | `CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR` | `20` (per address, rolling hour) |
 | `AGENT_DID` | _(required — no default; the workflow's config check fails fast if unset)_ — the backend agent's DID (agent triad; the deploy's `/api/agent/session` probe asserts the mount) |
 | `ELIZA_SERVICE_URL` | _(required — no default; the workflow's config check fails fast if unset)_ — Eliza agent service URL (agent triad) |
+| `ELIZA_TASKS_ENABLED` | `false` (repo variable; only literal `true` routes admitted agent turns through Eliza `/tasks`) |
+| `ELIZA_TASKS_TEST_ACCOUNTS` | _(empty — repo variable; comma-separated account addresses, trimmed and lowercased)_. **When tasks are enabled, an empty list admits all authenticated accounts.** Set an explicit canary list before enabling. |
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_ |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_ |
@@ -167,6 +169,36 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_API_URL` | _(empty — repo **variable**; the TinyCloud Private Transcription API base URL. With `TRANSCRIPTION_API_KEY` set, `/api/transcriber/meetings` mounts and Settings → Transcriber lights up; either empty ⇒ 404 and the card says it is not configured)_ |
 | `TRANSCRIPTION_API_KEY` | _(empty — repo **secret**; the `tc_live_…` project key minted with the transcription service's `create-key` CLI. Never reaches the browser)_ |
 | `TRANSCRIPTION_BOT_NAME` | `TinyCloud Private Notetaker` (repo variable; the bot's display name in the meeting) |
+
+### Eliza task rollout
+
+Deploy a compatible Eliza service first and verify its authenticated `/capabilities`
+response, build revision, provider profile, offered models and cancellation support.
+Deploy TinyChat initially with `ELIZA_TASKS_ENABLED=false`. Keep `AGENT_DID`,
+`ELIZA_SERVICE_URL`, `ELIZA_SERVICE_SECRET`, backend RedPill credentials and the
+legacy meeting settings intact. `MEETING_CONTENT_MODELS` does not gate Eliza tasks.
+The Eliza model map must cover the models offered by TinyChat; unsupported models
+are rejected without automatic model replacement or legacy replay.
+
+Before enabling, verify task and cancellation requests reach the same Eliza process,
+and verify the deployed proxy/stream timeouts support the intended task budget.
+Set a nonempty `ELIZA_TASKS_TEST_ACCOUNTS` canary list, then set the enable flag to
+literal `true` and deploy through the existing workflow. Both keys are always
+written into the encrypted deployment env file, including their off/empty defaults,
+forwarded by compose and included by `Sync CVM allowed_envs`. Verify the actual
+existing CVM's allowed names and resolved container settings. Changing a repository
+variable alone does not change a running process: these settings require a backend
+deploy/restart. Never enable a canary with an empty account list.
+
+The allowed-name sync retains existing allowed names, but it encrypts the values
+from the complete deployment env file. Keeping an allowed name does not preserve
+an omitted value; preserve existing identity, custody, billing and other deployment
+settings when preparing that file. Keep production local-validation flags unset or
+false. To roll back task routing, deploy `ELIZA_TASKS_ENABLED=false`, verify new
+requests use the legacy path and keep compatible Eliza endpoints available until
+in-flight tasks finish or cancel. Do not replay uncertain requests.
+
+### Legacy meeting content rollout
 
 Meeting content retrieval stays off for a missing, empty or nonliteral enable flag.
 A literal `true` with no accounts admits nobody. An admitted account with no
@@ -195,8 +227,8 @@ update path; never recreate the CVM automatically.
 > drops it: the deploy step's `env:` block, the `printf` ENV_FILE block it writes
 > (this is what `allowed_envs` is derived from — there is no static list), the
 > `environment:` map in `docker-compose.phala.yml`, and `backend/.env.example` +
-> these tables. `webhook-deploy-env.test.ts`, `ledger-deploy-env.test.ts` and
-> `meeting-rollout.test.ts` pin this wiring; missing the second one is what unmounted `/api/agent` in
+> these tables. `webhook-deploy-env.test.ts`, `ledger-deploy-env.test.ts`,
+> `meeting-rollout.test.ts` and `eliza-task-deploy-env.test.ts` pin this wiring; missing the second one is what unmounted `/api/agent` in
 > production on 2026-07-07.
 
 > `PHALA_CVM_ID` is read as a repo **variable** (not a secret) so it can be
