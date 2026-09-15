@@ -1,5 +1,7 @@
 import type { TinyCloudWeb } from '@tinycloud/web-sdk';
 import { CONNECTORS_SQL_DB_NAME, type StoreResult } from './connectorStore';
+export { prepareLegacyMeetingImport, runLegacyMeetingImport } from './legacyMeetingImport';
+export type { LegacyImportEntry, LegacyImportPlan, LegacyImportReceipt, LegacyImportRun } from './legacyMeetingImport';
 
 export interface MigrationInventoryEntry {
   meetingRef: string;
