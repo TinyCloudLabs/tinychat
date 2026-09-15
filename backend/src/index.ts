@@ -98,6 +98,7 @@ import { APP_ID } from "./manifest.js";
 import { createTinychatBackendIdentity } from "./startup.js";
 import { appCorsOrigins } from "./cors-origins.js";
 import { agentStreamPolicyFromEnv, type AgentStreamPolicy } from "./agent-stream-policy.js";
+import { localValidationFromEnv, localValidationGuard } from "./local-validation.js";
 
 const BACKEND_PRIVATE_KEY = process.env.BACKEND_PRIVATE_KEY;
 const TINYCLOUD_HOST = process.env.TINYCLOUD_HOST ?? "https://node.tinycloud.xyz";
@@ -231,6 +232,7 @@ export function validateLedgerStartupConfig(
 }
 
 async function main() {
+  const localValidation = localValidationFromEnv(process.env);
   const diagnosticUrl = process.env.MEETING_DIAGNOSTIC_FOREGROUND_BASE_URL;
   const diagnosticKey = process.env.MEETING_DIAGNOSTIC_FOREGROUND_API_KEY;
   if ((diagnosticUrl !== undefined || diagnosticKey !== undefined) && (!diagnosticUrl?.trim() || !diagnosticKey?.trim())) {
@@ -366,6 +368,7 @@ async function main() {
   const { node, did } = await createTinychatBackendIdentity({
     privateKey: backendPrivateKey,
     host: TINYCLOUD_HOST,
+    localValidation,
   });
 
   // §E.6/E.7 — construct and start the ledger flusher + rehydrator when configured.
@@ -393,6 +396,7 @@ async function main() {
   // on the delegation cache built at startup for no reader.
 
   const app = express();
+  if (localValidation) app.use(localValidationGuard);
   app.set("trust proxy", 1);
   applySecurityDefaults(app);
   app.use(cors({ origin: appCorsOrigins(FRONTEND_URL) }));
@@ -786,6 +790,11 @@ async function main() {
           ? {
               chat: {
                 streamPolicy: agentStreamPolicy!,
+                elizaTasksEnabled: process.env.ELIZA_TASKS_ENABLED === "true",
+                elizaTasksAccountAllowed: (address: string) => {
+                  const accounts = (process.env.ELIZA_TASKS_TEST_ACCOUNTS ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
+                  return accounts.length === 0 || accounts.includes(address.toLowerCase());
+                },
                 meetingContentRetrievalEnabled: meetingRollout.enabled,
                 meetingContentAccountAllowed: meetingRollout.accountAllowed,
                 meetingContentModelAllowed: meetingRollout.modelAllowed,
@@ -891,11 +900,12 @@ async function main() {
   });
 
   const tlsConfig = loadTlsConfig();
+  const listenOptions = { port: PORT, ...(localValidation ? { host: "127.0.0.1" } : {}) };
   const server = tlsConfig
-    ? createHttpsServer(tlsConfig, app).listen(PORT, () => {
+    ? createHttpsServer(tlsConfig, app).listen(listenOptions, () => {
         console.log(`TinyChat backend ready: https://localhost:${PORT}`);
       })
-    : app.listen(PORT, () => {
+    : app.listen(listenOptions, () => {
         console.log(`TinyChat backend ready: http://localhost:${PORT}`);
       });
 

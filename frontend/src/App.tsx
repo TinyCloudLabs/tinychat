@@ -15,6 +15,7 @@ import {
   clearPersistedSession,
   connectWallet,
   createAndSignIn,
+  createTinyCloudWeb,
   createApiClient,
   loadAppManifest,
   requestNonce,
@@ -38,7 +39,9 @@ import {
   appendCompaction,
   getLatestCompaction,
   readMemoryCache,
+  useLocalThreadStorage,
 } from "./lib/threadStore";
+import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidation";
 import { completeChat, type ChatMessage } from "./lib/chatApi";
 import { COMPACTION_SUMMARY_MAX_TOKENS, DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
@@ -118,6 +121,7 @@ import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChat
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
+const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
 const APP_NAME = "TinyCloud Chat";
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
@@ -332,7 +336,7 @@ export function App() {
           setState("unauthenticated");
           return;
         }
-        setTcw(restored.tcw);
+        setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw);
         setAddress(storedAddress);
         setDid(restored.tcw.did ?? `did:pkh:eip155:1:${storedAddress}`);
         setSpaceId(restored.tcw.spaceId ?? null);
@@ -556,19 +560,27 @@ export function App() {
       // network id embeds this user's DID. Capabilities are minted from the
       // manifest passed here, so sign-in is the only moment it can be added.
       // Delete this call when the SDK carries the capability itself.
-      const { tcw: signedTcw, session } = await createAndSignIn(web3Provider, {
+      const signInConfig = {
         address: connectedAddress,
         nonce,
-        autoCreateSpace: true,
+        autoCreateSpace: !LOCAL_VALIDATION,
         tinycloudHosts: TINYCLOUD_HOSTS,
         manifest: withEncryptionDecryptGrant(manifest, connectedAddress),
-      });
+      };
+      const { tcw: signedTcw, session } = LOCAL_VALIDATION
+        ? await (async () => {
+            const localTcw = createTinyCloudWeb(web3Provider, { ...signInConfig, siweConfig: { nonce } });
+            await prepareLocalSignIn(localTcw);
+            await localTcw.clearPersistedSession(connectedAddress);
+            return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
+          })()
+        : await createAndSignIn(web3Provider, signInConfig);
 
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
 
-      setTcw(signedTcw);
+      setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(signedTcw) : signedTcw);
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
@@ -649,12 +661,12 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
-  const showSettings = location.pathname.endsWith("/chat/settings");
+  const showSettings = !LOCAL_VALIDATION && location.pathname.endsWith("/chat/settings");
   // Connectors owns a nested route now (Sources | Library), so the match spans
   // the whole subtree — `endsWith("/chat/connectors")` cannot see
   // /chat/connectors/library, and the sidebar entry and the workspace both key
   // off this one flag.
-  const showConnectors = /\/chat\/connectors(\/|$)/.test(location.pathname);
+  const showConnectors = !LOCAL_VALIDATION && /\/chat\/connectors(\/|$)/.test(location.pathname);
   const connectorsTab = connectorsTabFor(location.pathname);
   // The standalone Meetings page is gone: meetings live under Connectors →
   // Library. Old links (bookmarks, shared URLs, the pre-Library header button)
@@ -728,7 +740,7 @@ export function App() {
     >
       <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
         <div className="flex items-center gap-1.5 sm:gap-3">
-          {isReady && (
+          {isReady && !LOCAL_VALIDATION && (
             <Button
               variant="outline"
               size="sm"
@@ -800,6 +812,13 @@ export function App() {
         </div>
       </header>
 
+      {LOCAL_VALIDATION && (
+        <div role="status" className="border-b px-4 py-2 text-sm">
+          Local validation: chats and memory stay in this tab and reset on reload.
+          Existing account memory, settings and connector sync are disabled.
+        </div>
+      )}
+
       <main className="min-h-0 flex-1">
         {shareToken ? (
           <SharedThreadSurface
@@ -838,10 +857,10 @@ export function App() {
                 showConnectors={showConnectors}
                 pendingMeetings={pendingMeetings}
                 onToggleConnectors={() =>
-                  showConnectors ? onBack() : navigate(CONNECTORS_SOURCES_PATH)
+                  !LOCAL_VALIDATION && (showConnectors ? onBack() : navigate(CONNECTORS_SOURCES_PATH))
                 }
                 onOpenChat={() => navigate("/chat")}
-                connectorsSurface={<ConnectorsPage
+                connectorsSurface={LOCAL_VALIDATION ? null : <ConnectorsPage
                   tcw={tcw}
                   backendUrl={BACKEND_URL}
                   sessionStore={sessionStoreRef.current}
@@ -903,7 +922,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -915,7 +934,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -928,7 +947,7 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && (
         <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}

@@ -60,6 +60,51 @@ afterEach(() => {
 });
 
 describe("tinychat share links", () => {
+  it("rejects sharing a local validation thread before invoking the SDK", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { useLocalThreadStorage, appendMessage } = await import("./threadStore");
+    let sdkCalls = 0;
+    const tcw = useLocalThreadStorage({
+      sql: { db: () => { throw new Error("Production SQL must not be reached"); } },
+      sharing: { generate: async () => { sdkCalls++; throw new Error("SDK sharing must not be reached"); } },
+    } as never);
+    await appendMessage(tcw, "local-share", {
+      message: { id: "local-user", role: "user", content: [{ type: "text", text: "Controlled local chat" }] },
+    } as never);
+
+    await expect(createTinychatShareLink(tcw, "local-share")).rejects.toThrow("Sharing is disabled during local validation");
+    expect(sdkCalls).toBe(0);
+  });
+
+  it("preserves SDK share generation for a normal client", async () => {
+    const { createTinychatShareLink } = await loadShareModule();
+    const { DEFAULT_MODEL, THREADS_SQL_DB_NAME } = await import("./threadStore");
+    const generated: unknown[] = [];
+    const item = { message: { id: "normal-user", role: "user", content: [{ type: "text", text: "Controlled normal chat" }] } };
+    const db = {
+      batch: async () => ({ ok: true, data: { rows: [] } }),
+      query: async (sql: string) => ({ ok: true, data: { rows: sql.includes("FROM threads")
+        ? [["normal-share", "Controlled chat", DEFAULT_MODEL, "2026-09-15", "2026-09-15"]]
+        : [[JSON.stringify(item)]] } }),
+    };
+    const tcw = {
+      sql: { db: () => db },
+      sharing: { generate: async (args: unknown) => {
+        generated.push(args);
+        return { ok: false, error: { message: "Controlled SDK generation reached" } };
+      } },
+    } as never;
+    await expect(createTinychatShareLink(tcw, "normal-share")).rejects.toThrow("Controlled SDK generation reached");
+    expect(generated).toHaveLength(1);
+    expect(generated[0]).toMatchObject({ path: THREADS_SQL_DB_NAME, actions: ["tinycloud.sql/read"] });
+  });
+
+  it("hides the Share button for the same marked local client", async () => {
+    const source = await Bun.file(new URL("../chat/Thread.tsx", import.meta.url)).text();
+    expect(source).toContain("const visible = Boolean(!isLocalThreadStorage(tcw) && threadId && !isEmpty && !isLoading)");
+    expect(source).toContain("if (!share?.visible) return null;");
+  });
+
   it("decodes a tinychat share token", async () => {
     const { decodeTinychatShareToken } = await loadShareModule();
     const decoded = decodeTinychatShareToken(token("2999-01-01T00:00:00.000Z"));

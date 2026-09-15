@@ -12,6 +12,7 @@
 // extra `tool_activity` frames the consumer safely ignores.
 
 import type { Request, RequestHandler, Response } from "express";
+import { createAgentTaskClient } from "../agent-task-client.js";
 import { validateAgentStreamPolicy, type AgentStreamPolicy } from "../agent-stream-policy.js";
 import { TINYCLOUD_MEETING_TOOLS } from "../transcripts/tool-contract.js";
 import { runMeetingTurn, type BufferedMeetingModelResult, type MeetingModelRequest, type MeetingToolContext } from "../transcripts/meeting-turn.js";
@@ -78,6 +79,9 @@ export interface AgentChatConfig {
   fetchImpl?: typeof fetch;
   /** Max tool→result rounds before forcing a final answer (default 3). */
   maxRounds?: number;
+  /** Selected once after admission; task mode takes precedence over legacy controllers. */
+  elizaTasksEnabled?: boolean;
+  elizaTasksAccountAllowed?: (address: string) => boolean;
   /** Dedicated staged rollout gate; disabled unless explicitly configured. */
   meetingContentRetrievalEnabled?: boolean;
   meetingContentAccountAllowed?: (address: string) => boolean;
@@ -1173,6 +1177,7 @@ class AgentStreamOwner {
 
 export function createAgentChatHandler(config: AgentChatConfig): RequestHandler {
   const policy = validateAgentStreamPolicy(config.streamPolicy);
+  const taskClient = createAgentTaskClient({ baseUrl: config.elizaServiceUrl, apiKey: config.elizaServiceSecret, fetch: config.fetchImpl });
   return async (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ error: "unauthenticated", message: "Authentication required" });
@@ -1357,7 +1362,90 @@ export function createAgentChatHandler(config: AgentChatConfig): RequestHandler 
 
     // Resolve synchronous setup before opening the transport.
     const entityId = config.entityIdFor(req.user.address);
+    const taskSelected = config.elizaTasksEnabled === true &&
+      (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     const owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
+    if (taskSelected) {
+      if (!await owner.open()) return;
+      // Bound browser delivery independently of the sole accounting reader.
+      let pendingBytes = 0;
+      let pendingFrames = 0;
+      let streamedContent = false;
+      let delivery = Promise.resolve();
+      const enqueue = (frame: string, optional = false): boolean => {
+        if (!owner.isOpen()) return false;
+        const bytes = Buffer.byteLength(frame);
+        if (pendingBytes + bytes > 128 * 1024 || pendingFrames >= 1024) {
+          if (optional) return true;
+          void owner.fail(new StreamFailure("result_size_limit"));
+          return false;
+        }
+        pendingBytes += bytes; pendingFrames++;
+        delivery = delivery.then(async () => {
+          if (owner.isOpen()) await owner.write(frame);
+        }).catch(error => { void owner.fail(error); }).finally(() => {
+          pendingBytes -= bytes; pendingFrames--;
+        });
+        return true;
+      };
+      const executionId = crypto.randomUUID();
+      const result = await taskClient.run({
+        version: 1, executionId, entityId,
+        ...(roomId !== undefined ? { roomId: roomId as string } : {}),
+        model: { id: resolvedModel, contextWindowTokens: contextLengthFor(resolvedModel) },
+        messages: messages as ChatMsg[],
+        ...(turnContext ? { calendar: turnContext } : {}),
+        allowedTools: ["web_search", "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions"],
+        deadlineAt: Math.floor(Date.now() + owner.remainingMs()),
+      }, {
+        signal: owner.signal,
+        cancelReason: () => owner.signal.reason instanceof StreamFailure && owner.signal.reason.code === "turn_timeout"
+          ? "turn_timeout" : owner.deliveryException ? "transport_failed" : "client_cancelled",
+        onContent: (text: string) => { streamedContent ||= text.length > 0; return enqueue(contentFrame(text)); },
+        onActivity: (event: { tool: string; status: "running" | "done" | "error"; callId: string }) => enqueue(toolActivityFrame(event.tool, event.status, event.callId), true),
+        onDelegationError: (code: string) => { enqueue(delegationErrorFrame(code)); },
+      });
+      // Accounting has settled even if the browser failed or cancelled. Never
+      // erase it because a subsequent content/write/end/enqueue operation fails.
+      if (paywallEnabled() && address) {
+        const credits = creditsFor(rates ?? FALLBACK_RECORDING_RATES, result.usage.promptTokens, result.usage.completionTokens);
+        try { recordUsage(address, TIERS[gatedTier], credits, anchor); }
+        catch { console.error("[agent-chat] task local usage recording failed"); }
+        if (config.flusher && credits > 0) {
+          const now = Date.now();
+          const tierCfg = TIERS[gatedTier];
+          try {
+            config.flusher.enqueue({
+              account: address, model: resolvedModel, credits,
+              window_start: tierCfg.budgetWindow === "week" ? startOfAnchoredWeek(anchor ?? now, now) : startOfUtcDay(now),
+              window_kind: tierCfg.budgetWindow === "week" ? "anchored_week" : "utc_day",
+              prompt_tokens: result.usage.promptTokens, completion_tokens: result.usage.completionTokens,
+              occurred_at: now, signed_token_count: null,
+            });
+          } catch { console.error("[agent-chat] task usage enqueue failed"); }
+        }
+      }
+      console.info("[agent-chat] task accounting", {
+        executionId, model: resolvedModel, complete: result.observationComplete,
+        outcome: result.final?.outcome ?? result.errorCode ?? "cancelled",
+        ...(result.final?.code || result.errorCode ? { code: result.final?.code ?? result.errorCode } : {}),
+        startedAttempts: result.usage.startedAttempts, reportedAttempts: result.usage.reportedAttempts,
+        finalizedAttempts: result.usage.finalizedAttempts,
+      });
+      const final = result.final;
+      if (!result.cancelled && !result.errorCode && final && ["success", "partial", "clarification"].includes(final.outcome)) {
+        const compositeAnswer = streamedContent && final.answer?.delivery === "buffered";
+        if (final.answer?.delivery === "buffered") enqueue(contentFrame((compositeAnswer ? "\n\n" : "") + final.answer.text!));
+        await delivery;
+        await owner.complete({ promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens,
+          completionId: final.answerIsProviderVerbatim && !compositeAnswer ? final.finalProviderCompletionId ?? "" : "" });
+      } else {
+        const code = result.errorCode ?? final?.code;
+        const safeCodes: StreamErrorCode[] = ["upstream_failed", "upstream_incomplete", "agent_failed", "routing_mismatch", "result_size_limit", "turn_timeout"];
+        await owner.fail(new StreamFailure(safeCodes.includes(code as StreamErrorCode) ? code as StreamErrorCode : "agent_failed"));
+      }
+      return;
+    }
     let orchestrateResult: OrchestrateResult | null = null;
     if (await owner.open()) {
       try {

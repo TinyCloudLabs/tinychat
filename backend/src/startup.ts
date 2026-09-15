@@ -3,6 +3,8 @@ import {
   type BackendIdentity,
   type BackendIdentityConfig,
 } from "@tinyboilerplate/server";
+import { TinyCloudNode } from "@tinycloud/node-sdk";
+import { privateKeyToAccount } from "viem/accounts";
 export const TINYCHAT_BACKEND_KV_PREFIX = "ops.tinychat.backend";
 
 type TinychatBackendIdentityInput = Pick<
@@ -21,8 +23,16 @@ export function tinychatBackendIdentityConfig(
 }
 
 export async function createTinychatBackendIdentity(
-  config: TinychatBackendIdentityInput,
+  config: TinychatBackendIdentityInput & { localValidation?: boolean },
 ): Promise<BackendIdentity> {
+  if (config.localValidation) {
+    // Chat authentication needs a signing identity, not backend-owned storage.
+    // Leave this client unactivated; the local route guard blocks storage users.
+    return {
+      node: new TinyCloudNode({ ...tinychatBackendIdentityConfig(config), autoCreateSpace: false }),
+      did: `did:pkh:eip155:1:${privateKeyToAccount(config.privateKey as `0x${string}`).address.toLowerCase()}`,
+    };
+  }
   const identity = await createBackendIdentity(
     tinychatBackendIdentityConfig(config),
   );
