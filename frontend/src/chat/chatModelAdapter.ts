@@ -1,3 +1,4 @@
+import type { PrivateAgentAccess } from "./useAgentEnablement";
 // ── ChatModelAdapter factory (pure; no React hooks) ─────────────────
 //
 // Extracted from runtime.tsx so it can be tested without pulling in
@@ -117,6 +118,7 @@ export interface AdapterDeps {
   backendUrl: string;
   selection: ModelSelectionCoordinator;
   agentEnabledRef: React.MutableRefObject<boolean>;
+  privateAccessRef: React.MutableRefObject<PrivateAgentAccess>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /**
@@ -235,7 +237,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // Separate the memory system block (kept caller-side, prepended first so it
       // lands at the least-context-rotted position) from the conversation
       // messages (which compaction may fold into a summary checkpoint).
-      const systemContent = context?.system;
+      const privateAccess = deps.privateAccessRef.current;
+      const systemContent = privateAccess.active ? context?.system : undefined;
       const memoryBlock: ChatMessage | null =
         typeof systemContent === "string" && systemContent.length > 0
           ? { role: "system", content: systemContent }
@@ -269,6 +272,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const modelId = origin.model;
       const agentEnabled = deps.agentEnabledRef.current;
       const assertTurn = () => {
+        if (deps.privateAccessRef.current !== privateAccess) throw new Error("Private agent access changed. Send a new message.");
         deps.selection.assertActive(origin);
         if (abortSignal.aborted) throw new Error("Send cancelled.");
       };
@@ -280,6 +284,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       );
       try {
 
+      assertTurn();
       // Meeting retrieval is a single, ephemeral preflight. It must finish
       // before any checkpoint/storage compaction work, and its raw evidence
       // remains only in this local outcome and the assembled inference payload.
@@ -289,7 +294,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // The agent receives the ordinary question and performs any transcript read
       // through its separately delegated tool.  Keep the existing retriever only
       // for the non-agent fallback path.
-      if (!agentEnabled && deps.meetingRetriever && threadId && latestQuestion !== undefined) {
+      if (privateAccess.active && !agentEnabled && deps.meetingRetriever && threadId && latestQuestion !== undefined) {
         let meetingOutcome: MeetingRetrievalOutcome;
         try {
           meetingOutcome = await deps.meetingRetriever.retrieve({
@@ -300,6 +305,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         } catch {
           meetingOutcome = { status: "storage-error", partial: true };
         }
+
+        assertTurn();
 
         // Every applicable meeting outcome (including a deterministic reply)
         // must skip the post-append memory pipeline. The flag is keyed only by
@@ -451,7 +458,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
                 ? (a) => setToolActivity(unstable_assistantMessageId, a)
                 : undefined,
             })) {
-              deps.selection.assertActive(origin);
+              assertTurn();
               yield { content: [{ type: "text", text }] };
             }
           } finally {
@@ -471,7 +478,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
             onUsage,
             onCompletionId,
           })) {
-            deps.selection.assertActive(origin);
+            assertTurn();
             yield { content: [{ type: "text", text }] };
           }
         }

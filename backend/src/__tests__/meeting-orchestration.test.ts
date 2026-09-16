@@ -212,7 +212,7 @@ test.each([
   ["fetch rejection", () => { throw new Error(failureSentinel); }, "upstream_failed", 0],
   ["provider error", () => new Response(`data: ${JSON.stringify({ error: { message: failureSentinel } })}\n\n`), "upstream_failed", 0],
   ["reader rejection", () => new Response(new ReadableStream({ pull(c) { c.error(new Error(failureSentinel)); } })), "upstream_failed", 0],
-  ["EOF", () => new Response('data: {"usage":{"prompt_tokens":99}}\n\n'), "upstream_incomplete", 0],
+  ["EOF", () => new Response('data: {"usage":{"prompt_tokens":99}}\n\n'), "upstream_incomplete", 99],
   ["malformed SSE", () => new Response('data: {broken\n\n'), "upstream_incomplete", 0],
   ["malformed tool envelope", () => new Response('data: {"choices":[{"delta":{"tool_calls":{}},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
   ["malformed choices", () => new Response('data: {"choices":{}}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
@@ -221,13 +221,13 @@ test.each([
   ["malformed delta", () => new Response('data: {"choices":[{"delta":"invalid","finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
   ["malformed content", () => new Response('data: {"choices":[{"delta":{"content":42},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 0],
   ["missing valid finish", () => new Response('data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\ndata: [DONE]\n\n'), "upstream_incomplete", 5],
-  ["provider output overflow", () => modelResponse(failureSentinel.repeat(600)), "result_size_limit", 0],
+  ["provider output overflow", () => modelResponse(failureSentinel.repeat(600)), "result_size_limit", 5],
 ] as const)("interpretation preserves bounded failure: %s", async (_name, response, code, promptTokens) => {
   let requests = 0; const traces: unknown[] = [], frames: string[] = [];
   const cfg = config((async () => { requests++; return response(); }) as typeof fetch);
   cfg.meetingTrace = trace => { traces.push(trace); };
   const result = await orchestrateToolCalling({ config: cfg, model: "test-model", messages: [{ role: "user", content: "Summarize it" }], entityId: "entity", write: frame => { frames.push(frame); } });
-  expect(result).toEqual({ errorCode: code, promptTokens, completionTokens: promptTokens ? 2 : 0, completionId: "" });
+  expect(result).toEqual({ errorCode: code, promptTokens, completionTokens: promptTokens && _name !== "EOF" ? 2 : 0, completionId: "" });
   expect(requests).toBe(1); expect(traces).toHaveLength(1);
   expect(traces[0]).toMatchObject({ terminal: code, tools: [] });
   expect(JSON.stringify([traces, frames])).not.toContain(failureSentinel);

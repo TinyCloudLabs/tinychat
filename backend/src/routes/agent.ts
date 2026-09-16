@@ -66,12 +66,35 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   const fetchImpl = config.fetchImpl ?? fetch;
   const deserialize = config.deserializeDelegationSet ?? deserializePortableDelegationSet;
 
+  // Each running turn belongs to one account generation. Invalidation is local
+  // and synchronous; the service remains the authority for private admission.
+  const turns = new Map<string, { current: boolean; callbacks: Set<() => void> }>();
+  const invalidate = (entityId: string) => {
+    const entry = turns.get(entityId);
+    if (!entry) return;
+    entry.current = false;
+    turns.delete(entityId);
+    for (const callback of entry.callbacks) callback();
+  };
   if (config.chat) {
-    router.post("/chat", createAgentChatHandler(config.chat));
+    router.post("/chat", createAgentChatHandler(config.chat, {
+      capture(entityId) {
+        const entry = turns.get(entityId) ?? { current: true, callbacks: new Set<() => void>() };
+        turns.set(entityId, entry);
+        return { isCurrent: () => entry.current, onInvalidate(callback) {
+          entry.callbacks.add(callback);
+          return () => { entry.callbacks.delete(callback); if (!entry.callbacks.size && turns.get(entityId) === entry) turns.delete(entityId); };
+        } };
+      },
+      async status(entityId) {
+        const result = await callEliza("GET", `/sessions/${encodeURIComponent(entityId)}`);
+        return result.status === 200 ? result.body : {};
+      },
+    }));
   }
 
   async function callEliza(
-    method: "POST" | "GET",
+    method: "POST" | "GET" | "DELETE",
     path: string,
     payload?: unknown,
   ): Promise<ElizaResponse> {
@@ -164,11 +187,21 @@ export function createAgentRouter(config: AgentRoutesConfig) {
     // Routing key the service registers and later routes on. Lowercase seed
     // (entity-id.ts) keeps checksummed and lowercase addresses aligned.
     const entityId = addressToEntityId(user.address, agentId);
-
+    const revision = req.body?.revision;
+    if (typeof revision !== "string" || !revision) {
+      res.status(409).json({ error: "access_revision_required" });
+      return;
+    }
+    if (!isV2) {
+      res.status(409).json({ error: "bundle_required" });
+      return;
+    }
+    invalidate(entityId);
     try {
       const eliza = await callEliza("POST", "/sessions", {
         agentId,
         entityId,
+        revision,
         ...(isV2
           ? { session: { ...session, ...(roomId ? { roomId } : {}) } }
           : { serializedDelegation: serialized, ...(roomId ? { roomId } : {}) }),
@@ -178,6 +211,23 @@ export function createAgentRouter(config: AgentRoutesConfig) {
       res.status(eliza.status).json(eliza.body);
     } catch (error) {
       console.error("[agent] eliza-service /sessions unreachable:", error);
+      res.status(502).json({ error: "eliza_unreachable" });
+    }
+  });
+
+  router.delete("/session", async (req: Request, res: Response) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+    const entityId = addressToEntityId(user.address, agentId);
+    invalidate(entityId);
+    try {
+      const eliza = await callEliza("DELETE", `/sessions/${encodeURIComponent(entityId)}`);
+      if (eliza.status === 200 && (eliza.body.status !== "none" || eliza.body.state !== "disconnected" || typeof eliza.body.revision !== "string" || !eliza.body.revision)) {
+        res.status(502).json({ error: "disconnect_unconfirmed" });
+        return;
+      }
+      res.status(eliza.status).json(eliza.body);
+    } catch {
       res.status(502).json({ error: "eliza_unreachable" });
     }
   });

@@ -31,7 +31,7 @@ import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
-import { useAgentEnablement } from "./chat/useAgentEnablement";
+import { AgentAccessProvider, useAgentAccess } from "./chat/useAgentEnablement";
 import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
@@ -831,7 +831,8 @@ export function App() {
             }}
           />
         ) : isReady && tcw ? (
-          <>
+          <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
+            appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
             {/* ChatWorkspace stays mounted while an app surface is active —
                 visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
@@ -896,7 +897,7 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               />
             )}
-          </>
+          </AgentAccessProvider>
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
         )}
@@ -1244,10 +1245,11 @@ function ChatWorkspace(props: {
   onOpenChat: () => void;
   connectorsSurface: React.ReactNode;
 }) {
-  // C2: stable ref written by the per-thread Provider so the adapter knows roomId.
-  const activeThreadIdRef = useRef<string | null>(null);
-  // C3: stable ref read by the adapter at request time to branch agent vs plain relay.
-  const agentEnabledRef = useRef(false);
+  const {
+    agentEnabledRef, activeThreadIdRef, privateAccessRef,
+    capability, enableError, enabling, onEnable, reconnectReason,
+    onDelegationError, silentlyEnabled,
+  } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
@@ -1260,29 +1262,8 @@ function ChatWorkspace(props: {
         sessionStore: props.sessionStore,
       }),
     }),
-    [props.tcw, props.sessionStore],
+    [props.tcw, props.sessionStore, privateAccessRef.current],
   );
-
-  // C3: capability probe + affordance state. This must be created before the
-  // runtime deps so streamed delegation failures can drive the reconnect UI.
-  const {
-    capability,
-    enableError,
-    enabling,
-    onEnable,
-    reconnectReason,
-    onDelegationError,
-    silentlyEnabled,
-  } = useAgentEnablement({
-    backendUrl: BACKEND_URL,
-    sessionStore: props.sessionStore,
-    tcw: props.tcw,
-    agentEnabledRef,
-    activeThreadIdRef,
-    appName: APP_NAME,
-    openkeyHost: OPENKEY_HOST,
-    tinycloudHosts: props.tcw.hosts,
-  });
 
   const deps = useMemo(
     () => ({
@@ -1296,6 +1277,7 @@ function ChatWorkspace(props: {
       onMemoryUpdated: props.onMemoryUpdated,
       activeThreadIdRef,
       agentEnabledRef,
+      privateAccessRef,
       onAgentDelegationError: onDelegationError,
       meetingRetriever,
       meetingMessageRegistry,

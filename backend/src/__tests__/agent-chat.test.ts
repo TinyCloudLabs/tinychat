@@ -1468,10 +1468,10 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
     ["invalid-plan", "interpretation_failed", true],
     ["incomplete-finish", "upstream_incomplete", true],
     ["provider-error", "upstream_failed", false],
-    ["incomplete-read", "upstream_incomplete", false],
+    ["incomplete-read", "upstream_incomplete", true],
     ["tool-overflow", "result_size_limit", true],
   ] as const) {
-    it(`returns one terminal for ${failure} and accounts only completed rounds exactly once`, async () => {
+    it(`returns one terminal for ${failure} and accounts observed usage exactly once`, async () => {
       process.env.PAYWALL_ENABLED = "true";
       process.env.STRIPE_SECRET_KEY = "sk_test";
       _setStripeClient(mockStripe(null));
@@ -1599,7 +1599,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
   });
 
   for (const failure of ["content", "id", "usage", "done", "end"] as const) {
-    it(`keeps completed usage ineligible when ${failure} delivery throws`, async () => {
+    it(`retains observed usage when ${failure} delivery throws`, async () => {
       process.env.PAYWALL_ENABLED = "true";
       process.env.STRIPE_SECRET_KEY = "sk_test";
       _setStripeClient(mockStripe(null));
@@ -1614,7 +1614,8 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
         }) as typeof res.write;
         if (failure === "end") res.end = (() => { throw new Error("synthetic end exception"); }) as typeof res.end;
         await createAgentChatHandler(baseConfig(makeCompletionFetch()))(req, res);
-        expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
+        if (failure === "content") expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
+        else expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
         expect(res.destroyed).toBe(true);
       } finally { restore(); }
     });
@@ -1665,8 +1666,7 @@ describe("createAgentChatHandler — A4 paywall + A5 recording", () => {
       try {
         const { req, res } = makeReqRes();
         await createAgentChatHandler(baseConfig(fetchImpl))(req, res);
-        if (secondRound === "exception") expect(getUsage(ADDR, TIERS.free, null).used).toBe(0);
-        else expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
+        expect(getUsage(ADDR, TIERS.free, null).used).toBeGreaterThan(0);
         expect(res.chunks.join("")).toContain('"stream_error":{"code":"upstream_failed"}');
       } finally { restore(); }
     });

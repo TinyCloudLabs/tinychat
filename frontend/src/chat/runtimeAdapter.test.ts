@@ -69,6 +69,7 @@ function makeDeps(agentEnabled: boolean, activeThreadId: string | null = null, m
     } as AdapterDeps["sessionStore"],
     selection,
     agentEnabledRef: { current: agentEnabled },
+    privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
     meetingMessageRegistry: createMeetingMessageRegistry(),
   };
 }

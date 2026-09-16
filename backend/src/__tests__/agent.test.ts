@@ -151,19 +151,19 @@ async function postSession(app: express.Express, session: unknown) {
   return request(app, "/api/agent/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session }),
+    body: JSON.stringify({ session, revision: "fixture-revision" }),
   });
 }
 
 describe("agent delegation courier", () => {
-  it("couriers a valid delegation to eliza /sessions with the derived entityId + credential", async () => {
+  it("couriers a valid bundle to eliza /sessions with the derived entityId + credential", async () => {
     const { app, calls } = createApp();
-    const serialized = validDelegation();
+    const session = v2Session();
 
     const res = await request(app, "/api/agent/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized, roomId: "thread-1" }),
+      body: JSON.stringify({ session, revision: "fixture-revision", roomId: "thread-1" }),
     });
 
     expect(res.status).toBe(200);
@@ -176,8 +176,8 @@ describe("agent delegation courier", () => {
     expect(calls[0].body).toEqual({
       agentId: TINYCHAT_AGENT_ID,
       entityId: addressToEntityId(TEST_ADDRESS, TINYCHAT_AGENT_ID),
-      serializedDelegation: serialized,
-      roomId: "thread-1",
+      session: { ...session, roomId: "thread-1" },
+      revision: "fixture-revision",
     });
   });
 
@@ -224,7 +224,7 @@ describe("agent delegation courier", () => {
     const res = await request(app, "/api/agent/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: validDelegation() }),
+      body: JSON.stringify({ session: v2Session(), revision: "fixture-revision" }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "delegation_expired" });
@@ -321,7 +321,7 @@ describe("agent delegation courier", () => {
     const res = await request(app, "/api/agent/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serialized: validDelegation() }),
+      body: JSON.stringify({ session: v2Session(), revision: "fixture-revision" }),
     });
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "eliza_unreachable" });
@@ -336,5 +336,35 @@ describe("agent delegation courier", () => {
       `https://eliza.test/sessions/${encodeURIComponent(addressToEntityId(TEST_ADDRESS, TINYCHAT_AGENT_ID))}`,
     );
     expect(calls[0].method).toBe("GET");
+  });
+});
+
+describe("bundled access lifecycle courier", () => {
+  it("rejects a revisionless legacy browser after identity validation", async () => {
+    const { app, calls } = createApp();
+    const res = await request(app, "/api/agent/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ serialized: validDelegation() }) });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "access_revision_required" });
+    expect(calls).toHaveLength(0);
+  });
+  it("couriers the exact pre-ceremony revision with both grants", async () => {
+    const { app, calls } = createApp();
+    const session = v2Session();
+    const res = await request(app, "/api/agent/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session, revision: "instance:before-mint" }) });
+    expect(res.status).toBe(200);
+    expect(calls[0].body).toMatchObject({ session, revision: "instance:before-mint" });
+  });
+  it("deletes only the authenticated account's agent session", async () => {
+    const { app, calls } = createApp({ elizaBody: { status: "none", state: "disconnected", revision: "after" } });
+    const res = await request(app, "/api/agent/session", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entityId: "victim", agentId: "other" }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "none", state: "disconnected", revision: "after" });
+    expect(calls).toEqual([{ url: `https://eliza.test/sessions/${addressToEntityId(TEST_ADDRESS, TINYCHAT_AGENT_ID)}`, method: "DELETE", authorization: "Bearer svc-secret", body: undefined }]);
+  });
+  it("does not acknowledge disconnect without service confirmation", async () => {
+    const { app } = createApp({ elizaThrows: true });
+    const res = await request(app, "/api/agent/session", { method: "DELETE" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "eliza_unreachable" });
   });
 });

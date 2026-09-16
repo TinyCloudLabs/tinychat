@@ -112,6 +112,7 @@ for (const composite of [false, true]) {
     const adapter = createChatModelAdapter({
       backendUrl: "https://synthetic.invalid", sessionStore: { getToken: () => "controlled-token" } as never,
       selection, agentEnabledRef: { current: true }, meetingMessageRegistry: registry,
+      privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
     });
     const runtime = new LocalThreadRuntimeCore({ getModelContext: () => ({ system: renderMemoryBlock(MEMORY_TEMPLATE) }) }, {
       adapters: { chatModel: adapter, history: { ...history, load: async () => ({ messages: [] }) } },

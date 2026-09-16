@@ -58,6 +58,7 @@ test("installed composer recovers from agent failures with no unhandled rejectio
         const adapter = createChatModelAdapter({
           sessionStore: { getToken: () => "synthetic-token" }, backendUrl: "https://synthetic.invalid",
           agentEnabledRef: { current: true }, meetingMessageRegistry: createMeetingMessageRegistry(),
+          privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
           selection: { captureCancel: () => () => {}, beginActiveTurn: async () => origin,
             waitForAppend: async () => {}, assertActive: () => {}, setRunning: (_origin, value) => running.push(value) },
         });

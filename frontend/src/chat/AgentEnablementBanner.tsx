@@ -5,7 +5,7 @@
 // Provider-agnostic copy: no model/vendor names.
 
 import type { FC } from "react";
-import type { AgentCapability } from "./useAgentEnablement";
+import type { AgentCapability, UseAgentEnablementResult } from "./useAgentEnablement";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 
 interface AgentEnablementBannerProps {
@@ -46,7 +46,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
   if (capability !== "available") return null;
 
   const reconnecting = reconnectReason !== null;
-  const action = reconnecting ? "Reconnect" : "Enable";
+  const action = reconnecting ? "Reconnect agent" : "Connect agent";
 
   return (
     <div
@@ -66,7 +66,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
               disabled={enabling}
               className="shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {enabling ? `${reconnecting ? "Reconnecting" : "Enabling"}…` : "Retry"}
+              {enabling ? `${reconnecting ? "Reconnecting" : "Connecting"}…` : "Retry"}
             </button>
           </>
         ) : (
@@ -77,7 +77,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                   ? reconnectReason === "delegation_expired"
                     ? "Private agent access expired"
                     : "Private agent access needs reconnecting"
-                  : "Enable agent memory & tools"}
+                  : "Connect private agent access"}
               </span>
               <span className="text-[11px] leading-none text-muted-foreground/70">
                 {reconnecting
@@ -91,7 +91,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
               disabled={enabling}
               className="shrink-0 rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {enabling ? `${reconnecting ? "Reconnecting" : "Enabling"}…` : action}
+              {enabling ? `${reconnecting ? "Reconnecting" : "Connecting"}…` : action}
             </button>
           </>
         )}
@@ -99,3 +99,31 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
     </div>
   );
 };
+
+
+/** Settings retains these controls even while access is already connected. */
+export function AgentAccessControls(props: UseAgentEnablementResult) {
+  const connected = props.capability === "enabled";
+  const unknown = props.status === null;
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">Controls private agent memory and meeting access. Public web search stays available.</p>
+      <p role="status" className="text-xs font-medium">
+        {props.disconnecting ? "Disconnecting…" : connected ? "Connected" : unknown ? "Access status unknown" : "Disconnected"}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => void props.onEnable()}
+          disabled={props.enabling || props.disconnecting || props.capability === "probing"}
+          className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">
+          {props.enabling ? "Connecting…" : connected ? "Reconnect agent" : "Connect agent"}
+        </button>
+        {(connected || props.disconnecting || unknown) && <button type="button" onClick={() => void props.onDisconnect()}
+          disabled={props.disconnecting || props.capability === "probing"}
+          className="rounded-md border border-border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50">
+          {props.disconnecting ? "Disconnecting…" : unknown ? "Retry disconnect" : "Disconnect agent"}
+        </button>}
+      </div>
+      {props.enableError && <p role="alert" className="text-xs text-destructive">{props.enableError}</p>}
+    </div>
+  );
+}

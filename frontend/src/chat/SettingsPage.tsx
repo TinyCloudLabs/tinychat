@@ -1,3 +1,5 @@
+import { useAgentAccess } from "./useAgentEnablement";
+import { AgentAccessControls } from "./AgentEnablementBanner";
 import {
   ArrowLeftIcon,
   BrainIcon,
@@ -62,6 +64,7 @@ export function SettingsPage({
   backendUrl,
   sessionStore,
 }: SettingsPageProps) {
+  const agentAccess = useAgentAccess();
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
   const pct = hasLimit
@@ -122,6 +125,9 @@ export function SettingsPage({
                 <span>{signingOut ? "Signing out…" : "Sign out"}</span>
               </Button>
             </div>
+          </SectionCard>
+          <SectionCard icon={ShieldCheckIcon} title="Agent access">
+            <AgentAccessControls {...agentAccess} />
           </SectionCard>
           <SectionCard icon={BrainIcon} title="Memory">
             <MemoryPanel

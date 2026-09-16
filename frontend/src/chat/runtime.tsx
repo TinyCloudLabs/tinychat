@@ -42,7 +42,8 @@ import {
   type ThreadDoc,
 } from "../lib/threadStore";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
-import { renderMemoryBlock, runExtraction } from "../lib/memory";
+import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
+import type { PrivateAgentAccess } from "./useAgentEnablement";
 import { pickExtractionModel } from "../lib/extractionModel";
 import {
   aggregateTurnCredits,
@@ -105,6 +106,7 @@ export interface ChatRuntimeDeps {
    * Read by the adapter at request time to branch streamAgentChat vs streamChat.
    */
   agentEnabledRef: React.MutableRefObject<boolean>;
+  privateAccessRef: React.MutableRefObject<PrivateAgentAccess>;
   /** Surfaces a streamed private-tool delegation failure to reconnect UI. */
   onAgentDelegationError?: (code: AgentDelegationErrorCode) => void;
   /** One mounted, browser-only meeting retriever with ephemeral thread state. */
@@ -313,6 +315,7 @@ export function createHistoryAdapter(
     exchange: ChatMessage[],
     turn: { assistantMessageId?: string; userMessageId?: string },
     origin: TurnOrigin,
+    access?: PrivateAgentAccess,
   ) => void,
   /**
    * Computes the input/output split receipt for an assistant turn, applies it
@@ -327,6 +330,7 @@ export function createHistoryAdapter(
     userMessageId?: string,
   ) => Promise<PersistedReceipt | null>,
   meetingMessageRegistry?: MeetingMessageRegistry,
+  privateAccessRef?: React.MutableRefObject<PrivateAgentAccess>,
 ): ThreadHistoryAdapter {
   // Per-thread rolling 2-item ring of the most recent user/assistant exchange.
   // Owned by the adapter (one ring per active thread instance) so a thread
@@ -336,6 +340,7 @@ export function createHistoryAdapter(
   // message id below to register the split receipt (input vs. output share).
   let lastUserMessageId: string | undefined;
   let lastOrigin: TurnOrigin | undefined;
+  let lastPrivateAccess: PrivateAgentAccess | undefined;
   return {
     async load(): Promise<ExportedMessageRepository> {
       // Brand-new threads have nothing persisted, but the runtime still fires
@@ -383,12 +388,14 @@ export function createHistoryAdapter(
       // code below the await can run many seconds late or never. Verified live:
       // the post-await path never ran while the stream + ids were all ready.
       if (role === "user") {
+        lastPrivateAccess = privateAccessRef?.current;
         lastUserMessageId = typeof id === "string" ? id : undefined;
         if (!lastUserMessageId) throw new Error("Cannot persist a user message without an id.");
         lastOrigin = await selection.beginTurn(threadId, lastUserMessageId);
         selection.assertActive(lastOrigin);
       }
       const origin = lastOrigin;
+      const turnPrivateAccess = lastPrivateAccess;
       // assistant-ui also appends its error reply after a blocked/cancelled
       // run. Such a reply must not create the missing first row or extract.
       if (role === "assistant" && (!origin || !selection.isAppendSaved(origin))) return;
@@ -456,6 +463,7 @@ export function createHistoryAdapter(
       const text = storedItemText(item);
       if (role === "user" && text) userTexts.set(origin.turnId, text);
       if (role === "assistant" && !meetingTurn) {
+        if (privateAccessRef && (!turnPrivateAccess?.active || privateAccessRef.current !== turnPrivateAccess || origin.signal.aborted)) return;
         const userText = userTexts.get(origin.turnId);
         const exchange: ChatMessage[] = [
           ...(userText ? [{ role: "user" as const, content: userText }] : []),
@@ -464,7 +472,7 @@ export function createHistoryAdapter(
         onAssistantTurn(exchange, {
           assistantMessageId: typeof id === "string" ? id : undefined,
           userMessageId: origin.turnId,
-        }, origin);
+        }, origin, turnPrivateAccess);
       }
     },
   };
@@ -498,13 +506,15 @@ function useThreadListAdapter(
       exchange: ChatMessage[],
       turn: { assistantMessageId?: string; userMessageId?: string },
       origin: TurnOrigin,
+      access?: PrivateAgentAccess,
     ) => {
       const d = depsRef.current;
+      if (!access?.active || d.privateAccessRef.current !== access || d.tcw !== origin.tcw || origin.signal.aborted) return;
       const extractionModel = pickExtractionModel(origin.model);
       // One fold per background call — a double-fire guard so the meter/badge
       // can never count this extraction twice (edge case c).
       let folded = false;
-      void runExtraction(exchange, {
+      void runPrivateMemoryExtraction(d.privateAccessRef, exchange, {
         complete: (messages, opts) =>
           completeChat({
             backendUrl: d.backendUrl,
@@ -526,13 +536,13 @@ function useThreadListAdapter(
         },
         setDoc: async (next) => {
           await setMemory(origin.tcw, next);
-          if (depsRef.current.tcw === origin.tcw) {
+          if (depsRef.current.tcw === origin.tcw && d.privateAccessRef.current === access) {
             depsRef.current.memoryRef.current = next;
             depsRef.current.onMemoryUpdated?.(next);
           }
         },
         writeGen: memoryWriteGen,
-      });
+      }, () => depsRef.current.tcw === origin.tcw && !origin.signal.aborted);
     },
     [],
   );
@@ -616,6 +626,7 @@ function useThreadListAdapter(
             onAssistantTurn,
             computeReceipt,
             depsRef.current.meetingMessageRegistry,
+            depsRef.current.privateAccessRef,
           ),
         [activeTcw, threadId, onAssistantTurn, computeReceipt],
       );
@@ -735,8 +746,8 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
 
   const chatModel = useMemo(
     () => createChatModelAdapter({ ...depsRef.current, selection }),
-    // The adapter reads everything off depsRef at call time, so it is stable.
-    [selection],
+    // Access changes replace the ephemeral browser meeting selection state.
+    [selection, deps.meetingRetriever],
   );
 
   const runtime = useRemoteThreadListRuntime({
@@ -819,7 +830,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   // extracted doc shows up on the NEXT turn without re-mounting anything.
   useEffect(() => {
     return runtime.registerModelContextProvider({
-      getModelContext: () => ({ system: renderMemoryBlock(depsRef.current.memoryRef.current) }),
+      getModelContext: () => ({ system: privateMemoryContext(depsRef.current.privateAccessRef, depsRef.current.memoryRef.current) }),
     });
   }, [runtime]);
 
@@ -831,10 +842,12 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
   // so the stale SQL value can't roll back a newer ref.
   useEffect(() => {
     let cancelled = false;
+    const access = deps.privateAccessRef.current;
+    if (!access.active) return;
     const startGen = memoryWriteGen();
     (async () => {
       const sqlDoc = await getMemory(deps.tcw).catch(() => null);
-      if (cancelled) return;
+      if (cancelled || deps.privateAccessRef.current !== access) return;
       if (
         sqlDoc !== null
         && sqlDoc !== deps.memoryRef.current
@@ -850,7 +863,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): AssistantRuntime {
     // Only the space (tcw) changing should trigger a re-reconcile; the ref
     // and callback are read off `deps` at call time and are stable for a
     // given space.
-  }, [deps.tcw]);
+  }, [deps.tcw, deps.privateAccessRef.current]);
 
   return runtime;
 }
