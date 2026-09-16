@@ -100,7 +100,6 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   ): Promise<ElizaResponse> {
     const res = await fetchImpl(`${config.elizaServiceUrl}${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${config.elizaServiceSecret}`,
