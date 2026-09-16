@@ -400,6 +400,7 @@ describe("seeded meeting-chat browser integration", () => {
           setRunning: () => {},
         } as never,
         agentEnabledRef: { current: false } as never,
+        privateAccessRef: { current: { active: true, revision: "fixture", generation: 0 } },
         meetingRetriever: fixture.retriever,
         meetingMessageRegistry,
         getCheckpoint: async () => null,

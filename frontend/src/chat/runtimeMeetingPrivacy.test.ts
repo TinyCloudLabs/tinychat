@@ -130,6 +130,7 @@ describe("meeting-turn runtime privacy boundary", () => {
         sessionStore: { getToken: () => "token", isExpired: () => false } as never,
         selection: selection(),
         agentEnabledRef: { current: false } as never,
+        privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
         meetingRetriever: {
           retrieve: async () => ({
             status: "grounded",
@@ -199,6 +200,7 @@ describe("meeting-turn runtime privacy boundary", () => {
           sessionStore: { getToken: () => "token", isExpired: () => false } as never,
           selection: selection(),
           agentEnabledRef: { current: agentEnabled } as never,
+          privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
           meetingRetriever: { retrieve: async () => ({ status: "not-applicable" as const }) },
           meetingMessageRegistry,
           getCheckpoint: async () => null,
@@ -237,6 +239,7 @@ describe("meeting-turn runtime privacy boundary", () => {
         // Deterministic browser retrieval outcomes exist only in fallback mode;
         // delegated turns always reach the agent tool path.
         agentEnabledRef: { current: false } as never,
+        privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
         meetingRetriever: { retrieve: async () => ({
           status: "no-content" as const,
           meeting: {
@@ -276,4 +279,33 @@ describe("meeting-turn runtime privacy boundary", () => {
     expect(JSON.stringify(sqlBatches)).not.toContain("sourceId");
     expect(JSON.stringify(sqlBatches)).not.toContain("provenance");
   });
+});
+
+test("assistant persistence cannot start extraction from a turn admitted before reconnect", async () => {
+  (globalThis as any).HTMLElement ??= class {};
+  (globalThis as any).customElements ??= { define: () => {}, get: () => undefined };
+  const { createHistoryAdapter } = await import("./runtime");
+  const captured: unknown[][] = [];
+  const tcw = historyTcw(captured);
+  const access = { current: { active: true, revision: "old", generation: 1 } };
+  const origin = { tcw, threadId: "privacy-race", space: "fixture", model: "model", turnId: "u", signal: new AbortController().signal, activation: 1 };
+  const coordinator = { ...(selection("privacy-race") as any), beginTurn: async () => origin };
+  let extracted = 0;
+  let resume!: () => void; let entered!: () => void;
+  const ready = new Promise<void>(done => { entered = done; });
+  const db = (tcw as any).sql.db();
+  let hold = false;
+  db.batch = async (ops: unknown[]) => {
+    captured.push(ops);
+    if (hold) { entered(); await new Promise<void>(done => { resume = done; }); }
+    return { ok: true, data: { rows: [] } };
+  };
+  const history = createHistoryAdapter(tcw, "privacy-race", coordinator, () => { extracted++; }, undefined, undefined, access);
+  await history.append({ message: { id: "u", role: "user", content: [{ type: "text", text: "Private original exchange" }] } } as never);
+  hold = true;
+  const pending = history.append({ message: { id: "a", role: "assistant", content: [{ type: "text", text: "Old reply" }] } } as never);
+  await ready;
+  access.current = { active: true, revision: "new", generation: 3 };
+  resume(); await pending;
+  expect(extracted).toBe(0);
 });

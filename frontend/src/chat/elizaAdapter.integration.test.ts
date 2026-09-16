@@ -74,9 +74,17 @@ async function setup(provider: (input: string, init?: RequestInit) => Promise<Re
   let backendProviderCalls = 0;
   let nativeRuntimeCalls = 0;
   const forbiddenNativeRuntime = async () => { nativeRuntimeCalls++; throw new Error("Ordinary task attempted native runtime or memory"); };
+  const sessions = new SessionStore();
+  const scope = { appId: "tinychat", agentId: TINYCHAT_AGENT_ID };
+  const entityId = addressToEntityId(ADDRESS, TINYCHAT_AGENT_ID);
+  if (runtimeFor) {
+    const lease = sessions.reserve(scope, entityId)!;
+    // Controlled native-tool fixture: activation itself is covered by session suites.
+    sessions.commit(scope, entityId, lease, { agentId: TINYCHAT_AGENT_ID, serializedDelegation: "controlled-fixture" });
+  }
   const elizaHandler = createElizaServiceFetch({
-    host: { agentDid: "did:test:joint-local", runtimeFor: runtimeFor ?? forbiddenNativeRuntime, storageFor: forbiddenNativeRuntime, preflight: forbiddenNativeRuntime },
-    sessions: new SessionStore(),
+    host: { agentDid: "did:test:joint-local", runtimeFor: runtimeFor ?? forbiddenNativeRuntime, storageFor: forbiddenNativeRuntime, preflight: forbiddenNativeRuntime, privateAccessAvailable: () => Boolean(runtimeFor) },
+    sessions,
     tasks: {
       apiKey: "controlled-provider", baseUrl: "http://127.0.0.1/v1", models: { [MODEL]: offeredChatModelContextTokens(MODEL)! },
       fetchImpl: async (input: string, init?: RequestInit) => {
@@ -89,6 +97,9 @@ async function setup(provider: (input: string, init?: RequestInit) => Promise<Re
     hostname: "127.0.0.1", port: 0,
     async fetch(request) {
       const path = new URL(request.url).pathname;
+      if (path.startsWith("/sessions/") && runtimeFor) return Response.json({
+        status: "active", transcriptStatus: "active", revision: sessions.snapshot(scope, entityId).revision,
+      });
       if (path === "/tasks") tasks.push(await request.clone().json());
       const response = await elizaHandler(request);
       if (path === "/tasks") reportTaskResponse(response.status);
@@ -149,6 +160,7 @@ async function setup(provider: (input: string, init?: RequestInit) => Promise<Re
       backendUrl, selection,
       sessionStore: { getToken: () => token, isExpired: () => false, hasSession: () => true } as AdapterDeps["sessionStore"],
       agentEnabledRef: { current: true }, meetingMessageRegistry: createMeetingMessageRegistry(),
+      privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
       getCheckpoint: async () => null,
       appendCompaction: async () => { throw new Error("Unexpected compaction write"); },
       summarize: async () => { throw new Error("Unexpected compaction inference"); },
@@ -350,7 +362,7 @@ describe.skipIf(!existsSync(new URL("server.ts", elizaSource)))("adapter → aut
     expect(app.tasks).toHaveLength(1);
     expect(app.providerRequests).toHaveLength(3);
     for (const request of app.providerRequests.slice(0, 2)) expect(request.messages.filter((message: any) => message.content.includes("Local controlled account context."))).toHaveLength(1);
-    expect(app.providerRequests[2].tools).toBeUndefined();
+    expect(app.providerRequests[2].tools.map((tool: any) => tool.function.name)).toEqual(["web_search"]);
     expect(app.providerRequests[2].reasoning_effort).toBe("low");
     const cleanSynthesis = JSON.stringify(app.providerRequests[2]);
     expect(cleanSynthesis).toContain(rawCanary);

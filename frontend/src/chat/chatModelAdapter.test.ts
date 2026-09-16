@@ -105,6 +105,7 @@ function makeDeps(overrides: Partial<AdapterDeps> = {}): {
       setRunning: () => {},
     } as never,
     agentEnabledRef: ref(false) as never,
+    privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
     meetingMessageRegistry: createMeetingMessageRegistry(),
     getCheckpoint: async () => null,
     appendCompaction: appendCompaction as never,
@@ -306,6 +307,7 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
       contextTokensFor: () => 64_000,
       // Browser grounding is the explicit private-agent-off fallback.
       agentEnabledRef: ref(false) as never,
+    privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
       getCheckpoint: async () => {
         events.push("checkpoint");
         return null;
@@ -363,6 +365,7 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
       meetingRetriever: { retrieve } as never,
       contextTokensFor: () => 5_000,
       agentEnabledRef: ref(false) as never,
+    privateAccessRef: { current: { active: true, revision: "test-revision", generation: 0 } },
     });
 
     const result = await drain(
@@ -496,4 +499,59 @@ describe("chatModelAdapter meeting retrieval preflight", () => {
     expect(fetchCalls).toBe(1);
     expect(deps.meetingMessageRegistry.isClassified("t1", "ordinary-1")).toBe(false);
   });
+});
+
+describe("private access admission", () => {
+  afterEach(() => { globalThis.fetch = realFetch; });
+  test.each([false, true])("inactive access blocks browser reads and memory while route availability is %s", async (routeAvailable) => {
+    let retrievals = 0; let url = ""; let sent: any;
+    globalThis.fetch = (async (input, init) => {
+      url = String(input); sent = JSON.parse(String(init?.body));
+      return okStreamResponse("ordinary answer");
+    }) as typeof fetch;
+    const { deps } = makeDeps({ agentEnabledRef: ref(routeAvailable), contextTokensFor: () => 64000,
+      privateAccessRef: ref({ active: false, revision: "off", generation: 1 }),
+      meetingRetriever: { retrieve: async () => { retrievals++; return { status: "not-applicable" }; } },
+    } as Partial<AdapterDeps>);
+    const result = await drain(createChatModelAdapter(deps).run({ messages: oneUserMessage(),
+      abortSignal: new AbortController().signal, context: { system: "PRIVATE_MEMORY_CANARY" } } as never) as never);
+    expect(result.thrown).toBeUndefined();
+    expect(retrievals).toBe(0);
+    expect(JSON.stringify(sent)).not.toContain("PRIVATE_MEMORY_CANARY");
+    expect(url).toEndWith(routeAvailable ? "/api/agent/chat" : "/api/chat");
+  });
+
+  test("a delayed browser retrieval cannot publish after disconnect and reconnect", async () => {
+    let resolve!: (outcome: MeetingRetrievalOutcome) => void;
+    let started!: () => void; const ready = new Promise<void>((done) => { started = done; });
+    let requests = 0;
+    globalThis.fetch = (async () => { requests++; return okStreamResponse("private answer"); }) as typeof fetch;
+    const privateAccessRef = ref({ active: true, revision: "old", generation: 1 });
+    const { deps } = makeDeps({ privateAccessRef, contextTokensFor: () => 64000,
+      meetingRetriever: { retrieve: () => { started(); return new Promise((done) => { resolve = done; }); } },
+    } as Partial<AdapterDeps>);
+    const work = drain(createChatModelAdapter(deps).run({ messages: oneUserMessage(), abortSignal: new AbortController().signal } as never) as never);
+    await ready;
+    privateAccessRef.current = { active: true, revision: "new", generation: 3 };
+    resolve({ status: "no-match" } as never);
+    const result = await work;
+    expect(result.text).toBe("");
+    expect(result.thrown).toBeDefined();
+    expect(requests).toBe(0);
+  });
+});
+
+test("access invalidated during turn admission prevents browser private dispatch", async () => {
+  let resume!: () => void; let entered!: () => void;
+  const ready = new Promise<void>(done => { entered = done; });
+  let reads = 0;
+  const privateAccessRef = ref({ active: true, revision: "old", generation: 1 });
+  const route = ref(true);
+  const { deps } = makeDeps({ privateAccessRef, agentEnabledRef: route, meetingRetriever: { retrieve: async () => { reads++; return { status: "no-match" } as never; } } });
+  (deps.selection as any).waitForAppend = () => { entered(); return new Promise<void>(done => { resume = done; }); };
+  const work = drain(createChatModelAdapter(deps).run({ messages: oneUserMessage(), abortSignal: new AbortController().signal } as never) as never);
+  await ready;
+  privateAccessRef.current = { active: false, revision: "off", generation: 2 }; route.current = false;
+  resume(); await work;
+  expect(reads).toBe(0);
 });

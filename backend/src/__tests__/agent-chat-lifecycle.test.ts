@@ -315,3 +315,47 @@ describe("provider protocol errors", () => {
     });
   }
 });
+
+describe("private access lifecycle", () => {
+  function access(active = true) {
+    let current = true;
+    const callbacks = new Set<() => void>();
+    return {
+      capture: () => ({ isCurrent: () => current, onInvalidate: (fn: () => void) => { callbacks.add(fn); return () => { callbacks.delete(fn); }; } }),
+      status: async () => ({ status: active ? "active" : "none", transcriptStatus: active ? "active" : "none", revision: "test-revision" }),
+      disconnect: () => { current = false; for (const fn of callbacks) fn(); },
+    };
+  }
+  it("offers only public search while private access is inactive", async () => {
+    const offered: string[][] = [];
+    const cfg = { ...config((async (_url, init) => { const body = JSON.parse(String(init?.body)); offered.push(body.tools.map((t: any) => t.function.name)); return provider(answer() + done); }) as typeof fetch), access: access(false) };
+    const turn = run(cfg); await turn.finished;
+    expect(offered).toEqual([["web_search"]]);
+    expect(turn.res.text()).toContain("safe answer");
+  });
+  it("disconnect cancels an active turn before any late private answer is delivered", async () => {
+    const pending = deferred<globalThis.Response>(); const started = deferred<void>();
+    const controller = access(); let signal: AbortSignal | undefined;
+    const turn = run({ ...config((async (_url, init) => { signal = init?.signal as AbortSignal; started.resolve(); return pending.promise; }) as typeof fetch), access: controller });
+    await started.promise; const before = turn.res.text(); controller.disconnect();
+    pending.resolve(provider(answer("LATE PRIVATE CONTENT") + done)); await turn.finished;
+    expect(signal?.aborted).toBe(true);
+    expect(turn.res.text()).toBe(before);
+    expect(turn.res.destroyed).toBe(true);
+  });
+  it("retains the cumulative usage checkpoint when cancellation interrupts a legacy round", async () => {
+    const controller = new AbortController(); const snapshots: unknown[] = [];
+    const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(frame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }))); } });
+    const pending = orchestrateToolCalling({ config: config((async () => new globalThis.Response(body)) as typeof fetch), model: "phala/test", messages: [{ role: "user", content: "q" }], entityId: "e", write: () => {}, signal: controller.signal, onUsage: (value: unknown) => { snapshots.push(value); controller.abort(); } } as any);
+    const outcome = pending.catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 0)); controller.abort();
+    await outcome;
+    expect(snapshots).toEqual([{ promptTokens: 7, completionTokens: 3 }]);
+  });
+});
+
+it("retains interpretation usage when the legacy controller returns a handled failure", async () => {
+  const cfg = { ...config((async () => provider(frame({ usage: { prompt_tokens: 7, completion_tokens: 3 } }) + frame({ choices: "invalid" }) + done)) as typeof fetch), meetingContentRetrievalEnabled: true, meetingTrace: () => {} };
+  const result = await orchestrateToolCalling({ config: cfg, model: "phala/test", messages: [{ role: "user", content: "Summarize the meeting." }], entityId: "e", write: () => {} });
+  expect(result).toMatchObject({ promptTokens: 7, completionTokens: 3, errorCode: "upstream_incomplete" });
+});

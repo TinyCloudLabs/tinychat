@@ -352,20 +352,33 @@ export interface EnsureAgentSessionDeps {
   roomId?: string;
   /** Override the agent DID (tests). */
   delegateDID?: string;
-  /** Skip the liveness check and force a fresh mint (re-mint UX). */
+  /** Force a fresh mint after capturing the authoritative status revision. */
   force?: boolean;
+  /** Stops an obsolete local ceremony before it can courier grants. */
+  isCurrent?: () => boolean;
+  /** Called only after both mints succeed, immediately before server replacement. */
+  beforeReplace?: () => void;
   /** Test-only seam: override the mint step (defaults to mintAgentDelegation). */
   _mint?: (tcw: TinyCloudWeb) => Promise<string | AgentSessionEnvelope>;
 }
 
 export type AgentSessionStatus = "active" | "expired" | "stale" | "none";
 
-// Per-address cache so the interactive passkey mint runs at most once per session.
-const sessionCache = new Map<string, AgentSessionStatus>();
-
-/** Clear the in-memory agent-session cache (e.g. on sign-out). */
+// Invalidating a session also prevents an already-open consent flow from posting.
+let sessionGeneration = 0;
 export function clearAgentSessionCache(): void {
-  sessionCache.clear();
+  sessionGeneration += 1;
+}
+
+export interface AgentSessionSnapshot {
+  status?: AgentSessionStatus;
+  transcriptStatus?: AgentSessionStatus;
+  revision?: string;
+}
+
+export function isActiveAgentBundle(body: AgentSessionSnapshot): boolean {
+  return body.status === "active" && body.transcriptStatus === "active"
+    && typeof body.revision === "string" && body.revision.length > 0;
 }
 
 function authHeaders(token: string): Record<string, string> {
@@ -379,8 +392,8 @@ function authHeaders(token: string): Record<string, string> {
 /**
  * Ensure the user has a live delegation registered with eliza-service.
  *
- * Lazy + cached: checks GET /api/agent/session first; only mints (interactive
- * passkey) when the delegation is missing/expired/stale, then couriers it via
+ * Checks GET /api/agent/session first; only mints (interactive passkey) when
+ * access is inactive or the user explicitly reconnects, then couriers it via
  * POST /api/agent/session. Returns the resulting status. Re-mint UX keys off the
  * signed expiry surfaced by the status endpoint (decision 4), not mint+7d.
  */
@@ -390,38 +403,37 @@ export async function ensureAgentSession(
   const token = deps.getToken();
   if (!token) throw new Error("Not authenticated. Please sign in.");
 
-  const address = deps.tcw.address() ?? "anon";
-  if (!deps.force && sessionCache.get(address) === "active") return "active";
-
-  const base = deps.backendUrl.replace(/\/$/, "");
-
-  if (!deps.force) {
-    try {
-      const res = await fetch(`${base}/api/agent/session`, {
-        method: "GET",
-        headers: authHeaders(token),
-      });
-      if (res.ok) {
-        const body = (await res.json()) as { status?: AgentSessionStatus };
-        if (body.status === "active") {
-          sessionCache.set(address, "active");
-          return "active";
-        }
-      }
-    } catch {
-      // Liveness probe failed (offline / eliza unreachable) — fall through to mint.
+  const generation = sessionGeneration;
+  const assertCurrent = () => {
+    if (generation !== sessionGeneration || deps.isCurrent?.() === false) {
+      throw new Error("Agent access changed. Start a new authorization.");
     }
+  };
+  const base = deps.backendUrl.replace(/\/$/, "");
+  // Even force/reconnect captures a server revision BEFORE prompting the user.
+  const probe = await fetch(`${base}/api/agent/session`, {
+    method: "GET", headers: authHeaders(token),
+  });
+  if (!probe.ok) throw new Error("Could not confirm agent access. Please retry.");
+  const before = await probe.json() as AgentSessionSnapshot;
+  assertCurrent();
+  if (typeof before.revision !== "string" || !before.revision) {
+    throw new Error("Agent access revision unavailable. Please reload.");
   }
+  if (!deps.force && isActiveAgentBundle(before)) return "active";
+  const revision = before.revision;
 
   // Mint (interactive passkey) + courier.
   const mint = deps._mint ?? ((tcw: TinyCloudWeb) => mintAgentSessionDelegations(tcw, { delegateDID: deps.delegateDID, roomId: deps.roomId }));
   const minted = await mint(deps.tcw);
+  assertCurrent();
+  deps.beforeReplace?.();
   const res = await fetch(`${base}/api/agent/session`, {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(typeof minted === "string"
-      ? { serialized: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }
-      : { session: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }),
+      ? { revision, serialized: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }
+      : { revision, session: minted, ...(deps.roomId ? { roomId: deps.roomId } : {}) }),
   });
 
   if (!res.ok) {
@@ -435,8 +447,21 @@ export async function ensureAgentSession(
     throw new Error(`Failed to register agent session (${res.status}): ${detail}`);
   }
 
-  const body = (await res.json()) as { status?: AgentSessionStatus };
-  const status = body.status ?? "active";
-  sessionCache.set(address, status);
-  return status;
+  const body = await res.json() as AgentSessionSnapshot;
+  assertCurrent();
+  if (!isActiveAgentBundle(body)) throw new Error("Agent access was not fully activated. Please retry.");
+  return "active";
+}
+
+/** A local toggle is insufficient: require a confirmed service stop. */
+export async function disconnectAgentSession(backendUrl: string, token: string): Promise<AgentSessionSnapshot> {
+  const res = await fetch(`${backendUrl.replace(/\/$/, "")}/api/agent/session`, {
+    method: "DELETE", headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error("Disconnection was not confirmed. Please retry.");
+  const body = await res.json() as AgentSessionSnapshot;
+  if (body.status !== "none" || typeof body.revision !== "string" || !body.revision) {
+    throw new Error("Disconnection was not confirmed. Please retry.");
+  }
+  return body;
 }

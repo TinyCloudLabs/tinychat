@@ -161,6 +161,7 @@ function Harness() {
   const controllerRef = useRef<ModelSelectionController | null>(null);
   const activeThreadIdRef = useRef<string | null>(null);
   const agentEnabledRef = useRef(false);
+  const privateAccessRef = useRef({ active: true, revision: "fixture", generation: 0 });
   const memoryRef = useRef<string | null>(null);
   const registry = useMemo(() => createMeetingMessageRegistry(), []);
   const runtime = useChatRuntime(useMemo(() => ({
@@ -176,6 +177,7 @@ function Harness() {
     memoryRef,
     activeThreadIdRef,
     agentEnabledRef,
+    privateAccessRef,
     meetingMessageRegistry: registry,
     getCheckpoint: async () => null,
     appendCompaction: async () => { throw new Error("unexpected compaction"); },

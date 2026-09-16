@@ -50,7 +50,7 @@ describe("ensureAgentSession", () => {
     let posted = false;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       if (init?.method === "POST") posted = true;
-      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
     }) as typeof fetch;
 
     const status = await ensureAgentSession({
@@ -74,9 +74,9 @@ describe("ensureAgentSession", () => {
         body: init?.body ? JSON.parse(init.body as string) : undefined,
       });
       if (init?.method === "POST") {
-        return new Response(JSON.stringify({ entityId: "e", status: "active" }), { status: 200 });
+        return new Response(JSON.stringify({ entityId: "e", status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
       }
-      return new Response(JSON.stringify({ status: "none" }), { status: 404 });
+      return new Response(JSON.stringify({ status: "none", revision: "instance:0" }), { status: 200 });
     }) as typeof fetch;
 
     const status = await ensureAgentSession({
@@ -91,15 +91,15 @@ describe("ensureAgentSession", () => {
     const post = calls.find((c) => c.method === "POST");
     expect(post?.url).toBe("https://api.test/api/agent/session");
     expect(post?.auth).toBe("Bearer tok");
-    expect(post?.body).toEqual({ serialized: "SERIALIZED_DELEGATION", roomId: "thread-9" });
+    expect(post?.body).toEqual({ serialized: "SERIALIZED_DELEGATION", roomId: "thread-9", revision: "instance:0" });
   });
 
-  it("caches an active session so the mint runs at most once", async () => {
+  it("re-probes an active session without minting again", async () => {
     let mints = 0;
     globalThis.fetch = (async (_url: string, init?: RequestInit) =>
       init?.method === "POST"
-        ? new Response(JSON.stringify({ status: "active" }), { status: 200 })
-        : new Response(JSON.stringify({ status: "none" }), { status: 404 })) as typeof fetch;
+        ? new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 })
+        : new Response(JSON.stringify(mints ? { status: "active", transcriptStatus: "active", revision: "instance:1" } : { status: "none", revision: "instance:0" }), { status: 200 })) as typeof fetch;
 
     const deps = {
       tcw: fakeTcw("0xCACHE"),
@@ -116,15 +116,15 @@ describe("ensureAgentSession", () => {
     expect(mints).toBe(1);
   });
 
-  it("force skips the liveness probe and re-mints", async () => {
+  it("force fetches a revision before re-minting", async () => {
     let gets = 0;
     let mints = 0;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
-        return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+        return new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
       }
       gets += 1;
-      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
     }) as typeof fetch;
 
     await ensureAgentSession({
@@ -138,19 +138,19 @@ describe("ensureAgentSession", () => {
       },
     });
 
-    expect(gets).toBe(0);
+    expect(gets).toBe(1);
     expect(mints).toBe(1);
   });
 
-  it("force re-mints even after the per-address cache recorded active", async () => {
+  it("force re-mints even after an earlier active status", async () => {
     let gets = 0;
     let mints = 0;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
-        return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+        return new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
       }
       gets += 1;
-      return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
     }) as typeof fetch;
 
     const tcw = fakeTcw("0xSTALE_CACHE");
@@ -171,7 +171,7 @@ describe("ensureAgentSession", () => {
       },
     });
 
-    expect(gets).toBe(1);
+    expect(gets).toBe(2);
     expect(mints).toBe(1);
   });
 
@@ -285,9 +285,9 @@ describe("two-grant session envelope", () => {
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
         bodies.push(JSON.parse(init.body as string));
-        return new Response(JSON.stringify({ status: "active" }), { status: 200 });
+        return new Response(JSON.stringify({ status: "active", transcriptStatus: "active", revision: "instance:1" }), { status: 200 });
       }
-      return new Response(JSON.stringify({ status: "none" }), { status: 404 });
+      return new Response(JSON.stringify({ status: "none", revision: "instance:0" }), { status: 200 });
     }) as typeof fetch;
 
     const envelope = { version: 2 as const, delegations: { memory: "M", transcripts: "T" } };
@@ -301,7 +301,39 @@ describe("two-grant session envelope", () => {
       roomId: "thread-9", _mint: async () => "LEGACY",
     });
 
-    expect(bodies[0]).toEqual({ session: envelope, roomId: "thread-9" });
-    expect(bodies[1]).toEqual({ serialized: "LEGACY", roomId: "thread-9" });
+    expect(bodies[0]).toEqual({ session: envelope, roomId: "thread-9", revision: "instance:0" });
+    expect(bodies[1]).toEqual({ serialized: "LEGACY", roomId: "thread-9", revision: "instance:0" });
+  });
+});
+
+
+describe("access replacement contract", () => {
+  it("captures the revision before minting and posts it without rebasing", async () => {
+    const order: string[] = [];
+    let posted: any;
+    globalThis.fetch = (async (_url, init) => {
+      order.push(init?.method ?? "GET");
+      if (init?.method === "POST") {
+        posted = JSON.parse(String(init.body));
+        return Response.json({ status: "active", transcriptStatus: "active", revision: "new" });
+      }
+      return Response.json({ status: "active", transcriptStatus: "active", revision: "before-mint" });
+    }) as typeof fetch;
+    await ensureAgentSession({ tcw: fakeTcw(), backendUrl: "https://api.test", getToken: () => "token", force: true,
+      _mint: async () => { order.push("mint"); return "grant"; } });
+    expect(order).toEqual(["GET", "mint", "POST"]);
+    expect(posted.revision).toBe("before-mint");
+  });
+
+  it.each([{}, { status: "active" }, { status: "active", transcriptStatus: "none" }])("rejects a partial or absent activation status %j", async (result) => {
+    globalThis.fetch = (async (_url, init) => Response.json(init?.method === "POST" ? result : { status: "none", revision: "r" })) as typeof fetch;
+    await expect(ensureAgentSession({ tcw: fakeTcw(), backendUrl: "https://api.test", getToken: () => "token", force: true, _mint: async () => "grant" })).rejects.toThrow();
+  });
+
+  it("does not start a ceremony without an authoritative revision", async () => {
+    let mints = 0;
+    globalThis.fetch = (async () => Response.json({ status: "none" })) as typeof fetch;
+    await expect(ensureAgentSession({ tcw: fakeTcw(), backendUrl: "https://api.test", getToken: () => "token", force: true, _mint: async () => { mints++; return "grant"; } })).rejects.toThrow();
+    expect(mints).toBe(0);
   });
 });

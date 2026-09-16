@@ -8,6 +8,7 @@ export interface AgentTaskRequest {
   messages: Array<{ role: "user" | "assistant" | "system" | "tool"; content: string; tool_calls?: unknown; tool_call_id?: string }>;
   calendar?: { localDate: string; timeZone: string };
   allowedTools: string[];
+  accessRevision?: string;
   deadlineAt: number;
 }
 
