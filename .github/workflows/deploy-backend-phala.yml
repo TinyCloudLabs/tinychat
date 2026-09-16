@@ -252,6 +252,10 @@ jobs:
 
           const domain = process.env.PHALA_INGRESS_DOMAIN;
           const expectedCname = process.env.PHALA_GATEWAY_CNAME.replace(/\.$/, "");
+          // Older Phala custom domains use the underscore alias for the same gateway.
+          // Keep the advertised target for ingress; accept only this exact legacy alias.
+          const gatewayDomain = expectedCname.match(/^gateway\.(dstack-[a-z0-9-]+\.phala\.network)$/)?.[1];
+          const acceptedCnames = [expectedCname, ...(gatewayDomain ? [`_.${gatewayDomain}`] : [])];
           const expectedTxt = `${process.env.PHALA_APP_ID}:443`;
           const txtName = `_dstack-app-address.${domain}`;
 
@@ -269,8 +273,8 @@ jobs:
             console.log(`CNAME ${domain}: ${actualCname.join(", ") || "<missing>"}`);
             console.log(`TXT ${txtName}: ${actualTxt.join(", ") || "<missing>"}`);
 
-            if (!actualCname.includes(expectedCname)) {
-              fail("Phala DNS CNAME mismatch", `${domain} must CNAME to ${expectedCname}`);
+            if (!actualCname.some(value => acceptedCnames.includes(value))) {
+              fail("Phala DNS CNAME mismatch", `${domain} must CNAME to ${acceptedCnames.join(" or ")}`);
             }
             if (!actualTxt.includes(expectedTxt)) {
               fail("Phala DNS TXT mismatch", `${txtName} must contain ${expectedTxt}`);
