@@ -38,6 +38,7 @@ interface SettingsPageProps {
   onMemoryUpdated: (doc: string | null) => void;
   onImported: () => void;
   billingStatus: BillingStatus | null;
+  billingTierName: string | null;
   onManagePlan: () => void;
   onOpenRates: () => void;
   backendUrl: string;
@@ -59,6 +60,7 @@ export function SettingsPage({
   onMemoryUpdated,
   onImported,
   billingStatus,
+  billingTierName,
   onManagePlan,
   onOpenRates,
   backendUrl,
@@ -156,7 +158,7 @@ export function SettingsPage({
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-xs text-muted-foreground">Current plan</span>
                 <span className="text-sm font-medium">
-                  {billingStatus ? capitalize(billingStatus.tier) : "—"}
+                  {billingTierName ?? "—"}
                 </span>
               </div>
               {hasLimit && (
@@ -304,10 +306,6 @@ function AccountRow(props: { label: string; value: string }) {
       </span>
     </div>
   );
-}
-
-function capitalize(s: string): string {
-  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }
 
 function formatResetsAt(iso: string): string {

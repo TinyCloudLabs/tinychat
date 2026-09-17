@@ -15,6 +15,7 @@ beforeEach(() => {
   process.env.STRIPE_PRICE_PLUS_YEARLY = "price_plus_y";
   process.env.STRIPE_PRICE_PRO_MONTHLY = "price_pro_m";
   process.env.STRIPE_PRICE_PRO_YEARLY = "price_pro_y";
+  delete process.env.STRIPE_PRICE_PRO_MONTHLY_LEGACY;
 });
 
 afterEach(() => {
@@ -22,12 +23,13 @@ afterEach(() => {
 });
 
 describe("tier config", () => {
-  test("display prices are integer cents", () => {
+  test("display plan names and prices in integer cents", () => {
     expect(TIERS.free.priceMonthly).toBeNull();
     expect(TIERS.plus.priceMonthly).toBe(1000);
     expect(TIERS.plus.priceYearly).toBe(9600);
-    expect(TIERS.pro.priceMonthly).toBe(2000);
+    expect(TIERS.pro.priceMonthly).toBe(5000);
     expect(TIERS.pro.priceYearly).toBe(19200);
+    expect(TIERS.pro.name).toBe("Early Access Demo");
   });
 
   test("credit budgets and windows", () => {
@@ -186,6 +188,29 @@ describe("price-id mapping", () => {
   test("priceIdFor returns the configured id", () => {
     expect(priceIdFor("plus", "monthly")).toBe("price_plus_m");
     expect(priceIdFor("pro", "yearly")).toBe("price_pro_y");
+  });
+
+  test("legacy monthly prices retain pro access while checkout uses the current price", () => {
+    process.env.STRIPE_PRICE_PRO_MONTHLY_LEGACY = " price_pro_old, price_pro_older ";
+
+    expect(tierForPriceId("price_pro_old")).toEqual({ tier: "pro", interval: "monthly" });
+    expect(tierForPriceId("price_pro_older")).toEqual({ tier: "pro", interval: "monthly" });
+    expect(priceIdFor("pro", "monthly")).toBe("price_pro_m");
+  });
+
+  test("current price mappings take precedence over legacy monthly aliases", () => {
+    process.env.STRIPE_PRICE_PRO_MONTHLY_LEGACY = "price_plus_m,price_pro_y";
+
+    expect(tierForPriceId("price_plus_m")).toEqual({ tier: "plus", interval: "monthly" });
+    expect(tierForPriceId("price_pro_y")).toEqual({ tier: "pro", interval: "yearly" });
+  });
+
+  test("blank legacy entries do not match empty or unknown prices", () => {
+    process.env.STRIPE_PRICE_PRO_MONTHLY_LEGACY = " , price_pro_old, , ";
+
+    expect(tierForPriceId("")).toBeNull();
+    expect(tierForPriceId("price_unknown")).toBeNull();
+    expect(tierForPriceId("price_pro_old")).toEqual({ tier: "pro", interval: "monthly" });
   });
 
   test("unconfigured price ids resolve to null and do not false-match empty", () => {
