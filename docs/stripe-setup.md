@@ -1,5 +1,11 @@
 # Stripe Subscription Gating — Setup Guide
 
+> This is the legacy setup guide. Current checkout lives in the account app;
+> the paid offer is **Early Access Demo — $50/month**. See
+> [Early Access Demo pricing](early-access-demo-pricing.md) for its coordinated
+> Stripe, entitlement, and application rollout. The historical prices and local
+> checkout instructions below are not the current signup configuration.
+
 TinyChat gates premium models and enforces per-tier **credit** budgets using
 Stripe subscriptions. The backend is **stateless**: Stripe is the source of
 truth for subscription state. There is no local database, no SQLite, and no

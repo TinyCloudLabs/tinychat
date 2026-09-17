@@ -215,6 +215,11 @@ export function App() {
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const paywallEnabled = billingConfig?.paywallEnabled === true;
+  const billingTierName = billingConfig?.tiers.find(
+    (tier) => tier.id === billingStatus?.tier,
+  )?.name ?? (billingStatus
+    ? billingStatus.tier.charAt(0).toUpperCase() + billingStatus.tier.slice(1)
+    : null);
   const openRates = useCallback(() => setRatesOpen(true), []);
 
   const refreshBillingStatus = useCallback(async () => {
@@ -739,19 +744,19 @@ export function App() {
       style={{ height: "var(--tc-app-height, 100dvh)" }}
     >
       <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
-        <div className="flex items-center gap-1.5 sm:gap-3">
+        <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
           {isReady && !LOCAL_VALIDATION && (
             <Button
               variant="outline"
               size="sm"
               aria-label="Open chat list"
               onClick={() => setSidebarOpen(true)}
-              className="h-11 w-11 p-0 md:hidden"
+              className="h-11 w-11 shrink-0 p-0 md:hidden"
             >
               <PanelLeftIcon className="size-4" />
             </Button>
           )}
-          <span className="flex items-center gap-2 text-sm font-semibold tracking-tight">
+          <span className="flex shrink-0 items-center gap-2 text-sm font-semibold tracking-tight">
             <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
               T
             </span>
@@ -775,7 +780,7 @@ export function App() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           {isReady && paywallEnabled && (
             // A2 — render the chip on mobile too. The chip already degrades to a
             // compact tier label under `sm` (the usage numbers + bar are
@@ -785,6 +790,7 @@ export function App() {
             // `hidden sm:inline-flex`).
             <UsageIndicator
               status={billingStatus}
+              tierName={billingTierName}
               onClick={openPricing}
               onOpenRates={openRates}
             />
@@ -891,6 +897,7 @@ export function App() {
                 onMemoryUpdated={onMemoryUpdated}
                 onImported={onImported}
                 billingStatus={billingStatus}
+                billingTierName={billingTierName}
                 onManagePlan={openPricing}
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
@@ -1042,7 +1049,7 @@ function ModelPicker(props: {
   };
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative min-w-0" ref={containerRef}>
       <button
         ref={triggerRef}
         type="button"
@@ -1053,7 +1060,7 @@ function ModelPicker(props: {
         aria-controls="model-picker-popup"
         aria-label="Model"
         title={status}
-        className="flex h-11 items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 md:h-8"
+        className="flex h-11 max-w-full items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 md:h-8"
       >
         {model && isResponseVerifiableModel(model) ? (
           <ShieldCheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
@@ -1063,7 +1070,7 @@ function ModelPicker(props: {
         <span className="max-w-[7rem] truncate sm:max-w-[12rem]">
           {model ?? status ?? "Choosing model…"}
         </span>
-        <ChevronDownIcon className="size-3.5 text-muted-foreground" />
+        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
       </button>
       {open && (
         <div
@@ -1112,17 +1119,18 @@ function ModelPicker(props: {
 
 function UsageIndicator(props: {
   status: BillingStatus | null;
+  tierName: string | null;
   onClick: () => void;
   onOpenRates: () => void;
 }) {
-  const { status, onClick, onOpenRates } = props;
+  const { status, tierName, onClick, onOpenRates } = props;
   const [open, setOpen] = useState(false);
   const usage = status?.usage;
   const pct =
     usage && usage.limit > 0
       ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
       : 0;
-  const tierLabel = status ? capitalize(status.tier) : "Plans";
+  const tierLabel = tierName ?? "Plans";
   const near = pct >= 90;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   // Compact "12K / 50K" rendered in the visible chip so touch users (who can't
@@ -1221,10 +1229,6 @@ function formatResetsAt(iso: string): string {
   } catch {
     return d.toDateString();
   }
-}
-
-function capitalize(s: string): string {
-  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }
 
 function ChatWorkspace(props: {

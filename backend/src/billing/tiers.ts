@@ -96,8 +96,8 @@ export const TIERS: Record<TierId, TierConfig> = {
   },
   pro: {
     id: "pro",
-    name: "Pro",
-    priceMonthly: 2000, // $20.00/mo, in cents
+    name: "Early Access Demo",
+    priceMonthly: 5000, // $50.00/mo, in cents
     priceYearly: 19200, // $192.00/yr, in cents
     creditBudget: 28_000,
     budgetWindow: "week",
@@ -173,6 +173,12 @@ export function tierForPriceId(priceId: string): PriceResolution | null {
     if (ids[tier].monthly && ids[tier].monthly === priceId) return { tier, interval: "monthly" };
     if (ids[tier].yearly && ids[tier].yearly === priceId) return { tier, interval: "yearly" };
   }
+  // Existing subscriptions retain access when the price for new checkouts changes.
+  const legacyMonthlyIds = (process.env.STRIPE_PRICE_PRO_MONTHLY_LEGACY ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (legacyMonthlyIds.includes(priceId)) return { tier: "pro", interval: "monthly" };
   return null;
 }
 

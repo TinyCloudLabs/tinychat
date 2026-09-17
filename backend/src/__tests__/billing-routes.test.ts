@@ -127,7 +127,8 @@ describe("GET /api/billing/config (public)", () => {
     // catalog (still present in TIERS for internal resolution / legacy subs).
     expect(body.tiers.map((t: any) => t.id)).toEqual(["free", "pro"]);
     const pro = body.tiers.find((t: any) => t.id === "pro");
-    expect(pro.priceMonthly).toBe(2000);
+    expect(pro.name).toBe("Early Access Demo");
+    expect(pro.priceMonthly).toBe(5000);
     expect(pro.priceYearly).toBe(19200);
     expect(pro.creditBudget).toBe(28_000);
     expect(pro.budgetWindow).toBe("week");
