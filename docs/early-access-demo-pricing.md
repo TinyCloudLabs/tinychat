@@ -20,10 +20,11 @@ Stripe account or mode.
 - Existing $20/month price: `price_1Tnk580FftynHqRpG3mg8kYu`.
 - Prepared $50/month price: `price_1UGfXY0FftynHqRpb125eEsD`.
 
-1. In the billing repository, apply `0010_early_access_demo_price.sql`. It adds
-   an equivalent `paid_early_access_demo` tier for the new price, retaining the
-   original paid row and old price mapping. Verify both rows have 1 GiB storage,
-   28,000 credits, and `anchored_week`.
+1. Deploy billing's configured-price support. It resolves the current checkout
+   price from `STRIPE_PRICE_ID` to the existing `paid` tier when there is no
+   stored price mapping. The original $20 price still resolves through its
+   stored mapping. Both retain the same tier identity, storage, and credits;
+   no database migration is needed.
 2. Set TinyChat's `STRIPE_PRICE_PRO_MONTHLY_LEGACY` to the existing $20 price,
    and `STRIPE_PRICE_PRO_MONTHLY` to the prepared $50 price. Preserve any other
    existing legacy IDs. The deploy workflow accepts repository secrets or
@@ -32,10 +33,9 @@ Stripe account or mode.
 3. Rename the Stripe product to exactly **Early Access Demo**, activate the
    prepared monthly price, and set it as the product's default price.
 4. Run billing's **Deploy** workflow on `main` with
-   `configure_early_access_demo=true`. This applies only migration 0010, checks
-   both price mappings have equal entitlements, sets the billing Worker's
-   `STRIPE_PRICE_ID` to the new price, and deploys the account app using its
-   existing CI credentials. Ordinary pushes do not repeat this configuration
+   `configure_early_access_demo=true`. This deploys the billing Worker first,
+   then sets its `STRIPE_PRICE_ID` to the new price using existing CI
+   credentials. Ordinary pushes do not repeat this configuration
    step. Deploy the TinyChat UI changes as well. Keep the old price for existing
    subscriptions; do not migrate or cancel their subscriptions.
 5. Verify `/api/billing/config` returns `name: "Early Access Demo"` and
@@ -47,6 +47,7 @@ At preparation time on 2026-09-17 the new Stripe price was created **inactive**.
 No checkout setting, product name, subscription, or production D1 row was
 changed during preparation. Activation and deployment must be coordinated.
 
-Rollback checkout by restoring the billing Worker's old `STRIPE_PRICE_ID`.
-Retain both entitlement mappings and TinyChat's price aliases once either price
-has subscribers.
+Before restoring the billing Worker's old `STRIPE_PRICE_ID`, retain a stored
+paid mapping for the $50 price if it already has subscribers. It will no longer
+be the configured current price after rollback. TinyChat must likewise retain
+aliases for every price that still has subscribers.
