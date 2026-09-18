@@ -189,5 +189,16 @@ test('large generated-notes omissions cannot erase earlier search evidence under
   const f = fixture({ envelopeBytes: 12000 }); f.add('a', { body: 'needle here' });
   for (let i = 0; i < 15; i++) f.add('n' + i + '界'.repeat(1000), { sourceId: `source-${i}`, source: 'google-meet', metadata: { notes_kind: 'gemini', notes_association: 'standalone' } });
   const r = await invoke(f, 'search', { term: 'needle', scanLimit: 20 });
-  expect(r.ok).toBe(true); expect(r.matches).toHaveLength(1); expect(r.coverage.failedBodies).toBe(15); expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThanOrEqual(12000);
+  expect(r.ok).toBe(true); expect(r.matches).toHaveLength(1); expect(r.coverage.excludedBodies).toBe(15); expect(r.coverage.failedBodies).toBe(0); expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThanOrEqual(12000);
+});
+
+
+test('search counts searched transcript bodies separately from excluded and failed sources', async () => {
+  const f = fixture(); f.add('a', { body: 'needle here' });
+  f.add('b', { source: 'google-meet', metadata: { notes_kind: 'gemini', notes_association: 'standalone' } });
+  f.add('c'); f.bodies.delete('c');
+  const r = await invoke(f, 'search', { term: 'needle' });
+  expect(r.coverage).toMatchObject({ catalogRecordsExamined: 3, bodiesExamined: 1, failedBodies: 1, excludedBodies: 1, unexaminedBodies: 1, completeWithinScope: false });
+  expect(f.calls.filter(args => args.includes('get'))).toHaveLength(2);
+  expect(r.omissions.map(o => o.code)).toEqual(['GENERATED_NOTES_EXCLUDED', 'MISSING_BODY']);
 });

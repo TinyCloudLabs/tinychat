@@ -259,14 +259,16 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
     keys(input, ['term', 'source', 'from', 'to', 'limit', 'scanLimit', 'cursor']);
     let state;
     if (input.cursor) { if (Object.keys(input).length !== 1) fail('INVALID_INPUT'); state = untoken(input.cursor, 'search'); }
-    else state = { scope: filters(input, true), after: null, bodiesExamined: 0, failedBodies: 0, matchesReturned: 0, pending: null };
+    else state = { scope: filters(input, true), after: null, catalogRecordsExamined: 0, failedBodies: 0, excludedBodies: 0, matchesReturned: 0, pending: null };
     state.scope = filters(state.scope, true); validateAfter(state.after);
-    for (const k of ['bodiesExamined', 'failedBodies', 'matchesReturned']) if (!integer(state[k], 0, 100000000)) fail('INVALID_INPUT');
+    for (const k of ['catalogRecordsExamined', 'failedBodies', 'excludedBodies', 'matchesReturned']) if (!integer(state[k], 0, 100000000)) fail('INVALID_INPUT');
     if (state.pending !== null && (!object(state.pending) || !integer(state.pending.recordIndex, 0, 10000000) || !integer(state.pending.offset, 0, 64000000) || !/^[a-f0-9]{64}$/.test(state.pending.hash))) fail('INVALID_INPUT');
-    const result = envelope('search', { matches: [], omissions: [], coverage: coverage({ searchScope: 'transcript-content', contentKinds: ['transcript'], matching: 'literal case-insensitive passages', bodiesExamined: state.bodiesExamined, failedBodies: state.failedBodies, matchingPassagesReturned: state.matchesReturned, unexaminedBodies: 'unknown', completeWithinScope: false }) });
+    if (state.failedBodies + state.excludedBodies > state.catalogRecordsExamined) fail('INVALID_INPUT');
+    const counts = () => ({ catalogRecordsExamined: state.catalogRecordsExamined, bodiesExamined: state.catalogRecordsExamined - state.failedBodies - state.excludedBodies, failedBodies: state.failedBodies, excludedBodies: state.excludedBodies });
+    const result = envelope('search', { matches: [], omissions: [], coverage: coverage({ searchScope: 'transcript-content', contentKinds: ['transcript'], matching: 'literal case-insensitive passages', ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: 'unknown', completeWithinScope: false }) });
     let scanned = 0, exhausted = false;
     const pattern = new RegExp(state.scope.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
-    const continuation = () => token('search', { scope: state.scope, after: state.after, bodiesExamined: state.bodiesExamined, failedBodies: state.failedBodies, matchesReturned: state.matchesReturned, pending: state.pending });
+    const continuation = () => token('search', { scope: state.scope, after: state.after, catalogRecordsExamined: state.catalogRecordsExamined, failedBodies: state.failedBodies, excludedBodies: state.excludedBodies, matchesReturned: state.matchesReturned, pending: state.pending });
     const addOmission = omission => {
       if (bytes({ ...result, omissions: [...result.omissions, omission], continuation: continuation() }) <= envelopeBytes - 500) result.omissions.push(omission);
       else result.omissionDetailsLimited = true;
@@ -285,7 +287,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       catch (error) {
         // Keep the raw keyset position even when a source's body format is unsupported.
         try { validateAfter(position(next[0])); } catch { addOmission({ code: 'INVALID_METADATA', stage: 'catalog' }); break; }
-        state.after = position(next[0]); state.pending = null; state.failedBodies++; state.bodiesExamined++; scanned++;
+        state.after = position(next[0]); state.pending = null; state.failedBodies++; state.catalogRecordsExamined++; scanned++;
         addOmission({ code: classified(error).code, stage: 'metadata' });
         continue;
       }
@@ -298,7 +300,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       state.after = priorAfter; state.pending = priorPending;
       if (!nextPositionFits) { if (!result.matches.length && !result.omissions.length) fail('OUTPUT_LIMIT'); break; }
       if (row.contentKind !== 'transcript') {
-        state.failedBodies++; state.bodiesExamined++; scanned++; state.after = position(row); state.pending = null;
+        state.excludedBodies++; state.catalogRecordsExamined++; scanned++; state.after = position(row); state.pending = null;
         addOmission({ ref: rowRef, code: 'GENERATED_NOTES_EXCLUDED' });
         continue;
       }
@@ -307,7 +309,7 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
       catch (error) {
         const e = classified(error);
         if (state.pending && e.code === 'REVISION_CHANGED') throw e;
-        state.failedBodies++; state.bodiesExamined++; scanned++; state.after = position(row); state.pending = null;
+        state.failedBodies++; state.catalogRecordsExamined++; scanned++; state.after = position(row); state.pending = null;
         addOmission({ ref: rowRef, code: e.code });
         if (['AUTH_REQUIRED', 'AUTH_EXPIRED', 'AUTH_OR_PERMISSION', 'PERMISSION_DENIED', 'SPACE_NOT_HOSTED', 'NETWORK_ERROR', 'TIMEOUT', 'CANCELLED'].includes(e.code)) break;
         continue;
@@ -329,10 +331,10 @@ export function createRetrieval({ profile, host, space, owner, tc, runTc = creat
         if (stopped) break;
       }
       if (stopped) break;
-      state.after = position(row); state.pending = null; state.bodiesExamined++; scanned++;
+      state.after = position(row); state.pending = null; state.catalogRecordsExamined++; scanned++;
     }
     result.continuation = exhausted ? null : continuation();
-    Object.assign(result.coverage, { bodiesExamined: state.bodiesExamined, failedBodies: state.failedBodies, matchingPassagesReturned: state.matchesReturned, unexaminedBodies: exhausted ? 0 : 'unknown', pendingBody: state.pending !== null, completeWithinScope: exhausted && state.failedBodies === 0 });
+    Object.assign(result.coverage, { ...counts(), matchingPassagesReturned: state.matchesReturned, unexaminedBodies: exhausted ? state.failedBodies : 'unknown', pendingBody: state.pending !== null, completeWithinScope: exhausted && state.failedBodies === 0 });
     return finish(result);
   }
   async function checkVersion() {
