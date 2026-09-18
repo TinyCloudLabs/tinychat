@@ -1,0 +1,16 @@
+/agents/*
+  X-Content-Type-Options: nosniff
+/agents/index.html
+  Cache-Control: no-cache
+/agents/tinychat-retrieval/*
+  Cache-Control: public, max-age=31536000, immutable
+/agents/setup.md
+  Cache-Control: no-cache
+  Content-Type: text/markdown; charset=utf-8
+/agents/prompt.txt
+  Cache-Control: no-cache
+  Content-Type: text/plain; charset=utf-8
+/agents/tinychat-retrieval/:version/SKILL.md
+  Content-Type: text/markdown; charset=utf-8
+/agents/tinychat-retrieval/:version/references/meetings.md
+  Content-Type: text/markdown; charset=utf-8
