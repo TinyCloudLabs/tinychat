@@ -45,7 +45,9 @@
     "docker:backend:push": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} --push .",
     "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs",
     "dev:desktop": "bun run --cwd desktop dev",
-    "build:desktop": "bun run --cwd desktop build"
+    "build:desktop": "bun run --cwd desktop build",
+    "build:agent-skills": "node scripts/build-agent-skills.mjs && node scripts/build-agent-setup.mjs",
+    "test:agent-skills": "node --test scripts/__tests__/build-agent-skills.test.mjs scripts/__tests__/build-agent-setup.test.mjs && bun test agent-skills/tinychat-retrieval/test/*.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

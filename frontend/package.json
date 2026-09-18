@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node ../scripts/build-agent-skills.mjs && node ../scripts/build-agent-setup.mjs && tsc && vite build",
     "preview": "vite preview",
     "test": "bun test"
   },

@@ -1,0 +1,26 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+const root = new URL('../../', import.meta.url);
+test('public instructions and HTML use the same prompt and pinned versions as the product', async t => {
+  const output = await mkdtemp(join(tmpdir(), 'tinychat-setup-'));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  const result = spawnSync(process.execPath, [new URL('../build-agent-setup.mjs', import.meta.url).pathname, '--output', output], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(await readFile(new URL('frontend/src/lib/agent-setup.json', root), 'utf8'));
+  const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
+  assert.equal(prompt, config.prompt + '\n');
+  const md = await readFile(join(output, 'setup.md'), 'utf8');
+  assert.ok(md.includes(`@tinycloud/cli@${config.cliVersion}`));
+  assert.ok(md.includes(`tinychat-retrieval/${config.packVersion}/tinychat-retrieval-${config.packVersion}.tgz`));
+  assert.ok(!md.includes('{{'));
+  const html = await readFile(join(output, 'index.html'), 'utf8');
+  assert.ok(html.includes(config.prompt));
+  assert.ok(html.includes('setup.md'));
+  assert.ok(!html.includes('type="module"'), 'public onboarding is independent of signed-in app JS');
+  const redirects = await readFile(new URL('frontend/public/_redirects', root), 'utf8');
+  assert.ok(redirects.indexOf('/agents/*') < redirects.indexOf('/*    /index.html'), 'public files must take priority over SPA catch-all');
+});
