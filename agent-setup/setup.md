@@ -32,6 +32,27 @@ node PACK/scripts/retrieve.mjs --version
 npx --yes skills@{{INSTALLER_VERSION}} list --global --agent CLIENT
 ```
 
+Resolve installed paths from the current terminal's `HOME`, including when the client uses a separate home directory. Do not infer a home path from the OS username or another session. The installer can also report its actual paths:
+
+```sh
+printf '%s\n' "$HOME"
+npx --yes skills@{{INSTALLER_VERSION}} list --global --agent CLIENT --json
+```
+
+If the current session cannot refresh its skill list, use its terminal tool to read both installed entry points before continuing. For **Codex or OpenCode**:
+
+```sh
+cat "$HOME/.agents/skills/tc-cli/SKILL.md" "$HOME/.agents/skills/tinychat-retrieval/SKILL.md"
+```
+
+For **Claude Code**:
+
+```sh
+cat "$HOME/.claude/skills/tc-cli/SKILL.md" "$HOME/.claude/skills/tinychat-retrieval/SKILL.md"
+```
+
+Approve ordinary client requests to read the identified installed skills. If permission cannot be approved in a noninteractive run, start a normal interactive session with the same client home. Keep unrelated directories outside that approval.
+
 The identified release contains [readable skill instructions](tinychat-retrieval/{{PACK_VERSION}}/SKILL.md), [meeting coverage and commands](tinychat-retrieval/{{PACK_VERSION}}/references/meetings.md), [permissions](tinychat-retrieval/{{PACK_VERSION}}/assets/permissions.json), [runtime metadata](tinychat-retrieval/{{PACK_VERSION}}/pack.json) and an [archive SHA-256/file manifest](tinychat-retrieval/{{PACK_VERSION}}/release.json). Install the full pack once; do not fetch mutable executable scripts for individual questions.
 
 ## Authorize your existing account
