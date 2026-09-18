@@ -6,13 +6,14 @@ TinyChat owns `agent-skills/tinychat-retrieval`. The CLI core skill is released 
 
 ```sh
 bun install --frozen-lockfile
-bun run test:agent-skills
+node --test scripts/__tests__/build-agent-skills.test.mjs scripts/__tests__/build-agent-setup.test.mjs
+bun test agent-skills/tinychat-retrieval/test/*.test.mjs
 bun test frontend/src/chat/AgentSetupCard.test.tsx frontend/src/chat/AgentEnablementBanner.test.tsx
 bun run build:packages
 bun run build:frontend
 ```
 
-`frontend`'s build generates the pack and public page before Vite copies the static files. No backend, inference-service or connector deployment is needed. The helper runs on plain Node; Bun is a development/test dependency.
+The Vite production-build hook generates the pack and public page before Vite copies the static files. No backend, inference-service or connector deployment is needed. The helper runs on plain Node; Bun is a development/test dependency.
 
 The build includes only SKILL.md, pack.json, lib, scripts, assets and references. Test fixtures and local environment files are excluded. The versioned directory contains a portable npm-shaped archive, directly readable source files and `release.json` with SHA-256 hashes. Existing version directories are immutable: unchanged sources reuse the verified stored archive; changed sources require a new version. This permits different npm gzip metadata on subsequent machines without changing release bytes. Keep earlier committed version directories when releasing updates.
 
