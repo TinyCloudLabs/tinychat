@@ -1,4 +1,3 @@
-import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
 import {
@@ -132,7 +131,6 @@ export function SettingsPage({
           <SectionCard icon={ShieldCheckIcon} title="Agent access">
             <AgentAccessControls {...agentAccess} />
           </SectionCard>
-          <AgentSetupCard did={did} hosts={tcw.hosts} />
           <SectionCard icon={BrainIcon} title="Memory">
             <MemoryPanel
               variant="inline"

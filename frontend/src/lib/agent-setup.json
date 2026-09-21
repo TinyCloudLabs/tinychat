@@ -1,8 +1,0 @@
-{
-  "setupUrl": "https://tinycloud.chat/agents/",
-  "instructionsUrl": "https://tinycloud.chat/agents/setup.md",
-  "cliVersion": "0.10.0",
-  "installerVersion": "1.7.0",
-  "packVersion": "0.1.0",
-  "prompt": "Help me use my existing TinyChat data from this agent. Read and follow the official setup instructions at https://tinycloud.chat/agents/setup.md, install the pinned TinyCloud CLI and TinyChat retrieval skills for this client, and help me authorize the same existing signing identity, host and space shown in TinyChat Settings. Keep browser consent and return codes in the terminal auth flow. Then answer: How did my last meeting go?"
-}
