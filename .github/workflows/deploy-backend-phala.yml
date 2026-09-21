@@ -18,9 +18,14 @@ on:
       - "infra/phala-ingress/**"
       - ".github/workflows/deploy-backend-phala.yml"
   workflow_dispatch:
+    inputs:
+      rollback_agent_cache:
+        description: Purge only retired agent setup URLs; disables backend deployment
+        type: boolean
+        default: false
 
 concurrency:
-  group: tinychat-backend-phala-production
+  group: ${{ inputs.rollback_agent_cache && 'tinychat-retired-agent-cache' || 'tinychat-backend-phala-production' }}
   cancel-in-progress: false
 
 env:
@@ -39,6 +44,7 @@ env:
 
 jobs:
   deploy:
+    if: ${{ !inputs.rollback_agent_cache }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment:
@@ -777,7 +783,7 @@ jobs:
   phala-status:
     runs-on: ubuntu-latest
     needs: deploy
-    if: always()
+    if: ${{ always() && !inputs.rollback_agent_cache }}
     permissions:
       contents: read
       statuses: write
@@ -814,3 +820,41 @@ jobs:
             -f context="tinychat-backend - phala" \
             -f description="$DESCRIPTION" \
             -f target_url="$TARGET_URL"
+
+  rollback-agent-cache:
+    if: ${{ inputs.rollback_agent_cache }}
+    name: Purge retired agent setup URLs only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Purge the retired setup and artifact paths
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, urllib.request
+          token = "".join(os.environ["CLOUDFLARE_API_TOKEN"].split())
+          assert token, "Cloudflare token is required"
+          def request(path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request("https://api.cloudflare.com/client/v4/" + path, data=data,
+                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  result = json.load(response)
+              assert result.get("success") is True, "Cloudflare operation failed"
+              return result["result"]
+          zones = request("zones?name=tinycloud.chat&status=active&match=all")
+          assert len(zones) == 1 and zones[0]["name"] == "tinycloud.chat", "Expected the exact TinyChat zone"
+          assert zones[0]["account"]["id"] == "9959301f03d2db1a5fcf5e004278d467", "Expected the TinyChat account"
+          paths = ["agents", "agents/", "agents/index.html", "agents/setup.md", "agents/prompt.txt"]
+          release = "agents/tinychat-retrieval/0.1.0/"
+          paths += [release + name for name in [
+              "SKILL.md", "pack.json", "release.json", "package.json", "tinychat-retrieval-0.1.0.tgz",
+              "references/setup.md", "references/meetings.md", "scripts/retrieve.mjs",
+              "lib/retrieval.mjs", "assets/permissions.json"]]
+          files = ["https://tinycloud.chat/" + path for path in paths]
+          request("zones/" + zones[0]["id"] + "/purge_cache", {"files": files})
+          print(json.dumps({"purgedUrls": files, "backendDeployed": False}))
+          PYTHON
