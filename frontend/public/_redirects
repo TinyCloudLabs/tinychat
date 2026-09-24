@@ -1,1 +1,4 @@
+/agents /agents/ 301
+/agents/ /agents/index.html 200
+/agents/* /agents/:splat 200
 /*    /index.html   200

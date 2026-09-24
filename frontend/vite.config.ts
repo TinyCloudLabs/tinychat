@@ -1,4 +1,5 @@
 import fs from "fs";
+import { execFileSync } from "node:child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { defineConfig } from "vite";
@@ -13,6 +14,15 @@ export default defineConfig({
   // Vite externalizes Node builtins in the browser, which silently broke the
   // GPU cert-chain check and an on-chain quote encoding. Polyfill the globals.
   plugins: [
+    {
+      name: "tinychat-agent-artifacts",
+      apply: "build",
+      buildStart() {
+        for (const script of ["build-agent-skills.mjs", "build-agent-setup.mjs"]) {
+          execFileSync("node", [path.join(rootDir, "../scripts", script)], { stdio: "inherit" });
+        }
+      },
+    },
     nodePolyfills({ globals: { Buffer: true, process: true, global: true } }),
     react(),
   ],
