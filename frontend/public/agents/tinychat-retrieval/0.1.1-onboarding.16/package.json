@@ -1,0 +1,18 @@
+{
+  "name": "@tinycloud/tinychat-retrieval",
+  "version": "0.1.1-onboarding.16",
+  "private": true,
+  "type": "module",
+  "description": "TinyChat retrieval skill and portable read helpers",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "SKILL.md",
+    "pack.json",
+    "scripts",
+    "references",
+    "assets",
+    "lib"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "name": "tinychat-retrieval",
+  "version": "0.1.1-onboarding.16",
+  "description": "Read existing TinyChat meeting metadata and transcript passages through TinyCloud CLI.",
+  "envelopeVersion": 1,
+  "runtime": {
+    "node": ">=20.0.0",
+    "platforms": [
+      "macos",
+      "linux"
+    ],
+    "dependencies": []
+  },
+  "cli": {
+    "package": "@tinycloud/cli",
+    "minimumVersion": "0.9.0",
+    "setupMinimumVersion": "0.10.0"
+  },
+  "entrypoint": "scripts/retrieve.mjs",
+  "permissionManifest": "assets/permissions.json",
+  "catalogs": {
+    "supported": [
+      "connector_meeting-sql"
+    ],
+    "excluded": [
+      "user-kv-only",
+      "backend-only"
+    ]
+  },
+  "limits": {
+    "envelopeBytes": 24000,
+    "consumerResponseBytes": 98304,
+    "bodyBytes": 8388608,
+    "metadataPageRecords": 50,
+    "searchBodiesPerInvocation": 20
+  },
+  "setupEntrypoint": "scripts/setup.mjs",
+  "opencode": {
+    "version": "1.18.31",
+    "installer": "scripts/install-opencode.mjs",
+    "plugin": "lib/opencode-plugin.mjs",
+    "capture": "chat.message",
+    "activation": "automatic-first-install",
+    "activationNode": ">=22.20.0",
+    "supportedActivationPlatforms": [
+      "macos"
+    ],
+    "restartRequired": false
+  }
+}
