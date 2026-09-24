@@ -1,0 +1,139 @@
+name: TinyChat Pages read-only audit
+
+on:
+  push:
+    branches:
+      - Codex/roman/tinychat-pages-readonly-audit-20260924
+    paths:
+      - .github/workflows/tinychat-pages-readonly-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read sanitized Pages configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          ACCOUNT = "9959301f03d2db1a5fcf5e004278d467"
+          PROJECT = "tinychat"
+          BASE = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/pages/projects/{PROJECT}"
+          ENV_NAMES = (
+              "VITE_OPENKEY_HOST", "VITE_BACKEND_URL", "VITE_TINYCLOUD_HOST",
+              "BUN_VERSION", "NODE_VERSION", "SKIP_DEPENDENCY_INSTALL",
+          )
+
+          class NoRedirects(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def get(path, token):
+              request = urllib.request.Request(
+                  BASE + path,
+                  headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+                  method="GET",
+              )
+              try:
+                  with urllib.request.build_opener(NoRedirects).open(request, timeout=30) as response:
+                      status = response.status
+                      payload = json.load(response)
+                  if not isinstance(payload, dict) or payload.get("success") is not True:
+                      return {"status": "error", "httpStatus": status}, None
+                  return {"status": "success", "httpStatus": status}, payload.get("result")
+              except urllib.error.HTTPError as error:
+                  return {"status": "error", "httpStatus": error.code}, None
+              except Exception:
+                  return {"status": "error"}, None
+
+          def pick(value, names):
+              if not isinstance(value, dict):
+                  return {}
+              return {name: value[name] for name in names if name in value}
+
+          def deployment(value):
+              if not isinstance(value, dict):
+                  return None
+              trigger = value.get("deployment_trigger") or {}
+              return {
+                  **pick(value, ("id", "environment")),
+                  "source": pick(trigger.get("metadata"), ("branch", "commit_hash")),
+              }
+
+          def project(value):
+              source = value.get("source") or {}
+              config = source.get("config") or {}
+              environments = {}
+              for name in ("preview", "production"):
+                  variables = ((value.get("deployment_configs") or {}).get(name) or {}).get("env_vars") or {}
+                  environments[name] = {}
+                  for key in ENV_NAMES:
+                      variable = variables.get(key)
+                      if isinstance(variable, dict) and variable.get("type") == "plain_text":
+                          environments[name][key] = variable.get("value")
+              return {
+                  "name": value.get("name"),
+                  "source": {
+                      "type": source.get("type"),
+                      **pick(config, ("owner", "repo_name", "production_branch")),
+                  },
+                  "production_branch": value.get("production_branch", config.get("production_branch")),
+                  "build_config": pick(value.get("build_config"), ("build_command", "destination_dir", "root_dir")),
+                  "canonical_deployment": deployment(value.get("canonical_deployment")),
+                  "deployment_configs": environments,
+              }
+
+          def main():
+              result = {
+                  "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  "accountId": ACCOUNT,
+                  "projectName": PROJECT,
+                  "githubRunId": os.environ.get("GITHUB_RUN_ID"),
+                  "auditCommit": os.environ.get("GITHUB_SHA"),
+              }
+              token = "".join(os.environ.get("CLOUDFLARE_API_TOKEN", "").split())
+              if not token:
+                  result["projectRead"] = {"status": "credential-unavailable"}
+                  return result
+              result["projectRead"], value = get("", token)
+              if result["projectRead"]["status"] != "success":
+                  return result
+              if not isinstance(value, dict):
+                  result["projectRead"] = {"status": "error"}
+                  return result
+              result["project"] = project(value)
+              result["deploymentsRead"], values = get("/deployments?env=production&per_page=5", token)
+              if result["deploymentsRead"]["status"] == "success" and isinstance(values, list):
+                  result["latestProductionDeployments"] = [
+                      deployment(value) for value in values
+                      if isinstance(value, dict) and value.get("environment") == "production"
+                  ]
+              return result
+
+          try:
+              result = main()
+          except Exception:
+              result = {"status": "error"}
+          Path("pages-config-ci.json").write_text(json.dumps(result, indent=2) + "\n")
+          print("Pages configuration read:", result.get("projectRead", {}).get("status", "error"))
+          PY
+
+      - name: Upload sanitized audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: pages-config-ci
+          path: pages-config-ci.json
+          if-no-files-found: error
+          retention-days: 7
