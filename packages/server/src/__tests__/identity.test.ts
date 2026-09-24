@@ -87,6 +87,7 @@ describe("withSessionRefresh", () => {
       "401 Not Authorized",
       "Unauthorized access",
       "unauthorized request",
+      "Not signed in. Call signIn() first.",
     ];
 
     for (const msg of sessionErrorMessages) {
@@ -286,6 +287,25 @@ describe("assertKvResult", () => {
             meta: { status: 401 },
           },
         });
+      }
+      return { ok: true as const, data: "recovered" };
+    });
+
+    await expect(withSessionRefresh(node as any, fn)).resolves.toEqual({
+      ok: true,
+      data: "recovered",
+    });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(node.signIn).toHaveBeenCalledTimes(1);
+  });
+
+  test("retries a legacy KV Result with the node SDK's not-signed-in error", async () => {
+    const node = createMockNode();
+    let calls = 0;
+    const fn = mock(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return assertKvResult({ ok: false, error: "Not signed in. Call signIn() first." });
       }
       return { ok: true as const, data: "recovered" };
     });
