@@ -8,13 +8,15 @@
 //   6. the api client speaks the SPEC.md contract (paths, bearer, 202 handling).
 
 import { describe, expect, test } from "bun:test";
+import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import express from "express";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 
 import { createTranscriberRouter } from "../routes/transcriber.js";
-import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
+import { BackendStorageLane } from "../services/backend-storage-lane.js";
+import { KvTranscriberIndexStore, MemoryTranscriberIndexStore, type TranscriberIndexStore } from "../services/transcriber-index.js";
 import {
   createTranscriptionApiClient,
   TranscriptionApiError,
@@ -94,9 +96,8 @@ function fakeApi() {
   return { api, calls, store };
 }
 
-function harness(address: string | null = ADDRESS_A) {
+function harness(address: string | null = ADDRESS_A, index: TranscriberIndexStore = new MemoryTranscriberIndexStore()) {
   const { api, calls, store } = fakeApi();
-  const index = new MemoryTranscriberIndexStore();
   const session: { address: string | null } = { address };
   const app = express();
   app.use(express.json());
@@ -171,6 +172,43 @@ describe("POST /api/transcriber/meetings", () => {
       ],
     });
     expect(await h.index.list(ADDRESS_A)).toEqual(["mtg_1"]);
+  });
+
+  test("recovers an expired backend KV session and keeps the created meeting", async () => {
+    let signedIn = false;
+    let signInCalls = 0;
+    let ids: string[] = [];
+    const node = {
+      kv: {
+        async get() {
+          if (!signedIn) throw new Error("Not signed in. Call signIn() first.");
+          return { ok: true, data: { ids } };
+        },
+        async put(_key: string, value: { ids: string[] }) {
+          if (!signedIn) throw new Error("Not signed in. Call signIn() first.");
+          ids = value.ids;
+          return { ok: true };
+        },
+      },
+      async signIn() {
+        signedIn = true;
+        signInCalls++;
+      },
+    } as unknown as TinyCloudNode;
+    const index = new KvTranscriberIndexStore(node, new BackendStorageLane());
+    const h = harness(ADDRESS_A, index);
+
+    await withServer(h.app, async (base) => {
+      const created = await call(base, "/api/transcriber/meetings", "POST", {
+        meeting_url: "https://meet.jit.si/tinycloud-demo",
+      });
+      expect(created.status).toBe(201);
+      const listed = await call(base, "/api/transcriber/meetings");
+      expect(listed.status).toBe(200);
+      expect(listed.body.meetings.map((m: TranscriptionMeeting) => m.id)).toEqual(["mtg_1"]);
+    });
+    expect(signInCalls).toBe(1);
+    expect(ids).toEqual(["mtg_1"]);
   });
 
   test("uses the default bot name when none is given", async () => {

@@ -74,7 +74,7 @@ interface StructuredKvError {
 
 const SAFE_KV_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SESSION_ERROR_PATTERN =
-  /\b(session\s+expired|invalid\s+session|token\s+expired|expired\s+credentials?|unauthorized|unauthenticated|sign.?in\s*required)\b|\b401\b(?![\d-])/i;
+  /\b(session\s+expired|invalid\s+session|token\s+expired|expired\s+credentials?|unauthorized|unauthenticated|sign.?in\s*required|not\s+signed\s+in)\b|\b401\b(?![\d-])/i;
 
 function safeStatus(value: unknown): number | undefined {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
