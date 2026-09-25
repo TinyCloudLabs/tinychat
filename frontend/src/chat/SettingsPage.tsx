@@ -23,6 +23,7 @@ import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
 import { BackendAttestationDetails } from "./BackendAttestationDetails";
+import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 
 interface SettingsPageProps {
   address: string | null;
@@ -68,6 +69,7 @@ export function SettingsPage({
   sessionStore,
 }: SettingsPageProps) {
   const agentAccess = useAgentAccess();
+  const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
   const pct = hasLimit
@@ -213,6 +215,19 @@ export function SettingsPage({
               <ThemeToggle />
             </div>
           </SectionCard>
+          {conversationCanvas.eligible && (
+            <SectionCard icon={DatabaseIcon} title="Experimental Features">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Conversation Canvas</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Explore branches and pin immutable Markdown context in a visual chat.</p>
+                </div>
+                <button type="button" role="switch" aria-checked={conversationCanvas.enabled} aria-label="Enable Conversation Canvas" disabled={conversationCanvas.loading} onClick={() => void conversationCanvas.setEnabled(!conversationCanvas.enabled)} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${conversationCanvas.enabled ? "bg-primary" : "bg-muted"}`}>
+                  <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${conversationCanvas.enabled ? "left-6" : "left-1"}`} />
+                </button>
+              </div>
+            </SectionCard>
+          )}
         </div>
       </div>
     </div>

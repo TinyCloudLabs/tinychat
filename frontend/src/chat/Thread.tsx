@@ -16,6 +16,7 @@ import {
   ThreadPrimitive,
   useAuiState,
   useMessage,
+  useThreadRuntime,
 } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -59,35 +60,52 @@ import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapt
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
 import type { SelectionView } from "./modelSelection";
+import { ConversationCanvas } from "./canvas/ConversationCanvas";
+import { repositoryFromCanvas } from "./runtime";
+import type { ConversationCanvas as CanvasModel } from "./canvas/model";
 
 interface ThreadProps {
   tcw: TinyCloudWeb;
   selection: SelectionView;
   onRetrySelection: () => void;
   onReload: () => void;
+  canvasEnabled?: boolean;
 }
 
-export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload }) => {
+export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false }) => {
+  const threadId = useAuiState((s) => s.threadListItem.remoteId ?? s.threadListItem.id) as string | undefined;
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const threadRuntime = useThreadRuntime();
+  const applyCanvasToRuntime = useCallback((canvas: CanvasModel) => {
+    threadRuntime.import(repositoryFromCanvas(canvas));
+  }, [threadRuntime]);
+  const [surface, setSurface] = useState<"chat" | "canvas">("chat");
+  useEffect(() => setSurface("chat"), [threadId]);
   return (
     <TooltipProvider delayDuration={300}>
       <ShareThreadProvider tcw={tcw}>
         <ThreadPrimitive.Root className="flex h-full flex-col bg-background">
-          <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
-            <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
-              <CompactionIndicator />
-              {!selection.canSend && selection.message && (
-                <div role="status" className="flex items-center justify-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                  <span>{selection.message}</span>
-                  {(selection.saveFailed || selection.message.startsWith("Retry loading")) && (
-                    <Button type="button" variant="outline" size="sm" onClick={onRetrySelection}>Retry</Button>
-                  )}
-                  {selection.message === "Chat unavailable." && (
-                    <Button type="button" variant="outline" size="sm" onClick={onReload}>Reload</Button>
-                  )}
-                </div>
-              )}
-              <ThreadBody />
+          {canvasEnabled && threadId && (
+            <div className="flex items-center justify-end gap-1 border-b border-border px-3 py-1.5">
+              <span className="mr-2 text-xs text-muted-foreground">View</span>
+              <Button type="button" variant={surface === "chat" ? "default" : "outline"} size="sm" aria-pressed={surface === "chat"} onClick={() => setSurface("chat")}>Chat</Button>
+              <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
             </div>
+          )}
+          <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+            {surface === "canvas" ? (
+              <div className="h-full w-full"><ConversationCanvas tcw={tcw} threadId={threadId ?? ""} editingDisabled={isRunning} onCanvasChange={applyCanvasToRuntime} onSwitchToChat={() => setSurface("chat")} /></div>
+            ) : <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
+                <CompactionIndicator />
+                {!selection.canSend && selection.message && (
+                  <div role="status" className="flex items-center justify-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                    <span>{selection.message}</span>
+                    {(selection.saveFailed || selection.message.startsWith("Retry loading")) && <Button type="button" variant="outline" size="sm" onClick={onRetrySelection}>Retry</Button>}
+                    {selection.message === "Chat unavailable." && <Button type="button" variant="outline" size="sm" onClick={onReload}>Reload</Button>}
+                  </div>
+                )}
+                <ThreadBody />
+              </div>}
 
             <Composer selection={selection} />
           </ThreadPrimitive.Viewport>

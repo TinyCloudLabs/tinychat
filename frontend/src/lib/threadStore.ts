@@ -1086,6 +1086,48 @@ export async function appendMessage(
   });
 }
 
+/** Update/create only the legacy thread index row; never inserts a message payload. */
+export async function upsertThreadIndex(
+  tcw: TinyCloudWeb,
+  id: string,
+  metadata: { title?: string; model?: string },
+): Promise<void> {
+  const local = localStores.get(tcw);
+  const now = new Date().toISOString();
+  if (local) {
+    const prior = local.threads.get(id);
+    local.threads.set(id, {
+      id,
+      title: metadata.title ?? prior?.title ?? DEFAULT_TITLE,
+      model: metadata.model ?? prior?.model ?? DEFAULT_MODEL,
+      createdAt: prior?.createdAt ?? now,
+      updatedAt: now,
+      messages: prior?.messages ?? [],
+    });
+    notifyLocalThreads(tcw, id);
+    return;
+  }
+  return enqueueThreadWrite(tcw, id, async () => {
+    mutationGen++;
+    await ensureSchema(tcw);
+    const prior = await store(tcw).query("SELECT title, model, created_at FROM threads WHERE id = ?", [id]);
+    if (!prior.ok) throw new SqlOpError(prior.error, "upsertThreadIndex(read)");
+    const row = prior.data.rows[0];
+    const title = metadata.title ?? cellStr(row ?? [], 0, DEFAULT_TITLE);
+    const model = metadata.model ?? cellStr(row ?? [], 1, DEFAULT_MODEL);
+    const createdAt = cellStr(row ?? [], 2, now);
+    const result = await store(tcw).execute(
+      `INSERT INTO threads (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET title = excluded.title, model = excluded.model, updated_at = excluded.updated_at`,
+      [id, title, model, createdAt, now],
+    );
+    if (!result.ok) throw new SqlOpError(result.error, "upsertThreadIndex(write)");
+    patchCacheEntry(tcw, { id, title, model, updatedAt: now });
+    historyPrefetch.invalidate(id);
+    notifyThreadIndex(readCache(tcw) ?? []);
+  });
+}
+
 /** Default model for imported (non-native) conversations — see spec §8. Must be
  * an offered picker model (backend PICKER_MODELS). */
 export const IMPORT_DEFAULT_MODEL = DEFAULT_CHAT_MODEL;
