@@ -509,6 +509,7 @@ export async function upsertMeeting(
   tcw: TinyCloudWeb,
   meeting: NormalizedMeeting,
   sentences: FirefliesSentence[],
+  options: { preserveExistingTitle?: boolean; preserveTranscriptBody?: boolean } = {},
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
@@ -526,7 +527,7 @@ export async function upsertMeeting(
   if (!row) {
     const ins = await insertMeetingRow(tcw, meeting, now, "upsertMeeting(insert)");
     if (!ins.ok) return ins;
-    const kv = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
+    const kv = await (options.preserveTranscriptBody ? putMissingTranscriptBody : putTranscriptBody)(tcw, meeting.source, meeting.sourceId, sentences);
     if (!kv.ok) return kv;
     return { ok: true, data: { id: meeting.id, inserted: true, createdAt: now } };
   }
@@ -575,7 +576,7 @@ export async function upsertMeeting(
        keywords = ?, meeting_type = ?, metadata = ?, updated_at = ?
      WHERE id = ?`,
     [
-      keepStr(meeting.title, 2),
+      options.preserveExistingTitle ? cellStr(row, 2, meeting.title) : keepStr(meeting.title, 2),
       acceptsIncomingDatetime ? meeting.startedAt : existingStartedAt,
       meeting.durationSecs !== null ? meeting.durationSecs : cellNum(row, 4, null),
       keepStr(meeting.organizerEmail, 5),
@@ -597,8 +598,8 @@ export async function upsertMeeting(
   );
   if (!upd.ok) return fail(upd.error, "upsertMeeting(update)");
 
-  if (sentences.length > 0) {
-    const kv = await putTranscriptBody(tcw, meeting.source, meeting.sourceId, sentences);
+  if (sentences.length > 0 || options.preserveTranscriptBody) {
+    const kv = await (options.preserveTranscriptBody ? putMissingTranscriptBody : putTranscriptBody)(tcw, meeting.source, meeting.sourceId, sentences);
     if (!kv.ok) return kv;
   }
 
@@ -606,6 +607,16 @@ export async function upsertMeeting(
 }
 
 // ── Transcript bodies (KV) ──────────────────────────────────────────────
+
+/** A SQL row may survive a failed KV write. Repair it, including a valid empty transcript. */
+async function putMissingTranscriptBody(
+  tcw: TinyCloudWeb, source: string, sourceId: string, sentences: FirefliesSentence[],
+): Promise<StoreResult<void>> {
+  const existing = await tcw.kv.get(transcriptKvKey(source, sourceId));
+  if (existing.ok) return { ok: true, data: undefined };
+  if (!/NOT_FOUND/i.test(existing.error.code ?? "")) return fail(existing.error, "putMissingTranscriptBody");
+  return putTranscriptBody(tcw, source, sourceId, sentences);
+}
 
 export async function putTranscriptBody(
   tcw: TinyCloudWeb,

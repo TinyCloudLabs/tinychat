@@ -5,7 +5,7 @@
 // react-dom/server, like MeetingsSection); `TranscriberSection` owns the client, the polling and
 // the form state. No vault, no key: a session token and the backend URL are the only inputs.
 
-import { useCallback, useEffect, useRef, useState, type FC, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AudioLinesIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -21,10 +21,9 @@ import {
   type TranscriberResult,
   type TranscriberTranscript,
 } from "@/lib/transcriberApi";
-import {
-  listSavedTranscriberMeetingIds,
-  saveTranscriberMeeting,
-} from "@/lib/transcriberSave";
+import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
+import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
+import { transcriberMeetingTitle } from "@/lib/transcriberSave";
 
 export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
@@ -49,6 +48,7 @@ export interface OpenTranscriptState {
 export type SaveState = "saving" | "saved" | "error";
 
 export interface TranscriberViewProps {
+  calendarOutcomes?: CalendarAutojoinOutcome[];
   listStatus: ListStatus;
   meetings: TranscriberListRow[];
   /** Per meeting id: whether its transcript has been copied into the user's space. */
@@ -138,6 +138,7 @@ const inputClass =
   "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60";
 
 export const TranscriberView: FC<TranscriberViewProps> = ({
+  calendarOutcomes = [],
   listStatus,
   meetings,
   saved,
@@ -270,6 +271,16 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
             </p>
           )}
 
+          {calendarOutcomes.length > 0 && <div className="mt-3 rounded-md border border-border p-3">
+            <h3 className="text-xs font-medium">Calendar autojoin outcomes</h3>
+            <ul className="mt-2 space-y-2 text-xs">
+              {calendarOutcomes.map((outcome) => <li key={outcome.id}>
+                <span className="font-medium">{outcome.title || "Calendar meeting"}</span>
+                <span className="text-muted-foreground"> · {formatWhen(new Date(outcome.start).toISOString())}</span>
+                <p className="text-muted-foreground">{calendarOutcomeLabel(outcome.reason)}</p>
+              </li>)}
+            </ul>
+          </div>}
           {meetings.length > 0 && (
             <ul className="mt-2 flex flex-col divide-y divide-border">
               {meetings.map((row) => (
@@ -332,7 +343,7 @@ function MeetingRow(props: {
   const { meeting, busy, open } = props;
   const active = ACTIVE_STATUSES.has(meeting.status);
   const stoppable = active && meeting.status !== "processing";
-  const when = formatWhen(meeting.created_at);
+  const when = formatWhen(meeting.metadata?.scheduled_start ?? meeting.created_at);
   return (
     <div>
       <div className="flex items-start justify-between gap-3">
@@ -343,7 +354,7 @@ function MeetingRow(props: {
             rel="noreferrer noopener"
             className="block truncate text-sm font-medium hover:underline"
           >
-            {meetingTitle(meeting.meeting_url)}
+            {meeting.metadata?.source === "google-calendar-autojoin" ? transcriberMeetingTitle(meeting) : meetingTitle(meeting.meeting_url)}
           </a>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">
@@ -533,15 +544,7 @@ export interface TranscriberSectionProps {
   tcw?: TinyCloudWeb;
   /** Injectable for tests; defaults to the real client. */
   client?: TranscriberClient;
-  /** Injectable for tests; defaults to the real store writers. */
-  saver?: {
-    listSaved: (tcw: TinyCloudWeb) => Promise<{ ok: boolean; data?: string[] }>;
-    save: (
-      tcw: TinyCloudWeb,
-      meeting: TranscriberMeeting,
-      transcript: TranscriberTranscript,
-    ) => Promise<{ ok: boolean }>;
-  };
+
 }
 
 function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
@@ -588,18 +591,25 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
 export const TranscriberSection: FC<TranscriberSectionProps> = ({
   backendUrl,
   sessionStore,
-  tcw,
   client,
-  saver,
 }) => {
   const apiRef = useRef<TranscriberClient | null>(null);
   if (apiRef.current === null) {
     apiRef.current = client ?? createTranscriberClient(backendUrl, { sessionStore });
   }
   const api = apiRef.current;
-  const saverRef = useRef(
-    saver ?? { listSaved: listSavedTranscriberMeetingIds, save: saveTranscriberMeeting },
-  );
+  const calendar = useMemo(() => createCalendarAutojoinClient(backendUrl, sessionStore), [backendUrl, sessionStore]);
+  const [calendarOutcomes, setCalendarOutcomes] = useState<CalendarAutojoinOutcome[]>([]);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try { const status = await calendar.status(); if (active) setCalendarOutcomes(status.outcomes); }
+      catch { /* The connector displays status errors; manual recordings remain usable. */ }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 60_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [calendar]);
 
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [meetings, setMeetings] = useState<TranscriberListRow[]>([]);
@@ -609,17 +619,10 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const [formError, setFormError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
-  const [saved, setSaved] = useState<Record<string, SaveState>>({});
-  const savedSeeded = useRef(false);
+  const saved = useTranscriberSavedState();
 
   const load = useCallback(async () => {
     setListStatus((s) => (s === "ready" ? s : "loading"));
-    // A failed save gets another go on every explicit or polled refresh.
-    setSaved((current) => {
-      const next: Record<string, SaveState> = {};
-      for (const [id, state] of Object.entries(current)) if (state !== "error") next[id] = state;
-      return next;
-    });
     const result = await api.list();
     setListStatus(listStatusOf(result));
     if (result.status === "ok") setMeetings(result.value.meetings);
@@ -636,47 +639,6 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [anyActive, listStatus, load]);
-
-  // Seed "already saved" from the user's space once, so a reload does not re-copy meetings.
-  useEffect(() => {
-    if (!tcw || savedSeeded.current) return;
-    savedSeeded.current = true;
-    void (async () => {
-      const result = await saverRef.current.listSaved(tcw);
-      if (!result.ok || !result.data) return;
-      setSaved((current) => {
-        const next = { ...current };
-        for (const id of result.data ?? []) if (next[id] === undefined) next[id] = "saved";
-        return next;
-      });
-    })();
-  }, [tcw]);
-
-  // Copy every COMPLETED meeting into the user's space exactly once. Transcript fetch + upsert;
-  // a failure is shown on the row and retried when the user hits Refresh (`load` clears errors).
-  useEffect(() => {
-    if (!tcw) return;
-    const pending = meetings.filter(
-      (m): m is TranscriberMeeting =>
-        !("unavailable" in m) && m.status === "completed" && saved[m.id] === undefined,
-    );
-    if (pending.length === 0) return;
-    setSaved((current) => {
-      const next = { ...current };
-      for (const m of pending) next[m.id] = "saving";
-      return next;
-    });
-    void (async () => {
-      for (const m of pending) {
-        const result = await api.transcript(m.id);
-        let ok = false;
-        if (result.status === "ok" && result.value.status === "ready") {
-          ok = (await saverRef.current.save(tcw, m, result.value.transcript)).ok;
-        }
-        setSaved((current) => ({ ...current, [m.id]: ok ? "saved" : "error" }));
-      }
-    })();
-  }, [api, meetings, saved, tcw]);
 
   const onSubmit = useCallback(() => {
     const trimmed = url.trim();
@@ -756,6 +718,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
 
   return (
     <TranscriberView
+      calendarOutcomes={calendarOutcomes}
       listStatus={listStatus}
       meetings={meetings}
       saved={saved}

@@ -96,6 +96,7 @@ import {
   connectorsAriaLabel,
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
+import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
@@ -839,6 +840,7 @@ export function App() {
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
+            <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
             {/* ChatWorkspace stays mounted while an app surface is active —
                 visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
@@ -904,6 +906,7 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               />
             )}
+            </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
