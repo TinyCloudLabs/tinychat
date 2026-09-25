@@ -388,8 +388,11 @@ nothing below may be reported as done on its behalf.
 - **Port:** the container listens on `3001` in production (`PORT=3001` is set in
   the compose/env), matching Listen and the ingress `TARGET_ENDPOINT`. Local dev
   still defaults to `3014`.
-- **CORS:** the backend allows exactly `FRONTEND_URL`, so production must set
-  `FRONTEND_URL=https://tinycloud.chat`.
+- **CORS:** the backend allows `FRONTEND_URL`, Exo's fixed Tauri origins, the
+  TinyChat Cloudflare Pages project (`*.tinychat-4jq.pages.dev`), and the exact
+  documented local origins on port `5186`. Production must still set
+  `FRONTEND_URL=https://tinycloud.chat`; unrelated Pages projects, localhost
+  ports, and lookalike domains remain blocked.
 - **TLS:** Phala's `dstack-ingress` terminates TLS for the API. The backend's
   local-only `HTTPS_CERT_FILE`/`HTTPS_KEY_FILE` path is unused in production.
 - **What's not included yet:** CI (`ci.yml`) and PR-preview deployments. Port

@@ -7,6 +7,7 @@ import {
   appCorsOrigins,
   EXO_DESKTOP_ORIGIN,
   EXO_DESKTOP_WINDOWS_ORIGIN,
+  LOCAL_WEB_ORIGINS,
 } from "../cors-origins.js";
 
 const WEB_ORIGIN = "https://tinycloud.chat";
@@ -44,9 +45,27 @@ describe("app CORS origins", () => {
     },
   );
 
-  test("does not allow an unrelated web origin", async () => {
+  test.each([
+    "https://feat-conversation-canvas.tinychat-4jq.pages.dev",
+    "https://aa9b9056.tinychat-4jq.pages.dev",
+    ...LOCAL_WEB_ORIGINS,
+  ])("allows the controlled testing origin %s", async (origin) => {
     const response = await fetch(`${baseUrl}/health`, {
-      headers: { Origin: "https://attacker.example" },
+      headers: { Origin: origin },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+  });
+
+  test.each([
+    "https://attacker.example",
+    "https://tinychat-4jq.pages.dev.attacker.example",
+    "https://other-project.pages.dev",
+    "http://localhost:5173",
+  ])("does not allow unrelated origin %s", async (origin) => {
+    const response = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: origin },
     });
 
     expect(response.status).toBe(200);
