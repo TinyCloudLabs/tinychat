@@ -19,7 +19,7 @@ if (!['http:', 'https:'].includes(setupUrl.protocol) || setupUrl.username || set
 if (!setupUrl.pathname.endsWith('/')) setupUrl.pathname += '/';
 const instructionsUrl = new URL('setup.md', setupUrl).href;
 const context = createSetupContext([values.host ?? process.env.VITE_TINYCLOUD_HOST ?? config.dataHost]);
-const prompt = buildSetupPrompt({ instructionsUrl }, context);
+const prompt = buildSetupPrompt({ instructionsUrl });
 const contextJson = JSON.stringify(context, null, 2);
 const replacements = {
   CLI_VERSION: config.cliVersion, PACK_VERSION: config.packVersion,
