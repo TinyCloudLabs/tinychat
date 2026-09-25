@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Client for the TinyCloud Private Transcription API
  * (`TinyCloudLabs/tinycloud-private-transcription`, SPEC.md V1).
@@ -8,6 +10,7 @@
  * is the whole reason `routes/transcriber.ts` proxies rather than letting the SPA call upstream.
  *
  *   POST   /v1/meetings                  createMeeting
+ *   GET    /v1/meetings/by-idempotency-key lookupMeetingByIdempotencyKey
  *   GET    /v1/meetings/{id}             getMeeting
  *   POST   /v1/meetings/{id}/stop        stopMeeting
  *   GET    /v1/meetings/{id}/transcript  getTranscript (202 while pending)
@@ -75,6 +78,7 @@ export interface CreateMeetingInput {
   meeting_url: string;
   bot_name?: string;
   language?: string;
+  webhook_url?: string;
   platform?: string;
   metadata?: Record<string, unknown>;
 }
@@ -85,6 +89,7 @@ export class TranscriptionApiError extends Error {
     public readonly status: number,
     public readonly code: string | null,
     message: string,
+    public readonly retryAfterMs: number | null = null,
   ) {
     super(message);
     this.name = "TranscriptionApiError";
@@ -92,7 +97,8 @@ export class TranscriptionApiError extends Error {
 }
 
 export interface TranscriptionApiClient {
-  createMeeting(input: CreateMeetingInput): Promise<TranscriptionMeeting>;
+  createMeeting(input: CreateMeetingInput, options?: CreateMeetingOptions): Promise<TranscriptionMeeting>;
+  lookupMeetingByIdempotencyKey(key: string): Promise<IdempotencyLookup | null>;
   getMeeting(id: string): Promise<TranscriptionMeeting>;
   stopMeeting(id: string): Promise<{ id: string; status: TranscriptionMeetingStatus }>;
   /** `pending: true` mirrors upstream's 202 — the transcript is not ready yet. */
@@ -102,6 +108,17 @@ export interface TranscriptionApiClient {
   deleteMeeting(id: string): Promise<void>;
 }
 
+export interface CreateMeetingOptions {
+  idempotencyKey?: string;
+  /** The scheduler must recheck consent and eligibility before every create attempt. */
+  retryTransport?: boolean;
+}
+
+export interface IdempotencyLookup {
+  meeting: TranscriptionMeeting;
+  requestHash: string;
+}
+
 export interface TranscriptionApiConfig {
   baseUrl: string;
   apiKey: string;
@@ -109,6 +126,46 @@ export interface TranscriptionApiConfig {
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   idempotencyKey?: () => string;
+  /** Bound each request, including reading its body. Defaults to 30 seconds. */
+  requestTimeoutMs?: number;
+}
+
+/** Match upstream's parsed JSON create hash, not defaults resolved after creation. */
+export function computeCreateRequestHash(input: CreateMeetingInput): string {
+  const wire = JSON.parse(JSON.stringify(input)) as CreateMeetingInput;
+  let meetingUrl = wire.meeting_url;
+  const url = new URL(meetingUrl);
+  // The upstream never includes a Signal bearer capability in its persisted request hash.
+  if (url.hostname === "signal.link" && url.pathname === "/call/") {
+    url.hash = "";
+    meetingUrl = url.toString();
+  }
+  const parsed = {
+    meeting_url: meetingUrl,
+    bot_name: wire.bot_name ?? undefined,
+    language: wire.language ?? undefined,
+    webhook_url: wire.webhook_url ?? undefined,
+    platform: wire.platform ?? undefined,
+    metadata: wire.metadata,
+  };
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined)
+        .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  };
+  return createHash("sha256").update(canonical(parsed)).digest("hex");
+}
+
+function retryAfterMs(value: string | null): number | null {
+  if (!value?.trim()) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
 }
 
 /** Both env vars set = the transcriber surface mounts. Either missing = the routes do not exist. */
@@ -127,7 +184,7 @@ const TRANSIENT_RETRY_DELAY_MS = 750;
 export function isTransientTransportError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const text = `${error.name} ${error.message} ${(error as { code?: string }).code ?? ""}`;
-  return /socket|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|timed out|network|closed unexpectedly|fetch failed/i.test(
+  return /socket|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|TimeoutError|timed out|network|closed unexpectedly|fetch failed/i.test(
     text,
   );
 }
@@ -137,12 +194,17 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
   const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
   const sleep = config.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const newIdempotencyKey = config.idempotencyKey ?? (() => crypto.randomUUID());
+  const requestTimeoutMs = config.requestTimeoutMs ?? 30_000;
+  if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+    throw new Error("requestTimeoutMs must be positive");
+  }
 
   async function request(
     method: "GET" | "POST" | "DELETE",
     path: string,
     body?: unknown,
     extraHeaders: Record<string, string> = {},
+    retryTransport = true,
   ): Promise<{ status: number; json: unknown }> {
     const init: RequestInit = {
       method,
@@ -158,16 +220,38 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
     // retry after a short pause covers the blip without turning an outage into a hammer.
     // Retried creates carry an Idempotency-Key, so they cannot send a second bot.
     // The only other POST is stop, whose upstream contract is explicitly idempotent.
-    let response: Response;
+    const attempt = async (): Promise<{ response: Response; text: string }> => {
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const error = new DOMException("Transcription request timed out", "TimeoutError");
+          controller.abort(error);
+          reject(error);
+        }, requestTimeoutMs);
+      });
+      try {
+        return await Promise.race([
+          (async () => {
+            const response = await fetchImpl(`${base}${path}`, { ...init, signal: controller.signal });
+            return { response, text: await response.text() };
+          })(),
+          timeout,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let result: { response: Response; text: string };
     try {
-      response = await fetchImpl(`${base}${path}`, init);
+      result = await attempt();
     } catch (error) {
-      if (!isTransientTransportError(error)) throw error;
+      if (!retryTransport || !isTransientTransportError(error)) throw error;
       await sleep(TRANSIENT_RETRY_DELAY_MS);
-      response = await fetchImpl(`${base}${path}`, init);
+      result = await attempt();
     }
+    const { response, text } = result;
     let json: unknown = null;
-    const text = await response.text();
     if (text.length > 0) {
       try {
         json = JSON.parse(text);
@@ -181,6 +265,7 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
         response.status,
         typeof err?.code === "string" ? err.code : null,
         typeof err?.message === "string" ? err.message : `upstream ${response.status}`,
+        retryAfterMs(response.headers.get("retry-after")),
       );
     }
     return { status: response.status, json };
@@ -189,11 +274,28 @@ export function createTranscriptionApiClient(config: TranscriptionApiConfig): Tr
   const encode = (id: string) => encodeURIComponent(id);
 
   return {
-    async createMeeting(input) {
+    async createMeeting(input, options = {}) {
       const { json } = await request("POST", "/v1/meetings", input, {
-        "Idempotency-Key": newIdempotencyKey(),
-      });
+        "Idempotency-Key": options.idempotencyKey ?? newIdempotencyKey(),
+      }, options.retryTransport ?? true);
       return json as TranscriptionMeeting;
+    },
+    async lookupMeetingByIdempotencyKey(key) {
+      try {
+        const { json } = await request("GET", "/v1/meetings/by-idempotency-key", undefined, {
+          "Idempotency-Key": key,
+        });
+        const body = json as { meeting?: TranscriptionMeeting; request_hash?: unknown } | null;
+        if (!body?.meeting?.id || typeof body.request_hash !== "string" || !/^[0-9a-f]{64}$/.test(body.request_hash)) {
+          throw new TranscriptionApiError(502, "invalid_lookup_response", "Invalid idempotency lookup response");
+        }
+        return { meeting: body.meeting, requestHash: body.request_hash };
+      } catch (error) {
+        if (error instanceof TranscriptionApiError && error.status === 404 && error.code === "meeting_not_found") {
+          return null;
+        }
+        throw error;
+      }
     },
     async getMeeting(id) {
       const { json } = await request("GET", `/v1/meetings/${encode(id)}`);

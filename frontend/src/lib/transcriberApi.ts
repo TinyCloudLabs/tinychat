@@ -58,6 +58,12 @@ export interface TranscriberMeeting {
   transcript_provider?: string;
   fallback_from?: string;
   fallback_reason?: string | null;
+  metadata?: {
+    source?: string;
+    calendar_title?: string;
+    scheduled_start?: string;
+    [key: string]: unknown;
+  };
 }
 
 /** A row whose upstream read failed this time round. It keeps its id so it can still be deleted. */

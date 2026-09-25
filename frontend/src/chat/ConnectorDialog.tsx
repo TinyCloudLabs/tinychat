@@ -93,6 +93,7 @@ import {
 } from "@/lib/connectors/gmeetSync";
 import {
   GOOGLE_MEET_CONSENT_COPY,
+  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
@@ -182,6 +183,7 @@ interface ConnectErrorState {
 }
 
 interface ConnectorConnectDialogProps {
+  purpose?: "browser" | "autojoin";
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
   /** The card's props, handed down. The OAuth machine's proxy calls need both;
@@ -689,6 +691,7 @@ const GMEET_STORE: GmeetSyncStore = {
 };
 
 const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
+  purpose = "browser",
   tcw,
   descriptor,
   backendUrl,
@@ -698,6 +701,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   onConnected,
 }) => {
   const [phase, setPhase] = useState<OAuthConnectPhase>("authorize");
+  const [custodyConsent, setCustodyConsent] = useState(false);
+  const autojoin = purpose === "autojoin";
   const [error, setError] = useState<OAuthErrorState | null>(null);
   const [progress, setProgress] = useState<GmeetSyncProgress | null>(null);
   const [summary, setSummary] = useState<GmeetSyncSummary | null>(null);
@@ -734,6 +739,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     setProgress(null);
     setSummary(null);
     setAutoTranscription({ status: "idle" });
+    setCustodyConsent(false);
     setMeetingCode("");
     stateRef.current = null;
     verifierRef.current = null;
@@ -772,7 +778,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
   /** save-token → initial-sync. Reached only with both tokens in hand. */
   const saveAndSync = useCallback(
-    async (accessToken: string, refreshToken: string) => {
+    async (accessToken: string, refreshToken: string, setupId?: string) => {
       setPhase("save-token");
       if (!isSecretsUnlocked(tcw)) {
         const unlock = await unlockSecrets<SecretsErr>(tcw);
@@ -793,6 +799,20 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           message: save.error?.message ?? "Could not save the Google connection",
         });
         return;
+      }
+
+      if (autojoin) {
+        if (!setupId) { failWith({ kind: "unknown", message: "Calendar setup did not complete." }); return; }
+        try {
+          const enabled = await fetch(`${backendUrl}/api/connectors/google/autojoin/enable`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStore.getToken()}`,
+              [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
+            body: JSON.stringify({ setupId }),
+          });
+          if (!enabled.ok) { failWith(await readGoogleProxyError(enabled)); return; }
+          onConnected();
+        } catch { failWith({ kind: "network", message: "" }); return; }
       }
 
       setPhase("initial-sync");
@@ -829,7 +849,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       setSummary(res.data);
       setPhase("done");
     },
-    [backendUrl, descriptor, failWith, onConnected, sessionStore, tcw],
+    [autojoin, backendUrl, descriptor, failWith, onConnected, sessionStore, tcw],
   );
 
   /**
@@ -840,6 +860,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     async (code: string) => {
       setPhase("exchange");
       const verifier = verifierRef.current;
+      const transactionState = stateRef.current;
       // Single-use, whatever happens next: a verifier that outlives its code is
       // a replay waiting for a second postMessage.
       verifierRef.current = null;
@@ -856,14 +877,14 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
       let response: Response;
       try {
-        response = await fetch(`${backendUrl}${GOOGLE_OAUTH_EXCHANGE_PATH}`, {
+        response = await fetch(`${backendUrl}${autojoin ? "/api/connectors/google/autojoin/exchange" : GOOGLE_OAUTH_EXCHANGE_PATH}`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${bearer}`,
             [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
           },
-          body: JSON.stringify({ code, verifier }),
+          body: JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}) }),
         });
       } catch {
         // Deliberately not narrated with the thrown message: a transport error
@@ -876,11 +897,12 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         return;
       }
 
-      let payload: { access_token?: unknown; refresh_token?: unknown };
+      let payload: { access_token?: unknown; refresh_token?: unknown; setupId?: unknown };
       try {
         payload = (await response.json()) as {
           access_token?: unknown;
           refresh_token?: unknown;
+          setupId?: unknown;
         };
       } catch {
         failWith({ kind: "unknown", message: "" });
@@ -898,9 +920,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       }
       accessTokenRef.current = accessToken;
       refreshTokenRef.current = refreshToken;
-      await saveAndSync(accessToken, refreshToken);
+      await saveAndSync(accessToken, refreshToken, typeof payload.setupId === "string" ? payload.setupId : undefined);
     },
-    [backendUrl, failWith, saveAndSync, sessionStore],
+    [autojoin, backendUrl, failWith, saveAndSync, sessionStore],
   );
 
   /**
@@ -909,6 +931,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
    * popup is opened blank, THEN navigated once the PKCE challenge is computed.
    */
   const handleAuthorize = useCallback(() => {
+    if (autojoin && !custodyConsent) return;
     setError(null);
     codeHandledRef.current = false;
     const popup = window.open(
@@ -939,9 +962,23 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       }
       stateRef.current = state;
       verifierRef.current = verifier;
-      const url =
-        `${backendUrl}${GOOGLE_OAUTH_START_PATH}` +
+      let url = `${backendUrl}${GOOGLE_OAUTH_START_PATH}` +
         `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}`;
+      if (autojoin) {
+        const bearer = sessionStore.getToken();
+        if (!bearer || sessionStore.isExpired()) { closePopup(); failWith({ kind: "session", message: "" }); return; }
+        try {
+          const begun = await fetch(`${backendUrl}/api/connectors/google/autojoin/begin`, {
+            method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}`,
+              [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
+            body: JSON.stringify({ state, challenge, consent: true }),
+          });
+          if (!begun.ok) { closePopup(); failWith(await readGoogleProxyError(begun)); return; }
+          const payload = await begun.json() as { authorizationUrl: string };
+          url = payload.authorizationUrl;
+        } catch { closePopup(); failWith({ kind: "network", message: "" }); return; }
+      }
+      if (codeHandledRef.current || popupRef.current !== popup) return;
       try {
         popup.location.href = url;
       } catch {
@@ -950,7 +987,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         setError({ kind: "cancelled", message: "" });
       }
     })();
-  }, [backendUrl, closePopup]);
+  }, [autojoin, custodyConsent, backendUrl, closePopup, failWith, sessionStore]);
 
   /**
    * The callback listener, live only while we are waiting for one.
@@ -1056,16 +1093,21 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md" hideCloseButton={busy}>
         <DialogHeader>
-          <DialogTitle>Connect {descriptor.name}</DialogTitle>
+          <DialogTitle>{autojoin ? "Enable Calendar autojoin" : `Connect ${descriptor.name}`}</DialogTitle>
           <DialogDescription>
-            Sign in with Google to sync your Meet transcripts. Your Google
-            connection is stored in TinyCloud’s encrypted secrets — the
-            transcripts themselves go straight from Google to your space.
+            {autojoin ? "Authorize background Calendar access and encrypted server custody of your Google token."
+              : "Sign in with Google to sync your Meet transcripts. Your Google connection is stored in TinyCloud’s encrypted secrets. Reconnecting turns Calendar autojoin off until you explicitly enable it again."}
           </DialogDescription>
         </DialogHeader>
 
         {phase === "authorize" && (
-          <AuthorizePanel copy={GOOGLE_MEET_CONSENT_COPY} error={error} />
+          <>
+            <AuthorizePanel copy={autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY} error={error} />
+            {autojoin && <label className="flex items-start gap-2 text-xs">
+              <input type="checkbox" checked={custodyConsent} onChange={(event) => setCustodyConsent(event.target.checked)} />
+              <span>{GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY.consentCheckbox}</span>
+            </label>}
+          </>
         )}
         {phase === "wait-callback" && <WaitCallbackPanel />}
         {phase === "exchange" && (
@@ -1089,6 +1131,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
         <OAuthConnectFooter
           phase={phase}
+          authorizeDisabled={autojoin && !custodyConsent}
           onAuthorize={handleAuthorize}
           onCancelAuthorize={handleCancelAuthorize}
           onClose={handleClose}
@@ -1121,6 +1164,7 @@ const AuthorizePanel: FC<{
         </li>
       ))}
     </ul>
+    {copy.disconnectNote && <p className="text-xs text-muted-foreground"><Emphasized text={copy.disconnectNote} /></p>}
     {SHOW_GOOGLE_TESTING_MODE_CAVEAT && (
       <p className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground">
         <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
@@ -1246,7 +1290,7 @@ const GmeetDonePanel: FC<{
       {autoTranscription.status !== "declined" && (
         <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
           <p className="text-xs font-medium text-foreground">
-            Turn on transcription for meetings you host
+            Google automatic transcription for meetings you host
           </p>
           <p className="text-xs text-muted-foreground">
             Google can transcribe automatically for a meeting space you host, so
@@ -1322,12 +1366,13 @@ const OAuthFailedPanel: FC<{ error: OAuthErrorState }> = ({ error }) => (
 );
 
 const OAuthConnectFooter: FC<{
+  authorizeDisabled?: boolean;
   phase: OAuthConnectPhase;
   onAuthorize: () => void;
   onCancelAuthorize: () => void;
   onClose: () => void;
   onStopSync: () => void;
-}> = ({ phase, onAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
+}> = ({ phase, authorizeDisabled, onAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
     {phase === "authorize" && (
       <>
@@ -1335,7 +1380,7 @@ const OAuthConnectFooter: FC<{
           Cancel
         </Button>
         {/* Not async, and it must stay that way — see `handleAuthorize`. */}
-        <Button size="sm" onClick={onAuthorize}>
+        <Button size="sm" disabled={authorizeDisabled} onClick={onAuthorize}>
           Continue with Google
         </Button>
       </>
@@ -1469,6 +1514,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
   const runTeardown = useCallback(async () => {
     setRunning(true);
     const resume = progressRef.current;
+    let showRevokeWarning = revoke?.status === "failed" || revoke?.status === "no-token";
 
     // ONE path, in one order: revoke upstream FIRST (while the token is still
     // readable — `delete-key` is about to wipe it), then the ordered local
@@ -1485,7 +1531,8 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
         sessionStore,
       });
       setRevoke(revokeOutcome);
-      if (revokeOutcome.status === "locked") {
+      showRevokeWarning = revokeOutcome.status === "failed" || revokeOutcome.status === "no-token";
+      if (revokeOutcome.status === "locked" || revokeOutcome.status === "server-unavailable") {
         // The one blocking case: without the vault we can neither read the
         // token to revoke nor delete it, so nothing has happened yet and the
         // honest state is "not disconnected, try again".
@@ -1550,7 +1597,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     // connector connected, and its count still stands.
     removeBackgroundDrainConnectorRecord(descriptor.source);
     onDisconnected();
-    onOpenChange(false);
+    if (!showRevokeWarning) onOpenChange(false);
   }, [
     backendUrl,
     descriptor,
@@ -1559,6 +1606,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
     oauth,
     onDisconnected,
     onOpenChange,
+    revoke,
     sessionStore,
     tcw,
     webhooks,
@@ -1581,7 +1629,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
             {oauth ? (
               // The copy `consentCopy.ts` pins — the same words the connect
               // dialog promised, said again where they take effect.
-              <Emphasized text={GOOGLE_MEET_CONSENT_COPY.disconnectNote ?? ""} />
+              <><Emphasized text={GOOGLE_MEET_CONSENT_COPY.disconnectNote ?? ""} /><span> Calendar autojoin is also disabled, server credentials are removed, and active autojoined bots are asked to stop. Recordings are preserved.</span></>
             ) : (
               <>
                 Background notifications are turned off first, then your API key
@@ -1639,13 +1687,13 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
 
         <AlertDialogFooter>
           <AlertDialogCancel disabled={running} className="h-8 px-3 text-xs">
-            {retry ? "Close" : "Cancel"}
+            {retry || progress?.done ? "Close" : "Cancel"}
           </AlertDialogCancel>
           <Button
             variant="destructive"
             size="sm"
             onClick={() => void runTeardown()}
-            disabled={running}
+            disabled={running || progress?.done}
             className="gap-1.5"
           >
             {running && (
@@ -1725,7 +1773,7 @@ const NO_DELIVERY_LANE: DisconnectWebhooks = {
 
 /** What the upstream `POST /revoke` did. Never fatal except `locked`. */
 interface UpstreamRevokeState {
-  status: "revoked" | "no-token" | "failed" | "locked";
+  status: "revoked" | "no-token" | "failed" | "locked" | "server-unavailable";
   /** Google's or the vault's own words, when there are any. */
   message?: string;
 }
@@ -1742,46 +1790,72 @@ interface UpstreamRevokeState {
  * is unclosable while the teardown runs, and cancelling a revoke the user asked
  * for is the one outcome worse than waiting for it — it strands the grant.
  */
-async function revokeGoogleUpstream(input: {
+export async function revokeGoogleUpstream(input: {
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
   backendUrl: string;
   sessionStore: SessionStore;
+  fetchImpl?: typeof fetch;
 }): Promise<UpstreamRevokeState> {
   const { tcw, descriptor, backendUrl, sessionStore } = input;
+  const fetchImpl = input.fetchImpl ?? fetch;
+  // End server custody before vault interaction; a locked/missing browser token must
+  // never leave unattended scheduling enabled after Disconnect.
+  let serverRevokeFailed = false;
+  let serverRevoked = false;
+  const auth = sessionStore.getToken();
+  if (!auth || sessionStore.isExpired()) return { status: "server-unavailable", message: "your TinyChat session expired" };
+  {
+    try {
+      const disconnected = await fetchImpl(`${backendUrl}/api/connectors/google/autojoin/disconnect`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth}`,
+          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE }, body: "{}",
+      });
+      // Older browser-only deployments have no autojoin route.
+      if (disconnected.status === 502) serverRevokeFailed = true;
+      else if (!disconnected.ok && disconnected.status !== 404) return { status: "server-unavailable", message: "could not stop Calendar autojoin" };
+      else if (disconnected.ok) {
+        const result = await disconnected.json() as { upstreamRevoked?: string };
+        serverRevoked = result.upstreamRevoked === "ok";
+      }
+    } catch { return { status: "server-unavailable", message: "could not stop Calendar autojoin" }; }
+  }
+  let browserToken: string | undefined;
+  let localFailure: UpstreamRevokeState | undefined;
   if (!isSecretsUnlocked(tcw)) {
     const unlock = await unlockSecrets<SecretsErr>(tcw);
-    if (!unlock.ok) {
-      return {
-        status: "locked",
-        message: unlock.error?.message ?? "unlock was not completed",
-      };
-    }
+    if (!unlock.ok) localFailure = { status: "locked", message: unlock.error?.message ?? "unlock was not completed" };
   }
-  const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
-  if (!stored.ok || typeof stored.data !== "string" || stored.data.length === 0) {
-    // Nothing to revoke — a connector row without a readable token. Say so;
-    // the teardown still has a key row and local data to clean up.
-    return { status: "no-token" };
+  if (!localFailure) {
+    const stored = await getConnectorKey<SecretsErr>(tcw, descriptor);
+    if (stored.ok && typeof stored.data === "string" && stored.data.length > 0) browserToken = stored.data;
+    else localFailure = { status: "no-token" };
   }
+  if (localFailure?.status === "locked") return localFailure;
+  // An interrupted account replacement can leave these tokens bound to different
+  // subjects. Successfully revoking the browser token cannot clear the server warning.
+  const finished: UpstreamRevokeState = serverRevokeFailed
+    ? { status: "failed", message: "Google could not revoke access; server credentials were removed" }
+    : { status: "revoked" };
+  if (!browserToken) return serverRevokeFailed || serverRevoked ? finished : localFailure ?? finished;
   const bearer = sessionStore.getToken();
   if (!bearer || sessionStore.isExpired()) {
     return { status: "failed", message: "your TinyChat session expired" };
   }
   try {
-    const response = await fetch(`${backendUrl}${GOOGLE_OAUTH_REVOKE_PATH}`, {
+    const response = await fetchImpl(`${backendUrl}${GOOGLE_OAUTH_REVOKE_PATH}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${bearer}`,
         [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
       },
-      body: JSON.stringify({ token: stored.data }),
+      body: JSON.stringify(browserToken ? { token: browserToken } : {}),
     });
-    if (response.ok) return { status: "revoked" };
+    if (response.ok) return finished;
     const failure = await readGoogleProxyError(response);
     // An already-dead grant is a revoke that has nothing left to do.
-    if (failure.kind === "reconnect-needed") return { status: "revoked" };
+    if (failure.kind === "reconnect-needed") return finished;
     return {
       status: "failed",
       message: failure.message.length > 0 ? failure.message : `HTTP ${response.status}`,
@@ -1800,8 +1874,10 @@ function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
       return `We couldn’t read a saved Google connection to revoke — remove TinyChat yourself at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. The rest of the disconnect continues.`;
     case "failed":
       return `We couldn’t ask Google to revoke this access (${state.message ?? "unknown reason"}), so it may still be live. Remove TinyChat at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. Everything else below still ran.`;
+    case "server-unavailable":
+      return "Could not confirm Calendar autojoin has stopped. Reconnect to TinyChat and retry disconnecting.";
     case "locked":
-      return `Your encrypted secrets stayed locked, so nothing was changed: ${state.message ?? "unlock was not completed"}. Try again.`;
+      return `Calendar autojoin was stopped, but your browser token remains locked: ${state.message ?? "unlock was not completed"}. Try again.`;
   }
 }
 

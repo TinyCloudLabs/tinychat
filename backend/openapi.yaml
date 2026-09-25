@@ -825,7 +825,7 @@ paths:
   # webhook group has. Two invariants hold across all five:
   #   1. The backend PERSISTS NOTHING. No KV, no SQL, no file, no in-process
   #      credential cache — it is a credential-shaped pipe between the SPA and
-  #      Google, and the browser is the only place a Google token ever lands.
+  #      Google for browser-only connections. Autojoin adds explicit encrypted server custody.
   #   2. The PKCE verifier never leaves the SPA. An authorization code
   #      intercepted anywhere on this surface is useless without it.
   /api/connectors/google/oauth/start:
@@ -836,10 +836,10 @@ paths:
         A 302 to Google's authorize endpoint with the caller's `state` and PKCE
         `code_challenge` attached, plus `access_type=offline` and `prompt=consent`
         — both non-optional, because without either one Google mints no refresh
-        token and the connector silently becomes single-session. Requests EXACTLY
-        two scopes, `meetings.space.readonly` and `meetings.space.settings`; no
-        Drive and no Calendar, which would pull the app into Restricted-scope
-        verification. Unauthenticated by design: this is a top-level browser
+        token and the connector silently becomes single-session. Requests
+        `meetings.space.readonly`, `meetings.space.settings`, `drive.metadata.readonly`
+        and `documents.readonly`. Calendar/openid permissions are requested only by
+        the separate authenticated autojoin consent flow. Unauthenticated by design: this is a top-level browser
         navigation and carries no Bearer, and CSRF exempts GET. The anti-forgery
         control is the `state` param, minted by the SPA and re-checked by it when
         the popup reports back. The server holds only the CHALLENGE, never the
@@ -951,9 +951,9 @@ paths:
       description: >-
         Authenticated, and the first point in the flow where a token exists at all.
         The backend forwards code + verifier + client secret to Google's token
-        endpoint and returns the payload to the caller — it stores NOTHING: no KV,
-        no SQL, no in-process cache. The browser is the only place a Google token
-        lands. The response is field-whitelisted rather than a passthrough, so the
+        endpoint and returns tokens only to the caller. This browser-only flow takes no
+        server custody. If autojoin was configured it first disables unattended access,
+        so browser reconnect cannot silently change the account followed by the server. The response is field-whitelisted rather than a passthrough, so the
         `id_token` some grants carry (a JWT with the user's Google email, name and
         picture) is dropped rather than handed to the SPA. A 4xx from Google is
         surfaced with ITS OWN status and code — `invalid_grant` means reconnect,
@@ -1060,8 +1060,10 @@ paths:
         Upstream revocation, so a disconnect actually ends Google's grant instead
         of only forgetting the token locally. A failure is SURFACED, never
         swallowed — a revoke that silently did not happen is a lie to the user
-        about what they just disconnected. Stateless like the rest of the group;
-        the token arrives in the body, is used once, and is never stored or logged.
+        about what they just disconnected. When autojoin is available this also blocks
+        new joins, requests stops and deletes its server credential even if revocation fails.
+        Its response then matches CalendarAutojoinDisconnect; the body token may be omitted.
+        Without autojoin the token is required and the response status is revoked.
       security:
         - bearerAuth: []
       requestBody:
@@ -1081,7 +1083,10 @@ paths:
                 properties:
                   status:
                     type: string
-                    const: revoked
+                    enum: [revoked, disconnected]
+                  upstreamRevoked:
+                    type: string
+                    enum: [ok, failed, not_applicable]
         "400":
           description: "`invalid_request`, or Google's own 400 forwarded."
           content:
@@ -1100,6 +1105,219 @@ paths:
                 $ref: "#/components/schemas/GoogleOAuthError"
         "502":
           $ref: "#/components/responses/GoogleOAuthUpstreamUnavailable"
+
+  /api/connectors/google/autojoin/status:
+    get:
+      operationId: getCalendarAutojoinStatus
+      summary: Read Calendar autojoin status and recent missed or failed occurrences
+      description: >-
+        Available when Google OAuth, transcription and encrypted credential custody are configured.
+        The tenant always comes from the authenticated session. No credentials or Google subject
+        are returned. Off includes incomplete setup; enabling never permits dispatch.
+      responses:
+        "200":
+          description: Connection status, last complete scan and up to 30 recent outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: Calendar autojoin state is unavailable.
+
+  /api/connectors/google/autojoin/begin:
+    post:
+      operationId: beginCalendarAutojoinConsent
+      summary: Begin explicit unattended Calendar and encrypted refresh-token custody consent
+      description: >-
+        Binds a ten-minute single-use transaction to the authenticated tenant, autojoin purpose,
+        consent, PKCE challenge and a server-generated OIDC nonce. Adds owned Calendar events
+        readonly and openid scopes while preserving Meet, Drive and Docs scopes. The browser
+        opens authorizationUrl in its existing OAuth popup and retains the PKCE verifier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, challenge, consent]
+              properties:
+                state:
+                  type: string
+                  minLength: 16
+                  maxLength: 512
+                challenge:
+                  type: string
+                  minLength: 43
+                  maxLength: 128
+                consent:
+                  type: boolean
+                  const: true
+      responses:
+        "200":
+          description: Google authorization URL for the consent-bound transaction.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl:
+                    type: string
+                    format: uri
+        "400":
+          description: Invalid request or missing explicit consent.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          description: Too many consent transactions or requests.
+
+  /api/connectors/google/autojoin/exchange:
+    post:
+      operationId: exchangeCalendarAutojoinCode
+      summary: Exchange a consent-bound code and prepare encrypted server custody
+      description: >-
+        Checks tenant, state, PKCE and transaction nonce, validates Google's signed ID token,
+        and requires Calendar/openid scopes from Google's actual exchange response plus a refresh
+        token. Browser-supplied scopes and tenant are never authoritative. Persists disabled old
+        scheduling and stop intent, then an enabling record before encrypted custody. Returns
+        browser importer tokens and setupId; never an ID token or Google subject. The browser
+        must store its importer secret before calling enable. Interrupted setup remains off
+        and its credential is cleaned after ten minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, code, verifier]
+              properties:
+                state:
+                  type: string
+                  maxLength: 512
+                code:
+                  type: string
+                  maxLength: 2048
+                verifier:
+                  type: string
+                  minLength: 43
+                  maxLength: 128
+      responses:
+        "200":
+          description: Whitelisted browser token fields and the pending setup identifier.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/GoogleTokenResponse"
+                  - type: object
+                    required: [setupId]
+                    properties:
+                      setupId:
+                        type: string
+        "400":
+          description: Invalid transaction, identity or missing refresh token.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Google did not grant required Calendar/openid scopes.
+        "409":
+          description: Connection generation changed during authorization.
+        "503":
+          description: Google or durable state is unavailable; autojoin remains off.
+
+  /api/connectors/google/autojoin/enable:
+    post:
+      operationId: enableCalendarAutojoin
+      summary: Finalize setup after the browser has saved the same Google importer secret
+      description: >-
+        Uses only the authenticated tenant's pending setup. Probes primary Calendar access
+        before enabling and rechecks setup expiry and connection generation after the probe.
+        Enabling cannot revive an old dispatch or clear its persisted stop intent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setupId]
+              properties:
+                setupId:
+                  type: string
+                  minLength: 43
+                  maxLength: 43
+      responses:
+        "200":
+          description: Autojoin enabled after Calendar access verification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "409":
+          description: Setup expired, was disabled, or belongs to a different session tenant.
+        "503":
+          description: Calendar verification or durable state is unavailable.
+
+  /api/connectors/google/autojoin/disable:
+    post:
+      operationId: disableCalendarAutojoin
+      summary: Block new joins, request active bot stops and delete server Google credentials
+      description: >-
+        Persists disabled scheduling and a new generation before acknowledgement. Outstanding
+        creates continue lookup and ownership repair and are stopped when found. Keeps the
+        browser importer and recordings; Google's grant may retain Calendar permissions.
+      responses:
+        "200":
+          description: Autojoin is off and local server custody has ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: Durable disable or local credential deletion failed; retry.
+
+  /api/connectors/google/autojoin/disconnect:
+    post:
+      operationId: disconnectCalendarAutojoin
+      summary: Disable autojoin, remove server custody and revoke Google access
+      description: >-
+        Can operate without a browser token when the browser vault is unavailable. Uses the
+        server credential for revocation when present and optionally revokes the browser token.
+        Removes local server custody even when upstream revocation fails. The browser must
+        remove its local Google secret regardless of the upstream result. Keeps recordings.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+      responses:
+        "200":
+          description: Disconnected; upstream revocation succeeded or no credential was present.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinDisconnect"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "502":
+          description: Local custody ended but Google revocation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinDisconnect"
+        "503":
+          description: Durable disable or local credential deletion failed; retry.
 
   /api/connectors/meetings:
     get:
@@ -1488,6 +1706,50 @@ components:
       description: Backend session token returned by SIWE verification.
 
   schemas:
+    CalendarAutojoinStatus:
+      type: object
+      required: [state, enabled, lastScanAt, errorCode, outcomes]
+      properties:
+        state:
+          type: string
+          enum: [off, on, needs_reconnect, error]
+        enabled:
+          type: boolean
+        lastScanAt:
+          type: [number, "null"]
+          description: Last successful complete scan, Unix milliseconds.
+        errorCode:
+          type: [string, "null"]
+          description: Fixed failure code; no provider response or credentials.
+        outcomes:
+          type: array
+          maxItems: 30
+          items:
+            type: object
+            required: [id, title, start, reason]
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              start:
+                type: number
+                description: Scheduled start, Unix milliseconds.
+              reason:
+                type: string
+                description: Fixed missed or failure code.
+              meetingId:
+                type: string
+    CalendarAutojoinDisconnect:
+      type: object
+      required: [status, upstreamRevoked]
+      properties:
+        status:
+          type: string
+          const: disconnected
+        upstreamRevoked:
+          type: string
+          enum: [ok, failed, not_applicable]
     TranscriberMeetingStatus:
       type: string
       enum:

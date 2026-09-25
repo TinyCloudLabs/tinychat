@@ -57,6 +57,7 @@ import {
 import { BackgroundSyncSection } from "./BackgroundSyncSection";
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync";
+import { CalendarAutojoinSection } from "./CalendarAutojoinSection";
 import { SectionCard } from "@/components/ui/section-card";
 
 interface ConnectorsCardProps {
@@ -235,6 +236,7 @@ export function ConnectorsCard({
   title = "Connectors",
 }: ConnectorsCardProps) {
   const [rows, setRows] = useState<RowStateMap>(INITIAL_ROW_STATE_MAP);
+  const [autojoinRevision, setAutojoinRevision] = useState(0);
   const [gmeetDiagnostics, setGmeetDiagnostics] = useState<GmeetSyncDiagnostics | null>(null);
   // The companion router's mount-time verdict, established ONCE by the
   // background-notifications section's `GET /config` probe. The teardown needs
@@ -259,7 +261,7 @@ export function ConnectorsCard({
   // Which connector (if any) currently owns a modal. Only one can be open at
   // a time — the card is a source list, not a multi-dialog dashboard.
   const [dialog, setDialog] = useState<
-    { kind: "connect" | "disconnect"; id: ConnectorId } | null
+    { kind: "connect" | "disconnect" | "autojoin"; id: ConnectorId } | null
   >(null);
   // Per-connector abort handles for in-flight card syncs so the Stop button
   // can cancel the loop between items. Kept out of state — flipping the ref
@@ -473,6 +475,10 @@ export function ConnectorsCard({
                 onStopSync={() => handleStopSync(d.id)}
                 onDisconnect={() => handleDisconnect(d)}
               >
+                {d.id === GMEET_CONNECTOR_ID && d.status === "available" && (
+                  <CalendarAutojoinSection backendUrl={backendUrl} sessionStore={sessionStore} revision={autojoinRevision}
+                    onEnable={() => setDialog({ kind: "autojoin", id: d.id })} />
+                )}
                 {supportsBackgroundNotifications(d, rows[d.id].connection) && (
                   <BackgroundSyncSection
                     tcw={tcw}
@@ -498,17 +504,19 @@ export function ConnectorsCard({
           </pre>
         )}
       </div>
-      {dialogDescriptor && dialog?.kind === "connect" && (
+      {dialogDescriptor && (dialog?.kind === "connect" || dialog?.kind === "autojoin") && (
         <ConnectorConnectDialog
           tcw={tcw}
           descriptor={dialogDescriptor}
+          purpose={dialog?.kind === "autojoin" ? "autojoin" : "browser"}
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           open
           onOpenChange={(next) => {
-            if (!next) setDialog(null);
+            if (!next) { setDialog(null); setAutojoinRevision((n) => n + 1); }
           }}
           onConnected={() => {
+            setAutojoinRevision((n) => n + 1);
             void refreshRow(dialogDescriptor.id);
           }}
         />
@@ -524,7 +532,7 @@ export function ConnectorsCard({
           itemCount={rows[dialogDescriptor.id].connection?.itemCount ?? 0}
           open
           onOpenChange={(next) => {
-            if (!next) setDialog(null);
+            if (!next) { setDialog(null); setAutojoinRevision((n) => n + 1); }
           }}
           onDisconnected={() => {
             void refreshRow(dialogDescriptor.id);
