@@ -138,6 +138,25 @@ jobs:
 
           echo "All required deployment config is present and valid."
 
+      - name: Install Phala CLI
+        run: |
+          # Keep the deploy client pinned for reproducibility. 1.1.21 restored
+          # compatibility with the current CVM schema when resolving the env
+          # encryption public key; 1.1.22 is the latest stable patch release.
+          npm install -g phala@1.1.22
+          phala --version || true
+
+      - name: Validate Phala access
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          if ! RAW="$(phala whoami --json)"; then
+            echo "::error title=Phala authentication failed::The configured API key could not access its workspace"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          echo "$RAW" | jq '{success, username, workspace, profile}'
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -201,21 +220,17 @@ jobs:
           sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${GITHUB_SHA}|g" docker-compose.phala.yml
           sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${GITHUB_SHA}|g" docker-compose.phala.yml
 
-      - name: Install Phala CLI
-        run: |
-          # Keep the deploy client pinned for reproducibility. 1.1.21 restored
-          # compatibility with the current CVM schema when resolving the env
-          # encryption public key; 1.1.22 is the latest stable patch release.
-          npm install -g phala@1.1.22
-          phala --version || true
-
       - name: Capture CVM status before deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
           echo "::group::CVM status before deploy"
-          phala cvms get "$PHALA_CVM_ID" --json \
-            | jq '{id, name, status, app_id, instance_type, gateway, updated_at, created_at}'
+          if ! RAW="$(phala cvms get "$PHALA_CVM_ID" --json)"; then
+            echo "::error title=Could not resolve Phala CVM::The configured target could not be read"
+            echo "$RAW" | jq '{success, error, details}'
+            exit 1
+          fi
+          echo "$RAW" | jq '{id, name, status, app_id, instance_type, gateway, updated_at, created_at}'
           echo "::endgroup::"
 
       - name: Resolve Phala gateway CNAME
