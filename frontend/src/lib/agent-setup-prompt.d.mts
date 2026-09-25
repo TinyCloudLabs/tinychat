@@ -5,4 +5,4 @@ export interface SetupContext {
   expectedOwner?: string;
 }
 export function createSetupContext(hosts: string[], expectedOwner?: string | null): SetupContext;
-export function buildSetupPrompt(config: { instructionsUrl: string }, context: SetupContext): string;
+export function buildSetupPrompt(config: { instructionsUrl: string }): string;

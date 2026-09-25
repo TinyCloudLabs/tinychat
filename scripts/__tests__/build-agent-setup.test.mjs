@@ -15,7 +15,8 @@ async function build(t, args = [], env = {}) {
   return { output, result };
 }
 const decodeHtml = value => value.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
-const promptContext = prompt => JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? '{}');
+const pageContext = instructions => JSON.parse(instructions.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? '{}');
+const expectedPrompt = 'How did my last meeting go? Check TinyCloud: https://tinycloud.chat/agents/setup.md';
 
 test('public instructions, HTML and saved app context agree on pinned versions and production configuration', async t => {
   const { output, result } = await build(t);
@@ -24,9 +25,10 @@ test('public instructions, HTML and saved app context agree on pinned versions a
   const production = await readFile(new URL('frontend/.env.production', root), 'utf8');
   const productionHost = production.match(/^VITE_TINYCLOUD_HOST=(.+)$/m)?.[1];
   const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
-  assert.deepEqual(promptContext(prompt), { schemaVersion: 1, host: productionHost, space: 'applications' });
-  assert.deepEqual(JSON.parse(await readFile(join(output, 'context.json'), 'utf8')), promptContext(prompt));
+  assert.equal(prompt, expectedPrompt + '\n');
+  assert.deepEqual(JSON.parse(await readFile(join(output, 'context.json'), 'utf8')), { schemaVersion: 1, host: productionHost, space: 'applications' });
   const md = await readFile(join(output, 'setup.md'), 'utf8');
+  assert.deepEqual(pageContext(md), JSON.parse(await readFile(join(output, 'context.json'), 'utf8')));
   assert.ok(md.includes(`@tinycloud/cli@${config.cliVersion}`));
   assert.ok(md.includes(`tinychat-retrieval/${config.packVersion}/tinychat-retrieval-${config.packVersion}.tgz`));
   assert.ok(!md.includes('{{'));
@@ -41,7 +43,8 @@ test('loopback artifact URL remains independent from the configured TinyCloud da
   const { output, result } = await build(t, ['--host', 'https://custom.example', '--setup-base-url', 'http://127.0.0.1:6199/agents']);
   assert.equal(result.status, 0, result.stderr);
   const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
-  assert.deepEqual(promptContext(prompt), { schemaVersion: 1, host: 'https://custom.example', space: 'applications' });
+  assert.equal(prompt, 'How did my last meeting go? Check TinyCloud: http://127.0.0.1:6199/agents/setup.md\n');
+  assert.deepEqual(JSON.parse(await readFile(join(output, 'context.json'), 'utf8')), { schemaVersion: 1, host: 'https://custom.example', space: 'applications' });
   assert.ok(prompt.includes('http://127.0.0.1:6199/agents/setup.md'));
   const md = await readFile(join(output, 'setup.md'), 'utf8');
   assert.ok(md.includes('http://127.0.0.1:6199/agents/tinychat-retrieval/'));
@@ -51,13 +54,13 @@ test('loopback artifact URL remains independent from the configured TinyCloud da
 test('deployment environment config wins over the standard hosted default', async t => {
   const { output, result } = await build(t, [], { VITE_TINYCLOUD_HOST: 'https://deployment.example' });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(promptContext(await readFile(join(output, 'prompt.txt'), 'utf8')).host, 'https://deployment.example');
+  assert.equal(pageContext(await readFile(join(output, 'setup.md'), 'utf8')).host, 'https://deployment.example');
 });
 
 test('explicit data host wins over build environment', async t => {
   const { output, result } = await build(t, ['--host', 'https://override.example'], { VITE_TINYCLOUD_HOST: 'https://deployment.example' });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(promptContext(await readFile(join(output, 'prompt.txt'), 'utf8')).host, 'https://override.example');
+  assert.equal(pageContext(await readFile(join(output, 'setup.md'), 'utf8')).host, 'https://override.example');
 });
 
 test('invalid explicitly configured data host fails generation instead of falling back', async t => {
@@ -66,55 +69,24 @@ test('invalid explicitly configured data host fails generation instead of fallin
   assert.match(result.stderr, /setup configuration/i);
 });
 
-test('normal prompt uses known installed setup, retrieval and local handoff tools', async t => {
+test('copy surfaces use one sentence while linked instructions retain setup and retrieval guidance', async t => {
   const { output, result } = await build(t);
   assert.equal(result.status, 0, result.stderr);
   const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
-  assert.match(prompt, /\$HOME\/\.agents\/skills\/tinychat-retrieval/);
-  assert.match(prompt, /tinychat_setup.*configPath/);
-  assert.match(prompt, /tinychat_meetings action latest/);
-  assert.match(prompt, /returns.*evidence/i);
-  assert.match(prompt, /action next/);
-  assert.match(prompt, /historical/);
-  assert.match(prompt, /sequentially/);
-  assert.match(prompt, /nextAction/);
-  assert.match(prompt, /chunk/);
-  assert.match(prompt, /Cite.*ref/);
-  assert.ok(!/acknowledge|displayBytes|displayReceipt|reviews|action review/i.test(prompt));
-  assert.ok(!/follow nextAction read|Finish with action status|Read every chunk\/page/.test(prompt));
-  assert.match(prompt, /speaker/);
-  assert.match(prompt, /semantic support/);
-  assert.match(prompt, /tinychat_handoff/);
-  assert.ok(!/scripts\/retrieve\.mjs|--ref|--continuation|glob\(|\*\*\//.test(prompt));
+  assert.equal(prompt, expectedPrompt + '\n');
+  const html = await readFile(join(output, 'index.html'), 'utf8');
+  assert.equal(decodeHtml(html.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/)?.[1]), expectedPrompt);
+  assert.doesNotMatch(html, /settings are (?:already )?included|account is included/);
   const instructions = await readFile(join(output, 'setup.md'), 'utf8');
+  for (const term of ['tinychat_setup', 'configPath', 'tinychat_authorize', 'tinychat_meetings', 'nextAction', 'tinychat_handoff', '96 KiB', 'tool_output']) {
+    assert.ok(instructions.includes(term), term);
+  }
+  assert.match(instructions, /Complete sign-in in the browser, then paste the code here/);
+  assert.match(instructions, /last, separate native bash tool call/);
   assert.match(instructions, /scripts\/consume\.mjs/);
   assert.match(instructions, /references\/session-handoff\.md/);
-  assert.match(instructions, /local diagnostic handoff/i);
-  assert.ok(!/displayBytes|displayReceipt|reviews|acknowledg/i.test(instructions));
-  assert.match(instructions, /96 KiB/);
-  assert.match(instructions, /tool_output/);
-});
-
-test('generated normal path uses installed OpenCode capture without model transcription or remote detours', async t => {
-  const { output, result } = await build(t);
-  assert.equal(result.status, 0, result.stderr);
-  const prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
-  assert.match(prompt, /tinychat_authorize/);
-  assert.match(prompt, /Complete sign-in in the browser, then paste the code here/);
-  assert.ok(!/heredoc|save it verbatim|download|remote\/headless/.test(prompt));
-  assert.ok(prompt.length < 2400, 'normal-path prompt should be short');
-  const instructions = await readFile(join(output, 'setup.md'), 'utf8');
-  assert.match(instructions, /scripts\/install-opencode.mjs/);
-  assert.match(instructions, /1\.18\.31/);
-  assert.match(instructions, /install-opencode\.mjs" --activate/);
-  assert.match(prompt, /--activate/);
-  assert.match(prompt, /separate native bash call/);
-  assert.match(prompt, /resumes this chat automatically/);
-  assert.doesNotMatch(prompt, /and restart OpenCode/);
-  assert.match(prompt, /setup\/login only, stop at ready/);
-  assert.match(instructions, /--delivery file/);
   assert.match(instructions, /private.*stdin|stdin.*private/i);
-  assert.ok(!/quoted heredoc|save.*verbatim/i.test(instructions));
+  assert.doesNotMatch(instructions, /quoted heredoc|save.*verbatim/i);
 });
 
 test('first-install activation is a separate final native call with explicit supported scope', async t => {
