@@ -43,6 +43,8 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { ModelSelectionCoordinator } from "./modelSelection";
 import { meetingSourceLabel } from "../lib/connectors/meetingExplorer";
 import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
+import { assembleRequestContext, publishRequestAttempt } from "./canvas/requestContext";
+import type { ConversationCanvas } from "./canvas/model";
 import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
 
 /**
@@ -114,6 +116,10 @@ export function subscribeThreadCompaction(cb: () => void): () => void {
 
 /** Subset of ChatRuntimeDeps consumed by the adapter factory. */
 export interface AdapterDeps {
+  /** Optional canvas read hook; omitted in legacy/unit harnesses. */
+  getCanvas?: (threadId: string) => Promise<ConversationCanvas | null>;
+  /** Distinguishes an unpromoted legacy thread from unavailable Canvas data. */
+  isCanvasPromoted?: (threadId: string) => Promise<boolean>;
   sessionStore: SessionStore;
   backendUrl: string;
   selection: ModelSelectionCoordinator;
@@ -354,6 +360,20 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const fixedSystemBlockChars =
         (memoryBlock?.content.length ?? 0) + (meetingSystemBlock?.content.length ?? 0);
       const messageIds = convo.map((m) => m.id);
+      let canvasState: ConversationCanvas | null = null;
+      if (deps.getCanvas) {
+        try {
+          canvasState = await deps.getCanvas(threadId);
+          if (!canvasState && await deps.isCanvasPromoted?.(threadId)) {
+            throw new Error("Conversation Canvas data is unavailable for this promoted chat.");
+          }
+        } catch (error) {
+          if (await deps.isCanvasPromoted?.(threadId)) throw error;
+          canvasState = null;
+        }
+      }
+      const latestUserMessage = [...convo].reverse().find((message) => message.role === "user")?.content ?? "";
+      const latestUserMessageId = [...convo].reverse().find((message) => message.role === "user")?.id;
 
       // (a) Load + chain-validate the latest checkpoint (§C.8). Never crash on a
       // bad/stale checkpoint — an unreadable or invalid one just sends full
@@ -369,6 +389,16 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       }
 
       const assemble = (cp: CompactionCheckpoint | null): ChatMessage[] => {
+        if (canvasState) {
+          return assembleRequestContext({
+            canvas: canvasState,
+            memoryPrelude: memoryBlock?.content,
+            meetingSystemBlock: meetingSystemBlock?.content,
+            compaction: cp ? { summary: cp.summary, coversThroughMessageId: cp.coversThroughMessageId } : null,
+            newUserMessage: latestUserMessage,
+            newUserMessageId: latestUserMessageId,
+          }).messages;
+        }
         const body: ChatMessage[] = cp
           ? (applyCheckpoint(convo, cp) as ChatMessage[])
           : convo.map((m) => ({ role: m.role, content: m.content }));
@@ -380,6 +410,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       };
 
       let payload = assemble(activeCheckpoint);
+      if (canvasState) publishRequestAttempt(threadId, "preparing", payload);
       if (canCompact && threadId) {
         patchCompaction(threadId, { summary: activeCheckpoint?.summary ?? null, compacting: false });
       }
@@ -407,6 +438,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
           const cp = await deps.appendCompaction(threadId, plan.coversThroughMessageId, summary);
           activeCheckpoint = cp;
           payload = assemble(cp);
+          if (canvasState) publishRequestAttempt(threadId, "preparing", payload);
           patchCompaction(threadId, { summary: cp.summary, compacting: false });
           return true;
         } finally {
@@ -440,6 +472,9 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         sendPayload: ChatMessage[],
       ): AsyncGenerator<{ content: { type: "text"; text: string }[] }, void, unknown> {
         assertTurn();
+        // Publish the exact body immediately before transport. This is
+        // memory-only and is replaced before every reactive retry.
+        if (canvasState) publishRequestAttempt(threadId, "sent", sendPayload);
         if (agentEnabled && !meetingSystemBlock) {
           const roomId = origin.threadId;
           try {

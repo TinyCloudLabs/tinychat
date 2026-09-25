@@ -119,6 +119,9 @@ import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
+import { useConversationCanvasFeature } from "./chat/useExperimentalFeatures";
+import { getCanvas, isCanvasPromoted } from "./lib/conversationCanvasStore";
+import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
@@ -341,7 +344,7 @@ export function App() {
           setState("unauthenticated");
           return;
         }
-        setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw);
+        setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw);
         setAddress(storedAddress);
         setDid(restored.tcw.did ?? `did:pkh:eip155:1:${storedAddress}`);
         setSpaceId(restored.tcw.spaceId ?? null);
@@ -585,7 +588,7 @@ export function App() {
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
 
-      setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(signedTcw) : signedTcw);
+      setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw);
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
@@ -879,6 +882,7 @@ export function App() {
                     />
                   }
                 />}
+                billingStatus={billingStatus}
               />
             </div>
             {showSettings && (
@@ -1248,6 +1252,7 @@ function ChatWorkspace(props: {
   onToggleConnectors: () => void;
   onOpenChat: () => void;
   connectorsSurface: React.ReactNode;
+  billingStatus: BillingStatus | null;
 }) {
   const {
     agentEnabledRef, activeThreadIdRef, privateAccessRef,
@@ -1255,6 +1260,7 @@ function ChatWorkspace(props: {
     onDelegationError, silentlyEnabled,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
+  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
@@ -1287,6 +1293,8 @@ function ChatWorkspace(props: {
       meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
       contextTokensFor: props.contextTokensFor,
+      getCanvas: (threadId: string) => getCanvas(props.tcw, threadId),
+      isCanvasPromoted: (threadId: string) => isCanvasPromoted(props.tcw, threadId),
       getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
       appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
         appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),
@@ -1402,6 +1410,7 @@ function ChatWorkspace(props: {
               selection={props.selectionView}
               onRetrySelection={() => props.selectionControllerRef.current?.retry()}
               onReload={() => props.selectionControllerRef.current?.reload()}
+              canvasEnabled={conversationCanvas.enabled}
             />
           </div>
           {showConnectors && props.connectorsSurface}

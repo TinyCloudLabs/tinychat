@@ -25,6 +25,7 @@ import { createChatModelAdapter } from "./chatModelAdapter";
 import type { CompactionCheckpoint } from "./compaction";
 import {
   appendMessage,
+  upsertThreadIndex,
   deleteThread,
   getMemory,
   getThread,
@@ -41,6 +42,8 @@ import {
   DEFAULT_TITLE,
   type ThreadDoc,
 } from "../lib/threadStore";
+import { deleteCanvas, getCanvas, isCanvasPromoted, saveCanvas } from "../lib/conversationCanvasStore";
+import { activeAncestry, appendCanvasMessage, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
 import type { PrivateAgentAccess } from "./useAgentEnablement";
@@ -125,6 +128,9 @@ export interface ChatRuntimeDeps {
   summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
   /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
   contextTokensFor: (modelId: string) => number;
+  /** Optional experimental Canvas projection and fail-closed promotion check. */
+  getCanvas?: (threadId: string) => Promise<ConversationCanvas | null>;
+  isCanvasPromoted?: (threadId: string) => Promise<boolean>;
 }
 
 // ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──
@@ -297,6 +303,50 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
   return { headId, messages };
 }
 
+/** Rehydrate exactly the selected Canvas ancestry into assistant-ui's branch. */
+export function repositoryFromCanvas(canvas: ConversationCanvas): ExportedMessageRepository {
+  const byId = new Map(canvas.nodes.map((node) => [node.id, node]));
+  const ancestry = activeAncestry(canvas);
+  const ordered: typeof canvas.nodes = [];
+  let id = canvas.activeHeadId;
+  while (id) {
+    const node = byId.get(id);
+    if (!node || !ancestry.has(id)) break;
+    ordered.unshift(node);
+    id = node.parentId;
+  }
+  let previousDurable: string | null = null;
+  const messages: ExportedMessageRepositoryItem[] = [];
+  for (const node of ordered) {
+    if (node.transient) continue;
+    const baseMessage = {
+      id: node.id,
+      role: node.role,
+      content: [{ type: "text" as const, text: node.content }],
+      createdAt: node.createdAt,
+    };
+    const message = node.role === "assistant"
+      ? {
+          ...baseMessage,
+          status: { type: "complete" as const, reason: "stop" as const },
+          metadata: {
+            unstable_state: null,
+            unstable_annotations: [],
+            unstable_data: [],
+            steps: [],
+            custom: {},
+          },
+        }
+      : { ...baseMessage, attachments: [], metadata: { custom: {} } };
+    messages.push({
+      parentId: previousDurable,
+      message,
+    } as unknown as ExportedMessageRepositoryItem);
+    previousDurable = node.id;
+  }
+  return { headId: messages.at(-1)?.message.id, messages };
+}
+
 /**
  * Build the per-thread persistence adapter. Exported for the runtime privacy
  * contract test; callers must still construct it only at the mounted runtime
@@ -352,6 +402,20 @@ export function createHistoryAdapter(
       // PRECEDENCE: this membership short-circuit MUST stay FIRST — instant
       // new-chat (requirement #1) outranks every freshness path below.
       if (isKnownThreadId(tcw, threadId) === false) return { messages: [] };
+      // A promoted thread's graph is the source of truth for the active Chat
+      // branch. Never hydrate from the legacy linear snapshot once a Canvas
+      // row exists; that snapshot is retained only for index/title/model/share.
+      try {
+        const canvas = await getCanvas(tcw, threadId);
+        if (canvas) return repositoryFromCanvas(canvas);
+        if (await isCanvasPromoted(tcw, threadId)) {
+          throw new Error("Conversation Canvas data is unavailable for this promoted chat.");
+        }
+      } catch (error) {
+        // Legacy sessions may not have the additive Canvas grant. A durable
+        // promotion marker means falling back would flatten the selected graph.
+        if (await isCanvasPromoted(tcw, threadId)) throw error;
+      }
       // Prefetched this session? Render from the in-memory cache instantly and
       // kick a background refresh of just this thread (promote dedupes against
       // any in-flight fetch — never double-fetches) so a re-open is fresh.
@@ -442,14 +506,45 @@ export function createHistoryAdapter(
 
       if (!origin) throw new Error("Cannot persist a message without a captured turn origin.");
       const firstInsert = role === "user" && selection.needsFirstInsert(origin);
+      let promotedCanvas: ConversationCanvas | null = null;
+      let markedPromoted = false;
+      try {
+        promotedCanvas = await getCanvas(tcw, threadId);
+        markedPromoted = await isCanvasPromoted(tcw, threadId);
+      } catch (error) {
+        // A promoted thread must fail closed: a Canvas capability/read outage
+        // can never fall through to the share-readable legacy message table.
+        if (await isCanvasPromoted(tcw, threadId)) throw error;
+        promotedCanvas = null;
+      }
+      if (!promotedCanvas && markedPromoted) {
+        throw new Error("Conversation Canvas data is unavailable for this promoted chat.");
+      }
+      const persist = async () => {
+        if (promotedCanvas) {
+          if (typeof id !== "string" || (role !== "user" && role !== "assistant")) return;
+          const next = appendCanvasMessage(promotedCanvas, {
+            id,
+            role,
+            content: storedItemText(item),
+            createdAt: new Date().toISOString(),
+          });
+          await saveCanvas(tcw, next);
+          promotedCanvas = next;
+          await upsertThreadIndex(tcw, threadId, { title: firstInsert && role === "user" ? storedItemText(item).slice(0, 60) : undefined, model: origin!.model });
+          return;
+        }
+        await appendMessage(tcw, threadId, item, origin!.model);
+      };
       const retryFirstInsert = firstInsert && origin
-        ? () => appendMessage(tcw, threadId, item, origin!.model)
+        ? () => persist()
         : undefined;
       if (firstInsert && origin) {
         selection.markFirstAppend(origin, true, false, retryFirstInsert);
       }
+      const text = storedItemText(item);
       try {
-        await appendMessage(tcw, threadId, item, origin.model);
+        await persist();
         if (firstInsert) selection.markFirstAppend(origin, false);
         if (role === "user") selection.confirmAppend(origin, true);
       } catch (error) {
@@ -460,7 +555,6 @@ export function createHistoryAdapter(
         throw error;
       }
 
-      const text = storedItemText(item);
       if (role === "user" && text) userTexts.set(origin.turnId, text);
       if (role === "assistant" && !meetingTurn) {
         if (privateAccessRef && (!turnPrivateAccess?.active || privateAccessRef.current !== turnPrivateAccess || origin.signal.aborted)) return;
@@ -672,6 +766,7 @@ function useThreadListAdapter(
         // no-op
       },
       async delete(remoteId: string) {
+        if (await isCanvasPromoted(tcw, remoteId)) await deleteCanvas(tcw, remoteId);
         await deleteThread(tcw, remoteId);
       },
       async generateTitle(remoteId: string) {

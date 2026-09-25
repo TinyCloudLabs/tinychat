@@ -1,12 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import "../index.css";
 import { OFFERED_CHAT_MODELS, offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import { useChatRuntime } from "./runtime";
 import { Thread } from "./Thread";
 import type { SelectionView, ModelSelectionController } from "./modelSelection";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import { DEFAULT_CONTEXT_TOKENS } from "./compaction";
+import {
+  getCanvas,
+  isCanvasPromoted,
+  useLocalCanvasStorage,
+} from "../lib/conversationCanvasStore";
 
 declare global {
   interface Window {
@@ -41,9 +47,34 @@ if (scenario.includes("reopen") || scenario.includes("restore") || scenario.incl
     model: scenario.includes("retired") ? "deepseek/deepseek-v4-flash-0731" : OFFERED_CHAT_MODELS[2].id,
     updatedAt: "2026-09-07T14:00:00.000Z",
   });
-  messages.set(savedId, [JSON.stringify({
-    message: { id: "old-user", role: "user", content: [{ type: "text", text: "old" }] },
-  })]);
+  messages.set(savedId, [
+    JSON.stringify({
+      message: {
+        id: "old-user",
+        role: "user",
+        content: [{ type: "text", text: "old question" }],
+        createdAt: "2026-09-07T14:00:00.000Z",
+        attachments: [],
+        metadata: { custom: {} },
+      },
+    }),
+    ...(scenario.includes("canvas") ? [JSON.stringify({
+      message: {
+        id: "old-assistant",
+        role: "assistant",
+        content: [{ type: "text", text: "old answer" }],
+        createdAt: "2026-09-07T14:00:01.000Z",
+        status: { type: "complete", reason: "stop" },
+        metadata: {
+          unstable_state: null,
+          unstable_annotations: [],
+          unstable_data: [],
+          steps: [],
+          custom: {},
+        },
+      },
+    })] : []),
+  ]);
 }
 
 let restoreRelease!: () => void;
@@ -131,10 +162,10 @@ const sql = {
   },
 };
 
-const tcw = {
+const tcw = useLocalCanvasStorage({
   did: "did:test:runtime-harness",
   sql: { db: () => sql },
-} as never;
+} as never);
 
 const sessionStore = {
   getToken: () => "test-token",
@@ -179,6 +210,8 @@ function Harness() {
     agentEnabledRef,
     privateAccessRef,
     meetingMessageRegistry: registry,
+    getCanvas: (threadId: string) => getCanvas(tcw, threadId),
+    isCanvasPromoted: (threadId: string) => isCanvasPromoted(tcw, threadId),
     getCheckpoint: async () => null,
     appendCompaction: async () => { throw new Error("unexpected compaction"); },
     summarize: async () => { throw new Error("unexpected summary"); },
@@ -213,7 +246,7 @@ function Harness() {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread tcw={tcw} selection={view} onRetrySelection={() => controllerRef.current?.retry()} onReload={() => {}} />
+      <Thread tcw={tcw} selection={view} onRetrySelection={() => controllerRef.current?.retry()} onReload={() => {}} canvasEnabled={params.get("canvas") === "1"} />
       <div id="phase">{view.phase}</div>
       <div id="model">{view.model ?? "none"}</div>
       <div id="message">{view.message ?? ""}</div>
