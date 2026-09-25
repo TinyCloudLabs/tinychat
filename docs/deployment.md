@@ -232,8 +232,10 @@ update path; never recreate the CVM automatically.
 > production on 2026-07-07.
 
 > `PHALA_CVM_ID` is read as a repo **variable** (not a secret) so it can be
-> referenced in the workflow's top-level `env:`. The workflow's config check
-> fails with a clear error if it is missing.
+> referenced in the workflow's top-level `env:`. Set it to the stable
+> `app_<app-id>` identifier rather than an instance UUID; current Phala APIs use
+> that app identity across CVM updates. The workflow's config check fails with
+> a clear error if it is missing.
 
 ---
 

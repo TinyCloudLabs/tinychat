@@ -49,7 +49,8 @@ if (envKeys.length === 0) {
 
 const client = createClient({ apiKey });
 
-const compose = await getCvmComposeFile(client, { uuid: cvmId }, { schema: false });
+const cvmRef = { id: cvmId };
+const compose = await getCvmComposeFile(client, cvmRef, { schema: false });
 const allowed = new Set(compose?.allowed_envs ?? []);
 const nextAllowed = [...new Set([...allowed, ...envKeys])];
 const missing = envKeys.filter((k) => !allowed.has(k));
@@ -59,7 +60,7 @@ if (missing.length === 0) {
 }
 console.log(`allowed_envs is missing ${missing.length} deploy env key(s): ${missing.join(", ")}`);
 
-const info = await getCvmInfo(client, { uuid: cvmId }, { schema: false });
+const info = await getCvmInfo(client, cvmRef, { schema: false });
 const pubkey = info?.encrypted_env_pubkey ?? info?.kms_info?.encrypted_env_pubkey;
 if (!pubkey) {
   console.error("Could not resolve encrypted_env_pubkey from CVM info");
@@ -70,7 +71,7 @@ const encryptedEnv = await encryptEnvVars(envs, pubkey);
 
 let result = await updateCvmEnvs(
   client,
-  { uuid: cvmId, encrypted_env: encryptedEnv, env_keys: nextAllowed },
+  { ...cvmRef, encrypted_env: encryptedEnv, env_keys: nextAllowed },
   { schema: false },
 );
 console.log("phase 1 response:", JSON.stringify(result));
@@ -79,7 +80,7 @@ if (result?.status === "precondition_required") {
   result = await updateCvmEnvs(
     client,
     {
-      uuid: cvmId,
+      ...cvmRef,
       encrypted_env: encryptedEnv,
       env_keys: nextAllowed,
       compose_hash: result.compose_hash,
@@ -102,7 +103,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let started = false;
 for (let i = 0; i < 120; i++) {
   await sleep(5000);
-  const cur = await getCvmInfo(client, { uuid: cvmId }, { schema: false });
+  const cur = await getCvmInfo(client, cvmRef, { schema: false });
   const status = cur?.status ?? "unknown";
   if (!started) {
     if (status !== "running") started = true;
@@ -118,7 +119,7 @@ for (let i = 0; i < 120; i++) {
   }
 }
 
-const after = await getCvmComposeFile(client, { uuid: cvmId }, { schema: false });
+const after = await getCvmComposeFile(client, cvmRef, { schema: false });
 const afterAllowed = new Set(after?.allowed_envs ?? []);
 const stillMissing = nextAllowed.filter((k) => !afterAllowed.has(k));
 if (stillMissing.length > 0) {
