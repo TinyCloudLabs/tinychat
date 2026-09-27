@@ -1,16 +1,77 @@
 # Calendar autojoin: obtain the changes and test locally
 
-Calendar autojoin spans two repositories. Use both feature branches:
+Calendar autojoin spans two repositories. **Check for existing local clones and worktrees before
+cloning anything.** Look in the current workspace and its `repositories/`, `repos/`, and `worktrees/`
+directories, plus the user's usual project directory. A linked worktree has a `.git` file rather
+than a directory, so use Git to identify it instead of testing only `-d .git`.
+
+## Sanity check existing checkouts
+
+Set these paths to the checkouts you actually find on the local machine; do not use the remote
+server's `/home/roman/...` paths on the Mac:
+
+```bash
+TINYCHAT_REPO="/absolute/path/to/existing/tinychat"
+TRANSCRIPTION_REPO="/absolute/path/to/existing/tinycloud-private-transcription"
+for calendar_repo in "$TINYCHAT_REPO" "$TRANSCRIPTION_REPO"; do
+  git -C "$calendar_repo" rev-parse --show-toplevel
+  git -C "$calendar_repo" remote -v
+  git -C "$calendar_repo" status --short --branch
+  git -C "$calendar_repo" worktree list
+done
+```
+
+Confirm that each reported repository root is the intended checkout, and verify the GitHub owner
+and repository before fetching. SSH and HTTPS remote URLs are both valid.
+
+| Repository | Expected GitHub repository | Feature branch |
+| --- | --- | --- |
+| Tinychat | `TinyCloudLabs/tinychat` | `feat/calendar-autojoin` |
+| Transcription | `TinyCloudLabs/tinycloud-private-transcription` | `feat/calendar-autojoin-lookup` |
+
+If `origin` is a fork or a different repository, use the verified remote for the expected repository
+in the commands below, replacing both the remote argument and the `origin` reference components;
+do not overwrite existing remote configuration. Inspect `worktree list` for
+an existing feature checkout and reuse it when appropriate. Preserve uncommitted work, untracked
+files, ignored configuration, and local commits. Do not reset, clean, or automatically stash them.
+
+Once the remotes are verified, fetch the feature branches into those existing clones:
+
+```bash
+git -C "$TINYCHAT_REPO" fetch origin refs/heads/feat/calendar-autojoin:refs/remotes/origin/feat/calendar-autojoin
+git -C "$TRANSCRIPTION_REPO" fetch origin refs/heads/feat/calendar-autojoin-lookup:refs/remotes/origin/feat/calendar-autojoin-lookup
+```
+
+Reuse a clean checkout already on the corresponding feature branch; update it with a fast-forward
+only merge of its fetched `origin/feat/...` reference if needed. If the checkout is dirty or being
+used for another branch, leave it intact and create a separate worktree at an unused path:
+
+```bash
+git -C "$TINYCHAT_REPO" worktree add --detach /absolute/path/to/unused/tinychat-calendar-autojoin origin/feat/calendar-autojoin
+git -C "$TRANSCRIPTION_REPO" worktree add --detach /absolute/path/to/unused/transcription-calendar-autojoin origin/feat/calendar-autojoin-lookup
+```
+
+These detached worktrees are suitable for testing; create a local branch before committing any
+fixes. Do not reuse an occupied destination or start another backend against the same backend
+identity. Existing worktrees do not automatically share ignored environment files.
+
+**Clone only a repository that is genuinely absent** after the check above:
 
 ```bash
 gh repo clone TinyCloudLabs/tinychat tinychat-calendar-autojoin -- --branch feat/calendar-autojoin
 gh repo clone TinyCloudLabs/tinycloud-private-transcription transcription-calendar-autojoin -- --branch feat/calendar-autojoin-lookup
 ```
 
-Use new destination directories; preserve any existing local changes. With an existing checkout,
-fetch the relevant branch and create a separate worktree instead. GitHub access to the transcription
-repository is required. The implementation, tests, and operational documentation are in these
-branches. Runtime credentials, environment files, databases, and recordings are not in Git.
+Run only the applicable clone command, using an unused destination. GitHub access to the
+transcription repository is required. The implementation, tests, and operational documentation are
+in these branches. Runtime credentials, environment files, databases, and recordings are not in Git.
+
+Before testing, record each selected checkout's path, current branch/commit, and local changes.
+Verify it contains the fetched feature revision with
+`git merge-base --is-ancestor origin/feat/calendar-autojoin HEAD` in Tinychat and
+`git merge-base --is-ancestor origin/feat/calendar-autojoin-lookup HEAD` in transcription
+(exit status 0 means the feature revision is included). This avoids testing an old `main` checkout
+by mistake. Investigate a nonzero result rather than claiming the feature is present.
 
 Read [the implementation report](calendar-autojoin-implementation.md) for previous validation and
 known baseline failures, and [the operations guide](calendar-autojoin-operations.md) for the storage,
