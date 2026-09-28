@@ -1,1 +1,1 @@
-How did my last meeting go? Check TinyCloud: https://tinycloud.chat/agents/setup.md
+How did my last meeting go? Check TinyCloud: https://raw.githubusercontent.com/TinyCloudLabs/prompts/refs/heads/docs/initial-setup-split/apps/tinychat/setup.md

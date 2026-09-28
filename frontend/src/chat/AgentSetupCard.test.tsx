@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AgentSetupCard } from './AgentSetupCard';
 
-const prompt = 'How did my last meeting go? Check TinyCloud: https://tinycloud.chat/agents/setup.md';
+const prompt = 'How did my last meeting go? Check TinyCloud: https://raw.githubusercontent.com/TinyCloudLabs/prompts/refs/heads/docs/initial-setup-split/apps/tinychat/setup.md';
 
 describe('external agent prompt', () => {
   it('shows the exact one-line production prompt without setup details', () => {
