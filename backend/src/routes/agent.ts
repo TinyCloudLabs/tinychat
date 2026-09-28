@@ -16,6 +16,7 @@
 //   GET  /api/agent/session  — delegation liveness (proxies eliza GET /sessions/:entityId)
 //                              for the re-mint UX (decision 4)
 
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { addressToEntityId, TINYCHAT_AGENT_ID } from "../entity-id.js";
@@ -30,7 +31,7 @@ import {
 
 const TRANSCRIPT_SQL = "xyz.tinycloud.tinychat/connectors";
 const TRANSCRIPT_KV = `${TRANSCRIPT_SQL}/`;
-const MAX_TRANSCRIPT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_TRANSCRIPT_EXPIRY_MS = SESSION_EXPIRATION_MS;
 
 export interface AgentRoutesConfig {
   /** The agent did:pkh all users delegate to (eliza-service's stable identity). */

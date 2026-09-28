@@ -205,7 +205,7 @@ describe("two-grant session envelope", () => {
       includePublicSpace: false,
       space: "applications",
       prefix: "",
-      expiry: "7d",
+      expiry: "30d",
       permissions: [
         {
           service: "tinycloud.sql",
@@ -277,7 +277,7 @@ describe("two-grant session envelope", () => {
     expect(delegateArgs!.did).toBe(AGENT_DID);
     expect(delegateArgs!.permissions).toEqual(TRANSCRIPT_PERMISSIONS);
     expect(delegateArgs!.options.expiry).toBe(AGENT_DELEGATION_EXPIRY_MS);
-    expect(AGENT_DELEGATION_EXPIRY_MS).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000);
+    expect(AGENT_DELEGATION_EXPIRY_MS).toBe(30 * 24 * 60 * 60 * 1000);
   });
 
   it("couriers a minted envelope under `session`, and a legacy string under `serialized`", async () => {

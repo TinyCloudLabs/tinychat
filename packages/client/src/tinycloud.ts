@@ -1,4 +1,5 @@
 import { TinyCloudWeb, BrowserSessionStorage } from "@tinycloud/web-sdk";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import type {
   ClientSession,
   ComposedManifestRequest,
@@ -54,6 +55,7 @@ export function createTinyCloudWeb(
     tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? true,
     sessionStorage: new BrowserSessionStorage(),
+    sessionExpirationMs: SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     manifest,

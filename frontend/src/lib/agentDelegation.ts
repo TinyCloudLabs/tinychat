@@ -8,8 +8,8 @@
 //
 // Ported from tinycloud-agents/tools/delegate-ui/src/delegate.ts (the live-proven
 // mint primitive), minus the DOM UI: the create() call, the lossy-`actions`
-// JWT-recovery fix, and the PortableDelegation assembly. Expiry shortened to ≤7d
-// (decision 4); the SDK clamps to the session window (~7d) regardless.
+// JWT-recovery fix, and the PortableDelegation assembly. Expiry was shortened to ≤7d
+// (decision 4), raised to 30d with the session window (SESSION_EXPIRATION_MS).
 
 // `serializeDelegation` is loaded LAZILY (dynamic import) from @tinycloud/web-sdk
 // inside mintAgentDelegation — the only place it runs, in-browser. We deliberately
@@ -22,6 +22,7 @@
 // custom-element registration, no collision) and never runs under bun test (the
 // real mint is stubbed via `_mint`). The DOM-bound types below are type-only.
 import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
 /** Production agent identity (Layer-1 contract §2). Local E2E may override it. */
@@ -32,8 +33,8 @@ export const AGENT_DID = viteEnv?.VITE_AGENT_DID?.trim() || DEFAULT_AGENT_DID;
 /** The agent's memory db handle — FIXED (the space varies per user, the path does not). */
 export const AGENT_MEMORY_PATH = "xyz.tinycloud.eliza/memory";
 
-/** Default delegation lifetime — ≤7d (decision 4); the SDK clamps to the session window. */
-export const AGENT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+/** Default delegation lifetime — 30d, bounded by the minting session (also 30d). */
+export const AGENT_DELEGATION_EXPIRY_MS = SESSION_EXPIRATION_MS;
 
 const SQL_ACTIONS = [
   "tinycloud.sql/read",
@@ -63,7 +64,7 @@ export const AGENT_CONSENT_MANIFEST: Manifest = {
   includePublicSpace: false,
   space: TINYCHAT_DATA_SPACE,
   prefix: "",
-  expiry: "7d",
+  expiry: "30d",
   permissions: [
     {
       service: "tinycloud.sql",
@@ -305,6 +306,7 @@ export async function mintAgentDelegationViaFreshSignIn(
     ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}),
     manifest: AGENT_CONSENT_MANIFEST,
     sessionStorage: new BrowserSessionStorage({ storage: ephemeralStorage }),
+    sessionExpirationMs: SESSION_EXPIRATION_MS,
   });
 
   try {
@@ -336,7 +338,7 @@ export async function mintAgentSessionViaFreshSignIn(
   const { web3Provider } = await connectWallet({ appName: options.appName, host: options.openkeyHost });
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
-  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }) });
+  const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }), sessionExpirationMs: SESSION_EXPIRATION_MS });
   try {
     if (localValidationEnabled()) await prepareLocalSignIn(tcw);
     await tcw.signIn();
