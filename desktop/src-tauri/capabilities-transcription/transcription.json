@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "transcription",
+  "description": "Local meeting capture and on-device transcription (anarlog plugins). Applied at runtime only when the `transcription` Cargo feature is enabled.",
+  "windows": ["main"],
+  "permissions": [
+    "transcription:default",
+    "local-stt:default"
+  ]
+}

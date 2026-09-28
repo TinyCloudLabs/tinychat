@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Exo records microphone audio for on-device meeting transcription. Audio stays on this Mac unless you choose to save a transcript.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Exo records audio playing on this Mac (meeting audio) for on-device transcription. Audio stays on this Mac unless you choose to save a transcript.</string>
+</dict>
+</plist>

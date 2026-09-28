@@ -19,7 +19,7 @@ import { DEFAULT_MEETINGS_SOURCE } from "../connectors/meetingsView";
 import type { MeetingCandidate, MeetingCorpus, MeetingLaneHealth, MeetingRef } from "./types";
 
 /** The deliberately small MVP source allowlist, shared by SQL and KV discovery. */
-export const SUPPORTED_MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber"] as const;
+export const SUPPORTED_MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"] as const;
 
 function isSupportedMeetingSource(source: string): boolean {
   return (SUPPORTED_MEETING_SOURCES as readonly string[]).includes(source);

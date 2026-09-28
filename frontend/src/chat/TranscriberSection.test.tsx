@@ -250,6 +250,43 @@ describe("TranscriberView", () => {
   });
 });
 
+describe("TranscriberView local mode", () => {
+  test("without a kind prop the card renders exactly the bot path (web)", () => {
+    const html = render();
+    expect(html).not.toContain("Meeting bot");
+    expect(html).not.toContain("Local recording");
+    expect(html).not.toContain('role="tablist"');
+    expect(html).toContain('id="transcriber-meeting-url"');
+  });
+
+  test("with kind props the segmented control renders and meeting-bot shows the bot form", () => {
+    const html = render({
+      kind: "meeting-bot",
+      localPanel: <div data-testid="local-panel">local panel</div>,
+      onKindChange: noop,
+    });
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain("Meeting bot");
+    expect(html).toContain("Local recording");
+    expect(html).toContain('id="transcriber-meeting-url"');
+    expect(html).not.toContain("local panel");
+  });
+
+  test("kind local renders the local panel instead of the bot form and list", () => {
+    const html = render({
+      kind: "local",
+      localPanel: <div data-testid="local-panel">local panel</div>,
+      onKindChange: noop,
+      // even a dark/unreachable backend must not hide local capture
+      listStatus: "dark",
+    });
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain("local panel");
+    expect(html).not.toContain('id="transcriber-meeting-url"');
+    expect(html).not.toContain("No meetings yet");
+  });
+});
+
 describe("transcriber client", () => {
   function session(token: string | null = "tok") {
     let t = token;
