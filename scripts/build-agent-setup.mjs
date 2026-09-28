@@ -17,7 +17,7 @@ if (!['http:', 'https:'].includes(setupUrl.protocol) || setupUrl.username || set
   throw new Error('TinyChat setup configuration has an invalid setup base URL.');
 }
 if (!setupUrl.pathname.endsWith('/')) setupUrl.pathname += '/';
-const instructionsUrl = new URL('setup.md', setupUrl).href;
+const instructionsUrl = values['setup-base-url'] ? new URL('setup.md', setupUrl).href : config.instructionsUrl;
 const context = createSetupContext([values.host ?? process.env.VITE_TINYCLOUD_HOST ?? config.dataHost]);
 const prompt = buildSetupPrompt({ instructionsUrl });
 const contextJson = JSON.stringify(context, null, 2);
