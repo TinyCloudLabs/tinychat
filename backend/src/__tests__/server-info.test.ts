@@ -29,7 +29,7 @@ describe("server-info route", () => {
       did: backendDid,
       status: "ready",
       name: "TinyChat Backend",
-      expiry: "7d",
+      expiry: "30d",
       permissions: [
         {
           service: "tinycloud.kv",

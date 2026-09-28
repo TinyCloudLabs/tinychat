@@ -5,6 +5,7 @@ import { mock } from "bun:test";
 
 mock.module("@tinyboilerplate/core", () => ({
   DELEGATION_CACHE_TTL_MS: 50 * 60 * 1000,
+  SESSION_EXPIRATION_MS: 30 * 24 * 60 * 60 * 1000,
 }));
 
 mock.module("@tinycloud/node-sdk", () => ({

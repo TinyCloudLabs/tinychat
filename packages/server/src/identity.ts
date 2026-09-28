@@ -1,4 +1,5 @@
 import { TinyCloudNode } from "@tinycloud/node-sdk";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ export async function createBackendIdentity(
     host: config.host ?? "https://node.tinycloud.xyz",
     prefix,
     autoCreateSpace: config.autoCreateSpace ?? true,
+    sessionExpirationMs: SESSION_EXPIRATION_MS,
   });
 
   await node.signIn();
