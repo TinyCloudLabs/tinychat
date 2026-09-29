@@ -457,6 +457,32 @@ describe("private cloud engine", () => {
     expect(result.sessionId).toBe(sessionId);
   });
 
+  test("connection lost while recovering another job re-enters submit on Retry, not a poll with no job id", async () => {
+    const s = setup();
+    let submits = 0;
+    s.n.setSubmit(async () => {
+      if (++submits === 1) throw { code: "active_transcription_exists", message: "x", transcriptionId: OTHER_ID };
+      return { transcriptionId: ID, status: "queued" };
+    });
+    // Reading the other job fails transiently for longer than the 10-minute window.
+    s.a.getsById.set(OTHER_ID, Array.from({ length: 40 }, () => failing("service_unavailable")));
+    const { sessionId, stopped } = await recordAndStop(s);
+    const err = await stopped.catch((e) => e);
+    expect(err).toBeInstanceOf(CloudConnectionLostError);
+    expect(s.n.submits).toHaveLength(1);
+
+    // Retry goes back to submit (same attempt), which now creates this recording's own job.
+    s.a.getsById.set(OTHER_ID, [() => ({ id: OTHER_ID, status: "completed" })]);
+    s.a.gets.push(job("completed"));
+    const result = (await s.t.retryTranscription()) as CloudTranscriptResult;
+    expect(s.n.submits.map((x) => x.attemptId)).toEqual([
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    expect(result.transcriptionId).toBe(ID);
+    expect(result.sessionId).toBe(sessionId);
+  });
+
   test("active_transcription_exists for a job awaiting another upload keeps this recording, offering on-device", async () => {
     const s = setup();
     s.n.setSubmit(async () => {

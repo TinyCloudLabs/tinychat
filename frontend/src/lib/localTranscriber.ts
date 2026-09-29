@@ -1420,7 +1420,10 @@ export function createLocalTranscriber(
   const cloudFailure = (err: unknown, job: TranscriptionJob): TranscriptionFailedError => {
     const c = job.cloud;
     if (err instanceof CloudConnectionLostError) {
-      if (c !== null) c.next = "poll";
+      // Only poll a job this recording owns. A connection lost before it exists (e.g. while
+      // recovering another job during submit) re-enters submit, where the idempotency key
+      // re-joins or re-creates this recording's job.
+      if (c !== null && c.transcriptionId !== null) c.next = "poll";
       return err;
     }
     const e = toPrivateCloudError(err);
