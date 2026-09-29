@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import {
   GOOGLE_AUTHORIZE_ENDPOINT,
   GOOGLE_MEET_SCOPES,
+  GOOGLE_AUTOJOIN_SCOPES,
   GOOGLE_REVOKE_ENDPOINT,
   GOOGLE_TOKEN_ENDPOINT,
   GoogleOAuthClient,
@@ -842,9 +844,9 @@ describe("no persistence", () => {
   }
 
   test("the allowlist is exactly what these two modules may import", () => {
-    expect(importSpecifiers("services/google-oauth.ts")).toEqual([]);
+    expect(importSpecifiers("services/google-oauth.ts")).toEqual(["google-auth-library"]);
     expect(new Set(importSpecifiers("routes/google-oauth.ts"))).toEqual(
-      new Set(["node:crypto", "express", "../services/google-oauth.js"]),
+      new Set(["node:crypto", "express", "../services/google-oauth.js", "../services/calendar-autojoin-connection.js"]),
     );
   });
 
@@ -879,4 +881,74 @@ describe("no persistence", () => {
 
 afterAll(() => {
   // Nothing to tear down: this suite created no store, no node client and no temp file.
+});
+
+
+describe("autojoin OIDC exchange", () => {
+  test("only autojoin adds Calendar, openid, incremental authorization and transaction nonce", () => {
+    const client = new GoogleOAuthClient(TEST_CONFIG);
+    const url = new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE, purpose: "autojoin", nonce: "transaction-nonce" }));
+    expect(url.searchParams.get("scope")).toBe(GOOGLE_AUTOJOIN_SCOPES);
+    expect(url.searchParams.get("include_granted_scopes")).toBe("true");
+    expect(url.searchParams.get("nonce")).toBe("transaction-nonce");
+    expect(new URL(client.authorizeUrl({ state: STATE, challenge: CHALLENGE })).searchParams.has("nonce")).toBe(false);
+  });
+
+  test("validates identity against configured audience and returns only the verified subject internally", async () => {
+    const calls: unknown[] = [];
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "access", refresh_token: "refresh", scope: "actual-scope", id_token: "signed-token" }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async (...args) => {
+      calls.push(args); return { sub: "google-subject", nonce: "bound-nonce" };
+    } });
+    const result = await client.exchangeCode({ code: "code", verifier: VERIFIER, nonce: "bound-nonce" });
+    expect(calls).toEqual([["signed-token", CLIENT_ID]]);
+    expect(result).toEqual({ access_token: "access", refresh_token: "refresh", scope: "actual-scope", subject: "google-subject" });
+    expect(result).not.toHaveProperty("id_token");
+  });
+
+  test.each(["missing", "nonce", "signature"])("rejects invalid identity: %s", async (failure) => {
+    const upstream = recordingFetch(() => jsonResponse(200, { access_token: "access", ...(failure === "missing" ? {} : { id_token: "signed-token" }) }));
+    const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl: upstream.impl, verifyIdToken: async () => {
+      if (failure === "signature") throw new Error("untrusted token contents");
+      return { sub: "subject", nonce: "other-nonce" };
+    } });
+    await expect(client.exchangeCode({ code: "code", verifier: VERIFIER, nonce: "bound-nonce" })).rejects.toMatchObject({ error: "invalid_identity" });
+  });
+});
+
+
+describe("Google standard ID-token verification", () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const publicPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  const publicJwk = { ...publicKey.export({ format: "jwk" }), kid: "fixture-key", alg: "RS256", use: "sig" };
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const issue = (claims: Record<string, unknown>, corruptSignature: boolean) => {
+    const body = `${encode({ alg: "RS256", kid: "fixture-key" })}.${encode(claims)}`;
+    const signature = sign("RSA-SHA256", Buffer.from(body), privateKey);
+    if (corruptSignature) signature[0] = signature[0]! ^ 255;
+    return `${body}.${signature.toString("base64url")}`;
+  };
+
+  for (const failure of [null, "issuer", "audience", "expiry", "signature", "nonce"] as const) {
+    test(`library verifies signature, issuer, audience, expiry and nonce: ${failure ?? "valid"}`, async () => {
+      const seconds = Math.floor(Date.now() / 1000);
+      const token = issue({ iss: failure === "issuer" ? "https://untrusted.example" : "https://accounts.google.com",
+        aud: failure === "audience" ? "another-client" : CLIENT_ID,
+        iat: seconds - 3_600, exp: failure === "expiry" ? seconds - 600 : seconds + 3_600,
+        sub: "verified-subject", nonce: failure === "nonce" ? "another-transaction" : "bound-nonce" }, failure === "signature");
+      const requests: string[] = [];
+      const fetchImpl = (async (input: RequestInfo | URL) => {
+        const url = String(input); requests.push(url);
+        if (url === TEST_CONFIG.tokenEndpoint) return jsonResponse(200, { access_token: "access", id_token: token });
+        if (url.includes("/v3/certs")) return jsonResponse(200, { keys: [publicJwk] });
+        if (url.includes("/certs")) return jsonResponse(200, { "fixture-key": publicPem });
+        throw new Error("unexpected verification endpoint");
+      }) as typeof fetch;
+      const client = new GoogleOAuthClient(TEST_CONFIG, { fetchImpl });
+      const result = client.exchangeCode({ code: "code", verifier: VERIFIER, nonce: "bound-nonce" });
+      if (failure === null) await expect(result).resolves.toMatchObject({ subject: "verified-subject" });
+      else await expect(result).rejects.toMatchObject({ error: "invalid_identity" });
+      expect(requests.length).toBeGreaterThan(1);
+    });
+  }
 });

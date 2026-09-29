@@ -32,7 +32,7 @@ import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
 import { AgentAccessProvider, useAgentAccess } from "./chat/useAgentEnablement";
-import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
+import { ChatViewAgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
@@ -96,6 +96,7 @@ import {
   connectorsAriaLabel,
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
+import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
@@ -839,6 +840,7 @@ export function App() {
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
+            <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
             {/* ChatWorkspace stays mounted while an app surface is active —
                 visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
@@ -904,6 +906,7 @@ export function App() {
                 sessionStore={sessionStoreRef.current}
               />
             )}
+            </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
           <BootSurface state={state} error={error} onSignIn={signIn} />
@@ -1250,9 +1253,7 @@ function ChatWorkspace(props: {
   connectorsSurface: React.ReactNode;
 }) {
   const {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef,
-    capability, enableError, enabling, onEnable, reconnectReason,
-    onDelegationError, silentlyEnabled,
+    agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
   // One instance per mounted workspace: its thread selection state is
@@ -1419,15 +1420,9 @@ function ChatWorkspace(props: {
           />
         </SheetContent>
       </Sheet>
-      {/* C3: first-time enablement + expired-delegation reconnect affordance. */}
-      <AgentEnablementBanner
-        capability={capability}
-        enableError={enableError}
-        enabling={enabling}
-        onEnable={onEnable}
-        reconnectReason={reconnectReason}
-        silentlyEnabled={silentlyEnabled}
-      />
+      {/* C3: first-time enablement + expired-delegation reconnect affordance —
+          chat views only (isChatViewPath). */}
+      <ChatViewAgentEnablementBanner />
     </AssistantRuntimeProvider>
   );
 }

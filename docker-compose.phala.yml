@@ -2,6 +2,9 @@ services:
   tinychat-backend:
     image: ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}
     platform: linux/amd64
+    # Autojoin requires stop-and-drain replacement: never run two backend writers.
+    # The HTTP server and scheduler drain together before process exit.
+    stop_grace_period: 130s
     ports:
       - "3001:3001"
     environment:
@@ -74,8 +77,9 @@ services:
       # addresses it applies to is a separate per-address cohort allowlist in the backend's own
       # config KV. Every non-cohort address keeps the shipped browser-drain path exactly.
       CONNECTOR_BACKEND_INGEST_ENABLED: ${CONNECTOR_BACKEND_INGEST_ENABLED:-false}
-      # W2 credential custody. Required only when backend ingestion is ARMED, and then the
-      # backend refuses to boot without it: it wraps every stored per-user Fireflies credential.
+      # W2 credential custody. Required when backend ingestion is ARMED and for Calendar autojoin;
+      # it wraps stored Fireflies and Google credentials. An invalid configured key fails boot;
+      # an absent key keeps Calendar autojoin unavailable and does not affect browser-only Google.
       # Its own `openssl rand -base64 32` value — reusing WEBHOOK_HMAC_MASTER is a hard error.
       # It MUST survive CVM redeploys: a redeploy that strips it orphans every stored credential.
       CONNECTOR_CREDENTIAL_MASTER: ${CONNECTOR_CREDENTIAL_MASTER:-}
@@ -90,7 +94,8 @@ services:
       # Google Meet OAuth proxy (WP-A) — dark by default: unset flag = the five
       # /api/connectors/google/oauth/* routes are never mounted (404). Armed, the three client
       # vars below are mandatory and the backend refuses to build the router without them.
-      # Nothing here is persisted: the proxy is a credential-shaped pipe to Google.
+      # Ordinary Google connection stays browser-only. Autojoin consent additionally stores
+      # encrypted Google credentials when transcription + CONNECTOR_CREDENTIAL_MASTER are set.
       GOOGLE_MEET_OAUTH_ENABLED: ${GOOGLE_MEET_OAUTH_ENABLED:-false}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
