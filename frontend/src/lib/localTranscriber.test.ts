@@ -257,7 +257,7 @@ describe("normalizeLocalTranscript", () => {
       const step = (end - start) / parts.length;
       return parts.map((word, i) => ({ word, start: start + i * step, end: start + (i + 1) * step, channel }));
     };
-    const remote = "Ship the release on Thursday. Blue kites fly over the harbor.";
+    const remote = ["Ship the release on Thursday.", "Blue kites fly over the harbor."];
     const { meeting, sentences } = normalizeLocalTranscript({
       ...resultWith([]),
       response: {
@@ -266,9 +266,13 @@ describe("normalizeLocalTranscript", () => {
           channels: [
             { alternatives: [{ transcript: "", confidence: 1, words: [
               ...spread(0, 0, 2, "Can everyone hear me?"),
-              ...spread(0, 3.2, 9.3, remote),
+              ...spread(0, 3.2, 6.1, remote[0]!),
+              ...spread(0, 7.2, 10.1, remote[1]!),
             ] }] },
-            { alternatives: [{ transcript: "", confidence: 1, words: spread(1, 3, 9, remote) }] },
+            { alternatives: [{ transcript: "", confidence: 1, words: [
+              ...spread(1, 3, 6, remote[0]!),
+              ...spread(1, 7, 10, remote[1]!),
+            ] }] },
           ],
         },
       } as never,
@@ -276,9 +280,9 @@ describe("normalizeLocalTranscript", () => {
 
     expect(sentences.map((s) => `${s.speaker_name}: ${s.text}`)).toEqual([
       "You: Can everyone hear me?",
-      `Others: ${remote}`,
+      `Others: ${remote.join(" ")}`,
     ]);
-    expect(meeting.metadata.transcript_text).toBe(`Can everyone hear me?\n${remote}`);
+    expect(meeting.metadata.transcript_text).toBe(`Can everyone hear me?\n${remote.join(" ")}`);
     expect(meeting.participants.map((p) => p.name)).toEqual(["You", "Others"]);
   });
 

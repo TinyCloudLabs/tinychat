@@ -7,15 +7,17 @@
 //     simultaneous speech never interleaves word by word;
 //   - consecutive same-speaker segments merge into one turn, and no turn
 //     (continuous speech included) spans more than MAX_TURN_SECONDS;
-//   - mic phrases that substantially repeat system audio from the same moment
-//     are dropped (kept as Others), including Whisper-garbled echo, once the
-//     recording shows a stable small echo lag;
+//   - a mic chunk that entirely repeats system audio from the same moment is
+//     dropped whole (kept as Others), tolerating plural and function-word
+//     differences, once the recording shows a stable small echo lag;
+//   - part of a mic chunk is never dropped: echo mixed with the user's own
+//     words in one chunk, in either order, keeps the whole chunk;
 //   - distinct mic speech is kept: overlapping different speech, shared
 //     function words or backchannels, lone-word replies, immediate verbatim
-//     repetitions in a recording with echo, a repeat after the echo was
-//     matched, long phrases repeated seconds apart, echo-like text off the
-//     recording's echo lag, confirmations on a headphone call, a single
-//     echo-like phrase;
+//     repetitions in a recording with echo (in their own chunk or sharing a
+//     chunk with other words), a repeat after the echo was matched, long
+//     phrases repeated seconds apart, echo-like text off the recording's echo
+//     lag, confirmations on a headphone call, a single echo-like chunk;
 //   - one-channel, empty, channel-less, and extra-channel recordings;
 //   - an 8-hour recording and collapsed timestamps finish quickly, and
 //     collapsed timestamps drop nothing.
@@ -63,8 +65,8 @@ function lines(words: LocalWord[]): string[] {
   return localTranscriptTurns(words).map((s) => `${s.speaker_name}: ${s.text}`);
 }
 
-/** Two clean echoes (mic 0.2 s behind system audio) starting at `at`: enough
- *  to open the echo gate and measure the recording's echo lag. */
+/** Two clean echo chunks (mic 0.2 s behind system audio) starting at `at`:
+ *  enough to open the echo gate and measure the recording's echo lag. */
 function cleanEchoes(at: number): LocalWord[][] {
   return [
     chunk(SYS, at, at + 3, "Ship the release on Thursday."),
@@ -74,7 +76,7 @@ function cleanEchoes(at: number): LocalWord[][] {
   ];
 }
 
-/** 32 words without punctuation or pauses: one long phrase. */
+/** 32 words without punctuation: one long phrase. */
 const LONG_PHRASE = (
   "quarterly revenue grew across every region while hiring stayed flat and the board asked "
   + "for a clearer plan covering pricing churn support costs partner margins and the launch "
@@ -96,21 +98,44 @@ describe("localChannelLabel", () => {
 
 describe("localTranscriptTurns: echo", () => {
   test("mic echo of system audio is dropped and the words stay with Others (no word-by-word interleave)", () => {
-    const text = "Ship the release on Thursday. Blue kites fly over the harbor.";
-    const words = recording(chunk(SYS, 0, 6, text), chunk(MIC, 0.3, 6.2, text));
+    const first = "Ship the release on Thursday. Blue kites fly over the harbor.";
+    const second = "Deploy the canary build tonight.";
+    const words = recording(
+      chunk(SYS, 0, 6, first),
+      chunk(MIC, 0.3, 6.2, first),
+      chunk(SYS, 8, 11, second),
+      chunk(MIC, 8.2, 11.1, second),
+    );
 
-    expect(lines(words)).toEqual([`Others: ${text}`]);
-    expect(findMicEcho(words).size).toBe(11);
+    expect(lines(words)).toEqual([`Others: ${first} ${second}`]);
+    expect(findMicEcho(words).size).toBe(16);
   });
 
-  test("echo that Whisper garbled on the mic still matches when most words align in order", () => {
+  test("echo with plural and function-word differences still matches", () => {
     const words = recording(
-      chunk(SYS, 0, 6, "Ship the release on Thursday. Purple elephants dance on Tuesday."),
-      // "releases" and "elephant" fold plurals; "prance" is a mishearing.
-      chunk(MIC, 0.2, 6.3, "Ship the releases on Thursday. Purple elephant prance on Tuesday."),
+      chunk(SYS, 0, 3, "Ship the release on Thursday."),
+      // "releases" folds to "release"; Whisper dropped "the".
+      chunk(MIC, 0.2, 3.1, "Ship releases on Thursday."),
+      chunk(SYS, 5, 8, "Purple elephants dance on Tuesday."),
+      chunk(MIC, 5.2, 8.1, "Purple elephant dance on the Tuesday."),
     );
 
     expect(lines(words)).toEqual(["Others: Ship the release on Thursday. Purple elephants dance on Tuesday."]);
+  });
+
+  test("a mic chunk with one misheard content word is kept whole", () => {
+    const words = recording(
+      ...cleanEchoes(0),
+      chunk(SYS, 10, 13, "Purple elephants dance on Tuesday."),
+      // "prance" explains nothing on the system side: it could be the user.
+      chunk(MIC, 10.2, 13.1, "Purple elephants prance on Tuesday."),
+    );
+
+    expect(findMicEcho(words).size).toBe(11);
+    expect(lines(words)).toEqual([
+      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Purple elephants dance on Tuesday.",
+      "You: Purple elephants prance on Tuesday.",
+    ]);
   });
 
   test("echo too garbled to align is kept on both channels", () => {
@@ -125,11 +150,12 @@ describe("localTranscriptTurns: echo", () => {
     ]);
   });
 
-  test("only the echoed phrase is dropped from a mic segment; speech on either side keeps its place", () => {
+  test("an echo chunk between the user's own chunks is dropped; their speech keeps its place", () => {
     const words = recording(
-      // 15 words over 12 s: the echoed sentence falls at 2.4–6.4 s.
-      chunk(MIC, 0, 12, "Good morning everyone. Ship the release on Thursday. Let us begin with the demo."),
-      chunk(SYS, 2.6, 6.6, "Ship the release on Thursday."),
+      chunk(MIC, 0, 2, "Good morning everyone."),
+      chunk(SYS, 2.6, 5.6, "Ship the release on Thursday."),
+      chunk(MIC, 2.8, 5.7, "Ship the release on Thursday."),
+      chunk(MIC, 7, 10, "Let us begin with the demo."),
       chunk(SYS, 20, 23, "Blue kites fly over the harbor."),
       chunk(MIC, 20.2, 23.1, "Blue kites fly over the harbor."),
     );
@@ -139,6 +165,34 @@ describe("localTranscriptTurns: echo", () => {
       "Others: Ship the release on Thursday.",
       "You: Let us begin with the demo.",
       "Others: Blue kites fly over the harbor.",
+    ]);
+  });
+
+  test("echo mixed with the user's own words in one chunk keeps the whole chunk, in either order", () => {
+    const echoThenUser = recording(
+      ...cleanEchoes(100),
+      chunk(SYS, 0, 3, "Deploy the canary build tonight."),
+      // One VAD chunk: the echo, then the user. Word times spread evenly.
+      chunk(MIC, 0.2, 5, "Deploy the canary build tonight. I will check."),
+    );
+    const userThenEcho = recording(
+      ...cleanEchoes(100),
+      chunk(SYS, 2, 5, "Deploy the canary build tonight."),
+      // One VAD chunk: the user, then the echo.
+      chunk(MIC, 0, 5.1, "I will check. Deploy the canary build tonight."),
+    );
+
+    for (const words of [echoThenUser, userThenEcho]) {
+      expect(micWordsBetween(findMicEcho(words), 0, 10)).toHaveLength(0);
+      expect(micWordsBetween(findMicEcho(words), 100, 110)).toHaveLength(11);
+    }
+    expect(lines(echoThenUser).slice(0, 2)).toEqual([
+      "Others: Deploy the canary build tonight.",
+      "You: Deploy the canary build tonight. I will check.",
+    ]);
+    expect(lines(userThenEcho).slice(0, 2)).toEqual([
+      "You: I will check. Deploy the canary build tonight.",
+      "Others: Deploy the canary build tonight.",
     ]);
   });
 
@@ -234,6 +288,23 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     ]);
   });
 
+  test("a reply sharing a chunk with the user's other words survives, even when timing makes it look like echo", () => {
+    // Two real echoes elsewhere; then the user's VAD chunk spans 8–13 s, so its
+    // evenly spread word times put "Friday at noon." right on top of the
+    // system-audio question at 10–12 s.
+    const words = recording(
+      ...cleanEchoes(100),
+      chunk(SYS, 10, 12, "Friday at noon?"),
+      chunk(MIC, 8, 13, "I will check. Friday at noon."),
+    );
+
+    expect(micWordsBetween(findMicEcho(words), 0, 20)).toHaveLength(0);
+    expect(lines(words).slice(0, 2)).toEqual([
+      "You: I will check. Friday at noon.",
+      "Others: Friday at noon?",
+    ]);
+  });
+
   test("immediate verbatim repetitions survive in a recording with echo", () => {
     const words = recording(
       ...cleanEchoes(0),
@@ -243,7 +314,7 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
       // Echoed on the mic, then confirmed.
       chunk(SYS, 20, 22.5, "Meet on the third floor?"),
       chunk(MIC, 20.2, 22.6, "Meet on the third floor?"),
-      chunk(MIC, 22.8, 23.8, "Third floor."),
+      chunk(MIC, 23.2, 24, "Third floor."),
       // Repeated in full, starting 0.1 s after the other side stops.
       chunk(SYS, 30, 33, "Send the budget draft tonight."),
       chunk(MIC, 33.1, 35.5, "Send the budget draft tonight."),
@@ -283,7 +354,7 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
     expect(micWordsBetween(findMicEcho(words), 0, 30)).toHaveLength(0);
   });
 
-  test("a single echo-like phrase is not enough evidence: both copies are kept", () => {
+  test("a single echo-like chunk is not enough evidence: both copies are kept", () => {
     const text = "Ship the release on Thursday.";
     const words = recording(chunk(SYS, 0, 3, text), chunk(MIC, 0.2, 3.1, text));
 
@@ -319,8 +390,7 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
   });
 
   test("system audio is never dropped, even when the mic carries the same words", () => {
-    const text = "Ship the release on Thursday. Blue kites fly over the harbor.";
-    const words = recording(chunk(MIC, 0, 3, text), chunk(SYS, 0.2, 3.1, text));
+    const words = recording(...cleanEchoes(0));
     const turns = localTranscriptTurns(words);
 
     expect(turns.map((s) => s.speaker_name)).toEqual(["Others"]);
