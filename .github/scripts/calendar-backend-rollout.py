@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 import yaml
 
@@ -18,6 +20,8 @@ APP = "2faaa9242e190fe9cbbff7bc8667b5c4e52c3acf"
 OLD = "ghcr.io/tinycloudlabs/tinychat-backend:add998813ea473b3396320cfbcadd30bf62e6d57"
 NEW = "ghcr.io/tinycloudlabs/tinychat-backend:calendar-autojoin-76e800725200594382f6715e80e33eea7fba3251@sha256:de34c711fe0e872d8b91fc70fce8e99bd0e15f3b1bcc0033103a4eca6aab3dc1"
 MASTER_SHA256 = "32f7011c098b15837c6dbcaf43f0b41b135cdaf06151516f0c9f4b5b0df608c8"
+RECOVERY_CERTIFICATE = Path(__file__).resolve().parent.parent / "calendar-recovery.crt.pem"
+FAILURE_EVIDENCE_DIR = None
 
 
 def check(condition, message):
@@ -26,9 +30,44 @@ def check(condition, message):
 
 
 def command(args, timeout=60):
-    result = subprocess.run(args, cwd="/tmp", capture_output=True, timeout=timeout)
+    try:
+        result = subprocess.run(args, cwd="/tmp", capture_output=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        capture_command_failure(args, None, getattr(error, "stdout", None), getattr(error, "stderr", None))
+        raise
+    if result.returncode:
+        capture_command_failure(args, result.returncode, result.stdout, result.stderr)
     check(result.returncode == 0, "Command failed; raw output withheld to protect configuration")
     return result.stdout
+
+
+def capture_command_failure(args, returncode, stdout, stderr):
+    if FAILURE_EVIDENCE_DIR is None:
+        return
+    destination = FAILURE_EVIDENCE_DIR / f"command-failure-{uuid.uuid4()}.cms"
+    try:
+        diagnostic = {"command": args, "returncode": returncode,
+                      "stdout": stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout,
+                      "stderr": stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr}
+        with tempfile.TemporaryDirectory(prefix="calendar-backend-diagnostic-") as tmp:
+            source = Path(tmp) / "diagnostic.json"
+            descriptor = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w") as stream:
+                json.dump(diagnostic, stream)
+            # Run encryption directly: its own failure must not recurse or retry
+            # the original operation. Plaintext never enters the artifact directory.
+            encrypted = subprocess.run([
+                "openssl", "cms", "-encrypt", "-binary", "-aes256", "-in", str(source),
+                "-out", str(destination), "-outform", "DER", str(RECOVERY_CERTIFICATE),
+            ], cwd="/tmp", capture_output=True, timeout=30)
+            check(encrypted.returncode == 0 and destination.is_file() and destination.stat().st_size > 0,
+                  "Diagnostic encryption failed")
+    except Exception:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+        print("Encrypted command-failure diagnostics unavailable; raw output withheld", flush=True)
 
 
 def api(suffix="", method="GET"):
@@ -58,11 +97,13 @@ def running_backends(composition):
 
 
 def main(mode):
+    global FAILURE_EVIDENCE_DIR
     os.umask(0o077)
     temp = Path(os.environ["RUNNER_TEMP"])
     evidence = temp / "calendar-backend-evidence"
     evidence.mkdir(mode=0o700, exist_ok=True)
-    certificate = Path(__file__).resolve().parent.parent / "calendar-recovery.crt.pem"
+    FAILURE_EVIDENCE_DIR = evidence
+    certificate = RECOVERY_CERTIFICATE
     receipt = {"vmUuid": UUID, "appId": APP, "image": NEW, "phase": "preflight"}
 
     def record():

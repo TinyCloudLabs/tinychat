@@ -325,12 +325,14 @@ jobs:
     - name: Stop old writer, deploy tested image and verify replacement
       env: *id001
       run: python3 .github/scripts/calendar-backend-rollout.py --execute
-    - name: Save replacement receipt
+    - name: Save replacement receipt and encrypted failure diagnostics
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: calendar-backend-receipt
-        path: ${{ runner.temp }}/calendar-backend-evidence/receipt.json
+        path: |
+          ${{ runner.temp }}/calendar-backend-evidence/receipt.json
+          ${{ runner.temp }}/calendar-backend-evidence/command-failure-*.cms
         retention-days: 90
     - name: Verify public API
       env:
