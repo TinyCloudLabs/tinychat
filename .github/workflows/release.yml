@@ -32,8 +32,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Holds the release-push deploy key: release tags may only be created by deploy keys (ruleset). main only.
+    environment: release-push
     permissions:
-      contents: write # [skip ci] version commits, tags, and the release/stable branch
+      contents: write # the release/stable branch (version commits and tags go over the deploy key)
       pull-requests: write # the Release stable PR
       actions: write # dispatch deploy-production.yml for new stable tags
     env:
@@ -75,21 +77,23 @@ jobs:
         id: tag
         run: node scripts/release/tag.mjs
 
-      # --atomic: the [skip ci] version commit and its tags land together, and only as a fast-forward of main.
+      # --atomic: the [skip ci] version commit and its tags land together, and only as a fast-forward of main. Both
+      # go over the release-push deploy key: the tag ruleset admits only deploy keys, and one transport keeps the push
+      # atomic. A deploy-key push triggers workflows, so the commit's [skip ci] is what keeps this from re-running.
       - name: Push version commit and tags
         if: steps.version.outputs.channel != 'none' || steps.tag.outputs.tags != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_PUSH_SSH_KEY: ${{ secrets.RELEASE_PUSH_SSH_KEY }}
           TAGS: ${{ steps.tag.outputs.tags }}
         run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           read -ra tags <<< "$TAGS"
           refs=()
           for tag in "${tags[@]}"; do refs+=("refs/tags/$tag"); done
-          git -c "http.https://github.com/.extraheader=$auth" push --atomic origin HEAD:refs/heads/main "${refs[@]}"
+          scripts/release/deploy-key-push.sh --atomic HEAD:refs/heads/main "${refs[@]}"
 
-      # Tags pushed with GITHUB_TOKEN trigger no workflow, so downstream work is dispatched on the tag refs.
-      # Only a stable run deploys production (backend, then web); beta and baseline tags dispatch nothing.
+      # Downstream work is dispatched explicitly, from main, with the new tag as an input (the tag commits carry
+      # [skip ci]). Only a stable run deploys production (backend, then web); beta and baseline tags dispatch nothing.
       - name: Dispatch production deploys for stable tags
         if: steps.tag.outputs.tags != ''
         env:

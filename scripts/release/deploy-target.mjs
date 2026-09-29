@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Gate for deploy-production.yml. Each selected unit (backend, web) must have a stable release tag
- * (`@tinychat/backend@X.Y.Z` / `@tinychat/frontend@X.Y.Z`, matching its package.json version) on the commit being
- * deployed, and that commit must be on --main (fetch it fresh first). Anything else is an unreleased hotfix, allowed
- * only with --allow-unreleased true plus --confirm-sha equal to the full commit SHA. Writes label, released,
- * backend-version and frontend-version to $GITHUB_OUTPUT.
+ * Gate for deploy-production.yml, run from main's checkout against --commit (the commit to deploy). Each selected
+ * unit (backend, web) must have a stable release tag (`@tinychat/backend@X.Y.Z` / `@tinychat/frontend@X.Y.Z`, matching
+ * its package.json version at that commit) on that commit, and the commit must be on --main (fetch it fresh first).
+ * Anything else is an unreleased hotfix, allowed only with --allow-unreleased true plus --confirm-sha equal to the
+ * full commit SHA. Writes sha, label, released, backend-version and frontend-version to $GITHUB_OUTPUT.
  */
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -13,6 +13,7 @@ import { BACKEND, FRONTEND, STABLE_VERSION, git, repoRoot, setOutput } from './l
 const { values } = parseArgs({
   options: {
     root: { type: 'string' },
+    commit: { type: 'string', default: 'HEAD' },
     backend: { type: 'string' },
     web: { type: 'string' },
     'allow-unreleased': { type: 'string', default: 'false' },
@@ -31,7 +32,7 @@ const units = [
 ].filter(unit => unit.selected);
 if (units.length === 0) throw new Error('Nothing to deploy: set backend and/or web');
 
-const sha = git(root, ['rev-parse', '--verify', 'HEAD^{commit}']);
+const sha = git(root, ['rev-parse', '--verify', `${values.commit}^{commit}`]);
 const version = dir => JSON.parse(git(root, ['show', `${sha}:${dir}/package.json`])).version;
 const tagsHere = new Set(git(root, ['tag', '--points-at', sha]).split('\n').filter(Boolean));
 const onMain = git(root, ['merge-base', '--is-ancestor', sha, values.main], { allowFailure: true }) !== undefined;
@@ -53,12 +54,13 @@ if (unreleased.length === 0) {
 } else {
   throw new Error([
     `Refusing to deploy ${sha} to production: ${unreleased.join('; ')}.`,
-    'Deploy a stable release: gh workflow run deploy-production.yml --ref refs/tags/<@tinychat/backend|@tinychat/frontend>@<X.Y.Z>.',
-    `For an unreleased hotfix, re-run with -f allow_unreleased=true -f confirm_sha=${sha}.`,
+    'Deploy a stable release: gh workflow run deploy-production.yml --ref main -f tag=<@tinychat/backend|@tinychat/frontend>@<X.Y.Z>.',
+    `For an unreleased hotfix: gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=${sha}.`,
   ].join(' '));
 }
 
 console.log(`deploy target ${sha}: ${label}`);
+setOutput('sha', sha);
 setOutput('label', label);
 setOutput('released', String(unreleased.length === 0));
 setOutput('backend-version', version('backend'));

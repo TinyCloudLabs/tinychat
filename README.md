@@ -170,20 +170,22 @@ serves the new backend (`/api/server-info` `backendRevision` equals the deployed
 commit and `backendVersion` the released version). Betas and ordinary merges to
 `main` deploy nothing to production (`main` gets a Pages preview build).
 `Deploy production` is also the only manual path (the Phala workflow has no
-trigger of its own):
+trigger of its own). It always runs from `main` and deploys the commit it
+resolves:
 
 ```bash
 # Redeploy or roll back to a stable release (one side with -f backend=false / -f web=false)
-gh workflow run deploy-production.yml --ref refs/tags/@tinychat/backend@0.1.1 -f web=false
-# Unreleased hotfix: explicit opt-in plus the full SHA of the commit being deployed
-gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<40-char SHA of main>
+gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@0.1.1 -f web=false
+# Unreleased hotfix: explicit opt-in plus the full SHA of the commit to deploy
+gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<40-char SHA>
 ```
 
-The web deploy fast-forwards the `production` branch, which Pages builds as
-production; only GitHub Actions may update it (ruleset), and the run's final
-"Production state" table says what changed, including when a later check
-failed. See [docs/deployment.md](docs/deployment.md), including the release
-rulesets and their residual risk.
+Release tags and the `production` branch are pushed only with the
+`release-push` deploy key (rulesets let only deploy keys write them). The web
+deploy fast-forwards `production`, which Pages builds as production, and the
+run's final "Production state" table says what changed, including when a later
+check failed. See [docs/deployment.md](docs/deployment.md) for the deploy key,
+the rulesets and their residual risk.
 
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release

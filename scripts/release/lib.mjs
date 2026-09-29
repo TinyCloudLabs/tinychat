@@ -59,9 +59,10 @@ export function planDispatches({ channel, tags }) {
     if (backend || web) {
       dispatches.push({
         workflow: PRODUCTION_WORKFLOW,
-        // Every stable tag of a run sits on the same stable version commit; dispatch.mjs verifies that.
-        ref: `refs/tags/${(backend ?? web).tag}`,
-        inputs: { backend: String(Boolean(backend)), web: String(Boolean(web)) },
+        // Always from main (trusted workflow code); the tag selects the commit. Every stable tag of a run sits on the
+        // same stable version commit; dispatch.mjs verifies that.
+        ref: 'main',
+        inputs: { tag: (backend ?? web).tag, backend: String(Boolean(backend)), web: String(Boolean(web)) },
         tags: [backend, web].filter(Boolean).map(({ tag }) => tag),
       });
     }
