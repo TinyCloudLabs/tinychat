@@ -66,14 +66,20 @@ optional = true
 # for release builds, which would share (or be redirected by) a real anarlog
 # install's vault and models. The vendored copy keeps every build under the
 # app's own bundle-identifier folder. See vendor/anarlog-storage/PROVENANCE.md.
+#
+# The in-process whisper.cpp server (`transcribe-whisper-local`, mounted by
+# tauri-plugin-local-stt) sent no stream events while decoding a recording or
+# scanning speech-free audio, so long or mostly-silent recordings hit the
+# clients' 30 s / 60 s stream-idle timeouts; it also rejected recordings over
+# 100 MiB (~109 min). See vendor/anarlog-transcribe-whisper-local/PROVENANCE.md.
 [patch."https://github.com/fastrepl/anarlog"]
 storage = { path = "../vendor/anarlog-storage" }
+transcribe-whisper-local = { path = "../vendor/anarlog-transcribe-whisper-local" }
 
-# The yujonglee swift-rs fork assumes the pre-Xcode-16.3 SwiftPM layout
-# (<build-path>/<arch>-apple-macosx/<config>), but current SwiftPM writes
-# products to <build-path>/out/Products/<Config> — "native static library
-# `apple-speech-swift` not found" on link. Vendored + one extra link-search line.
-# See vendor/swift-rs/PROVENANCE.md.
+# The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build
+# system. Xcode 27's default (`swiftbuild`) prelinks targets and hides the
+# SwiftRs bridge symbols from the release link; the vendored copy forces
+# `--build-system native`. See vendor/swift-rs/PROVENANCE.md.
 [patch."https://github.com/yujonglee/swift-rs"]
 swift-rs = { path = "../vendor/swift-rs" }
 

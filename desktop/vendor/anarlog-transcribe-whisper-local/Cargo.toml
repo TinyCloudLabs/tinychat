@@ -1,0 +1,57 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/transcribe-whisper-local, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "transcribe-whisper-local"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+coreml = ["anlg-whisper-local/coreml"]
+directml = ["anlg-pyannote-local/directml"]
+cuda = ["anlg-whisper-local/cuda"]
+hipblas = ["anlg-whisper-local/hipblas"]
+openblas = ["anlg-whisper-local/openblas"]
+metal = ["anlg-whisper-local/metal"]
+vulkan = ["anlg-whisper-local/vulkan"]
+openmp = ["anlg-whisper-local/openmp"]
+
+[dependencies]
+anlg-audio-chunking = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-chunking" }
+anlg-audio-interface = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-interface" }
+anlg-audio-utils = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-utils" }
+anlg-model-manager = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "model-manager", features = ["whisper-local"] }
+anlg-pyannote-local = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "pyannote-local" }
+anlg-transcribe-core = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "transcribe-core" }
+anlg-whisper = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "whisper" }
+anlg-whisper-local = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "whisper-local" }
+anlg-ws-utils = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "ws-utils" }
+owhisper-interface = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "owhisper-interface" }
+
+bytes = "1.11"
+serde_html_form = "0.4"
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3.31"
+hound = "3.5.1"
+tokio = { version = "1", features = ["fs", "io-util"] }
+tokio-util = "0.7.15"
+tower = "0.5"
+tracing = "0.1"
+
+rodio = "0.22"
+
+[dev-dependencies]
+anlg-data = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "data" }
+bytes = "1.11"
+dirs = "6.0.0"
+futures-util = "0.3.31"
+owhisper-client = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "owhisper-client" }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+tokio-tungstenite = "0.29"
+# Upstream gets these tokio features through workspace feature unification;
+# needed only to compile this crate's tests on its own.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

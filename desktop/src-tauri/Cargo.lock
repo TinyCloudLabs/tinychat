@@ -11054,7 +11054,6 @@ dependencies = [
 [[package]]
 name = "transcribe-whisper-local"
 version = "0.1.0"
-source = "git+https://github.com/fastrepl/anarlog?rev=864ddc1f692116d128eea2692fd72b0a51007768#864ddc1f692116d128eea2692fd72b0a51007768"
 dependencies = [
  "audio-chunking",
  "audio-interface",
