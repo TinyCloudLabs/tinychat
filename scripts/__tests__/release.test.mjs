@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyPagesCheckRuns, planDispatches, setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
+import { changelogSection, classifyPagesCheckRuns, desktopBundleVersions, planDispatches, setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFESTS = [
@@ -394,7 +394,9 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   const betaCommit = git(root, 'rev-parse', 'HEAD');
   assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.2\.0-beta\.0 @tinychat\/frontend@0\.2\.0-beta\.0 @tinychat\/backend@0\.1\.1-beta\.0$/m);
   assert.equal(tagCommit(root, '@tinychat/backend@0.1.1-beta.0'), betaCommit);
-  assert.doesNotMatch(step('dispatch.mjs', ['--channel', 'beta', '--tags', 'exo-desktop@0.2.0-beta.0 @tinychat/frontend@0.2.0-beta.0 @tinychat/backend@0.1.1-beta.0', '--dry-run']), /deploy-production/);
+  const betaDispatch = step('dispatch.mjs', ['--channel', 'beta', '--tags', 'exo-desktop@0.2.0-beta.0 @tinychat/frontend@0.2.0-beta.0 @tinychat/backend@0.1.1-beta.0', '--dry-run']);
+  assert.doesNotMatch(betaDispatch, /deploy-production/);
+  assert.match(betaDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref refs\/tags\/exo-desktop@0\.2\.0-beta\.0$/m);
 
   write(root, '.changeset/web-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Web fix'));
   commitAll(root, 'fix: web (#2)');
@@ -468,6 +470,7 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   assert.equal(tagCommit(root, 'exo-desktop@0.2.0'), stableCommit);
   const stableDispatch = step('dispatch.mjs', ['--channel', 'stable', '--tags', 'exo-desktop@0.2.0 @tinychat/frontend@0.2.0 @tinychat/backend@0.1.1', '--dry-run']);
   assert.match(stableDispatch, /^gh workflow run deploy-production\.yml --repo \S+ --ref main -f tag=@tinychat\/backend@0\.1\.1 -f backend=true -f web=true$/m);
+  assert.match(stableDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref refs\/tags\/exo-desktop@0\.2\.0$/m);
   assert.match(step('stable-pr.mjs', ['--body', body]), /^open=false$/m);
 
   // The next change starts a new beta cycle from the stable versions.
@@ -658,6 +661,104 @@ test('deploy-target.mjs refuses unreleased commits unless allow_unreleased and t
   const off = commitAll(side, 'off main');
   git(side, 'tag', '-f', '-a', '@tinychat/backend@0.1.1', '-m', 'moved', off);
   assert.match(target(side, '--backend', 'true', '--web', 'false').stderr, /is not on main/);
+// Desktop releases: one build per new exo-desktop tag, numeric Apple bundle versions, release plan and notes.
+test('planDispatches builds a desktop release for each new beta or stable exo-desktop tag, never for baselines', () => {
+  const desktop = (channel, tags) => planDispatches({ channel, tags }).filter(({ workflow }) => workflow === 'desktop-release.yml').map(({ ref }) => ref);
+  assert.deepEqual(desktop('beta', ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3']), ['refs/tags/exo-desktop@0.2.0-beta.3']);
+  assert.deepEqual(desktop('stable', ['exo-desktop@0.2.0', '@tinychat/frontend@0.2.0', '@tinychat/backend@0.1.1']), ['refs/tags/exo-desktop@0.2.0']);
+  assert.deepEqual(desktop('beta', ['@tinychat/backend@0.1.2-beta.0']), []);
+  assert.deepEqual(desktop('none', ['exo-desktop@0.1.0', '@tinychat/frontend@0.1.0', '@tinychat/backend@0.1.0']), []);
+});
+
+test('desktopBundleVersions: numeric X.Y.Z short version and a build number that grows with every release', () => {
+  assert.deepEqual(desktopBundleVersions('0.2.0-beta.3'), { shortVersion: '0.2.0', bundleVersion: '200003', prerelease: true });
+  assert.deepEqual(desktopBundleVersions('0.2.0'), { shortVersion: '0.2.0', bundleVersion: '200999', prerelease: false });
+  assert.deepEqual(desktopBundleVersions('1.12.4-beta.0'), { shortVersion: '1.12.4', bundleVersion: '11204000', prerelease: true });
+  const order = ['0.1.0', '0.2.0-beta.0', '0.2.0-beta.1', '0.2.0-beta.12', '0.2.0', '0.2.1-beta.0', '0.2.1', '0.10.0', '1.0.0-beta.0', '1.0.0', '213.99.99'];
+  const builds = order.map(version => Number(desktopBundleVersions(version).bundleVersion));
+  assert.deepEqual([...builds].sort((a, b) => a - b), builds);
+  assert.ok(builds.at(-1) < 2 ** 31);
+  for (const version of order) assert.match(desktopBundleVersions(version).shortVersion, /^\d+\.\d+\.\d+$/);
+  assert.throws(() => desktopBundleVersions('0.100.0'), /does not fit/);
+  assert.throws(() => desktopBundleVersions('0.2.0-beta.999'), /does not fit/);
+  assert.throws(() => desktopBundleVersions('0.2.0-rc.1'), /must be X\.Y\.Z or X\.Y\.Z-beta\.N/);
+});
+
+test('changelogSection returns one version\'s entries and treats "No changes" as empty', () => {
+  const text = '# exo-desktop\n\n## 0.2.0-beta.1\n\n### Patch Changes\n\n- a328407: Desktop fix Y\n\n## 0.2.0-beta.0\n\nNo changes in this release.\n';
+  assert.equal(changelogSection(text, '0.2.0-beta.1'), '### Patch Changes\n\n- a328407: Desktop fix Y');
+  assert.equal(changelogSection(text, '0.2.0-beta.0'), '');
+  assert.equal(changelogSection(text, '0.2.0'), '');
+});
+
+test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --config', t => {
+  const root = manifests(t);
+  for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.3.0-beta.4'; });
+  const out = join(tempDir(t), 'bundle');
+  const result = run('desktop-bundle-config.mjs', ['--root', root, '--out', out]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^version=0\.3\.0-beta\.4$/m);
+  assert.match(result.stdout, /^short-version=0\.3\.0$/m);
+  assert.match(result.stdout, /^bundle-version=300004$/m);
+  assert.match(result.stdout, /^prerelease=true$/m);
+  const config = JSON.parse(read(out, 'tauri.bundle.conf.json'));
+  assert.deepEqual(Object.keys(config), ['bundle']);
+  assert.equal(config.bundle.macOS.infoPlist, join(out, 'Info.bundle-version.plist'));
+  const plist = read(out, 'Info.bundle-version.plist');
+  assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n\t<string>0\.3\.0<\/string>/);
+  assert.match(plist, /<key>CFBundleVersion<\/key>\n\t<string>300004<\/string>/);
+});
+
+function releasePlan(t, version, ref = `refs/tags/exo-desktop@${version}`) {
+  const root = manifests(t);
+  for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = version; });
+  write(root, 'desktop/CHANGELOG.md', `# exo-desktop\n\n## ${version}\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n\n## 0.1.0\n\n- Old\n`);
+  write(root, 'frontend/CHANGELOG.md', `# @tinychat/frontend\n\n## ${version}\n\n### Minor Changes\n\n- def5678: Web feature X\n`);
+  const notes = join(tempDir(t), 'notes.md');
+  return { result: run('desktop-release-plan.mjs', ['--root', root, '--ref', ref, '--notes', notes]), notes };
+}
+
+test('desktop-release-plan.mjs: a beta tag becomes a clearly labelled unsigned pre-release', t => {
+  const { result, notes } = releasePlan(t, '0.2.0-beta.3');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^tag=exo-desktop@0\.2\.0-beta\.3$/m);
+  assert.match(result.stdout, /^channel=beta$/m);
+  assert.match(result.stdout, /^prerelease=true$/m);
+  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta, unsigned\)$/m);
+  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64_UNSIGNED$/m);
+  const text = readFileSync(notes, 'utf8');
+  assert.match(text, /\*\*Beta\.\*\* A pre-release of Exo 0\.2\.0/);
+  assert.match(text, /\*\*Unsigned\.\*\*/);
+  assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
+  assert.match(text, /## Web app \(bundled, @tinychat\/frontend@0\.2\.0-beta\.3\)\n\n### Minor Changes\n\n- def5678: Web feature X\n/);
+  assert.match(text, /CFBundleShortVersionString 0\.2\.0, CFBundleVersion 200003/);
+  assert.doesNotMatch(text, /- Old/);
+});
+
+test('desktop-release-plan.mjs refuses wrong refs, version mismatches and unsigned stable releases', t => {
+  const branch = releasePlan(t, '0.2.0-beta.3', 'refs/heads/main').result;
+  assert.equal(branch.status, 1);
+  assert.match(branch.stderr, /run on an exo-desktop@<version> tag, got refs\/heads\/main/);
+
+  const mismatch = releasePlan(t, '0.2.0-beta.3', 'refs/tags/exo-desktop@0.2.0-beta.2').result;
+  assert.equal(mismatch.status, 1);
+  assert.match(mismatch.stderr, /does not match desktop\/package\.json version 0\.2\.0-beta\.3/);
+
+  const stable = releasePlan(t, '0.2.0').result;
+  assert.equal(stable.status, 1);
+  assert.match(stable.stderr, /Refusing to publish exo-desktop@0\.2\.0 unsigned/);
+});
+
+test('the Exo build is defined once and shared by CI and releases', () => {
+  for (const name of ['desktop.yml', 'desktop-release.yml', 'desktop-build.yml']) {
+    const builds = (read(repo, `.github/workflows/${name}`).match(/^\s+run: .*tauri build/gm) ?? []).length;
+    assert.equal(builds, name === 'desktop-build.yml' ? 1 : 0, `${name} runs tauri build ${builds} times`);
+  }
+  assert.match(triggers('.github/workflows/desktop-build.yml'), /^ {2}workflow_call:/m);
+  for (const name of ['desktop.yml', 'desktop-release.yml']) assert.match(read(repo, `.github/workflows/${name}`), /uses: \.\/\.github\/workflows\/desktop-build\.yml/);
+  const build = read(repo, '.github/workflows/desktop-build.yml');
+  assert.match(build, /shared-key: exo-desktop-macos-arm64/);
+  assert.match(build, /--config "\$TAURI_BUNDLE_CONFIG"/);
 });
 
 // Release tags and the production branch are pushed only with the release-push deploy key (ruleset bypass).

@@ -192,6 +192,42 @@ the rulesets and their residual risk.
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
+**Desktop releases.** Every new `exo-desktop@<version>` tag makes the
+`Release` workflow dispatch `Desktop release (Exo)` on that tag, which builds
+Exo with the same job as desktop CI (`.github/workflows/desktop-build.yml`) and
+publishes a GitHub Release with no manual step:
+
+- a beta (`0.2.0-beta.3`) becomes a **pre-release** titled
+  `Exo 0.2.0-beta.3 (beta, unsigned)`, never marked latest; its assets carry
+  `_UNSIGNED` in their names and the notes say how to open an unsigned build;
+- a stable version becomes a published Release marked **latest**. It is refused
+  unless the build is Developer ID signed and notarized; an unsigned stable
+  release is never published.
+
+Assets are `Exo_<version>_aarch64[_UNSIGNED].dmg`, the matching `.app.zip`
+and `SHA256SUMS.txt`. The notes combine the desktop and web changelog entries
+for the version. A published release is never rebuilt (cut a new version); a
+failed run can be retried with
+`gh workflow run desktop-release.yml --ref refs/tags/exo-desktop@<version>`,
+which reads the workflow from the tag's commit.
+
+Apple needs numeric bundle versions, so every build maps the semver:
+
+| Exo version | `CFBundleShortVersionString` | `CFBundleVersion` (`XYYZZSSS`) |
+|---|---|---|
+| `0.2.0-beta.3` | `0.2.0` | `200003` |
+| `0.2.0` | `0.2.0` | `200999` |
+| `0.2.1-beta.0` | `0.2.1` | `201000` |
+
+The build number grows with every beta and stable release (stage = beta
+number, `999` for stable). The semver stays in the app itself, the tag, the
+DMG name and the release title. `scripts/release/desktop-bundle-config.mjs`
+writes the Info.plist overlay passed to `tauri build --config`, and the build
+fails if the built Info.plist doesn't match.
+
+Beta desktop builds embed the beta web app, which talks to the production API
+(betas don't deploy the backend).
+
 ## Chat Sharing
 
 TinyCloud Chat supports read-only sharing for saved threads. The active chat
