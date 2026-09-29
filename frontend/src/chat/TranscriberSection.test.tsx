@@ -22,6 +22,20 @@ import {
   type TranscriberViewProps,
 } from "./TranscriberSection";
 import {
+  LocalTranscriberView,
+  isLocalWorkflowActive,
+  localFailureState,
+  localRetryAction,
+  type LocalTranscriberViewProps,
+} from "./LocalTranscriber";
+import {
+  CaptureStopUnconfirmedError,
+  NO_SPEECH_MESSAGE,
+  PartialRecordingError,
+  PreviousCaptureUnconfirmedError,
+  TranscriptionFailedError,
+} from "@/lib/localTranscriber";
+import {
   createTranscriberClient,
   type TranscriberMeeting,
   type TranscriberMeetingStatus,
@@ -247,6 +261,201 @@ describe("TranscriberView", () => {
       "temporarily unavailable",
     );
     expect(describeFailure({ status: "feature-dark" })).toContain("configured");
+  });
+});
+
+describe("TranscriberView local mode", () => {
+  test("without a kind prop the card renders exactly the bot path (web)", () => {
+    const html = render();
+    expect(html).not.toContain("Meeting bot");
+    expect(html).not.toContain("Local recording");
+    expect(html).not.toContain('role="tablist"');
+    expect(html).toContain('id="transcriber-meeting-url"');
+  });
+
+  test("with kind props the segmented control renders and meeting-bot shows the bot form", () => {
+    const html = render({
+      kind: "meeting-bot",
+      localPanel: <div data-testid="local-panel">local panel</div>,
+      onKindChange: noop,
+    });
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain("Meeting bot");
+    expect(html).toContain("Local recording");
+    expect(html).toContain('id="transcriber-meeting-url"');
+    expect(html).not.toContain("local panel");
+  });
+
+  test("kind local renders the local panel instead of the bot form and list", () => {
+    const html = render({
+      kind: "local",
+      localPanel: <div data-testid="local-panel">local panel</div>,
+      onKindChange: noop,
+      // even a dark/unreachable backend must not hide local capture
+      listStatus: "dark",
+    });
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain("local panel");
+    expect(html).not.toContain('id="transcriber-meeting-url"');
+    expect(html).not.toContain("No meetings yet");
+  });
+
+  test("cannot switch away while a local recording workflow is active", () => {
+    const html = render({
+      kind: "local",
+      localWorkflowActive: true,
+      localPanel: <div>recording</div>,
+      onKindChange: noop,
+    });
+    expect(html).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
+    expect(html).toContain("recording");
+  });
+});
+
+function renderLocal(patch: Partial<LocalTranscriberViewProps> = {}): string {
+  const props: LocalTranscriberViewProps = {
+    state: "ready",
+    model: "QuantizedTinyEn",
+    mics: { status: "loaded", devices: ["MacBook Mic"] },
+    micDevice: "",
+    downloadPct: null,
+    statusText: null,
+    onModelChange: noop,
+    onMicChange: noop,
+    onDownload: noop,
+    onRetry: noop,
+    onDiscardRecording: noop,
+    onStart: noop,
+    onStop: noop,
+    ...patch,
+  };
+  return renderToStaticMarkup(<LocalTranscriberView {...props} />);
+}
+
+describe("LocalTranscriberView", () => {
+  test("model sizes match anarlog's model files", () => {
+    const html = renderLocal({ state: "needs-download" });
+    expect(html).toContain("Download model (~44 MB)");
+    expect(html).toContain("Whisper Base (English) · ~82 MB");
+    expect(html).toContain("Whisper Small (multilingual) · ~264 MB");
+    expect(html).toContain("Whisper Large Turbo · ~874 MB");
+  });
+
+  test("a failed microphone listing is an alert, distinct from an empty list", () => {
+    const failed = renderLocal({ mics: { status: "failed", message: "list_microphone_devices: CoreAudio unavailable" } });
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain("Couldn&#x27;t list microphones: list_microphone_devices: CoreAudio unavailable");
+    expect(failed).not.toContain("No microphones were found");
+
+    const empty = renderLocal({ mics: { status: "loaded", devices: [] } });
+    expect(empty).toContain("No microphones were found on this Mac.");
+    expect(empty).not.toContain('role="alert"');
+
+    const loading = renderLocal({ mics: { status: "loading" } });
+    expect(loading).not.toContain("No microphones were found");
+    expect(loading).not.toContain("list microphones");
+  });
+
+  test("an unconfirmed stop offers Retry stop and keeps the capture locked", () => {
+    const html = renderLocal({ state: "stop-failed", statusText: "Stopping was not confirmed: timed out." });
+    expect(html).toContain(">Retry stop</button>");
+    expect(html).toContain("Stopping was not confirmed");
+    expect(html).toContain("Keep this view open while recording");
+    expect(html).not.toContain("Start recording");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localRetryAction("stop-failed")).toBe("stop");
+    expect(isLocalWorkflowActive("stop-failed")).toBe(true);
+  });
+
+  test("a failed transcription offers Retry transcription and Discard recording, and keeps the mode locked", () => {
+    const html = renderLocal({
+      state: "transcribe-failed",
+      statusText: "Transcription failed (progressive_stream_timeout): no progress for 120s",
+    });
+    expect(html).toContain(">Retry transcription</button>");
+    expect(html).toContain(">Discard recording</button>");
+    expect(html).toContain("Transcription failed (progressive_stream_timeout)");
+    expect(html).toContain("The recording is kept until it transcribes or you discard it.");
+    expect(html).toContain("Discarding leaves its audio file on this Mac.");
+    expect(html).not.toContain("Start recording");
+    expect(html).not.toContain(">Retry</button>");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localRetryAction("transcribe-failed")).toBe("transcribe");
+    expect(isLocalWorkflowActive("transcribe-failed")).toBe(true);
+    const card = render({
+      kind: "local",
+      localWorkflowActive: isLocalWorkflowActive("transcribe-failed"),
+      localPanel: <div>awaiting transcription</div>,
+      onKindChange: noop,
+    });
+    expect(card).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
+    // Discard belongs to the kept recording only.
+    for (const state of ["stop-failed", "save-failed", "error"] as const) {
+      expect(renderLocal({ state })).not.toContain("Discard recording");
+    }
+  });
+
+  test("a partial recording offers Transcribe partial recording and Discard recording, with the capture warning", () => {
+    const html = renderLocal({
+      state: "partial-recording",
+      statusText: "Capture failed: ActorFailed(mic stream closed). A partial recording was kept.",
+    });
+    expect(html).toContain(">Transcribe partial recording</button>");
+    expect(html).toContain(">Discard recording</button>");
+    expect(html).toContain("Capture failed: ActorFailed(mic stream closed)");
+    expect(html).toContain("Capture stopped with an error, but the audio recorded until then was kept.");
+    expect(html).not.toContain("Start recording");
+    expect(html).not.toContain(">Retry transcription</button>");
+    expect(localRetryAction("partial-recording")).toBe("transcribe");
+    expect(isLocalWorkflowActive("partial-recording")).toBe(true);
+  });
+
+  test("a rejected start, stop or transcription retry lands in its own failed state", () => {
+    expect(localFailureState(new CaptureStopUnconfirmedError("Stopping was not confirmed"))).toBe("stop-failed");
+    expect(localFailureState(new TranscriptionFailedError("Transcription failed (x): y"))).toBe("transcribe-failed");
+    expect(localFailureState(new PreviousCaptureUnconfirmedError("Native capture is active."))).toBe("previous-recording");
+    expect(localFailureState(new PartialRecordingError("Capture failed: x. A partial recording was kept."))).toBe(
+      "partial-recording",
+    );
+    expect(localFailureState(new Error("Capture failed: ActorFailed(mic stream closed)"))).toBe("error");
+  });
+
+  test("an unconfirmed previous recording is shown with why, and offers only Stop previous recording", () => {
+    const message =
+      "The Local recording view closed before its recording confirmed it stopped (Timed out waiting for native capture to confirm it stopped). Native capture is active. Stop it before starting a new recording.";
+    const html = renderLocal({ state: "previous-recording", statusText: message });
+    expect(html).toContain(">Stop previous recording</button>");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("closed before its recording confirmed it stopped");
+    expect(html).toContain("A new recording can&#x27;t start until the previous one is confirmed stopped.");
+    expect(html).not.toContain("Start recording");
+    expect(html).not.toContain(">Retry</button>");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localRetryAction("previous-recording")).toBe("stop-previous");
+    expect(isLocalWorkflowActive("previous-recording")).toBe(true);
+
+    const stopping = renderLocal({ state: "stopping-previous" });
+    expect(stopping).toContain("Stopping previous recording…");
+    expect(stopping).not.toContain("Start recording");
+    expect(stopping).not.toContain(">Stop previous recording</button>");
+    expect(isLocalWorkflowActive("stopping-previous")).toBe(true);
+  });
+
+  test("a failed save offers Retry save for the transcript it keeps", () => {
+    const html = renderLocal({ state: "save-failed", statusText: "putTranscriptBody: [KV_UNAVAILABLE] kv write failed" });
+    expect(html).toContain(">Retry save</button>");
+    expect(html).toContain("The transcript is kept here until it saves.");
+    expect(html).not.toContain("Start recording");
+    expect(localRetryAction("save-failed")).toBe("save");
+    expect(isLocalWorkflowActive("save-failed")).toBe(true);
+  });
+
+  test("an empty transcript is a visible error with the ordinary Retry", () => {
+    const html = renderLocal({ state: "error", statusText: NO_SPEECH_MESSAGE });
+    expect(html).toContain("No speech was transcribed — nothing was saved.");
+    expect(html).toContain(">Retry</button>");
+    expect(localRetryAction("error")).toBe("readiness");
+    expect(isLocalWorkflowActive("error")).toBe(false);
   });
 });
 

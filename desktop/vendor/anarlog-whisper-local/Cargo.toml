@@ -1,0 +1,49 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/whisper-local, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "whisper-local"
+version = "0.1.0"
+edition = "2024"
+
+# https://github.com/tazz4843/whisper-rs/blob/e3d67d5/Cargo.toml
+[features]
+default = ["actual"]
+actual = ["dep:whisper-rs"]
+
+coreml = ["actual", "whisper-rs/coreml"]
+cuda = ["actual", "whisper-rs/cuda"]
+hipblas = ["actual", "whisper-rs/hipblas"]
+openblas = ["actual", "whisper-rs/openblas"]
+metal = ["actual", "whisper-rs/metal"]
+vulkan = ["actual", "whisper-rs/vulkan"]
+openmp = ["actual", "whisper-rs/openmp"]
+
+[dependencies]
+anlg-audio-utils = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-utils" }
+anlg-whisper = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "whisper" }
+
+dasp = { version = "0.11.0", features = ["interpolate", "interpolate-linear"] }
+hound = "3.5.1"
+
+anlg-audio-interface = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-interface" }
+rodio = "0.22"
+whisper-rs = { git = "https://codeberg.org/tazz4843/whisper-rs", rev = "129b982", features = ["raw-api", "tracing_backend"], optional = true }
+
+futures-util = "0.3.31"
+tracing = "0.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+specta = { version = "2.0.0-rc.22", features = ["derive"] }
+thiserror = "2"
+
+lazy_static = "1.5.0"
+regex = "1.12"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+anlg-data = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "data" }
+
+dirs = "6.0.0"
+futures-util = "0.3.31"
+tokio = "1"

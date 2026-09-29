@@ -1,0 +1,586 @@
+// LOCAL recording panel — the desktop-only half of the Transcriber card.
+//
+// `LocalTranscriberView` is a pure function of its props (asserted with
+// react-dom/server in tests); `LocalTranscriberPanel` owns the bridge instance,
+// model download, and the record → transcribe → save lifecycle. Whisper at the
+// pinned anarlog rev is batch-only, so the UI always says transcription happens
+// after Stop.
+
+import { useEffect, useMemo, useRef, useState, type FC } from "react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { Loader2Icon, MicIcon, SquareIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  CaptureStopUnconfirmedError,
+  createLocalTranscriber,
+  createLocalTranscriptSaver,
+  DEFAULT_LOCAL_MODEL,
+  LOCAL_MODEL_STORAGE_KEY,
+  LOCAL_WHISPER_MODELS,
+  PartialRecordingError,
+  PreviousCaptureUnconfirmedError,
+  prepareLocalTranscript,
+  TranscriptionFailedError,
+  type LocalTranscriber,
+  type LocalTranscriberStatus,
+  type LocalTranscriptResult,
+  type PreparedLocalTranscript,
+  type WhisperModel,
+} from "@/lib/localTranscriber";
+
+export type LocalPanelState =
+  | "checking-model"
+  /** A closed view's capture, or a previous recording, is being stopped and confirmed. */
+  | "stopping-previous"
+  /** A capture no open view owns is not confirmed stopped; nothing starts until it is stopped. */
+  | "previous-recording"
+  | "needs-download"
+  | "downloading"
+  | "ready"
+  | "starting"
+  | "recording"
+  | "transcribing"
+  | "saving"
+  | "saved"
+  /** Native capture did not confirm Stop; the recording may still be running. */
+  | "stop-failed"
+  /** Transcribing the stopped recording failed; Retry re-transcribes the same audio file. */
+  | "transcribe-failed"
+  /** Capture failed but kept a partial recording; it can be transcribed or discarded. */
+  | "partial-recording"
+  /** The transcript is held in the panel; Retry re-runs the identical save. */
+  | "save-failed"
+  | "error";
+
+/** "loaded" with no devices is a real answer; "failed" is an enumeration error. */
+export type MicDeviceList =
+  | { status: "loading" }
+  | { status: "loaded"; devices: readonly string[] }
+  | { status: "failed"; message: string };
+
+/** States where a capture may be live or a transcript is not yet saved: the
+ *  mode switch and pickers stay locked, and model checks never replace them. */
+export function isLocalWorkflowActive(state: LocalPanelState): boolean {
+  return (
+    state === "stopping-previous" ||
+    state === "previous-recording" ||
+    state === "starting" ||
+    state === "recording" ||
+    state === "transcribing" ||
+    state === "saving" ||
+    state === "stop-failed" ||
+    state === "transcribe-failed" ||
+    state === "partial-recording" ||
+    state === "save-failed"
+  );
+}
+
+/** What the Retry button does in each failed state. */
+export function localRetryAction(
+  state: LocalPanelState,
+): "stop" | "transcribe" | "save" | "stop-previous" | "readiness" {
+  if (state === "stop-failed") return "stop";
+  if (state === "transcribe-failed" || state === "partial-recording") return "transcribe";
+  if (state === "save-failed") return "save";
+  if (state === "previous-recording") return "stop-previous";
+  return "readiness";
+}
+
+/** The panel state a rejected start(), stop() or retryTranscription() lands in. */
+export function localFailureState(
+  err: unknown,
+): "stop-failed" | "transcribe-failed" | "partial-recording" | "previous-recording" | "error" {
+  if (err instanceof CaptureStopUnconfirmedError) return "stop-failed";
+  if (err instanceof PartialRecordingError) return "partial-recording";
+  if (err instanceof TranscriptionFailedError) return "transcribe-failed";
+  if (err instanceof PreviousCaptureUnconfirmedError) return "previous-recording";
+  return "error";
+}
+
+export interface LocalTranscriberViewProps {
+  state: LocalPanelState;
+  model: WhisperModel;
+  mics: MicDeviceList;
+  micDevice: string;
+  downloadPct: number | null;
+  /** Status line; for `error` this is the message. */
+  statusText: string | null;
+  onModelChange: (model: WhisperModel) => void;
+  onMicChange: (device: string) => void;
+  onDownload: () => void;
+  onRetry: () => void;
+  /** Leaves `transcribe-failed` or `partial-recording` without transcribing; the audio file stays on disk. */
+  onDiscardRecording: () => void;
+  onStart: () => void;
+  onStop: () => void;
+}
+
+const selectClass =
+  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60";
+
+export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
+  state,
+  model,
+  mics,
+  micDevice,
+  downloadPct,
+  statusText,
+  onModelChange,
+  onMicChange,
+  onDownload,
+  onRetry,
+  onDiscardRecording,
+  onStart,
+  onStop,
+}) => {
+  const modelInfo = LOCAL_WHISPER_MODELS.find((m) => m.id === model);
+  const recording = state === "recording";
+  const micDevices = mics.status === "loaded" ? mics.devices : [];
+  const locked = isLocalWorkflowActive(state);
+  const busy =
+    state === "checking-model" ||
+    state === "stopping-previous" ||
+    state === "downloading" ||
+    state === "starting" ||
+    state === "transcribing" ||
+    state === "saving";
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">
+        Record this Mac&apos;s microphone and meeting audio, then transcribe on-device with
+        Whisper. Nothing leaves the machine until the transcript is saved to your space.
+        Whisper runs after you stop, not live.
+      </p>
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <label htmlFor="local-transcriber-model" className="sr-only">
+          Whisper model
+        </label>
+        <select
+          id="local-transcriber-model"
+          aria-label="Whisper model"
+          className={`${selectClass} sm:max-w-[16rem]`}
+          value={model}
+          disabled={locked || busy}
+          onChange={(e) => onModelChange(e.target.value as WhisperModel)}
+        >
+          {LOCAL_WHISPER_MODELS.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label} · ~{m.approxSizeMb} MB
+            </option>
+          ))}
+        </select>
+
+        {micDevices.length > 0 && (
+          <>
+            <label htmlFor="local-transcriber-mic" className="sr-only">
+              Microphone
+            </label>
+            <select
+              id="local-transcriber-mic"
+              aria-label="Microphone"
+              className={`${selectClass} sm:max-w-[16rem]`}
+              value={micDevice}
+              disabled={locked || busy}
+              onChange={(e) => onMicChange(e.target.value)}
+            >
+              <option value="">System default</option>
+              {micDevices.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+      </div>
+
+      {mics.status === "failed" && (
+        <p role="alert" className="text-xs text-destructive">
+          Couldn&apos;t list microphones: {mics.message}
+        </p>
+      )}
+      {mics.status === "loaded" && micDevices.length === 0 && (
+        <p className="text-xs text-muted-foreground">No microphones were found on this Mac.</p>
+      )}
+
+      <div className="flex items-center gap-2">
+        {state === "needs-download" && (
+          <Button type="button" size="sm" onClick={onDownload} className="h-9 gap-1.5">
+            Download model{modelInfo ? ` (~${modelInfo.approxSizeMb} MB)` : ""}
+          </Button>
+        )}
+        {state === "downloading" && (
+          <Button type="button" size="sm" disabled className="h-9 gap-1.5">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>Downloading model{downloadPct !== null ? ` · ${downloadPct}%` : "…"}</span>
+          </Button>
+        )}
+        {(state === "ready" || state === "saved") && !recording && (
+          <Button
+            type="button"
+            size="sm"
+            onClick={onStart}
+            disabled={busy}
+            aria-label="Start local recording"
+            className="h-9 gap-1.5"
+          >
+            <MicIcon className="size-4" />
+            <span>Start recording</span>
+          </Button>
+        )}
+        {recording && (
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            onClick={onStop}
+            aria-label="Stop and transcribe"
+            className="h-9 gap-1.5"
+          >
+            <SquareIcon className="size-4" />
+            <span>Stop &amp; transcribe</span>
+          </Button>
+        )}
+        {(state === "starting" || state === "transcribing" || state === "saving") && (
+          <Button type="button" size="sm" disabled className="h-9 gap-1.5">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>{state === "starting" ? "Starting recording…" : state === "transcribing" ? "Transcribing…" : "Saving…"}</span>
+          </Button>
+        )}
+        {state === "checking-model" && (
+          <Button type="button" size="sm" disabled className="h-9 gap-1.5">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>Checking model…</span>
+          </Button>
+        )}
+        {state === "stopping-previous" && (
+          <Button type="button" size="sm" disabled className="h-9 gap-1.5">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>Stopping previous recording…</span>
+          </Button>
+        )}
+        {state === "previous-recording" && (
+          <Button type="button" size="sm" variant="destructive" onClick={onRetry} className="h-9">
+            Stop previous recording
+          </Button>
+        )}
+        {state === "error" && (
+          <Button type="button" size="sm" onClick={onRetry} className="h-9">
+            Retry
+          </Button>
+        )}
+        {state === "stop-failed" && (
+          <Button type="button" size="sm" variant="destructive" onClick={onRetry} className="h-9">
+            Retry stop
+          </Button>
+        )}
+        {(state === "transcribe-failed" || state === "partial-recording") && (
+          <>
+            <Button type="button" size="sm" onClick={onRetry} className="h-9">
+              {state === "partial-recording" ? "Transcribe partial recording" : "Retry transcription"}
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={onDiscardRecording} className="h-9">
+              Discard recording
+            </Button>
+          </>
+        )}
+        {state === "save-failed" && (
+          <Button type="button" size="sm" onClick={onRetry} className="h-9">
+            Retry save
+          </Button>
+        )}
+      </div>
+
+      {state === "saved" && (
+        <p className="text-xs text-muted-foreground">Saved to Meetings as Exo Local.</p>
+      )}
+      {state === "save-failed" && (
+        <p className="text-xs text-muted-foreground">
+          The transcript is kept here until it saves. Leaving this view discards it.
+        </p>
+      )}
+      {state === "previous-recording" && (
+        <p className="text-xs text-muted-foreground">
+          A new recording can&apos;t start until the previous one is confirmed stopped. Stopping it does
+          not transcribe it; any audio it recorded stays on this Mac.
+        </p>
+      )}
+      {state === "transcribe-failed" && (
+        <p className="text-xs text-muted-foreground">
+          The recording is kept until it transcribes or you discard it. Discarding leaves its audio
+          file on this Mac.
+        </p>
+      )}
+      {state === "partial-recording" && (
+        <p className="text-xs text-muted-foreground">
+          Capture stopped with an error, but the audio recorded until then was kept. Transcribe it, or
+          discard it; discarding leaves its audio file on this Mac.
+        </p>
+      )}
+      {(recording || state === "stop-failed") && (
+        <p className="text-xs text-muted-foreground">
+          Keep this view open while recording. Leaving it stops capture without saving a transcript.
+        </p>
+      )}
+      {statusText !== null && (
+        <p role="alert" className="text-xs text-destructive">
+          {statusText}
+        </p>
+      )}
+    </div>
+  );
+};
+
+export interface LocalTranscriberPanelProps {
+  tcw: TinyCloudWeb;
+  onWorkflowActiveChange?: (active: boolean) => void;
+  /** Injectable for tests; defaults to the real bridge-backed transcriber. */
+  transcriber?: LocalTranscriber;
+}
+
+function readSavedModel(): WhisperModel {
+  if (typeof localStorage === "undefined") return DEFAULT_LOCAL_MODEL;
+  const stored = localStorage.getItem(LOCAL_MODEL_STORAGE_KEY);
+  return LOCAL_WHISPER_MODELS.some((m) => m.id === stored)
+    ? (stored as WhisperModel)
+    : DEFAULT_LOCAL_MODEL;
+}
+
+/** Stateful owner: bridge instance, model readiness, capture lifecycle, save. */
+export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, transcriber, onWorkflowActiveChange }) => {
+  const transcriberRef = useRef<LocalTranscriber | null>(null);
+  if (transcriberRef.current === null) {
+    transcriberRef.current = transcriber ?? createLocalTranscriber();
+  }
+  const t = transcriberRef.current;
+
+  // A stop that is not confirmed here is left as the previous recording,
+  // which the next mounted panel shows with "Stop previous recording"; a
+  // running or failed transcription is handed to the next panel to adopt.
+  useEffect(() => () => {
+    void t.stopCaptureOnUnmount().catch((err) => {
+      console.error("Failed to stop local recording when leaving the view", err);
+    });
+  }, [t]);
+
+  // Saves are bounded and serialized: a timed-out save may still be writing.
+  const saveToSpace = useMemo(() => createLocalTranscriptSaver(tcw), [tcw]);
+
+  const [model, setModel] = useState<WhisperModel>(readSavedModel);
+  const [mics, setMics] = useState<MicDeviceList>({ status: "loading" });
+  const [micDevice, setMicDevice] = useState("");
+  const [downloadPct, setDownloadPct] = useState<number | null>(null);
+  const [state, setState] = useState<LocalPanelState>("checking-model");
+  const [retryCount, setRetryCount] = useState(0);
+  const [errorText, setErrorText] = useState<string | null>(null);
+  // The transcript waiting to be saved; kept until a save succeeds so Retry
+  // re-runs that exact save.
+  const [pendingSave, setPendingSave] = useState<PreparedLocalTranscript | null>(null);
+  // Recording/transcribing progress is driven by plugin events through onStatus;
+  // panel state mirrors the last lifecycle-relevant status.
+  const lastStatus = useRef<LocalTranscriberStatus>({ kind: "idle" });
+
+  useEffect(() => {
+    onWorkflowActiveChange?.(isLocalWorkflowActive(state));
+    return () => onWorkflowActiveChange?.(false);
+  }, [onWorkflowActiveChange, state]);
+
+  const fail = (err: unknown) => {
+    setErrorText(err instanceof Error ? err.message : String(err));
+    setState("error");
+  };
+
+  // Model readiness + mic list on mount and when the model changes. A previous
+  // recording that is not confirmed stopped comes first: nothing starts over it.
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => (isLocalWorkflowActive(s) ? s : "checking-model"));
+    void (async () => {
+      const previous = await t.previousRecording(() => {
+        if (!cancelled) setState((s) => (s === "checking-model" ? "stopping-previous" : s));
+      });
+      if (cancelled) return;
+      if (previous !== null) {
+        setErrorText(previous.message);
+        setState("previous-recording");
+        return;
+      }
+      setState((s) => (s === "stopping-previous" ? "checking-model" : s));
+      // A transcription whose panel closed is shown and finished here: its
+      // transcript is saved by this panel, once; a failure offers Retry/Discard.
+      const adopted = t.adoptTranscription();
+      if (adopted !== null) {
+        setState("transcribing");
+        void adopted.then(saveTranscript, failWithRecovery);
+        return;
+      }
+      const downloaded = await t.isModelDownloaded(model);
+      if (cancelled) return;
+      setState((s) => (s === "checking-model" ? (downloaded ? "ready" : "needs-download") : s));
+    })().catch((err) => {
+      if (!cancelled) fail(err);
+    });
+    setMics({ status: "loading" });
+    void t
+      .listMicrophoneDevices()
+      .then((devices) => {
+        if (!cancelled) setMics({ status: "loaded", devices });
+      })
+      .catch((err) => {
+        if (!cancelled) setMics({ status: "failed", message: err instanceof Error ? err.message : String(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t, model, retryCount]);
+
+  useEffect(() => t.onStatus((s) => {
+    lastStatus.current = s;
+    if (s.kind === "error") setErrorText(s.message);
+  }), [t]);
+
+  const onDownload = () => {
+    setDownloadPct(0);
+    setErrorText(null);
+    setState("downloading");
+    void t
+      .ensureModel(model, (pct) => setDownloadPct(pct))
+      .then(() => setState("ready"))
+      .catch((err) => {
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setState("needs-download");
+      });
+  };
+
+  // A rejected start, stop or transcription lands in the state that offers its
+  // recovery: a failed transcription keeps its recording in the transcriber for
+  // Retry, and an unconfirmed previous capture offers "Stop previous recording".
+  const failWithRecovery = (err: unknown) => {
+    setErrorText(err instanceof Error ? err.message : String(err));
+    setState(localFailureState(err));
+  };
+
+  const onStart = () => {
+    setErrorText(null);
+    setState("starting");
+    void t
+      .start({ model, language: "en", micDevice: micDevice || undefined })
+      .then(() => setState("recording"), failWithRecovery);
+  };
+
+  const save = (prepared: PreparedLocalTranscript) => {
+    setErrorText(null);
+    setState("saving");
+    void saveToSpace(prepared)
+      .then((saved) => {
+        if (!saved.ok) throw new Error(saved.error.message);
+        setPendingSave(null);
+        setState("saved");
+      })
+      .catch((err) => {
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setState("save-failed");
+      });
+  };
+
+  const saveTranscript = (result: LocalTranscriptResult) => {
+    let prepared: PreparedLocalTranscript;
+    try {
+      prepared = prepareLocalTranscript(result);
+    } catch (err) {
+      fail(err);
+      return;
+    }
+    setPendingSave(prepared);
+    save(prepared);
+  };
+
+  const onStop = () => {
+    setErrorText(null);
+    setState("transcribing");
+    void t.stop().then(saveTranscript, failWithRecovery);
+  };
+
+  // Stops the previous recording, then re-runs readiness once native capture
+  // is confirmed inactive; otherwise stays here with the new failure.
+  const onStopPrevious = () => {
+    setErrorText(null);
+    setState("stopping-previous");
+    void t.stopPreviousRecording().then(
+      () => {
+        setState("checking-model");
+        setRetryCount((count) => count + 1);
+      },
+      (err) => {
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setState("previous-recording");
+      },
+    );
+  };
+
+  const onDiscardRecording = () => {
+    try {
+      t.discardRecording();
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setErrorText(null);
+    setState("ready");
+  };
+
+  const onRetry = () => {
+    switch (localRetryAction(state)) {
+      case "stop":
+        onStop();
+        return;
+      case "transcribe":
+        setErrorText(null);
+        setState("transcribing");
+        void t.retryTranscription().then(saveTranscript, failWithRecovery);
+        return;
+      case "save":
+        if (pendingSave === null) {
+          fail(new Error("No transcript is waiting to be saved"));
+          return;
+        }
+        save(pendingSave);
+        return;
+      case "stop-previous":
+        onStopPrevious();
+        return;
+      case "readiness":
+        setErrorText(null);
+        setRetryCount((count) => count + 1);
+        return;
+    }
+  };
+
+  return (
+    <LocalTranscriberView
+      state={state}
+      model={model}
+      mics={mics}
+      micDevice={micDevice}
+      downloadPct={downloadPct}
+      statusText={errorText}
+      onModelChange={(m) => {
+        setModel(m);
+        try {
+          localStorage.setItem(LOCAL_MODEL_STORAGE_KEY, m);
+        } catch {
+          // localStorage can throw in private contexts; the preference is best-effort.
+        }
+      }}
+      onMicChange={setMicDevice}
+      onDownload={onDownload}
+      onRetry={onRetry}
+      onDiscardRecording={onDiscardRecording}
+      onStart={onStart}
+      onStop={onStop}
+    />
+  );
+};

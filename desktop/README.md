@@ -18,51 +18,119 @@ React app, with local meeting transcription from
 
 ```sh
 bun install                 # repo root
-bun run dev:desktop         # = tauri dev (starts frontend dev server itself)
+bun run dev:desktop         # = tauri dev (transcription enabled by default)
 ```
 
-Prereqs: Rust stable, plus on Linux `webkit2gtk-4.1`, `libgtk-3-dev`,
-`libayatana-appindicator3-dev`, `librsvg2-dev` (standard Tauri 2 deps).
+Prereqs: Rust stable, Bun 1.3.9, and full Xcode (not just the Command Line
+Tools) with the Metal Toolchain component installed
+(`xcodebuild -downloadComponent MetalToolchain`) — the local transcription
+engine compiles whisper.cpp/MLX Metal shaders and SwiftPM packages. Exo desktop
+is macOS-only (Apple Silicon, macOS 14.2+), because the default `transcription`
+feature targets Core Audio process taps and Metal; CI builds macOS only.
+Use `cargo check --no-default-features` to check the shell on other platforms.
 
-`bun run build:desktop` produces installers via `tauri build`
+Build notes:
+
+- The vendored `swift-rs` (`desktop/vendor/swift-rs`) forces SwiftPM's
+  `native` build system; Xcode 27's default `swiftbuild` hides the Swift
+  bridge symbols from the release link. See its `PROVENANCE.md`.
+- `src-tauri/.cargo/config.toml` forces an empty `POSTHOG_API_KEY`: anarlog's
+  transitive analytics crate reads it at compile time, and Exo never
+  registers that plugin or embeds a vendor key. Cargo only reads this file
+  when run under `desktop/src-tauri` (the tauri CLI does).
+- `[profile.release.build-override] strip = "none"` works around macOS 27
+  rejecting stripped proc-macro dylibs (rust-lang/rust#157750).
+
+`bun run build:desktop` produces installers with local transcription enabled
 (builds the frontend first with production env: `VITE_BACKEND_URL=https://api.tinycloud.chat`).
 
-## Transcription (anarlog MIT layer)
+## Local transcription (anarlog MIT layer)
 
-Two Tauri plugins from the anarlog monorepo are declared in
-`src-tauri/Cargo.toml` behind the **`transcription`** Cargo feature
-(pinned to rev `864ddc1`), default **off** because they compile whisper.cpp
-and a large crate graph:
+Local recording is the second Transcriber mode: **Meeting bot** (backend bot)
+and **Local recording** (this Mac) live side by side in Connectors → Sources.
+Local mode captures microphone + system audio, transcribes on-device with
+whisper.cpp after you stop, and saves into the same Meetings store as a meeting
+with source `exo-local` (label "Exo Local") — so it shows up in Meetings,
+meeting chat, and retrieval like any other connector.
 
-- `tauri-plugin-transcription` — mic/system-audio capture
-  (`startCapture`/`stopCapture`, device list, mute, live transcript events).
-- `tauri-plugin-local-stt` — on-device Whisper model management + local STT
-  server. GPU backends are features on the plugin: `metal`/`coreml` (macOS),
-  `cuda`/`directml`/`vulkan`/`openblas` (Windows/Linux).
+The `transcription` Cargo feature is enabled by default in desktop dev and
+release builds. The feature wires up:
 
-To enable:
+- `audio-actual` → a managed `Arc<dyn AudioProvider>` (the transcription plugin's
+  setup panics without it);
+- `tauri-plugin-settings` → provides `vault_base()`/`global_base()` (sessions and
+  model directories);
+- `tauri-plugin-transcription` → mic/system-audio capture;
+- `tauri-plugin-local-stt` → in-process whisper.cpp server + model downloads.
 
-1. `cargo tauri dev --features transcription` (or add to `default`).
-2. Add `"transcription:default"` and `"local-stt:default"` to
-   `src-tauri/capabilities/default.json`.
-3. Vendor the typed JS bindings from anarlog (`plugins/transcription/js`,
-   `plugins/local-stt/js` — MIT; keep their license notice) into a small
-   frontend package and gate calls on running inside Tauri
-   (`"__TAURI_INTERNALS__" in window`).
-4. Feed finished transcripts through the existing connector save path
-   (`frontend/src/lib/transcriberSave.ts`, connector source
-   `tinycloud-transcriber`) so desktop-local capture lands in the user's
-   space exactly like the Private Notetaker bot output.
+Permissions are injected at runtime from
+`src-tauri/capabilities-transcription/transcription.json` (kept outside
+`capabilities/` so feature-off builds never validate commands they don't have).
+It grants exactly the eight plugin commands the Local recording UI invokes —
+not the plugins' `default` sets, which include model deletion, mic mute,
+voiceprint and export commands Exo doesn't use.
 
-Licensing: only anarlog's MIT layer is used. Do not depend on anything under
-anarlog's `enterprise/` directory (commercially licensed).
+### What works at the pinned rev (864ddc1)
+
+| Engine | Mode | Status |
+|---|---|---|
+| Whisper via whisper.cpp | Batch, after Stop | Shipped. Verified on-Mac in the release app: record → transcribe → save as Exo Local → relaunch |
+| Apple Speech | Live, macOS 26+ | Follow-up; needs locale-asset download + availability gate |
+| Soniqo Parakeet | Live or batch | Built but not exposed: third-party speech-swift + model weights unreviewed |
+| AM / Argmax | Requires proprietary sidecar + `AM_API_KEY` | Out of scope |
+
+Whisper models download on first use from `hyprnote.s3.us-east-1.amazonaws.com`
+(size + checksum validated by anarlog's `model-downloader`) into
+`models/stt/` under the app-data dir. Recordings land in `sessions/<id>/`.
+
+Long recordings: the vendored `transcribe-whisper-local`
+(`desktop/vendor/anarlog-transcribe-whisper-local`, see its `PROVENANCE.md`,
+with small progress hooks in the vendored `audio-chunking` and
+`whisper-local`) reports progress while it receives, decodes, VAD-scans and
+transcribes audio, so long, mostly quiet recordings and slow machines don't
+trip the 30 s / 60 s stream-idle timeouts, while a stalled server still does.
+Supported maximum: **8 hours** (stereo). Longer recordings, or a temp volume
+without room for the decoded audio (~0.5 GB per stereo hour + 0.5 GB), are
+rejected before decoding with a clear error. `NSAppSleepDisabled` keeps App
+Nap from starving background transcription. If transcription still fails, the panel keeps the
+recording: **Retry transcription** re-runs Whisper on the same audio.
+
+### Storage paths
+
+`~/Library/Application Support/xyz.tinycloud.exo` in **every** build. Upstream
+anarlog hardcodes `anarlog`/`hyprnote` folders for release builds; the vendored
+`storage` crate (`desktop/vendor/anarlog-storage`, MIT — see its
+`PROVENANCE.md`) is patched via `[patch]` to use the host bundle identifier, so
+Exo never shares or follows another app's vault redirect. The only remaining
+redirects are explicit: a `vault_path` in Exo's own
+`xyz.tinycloud.exo/global.json` (Exo never writes one) or the
+`CHAR_VAULT_BASE` environment variable (developer override).
+
+macOS prompts: Microphone (`NSMicrophoneUsageDescription`) and system-audio
+capture (`NSAudioCaptureUsageDescription`, process tap — macOS 14.2+). Dev
+builds attribute these to the launching terminal. `Entitlements.plist` adds
+`com.apple.security.device.audio-input` for signed/hardened-runtime bundles.
+
+### Known gaps
+
+- Speaker labels are channel-numbered. A real capture confirmed the order:
+  `Speaker 1` = microphone, `Speaker 2` = system audio (the remote side of a
+  call). The mic also picks up speaker output acoustically.
+- One capture at a time: the shared RootActor rejects a second `start_capture`.
+- Calling any other plugin command needs an explicit grant in
+  `capabilities-transcription/transcription.json`.
 
 ## Known constraints
 
-- **Sign-in:** tinycloud.chat is OpenKey-passkey-only in the browser; WebAuthn
-  inside Tauri webviews is unreliable. Options: SIWE session against the
-  backend (`GET /api/auth/nonce` → `POST /api/auth/verify`, needs
-  `X-Requested-With`), or a deep-link browser handoff. Decide before shipping.
+- **Sign-in:** OpenKey **email** sign-in (one-time code) works inside Exo's
+  webview, including the capability consent, and the session survives
+  relaunch. Passkeys inside the ad-hoc-signed app are not expected to work
+  (WebAuthn in a third-party WKWebView needs an associated domain). Local
+  recording is shown only with a signed-in space so a finished transcript can
+  be saved; offline save/export is not implemented.
 - **Web deploy rename** (tinycloud.chat → exo.tinycloud.xyz) is intentionally
   not part of this scaffold: it touches the Cloudflare Pages project,
   production env vars, and the backend CORS/hostname config.
+- **Licensing:** only anarlog's MIT layer is used (`plugins/**`, `crates/**`).
+  Nothing under anarlog's `enterprise/` (commercially licensed) is vendored or
+  depended on.

@@ -5,7 +5,7 @@
 // react-dom/server, like MeetingsSection); `TranscriberSection` owns the client, the polling and
 // the form state. No vault, no key: a session token and the backend URL are the only inputs.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent, type ReactNode } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { AudioLinesIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
@@ -24,6 +24,12 @@ import {
 import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
+import {
+  isDesktopLocalTranscriptionAvailable,
+  LOCAL_KIND_STORAGE_KEY,
+  type TranscriberKind,
+} from "@/lib/localTranscriber";
+import { LocalTranscriberPanel } from "./LocalTranscriber";
 
 export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
@@ -56,6 +62,15 @@ export interface TranscriberViewProps {
   form: { url: string; botName: string; submitting: boolean; error: string | null };
   busyId: string | null;
   open: OpenTranscriptState | null;
+  /**
+   * Desktop only: which transcription surface is selected. Omit both props and
+   * the card renders exactly the bot form as before (web).
+   */
+  kind?: TranscriberKind;
+  localWorkflowActive?: boolean;
+  /** Rendered in place of the bot form when `kind === "local"`. */
+  localPanel?: ReactNode;
+  onKindChange?: (kind: TranscriberKind) => void;
   onUrlChange: (value: string) => void;
   onBotNameChange: (value: string) => void;
   onSubmit: () => void;
@@ -145,6 +160,10 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   form,
   busyId,
   open,
+  kind,
+  localWorkflowActive,
+  localPanel,
+  onKindChange,
   onUrlChange,
   onBotNameChange,
   onSubmit,
@@ -155,9 +174,41 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
 }) => {
   const dark = listStatus === "dark";
   const canSubmit = !dark && !form.submitting && form.url.trim().length > 0;
+  // Local mode needs no backend: the bot form/list hide behind the switch.
+  const showLocal = kind === "local";
 
   return (
     <SectionCard icon={AudioLinesIcon} title="Transcriber">
+      {kind !== undefined && onKindChange !== undefined && (
+        <div
+          role="tablist"
+          aria-label="Transcription source"
+          className="mb-3 inline-flex rounded-md border border-border bg-muted/40 p-0.5 text-xs"
+        >
+          {(["meeting-bot", "local"] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              role="tab"
+              aria-selected={kind === k}
+              disabled={kind === "local" && localWorkflowActive && k !== kind}
+              onClick={() => onKindChange(k)}
+              className={`rounded px-3 py-1.5 ${
+                kind === k
+                  ? "bg-background font-medium text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {k === "meeting-bot" ? "Meeting bot" : "Local recording"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {showLocal ? (
+        (localPanel ?? null)
+      ) : (
+      <>
       <p className="text-xs text-muted-foreground">
         Paste a meeting link and a TinyCloud notetaker joins the call. When the meeting ends the
         speaker-attributed transcript is saved to your TinyCloud space and shows up in Meetings.
@@ -303,6 +354,8 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
             </ul>
           )}
         </div>
+      )}
+      </>
       )}
     </SectionCard>
   );
@@ -591,6 +644,7 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
 export const TranscriberSection: FC<TranscriberSectionProps> = ({
   backendUrl,
   sessionStore,
+  tcw,
   client,
 }) => {
   const apiRef = useRef<TranscriberClient | null>(null);
@@ -620,6 +674,30 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
   const saved = useTranscriberSavedState();
+
+  // Desktop only: a second, on-device transcription surface. On the web the
+  // flag is false and the card renders exactly the bot path.
+  // Connectors only persists meetings with a signed-in space. Do not expose a
+  // recording path that would discard its transcript when no tcw is present.
+  const localAvailable = isDesktopLocalTranscriptionAvailable() && tcw !== undefined;
+  const [kind, setKind] = useState<TranscriberKind>(() => {
+    if (!localAvailable) return "meeting-bot";
+    try {
+      return localStorage.getItem(LOCAL_KIND_STORAGE_KEY) === "local" ? "local" : "meeting-bot";
+    } catch {
+      return "meeting-bot";
+    }
+  });
+  const [localWorkflowActive, setLocalWorkflowActive] = useState(false);
+  const onKindChange = useCallback((next: TranscriberKind) => {
+    if (localWorkflowActive) return;
+    setKind(next);
+    try {
+      localStorage.setItem(LOCAL_KIND_STORAGE_KEY, next);
+    } catch {
+      // best-effort preference; ignore storage failures
+    }
+  }, [localWorkflowActive]);
 
   const load = useCallback(async () => {
     setListStatus((s) => (s === "ready" ? s : "loading"));
@@ -725,6 +803,14 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
       form={{ url, botName, submitting, error: formError }}
       busyId={busyId}
       open={open}
+      {...(localAvailable && tcw
+        ? {
+            kind,
+            localWorkflowActive,
+            localPanel: <LocalTranscriberPanel tcw={tcw} onWorkflowActiveChange={setLocalWorkflowActive} />,
+            onKindChange,
+          }
+        : {})}
       onUrlChange={setUrl}
       onBotNameChange={setBotName}
       onSubmit={onSubmit}

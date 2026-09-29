@@ -1,0 +1,27 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/storage, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "storage"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+specta = ["dep:specta"]
+
+[dependencies]
+base64 = "0.22.1"
+dirs = "6.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shellexpand = "3"
+specta = { version = "2.0.0-rc.22", optional = true }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["fs"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
