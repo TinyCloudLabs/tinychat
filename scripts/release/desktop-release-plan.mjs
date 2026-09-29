@@ -50,7 +50,7 @@ const notes = [
   `- Exo ${version} for Apple Silicon Macs, macOS 14.2 or later, built from \`${sha}\`.`,
   `- Bundles the web app ${FRONTEND}@${frontendVersion}.`,
   `- Info.plist: CFBundleShortVersionString ${shortVersion}, CFBundleVersion ${bundleVersion}.`,
-  '- Check downloads against SHA256SUMS.txt.',
+  '- Developer ID signed, notarized and stapled. Check downloads against SHA256SUMS.txt.',
   '',
 ].join('\n');
 writeFileSync(values.notes, notes);

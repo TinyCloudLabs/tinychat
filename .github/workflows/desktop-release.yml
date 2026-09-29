@@ -7,8 +7,9 @@ name: Desktop release (Exo)
 # commit of main (fetched fresh) and builds exactly that commit.
 # - beta (X.Y.Z-beta.N): a GitHub pre-release, never "latest";
 # - stable (X.Y.Z): a published GitHub Release marked latest.
-# Publishing requires a signed, notarized build: until signing lands, both channels build and then refuse to publish,
-# so no unsigned Exo is ever released. The release is created as a draft only while its assets upload, then
+# Both are Developer ID signed, notarized and stapled (desktop-build.yml with sign: true, secrets from the
+# desktop-release environment, which only main can deploy to); publishing requires the build's signed=true, so no
+# unsigned Exo is ever released. The release is created as a draft only while its assets upload, then
 # published by the same job; a draft left by a failed run is reused, a published release is never touched again
 # (cut a new version instead).
 #
@@ -92,6 +93,7 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.sha }}
       artifact-name: exo-${{ needs.plan.outputs.version }}-macos-arm64
+      sign: true
 
   publish:
     name: Publish
