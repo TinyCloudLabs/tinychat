@@ -12,8 +12,9 @@
 //   - submits a capture handle, then polls the job through the backend
 //     (bearer), fetches the transcript, and deletes it after it is saved.
 //
-// Backend routes (plan §4.4, TinyChat PR "private cloud transcription API"):
+// Backend routes (plan §4.4, TinyChat #99):
 //   GET    /api/transcriber/private-cloud/capabilities
+//   GET    /api/transcriber/private-cloud/transcriptions?limit=   (this account's jobs)
 //   GET    /api/transcriber/private-cloud/transcriptions/:id
 //   GET    /api/transcriber/private-cloud/transcriptions/:id/result   (202 = pending)
 //   POST   /api/transcriber/private-cloud/transcriptions/:id/cancel
@@ -43,6 +44,8 @@ export interface PrivateCloudJob {
   id: string;
   status: PrivateCloudJobStatus;
   duration_seconds?: number | null;
+  created_at?: string;
+  updated_at?: string;
   progress?: {
     stage?: string | null;
     queue_position?: number | null;
@@ -133,7 +136,7 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "service_paused":
       return "Private cloud transcription is paused. Try again later.";
     case "active_transcription_exists":
-      return "Another private cloud transcription is still running for your account. Try again when it finishes.";
+      return "Another private cloud upload for your account hasn't finished (it expires within 2 hours). Try again later, or transcribe this recording on this Mac.";
     case "provider_unavailable":
     case "provider_outcome_unknown":
     case "processing_timeout":
@@ -181,6 +184,8 @@ export interface PrivateCloudApi {
   bearer(): string | null;
   /** Null when the feature is dark or this account is not in the cohort (404). */
   capabilities(): Promise<PrivateCloudCapabilities | null>;
+  /** This account's jobs (tenant-scoped by the backend); empty when the feature is dark. */
+  list(): Promise<PrivateCloudJob[]>;
   get(id: string): Promise<PrivateCloudJob>;
   result(id: string): Promise<PrivateCloudResult>;
   cancel(id: string): Promise<void>;
@@ -270,6 +275,15 @@ export function createPrivateCloudApi(
       if (response.status === 404) return null;
       if (!response.ok) throw await readError(response);
       return json<PrivateCloudCapabilities>(response);
+    },
+
+    async list() {
+      const response = await request("/transcriptions?limit=20", "GET");
+      if (response.status === 404) return [];
+      if (!response.ok) throw await readError(response);
+      const body = await json<{ transcriptions?: unknown }>(response);
+      if (!Array.isArray(body.transcriptions)) throw new PrivateCloudError("upstream_bad_response", "Unexpected job list");
+      return body.transcriptions as PrivateCloudJob[];
     },
 
     async get(id) {
@@ -390,6 +404,13 @@ export async function loadPrivateCloudNative(): Promise<PrivateCloudNative> {
 }
 
 // ── Engine choice ──────────────────────────────────────────────────────
+
+/**
+ * Whether private cloud can be offered: `available`; `hidden` (this build has
+ * no PTX origin, or the backend answers 404: dark or not in the cohort);
+ * `failed` (the check itself failed — offline, 5xx, timeout — so try again).
+ */
+export type PrivateCloudAvailability = "available" | "hidden" | "failed";
 
 /**
  * The engine a Local recording uses. An explicit choice wins; with none,

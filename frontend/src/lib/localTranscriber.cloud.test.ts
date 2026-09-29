@@ -15,12 +15,19 @@
 //     created job, status decides — a lost 201 (the upload landed) continues
 //     polling with no second upload and no user action; awaiting_upload keeps
 //     the recording and Retry re-uploads the SAME attempt; a PTX-side failure
-//     retries as a NEW attempt; someone else's active job is never adopted;
+//     retries as a NEW attempt;
+//   - tenant-list recovery (plan §4.7): an active_transcription_exists names
+//     another job of this account, which is finished and saved as its own
+//     meeting before this recording uploads (same attempt); a relaunch with no
+//     pending record, or whose pending job is gone, lists the account's jobs
+//     and finishes the ones no recording here knows, skipping awaiting_upload;
 //   - polling rides out 10 minutes of transient failures (backing off to 30 s
 //     after one minute), then reports connection lost, and Keep waiting
 //     resumes polling without re-uploading;
 //   - a job left by a relaunch resumes from the persisted pending record;
-//   - availability needs both native configuration and the backend's 200.
+//   - availability needs both native configuration and the backend's 200; a
+//     failed check is "failed", not hidden; a clean 404 forgets the pending job;
+//   - cloud recordings use `cloud-` session ids (native opens only those).
 
 import { describe, expect, test } from "bun:test";
 
@@ -170,16 +177,26 @@ const failing = (code: string): Step => () => {
 
 function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"] } = {}) {
   const calls: string[] = [];
+  /** Status answers for ID (and any job without its own queue). */
   const gets: Step[] = [];
+  /** Status answers for other jobs. */
+  const getsById = new Map<string, Step[]>();
+  const listed: PrivateCloudJob[] = [];
+  const control = { removeFails: false };
   const api: PrivateCloudApi = {
     backendUrl: "https://api.example",
     bearer: () => "tok",
     capabilities: opts.capabilities ?? (async () => ({ max_bytes: 120960000 })),
+    list: async () => {
+      calls.push("list");
+      return listed;
+    },
     get: async (id) => {
       calls.push(`get:${id}`);
-      const next = gets.shift();
+      const next = (getsById.get(id) ?? gets).shift();
       if (!next) throw new Error(`unexpected get ${id}`);
-      return next();
+      const answer = await next();
+      return { ...answer, id };
     },
     result: async (id) => {
       calls.push(`result:${id}`);
@@ -190,9 +207,10 @@ function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"] } = {}) 
     },
     remove: async (id) => {
       calls.push(`remove:${id}`);
+      if (control.removeFails) throw new PrivateCloudError("service_unavailable", "down");
     },
   };
-  return { api, calls, gets };
+  return { api, calls, gets, getsById, listed, control };
 }
 
 function memoryPending(initial: PendingCloudJob | null = null): PendingCloudStore & { value: PendingCloudJob | null } {
@@ -229,6 +247,7 @@ function setup(opts: { configured?: boolean; capabilities?: PrivateCloudApi["cap
   const a = makeApi({ capabilities: opts.capabilities });
   const pending = memoryPending(opts.pending ?? null);
   const clock = fakeClock();
+  const recovered: CloudTranscriptResult[] = [];
   let attempt = 0;
   const t = createLocalTranscriber(b.bridge, {
     timeouts: { captureReadyMs: 50 },
@@ -238,11 +257,14 @@ function setup(opts: { configured?: boolean; capabilities?: PrivateCloudApi["cap
       pending,
       clock,
       newAttemptId: () => `00000000-0000-4000-8000-00000000000${++attempt}`,
+      saveRecovered: async (r) => {
+        recovered.push(r);
+      },
     },
   });
   const statuses: LocalTranscriberStatus[] = [];
   t.onStatus((s) => statuses.push(s));
-  return { t, ...b, n, a, pending, clock, statuses };
+  return { t, ...b, n, a, pending, clock, statuses, recovered };
 }
 
 /** Start a cloud recording; on stop, native reports the capture handle (or `ready`). */
@@ -262,6 +284,7 @@ describe("private cloud engine", () => {
     const { sessionId, stopped } = await recordAndStop(s);
     const result = (await stopped) as CloudTranscriptResult;
 
+    expect(sessionId).toMatch(/^cloud-[0-9a-f-]{36}$/);
     expect(s.calls).toEqual(["start_capture:batch::", "stop_capture"]);
     expect(s.n.log[0]).toBe("listen:capture-ready");
     expect(s.n.submits).toEqual([
@@ -387,7 +410,7 @@ describe("private cloud engine", () => {
     expect(err.offerOnDevice).toBe(true);
   });
 
-  test("a PTX-side failure retries as a NEW job; someone else's active job is never adopted", async () => {
+  test("a PTX-side failure retries as a NEW job", async () => {
     const s = setup();
     s.a.gets.push(job("failed", { error: { code: "provider_outcome_unknown", message: "x" } }));
     const { stopped } = await recordAndStop(s);
@@ -395,22 +418,58 @@ describe("private cloud engine", () => {
     expect(err.code).toBe("provider_outcome_unknown");
     expect(err.retryable).toBe(true);
 
-    s.n.setSubmit(async () => {
-      throw { code: "active_transcription_exists", message: "x", transcriptionId: OTHER_ID };
-    });
-    const busy = (await s.t.retryTranscription().catch((e) => e)) as TranscriptionFailedError;
-    expect(busy.code).toBe("active_transcription_exists");
+    s.a.gets.push(job("completed"));
+    await s.t.retryTranscription();
     expect(s.n.submits.map((x) => x.attemptId)).toEqual([
       "00000000-0000-4000-8000-000000000001",
       "00000000-0000-4000-8000-000000000002",
     ]);
+  });
 
-    s.n.setSubmit(async () => ({ transcriptionId: ID, status: "queued" }));
+  test("active_transcription_exists: the account's other job is finished and saved on its own, then this recording uploads", async () => {
+    const s = setup();
+    let submits = 0;
+    s.n.setSubmit(async () => {
+      if (++submits === 1) throw { code: "active_transcription_exists", message: "x", transcriptionId: OTHER_ID };
+      return { transcriptionId: ID, status: "queued" };
+    });
+    s.a.getsById.set(OTHER_ID, [
+      () => ({ id: OTHER_ID, status: "processing", duration_seconds: 600, created_at: "2026-09-29T10:10:00.000Z" }),
+      () => ({ id: OTHER_ID, status: "completed" }),
+    ]);
     s.a.gets.push(job("completed"));
-    await s.t.retryTranscription();
-    // Same new attempt, and never a status read of the other job.
-    expect(s.n.submits.at(-1)!.attemptId).toBe("00000000-0000-4000-8000-000000000002");
-    expect(s.a.calls.some((c) => c.includes(OTHER_ID))).toBe(false);
+    const { sessionId, stopped } = await recordAndStop(s);
+    const result = (await stopped) as CloudTranscriptResult;
+
+    // The other job's transcript became its own meeting, never this recording's.
+    expect(s.recovered).toHaveLength(1);
+    expect(s.recovered[0]!.transcriptionId).toBe(OTHER_ID);
+    expect(s.recovered[0]!.sessionId).toBe(OTHER_ID);
+    expect(s.recovered[0]!.startedAt).toBe("2026-09-29T10:00:00.000Z");
+    expect(normalizeLocalTranscript(s.recovered[0]!).meeting.sourceId).toBe(`local:${OTHER_ID}`);
+    expect(s.statuses).toContainEqual({ kind: "cloud-recovering" });
+    // Then this recording uploaded, with the same attempt, into its own job.
+    expect(s.n.submits.map((x) => x.attemptId)).toEqual([
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    expect(result.transcriptionId).toBe(ID);
+    expect(result.sessionId).toBe(sessionId);
+  });
+
+  test("active_transcription_exists for a job awaiting another upload keeps this recording, offering on-device", async () => {
+    const s = setup();
+    s.n.setSubmit(async () => {
+      throw { code: "active_transcription_exists", message: "x", transcriptionId: OTHER_ID };
+    });
+    s.a.getsById.set(OTHER_ID, [() => ({ id: OTHER_ID, status: "awaiting_upload" })]);
+    const { stopped } = await recordAndStop(s);
+    const err = (await stopped.catch((e) => e)) as TranscriptionFailedError;
+    expect(err.code).toBe("active_transcription_exists");
+    expect(err.retryable).toBe(true);
+    expect(err.offerOnDevice).toBe(true);
+    expect(s.recovered).toHaveLength(0);
+    expect(s.n.submits).toHaveLength(1);
   });
 
   test("polling rides out a backend redeploy, backing off to 30 s after a minute", async () => {
@@ -481,7 +540,64 @@ describe("private cloud engine", () => {
     expect(s.pending.value).toBeNull();
   });
 
-  test("availability needs native configuration and the backend's 200", async () => {
+  test("relaunch without a pending record: the tenant list's unknown jobs are finished and saved", async () => {
+    const s = setup();
+    s.a.listed.push(
+      { id: OTHER_ID, status: "completed", duration_seconds: 60, created_at: "2026-09-29T10:01:00.000Z" },
+      { id: ID, status: "queued", created_at: "2026-09-29T11:00:00.000Z" },
+      { id: "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W5", status: "awaiting_upload" },
+      { id: "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W6", status: "failed", error: { code: "invalid_audio" } },
+    );
+    s.a.getsById.set(OTHER_ID, [() => ({ id: OTHER_ID, status: "completed", duration_seconds: 60, created_at: "2026-09-29T10:01:00.000Z" }), () => ({ id: OTHER_ID, status: "completed" })]);
+    // Every status carries created_at (the backend's DTO requires it).
+    const queuedAt = { created_at: "2026-09-29T11:00:00.000Z" };
+    s.a.getsById.set(ID, [
+      () => ({ id: ID, status: "queued", ...queuedAt }),
+      () => ({ id: ID, status: "processing", ...queuedAt }),
+      () => ({ id: ID, status: "completed", ...queuedAt }),
+    ]);
+    expect(s.t.resumeCloudTranscription()).toBeNull();
+    expect(await s.t.recoverCloudTranscripts()).toBe(2);
+    expect(s.recovered.map((r) => [r.transcriptionId, r.startedAt])).toEqual([
+      [OTHER_ID, "2026-09-29T10:00:00.000Z"],
+      [ID, "2026-09-29T11:00:00.000Z"],
+    ]);
+    // Never touched: the job awaiting its recording's upload, and the failed one.
+    expect(s.a.calls.filter((c) => c.includes("V2W5") || c.includes("V2W6"))).toEqual([]);
+  });
+
+  test("recovery skips the job a pending record or the current recording owns", async () => {
+    const s = setup({ pending: { attemptId: "a-1", transcriptionId: ID, sessionId: "cloud-s", startedAt: "2026-09-29T10:00:00.000Z", language: "en" } });
+    s.a.listed.push({ id: ID, status: "completed" });
+    expect(await s.t.recoverCloudTranscripts()).toBe(0);
+    expect(s.a.calls).toEqual(["list"]);
+  });
+
+  test("relaunch whose pending job is gone forgets it (no failure) and leaves recovery to the list", async () => {
+    const s = setup({ pending: { attemptId: "a-1", transcriptionId: ID, sessionId: "cloud-s", startedAt: "2026-09-29T10:00:00.000Z", language: "en" } });
+    s.a.gets.push(failing("transcription_not_found"));
+    const resumed = s.t.resumeCloudTranscription();
+    expect(await resumed!).toBeNull();
+    expect(s.pending.value).toBeNull();
+    expect(s.statuses.at(-1)).toEqual({ kind: "idle" });
+    // Nothing is left for Retry/Discard: a new recording can start.
+    await s.t.start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" });
+  });
+
+  test("the pending record outlives a failed PTX delete, so a relaunch finishes it again", async () => {
+    const s = setup();
+    s.a.gets.push(job("completed"));
+    const { stopped } = await recordAndStop(s);
+    const result = (await stopped) as CloudTranscriptResult;
+    s.a.control.removeFails = true;
+    await expect(s.t.finishCloudTranscript(result)).rejects.toThrow("down");
+    expect(s.pending.value?.transcriptionId).toBe(ID);
+    s.a.control.removeFails = false;
+    await s.t.finishCloudTranscript(result);
+    expect(s.pending.value).toBeNull();
+  });
+
+  test("availability needs native configuration and the backend's 200; a failed check is not a no", async () => {
     let capabilityCalls = 0;
     const unconfigured = setup({
       configured: false,
@@ -490,11 +606,25 @@ describe("private cloud engine", () => {
         return { max_bytes: 1 };
       },
     });
-    expect(await unconfigured.t.privateCloudAvailable()).toBe(false);
+    expect(await unconfigured.t.privateCloudAvailability()).toBe("hidden");
     expect(capabilityCalls).toBe(0);
-    expect(await setup({ capabilities: async () => null }).t.privateCloudAvailable()).toBe(false);
-    expect(await setup().t.privateCloudAvailable()).toBe(true);
-    expect(await createLocalTranscriber(makeBridge().bridge).privateCloudAvailable()).toBe(false);
+    expect(await setup().t.privateCloudAvailability()).toBe("available");
+    expect(await createLocalTranscriber(makeBridge().bridge).privateCloudAvailability()).toBe("hidden");
+    const offline = setup({
+      capabilities: async () => {
+        throw new PrivateCloudError("offline", "Could not reach the backend");
+      },
+      pending: { attemptId: "a-1", transcriptionId: ID, sessionId: "cloud-s", startedAt: "2026-09-29T10:00:00.000Z", language: "en" },
+    });
+    expect(await offline.t.privateCloudAvailability()).toBe("failed");
+    expect(offline.pending.value).not.toBeNull();
+    // A clean 404 (dark, or not in the cohort) forgets the pending job.
+    const dark = setup({
+      capabilities: async () => null,
+      pending: { attemptId: "a-1", transcriptionId: ID, sessionId: "cloud-s", startedAt: "2026-09-29T10:00:00.000Z", language: "en" },
+    });
+    expect(await dark.t.privateCloudAvailability()).toBe("hidden");
+    expect(dark.pending.value).toBeNull();
     await expect(
       createLocalTranscriber(makeBridge().bridge).start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" }),
     ).rejects.toThrow("Private cloud transcription is not available");

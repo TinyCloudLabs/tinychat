@@ -90,6 +90,15 @@ describe("createPrivateCloudApi", () => {
     expect(isTransientCloudError(misconfigured)).toBe(false);
   });
 
+  test("list: this account's jobs; 404 (dark) is an empty list", async () => {
+    const { client, calls } = api(() => json(200, { transcriptions: [{ id: ID, status: "completed" }] }));
+    expect(await client.list()).toEqual([{ id: ID, status: "completed" }]);
+    expect(calls[0]!.url).toBe("https://api.example/api/transcriber/private-cloud/transcriptions?limit=20");
+    expect(await api(() => new Response("", { status: 404 })).client.list()).toEqual([]);
+    const bad = (await api(() => json(200, { nope: 1 })).client.list().catch((e) => e)) as PrivateCloudError;
+    expect(bad.code).toBe("upstream_bad_response");
+  });
+
   test("no session means unauthenticated without a request", async () => {
     const { client, calls } = api(() => json(200, {}), null);
     expect(((await client.get(ID).catch((e) => e)) as PrivateCloudError).code).toBe("unauthenticated");

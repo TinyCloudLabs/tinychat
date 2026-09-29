@@ -664,6 +664,46 @@ describe("LocalTranscriberView: private cloud engine", () => {
     expect(isLocalWorkflowActive("connection-lost")).toBe(true);
   });
 
+  test("a failed availability check is shown as unavailable right now, not hidden", () => {
+    const failed = renderLocal({ engine: "private-cloud", cloudCheckFailed: true });
+    expect(failed).toContain('aria-label="Transcription engine"');
+    expect(failed).toContain("Private cloud transcription is unavailable right now");
+    expect(failed).toContain(">Check again</button>");
+    expect(failed).not.toContain("Start recording");
+    expect(failed).not.toContain("Use private cloud");
+    // With On this Mac selected the picker stays, so private cloud can be chosen again.
+    const onDevice = renderLocal({ cloudCheckFailed: true });
+    expect(onDevice).toContain('aria-label="Transcription engine"');
+    expect(onDevice).toContain("Start recording");
+    expect(onDevice).not.toContain("Check again");
+
+    const checking = renderLocal({ engine: "private-cloud", cloudChecking: true });
+    expect(checking).toContain("Checking private cloud…");
+    expect(checking).not.toContain("Start recording");
+  });
+
+  test("a too-long cloud recording with no local model offers the model download", () => {
+    const html = renderLocal({
+      state: "transcribe-failed",
+      engine: "private-cloud",
+      statusText: "Private cloud transcription takes recordings up to 2 hours.",
+      retryable: false,
+      onDeviceNeedsModel: true,
+    });
+    expect(html).toContain("Download model (~44 MB)");
+    expect(html).toContain("To transcribe this recording on this Mac instead, download a Whisper model first.");
+    expect(html).not.toContain(">Transcribe on this Mac</button>");
+    const downloading = renderLocal({
+      state: "transcribe-failed",
+      engine: "private-cloud",
+      retryable: false,
+      onDeviceNeedsModel: true,
+      modelDownloading: true,
+      downloadPct: 30,
+    });
+    expect(downloading).toContain("Downloading model · 30%");
+  });
+
   test("the 1 h 50 min hint shows only while recording on private cloud", () => {
     expect(renderLocal({ state: "recording", engine: "private-cloud", nearCloudLimit: true })).toContain("up to 2 hours");
     expect(renderLocal({ state: "recording", nearCloudLimit: true })).not.toContain("up to 2 hours");

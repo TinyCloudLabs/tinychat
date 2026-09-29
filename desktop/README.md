@@ -127,7 +127,9 @@ backend answers `GET /api/transcriber/private-cloud/capabilities` with 200
 
 Native side (`src-tauri/src/cloud/`):
 
-- `registry.rs`: on the transcription plugin's `stopped` event, opens
+- `registry.rs`: on the transcription plugin's `stopped` event for a
+  cloud-bound capture (the webview gives those `cloud-<uuid>` session ids;
+  on-device captures are never opened), opens
   `vault/sessions/<session>/audio.{mp3,wav,ogg}` with `openat` + `O_NOFOLLOW`
   at each step, requires a regular file ≤ 120,960,000 bytes (2 h), keeps the
   descriptor, and emits `exo://capture-ready` with a random 128-bit handle.

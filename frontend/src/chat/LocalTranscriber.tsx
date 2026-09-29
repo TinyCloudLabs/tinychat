@@ -19,6 +19,7 @@ import {
   PRIVATE_CLOUD_CONSENT_KEY,
   readStoredEngine,
   resolveEngine,
+  type PrivateCloudAvailability,
   type TranscriptionEngine,
 } from "@/lib/privateCloud";
 import {
@@ -33,6 +34,7 @@ import {
   PreviousCaptureUnconfirmedError,
   prepareLocalTranscript,
   TranscriptionFailedError,
+  type LocalTranscriptSaver,
   type CloudTranscriptResult,
   type LocalTranscriber,
   type LocalTranscriberStatus,
@@ -133,8 +135,13 @@ export interface LocalTranscriberViewProps {
   /** The engine new recordings use. The picker shows only when private cloud is available. */
   engine?: TranscriptionEngine;
   cloudAvailable?: boolean;
-  /** The user chose private cloud, but it is not available right now. */
+  /** The user chose private cloud, but this account or build does not offer it. */
   cloudUnavailable?: boolean;
+  /** Checking whether private cloud is available (with private cloud selected). */
+  cloudChecking?: boolean;
+  /** The availability check itself failed (offline, server error): not a "no". */
+  cloudCheckFailed?: boolean;
+  onRecheckCloud?: () => void;
   /** The one-time "Use private cloud" confirmation was given. */
   cloudConsented?: boolean;
   onEngineChange?: (engine: TranscriptionEngine) => void;
@@ -148,6 +155,11 @@ export interface LocalTranscriberViewProps {
   /** Offer transcribing the kept private cloud recording with on-device Whisper. */
   onDeviceOffer?: boolean;
   onTranscribeOnDevice?: () => void;
+  /** That recording could be transcribed on this Mac once a Whisper model is downloaded. */
+  onDeviceNeedsModel?: boolean;
+  /** A model download for the kept recording is running (progress in downloadPct). */
+  modelDownloading?: boolean;
+  onDownloadForOnDevice?: () => void;
   /** An informational note (e.g. the private cloud copy's deletion schedule). */
   noteText?: string | null;
   /** A private cloud recording is nearing the 2 hour limit. */
@@ -214,6 +226,9 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   engine = "on-device",
   cloudAvailable = false,
   cloudUnavailable = false,
+  cloudChecking = false,
+  cloudCheckFailed = false,
+  onRecheckCloud,
   cloudConsented = false,
   onEngineChange,
   onConsentCloud,
@@ -222,6 +237,9 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   retryable = true,
   onDeviceOffer = false,
   onTranscribeOnDevice,
+  onDeviceNeedsModel = false,
+  modelDownloading = false,
+  onDownloadForOnDevice,
   noteText = null,
   nearCloudLimit = false,
 }) => {
@@ -240,7 +258,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
 
   return (
     <div className="mt-3 flex flex-col gap-2">
-      {cloudAvailable && (
+      {(cloudAvailable || cloudCheckFailed) && (
         <div role="radiogroup" aria-label="Transcription engine" className="inline-flex w-fit rounded-md border p-0.5">
           {(["on-device", "private-cloud"] as const).map((e) => (
             <button
@@ -267,6 +285,12 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           Record this Mac&apos;s microphone and meeting audio, then transcribe on-device with
           Whisper. Nothing leaves the machine until the transcript is saved to your space.
           Whisper runs after you stop, not live.
+        </p>
+      )}
+      {cloud && cloudCheckFailed && (
+        <p className="text-xs text-muted-foreground">
+          Private cloud transcription is unavailable right now (Exo couldn&apos;t reach it). Check again, or choose
+          On this Mac.
         </p>
       )}
       {cloudUnavailable && (
@@ -344,12 +368,23 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             <span>Downloading model{downloadPct !== null ? ` · ${downloadPct}%` : "…"}</span>
           </Button>
         )}
-        {(state === "ready" || state === "saved") && !recording && cloud && !cloudConsented && (
+        {(state === "ready" || state === "saved") && !recording && cloud && cloudChecking && (
+          <Button type="button" size="sm" disabled className="h-9 gap-1.5">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>Checking private cloud…</span>
+          </Button>
+        )}
+        {(state === "ready" || state === "saved") && !recording && cloud && cloudCheckFailed && (
+          <Button type="button" size="sm" variant="outline" onClick={onRecheckCloud} className="h-9">
+            Check again
+          </Button>
+        )}
+        {(state === "ready" || state === "saved") && !recording && cloud && cloudAvailable && !cloudConsented && (
           <Button type="button" size="sm" onClick={onConsentCloud} className="h-9">
             Use private cloud
           </Button>
         )}
-        {(state === "ready" || state === "saved") && !recording && (!cloud || cloudConsented) && (
+        {(state === "ready" || state === "saved") && !recording && (!cloud || (cloudAvailable && cloudConsented)) && (
           <Button
             type="button"
             size="sm"
@@ -430,6 +465,23 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
                 Transcribe on this Mac
               </Button>
             )}
+            {onDeviceNeedsModel && state === "transcribe-failed" && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onDownloadForOnDevice}
+                disabled={modelDownloading}
+                className="h-9 gap-1.5"
+              >
+                {modelDownloading && <Loader2Icon className="size-4 animate-spin" />}
+                <span>
+                  {modelDownloading
+                    ? `Downloading model${downloadPct !== null ? ` · ${downloadPct}%` : "…"}`
+                    : `Download model${modelInfo ? ` (~${modelInfo.approxSizeMb} MB)` : ""}`}
+                </span>
+              </Button>
+            )}
             <Button type="button" size="sm" variant="outline" onClick={onDiscardRecording} className="h-9">
               Discard recording
             </Button>
@@ -460,6 +512,11 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
         <p className="text-xs text-muted-foreground">
           The recording is kept until it transcribes or you discard it. Discarding leaves its audio
           file on this Mac.
+        </p>
+      )}
+      {onDeviceNeedsModel && state === "transcribe-failed" && (
+        <p className="text-xs text-muted-foreground">
+          To transcribe this recording on this Mac instead, download a Whisper model first.
         </p>
       )}
       {recording && cloud && nearCloudLimit && (
@@ -507,6 +564,9 @@ function readSavedModel(): WhisperModel {
     : DEFAULT_LOCAL_MODEL;
 }
 
+/** Waits between availability checks after one fails (plus the first try). */
+const CLOUD_CHECK_RETRY_MS = [2_000, 5_000];
+
 /** Private cloud: 1 h 50 min into a recording, warn before the 2 hour limit. */
 const CLOUD_LIMIT_WARNING_MS = 110 * 60_000;
 
@@ -532,14 +592,47 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   backendUrl,
   sessionStore,
 }) => {
+  // Transcripts recovered from this account's other private cloud jobs are
+  // saved one at a time, each as its own Exo Local meeting, then deleted.
+  const tcwRef = useRef(tcw);
+  tcwRef.current = tcw;
+  const recoverySaver = useRef<LocalTranscriptSaver | null>(null);
+  const recoveryQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const recoveredCount = useRef(0);
+  const [recoveredNote, setRecoveredNote] = useState<string | null>(null);
   const transcriberRef = useRef<LocalTranscriber | null>(null);
+  const saveRecovered = (result: CloudTranscriptResult): Promise<void> => {
+    const run = recoveryQueue.current.then(async () => {
+      const owner = transcriberRef.current;
+      if (owner === null) return;
+      let prepared: PreparedLocalTranscript;
+      try {
+        prepared = prepareLocalTranscript(result);
+      } catch {
+        await owner.finishCloudTranscript(result); // no speech: nothing to keep
+        return;
+      }
+      recoverySaver.current ??= createLocalTranscriptSaver(tcwRef.current);
+      const saved = await recoverySaver.current(prepared);
+      if (!saved.ok) throw new Error(saved.error.message);
+      recoveredCount.current += 1;
+      setRecoveredNote(
+        recoveredCount.current === 1
+          ? "Saved an earlier private cloud transcript to Meetings."
+          : `Saved ${recoveredCount.current} earlier private cloud transcripts to Meetings.`,
+      );
+      await owner.finishCloudTranscript(result);
+    });
+    recoveryQueue.current = run.catch(() => {});
+    return run;
+  };
   if (transcriberRef.current === null) {
     transcriberRef.current =
       transcriber ??
       createLocalTranscriber(
         undefined,
         backendUrl !== undefined && sessionStore !== undefined
-          ? { cloud: { api: createPrivateCloudApi(backendUrl, { sessionStore }) } }
+          ? { cloud: { api: createPrivateCloudApi(backendUrl, { sessionStore }), saveRecovered } }
           : {},
       );
   }
@@ -571,10 +664,19 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   // panel state mirrors the last lifecycle-relevant status.
   const lastStatus = useRef<LocalTranscriberStatus>({ kind: "idle" });
 
-  // Engine: resolved once availability is known; an explicit choice wins.
-  const [engine, setEngine] = useState<TranscriptionEngine>("on-device");
-  const [cloudAvailable, setCloudAvailable] = useState(false);
+  // Engine: resolved once availability is known; an explicit choice wins, and
+  // a stored private cloud choice waits (visibly) for the check.
+  const [engine, setEngine] = useState<TranscriptionEngine>(() =>
+    readStoredEngine() === "private-cloud" ? "private-cloud" : "on-device",
+  );
+  const [cloudCheck, setCloudCheck] = useState<"checking" | PrivateCloudAvailability>("checking");
+  const [cloudCheckRound, setCloudCheckRound] = useState(0);
   const [cloudUnavailable, setCloudUnavailable] = useState(false);
+  const [modelDownloading, setModelDownloading] = useState(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  /** Tenant-list recovery runs once per panel. */
+  const recoveryStarted = useRef(false);
   const [cloudConsented, setCloudConsented] = useState(hasPrivateCloudConsent);
   const [progressText, setProgressText] = useState<string | null>(null);
   const [referenceId, setReferenceId] = useState<string | null>(null);
@@ -591,30 +693,44 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
     return () => onWorkflowActiveChange?.(false);
   }, [onWorkflowActiveChange, state]);
 
-  // Engine availability, once: private cloud needs this build's native
-  // upload (a compiled-in PTX origin) and the backend's 200 for this account.
+  // Engine availability, on every mount and on "Check again": private cloud
+  // needs this build's native upload (a compiled-in PTX origin) and the
+  // backend's 200 for this account. A failed check (not a 404) is retried a
+  // bounded number of times and then shown as "unavailable right now".
   useEffect(() => {
     let cancelled = false;
+    setCloudCheck("checking");
     void (async () => {
-      const stored = readStoredEngine();
-      let available = false;
-      try {
-        available = await t.privateCloudAvailable();
-      } catch (err) {
-        console.warn("Private cloud transcription availability check failed", err);
+      let availability = await t.privateCloudAvailability();
+      for (const waitMs of CLOUD_CHECK_RETRY_MS) {
+        if (availability !== "failed" || cancelled) break;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        if (cancelled) return;
+        availability = await t.privateCloudAvailability();
       }
-      const anyModel = available && stored === null ? await t.anyModelDownloaded() : true;
+      const stored = readStoredEngine();
+      const anyModel = availability === "available" && stored === null ? await t.anyModelDownloaded() : true;
       if (cancelled) return;
-      setCloudAvailable(available);
-      setCloudUnavailable(stored === "private-cloud" && !available);
-      setEngine(resolveEngine({ stored, cloudAvailable: available, anyModelDownloaded: anyModel }));
+      setCloudCheck(availability);
+      setCloudUnavailable(stored === "private-cloud" && availability === "hidden");
+      // Never switch the engine under a recording in progress, and never
+      // quietly drop a stored private cloud choice because a check failed.
+      if (isLocalWorkflowActive(stateRef.current)) return;
+      if (availability === "failed") {
+        if (stored !== "private-cloud") setEngine("on-device");
+        return;
+      }
+      setEngine(resolveEngine({ stored, cloudAvailable: availability === "available", anyModelDownloaded: anyModel }));
     })().catch((err) => {
-      if (!cancelled) console.warn("Choosing the transcription engine failed", err);
+      if (!cancelled) {
+        console.warn("Choosing the transcription engine failed", err);
+        setCloudCheck("failed");
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, cloudCheckRound]);
 
   const fail = (err: unknown) => {
     setErrorText(err instanceof Error ? err.message : String(err));
@@ -626,6 +742,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   // starts over it.
   useEffect(() => {
     let cancelled = false;
+    const wasActive = isLocalWorkflowActive(stateRef.current);
     setState((s) => (isLocalWorkflowActive(s) ? s : "checking-model"));
     void (async () => {
       const previous = await t.previousRecording(() => {
@@ -640,12 +757,37 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       setState((s) => (s === "stopping-previous" ? "checking-model" : s));
       // A transcription whose panel closed is shown and finished here: its
       // transcript is saved by this panel, once; a failure offers Retry/Discard.
-      // A private cloud job left by a previous launch is finished the same way.
-      const adopted = t.adoptTranscription() ?? t.resumeCloudTranscription();
+      const adopted = t.adoptTranscription();
       if (adopted !== null) {
         setState("transcribing");
         void adopted.then(saveTranscript, failWithRecovery);
         return;
+      }
+      if (cloudCheck === "available") {
+        // A private cloud job left by a previous launch is finished the same
+        // way, but never over a recording this panel is running.
+        const resumed = wasActive ? null : t.resumeCloudTranscription();
+        if (resumed !== null) {
+          setState("transcribing");
+          void resumed.then((result) => {
+            if (result !== null) {
+              saveTranscript(result);
+              return;
+            }
+            // That job no longer exists: back to ready.
+            setState("checking-model");
+            setRetryCount((count) => count + 1);
+          }, failWithRecovery);
+          return;
+        }
+        // Jobs of this account no recording here knows (a lost record, a
+        // relaunch, another Mac): finish them so no transcript is lost.
+        if (!recoveryStarted.current) {
+          recoveryStarted.current = true;
+          void t.recoverCloudTranscripts().catch((err) => {
+            console.warn("Private cloud transcript recovery failed; the next launch retries", err);
+          });
+        }
       }
       const downloaded = await t.isModelDownloaded(model);
       if (cancelled) return;
@@ -667,7 +809,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [t, model, engine, retryCount]);
+  }, [t, model, engine, retryCount, cloudCheck]);
 
   useEffect(() => t.onStatus((s) => {
     lastStatus.current = s;
@@ -807,6 +949,17 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
     setRetryCount((count) => count + 1);
   };
 
+  // The kept recording could be transcribed on this Mac once a model exists.
+  const onDownloadForOnDevice = () => {
+    setModelDownloading(true);
+    setDownloadPct(0);
+    void t
+      .ensureModel(model, (pct) => setDownloadPct(pct))
+      .then(() => setModelReady(true))
+      .catch((err) => setErrorText(`Model download failed: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => setModelDownloading(false));
+  };
+
   const onTranscribeOnDevice = () => {
     clearFailure();
     setState("transcribing");
@@ -849,14 +1002,20 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       downloadPct={downloadPct}
       statusText={errorText}
       engine={engine}
-      cloudAvailable={cloudAvailable}
+      cloudAvailable={cloudCheck === "available"}
       cloudUnavailable={cloudUnavailable}
+      cloudChecking={cloudCheck === "checking"}
+      cloudCheckFailed={cloudCheck === "failed"}
+      onRecheckCloud={() => setCloudCheckRound((round) => round + 1)}
       cloudConsented={cloudConsented}
       progressText={progressText}
       referenceId={referenceId}
       retryable={retryable}
       onDeviceOffer={onDeviceOffer && modelReady}
-      noteText={noteText}
+      onDeviceNeedsModel={onDeviceOffer && !modelReady}
+      modelDownloading={modelDownloading}
+      onDownloadForOnDevice={onDownloadForOnDevice}
+      noteText={noteText ?? recoveredNote}
       nearCloudLimit={nearCloudLimit}
       onModelChange={(m) => {
         setModel(m);

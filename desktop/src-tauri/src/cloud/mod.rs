@@ -30,7 +30,8 @@ use tauri::{Emitter, Listener, Manager};
 
 /// The transcription plugin's capture lifecycle event (tauri-specta name).
 pub const CAPTURE_LIFECYCLE_EVENT: &str = "plugin:transcription:capture-lifecycle-event";
-/// Emitted once per stopped capture while the engine is configured.
+/// Emitted once per stopped cloud-bound capture (`cloud-` session id) while
+/// the engine is configured.
 pub const CAPTURE_READY_EVENT: &str = "exo://capture-ready";
 /// Upload progress for one capture handle (at most 4 per second).
 pub const UPLOAD_PROGRESS_EVENT: &str = "exo://cloud-upload-progress";

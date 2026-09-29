@@ -198,8 +198,14 @@ pub struct StoppedCapture {
     pub partial: bool,
 }
 
+/// Session ids the webview gives captures it will upload (`cloud-<uuid>`).
+/// Only those are opened; an on-device capture never gets a descriptor or an
+/// `exo://capture-ready` event.
+pub const CLOUD_SESSION_PREFIX: &str = "cloud-";
+
 /// Reads the plugin's own event type, so a change to its shape fails to compile
-/// here rather than silently never matching.
+/// here rather than silently never matching. `None` for anything but a
+/// cloud-bound capture that stopped with audio.
 pub fn parse_stopped(payload: &str) -> Option<StoppedCapture> {
     use tauri_plugin_transcription::CaptureLifecycleEvent;
     match serde_json::from_str::<CaptureLifecycleEvent>(payload).ok()? {
@@ -208,7 +214,7 @@ pub fn parse_stopped(payload: &str) -> Option<StoppedCapture> {
             audio_path: Some(audio_path),
             error,
             ..
-        } => Some(StoppedCapture {
+        } if session_id.starts_with(CLOUD_SESSION_PREFIX) => Some(StoppedCapture {
             session_id,
             audio_path,
             partial: error.is_some(),
@@ -473,24 +479,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn parses_only_stopped_events_with_audio() {
+    fn parses_only_cloud_bound_stopped_events_with_audio() {
+        let cloud = format!("{CLOUD_SESSION_PREFIX}{SESSION}");
         let stopped = parse_stopped(&format!(
-            r#"{{"type":"stopped","session_id":"{SESSION}","audio_path":"/v/sessions/{SESSION}/audio.mp3","requested_live_transcription":false,"live_transcription_active":false,"error":null}}"#
+            r#"{{"type":"stopped","session_id":"{cloud}","audio_path":"/v/sessions/{cloud}/audio.mp3","requested_live_transcription":false,"live_transcription_active":false,"error":null}}"#
         ))
         .unwrap();
-        assert_eq!(stopped.session_id, SESSION);
+        assert_eq!(stopped.session_id, cloud);
         assert!(!stopped.partial);
         let partial = parse_stopped(&format!(
-            r#"{{"type":"stopped","session_id":"{SESSION}","audio_path":"/a/audio.wav","requested_live_transcription":false,"live_transcription_active":false,"error":"mic failed"}}"#
+            r#"{{"type":"stopped","session_id":"{cloud}","audio_path":"/a/audio.wav","requested_live_transcription":false,"live_transcription_active":false,"error":"mic failed"}}"#
         ))
         .unwrap();
         assert!(partial.partial);
+        // An on-device capture is never opened.
         assert!(parse_stopped(&format!(
-            r#"{{"type":"stopped","session_id":"{SESSION}","audio_path":null,"requested_live_transcription":false,"live_transcription_active":false,"error":"x"}}"#
+            r#"{{"type":"stopped","session_id":"{SESSION}","audio_path":"/v/sessions/{SESSION}/audio.mp3","requested_live_transcription":false,"live_transcription_active":false,"error":null}}"#
         ))
         .is_none());
         assert!(parse_stopped(&format!(
-            r#"{{"type":"finalizing","session_id":"{SESSION}"}}"#
+            r#"{{"type":"stopped","session_id":"{cloud}","audio_path":null,"requested_live_transcription":false,"live_transcription_active":false,"error":"x"}}"#
+        ))
+        .is_none());
+        assert!(parse_stopped(&format!(
+            r#"{{"type":"finalizing","session_id":"{cloud}"}}"#
         ))
         .is_none());
         assert!(parse_stopped("not json").is_none());
