@@ -67,6 +67,25 @@ export function readChangesets(root) {
   });
 }
 
+// The Release stable PR records the plan it was reviewed with here; the stable release deletes it.
+export const STABLE_PLAN = '.changeset/release-stable.json';
+
+/**
+ * What a stable release ships right now: every unit on a beta graduates to its X.Y.Z, carrying the changesets that
+ * betas already released (.changeset/pre/). Fresh changesets never go straight to stable (check.mjs refuses them).
+ */
+export function stablePlan(root) {
+  const versions = {};
+  for (const unit of UNITS) {
+    const beta = /^(\d+\.\d+\.\d+)-beta\.\d+$/.exec(readJson(root, `${unit.dir}/package.json`).version ?? '');
+    if (beta) versions[unit.name] = beta[1];
+  }
+  return { versions, changesets: readChangesets(root).filter(changeset => changeset.admitted).map(changeset => changeset.file) };
+}
+
+const canonicalPlan = plan => JSON.stringify({ versions: Object.entries(plan.versions).sort(), changesets: [...plan.changesets].sort() });
+export const samePlan = (a, b) => canonicalPlan(a) === canonicalPlan(b);
+
 // `version = "..."` inside the [package] table of Cargo.toml.
 const cargoTomlVersion = /^(\[package\]\n(?:(?!\[)[^\n]*\n)*?version = ")([^"\n]*)(")/m;
 

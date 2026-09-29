@@ -1,9 +1,9 @@
 name: Changeset
 
 # Every PR must add a changeset (`bunx changeset`, or `bunx changeset add --empty` when nothing ships).
-# The one exception is the Release stable PR, whose only change is .changeset/pre.json -> "exit"; that is
-# decided from the diff, not the branch name. Changesets may only name the release units, and never bump the
-# backend major.
+# The one exception is the Release stable PR, whose only changes are .changeset/pre.json -> "exit" and its
+# recorded plan; that is decided from the diff, not the branch name, and the recorded plan must match what
+# stable would ship. Changesets may only name the release units, and never bump the backend major.
 
 on:
   pull_request:

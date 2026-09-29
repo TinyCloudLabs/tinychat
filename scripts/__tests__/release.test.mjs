@@ -158,7 +158,46 @@ test('empty changesets and changesets naming units pass', t => {
 test('pre mode must use the beta tag', t => {
   const root = manifests(t);
   write(root, '.changeset/pre.json', '{"mode":"pre","tag":"rc"}\n');
-  assert.match(check(root).stderr, /\.changeset\/pre\.json must be/);
+  assert.match(check(root).stderr, /\.changeset\/pre\.json must be exactly/);
+});
+
+test('a missing, corrupt or reshaped pre.json fails (it would stop every release after merge)', t => {
+  const deleted = manifests(t);
+  rmSync(join(deleted, '.changeset/pre.json'));
+  assert.match(check(deleted).stderr, /\.changeset\/pre\.json is missing: main must stay in Changesets pre mode/);
+
+  const corrupt = manifests(t);
+  write(corrupt, '.changeset/pre.json', '{"mode": "pre", "tag": ');
+  const corruptResult = check(corrupt);
+  assert.equal(corruptResult.status, 1);
+  assert.match(corruptResult.stderr, /\.changeset\/pre\.json is not valid JSON/);
+
+  for (const text of ['[]', 'null', '{"mode":"pre","tag":"beta","changesets":[]}', '{"mode":"snapshot","tag":"beta"}']) {
+    const reshaped = manifests(t);
+    write(reshaped, '.changeset/pre.json', text);
+    assert.match(check(reshaped).stderr, /\.changeset\/pre\.json must be exactly/, text);
+  }
+});
+
+test('a PR that deletes pre.json fails the PR check even with a changeset', t => {
+  const root = manifests(t);
+  initRepo(root);
+  commitAll(root, 'base');
+  git(root, 'checkout', '-q', '-b', 'feature');
+  rmSync(join(root, '.changeset/pre.json'));
+  write(root, '.changeset/quiet.md', '---\n---\n');
+  commitAll(root, 'drop pre mode');
+  assert.match(check(root, '--since', 'main').stderr, /\.changeset\/pre\.json is missing/);
+});
+
+test('the recorded stable plan only exists with exit mode, and exit mode needs it', t => {
+  const exitOnly = manifests(t);
+  write(exitOnly, '.changeset/pre.json', '{"mode":"exit","tag":"beta"}\n');
+  assert.match(check(exitOnly).stderr, /"exit" mode without \.changeset\/release-stable\.json/);
+
+  const planOnly = manifests(t);
+  write(planOnly, '.changeset/release-stable.json', '{"versions":{},"changesets":[]}\n');
+  assert.match(check(planOnly).stderr, /release-stable\.json only belongs to the Release stable PR/);
 });
 
 test('tauri.conf.json must read its version from desktop/package.json', t => {
@@ -207,12 +246,13 @@ test('--since requires the branch to add a changeset; an empty one opts out', t 
   assert.equal(optedOut.status, 0, optedOut.stderr);
 });
 
-test('--since exempts only a PR whose sole change flips pre.json to exit, whatever its branch name', t => {
+test('--since exempts only a PR that just flips pre.json to exit with its plan, whatever its branch name', t => {
   const root = manifests(t);
   initRepo(root);
   commitAll(root, 'base');
   git(root, 'checkout', '-q', '-b', 'any-name');
   write(root, '.changeset/pre.json', '{\n  "mode": "exit",\n  "tag": "beta"\n}\n');
+  write(root, '.changeset/release-stable.json', '{"versions":{},"changesets":[]}\n');
   commitAll(root, 'release stable');
   const stable = check(root, '--since', 'main');
   assert.equal(stable.status, 0, stable.stderr);
@@ -360,7 +400,7 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   assert.match(check(root).stderr, /bumps @tinychat\/backend major/);
   const refused = run('version.mjs', ['--root', root]);
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /refuses unconfirmed major bumps: @tinychat\/backend/);
+  assert.match(refused.stderr, /api-major\.md bumps @tinychat\/backend major/);
   assert.deepEqual(versions(), ['0.2.0-beta.1', '0.2.0-beta.1', '0.1.1-beta.0']);
   rmSync(join(root, '.changeset/api-major.md'));
   commitAll(root, 'revert: api major (#4)');
@@ -369,14 +409,47 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   const body = join(root, '..', 'stable.md');
   assert.match(step('stable-pr.mjs', ['--body', body]), /^open=true$/m);
   assert.equal(git(root, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main');
-  assert.equal(git(root, 'diff', '--name-only', 'main', 'release/stable'), '.changeset/pre.json');
+  assert.equal(git(root, 'diff', '--name-only', 'main', 'release/stable'), '.changeset/pre.json\n.changeset/release-stable.json');
+  assert.deepEqual(JSON.parse(git(root, 'show', 'release/stable:.changeset/release-stable.json')), {
+    versions: { 'exo-desktop': '0.2.0', '@tinychat/frontend': '0.2.0', '@tinychat/backend': '0.1.1' },
+    changesets: ['.changeset/pre/quiet-docs.md', '.changeset/pre/web-api.md', '.changeset/pre/web-fix.md'],
+  });
   assert.match(read(root, '../stable.md'), /\| `@tinychat\/frontend` \| 0\.2\.0-beta\.1 \| \*\*0\.2\.0\*\* \| minor \|/);
   assert.match(read(root, '../stable.md'), /\| `exo-desktop` \| 0\.2\.0-beta\.1 \| \*\*0\.2\.0\*\* \| minor \|/);
   assert.match(read(root, '../stable.md'), /\| `@tinychat\/backend` \| 0\.1\.1-beta\.0 \| \*\*0\.1\.1\*\* \| patch \|/);
   assert.match(read(root, '../stable.md'), /- Web fix/);
   assert.match(read(root, '../stable.md'), /### exo-desktop@0\.2\.0\n\n- Same release as @tinychat\/frontend/);
 
-  // Merging it releases stable and re-enters beta.
+  // Race 1: a feature lands on main, then the stale Release stable PR merges before any beta released it.
+  git(root, 'switch', '-q', '-c', 'race-fresh', 'main');
+  write(root, '.changeset/late.md', changesetFile({ '@tinychat/backend': 'minor' }, 'Late API change'));
+  commitAll(root, 'feat: late api (#6)');
+  git(root, 'merge', '-q', '--no-ff', '-m', 'Merge stale release stable', 'release/stable');
+  assert.match(check(root).stderr, /no beta has released \.changeset\/late\.md yet/);
+  const refusedStable = run('version.mjs', ['--root', root]);
+  assert.equal(refusedStable.status, 1);
+  assert.match(refusedStable.stderr, /no beta has released \.changeset\/late\.md yet/);
+  assert.deepEqual(versions(), ['0.2.0-beta.1', '0.2.0-beta.1', '0.1.1-beta.0']);
+  // The recovery the error describes: back to beta mode, and the late change ships as a beta first.
+  write(root, '.changeset/pre.json', '{\n  "mode": "pre",\n  "tag": "beta"\n}\n');
+  rmSync(join(root, '.changeset/release-stable.json'));
+  write(root, '.changeset/back-to-beta.md', '---\n---\n');
+  commitAll(root, 'chore(release): back to beta (#7)');
+  assert.match(step('version.mjs'), /^channel=beta$/m);
+  assert.deepEqual(versions(), ['0.2.0-beta.1', '0.2.0-beta.1', '0.2.0-beta.1']);
+
+  // Race 2: a beta ships after the Release stable PR was prepared; the PR's recorded plan is now stale.
+  git(root, 'switch', '-q', '-c', 'race-stale', 'main');
+  write(root, '.changeset/late-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Late web fix'));
+  commitAll(root, 'fix: late web (#8)');
+  assert.match(step('version.mjs'), /^channel=beta$/m);
+  git(root, 'merge', '-q', '--no-ff', '-m', 'Merge stale release stable', 'release/stable');
+  assert.match(check(root).stderr, /The Release stable PR is stale/);
+  assert.equal(run('version.mjs', ['--root', root]).status, 1);
+  assert.deepEqual(versions(), ['0.2.0-beta.2', '0.2.0-beta.2', '0.1.1-beta.0']);
+  git(root, 'switch', '-q', 'main');
+
+  // Merging the current Release stable PR releases stable and re-enters beta.
   git(root, 'merge', '-q', '--no-ff', '-m', 'Merge release stable (#5)', 'release/stable');
   assert.match(step('version.mjs'), /^channel=stable$/m);
   assert.deepEqual(versions(), ['0.2.0', '0.2.0', '0.1.1']);

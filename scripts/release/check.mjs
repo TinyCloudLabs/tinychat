@@ -4,18 +4,20 @@
  *  - any workspace package is not private (nothing in this repo may ever reach npm);
  *  - a release unit has no X.Y.Z / X.Y.Z-beta.N version (Changesets silently skips unversioned packages);
  *  - web and desktop versions differ (one fixed group), or the backend leaves 0.x;
- *  - .changeset/pre.json is not beta pre mode (or its "exit" for a stable release);
+ *  - .changeset/pre.json is missing or not exactly {"mode": "pre" | "exit", "tag": "beta"} (main stays in beta pre mode);
+ *  - in "exit" mode (the merged Release stable PR): a changeset no beta has released yet exists, or the plan recorded in
+ *    .changeset/release-stable.json is not what a stable release would ship now (the PR went stale);
  *  - a changeset names anything other than the release units, or bumps the backend `major`;
  *  - desktop/package.json, Cargo.toml and Cargo.lock disagree, or tauri.conf.json does not read package.json.
  * With --since <ref> (PR check) it also requires the branch to add a changeset, except for the Release stable PR,
- * whose only change is flipping .changeset/pre.json to "exit".
+ * whose only changes are .changeset/pre.json -> "exit" and its recorded plan.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  BACKEND, DESKTOP, FIXED, PRE_TAG, UNITS, VERSION, git, readCargoLockVersion, readCargoTomlVersion, readChangesets,
-  readJson, readPreState, repoRoot,
+  BACKEND, DESKTOP, FIXED, PRE_TAG, STABLE_PLAN, UNITS, VERSION, git, readCargoLockVersion, readCargoTomlVersion,
+  readChangesets, readJson, readPreState, repoRoot, samePlan, stablePlan,
 } from './lib.mjs';
 
 function workspaceDirs(root) {
@@ -58,9 +60,20 @@ function checkRelease(root, { since } = {}) {
   }
   if (!/^0\./.test(versions.get(BACKEND) ?? '')) errors.push(`${BACKEND} stays on 0.x, found ${versions.get(BACKEND)}`);
 
-  const pre = readPreState(root);
-  if (pre && (pre.tag !== PRE_TAG || !['pre', 'exit'].includes(pre.mode))) {
-    errors.push(`.changeset/pre.json must be {"mode": "pre" | "exit", "tag": "${PRE_TAG}"}, found ${JSON.stringify(pre)}`);
+  const restoreBeta = `restore it to {"mode": "pre", "tag": "${PRE_TAG}"} (\`bunx changeset pre enter ${PRE_TAG}\`)`;
+  let pre;
+  if (!existsSync(join(root, '.changeset/pre.json'))) {
+    errors.push(`.changeset/pre.json is missing: main must stay in Changesets pre mode; ${restoreBeta}`);
+  } else {
+    try {
+      pre = readPreState(root);
+      if (pre === null || typeof pre !== 'object' || Array.isArray(pre) || Object.keys(pre).sort().join() !== 'mode,tag'
+        || pre.tag !== PRE_TAG || !['pre', 'exit'].includes(pre.mode)) {
+        errors.push(`.changeset/pre.json must be exactly {"mode": "pre" | "exit", "tag": "${PRE_TAG}"}, found ${JSON.stringify(pre)}; ${restoreBeta}`);
+      }
+    } catch (error) {
+      errors.push(`.changeset/pre.json is not valid JSON (${error.message}); ${restoreBeta}`);
+    }
   }
 
   const changesets = readChangesets(root);
@@ -73,6 +86,23 @@ function checkRelease(root, { since } = {}) {
       if (!unitNames.has(name)) errors.push(`${file} names ${name}; changesets may only name ${[...unitNames].join(', ')}`);
       if (name === BACKEND && type === 'major') errors.push(`${file} bumps ${BACKEND} major; the backend stays on 0.x and takes only minor or patch`);
     }
+  }
+
+  const hasPlan = existsSync(join(root, STABLE_PLAN));
+  const recorded = hasPlan ? readRecordedPlan(root, errors) : undefined;
+  if (pre?.mode === 'exit') {
+    const recover = `If the Release stable PR is already merged, open a PR that sets .changeset/pre.json back to {"mode": "pre", "tag": "${PRE_TAG}"} (\`bunx changeset pre enter ${PRE_TAG}\`), deletes ${STABLE_PLAN} and adds an empty changeset; otherwise wait for the Release workflow to refresh the PR (it does after every push to main).`;
+    const fresh = changesets.filter(changeset => !changeset.admitted && changeset.releases?.length).map(changeset => changeset.file);
+    if (fresh.length) {
+      errors.push(`Stable releases only ship what a beta already released, but no beta has released ${fresh.join(', ')} yet. ${recover}`);
+    }
+    if (!hasPlan) {
+      errors.push(`.changeset/pre.json is in "exit" mode without ${STABLE_PLAN}: only merge the Release stable PR that the Release workflow maintains.`);
+    } else if (recorded && !samePlan(recorded, stablePlan(root))) {
+      errors.push(`The Release stable PR is stale: it was reviewed as ${JSON.stringify(recorded)}, but a stable release would now ship ${JSON.stringify(stablePlan(root))}. ${recover}`);
+    }
+  } else if (hasPlan) {
+    errors.push(`${STABLE_PLAN} only belongs to the Release stable PR ("exit" mode); delete it.`);
   }
 
   const desktopVersion = readJson(root, DESKTOP.packageJson).version;
@@ -93,7 +123,8 @@ function checkRelease(root, { since } = {}) {
     const changed = git(root, ['diff', '--name-only', `${since}...HEAD`]).split('\n').filter(Boolean);
     const added = git(root, ['diff', '--name-only', '--diff-filter=A', `${since}...HEAD`]).split('\n')
       .filter(file => /^\.changeset\/(?!README\.md$)[^/]+\.md$/.test(file));
-    const releaseStablePr = changed.length === 1 && changed[0] === '.changeset/pre.json' && pre?.mode === 'exit';
+    const releaseStablePr = pre?.mode === 'exit' && changed.length > 0
+      && changed.every(file => file === '.changeset/pre.json' || file === STABLE_PLAN);
     if (added.length === 0 && !releaseStablePr) {
       errors.push(`No changeset added since ${since}. Every PR needs one: run \`bunx changeset\`, or \`bunx changeset add --empty\` if nothing ships.`);
     }
@@ -105,6 +136,26 @@ function checkRelease(root, { since } = {}) {
   }
 
   return { errors, notices };
+}
+
+function readRecordedPlan(root, errors) {
+  let plan;
+  try {
+    plan = readJson(root, STABLE_PLAN);
+  } catch (error) {
+    errors.push(`${STABLE_PLAN} is not valid JSON: ${error.message}`);
+    return undefined;
+  }
+  const units = new Set(UNITS.map(unit => unit.name));
+  const valid = plan !== null && typeof plan === 'object' && Object.keys(plan).sort().join() === 'changesets,versions'
+    && plan.versions !== null && typeof plan.versions === 'object' && !Array.isArray(plan.versions)
+    && Object.entries(plan.versions).every(([name, version]) => units.has(name) && /^\d+\.\d+\.\d+$/.test(version))
+    && Array.isArray(plan.changesets) && plan.changesets.every(file => typeof file === 'string');
+  if (!valid) {
+    errors.push(`${STABLE_PLAN} must be {"versions": {"<unit>": "X.Y.Z"}, "changesets": ["<file>"]}, found ${JSON.stringify(plan)}`);
+    return undefined;
+  }
+  return plan;
 }
 
 const { values } = parseArgs({ options: { root: { type: 'string' }, since: { type: 'string' } } });

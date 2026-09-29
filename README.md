@@ -155,9 +155,12 @@ changeset.
   deploy web or backend. A major web/desktop bump is refused until someone
   runs the `Release` workflow with `confirm=major-beta`.
 - **Stable.** The workflow keeps a **chore(release): release stable** PR open
-  that only flips `.changeset/pre.json` to `"exit"`, and its description lists
-  what stable would ship. Merging it versions the stable releases, tags them,
-  and puts main back into beta pre mode.
+  that only flips `.changeset/pre.json` to `"exit"` and records the plan in
+  `.changeset/release-stable.json`; its description lists what stable would
+  ship. Merging it versions the stable releases, tags them, and puts main back
+  into beta pre mode. Stable only ships what betas already released: if the PR
+  is stale (main moved on since the plan was recorded) or a changeset no beta
+  has released is on main, the release is refused with recovery steps.
 
 Tags do not drive deploys or desktop builds yet; production still deploys
 from pushes to main until that is wired up.
