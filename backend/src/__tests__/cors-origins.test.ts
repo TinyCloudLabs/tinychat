@@ -5,8 +5,10 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import {
   appCorsOrigins,
+  EXO_ANDROID_ORIGIN,
   EXO_DESKTOP_ORIGIN,
   EXO_DESKTOP_WINDOWS_ORIGIN,
+  EXO_IOS_ORIGIN,
   LOCAL_WEB_ORIGINS,
 } from "../cors-origins.js";
 
@@ -33,7 +35,7 @@ afterAll(async () => {
 });
 
 describe("app CORS origins", () => {
-  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN])(
+  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN, EXO_ANDROID_ORIGIN, EXO_IOS_ORIGIN])(
     "allows %s",
     async (origin) => {
       const response = await fetch(`${baseUrl}/health`, {
@@ -63,6 +65,8 @@ describe("app CORS origins", () => {
     "https://tinychat-4jq.pages.dev.attacker.example",
     "https://other-project.pages.dev",
     "http://localhost:5173",
+    "https://localhost:8443",
+    "capacitor://attacker.example",
   ])("does not allow unrelated origin %s", async (origin) => {
     const response = await fetch(`${baseUrl}/health`, {
       headers: { Origin: origin },
