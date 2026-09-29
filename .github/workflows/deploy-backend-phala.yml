@@ -1,24 +1,30 @@
 name: Deploy Backend to Phala Cloud
 
+# Only deploy-production.yml calls this (backend first, then web), for a stable release or a confirmed hotfix; it has
+# no trigger of its own, so the release gate there cannot be bypassed. It builds and deploys `ref` (the full SHA the
+# gate resolved), not the caller's main. Backend-only deploy or rollback:
+#   gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@<version> -f web=false
+# This is the one deploy definition: the env var list below, the allowed_envs sync and the public API probes apply
+# to every deploy. It proves the new build is live (server-info backendRevision == the deployed commit and
+# backendVersion == backend/package.json) and always reports whether the production backend changed.
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "packages/**"
-      - "patches/**"
-      - "backend/Dockerfile"
-      - "docker-compose.phala.yml"
-      - "phala.toml"
-      - "manifest.json"
-      - "package.json"
-      - "bun.lock"
-      - "frontend/package.json"
-      - "tsconfig.base.json"
-      - "turbo.json"
-      - "infra/phala-ingress/**"
-      - ".github/workflows/deploy-backend-phala.yml"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Full commit SHA to build and deploy (resolved and gated by deploy-production.yml)
+        type: string
+        required: true
+    outputs:
+      state:
+        description: unchanged | changed-verified | changed-unverified
+        value: ${{ jobs.deploy.outputs.state }}
+      revision:
+        description: backendRevision served by the production API after the deploy
+        value: ${{ jobs.deploy.outputs.revision }}
+      version:
+        description: backendVersion served by the production API after the deploy
+        value: ${{ jobs.deploy.outputs.version }}
 
 concurrency:
   group: tinychat-backend-phala-production
@@ -49,8 +55,26 @@ jobs:
       contents: read
       packages: write
       statuses: write
+    outputs:
+      state: ${{ steps.state.outputs.state }}
+      revision: ${{ steps.live.outputs.revision }}
+      version: ${{ steps.live.outputs.version }}
+    env:
+      DEPLOY_SHA: ${{ inputs.ref }}
     steps:
+      - name: Require a full commit SHA
+        run: |
+          if ! [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ref must be a full commit SHA, got '$DEPLOY_SHA'"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Check the checkout is the deploy commit
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
 
       - name: Publish pending deployment status
         env:
@@ -59,7 +83,7 @@ jobs:
         run: |
           gh api \
             --method POST \
-            "/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            "/repos/${GITHUB_REPOSITORY}/statuses/${DEPLOY_SHA}" \
             -f state="pending" \
             -f context="tinychat-backend - phala" \
             -f description="Phala deployment started" \
@@ -70,8 +94,8 @@ jobs:
           {
             echo "## Phala backend deployment"
             echo
-            echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Image: \`${DOCKER_IMAGE}:${GITHUB_SHA}\`"
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- Image: \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`"
             echo "- CVM ID: \`${PHALA_CVM_ID}\`"
             echo "- Public API: ${PRODUCTION_API_URL}"
             echo "- Ingress domain: \`${PHALA_INGRESS_DOMAIN}\`"
@@ -175,16 +199,16 @@ jobs:
           context: .
           file: backend/Dockerfile
           build-args: |
-            BUILD_REVISION=${{ github.sha }}
+            BUILD_REVISION=${{ inputs.ref }}
           platforms: linux/amd64
           push: true
           no-cache: true
           tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE }}:${{ inputs.ref }}
             ${{ env.DOCKER_IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.description=TinyChat backend
 
       - name: Build and push ingress image
@@ -197,11 +221,11 @@ jobs:
           push: true
           no-cache: true
           tags: |
-            ${{ env.INGRESS_IMAGE }}:ingress-${{ github.sha }}
+            ${{ env.INGRESS_IMAGE }}:ingress-${{ inputs.ref }}
             ${{ env.INGRESS_IMAGE }}:ingress-latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.description=TinyChat Phala ingress
 
       - name: Record pushed image
@@ -210,16 +234,16 @@ jobs:
             echo
             echo "### Container image"
             echo
-            echo "- Tag: \`${DOCKER_IMAGE}:${GITHUB_SHA}\`"
+            echo "- Tag: \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "- Ingress tag: \`${INGRESS_IMAGE}:ingress-${GITHUB_SHA}\`"
+            echo "- Ingress tag: \`${INGRESS_IMAGE}:ingress-${DEPLOY_SHA}\`"
             echo "- Ingress digest: \`${{ steps.ingress-build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pin deployed image tag
         run: |
-          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${GITHUB_SHA}|g" docker-compose.phala.yml
-          sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${GITHUB_SHA}|g" docker-compose.phala.yml
+          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${DEPLOY_SHA}|g" docker-compose.phala.yml
+          sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${DEPLOY_SHA}|g" docker-compose.phala.yml
 
       - name: Capture CVM status before deploy
         env:
@@ -311,6 +335,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy to Phala Cloud
+        id: deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           BACKEND_PRIVATE_KEY: ${{ secrets.BACKEND_PRIVATE_KEY }}
@@ -455,9 +480,9 @@ jobs:
             printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"
             printf '%s\n' "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"
             printf '%s\n' "CERTBOT_EMAIL=$CERTBOT_EMAIL"
-            printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${GITHUB_SHA}"
-            printf '%s\n' "TINYCHAT_INGRESS_IMAGE=${INGRESS_IMAGE}:ingress-$GITHUB_SHA"
-            printf '%s\n' "TINYCHAT_BUILD_SHA=$GITHUB_SHA"
+            printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${DEPLOY_SHA}"
+            printf '%s\n' "TINYCHAT_INGRESS_IMAGE=${INGRESS_IMAGE}:ingress-$DEPLOY_SHA"
+            printf '%s\n' "TINYCHAT_BUILD_SHA=$DEPLOY_SHA"
             printf '%s\n' "TINYCHAT_DEPLOY_RUN_URL=$DEPLOY_RUN_URL"
             printf '%s\n' "PORT=3001"
             printf '%s\n' "PHALA_INGRESS_DOMAIN=$PHALA_INGRESS_DOMAIN"
@@ -844,10 +869,67 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Generic 2xx probes can pass against a stale gateway or the old container; require the new build itself.
+      - name: Verify the deployed revision and version
+        id: live
+        run: |
+          expected_version=$(jq -r .version backend/package.json)
+          url="${PRODUCTION_API_URL%/}/api/server-info"
+          revision='' version=''
+          for i in {1..30}; do
+            if info=$(curl -fsS --connect-timeout 5 --max-time 15 "$url"); then
+              revision=$(jq -r '.backendRevision // ""' <<<"$info")
+              version=$(jq -r '.backendVersion // ""' <<<"$info")
+            fi
+            echo "Attempt $i/30: backendRevision=${revision:-?} backendVersion=${version:-?}"
+            if [ "$revision" = "$DEPLOY_SHA" ] && [ "$version" = "$expected_version" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$revision" != "$DEPLOY_SHA" ] || [ "$version" != "$expected_version" ]; then
+            echo "::error title=Deployed build not live::$url serves backendRevision=${revision:-none} backendVersion=${version:-none}, expected $DEPLOY_SHA / $expected_version"
+            exit 1
+          fi
+          echo "- Live: \`$url\` serves backendRevision \`$revision\`, backendVersion \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # A red run does not mean production is unchanged: once `phala deploy` has run, the CVM may be on the new image.
+      - name: Report production backend state
+        id: state
+        if: always()
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          LIVE_REVISION: ${{ steps.live.outputs.revision }}
+          LIVE_VERSION: ${{ steps.live.outputs.version }}
+        run: |
+          if [ "$DEPLOY_OUTCOME" = skipped ] || [ -z "$DEPLOY_OUTCOME" ]; then
+            state=unchanged
+            detail="The run stopped before \`phala deploy\`; the production backend was not touched."
+          elif [ "$DEPLOY_OUTCOME" = success ] && [ "$LIVE_OUTCOME" = success ]; then
+            state=changed-verified
+            detail="Production runs \`$DEPLOY_SHA\` (backendVersion $LIVE_VERSION), verified via server-info."
+          else
+            state=changed-unverified
+            detail="\`phala deploy\` ran (outcome: $DEPLOY_OUTCOME), so the CVM may now run \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`, but the post-deploy checks did not pass (server-info last reported backendRevision=${LIVE_REVISION:-none}, backendVersion=${LIVE_VERSION:-none}). Production is CHANGED and UNVERIFIED; web was not deployed. Redeploy the last good backend: \`gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@<last good version> -f web=false\`."
+            echo "::error title=Production backend changed but unverified::$detail"
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Production backend state: \`$state\`"
+            echo
+            echo "$detail"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   phala-status:
     runs-on: ubuntu-latest
     needs: deploy
     if: always()
+    env:
+      DEPLOY_SHA: ${{ inputs.ref }}
     permissions:
       contents: read
       statuses: write
@@ -856,6 +938,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOY_STATE: ${{ needs.deploy.outputs.state }}
           TARGET_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           case "$DEPLOY_RESULT" in
@@ -865,7 +948,11 @@ jobs:
               ;;
             cancelled)
               STATE=error
-              DESCRIPTION="Phala deployment cancelled"
+              if [ "$DEPLOY_STATE" = unchanged ]; then
+                DESCRIPTION="Phala deployment cancelled before changing the CVM"
+              else
+                DESCRIPTION="Phala deployment cancelled after it started: backend may be CHANGED"
+              fi
               ;;
             skipped)
               STATE=error
@@ -873,13 +960,17 @@ jobs:
               ;;
             *)
               STATE=failure
-              DESCRIPTION="Phala deployment or API probe failed"
+              if [ "$DEPLOY_STATE" = unchanged ]; then
+                DESCRIPTION="Phala deployment failed before changing the CVM"
+              else
+                DESCRIPTION="Backend CHANGED but post-deploy checks failed"
+              fi
               ;;
           esac
 
           gh api \
             --method POST \
-            "/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            "/repos/${GITHUB_REPOSITORY}/statuses/${DEPLOY_SHA}" \
             -f state="$STATE" \
             -f context="tinychat-backend - phala" \
             -f description="$DESCRIPTION" \

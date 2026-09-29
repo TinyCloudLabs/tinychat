@@ -162,8 +162,30 @@ changeset.
   is stale (main moved on since the plan was recorded) or a changeset no beta
   has released is on main, the release is refused with recovery steps.
 
-Tags do not drive deploys or desktop builds yet; production still deploys
-from pushes to main until that is wired up.
+**Production deploys only on stable releases.** Merging the Release stable PR
+makes the `Release` workflow dispatch `Deploy production` on the stable version
+commit: the backend (Phala) first, then the web app (Cloudflare Pages), each only
+if it got a new stable version. Web goes only after the production API proves it
+serves the new backend (`/api/server-info` `backendRevision` equals the deployed
+commit and `backendVersion` the released version). Betas and ordinary merges to
+`main` deploy nothing to production (`main` gets a Pages preview build).
+`Deploy production` is also the only manual path (the Phala workflow has no
+trigger of its own). It always runs from `main` and deploys the commit it
+resolves:
+
+```bash
+# Redeploy or roll back to a stable release (one side with -f backend=false / -f web=false)
+gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@0.1.1 -f web=false
+# Unreleased hotfix: explicit opt-in plus the full SHA of the commit to deploy
+gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<40-char SHA>
+```
+
+Release tags and the `production` branch are pushed only with the
+`release-push` deploy key (rulesets let only deploy keys write them). The web
+deploy fast-forwards `production`, which Pages builds as production, and the
+run's final "Production state" table says what changed, including when a later
+check failed. See [docs/deployment.md](docs/deployment.md) for the deploy key,
+the rulesets and their residual risk.
 
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release

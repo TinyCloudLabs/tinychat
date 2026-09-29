@@ -130,6 +130,8 @@ describe("TinyChat OpenAPI spec", () => {
       "expiry",
       "permissions",
       "policyHash",
+      "backendRevision",
+      "backendVersion",
     ]);
     expect(schemas.ServerInfo.properties.policyHash).toEqual({
       type: "string",

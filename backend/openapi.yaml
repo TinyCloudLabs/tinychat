@@ -2445,7 +2445,7 @@ components:
 
     ServerInfo:
       type: object
-      required: [did, status, name, expiry, permissions, policyHash]
+      required: [did, status, name, expiry, permissions, policyHash, backendRevision, backendVersion]
       properties:
         did:
           type: string
@@ -2462,6 +2462,12 @@ components:
         policyHash:
           type: string
           pattern: "^[a-f0-9]{64}$"
+        backendRevision:
+          type: string
+          description: Commit the running image was built from (BUILD_REVISION), or "unknown".
+        backendVersion:
+          type: string
+          description: backend/package.json version of the running image.
 
     DelegationStatus:
       type: string

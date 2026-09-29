@@ -13,6 +13,7 @@ export const UNITS = [
   { name: '@tinychat/backend', dir: 'backend' },
 ];
 export const BACKEND = '@tinychat/backend';
+export const FRONTEND = '@tinychat/frontend';
 // One product version for web and desktop (and future mobile): a Changesets `fixed` group.
 export const FIXED = ['@tinychat/frontend', 'exo-desktop'];
 
@@ -26,8 +27,73 @@ export const DESKTOP = {
 
 // Stable X.Y.Z, or X.Y.Z-beta.N while main is in Changesets pre mode (tag "beta").
 export const VERSION = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
+export const STABLE_VERSION = /^\d+\.\d+\.\d+$/;
 export const PRE_TAG = 'beta';
 export const BRANCH_STABLE = 'release/stable';
+// Cloudflare Pages builds this branch as production (tinycloud.chat); only deploy-production.yml advances it.
+export const BRANCH_PRODUCTION = 'production';
+export const PRODUCTION_WORKFLOW = 'deploy-production.yml';
+
+/** Split a `<name>@<version>` tag; names may be scoped (`@tinychat/backend@0.1.1`). */
+export function parseTag(tag) {
+  const at = tag.lastIndexOf('@');
+  if (at <= 0 || at === tag.length - 1) throw new Error(`Not a <name>@<version> tag: ${JSON.stringify(tag)}`);
+  return { name: tag.slice(0, at), version: tag.slice(at + 1) };
+}
+
+/**
+ * The workflows the Release job starts for the tags one run created (tags pushed with GITHUB_TOKEN trigger
+ * nothing; workflow_dispatch is the one event that token may start). Returns [{ workflow, ref, inputs, tags }].
+ *  - channel "stable": one production deploy on the stable version commit, backend first, then web, for the units
+ *    that got a new stable tag;
+ *  - channel "beta" and "none" (baseline tags): no production deploy. Betas never deploy web or backend.
+ */
+export function planDispatches({ channel, tags }) {
+  if (!['beta', 'stable', 'none'].includes(channel)) throw new Error(`Unknown release channel ${JSON.stringify(channel)}`);
+  const parsed = tags.map(tag => ({ tag, ...parseTag(tag) }));
+  const dispatches = [];
+  if (channel === 'stable') {
+    const stable = name => parsed.find(tag => tag.name === name && STABLE_VERSION.test(tag.version));
+    const backend = stable(BACKEND);
+    const web = stable(FRONTEND);
+    if (backend || web) {
+      dispatches.push({
+        workflow: PRODUCTION_WORKFLOW,
+        // Always from main (trusted workflow code); the tag selects the commit. Every stable tag of a run sits on the
+        // same stable version commit; dispatch.mjs verifies that.
+        ref: 'main',
+        inputs: { tag: (backend ?? web).tag, backend: String(Boolean(backend)), web: String(Boolean(web)) },
+        tags: [backend, web].filter(Boolean).map(({ tag }) => tag),
+      });
+    }
+  }
+  return dispatches;
+}
+
+const PAGES_CHECK = 'Cloudflare Pages';
+const PAGES_APP = 'cloudflare-workers-and-pages';
+
+/**
+ * Classify the Cloudflare Pages check runs GitHub lists for a production-branch commit:
+ *  - waiting: no finished run from the Pages app yet;
+ *  - failed: the newest run did not succeed;
+ *  - preview: it succeeded but as a preview (its summary has a "Branch Preview URL"), so the Pages project's
+ *    production branch is not `production`;
+ *  - production: it succeeded as a production deployment; `deploymentUrl` is that deployment's unique URL.
+ */
+export function classifyPagesCheckRuns(checkRuns) {
+  const runs = checkRuns
+    .filter(run => run.name === PAGES_CHECK && run.app?.slug === PAGES_APP)
+    .sort((a, b) => b.id - a.id);
+  const [latest] = runs;
+  if (!latest || latest.status !== 'completed') return { state: 'waiting' };
+  const summary = latest.output?.summary ?? '';
+  if (latest.conclusion !== 'success') return { state: 'failed', reason: `${latest.conclusion}: ${latest.output?.title ?? ''}`.trim(), detailsUrl: latest.details_url };
+  if (/Branch Preview URL/.test(summary)) return { state: 'preview', detailsUrl: latest.details_url };
+  const deploymentUrl = /Preview URL:[\s\S]*?href='(https:\/\/[^']+)'/.exec(summary)?.[1];
+  if (!deploymentUrl) return { state: 'failed', reason: 'no deployment URL in the Cloudflare Pages check run', detailsUrl: latest.details_url };
+  return { state: 'production', deploymentUrl, detailsUrl: latest.details_url };
+}
 
 export const readJson = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'));
 
