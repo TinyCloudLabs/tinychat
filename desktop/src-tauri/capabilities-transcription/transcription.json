@@ -1,10 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "transcription",
-  "description": "Local meeting capture and on-device transcription (anarlog plugins). Applied at runtime only when the `transcription` Cargo feature is enabled.",
+  "description": "Local meeting capture and on-device transcription (anarlog plugins). Applied at runtime only when the `transcription` Cargo feature is enabled. Grants exactly the commands the Local recording UI invokes; event listening comes from core:default.",
   "windows": ["main"],
   "permissions": [
-    "transcription:default",
-    "local-stt:default"
+    "transcription:allow-list-microphone-devices",
+    "transcription:allow-start-capture",
+    "transcription:allow-stop-capture",
+    "transcription:allow-get-capture-state",
+    "transcription:allow-start-transcription",
+    "local-stt:allow-is-model-downloaded",
+    "local-stt:allow-download-model",
+    "local-stt:allow-start-server"
   ]
 }

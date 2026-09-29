@@ -138,7 +138,6 @@ pub fn maybe_run(app: &tauri::App) {
   for (const [k, cmd, args] of [
     ["list_mics", "plugin:transcription|list_microphone_devices"],
     ["capture_state", "plugin:transcription|get_capture_state"],
-    ["models_dir", "plugin:local-stt|models_dir"],
     ["model_downloaded", "plugin:local-stt|is_model_downloaded", {{ model: "QuantizedTinyEn" }}],
     ["smoke_cmd", "exo_desktop_smoke"],
   ]) {{

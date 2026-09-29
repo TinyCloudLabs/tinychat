@@ -66,6 +66,9 @@ release builds. The feature wires up:
 Permissions are injected at runtime from
 `src-tauri/capabilities-transcription/transcription.json` (kept outside
 `capabilities/` so feature-off builds never validate commands they don't have).
+It grants exactly the eight plugin commands the Local recording UI invokes —
+not the plugins' `default` sets, which include model deletion, mic mute,
+voiceprint and export commands Exo doesn't use.
 
 ### What works at the pinned rev (864ddc1)
 
@@ -101,8 +104,8 @@ builds attribute these to the launching terminal. `Entitlements.plist` adds
 - Speaker labels are channel-numbered (`Speaker 1`, `Speaker 2`) because the
   channel → mic/system order isn't yet confirmed by a real capture.
 - One capture at a time: the shared RootActor rejects a second `start_capture`.
-- `update_capture_config` / `soniqo_model_dir` are missing from the plugins'
-  default permission sets at this rev — don't call them.
+- Calling any other plugin command needs an explicit grant in
+  `capabilities-transcription/transcription.json`.
 
 ## Known constraints
 
