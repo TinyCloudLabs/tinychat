@@ -122,6 +122,35 @@ builds attribute these to the launching terminal. `Entitlements.plist` adds
 - Calling any other plugin command needs an explicit grant in
   `capabilities-transcription/transcription.json`.
 
+## Content-Security-Policy
+
+Built apps (`tauri build`, including `--debug`) serve the frontend with the
+policy in `src-tauri/tauri.conf.json` → `app.security.csp`. `tauri dev` loads
+the Vite dev server directly and applies no CSP.
+
+- `script-src 'self' 'wasm-unsafe-eval'`: only the bundled scripts (Tauri adds
+  a hash for each bundled script and for the inline theme script in
+  `index.html`); the TinyCloud SDK instantiates its inlined WASM, which needs
+  `'wasm-unsafe-eval'`. No `eval`, no remote scripts.
+- `style-src 'self' 'unsafe-inline'`: the OpenKey SDK and UI libraries insert
+  `<style>` elements at runtime.
+- `connect-src` lists every origin the bundled frontend fetches: Tauri IPC
+  (`ipc:`, `http://ipc.localhost`), the backend (`api.tinycloud.chat`), the
+  TinyCloud node, fallback node and location registry, OpenKey
+  (`openkey.so`, `api.openkey.so`), model verification (`api.redpill.ai`,
+  `rpc.ata.network`, `search.sigstore.dev`, Tinfoil's two GitHub proxies), and
+  the browser-side connectors (Fireflies GraphQL; Google Drive, Docs and Meet
+  APIs). Local recording talks to its plugins over IPC only.
+- `frame-src https://openkey.so`: the OpenKey sign-in/approval iframe.
+- `img-src` allows `https:`, `data:` and `blob:` (chat markdown and avatars);
+  `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`.
+
+A feature that fetches a new origin from the webview must add it to
+`connect-src`; a build pointed at a different backend, node or OpenKey host
+(other `VITE_*` values) must change the policy to match. Blocked requests show
+up as `securitypolicyviolation` events and console errors in Web Inspector
+(debug builds).
+
 ## Known constraints
 
 - **Sign-in:** OpenKey **email** sign-in (one-time code) works inside Exo's
