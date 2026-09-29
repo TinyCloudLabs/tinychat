@@ -8,11 +8,22 @@
 
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SessionStore } from "@tinyboilerplate/client";
 import { Loader2Icon, MicIcon, SquareIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
+  createPrivateCloudApi,
+  ENGINE_STORAGE_KEY,
+  hasPrivateCloudConsent,
+  PRIVATE_CLOUD_CONSENT_KEY,
+  readStoredEngine,
+  resolveEngine,
+  type TranscriptionEngine,
+} from "@/lib/privateCloud";
+import {
   CaptureStopUnconfirmedError,
+  CloudConnectionLostError,
   createLocalTranscriber,
   createLocalTranscriptSaver,
   DEFAULT_LOCAL_MODEL,
@@ -22,6 +33,7 @@ import {
   PreviousCaptureUnconfirmedError,
   prepareLocalTranscript,
   TranscriptionFailedError,
+  type CloudTranscriptResult,
   type LocalTranscriber,
   type LocalTranscriberStatus,
   type LocalTranscriptResult,
@@ -47,6 +59,8 @@ export type LocalPanelState =
   | "stop-failed"
   /** Transcribing the stopped recording failed; Retry re-transcribes the same audio file. */
   | "transcribe-failed"
+  /** Private cloud: polling failed for 10 minutes; "Keep waiting" resumes it. */
+  | "connection-lost"
   /** Capture failed but kept a partial recording; it can be transcribed or discarded. */
   | "partial-recording"
   /** The transcript is held in the panel; Retry re-runs the identical save. */
@@ -71,6 +85,7 @@ export function isLocalWorkflowActive(state: LocalPanelState): boolean {
     state === "saving" ||
     state === "stop-failed" ||
     state === "transcribe-failed" ||
+    state === "connection-lost" ||
     state === "partial-recording" ||
     state === "save-failed"
   );
@@ -81,7 +96,7 @@ export function localRetryAction(
   state: LocalPanelState,
 ): "stop" | "transcribe" | "save" | "stop-previous" | "readiness" {
   if (state === "stop-failed") return "stop";
-  if (state === "transcribe-failed" || state === "partial-recording") return "transcribe";
+  if (state === "transcribe-failed" || state === "partial-recording" || state === "connection-lost") return "transcribe";
   if (state === "save-failed") return "save";
   if (state === "previous-recording") return "stop-previous";
   return "readiness";
@@ -90,9 +105,10 @@ export function localRetryAction(
 /** The panel state a rejected start(), stop() or retryTranscription() lands in. */
 export function localFailureState(
   err: unknown,
-): "stop-failed" | "transcribe-failed" | "partial-recording" | "previous-recording" | "error" {
+): "stop-failed" | "transcribe-failed" | "connection-lost" | "partial-recording" | "previous-recording" | "error" {
   if (err instanceof CaptureStopUnconfirmedError) return "stop-failed";
   if (err instanceof PartialRecordingError) return "partial-recording";
+  if (err instanceof CloudConnectionLostError) return "connection-lost";
   if (err instanceof TranscriptionFailedError) return "transcribe-failed";
   if (err instanceof PreviousCaptureUnconfirmedError) return "previous-recording";
   return "error";
@@ -114,7 +130,69 @@ export interface LocalTranscriberViewProps {
   onDiscardRecording: () => void;
   onStart: () => void;
   onStop: () => void;
+  /** The engine new recordings use. The picker shows only when private cloud is available. */
+  engine?: TranscriptionEngine;
+  cloudAvailable?: boolean;
+  /** The user chose private cloud, but it is not available right now. */
+  cloudUnavailable?: boolean;
+  /** The one-time "Use private cloud" confirmation was given. */
+  cloudConsented?: boolean;
+  onEngineChange?: (engine: TranscriptionEngine) => void;
+  onConsentCloud?: () => void;
+  /** Private cloud progress while a job runs (uploading, queued, transcribing). */
+  progressText?: string | null;
+  /** Private cloud failure reference (correlation id). */
+  referenceId?: string | null;
+  /** False when Retry cannot help: only Discard (and maybe Transcribe on this Mac). */
+  retryable?: boolean;
+  /** Offer transcribing the kept private cloud recording with on-device Whisper. */
+  onDeviceOffer?: boolean;
+  onTranscribeOnDevice?: () => void;
+  /** An informational note (e.g. the private cloud copy's deletion schedule). */
+  noteText?: string | null;
+  /** A private cloud recording is nearing the 2 hour limit. */
+  nearCloudLimit?: boolean;
 }
+
+const TINFOIL_FAQ_URL = "https://tinfoil.sh/security-and-privacy-faq";
+const TINFOIL_PRIVACY_URL = "https://tinfoil.sh/privacy";
+
+/** Plan §5: separate claims for PTX, Tinfoil and TinyChat; nothing "verified" or "end-to-end". */
+const PrivateCloudDisclosure: FC = () => (
+  <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+    <p>
+      No download needed. After you stop, this recording (up to 2 hours) is uploaded over an encrypted
+      connection to <strong>TinyCloud Private Transcription</strong>, a dedicated confidential virtual machine
+      on Phala Cloud. It sends short speech segments to <strong>Tinfoil</strong> for speech-to-text.
+    </p>
+    <ul className="list-disc space-y-1 pl-4">
+      <li>
+        TinyCloud Private Transcription deletes the audio once transcription finishes or fails. It deletes the
+        text transcript when this app has saved it to your TinyCloud space; otherwise the transcript is
+        scheduled for deletion 24 hours after transcription. Deleted data is no longer available through the
+        service but may remain on its storage media until overwritten. It receives an anonymous account
+        identifier, not your wallet address.
+      </li>
+      <li>
+        Tinfoil processes the segments inside hardware enclaves. It states that it does not retain request or
+        response content after responding, and it keeps billing and usage metadata. See Tinfoil&apos;s{" "}
+        <a href={TINFOIL_FAQ_URL} target="_blank" rel="noopener noreferrer" className="underline">
+          security FAQ
+        </a>{" "}
+        and{" "}
+        <a href={TINFOIL_PRIVACY_URL} target="_blank" rel="noopener noreferrer" className="underline">
+          privacy policy
+        </a>
+        .
+      </li>
+      <li>
+        TinyChat&apos;s server authorizes the upload and relays status and the transcript text back to this
+        app. It never receives your audio.
+      </li>
+      <li>The original recording stays on this Mac.</li>
+    </ul>
+  </div>
+);
 
 const selectClass =
   "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60";
@@ -133,7 +211,21 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   onDiscardRecording,
   onStart,
   onStop,
+  engine = "on-device",
+  cloudAvailable = false,
+  cloudUnavailable = false,
+  cloudConsented = false,
+  onEngineChange,
+  onConsentCloud,
+  progressText = null,
+  referenceId = null,
+  retryable = true,
+  onDeviceOffer = false,
+  onTranscribeOnDevice,
+  noteText = null,
+  nearCloudLimit = false,
 }) => {
+  const cloud = engine === "private-cloud";
   const modelInfo = LOCAL_WHISPER_MODELS.find((m) => m.id === model);
   const recording = state === "recording";
   const micDevices = mics.status === "loaded" ? mics.devices : [];
@@ -148,30 +240,64 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
 
   return (
     <div className="mt-3 flex flex-col gap-2">
-      <p className="text-xs text-muted-foreground">
-        Record this Mac&apos;s microphone and meeting audio, then transcribe on-device with
-        Whisper. Nothing leaves the machine until the transcript is saved to your space.
-        Whisper runs after you stop, not live.
-      </p>
+      {cloudAvailable && (
+        <div role="radiogroup" aria-label="Transcription engine" className="inline-flex w-fit rounded-md border p-0.5">
+          {(["on-device", "private-cloud"] as const).map((e) => (
+            <button
+              key={e}
+              type="button"
+              role="radio"
+              aria-checked={engine === e}
+              disabled={locked || busy}
+              onClick={() => onEngineChange?.(e)}
+              className={`rounded px-3 py-1 text-xs disabled:opacity-60 ${
+                engine === e ? "bg-primary text-primary-foreground" : "text-muted-foreground"
+              }`}
+            >
+              {e === "on-device" ? "On this Mac" : "Private cloud"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {cloud ? (
+        <PrivateCloudDisclosure />
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Record this Mac&apos;s microphone and meeting audio, then transcribe on-device with
+          Whisper. Nothing leaves the machine until the transcript is saved to your space.
+          Whisper runs after you stop, not live.
+        </p>
+      )}
+      {cloudUnavailable && (
+        <p className="text-xs text-muted-foreground">
+          Private cloud transcription isn&apos;t available right now, so new recordings are transcribed on this
+          Mac.
+        </p>
+      )}
 
       <div className="flex flex-col gap-2 sm:flex-row">
-        <label htmlFor="local-transcriber-model" className="sr-only">
-          Whisper model
-        </label>
-        <select
-          id="local-transcriber-model"
-          aria-label="Whisper model"
-          className={`${selectClass} sm:max-w-[16rem]`}
-          value={model}
-          disabled={locked || busy}
-          onChange={(e) => onModelChange(e.target.value as WhisperModel)}
-        >
-          {LOCAL_WHISPER_MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label} · ~{m.approxSizeMb} MB
-            </option>
-          ))}
-        </select>
+        {!cloud && (
+          <>
+            <label htmlFor="local-transcriber-model" className="sr-only">
+              Whisper model
+            </label>
+            <select
+              id="local-transcriber-model"
+              aria-label="Whisper model"
+              className={`${selectClass} sm:max-w-[16rem]`}
+              value={model}
+              disabled={locked || busy}
+              onChange={(e) => onModelChange(e.target.value as WhisperModel)}
+            >
+              {LOCAL_WHISPER_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} · ~{m.approxSizeMb} MB
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
         {micDevices.length > 0 && (
           <>
@@ -218,7 +344,12 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             <span>Downloading model{downloadPct !== null ? ` · ${downloadPct}%` : "…"}</span>
           </Button>
         )}
-        {(state === "ready" || state === "saved") && !recording && (
+        {(state === "ready" || state === "saved") && !recording && cloud && !cloudConsented && (
+          <Button type="button" size="sm" onClick={onConsentCloud} className="h-9">
+            Use private cloud
+          </Button>
+        )}
+        {(state === "ready" || state === "saved") && !recording && (!cloud || cloudConsented) && (
           <Button
             type="button"
             size="sm"
@@ -247,7 +378,13 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
         {(state === "starting" || state === "transcribing" || state === "saving") && (
           <Button type="button" size="sm" disabled className="h-9 gap-1.5">
             <Loader2Icon className="size-4 animate-spin" />
-            <span>{state === "starting" ? "Starting recording…" : state === "transcribing" ? "Transcribing…" : "Saving…"}</span>
+            <span>
+              {state === "starting"
+                ? "Starting recording…"
+                : state === "transcribing"
+                  ? (progressText ?? "Transcribing…")
+                  : "Saving…"}
+            </span>
           </Button>
         )}
         {state === "checking-model" && (
@@ -277,11 +414,22 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             Retry stop
           </Button>
         )}
-        {(state === "transcribe-failed" || state === "partial-recording") && (
+        {(state === "transcribe-failed" || state === "partial-recording" || state === "connection-lost") && (
           <>
-            <Button type="button" size="sm" onClick={onRetry} className="h-9">
-              {state === "partial-recording" ? "Transcribe partial recording" : "Retry transcription"}
-            </Button>
+            {(retryable || state === "partial-recording") && (
+              <Button type="button" size="sm" onClick={onRetry} className="h-9">
+                {state === "partial-recording"
+                  ? "Transcribe partial recording"
+                  : state === "connection-lost"
+                    ? "Keep waiting"
+                    : "Retry transcription"}
+              </Button>
+            )}
+            {onDeviceOffer && state === "transcribe-failed" && (
+              <Button type="button" size="sm" variant="outline" onClick={onTranscribeOnDevice} className="h-9">
+                Transcribe on this Mac
+              </Button>
+            )}
             <Button type="button" size="sm" variant="outline" onClick={onDiscardRecording} className="h-9">
               Discard recording
             </Button>
@@ -308,10 +456,15 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           not transcribe it; any audio it recorded stays on this Mac.
         </p>
       )}
-      {state === "transcribe-failed" && (
+      {(state === "transcribe-failed" || state === "connection-lost") && (
         <p className="text-xs text-muted-foreground">
           The recording is kept until it transcribes or you discard it. Discarding leaves its audio
           file on this Mac.
+        </p>
+      )}
+      {recording && cloud && nearCloudLimit && (
+        <p className="text-xs text-muted-foreground">
+          Private cloud transcription takes recordings up to 2 hours. Stop soon, or transcribe this one on this Mac.
         </p>
       )}
       {state === "partial-recording" && (
@@ -330,6 +483,8 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           {statusText}
         </p>
       )}
+      {referenceId !== null && <p className="text-xs text-muted-foreground">Reference: {referenceId}</p>}
+      {noteText !== null && <p className="text-xs text-muted-foreground">{noteText}</p>}
     </div>
   );
 };
@@ -337,6 +492,9 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
 export interface LocalTranscriberPanelProps {
   tcw: TinyCloudWeb;
   onWorkflowActiveChange?: (active: boolean) => void;
+  /** Backend + session for the private cloud engine; without them it is never offered. */
+  backendUrl?: string;
+  sessionStore?: SessionStore;
   /** Injectable for tests; defaults to the real bridge-backed transcriber. */
   transcriber?: LocalTranscriber;
 }
@@ -349,11 +507,41 @@ function readSavedModel(): WhisperModel {
     : DEFAULT_LOCAL_MODEL;
 }
 
+/** Private cloud: 1 h 50 min into a recording, warn before the 2 hour limit. */
+const CLOUD_LIMIT_WARNING_MS = 110 * 60_000;
+
+/** Progress line for a private cloud status, or null for anything else. */
+export function cloudProgressText(s: LocalTranscriberStatus): string | null {
+  if (s.kind === "uploading") return s.pct === null ? "Uploading…" : `Uploading… ${s.pct}%`;
+  if (s.kind === "cloud-processing") {
+    if (s.stage === "queued") {
+      return s.queuePosition !== null && s.queuePosition > 0 ? `Queued (position ${s.queuePosition})…` : "Queued…";
+    }
+    return s.regionsTotal !== null && s.regionsTotal > 0
+      ? `Transcribing in private cloud… ${s.regionsCompleted ?? 0}/${s.regionsTotal}`
+      : "Transcribing in private cloud…";
+  }
+  return null;
+}
+
 /** Stateful owner: bridge instance, model readiness, capture lifecycle, save. */
-export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, transcriber, onWorkflowActiveChange }) => {
+export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
+  tcw,
+  transcriber,
+  onWorkflowActiveChange,
+  backendUrl,
+  sessionStore,
+}) => {
   const transcriberRef = useRef<LocalTranscriber | null>(null);
   if (transcriberRef.current === null) {
-    transcriberRef.current = transcriber ?? createLocalTranscriber();
+    transcriberRef.current =
+      transcriber ??
+      createLocalTranscriber(
+        undefined,
+        backendUrl !== undefined && sessionStore !== undefined
+          ? { cloud: { api: createPrivateCloudApi(backendUrl, { sessionStore }) } }
+          : {},
+      );
   }
   const t = transcriberRef.current;
 
@@ -383,18 +571,59 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   // panel state mirrors the last lifecycle-relevant status.
   const lastStatus = useRef<LocalTranscriberStatus>({ kind: "idle" });
 
+  // Engine: resolved once availability is known; an explicit choice wins.
+  const [engine, setEngine] = useState<TranscriptionEngine>("on-device");
+  const [cloudAvailable, setCloudAvailable] = useState(false);
+  const [cloudUnavailable, setCloudUnavailable] = useState(false);
+  const [cloudConsented, setCloudConsented] = useState(hasPrivateCloudConsent);
+  const [progressText, setProgressText] = useState<string | null>(null);
+  const [referenceId, setReferenceId] = useState<string | null>(null);
+  const [retryable, setRetryable] = useState(true);
+  const [onDeviceOffer, setOnDeviceOffer] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
+  const [noteText, setNoteText] = useState<string | null>(null);
+  const [nearCloudLimit, setNearCloudLimit] = useState(false);
+  // The private cloud transcript being saved, deleted from PTX once saved.
+  const cloudResult = useRef<CloudTranscriptResult | null>(null);
+
   useEffect(() => {
     onWorkflowActiveChange?.(isLocalWorkflowActive(state));
     return () => onWorkflowActiveChange?.(false);
   }, [onWorkflowActiveChange, state]);
+
+  // Engine availability, once: private cloud needs this build's native
+  // upload (a compiled-in PTX origin) and the backend's 200 for this account.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const stored = readStoredEngine();
+      let available = false;
+      try {
+        available = await t.privateCloudAvailable();
+      } catch (err) {
+        console.warn("Private cloud transcription availability check failed", err);
+      }
+      const anyModel = available && stored === null ? await t.anyModelDownloaded() : true;
+      if (cancelled) return;
+      setCloudAvailable(available);
+      setCloudUnavailable(stored === "private-cloud" && !available);
+      setEngine(resolveEngine({ stored, cloudAvailable: available, anyModelDownloaded: anyModel }));
+    })().catch((err) => {
+      if (!cancelled) console.warn("Choosing the transcription engine failed", err);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
 
   const fail = (err: unknown) => {
     setErrorText(err instanceof Error ? err.message : String(err));
     setState("error");
   };
 
-  // Model readiness + mic list on mount and when the model changes. A previous
-  // recording that is not confirmed stopped comes first: nothing starts over it.
+  // Model readiness + mic list on mount and when the model or engine changes.
+  // A previous recording that is not confirmed stopped comes first: nothing
+  // starts over it.
   useEffect(() => {
     let cancelled = false;
     setState((s) => (isLocalWorkflowActive(s) ? s : "checking-model"));
@@ -411,7 +640,8 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       setState((s) => (s === "stopping-previous" ? "checking-model" : s));
       // A transcription whose panel closed is shown and finished here: its
       // transcript is saved by this panel, once; a failure offers Retry/Discard.
-      const adopted = t.adoptTranscription();
+      // A private cloud job left by a previous launch is finished the same way.
+      const adopted = t.adoptTranscription() ?? t.resumeCloudTranscription();
       if (adopted !== null) {
         setState("transcribing");
         void adopted.then(saveTranscript, failWithRecovery);
@@ -419,7 +649,9 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       }
       const downloaded = await t.isModelDownloaded(model);
       if (cancelled) return;
-      setState((s) => (s === "checking-model" ? (downloaded ? "ready" : "needs-download") : s));
+      setModelReady(downloaded);
+      const ready = engine === "private-cloud" || downloaded;
+      setState((s) => (s === "checking-model" ? (ready ? "ready" : "needs-download") : s));
     })().catch((err) => {
       if (!cancelled) fail(err);
     });
@@ -435,12 +667,33 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
     return () => {
       cancelled = true;
     };
-  }, [t, model, retryCount]);
+  }, [t, model, engine, retryCount]);
 
   useEffect(() => t.onStatus((s) => {
     lastStatus.current = s;
     if (s.kind === "error") setErrorText(s.message);
+    const cloudText = cloudProgressText(s);
+    if (cloudText !== null) setProgressText(cloudText);
+    else if (s.kind !== "transcribing") setProgressText(null);
   }), [t]);
+
+  // Private cloud: warn at 1 h 50 min into a recording.
+  useEffect(() => {
+    setNearCloudLimit(false);
+    if (state !== "recording" || engine !== "private-cloud") return;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (Date.now() - started >= CLOUD_LIMIT_WARNING_MS) setNearCloudLimit(true);
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [state, engine]);
+
+  const clearFailure = () => {
+    setErrorText(null);
+    setReferenceId(null);
+    setRetryable(true);
+    setOnDeviceOffer(false);
+  };
 
   const onDownload = () => {
     setDownloadPct(0);
@@ -448,7 +701,10 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
     setState("downloading");
     void t
       .ensureModel(model, (pct) => setDownloadPct(pct))
-      .then(() => setState("ready"))
+      .then(() => {
+        setModelReady(true);
+        setState("ready");
+      })
       .catch((err) => {
         setErrorText(err instanceof Error ? err.message : String(err));
         setState("needs-download");
@@ -460,14 +716,21 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   // Retry, and an unconfirmed previous capture offers "Stop previous recording".
   const failWithRecovery = (err: unknown) => {
     setErrorText(err instanceof Error ? err.message : String(err));
+    setProgressText(null);
+    if (err instanceof TranscriptionFailedError) {
+      setReferenceId(err.correlationId);
+      setRetryable(err.retryable);
+      setOnDeviceOffer(err.offerOnDevice);
+    }
     setState(localFailureState(err));
   };
 
   const onStart = () => {
-    setErrorText(null);
+    clearFailure();
+    setNoteText(null);
     setState("starting");
     void t
-      .start({ model, language: "en", micDevice: micDevice || undefined })
+      .start({ model, language: "en", micDevice: micDevice || undefined, engine })
       .then(() => setState("recording"), failWithRecovery);
   };
 
@@ -479,6 +742,15 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
         if (!saved.ok) throw new Error(saved.error.message);
         setPendingSave(null);
         setState("saved");
+        const finished = cloudResult.current;
+        cloudResult.current = null;
+        if (finished !== null) {
+          // Saved to the space: delete the transcript from PTX now.
+          t.finishCloudTranscript(finished).catch((err) => {
+            console.error("Deleting the private cloud transcript failed", err);
+            setNoteText("The private cloud copy could not be deleted now; it is scheduled for deletion 24 hours after transcription.");
+          });
+        }
       })
       .catch((err) => {
         setErrorText(err instanceof Error ? err.message : String(err));
@@ -487,6 +759,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   };
 
   const saveTranscript = (result: LocalTranscriptResult) => {
+    setProgressText(null);
     let prepared: PreparedLocalTranscript;
     try {
       prepared = prepareLocalTranscript(result);
@@ -494,12 +767,13 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       fail(err);
       return;
     }
+    cloudResult.current = result.engine === "private-cloud" ? result : null;
     setPendingSave(prepared);
     save(prepared);
   };
 
   const onStop = () => {
-    setErrorText(null);
+    clearFailure();
     setState("transcribing");
     void t.stop().then(saveTranscript, failWithRecovery);
   };
@@ -528,8 +802,15 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       setErrorText(err instanceof Error ? err.message : String(err));
       return;
     }
-    setErrorText(null);
+    clearFailure();
     setState("ready");
+    setRetryCount((count) => count + 1);
+  };
+
+  const onTranscribeOnDevice = () => {
+    clearFailure();
+    setState("transcribing");
+    void t.retryTranscription({ onDevice: { model } }).then(saveTranscript, failWithRecovery);
   };
 
   const onRetry = () => {
@@ -538,7 +819,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
         onStop();
         return;
       case "transcribe":
-        setErrorText(null);
+        clearFailure();
         setState("transcribing");
         void t.retryTranscription().then(saveTranscript, failWithRecovery);
         return;
@@ -567,6 +848,16 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       micDevice={micDevice}
       downloadPct={downloadPct}
       statusText={errorText}
+      engine={engine}
+      cloudAvailable={cloudAvailable}
+      cloudUnavailable={cloudUnavailable}
+      cloudConsented={cloudConsented}
+      progressText={progressText}
+      referenceId={referenceId}
+      retryable={retryable}
+      onDeviceOffer={onDeviceOffer && modelReady}
+      noteText={noteText}
+      nearCloudLimit={nearCloudLimit}
       onModelChange={(m) => {
         setModel(m);
         try {
@@ -575,10 +866,28 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
           // localStorage can throw in private contexts; the preference is best-effort.
         }
       }}
+      onEngineChange={(e) => {
+        setEngine(e);
+        setCloudUnavailable(false);
+        try {
+          localStorage.setItem(ENGINE_STORAGE_KEY, e);
+        } catch {
+          // Best-effort, like the model preference.
+        }
+      }}
+      onConsentCloud={() => {
+        setCloudConsented(true);
+        try {
+          localStorage.setItem(PRIVATE_CLOUD_CONSENT_KEY, "1");
+        } catch {
+          // Best-effort: without it the confirmation is asked again next launch.
+        }
+      }}
       onMicChange={setMicDevice}
       onDownload={onDownload}
       onRetry={onRetry}
       onDiscardRecording={onDiscardRecording}
+      onTranscribeOnDevice={onTranscribeOnDevice}
       onStart={onStart}
       onStop={onStop}
     />

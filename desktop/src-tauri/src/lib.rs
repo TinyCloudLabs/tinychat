@@ -1,3 +1,5 @@
+#[cfg(feature = "transcription")]
+mod cloud;
 #[cfg(all(feature = "transcription", debug_assertions))]
 mod smoke;
 
@@ -27,18 +29,38 @@ pub fn run() {
                 tauri_plugin_local_stt::InitOptions::default(),
             ));
 
-        // Debug-only diagnostic: lets the webview verify the native wiring
-        // in one invoke before any recording is attempted.
+        // App commands. build.rs declares them in the app ACL manifest, so each
+        // one is callable only where a capability grants it: the private cloud
+        // commands by capabilities-transcription/, the debug smoke below.
+        #[cfg(not(debug_assertions))]
+        let builder = builder.invoke_handler(tauri::generate_handler![
+            cloud::commands::cloud_transcription_status,
+            cloud::commands::cloud_transcription_submit,
+            cloud::commands::cloud_transcription_cancel,
+        ]);
+        // Debug builds add a diagnostic that lets the webview verify the
+        // native wiring in one invoke before any recording is attempted.
         #[cfg(debug_assertions)]
-        let builder = builder.invoke_handler(tauri::generate_handler![smoke::exo_desktop_smoke]);
+        let builder = builder.invoke_handler(tauri::generate_handler![
+            cloud::commands::cloud_transcription_status,
+            cloud::commands::cloud_transcription_submit,
+            cloud::commands::cloud_transcription_cancel,
+            smoke::exo_desktop_smoke,
+        ]);
 
         builder.setup(|app| {
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
+            // Private cloud engine: inert (no listener, no file access) unless
+            // a PTX origin is compiled in.
+            cloud::install(app);
             // EXO_SMOKE=1 runs real plugin invokes in the webview (debug only).
             #[cfg(debug_assertions)]
-            smoke::maybe_run(app);
+            {
+                app.add_capability(smoke::SMOKE_CAPABILITY)?;
+                smoke::maybe_run(app);
+            }
             Ok(())
         })
     };
