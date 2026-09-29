@@ -7,11 +7,12 @@
 //     simultaneous speech never interleaves word by word;
 //   - consecutive same-speaker segments merge into one turn, and no turn
 //     (continuous speech included) spans more than MAX_TURN_SECONDS;
-//   - a mic chunk that entirely repeats system audio from the same moment is
-//     dropped whole (kept as Others), tolerating plural and function-word
-//     differences, once the recording shows a stable small echo lag;
+//   - a mic chunk whose every word repeats system audio from the same moment
+//     is dropped whole (kept as Others), tolerating plurals and words Whisper
+//     dropped, once the recording shows a stable small echo lag;
 //   - part of a mic chunk is never dropped: echo mixed with the user's own
-//     words in one chunk, in either order, keeps the whole chunk;
+//     words in one chunk, in either order, keeps the whole chunk, including a
+//     lone confirmation ("Yes.", "No.", "Okay.", "Sure.") or an extra word;
 //   - distinct mic speech is kept: overlapping different speech, shared
 //     function words or backchannels, lone-word replies, immediate verbatim
 //     repetitions in a recording with echo (in their own chunk or sharing a
@@ -111,16 +112,50 @@ describe("localTranscriptTurns: echo", () => {
     expect(findMicEcho(words).size).toBe(16);
   });
 
-  test("echo with plural and function-word differences still matches", () => {
+  test("echo with plurals or words Whisper dropped on the mic still matches", () => {
     const words = recording(
       chunk(SYS, 0, 3, "Ship the release on Thursday."),
       // "releases" folds to "release"; Whisper dropped "the".
       chunk(MIC, 0.2, 3.1, "Ship releases on Thursday."),
       chunk(SYS, 5, 8, "Purple elephants dance on Tuesday."),
-      chunk(MIC, 5.2, 8.1, "Purple elephant dance on the Tuesday."),
+      chunk(MIC, 5.2, 8.1, "Purple elephant dance Tuesday."),
     );
 
     expect(lines(words)).toEqual(["Others: Ship the release on Thursday. Purple elephants dance on Tuesday."]);
+  });
+
+  test("a mic chunk with any word the system audio does not explain is kept whole", () => {
+    const words = recording(
+      ...cleanEchoes(0),
+      chunk(SYS, 10, 13, "Purple elephants dance on Tuesday."),
+      // One extra "the": it could be the user's.
+      chunk(MIC, 10.2, 13.1, "Purple elephants dance on the Tuesday."),
+    );
+
+    expect(findMicEcho(words).size).toBe(11);
+    expect(lines(words)).toEqual([
+      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Purple elephants dance on Tuesday.",
+      "You: Purple elephants dance on the Tuesday.",
+    ]);
+  });
+
+  test("a confirmation sharing a chunk with echo keeps the whole chunk, in either order", () => {
+    const echoed = "Deploy the canary build tonight.";
+    for (const answer of ["Yes.", "No.", "Okay.", "Sure."]) {
+      for (const micText of [`${echoed} ${answer}`, `${answer} ${echoed}`]) {
+        const words = recording(
+          ...cleanEchoes(100),
+          chunk(SYS, 0, 3, echoed),
+          // One VAD chunk: the echo and the user's answer, word times spread evenly.
+          chunk(MIC, 0.1, 3.6, micText),
+        );
+
+        expect(micWordsBetween(findMicEcho(words), 0, 10)).toHaveLength(0);
+        expect(micWordsBetween(findMicEcho(words), 100, 110)).toHaveLength(11);
+        expect(lines(words)[0]).toBe(`Others: ${echoed}`);
+        expect(lines(words)).toContain(`You: ${micText}`);
+      }
+    }
   });
 
   test("a mic chunk with one misheard content word is kept whole", () => {

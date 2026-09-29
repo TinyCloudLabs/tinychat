@@ -73,11 +73,6 @@ export const ECHO_MIN_OVERLAP = 0.5;
  *  system-audio words for the unit to measure the echo lag. */
 export const ECHO_MIN_MATCH_RATIO = 0.6;
 
-/** Confirm pass: share of a mic unit's words that must align. Every content
- *  word must align too; only a few function words or fillers, which Whisper
- *  often adds or drops on echo, may be unexplained. */
-export const ECHO_MIN_UNIT_MATCH_RATIO = 0.8;
-
 /** Aligned words that must be content words (not function words or
  *  backchannels such as "yeah", "okay", "right") for a unit to count as echo. */
 export const ECHO_MIN_CONTENT_MATCHES = 2;
@@ -225,8 +220,8 @@ interface EchoMatch {
  * system-audio word explains at most one mic unit. A unit needs at least two
  * words and ECHO_MIN_CONTENT_MATCHES aligned content words, and:
  *  - survey (`confirm` false): ECHO_MIN_MATCH_RATIO of its words aligned;
- *  - confirm: every content word and ECHO_MIN_UNIT_MATCH_RATIO of all words
- *    aligned, and the aligned spans overlap (ECHO_MIN_OVERLAP) once the system
+ *  - confirm: every word aligned (a "Yes." or "No." left over is the user's
+ *    answer), and the aligned spans overlap (ECHO_MIN_OVERLAP) once the system
  *    audio is shifted by `lag`.
  */
 function matchEchoUnits(
@@ -269,9 +264,9 @@ function matchEchoUnits(
     if (!confirm) {
       if (pairs.length / scored < ECHO_MIN_MATCH_RATIO) continue;
     } else {
-      // Nothing in the unit may be unexplained speech.
-      const unitContent = tokens.filter(isContentToken).length;
-      if (contentMatches < unitContent || pairs.length / scored < ECHO_MIN_UNIT_MATCH_RATIO) continue;
+      // Nothing in the unit may be unexplained: any word left over, even
+      // "yes" or "no", could be the user's own.
+      if (pairs.length < scored) continue;
       const [firstMic, firstSys] = pairs[0]!;
       const [lastMic, lastSys] = pairs[pairs.length - 1]!;
       const micStart = unit[firstMic]!.start;
@@ -302,11 +297,11 @@ function matchEchoUnits(
  *     ECHO_MIN_UNITS of them have a small lag (ECHO_MAX_LAG_SECONDS); their
  *     median is the recording's echo lag. No stable small lag, no echo.
  *  2. Confirm: the unit re-aligns with every word pair within
- *     ECHO_LAG_TOLERANCE_SECONDS of that lag, every content word explained,
- *     and the aligned spans overlapping in time (ECHO_MIN_OVERLAP). A chunk
- *     that mixes echo with the user's own words ("I will check. Friday at
- *     noon.") has unexplained words and is kept; a reply in its own chunk
- *     comes after the original, does not overlap, and is kept.
+ *     ECHO_LAG_TOLERANCE_SECONDS of that lag, every word explained, and the
+ *     aligned spans overlapping in time (ECHO_MIN_OVERLAP). A chunk that mixes
+ *     echo with the user's own words ("I will check. Friday at noon.", "…
+ *     tonight. Yes.") has unexplained words and is kept; a reply in its own
+ *     chunk comes after the original, does not overlap, and is kept.
  *  3. Gate: at least ECHO_MIN_UNITS units confirm, and at least
  *     ECHO_MIN_SHARE of the system-audio units that could be echoed.
  *
