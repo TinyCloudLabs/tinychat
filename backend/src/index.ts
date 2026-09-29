@@ -49,6 +49,7 @@ import { createConnectorCredentialRouter } from "./routes/connector-credentials.
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
+import { createPrivateCloudTranscriptionRouter } from "./routes/private-cloud-transcription.js";
 import { createCalendarAutojoinRouter } from "./routes/calendar-autojoin.js";
 import { CalendarAutojoinConnection } from "./services/calendar-autojoin-connection.js";
 import { KvCalendarAutojoinStore, TenantCoordinator } from "./services/calendar-autojoin-store.js";
@@ -59,6 +60,13 @@ import {
   transcriptionApiConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import {
+  PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+  createPtxClient,
+  privateCloudTranscriptionConfigFromEnv,
+  withoutPrivateCloudOpenApi,
+  type PrivateCloudTranscriptionConfig,
+} from "./services/private-cloud-transcription.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -267,6 +275,17 @@ async function main() {
   });
   if (!ledgerStartupConfig.ok) {
     console.error(`[startup] FATAL LEDGER CONFIGURATION ERROR: ${ledgerStartupConfig.error}`);
+    process.exit(1);
+    return;
+  }
+
+  // Exo private cloud transcription: dark unless PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and
+  // armed with a missing or weak var it refuses boot rather than mounting a half-configured proxy.
+  let privateCloudTranscription: PrivateCloudTranscriptionConfig;
+  try {
+    privateCloudTranscription = privateCloudTranscriptionConfigFromEnv(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
     return;
   }
@@ -903,8 +922,26 @@ async function main() {
     );
   }
 
+  // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
+  // deployment (`ptx-batch`) and key from the meeting transcriber above. Flag off = never mounted,
+  // so every path 404s; a non-cohort address gets the same 404 from inside the router.
+  if (privateCloudTranscription.enabled) {
+    app.use(
+      PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+      authMiddleware,
+      createPrivateCloudTranscriptionRouter({
+        client: createPtxClient(privateCloudTranscription),
+        tenantKey: privateCloudTranscription.tenantKey,
+        accountAllowed: privateCloudTranscription.accountAllowed,
+      }),
+    );
+    console.log("[startup] private cloud transcription enabled for its account allowlist.");
+  }
+
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const spec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
+  const fullSpec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
+  // Dark means undiscoverable too: while the flag is off the served spec omits private cloud.
+  const spec = privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec);
   app.get("/api/openapi.json", (_req, res) => res.json(spec));
   app.use("/api/docs", apiReference({ spec: { content: spec } }));
 

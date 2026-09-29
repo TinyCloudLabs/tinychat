@@ -421,6 +421,17 @@ jobs:
           TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
           TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
           TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+          # Exo private cloud transcription (backend/src/routes/private-cloud-transcription.ts).
+          # Ships DARK: ENABLED defaults 'false', so /api/transcriber/private-cloud/* is never
+          # mounted (404). ACCOUNTS: empty = nobody, `*` alone = everyone. The URL is the ptx-batch
+          # origin (repo var); the transcriptions:* key and the tenant HMAC key (>=32 random bytes,
+          # `openssl rand -base64 32`) are secrets. Armed with a missing or weak value, startup
+          # refuses to boot. Declared in all four places for the allowed_envs freeze reason.
+          PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}
+          PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS }}
+          PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
+          PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
+          PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -489,6 +500,11 @@ jobs:
             printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
             printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
             printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS=${PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS:-}"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_URL=$PRIVATE_CLOUD_TRANSCRIPTION_API_URL"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"
@@ -569,6 +585,7 @@ jobs:
           # what this deploy actually shipped, never a hard-coded assumption.
           CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
           GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
+          PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}
         run: |
           probe_url() {
             local label="$1"
@@ -768,6 +785,41 @@ jobs:
             echo "Google Meet OAuth probe passed (404 = flag off, nothing mounted)."
           fi
 
+          # >>> private-cloud canary
+          # Exo private cloud transcription mount canary. An unauthenticated GET of
+          # /api/transcriber/private-cloud/capabilities never reaches PTX:
+          #   flag on  -> 401 (mounted; session auth runs before the cohort check)
+          #   flag off -> 404 (nothing mounted — the dark-ship state)
+          # A 404 with the flag ON is the silently-dropped-env failure; a 401 with the
+          # flag OFF means the proxy shipped hot.
+          PRIVATE_CLOUD_URL="${PRODUCTION_API_URL%/}/api/transcriber/private-cloud/capabilities"
+          if [ "${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}" = "true" ]; then
+            PRIVATE_CLOUD_EXPECT=401
+          else
+            PRIVATE_CLOUD_EXPECT=404
+          fi
+          echo "Probing private cloud transcription route at $PRIVATE_CLOUD_URL (expect $PRIVATE_CLOUD_EXPECT; flag=${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false})"
+          PRIVATE_CLOUD_STATUS=0
+          for i in {1..10}; do
+            PRIVATE_CLOUD_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 5 --max-time 15 "$PRIVATE_CLOUD_URL" || echo 000)"
+            echo "Attempt $i/10: http_status=$PRIVATE_CLOUD_STATUS"
+            if [ "$PRIVATE_CLOUD_STATUS" = "$PRIVATE_CLOUD_EXPECT" ]; then
+              break
+            fi
+            sleep 6
+          done
+          if [ "$PRIVATE_CLOUD_STATUS" != "$PRIVATE_CLOUD_EXPECT" ]; then
+            if [ "$PRIVATE_CLOUD_EXPECT" = "401" ]; then
+              echo "::error title=Private cloud transcription probe failed::GET /api/transcriber/private-cloud/capabilities returned $PRIVATE_CLOUD_STATUS (expected 401). PRIVATE_CLOUD_TRANSCRIPTION_ENABLED is true but the routes are not mounted — the flag did not reach the backend."
+            else
+              echo "::error title=Private cloud transcription probe failed::GET /api/transcriber/private-cloud/capabilities returned $PRIVATE_CLOUD_STATUS (expected 404 while PRIVATE_CLOUD_TRANSCRIPTION_ENABLED is not 'true'). The proxy is mounted on a deploy that was meant to ship dark."
+            fi
+            exit 1
+          fi
+          echo "Private cloud transcription probe passed ($PRIVATE_CLOUD_STATUS)."
+          # <<< private-cloud canary
+
           {
             echo
             echo "### Public API probes"
@@ -784,6 +836,11 @@ jobs:
               echo "- ${GOOGLE_URL}: passed (400 = Google Meet OAuth routes mounted)"
             else
               echo "- ${GOOGLE_URL}: passed (404 = Google Meet OAuth shipped dark)"
+            fi
+            if [ "$PRIVATE_CLOUD_EXPECT" = "401" ]; then
+              echo "- ${PRIVATE_CLOUD_URL}: passed (401 = private cloud transcription mounted)"
+            else
+              echo "- ${PRIVATE_CLOUD_URL}: passed (404 = private cloud transcription shipped dark)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

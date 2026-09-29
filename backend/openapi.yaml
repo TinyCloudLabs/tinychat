@@ -1697,6 +1697,265 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
+  /api/transcriber/private-cloud/capabilities:
+    get:
+      operationId: getPrivateCloudTranscriptionCapabilities
+      summary: Exo private cloud transcription limits and admission mode
+      description: >-
+        Exo desktop's "Private cloud" engine. Mounted only when
+        PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and then only for addresses in
+        PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: otherwise every path under
+        /api/transcriber/private-cloud answers the server's ordinary 404, so a dark
+        deployment and a non-cohort address look the same. Relays the TinyCloud
+        Private Transcription batch service's capabilities. Every success body under
+        this prefix is rebuilt field by field from the upstream answer (fields outside
+        the contract are dropped; an off-contract value is `upstream_bad_response`),
+        and every response is `Cache-Control: no-store`. Errors are PrivateCloudError
+        with a correlation id, EXCEPT 401 (session auth) and 403 `csrf_rejected`, which
+        the backend-wide middleware answers before the caller is known, in the
+        backend-wide `{error, message}` shape.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudCapabilities"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: Dark, or the address is not in the cohort (the server's ordinary 404)
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions:
+    get:
+      operationId: listPrivateCloudTranscriptions
+      summary: The signed-in address's transcription jobs (resume after relaunch)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: Jobs, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transcriptions]
+                properties:
+                  transcriptions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PrivateCloudJob"
+        "400":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+    post:
+      operationId: createPrivateCloudTranscription
+      summary: Create a job and get a job-scoped upload capability
+      description: >-
+        Metadata only: the audio never passes through this server. The response
+        carries a RELATIVE `upload.path` (`/uploads/<id>`) and a job-scoped
+        `upload.capability`; the desktop PUTs the recording to its compiled-in PTX
+        origin + path with that capability. `upload` is present exactly while the
+        job is `awaiting_upload`. A retry with the same Idempotency-Key and body
+        returns the same job (200). Requires `X-Requested-With: XMLHttpRequest`.
+        The address is never sent upstream: the service receives
+        HMAC-SHA256(tenant key, lower(address)).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Correlation-Id
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrivateCloudCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudCreated"
+        "200":
+          description: Replay of the same Idempotency-Key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudCreated"
+        "400":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Missing X-Requested-With (CSRF)
+        "409":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "413":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "415":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "429":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    get:
+      operationId: getPrivateCloudTranscription
+      summary: Job status (owner only; anyone else's id is transcription_not_found)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudJob"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+    delete:
+      operationId: deletePrivateCloudTranscription
+      summary: Delete the job and its transcript upstream
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions/{id}/result:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    get:
+      operationId: getPrivateCloudTranscriptionResult
+      summary: The transcript, 202 while not ready, or the failure
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The transcript, or the failed/cancelled outcome
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/PrivateCloudTranscript"
+                  - $ref: "#/components/schemas/PrivateCloudOutcome"
+        "202":
+          description: Not ready yet
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    $ref: "#/components/schemas/PrivateCloudJobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions/{id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    post:
+      operationId: cancelPrivateCloudTranscription
+      summary: Cancel the job
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The new status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    $ref: "#/components/schemas/PrivateCloudJobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1853,6 +2112,268 @@ components:
           type: string
         message:
           type: string
+    PrivateCloudJobStatus:
+      type: string
+      enum: [awaiting_upload, queued, processing, completed, failed, cancelled]
+    PrivateCloudJobError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - upload_expired
+            - upload_integrity_failed
+            - invalid_audio
+            - recording_too_long
+            - unsupported_recording
+            - no_speech
+            - provider_unavailable
+            - provider_outcome_unknown
+            - processing_timeout
+            - transcription_failed
+        message:
+          type: string
+    PrivateCloudCapabilities:
+      type: object
+      required: [max_bytes, max_duration_seconds, max_channels, content_types, transcript_ttl_seconds, admission]
+      properties:
+        max_bytes:
+          type: integer
+          maximum: 120960000
+        max_duration_seconds:
+          type: integer
+        max_channels:
+          type: integer
+          maximum: 2
+        content_types:
+          type: array
+          items:
+            type: string
+            enum: [audio/mpeg, audio/wav, audio/ogg]
+        transcript_ttl_seconds:
+          type: integer
+        admission:
+          type: string
+          enum: [open, drain, closed]
+    PrivateCloudJob:
+      type: object
+      required: [id, status, byte_size, duration_seconds, channels, progress, retention, error, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+        status:
+          $ref: "#/components/schemas/PrivateCloudJobStatus"
+        byte_size:
+          type: integer
+        duration_seconds:
+          type: [number, "null"]
+        channels:
+          type: [integer, "null"]
+        progress:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [stage, queue_position, regions_completed, regions_total]
+              properties:
+                stage:
+                  type: string
+                queue_position:
+                  type: [integer, "null"]
+                regions_completed:
+                  type: integer
+                regions_total:
+                  type: integer
+        retention:
+          type: object
+          required: [audio, audio_deleted_at, transcript_expires_at]
+          properties:
+            audio:
+              type: string
+              enum: [stored, deletion_pending, deleted]
+            audio_deleted_at:
+              type: [string, "null"]
+              format: date-time
+            transcript_expires_at:
+              type: [string, "null"]
+              format: date-time
+        error:
+          description: Set exactly when status is failed.
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/PrivateCloudJobError"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PrivateCloudTranscript:
+      type: object
+      required: [id, status, language, duration_seconds, provider, model, channels, speakers, segments, text, stats]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [completed]
+        language:
+          type: string
+        duration_seconds:
+          type: number
+        provider:
+          type: string
+          enum: [tinfoil]
+        model:
+          type: string
+        channels:
+          type: integer
+        speakers:
+          type: array
+          items:
+            type: object
+            required: [id, name, channel]
+            properties:
+              id:
+                type: string
+                pattern: "^channel_[01]$"
+              name:
+                type: string
+              channel:
+                type: integer
+        segments:
+          type: array
+          items:
+            type: object
+            required: [id, speaker_id, channel, start, end, text]
+            properties:
+              id:
+                type: string
+              speaker_id:
+                type: string
+              channel:
+                type: integer
+              start:
+                type: number
+              end:
+                type: number
+              text:
+                type: string
+        text:
+          type: string
+        stats:
+          type: object
+          required: [tinfoil_calls, tinfoil_audio_seconds]
+          properties:
+            tinfoil_calls:
+              type: integer
+            tinfoil_audio_seconds:
+              type: number
+    PrivateCloudOutcome:
+      type: object
+      required: [id, status, error]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [failed, cancelled]
+        error:
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/PrivateCloudJobError"
+    PrivateCloudCreateRequest:
+      type: object
+      required: [content_type, byte_size, sha256]
+      properties:
+        content_type:
+          type: string
+          enum: [audio/mpeg, audio/wav, audio/ogg]
+        byte_size:
+          type: integer
+          minimum: 1
+          maximum: 120960000
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        language:
+          type: string
+          description: e.g. `en` or `en-US`.
+        channel_mode:
+          type: string
+          enum: [separate, mixed]
+        channel_labels:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            type: string
+            maxLength: 64
+    PrivateCloudCreated:
+      type: object
+      required: [id, status, byte_size]
+      properties:
+        id:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+        status:
+          $ref: "#/components/schemas/PrivateCloudJobStatus"
+        byte_size:
+          type: integer
+        upload:
+          type: object
+          required: [path, capability, expires_at]
+          properties:
+            path:
+              type: string
+              pattern: "^/uploads/trn_[0-9A-HJKMNP-TV-Z]{26}$"
+              description: Relative; joined to the desktop's compiled-in PTX origin.
+            capability:
+              type: string
+              description: Job-scoped upload bearer for PUT {origin}{path} only.
+            expires_at:
+              type: string
+              format: date-time
+    PrivateCloudError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlation_id]
+          properties:
+            code:
+              type: string
+              description: >-
+                Classes: client (definite), transient (retry later),
+                operator_fault (service_misconfigured: alerted, never retried).
+              enum:
+                - invalid_request
+                - invalid_idempotency_key
+                - unsupported_media_type
+                - recording_too_large
+                - transcription_not_found
+                - active_transcription_exists
+                - idempotency_conflict
+                - quota_exceeded
+                - service_busy
+                - service_paused
+                - service_unavailable
+                - upstream_bad_response
+                - service_misconfigured
+            message:
+              type: string
+            correlation_id:
+              type: string
+              format: uuid
+              description: Also returned as the X-Correlation-Id header.
+            retry_after_seconds:
+              type: integer
+              description: With 429 and 503 when known (also the Retry-After header).
+            id:
+              type: string
+              description: The job already in progress, with active_transcription_exists.
     ApiError:
       type: object
       required: [error, message]
@@ -2660,6 +3181,12 @@ components:
             (a Google 5xx is answered 502). 0 means the request never completed.
 
   responses:
+    PrivateCloudFailure:
+      description: A stable public error code with a correlation id
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PrivateCloudError"
     TranscriberNotFound:
       description: No such meeting for this address
       content:
