@@ -18,13 +18,13 @@ React app, with local meeting transcription from
 
 ```sh
 bun install                 # repo root
-bun run dev:desktop         # = tauri dev (starts frontend dev server itself)
+bun run dev:desktop         # = tauri dev (transcription enabled by default)
 ```
 
 Prereqs: Rust stable, plus on Linux `webkit2gtk-4.1`, `libgtk-3-dev`,
 `libayatana-appindicator3-dev`, `librsvg2-dev` (standard Tauri 2 deps).
 
-`bun run build:desktop` produces installers via `tauri build`
+`bun run build:desktop` produces installers with local transcription enabled
 (builds the frontend first with production env: `VITE_BACKEND_URL=https://api.tinycloud.chat`).
 
 ## Local transcription (anarlog MIT layer)
@@ -36,15 +36,10 @@ whisper.cpp after you stop, and saves into the same Meetings store as a meeting
 with source `exo-local` (label "Exo Local") — so it shows up in Meetings,
 meeting chat, and retrieval like any other connector.
 
-### Enable
-
-```sh
-bun run --cwd desktop dev:transcription   # tauri dev --features transcription
-```
-
-The `transcription` Cargo feature (default off — it compiles whisper.cpp and a
-large crate graph, currently macOS/Metal only via `local-stt`'s `metal` feature)
-wires up:
+The `transcription` Cargo feature is enabled by default in desktop dev and
+release builds. The local engine currently targets macOS/Metal and compiles a
+large native dependency graph. To check the shell without it, use
+`cargo check --no-default-features` in `desktop/src-tauri/`. The feature wires up:
 
 - `audio-actual` → a managed `Arc<dyn AudioProvider>` (the transcription plugin's
   setup panics without it);
@@ -61,7 +56,7 @@ Permissions are injected at runtime from
 
 | Engine | Mode | Status |
 |---|---|---|
-| Whisper via whisper.cpp | Batch, after Stop | Shipped happy path (`metal` feature + downloaded model) |
+| Whisper via whisper.cpp | Batch, after Stop | Implemented; real audio capture/transcription smoke still pending |
 | Apple Speech | Live, macOS 26+ | Follow-up; needs locale-asset download + availability gate |
 | Soniqo Parakeet | Live or batch | Built but not exposed: third-party speech-swift + model weights unreviewed |
 | AM / Argmax | Requires proprietary sidecar + `AM_API_KEY` | Out of scope |
@@ -97,8 +92,9 @@ builds attribute these to the launching terminal. `Entitlements.plist` adds
   inside Tauri webviews is unreliable. Options: SIWE session against the
   backend (`GET /api/auth/nonce` → `POST /api/auth/verify`, needs
   `X-Requested-With`), or a deep-link browser handoff. Decide before shipping.
-  Local recording itself doesn't need sign-in; saving the transcript to the
-  space does.
+  The native engine can run locally, but the current Connectors UI shows Local
+  recording only with a signed-in space so a finished transcript can be saved.
+  Offline save/export is not implemented.
 - **Web deploy rename** (tinycloud.chat → exo.tinycloud.xyz) is intentionally
   not part of this scaffold: it touches the Cloudflare Pages project,
   production env vars, and the backend CORS/hostname config.

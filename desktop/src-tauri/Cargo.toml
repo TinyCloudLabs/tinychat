@@ -22,8 +22,8 @@ serde_json = "1"
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
 # Local meeting capture + on-device Whisper, reused from fastrepl/anarlog's
-# MIT-licensed Tauri plugins. Feature-gated because they pull in a large crate
-#   cargo tauri dev --features transcription
+# MIT-licensed Tauri plugins. This is a first-class desktop feature, included
+# by default despite its large native dependency graph.
 # Plugin permissions are injected at runtime from
 # capabilities-transcription/ (see src/lib.rs and ../README.md).
 [dependencies.tauri-plugin-transcription]
@@ -78,7 +78,7 @@ storage = { path = "../vendor/anarlog-storage" }
 swift-rs = { path = "../vendor/swift-rs" }
 
 [features]
-default = []
+default = ["transcription"]
 transcription = [
     "dep:tauri-plugin-transcription",
     "dep:tauri-plugin-local-stt",
@@ -86,3 +86,9 @@ transcription = [
     "dep:tauri-plugin-settings",
     "dep:tokio",
 ]
+
+# macOS 27 dyld rejects some stripped proc-macro dylibs with a misaligned
+# LINKEDIT string pool (rust-lang/rust#157750). Keep build-time crates unstripped
+# until the toolchain fixes the alignment bug.
+[profile.release.build-override]
+strip = "none"

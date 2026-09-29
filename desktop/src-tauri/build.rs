@@ -8,10 +8,10 @@ fn main() {
     {
         if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
             println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
-            if let Some(toolchain) = swift_toolchain_root() {
+            if let Some(swift_usr) = swift_usr_dir() {
                 println!(
                     "cargo:rustc-link-arg=-Wl,-rpath,{}/lib/swift/macosx",
-                    toolchain.display()
+                    swift_usr.display()
                 );
             }
         }
@@ -20,9 +20,9 @@ fn main() {
     tauri_build::build()
 }
 
-/// `xcrun --find swift` → toolchain root (`<root>/bin/swift` → `<root>`).
+/// `xcrun --find swift` → toolchain `usr` dir (`<usr>/bin/swift` → `<usr>`).
 #[cfg(all(target_os = "macos", feature = "transcription"))]
-fn swift_toolchain_root() -> Option<std::path::PathBuf> {
+fn swift_usr_dir() -> Option<std::path::PathBuf> {
     let output = std::process::Command::new("xcrun")
         .args(["--find", "swift"])
         .output()
@@ -33,7 +33,6 @@ fn swift_toolchain_root() -> Option<std::path::PathBuf> {
     let bin = String::from_utf8(output.stdout).ok()?;
     std::path::Path::new(bin.trim())
         .parent()
-        .and_then(std::path::Path::parent)
         .and_then(std::path::Path::parent)
         .map(std::path::Path::to_path_buf)
 }

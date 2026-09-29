@@ -28,6 +28,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure Metal compiler
+        run: |
+          if ! xcrun metal -v >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+            for attempt in {1..30}; do
+              if xcrun metal -v >/dev/null 2>&1; then exit 0; fi
+              echo "Waiting for Metal compiler ($attempt/30)" >&2
+              sleep 2
+            done
+            echo "Metal compiler is still unavailable" >&2
+            exit 1
+          fi
+
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri

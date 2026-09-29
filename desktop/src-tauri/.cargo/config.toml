@@ -1,0 +1,5 @@
+# anarlog's transitive windows → analytics crate uses env! in release builds.
+# Exo does not register that analytics plugin. Satisfy compilation without ever
+# embedding a vendor PostHog key, even if the invoking shell has one set.
+[env]
+POSTHOG_API_KEY = { value = "", force = true }
