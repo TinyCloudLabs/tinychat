@@ -5,8 +5,10 @@
 // Provider-agnostic copy: no model/vendor names.
 
 import type { FC } from "react";
-import type { AgentCapability, UseAgentEnablementResult } from "./useAgentEnablement";
+import { useLocation } from "react-router-dom";
+import { useAgentAccess, type AgentCapability, type UseAgentEnablementResult } from "./useAgentEnablement";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
+import { isChatViewPath } from "./chatViewPath";
 
 interface AgentEnablementBannerProps {
   capability: AgentCapability;
@@ -99,6 +101,28 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
     </div>
   );
 };
+
+/**
+ * The banner as the chat workspace mounts it: on chat views only (see
+ * isChatViewPath), never over Connectors, Settings, redirects or unknown
+ * `/chat/*` links. Visibility only — the enclosing AgentAccessProvider keeps
+ * its state across navigation.
+ */
+export function ChatViewAgentEnablementBanner() {
+  const { pathname } = useLocation();
+  const { capability, enableError, enabling, onEnable, reconnectReason, silentlyEnabled } = useAgentAccess();
+  if (!isChatViewPath(pathname)) return null;
+  return (
+    <AgentEnablementBanner
+      capability={capability}
+      enableError={enableError}
+      enabling={enabling}
+      onEnable={onEnable}
+      reconnectReason={reconnectReason}
+      silentlyEnabled={silentlyEnabled}
+    />
+  );
+}
 
 
 /** Settings retains these controls even while access is already connected. */

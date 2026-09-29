@@ -32,7 +32,7 @@ import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
 import { ThreadList } from "./chat/ThreadList";
 import { AgentAccessProvider, useAgentAccess } from "./chat/useAgentEnablement";
-import { AgentEnablementBanner } from "./chat/AgentEnablementBanner";
+import { ChatViewAgentEnablementBanner } from "./chat/AgentEnablementBanner";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
@@ -862,7 +862,6 @@ export function App() {
                 sidebarOpen={sidebarOpen}
                 setSidebarOpen={setSidebarOpen}
                 showConnectors={showConnectors}
-                showSettings={showSettings}
                 pendingMeetings={pendingMeetings}
                 onToggleConnectors={() =>
                   !LOCAL_VALIDATION && (showConnectors ? onBack() : navigate(CONNECTORS_SOURCES_PATH))
@@ -1245,16 +1244,13 @@ function ChatWorkspace(props: {
   sidebarOpen: boolean;
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
   showConnectors: boolean;
-  showSettings: boolean;
   pendingMeetings: number;
   onToggleConnectors: () => void;
   onOpenChat: () => void;
   connectorsSurface: React.ReactNode;
 }) {
   const {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef,
-    capability, enableError, enabling, onEnable, reconnectReason,
-    onDelegationError, silentlyEnabled,
+    agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
   // One instance per mounted workspace: its thread selection state is
@@ -1363,7 +1359,7 @@ function ChatWorkspace(props: {
     closeSidebar();
     props.onToggleConnectors();
   }, [closeSidebar, props.onToggleConnectors]);
-  const { showConnectors, showSettings, pendingMeetings } = props;
+  const { showConnectors, pendingMeetings } = props;
   const connectorsNavigation = (
     <Button
       variant="ghost"
@@ -1421,19 +1417,9 @@ function ChatWorkspace(props: {
           />
         </SheetContent>
       </Sheet>
-      {/* C3: first-time enablement + expired-delegation reconnect affordance.
-          Chat views only — never over Connectors (Sources | Library) or
-          Settings; Settings keeps its own AgentAccessControls. */}
-      {!showConnectors && !showSettings && (
-        <AgentEnablementBanner
-          capability={capability}
-          enableError={enableError}
-          enabling={enabling}
-          onEnable={onEnable}
-          reconnectReason={reconnectReason}
-          silentlyEnabled={silentlyEnabled}
-        />
-      )}
+      {/* C3: first-time enablement + expired-delegation reconnect affordance —
+          chat views only (isChatViewPath). */}
+      <ChatViewAgentEnablementBanner />
     </AssistantRuntimeProvider>
   );
 }
