@@ -1,0 +1,167 @@
+name: Desktop build (Exo)
+
+# The one Exo build definition, called by desktop.yml (CI) and desktop-release.yml (releases), so the long native
+# build is never duplicated. It produces the .dmg and a ditto-zipped .app as one workflow artifact.
+#
+# Info.plist versions: every build passes scripts/release/desktop-bundle-config.mjs's overlay to `tauri build`, so
+# CFBundleShortVersionString is numeric X.Y.Z (a beta X.Y.Z-beta.N ships as X.Y.Z) and CFBundleVersion is the build
+# number XYYZZSSS (stage = beta number, 999 for stable). The app's own version stays the semver.
+#
+# Cache: the Rust target dir and cargo registry/git (whisper.cpp, MLX, anarlog and ~1,100 crates; SwiftPM build
+# products live in the Rust target dir) share one key across CI and release jobs. Only main's own CI builds write it
+# (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
+# (mlx-swift, speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build (release builds pass the release tag's commit); default is the caller's commit
+        type: string
+        default: ""
+      artifact-name:
+        description: Workflow artifact name for the .dmg and .app.zip
+        type: string
+        required: true
+    outputs:
+      version:
+        description: desktop/package.json version that was built
+        value: ${{ jobs.build.outputs.version }}
+      bundle-version:
+        description: CFBundleVersion of the built app
+        value: ${{ jobs.build.outputs.bundle-version }}
+      signed:
+        description: true only for a Developer ID signed and notarized build (not available yet)
+        value: ${{ jobs.build.outputs.signed }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: macOS (Apple Silicon)
+    # Pinned: macos-26 runner + Xcode 26.6 (Swift <= 6.3). The vendored swift-rs
+    # forces SwiftPM's deprecated `native` build system
+    # (desktop/vendor/swift-rs/PROVENANCE.md); verify a newer Xcode before
+    # moving either pin.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' }}
+    # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs.
+    timeout-minutes: 150
+    outputs:
+      version: ${{ steps.bundle.outputs.version }}
+      bundle-version: ${{ steps.bundle.outputs.bundle-version }}
+      signed: "false"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.9"
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Require pinned Xcode
+        run: test -d "$DEVELOPER_DIR"
+
+      - name: Ensure Metal compiler
+        run: |
+          if ! xcrun metal -v >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+            for attempt in {1..30}; do
+              if xcrun metal -v >/dev/null 2>&1; then exit 0; fi
+              echo "Waiting for Metal compiler ($attempt/30)" >&2
+              sleep 2
+            done
+            echo "Metal compiler is still unavailable" >&2
+            exit 1
+          fi
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          swift --version
+          xcrun --find metal
+          df -h /
+
+      # One key for CI and release jobs (the default key includes the job id); written only from main.
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop/src-tauri
+          shared-key: exo-desktop-macos-arm64
+          save-if: ${{ env.SAVE_CACHE == 'true' }}
+
+      - name: Restore SwiftPM repository cache
+        id: swiftpm
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-macos-arm64-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: swiftpm-macos-arm64-
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Bundle versions
+        id: bundle
+        run: node scripts/release/desktop-bundle-config.mjs --out "$RUNNER_TEMP/exo-bundle"
+
+      # tauri build runs the frontend production build itself
+      # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
+      - name: Build Exo desktop app
+        env:
+          TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
+        run: bun run --cwd desktop tauri build --config "$TAURI_BUNDLE_CONFIG"
+
+      - name: Check Info.plist
+        env:
+          SHORT_VERSION: ${{ steps.bundle.outputs.short-version }}
+          BUNDLE_VERSION: ${{ steps.bundle.outputs.bundle-version }}
+        run: |
+          plist=desktop/src-tauri/target/release/bundle/macos/Exo.app/Contents/Info.plist
+          check() {
+            actual=$(plutil -extract "$1" raw "$plist")
+            if [ "$actual" != "$2" ]; then
+              echo "::error::$1 is '$actual', expected '$2'"
+              exit 1
+            fi
+            echo "$1 = $actual"
+          }
+          check CFBundleShortVersionString "$SHORT_VERSION"
+          check CFBundleVersion "$BUNDLE_VERSION"
+          check CFBundleIdentifier xyz.tinycloud.exo
+          check LSMinimumSystemVersion 14.2
+          # The overlay must add to src-tauri/Info.plist, not replace it.
+          plutil -extract NSMicrophoneUsageDescription raw "$plist" >/dev/null
+          plutil -extract NSAudioCaptureUsageDescription raw "$plist" >/dev/null
+
+      # Zip the .app with ditto to preserve symlinks/permissions;
+      # upload-artifact would flatten them.
+      - name: Package .app
+        run: |
+          cd desktop/src-tauri/target/release/bundle/macos
+          ditto -c -k --sequesterRsrc --keepParent Exo.app Exo-macos-arm64.app.zip
+
+      - name: Upload dmg + app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          if-no-files-found: error
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/macos/Exo-macos-arm64.app.zip
+
+      - name: Save SwiftPM repository cache
+        if: env.SAVE_CACHE == 'true' && steps.swiftpm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: ${{ steps.swiftpm.outputs.cache-primary-key }}

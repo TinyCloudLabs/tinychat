@@ -192,6 +192,42 @@ the rulesets and their residual risk.
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
+**Desktop releases.** For every new `exo-desktop@<version>` tag the `Release`
+workflow runs `Desktop release (Exo)` **from main** with the tag as an input
+(`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`,
+which is also how to retry). It refuses any other ref, requires the tag to point
+at a commit of `main`, builds exactly that commit with the same job as desktop
+CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
+no manual step:
+
+- a beta (`0.2.0-beta.3`) becomes a **pre-release** titled
+  `Exo 0.2.0-beta.3 (beta)`, never marked latest;
+- a stable version becomes a published Release marked **latest**.
+
+**Publishing requires a Developer ID signed and notarized build**, for both
+channels. Until signing is wired up, releases build and then refuse to publish,
+so no unsigned Exo is ever released. Assets are `Exo_<version>_aarch64.dmg`,
+the matching `.app.zip` and `SHA256SUMS.txt`; the notes combine the desktop and
+web changelog entries of the tagged commit. A published release is never
+rebuilt (cut a new version).
+
+Apple needs numeric bundle versions, so every build maps the semver:
+
+| Exo version | `CFBundleShortVersionString` | `CFBundleVersion` (`XYYZZSSS`) |
+|---|---|---|
+| `0.2.0-beta.3` | `0.2.0` | `200003` |
+| `0.2.0` | `0.2.0` | `200999` |
+| `0.2.1-beta.0` | `0.2.1` | `201000` |
+
+The build number grows with every beta and stable release (stage = beta
+number, `999` for stable). The semver stays in the app itself, the tag, the
+DMG name and the release title. `scripts/release/desktop-bundle-config.mjs`
+writes the Info.plist overlay passed to `tauri build --config`, and the build
+fails if the built Info.plist doesn't match.
+
+Beta desktop builds embed the beta web app, which talks to the production API
+(betas don't deploy the backend).
+
 ## Chat Sharing
 
 TinyCloud Chat supports read-only sharing for saved threads. The active chat

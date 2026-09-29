@@ -33,6 +33,7 @@ export const BRANCH_STABLE = 'release/stable';
 // Cloudflare Pages builds this branch as production (tinycloud.chat); only deploy-production.yml advances it.
 export const BRANCH_PRODUCTION = 'production';
 export const PRODUCTION_WORKFLOW = 'deploy-production.yml';
+export const DESKTOP_RELEASE_WORKFLOW = 'desktop-release.yml';
 
 /** Split a `<name>@<version>` tag; names may be scoped (`@tinychat/backend@0.1.1`). */
 export function parseTag(tag) {
@@ -44,14 +45,24 @@ export function parseTag(tag) {
 /**
  * The workflows the Release job starts for the tags one run created (tags pushed with GITHUB_TOKEN trigger
  * nothing; workflow_dispatch is the one event that token may start). Returns [{ workflow, ref, inputs, tags }].
+ *  - every new exo-desktop tag of a "beta" or "stable" run: one desktop release build, dispatched on main with the tag
+ *    as an input (a GitHub pre-release for a beta, a published Release for stable);
  *  - channel "stable": one production deploy on the stable version commit, backend first, then web, for the units
  *    that got a new stable tag;
- *  - channel "beta" and "none" (baseline tags): no production deploy. Betas never deploy web or backend.
+ *  - channel "beta": no production deploy. Betas never deploy web or backend;
+ *  - channel "none" (the 0.1.0 baseline tags of the first run): nothing.
  */
 export function planDispatches({ channel, tags }) {
   if (!['beta', 'stable', 'none'].includes(channel)) throw new Error(`Unknown release channel ${JSON.stringify(channel)}`);
   const parsed = tags.map(tag => ({ tag, ...parseTag(tag) }));
   const dispatches = [];
+  const releaseVersion = channel === 'stable' ? STABLE_VERSION : /^\d+\.\d+\.\d+-beta\.\d+$/;
+  if (channel !== 'none') {
+    // Always run from main (trusted workflow code); the tag is an input the workflow validates.
+    for (const { tag } of parsed.filter(tag => tag.name === DESKTOP.crate && releaseVersion.test(tag.version))) {
+      dispatches.push({ workflow: DESKTOP_RELEASE_WORKFLOW, ref: 'main', inputs: { tag }, tags: [tag] });
+    }
+  }
   if (channel === 'stable') {
     const stable = name => parsed.find(tag => tag.name === name && STABLE_VERSION.test(tag.version));
     const backend = stable(BACKEND);
@@ -196,4 +207,36 @@ export function changeset(root, args) {
 export function setOutput(name, value) {
   console.log(`${name}=${value}`);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+}
+
+/**
+ * Apple's Info.plist versions for an Exo semver (desktop/package.json). CFBundleShortVersionString must be numeric
+ * X.Y.Z, so a beta X.Y.Z-beta.N uses the X.Y.Z it leads to. CFBundleVersion is one integer XYYZZSSS
+ * (X, two-digit Y, two-digit Z, three-digit stage), where the stage is N for beta.N and 999 for stable. It increases
+ * with every beta and stable release (0.2.0-beta.3 -> 200003 < 0.2.0 -> 200999 < 0.2.1-beta.0 -> 201000) and stays
+ * below 2^31. The semver itself stays in the app (tauri's version), the tag, the DMG name and the release title.
+ */
+export function desktopBundleVersions(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(version ?? '');
+  if (!match) throw new Error(`Exo version must be X.Y.Z or X.Y.Z-beta.N, got ${JSON.stringify(version)}`);
+  const [major, minor, patch] = match.slice(1, 4).map(Number);
+  const beta = match[4] === undefined ? undefined : Number(match[4]);
+  if (major > 213 || minor > 99 || patch > 99 || beta > 998) {
+    throw new Error(`${version} does not fit the CFBundleVersion scheme XYYZZSSS (X <= 213, Y and Z <= 99, beta <= 998): extend desktopBundleVersions`);
+  }
+  return {
+    shortVersion: `${major}.${minor}.${patch}`,
+    bundleVersion: String(((major * 100 + minor) * 100 + patch) * 1000 + (beta ?? 999)),
+    prerelease: beta !== undefined,
+  };
+}
+
+/** The body of the `## <version>` section of a Changesets CHANGELOG.md, or '' when absent or "No changes". */
+export function changelogSection(text, version) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex(line => line.trim() === `## ${version}`);
+  if (start === -1) return '';
+  const end = lines.findIndex((line, index) => index > start && /^## /.test(line));
+  const body = lines.slice(start + 1, end === -1 ? undefined : end).join('\n').trim();
+  return body === 'No changes in this release.' ? '' : body;
 }

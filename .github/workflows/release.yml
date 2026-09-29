@@ -6,7 +6,9 @@ name: Release
 #      when the "Release stable" PR (.changeset/pre.json -> "exit") was merged, stable versions instead,
 #      then beta pre mode is re-entered;
 #   2. each unit's version is tagged <name>@<version> on the commit that set it;
-#   3. stable tags start the production deploy (deploy-production.yml: backend, then web); betas deploy nothing;
+#   3. new exo-desktop tags start a desktop release build (desktop-release.yml: a pre-release for a beta, the
+#      published release for stable); stable tags also start the production deploy (deploy-production.yml: backend,
+#      then web). Betas never deploy web or backend;
 #   4. the "Release stable" PR is rebuilt to show what stable would ship.
 # Web and desktop share one version (fixed group); the backend stays 0.x (minor/patch only).
 
@@ -37,7 +39,7 @@ jobs:
     permissions:
       contents: write # the release/stable branch (version commits and tags go over the deploy key)
       pull-requests: write # the Release stable PR
-      actions: write # dispatch deploy-production.yml for new stable tags
+      actions: write # dispatch desktop-release.yml and deploy-production.yml for new tags
     env:
       GIT_AUTHOR_NAME: github-actions[bot]
       GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
@@ -93,8 +95,9 @@ jobs:
           scripts/release/deploy-key-push.sh --atomic HEAD:refs/heads/main "${refs[@]}"
 
       # Downstream work is dispatched explicitly, from main, with the new tag as an input (the tag commits carry
-      # [skip ci]). Only a stable run deploys production (backend, then web); beta and baseline tags dispatch nothing.
-      - name: Dispatch production deploys for stable tags
+      # [skip ci]). Desktop builds for beta and stable exo-desktop tags; production deploys (backend, then web) only
+      # for a stable run. The 0.1.0 baseline tags of the first run dispatch nothing.
+      - name: Dispatch desktop releases and production deploys
         if: steps.tag.outputs.tags != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -119,7 +122,3 @@ jobs:
           else
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head release/stable --title "chore(release): release stable" --body-file "$RUNNER_TEMP/release-stable.md"
           fi
-
-      # Hook for a follow-up PR (not wired yet):
-      #   PR C: for each new exo-desktop@* tag in steps.tag.outputs.tags, dispatch the desktop build:
-      #         a GitHub pre-release for channel "beta", the signed + notarized Exo release (PR D) for "stable".
