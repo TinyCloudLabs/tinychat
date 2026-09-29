@@ -2,6 +2,7 @@ package xyz.tinycloud.exo.voicenotes;
 
 import android.Manifest;
 import android.util.Base64;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -12,7 +13,10 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONException;
 
 /**
  * JS bridge for native voice notes. Contract (shared with iOS and the TS
@@ -24,6 +28,7 @@ import java.io.IOException;
  *   status()             → { state, reason, id?, elapsedMs }
  *   readAudio({ id })    → { id, mimeType, base64 }
  *   deleteAudio({ id })  → {}
+ *   listPending()        → { recordings: [stop() result, ...] } still on the device
  *   events: "micState" { state, reason, at }, "level" { level }
  */
 @CapacitorPlugin(
@@ -109,6 +114,10 @@ public class VoiceNotesPlugin extends Plugin {
             ret.put("silencedMs", result.silencedMs);
             ret.put("silencedEvents", result.silencedEvents);
             ret.put("noSignalMs", result.noSignalMs);
+            // Until the web layer confirms the save (deleteAudio), the sidecar
+            // lets listPending() hand the recording back after a failed upload
+            // or an app restart.
+            writeSidecar(result.id, ret);
             call.resolve(ret);
         } catch (IllegalStateException e) {
             call.reject("The recording captured no audio", e.getMessage());
@@ -135,14 +144,9 @@ public class VoiceNotesPlugin extends Plugin {
             call.reject("Voice note audio not found", "not_found");
             return;
         }
-        byte[] bytes = new byte[(int) file.length()];
-        try (FileInputStream in = new FileInputStream(file)) {
-            int read = 0;
-            while (read < bytes.length) {
-                int n = in.read(bytes, read, bytes.length - read);
-                if (n < 0) break;
-                read += n;
-            }
+        byte[] bytes;
+        try {
+            bytes = readAll(file);
         } catch (IOException e) {
             call.reject("Could not read voice note audio", "read_failed", e);
             return;
@@ -157,7 +161,59 @@ public class VoiceNotesPlugin extends Plugin {
     @PluginMethod
     public void deleteAudio(PluginCall call) {
         String id = call.getString("id");
-        if (id != null) VoiceRecorder.fileFor(getContext(), id).delete();
+        if (id != null) {
+            VoiceRecorder.fileFor(getContext(), id).delete();
+            sidecarFor(id).delete();
+        }
         call.resolve();
+    }
+
+    @PluginMethod
+    public void listPending(PluginCall call) {
+        JSArray recordings = new JSArray();
+        File[] sidecars = VoiceRecorder.directory(getContext()).listFiles((dir, name) -> name.endsWith(".json"));
+        if (sidecars != null) {
+            for (File sidecar : sidecars) {
+                String id = sidecar.getName().substring(0, sidecar.getName().length() - ".json".length());
+                if (id.equals(recorder.getId())) continue;
+                if (!VoiceRecorder.fileFor(getContext(), id).isFile()) {
+                    sidecar.delete();
+                    continue;
+                }
+                try {
+                    recordings.put(new JSObject(new String(readAll(sidecar), StandardCharsets.UTF_8)));
+                } catch (IOException | JSONException e) {
+                    // A torn sidecar cannot be described to the web layer; leave the audio for inspection.
+                }
+            }
+        }
+        JSObject ret = new JSObject();
+        ret.put("recordings", recordings);
+        call.resolve(ret);
+    }
+
+    private File sidecarFor(String id) {
+        return new File(VoiceRecorder.directory(getContext()), id + ".json");
+    }
+
+    private void writeSidecar(String id, JSObject result) {
+        try (FileOutputStream out = new FileOutputStream(sidecarFor(id))) {
+            out.write(result.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // Best effort: without it the note still saves now, it just cannot be retried later.
+        }
+    }
+
+    private static byte[] readAll(File file) throws IOException {
+        byte[] bytes = new byte[(int) file.length()];
+        try (FileInputStream in = new FileInputStream(file)) {
+            int read = 0;
+            while (read < bytes.length) {
+                int n = in.read(bytes, read, bytes.length - read);
+                if (n < 0) break;
+                read += n;
+            }
+        }
+        return bytes;
     }
 }

@@ -4,7 +4,8 @@
 //   2. recording shows the elapsed time and Stop;
 //   3. what the OS reports is told, never hidden: silenced and no-signal read as warnings;
 //   4. a load failure is not rendered as "no voice notes";
-//   5. outside the native app the section renders nothing.
+//   5. notes still only on the phone are told, with a way to save them;
+//   6. outside the native app the section renders nothing.
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -30,9 +31,12 @@ function render(patch: Partial<VoiceNotesViewProps> = {}): string {
       notes={[]}
       notesStatus="ready"
       playing={null}
+      pendingCount={0}
+      retrying={false}
       onRecord={noop}
       onStop={noop}
       onPlay={noop}
+      onRetry={noop}
       {...patch}
     />,
   );
@@ -80,6 +84,23 @@ describe("VoiceNotesView", () => {
     expect(html).toContain('data-source-id="rec-1"');
     expect(html).toContain("0:12");
     expect(html).toContain('data-testid="voice-note-player"');
+  });
+});
+
+describe("VoiceNotesView pending saves", () => {
+  test("nothing pending shows no banner", () => {
+    expect(render()).not.toContain('data-testid="voice-note-pending"');
+  });
+
+  test("notes left on the phone are told, with Save now", () => {
+    const one = render({ pendingCount: 1 });
+    expect(one).toContain("1 note is on this phone but not yet in your");
+    expect(one).toContain('data-testid="voice-note-retry"');
+    expect(render({ pendingCount: 3 })).toContain("3 notes are on this phone");
+  });
+
+  test("Save now is disabled while a retry runs", () => {
+    expect(render({ pendingCount: 1, retrying: true })).toMatch(/<button[^>]*disabled[^>]*data-testid="voice-note-retry"/);
   });
 });
 

@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { Loader2Icon, MicIcon, PlayIcon, SquareIcon } from "lucide-react";
+import { Loader2Icon, MicIcon, PlayIcon, RefreshCwIcon, SquareIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
@@ -18,6 +18,7 @@ import {
   nativeVoiceNotesAvailable,
   type MicState,
   type MicStateReason,
+  type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import {
   listVoiceNotes,
@@ -37,9 +38,13 @@ export interface VoiceNotesViewProps {
   notes: VoiceNoteListItem[];
   notesStatus: "loading" | "ready" | "error";
   playing: { sourceId: string; src: string | null } | null;
+  /** Recordings still only on this phone (a save failed or was interrupted). */
+  pendingCount: number;
+  retrying: boolean;
   onRecord: () => void;
   onStop: () => void;
   onPlay: (sourceId: string) => void;
+  onRetry: () => void;
 }
 
 export function formatDuration(ms: number): string {
@@ -62,7 +67,7 @@ export function micStatusText(phase: RecorderPhase, mic: { state: MicState; reas
 }
 
 export const VoiceNotesView: FC<VoiceNotesViewProps> = (props) => {
-  const { phase, mic, elapsedMs, level, error, notes, notesStatus, playing } = props;
+  const { phase, mic, elapsedMs, level, error, notes, notesStatus, playing, pendingCount, retrying } = props;
   const live = phase === "recording";
   const busy = phase === "starting" || phase === "stopping" || phase === "saving";
   const warn = live && (mic.state === "silenced" || mic.reason === "no_signal");
@@ -109,6 +114,18 @@ export const VoiceNotesView: FC<VoiceNotesViewProps> = (props) => {
         </p>
       )}
 
+      {pendingCount > 0 && (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-border px-3 py-2" data-testid="voice-note-pending">
+          <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+            {pendingCount === 1 ? "1 note is" : `${pendingCount} notes are`} on this phone but not yet in your
+            TinyCloud space.
+          </p>
+          <Button type="button" size="sm" variant="outline" onClick={props.onRetry} disabled={retrying || busy} data-testid="voice-note-retry">
+            {retrying ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />} Save now
+          </Button>
+        </div>
+      )}
+
       <div className="mt-4">
         {notesStatus === "loading" && <p className="text-xs text-muted-foreground">Loading your voice notes…</p>}
         {notesStatus === "error" && <p className="text-xs text-muted-foreground">Could not load your voice notes.</p>}
@@ -152,6 +169,60 @@ function messageOf(error: unknown): string {
   return String(error);
 }
 
+/** Recordings being uploaded right now, across mounts (StrictMode mounts effects twice). */
+const savesInFlight = new Set<string>();
+
+/**
+ * Upload one stopped recording; the device copy is deleted only after the save is confirmed.
+ * Returns null when saved (or already being saved elsewhere), else the failure message.
+ * The in-flight guard matters because upsertMeeting's select-then-insert is not atomic: two
+ * concurrent saves of one recording would write two rows.
+ */
+async function saveRecording(tcw: TinyCloudWeb, recording: VoiceNoteRecording): Promise<string | null> {
+  if (savesInFlight.has(recording.id)) return null;
+  savesInFlight.add(recording.id);
+  try {
+    const audio = await VoiceNotes.readAudio({ id: recording.id });
+    const saved = await saveVoiceNote(tcw, recording, audio, nativePlatform());
+    if (!saved.ok) return saved.error.message;
+    await VoiceNotes.deleteAudio({ id: recording.id });
+    return null;
+  } catch (caught) {
+    return messageOf(caught);
+  } finally {
+    savesInFlight.delete(recording.id);
+  }
+}
+
+interface PendingRun {
+  total: number;
+  left: VoiceNoteRecording[];
+  lastError: string | null;
+}
+
+let pendingRunInFlight: Promise<PendingRun> | null = null;
+
+/** Retry every recording still on the device, oldest first, one at a time. Single-flight. */
+function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
+  if (pendingRunInFlight) return pendingRunInFlight;
+  pendingRunInFlight = (async () => {
+    const { recordings } = await VoiceNotes.listPending();
+    const left: VoiceNoteRecording[] = [];
+    let lastError: string | null = null;
+    for (const recording of [...recordings].sort((a, b) => a.startedAt - b.startedAt)) {
+      const failure = await saveRecording(tcw, recording);
+      if (failure) {
+        left.push(recording);
+        lastError = failure;
+      }
+    }
+    return { total: recordings.length, left, lastError };
+  })().finally(() => {
+    pendingRunInFlight = null;
+  });
+  return pendingRunInFlight;
+}
+
 function VoiceNotesController({ tcw }: { tcw: TinyCloudWeb }) {
   const [phase, setPhase] = useState<RecorderPhase>("idle");
   const [mic, setMic] = useState<{ state: MicState; reason: MicStateReason }>({ state: "idle", reason: null });
@@ -162,6 +233,8 @@ function VoiceNotesController({ tcw }: { tcw: TinyCloudWeb }) {
   const [notes, setNotes] = useState<VoiceNoteListItem[]>([]);
   const [notesStatus, setNotesStatus] = useState<"loading" | "ready" | "error">("loading");
   const [playing, setPlaying] = useState<{ sourceId: string; src: string | null } | null>(null);
+  const [pending, setPending] = useState<VoiceNoteRecording[]>([]);
+  const [retrying, setRetrying] = useState(false);
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -174,6 +247,22 @@ function VoiceNotesController({ tcw }: { tcw: TinyCloudWeb }) {
       setNotesStatus("error");
     }
   }, [tcw]);
+
+  const retryPending = useCallback(async () => {
+    setRetrying(true);
+    setError(null);
+    try {
+      const run = await savePendingRecordings(tcw);
+      if (!mounted.current) return;
+      setPending(run.left);
+      if (run.lastError) setError(`Some notes could not be saved yet: ${run.lastError}`);
+      if (run.left.length < run.total) await refresh();
+    } catch (caught) {
+      if (mounted.current) setError(messageOf(caught));
+    } finally {
+      if (mounted.current) setRetrying(false);
+    }
+  }, [refresh, tcw]);
 
   useEffect(() => {
     mounted.current = true;
@@ -189,11 +278,17 @@ function VoiceNotesController({ tcw }: { tcw: TinyCloudWeb }) {
       setPhase("recording");
     });
     void refresh();
+    // Anything left from an earlier failed save or an app restart gets another try.
+    void VoiceNotes.listPending().then(({ recordings }) => {
+      if (!mounted.current || recordings.length === 0) return;
+      setPending(recordings);
+      void retryPending();
+    });
     return () => {
       mounted.current = false;
       for (const handle of handles) void handle.then((h) => h.remove());
     };
-  }, [refresh]);
+  }, [refresh, retryPending]);
 
   useEffect(() => {
     if (phase !== "recording") return;
@@ -222,13 +317,12 @@ function VoiceNotesController({ tcw }: { tcw: TinyCloudWeb }) {
     try {
       const recording = await VoiceNotes.stop();
       setPhase("saving");
-      const audio = await VoiceNotes.readAudio({ id: recording.id });
-      const saved = await saveVoiceNote(tcw, recording, audio, nativePlatform());
-      if (!saved.ok) {
+      const failure = await saveRecording(tcw, recording);
+      if (failure) {
         // The audio stays on the device; nothing is lost if the save failed.
-        setError(`Recorded, but saving to your space failed: ${saved.error.message}`);
+        setPending((current) => [...current.filter((r) => r.id !== recording.id), recording]);
+        setError(`Recorded, but saving to your space failed: ${failure}`);
       } else {
-        await VoiceNotes.deleteAudio({ id: recording.id });
         await refresh();
       }
     } catch (caught) {
@@ -265,9 +359,12 @@ function VoiceNotesController({ tcw }: { tcw: TinyCloudWeb }) {
       notes={notes}
       notesStatus={notesStatus}
       playing={playing}
+      pendingCount={pending.length}
+      retrying={retrying}
       onRecord={() => void onRecord()}
       onStop={() => void onStop()}
       onPlay={(id) => void onPlay(id)}
+      onRetry={() => void retryPending()}
     />
   );
 }

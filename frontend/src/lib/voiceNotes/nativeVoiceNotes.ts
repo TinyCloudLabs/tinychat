@@ -40,7 +40,10 @@ export interface VoiceNotesPlugin {
   stop(): Promise<VoiceNoteRecording>;
   status(): Promise<{ state: MicState; reason: MicStateReason; id: string | null; elapsedMs: number }>;
   readAudio(options: { id: string }): Promise<{ id: string; mimeType: string; base64: string }>;
+  /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
+  /** Stopped recordings still on the device, i.e. not yet confirmed saved. */
+  listPending(): Promise<{ recordings: VoiceNoteRecording[] }>;
   addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "level", listener: (event: { level: number }) => void): Promise<PluginListenerHandle>;
 }

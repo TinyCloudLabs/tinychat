@@ -11,6 +11,7 @@ import Foundation
 ///   status()            → { state, reason, id?, elapsedMs }
 ///   readAudio({ id })   → { id, mimeType, base64 }
 ///   deleteAudio({ id }) → {}
+///   listPending()       → { recordings: [stop() result, ...] } still on the device
 ///   events: "micState" { state, reason, at }, "level" { level }
 ///
 /// Mic state comes from the OS: an audio-session interruption (a call, Siri,
@@ -26,7 +27,8 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readAudio", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "deleteAudio", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "deleteAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "listPending", returnType: CAPPluginReturnPromise)
     ]
 
     private static let mimeType = "audio/mp4"
@@ -100,7 +102,7 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("The recording captured no audio", "no_audio_captured")
                 return
             }
-            call.resolve([
+            let result: [String: Any] = [
                 "id": id,
                 "startedAt": self.startedAtMs,
                 "durationMs": Int64((now - self.startedUptime) * 1000),
@@ -109,7 +111,13 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
                 "silencedMs": Int64(self.silencedTotal * 1000),
                 "silencedEvents": self.silencedEvents,
                 "noSignalMs": Int64(self.noSignalTotal * 1000)
-            ])
+            ]
+            // Until the web layer confirms the save (deleteAudio), the sidecar lets
+            // listPending() hand the recording back after a failed upload or a relaunch.
+            if let json = try? JSONSerialization.data(withJSONObject: result) {
+                try? json.write(to: Self.sidecarURL(id))
+            }
+            call.resolve(result)
         }
     }
 
@@ -136,8 +144,30 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func deleteAudio(_ call: CAPPluginCall) {
         if let id = call.getString("id") {
             try? FileManager.default.removeItem(at: Self.fileURL(id))
+            try? FileManager.default.removeItem(at: Self.sidecarURL(id))
         }
         call.resolve()
+    }
+
+    @objc func listPending(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            let dir = Self.fileURL("probe").deletingLastPathComponent()
+            let sidecars = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            var recordings: [Any] = []
+            for sidecar in sidecars where sidecar.pathExtension == "json" {
+                let id = sidecar.deletingPathExtension().lastPathComponent
+                if id == self.recordingId { continue }
+                guard FileManager.default.fileExists(atPath: Self.fileURL(id).path) else {
+                    try? FileManager.default.removeItem(at: sidecar)
+                    continue
+                }
+                if let data = try? Data(contentsOf: sidecar),
+                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    recordings.append(object)
+                }
+            }
+            call.resolve(["recordings": recordings])
+        }
     }
 
     // MARK: - Recording
@@ -279,6 +309,10 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
     /// Bridge-safe optional: JSON null instead of a boxed Swift Optional.
     private static func jsonValue(_ value: String?) -> Any {
         value.map { $0 as Any } ?? NSNull()
+    }
+
+    private static func sidecarURL(_ id: String) -> URL {
+        fileURL(id).deletingPathExtension().appendingPathExtension("json")
     }
 
     private static func fileURL(_ id: String) -> URL {

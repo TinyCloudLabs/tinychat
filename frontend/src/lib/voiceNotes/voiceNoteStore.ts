@@ -109,16 +109,23 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
   if (!res.ok) {
     return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `listVoiceNotes: ${res.error.message}` } };
   }
-  return {
-    ok: true,
-    data: res.data.rows.map((row) => ({
+  // Dedup is app-level (the authorizer forbids UNIQUE): one note per recording id, even if a
+  // racing save ever wrote a second row.
+  const seen = new Set<string>();
+  const notes: VoiceNoteListItem[] = [];
+  for (const row of res.data.rows) {
+    const sourceId = String(row[1]);
+    if (seen.has(sourceId)) continue;
+    seen.add(sourceId);
+    notes.push({
       id: String(row[0]),
-      sourceId: String(row[1]),
+      sourceId,
       title: typeof row[2] === "string" ? row[2] : null,
       startedAt: typeof row[3] === "string" ? row[3] : null,
       durationSecs: typeof row[4] === "number" ? row[4] : null,
-    })),
-  };
+    });
+  }
+  return { ok: true, data: notes };
 }
 
 export async function loadVoiceNoteAudio(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<VoiceNoteAudio>> {

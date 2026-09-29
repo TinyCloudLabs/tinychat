@@ -111,6 +111,20 @@ describe("listVoiceNotes", () => {
   });
 });
 
+describe("listVoiceNotes dedup", () => {
+  test("one note per recording id even if a racing save wrote two rows", async () => {
+    const { tcw } = fakeTcw({
+      rows: [
+        ["row-2", "rec-1", "Voice note", "2026-09-29T05:40:00.000Z", 12],
+        ["row-1", "rec-1", "Voice note", "2026-09-29T05:40:00.000Z", 12],
+        ["row-3", "rec-2", "Voice note", "2026-09-29T05:30:00.000Z", 4],
+      ],
+    });
+    const res = await listVoiceNotes(tcw);
+    expect(res.ok && res.data.map((n) => n.sourceId)).toEqual(["rec-1", "rec-2"]);
+  });
+});
+
 describe("loadVoiceNoteAudio", () => {
   test("round-trips the stored JSON", async () => {
     const { tcw } = fakeTcw({ kvGet: JSON.stringify({ mimeType: "audio/mp4", base64: "AAAA" }) });
