@@ -667,7 +667,7 @@ export function createLocalTranscriber(
             b.transcription.events.transcriptionEvent.listen((e) => {
               if (e.payload.session_id !== sessionId) return;
               if (e.payload.type === "progress" && e.payload.event.type === "progress") {
-                emit({ kind: "transcribing", progress: Math.round(e.payload.event.percentage) });
+                emit({ kind: "transcribing", progress: Math.round(e.payload.event.percentage * 100) });
               }
             }),
         ],
