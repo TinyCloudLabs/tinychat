@@ -109,6 +109,13 @@ services:
       TRANSCRIPTION_API_URL: ${TRANSCRIPTION_API_URL:-}
       TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
       TRANSCRIPTION_BOT_NAME: ${TRANSCRIPTION_BOT_NAME:-}
+      # Exo private cloud transcription. Dark by default: false ⇒ /api/transcriber/private-cloud
+      # is never mounted. Armed, URL + key + tenant key are mandatory (startup refuses otherwise).
+      PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}
+      PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: ${PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS:-}
+      PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${PRIVATE_CLOUD_TRANSCRIPTION_API_URL:-}
+      PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_API_KEY:-}
+      PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
     restart: unless-stopped

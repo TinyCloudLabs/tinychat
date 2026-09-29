@@ -421,6 +421,17 @@ jobs:
           TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
           TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
           TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+          # Exo private cloud transcription (backend/src/routes/private-cloud-transcription.ts).
+          # Ships DARK: ENABLED defaults 'false', so /api/transcriber/private-cloud/* is never
+          # mounted (404). ACCOUNTS: empty = nobody, `*` alone = everyone. The URL is the ptx-batch
+          # origin (repo var); the transcriptions:* key and the tenant HMAC key (>=32 random bytes,
+          # `openssl rand -base64 32`) are secrets. Armed with a missing or weak value, startup
+          # refuses to boot. Declared in all four places for the allowed_envs freeze reason.
+          PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}
+          PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS }}
+          PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
+          PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
+          PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -489,6 +500,11 @@ jobs:
             printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
             printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
             printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS=${PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS:-}"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_URL=$PRIVATE_CLOUD_TRANSCRIPTION_API_URL"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

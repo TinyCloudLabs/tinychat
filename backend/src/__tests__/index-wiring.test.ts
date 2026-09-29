@@ -100,6 +100,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
     require: (id: string) => {
       if (id === "./agent-stream-policy.js") return load("./agent-stream-policy.ts");
       if (id === "./transcripts/meeting-rollout.js") return load("./transcripts/meeting-rollout.ts");
+      if (id === "./services/private-cloud-transcription.js") return load("./services/private-cloud-transcription.ts");
       if (id in known) return known[id];
       // These import collaborators only register handlers or hold inert local state.
       return new Proxy({}, { get: (_target, name) => {
@@ -410,6 +411,18 @@ describe("backend index middleware wiring", () => {
     expect(block).toMatch(/process\.exit\(1\)/);
   });
 
+  test("private cloud transcription mounts once, inside its flag branch, behind auth, CSRF and the limiter", () => {
+    const gate = INDEX.indexOf("if (privateCloudTranscription.enabled) {");
+    const mount = INDEX.indexOf("PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,\n      authMiddleware,");
+    expect(gate).toBeGreaterThan(-1);
+    expect(mount).toBeGreaterThan(gate);
+    expect(INDEX.slice(gate, mount)).not.toMatch(/\n {2}\}/);
+    expect(INDEX.match(/app\.use\(\s*PRIVATE_CLOUD_TRANSCRIPTION_MOUNT/g)).toHaveLength(1);
+    expect(mount).toBeGreaterThan(INDEX.indexOf("const globalJsonParser"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+  });
+
   test("large NRAS JSON parsing happens after auth on the route mount", () => {
     expect(INDEX).not.toContain('app.use("/api/nras-proxy", express.json({ limit: "4mb" }))');
     expect(INDEX).toContain(
@@ -439,5 +452,29 @@ test("partial or empty diagnostic endpoint credentials fail before startup effec
     const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...partial });
     expect(result.calls).toEqual(["exit"]);
     expect(result.logs).toEqual(["Invalid meeting diagnostic foreground configuration: set both endpoint and API key, or neither"]);
+  }
+});
+
+test("armed private cloud transcription with a bad or missing value refuses boot before startup effects, without logging values", async () => {
+  const armed = {
+    PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "true",
+    PRIVATE_CLOUD_TRANSCRIPTION_API_URL: "https://ptx-batch.invalid",
+    PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: "synthetic-ptx-batch-key",
+    PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: "q3Jm8V0t6n0bqK1i2Xz7cP4sWf9YhR5uLd2eA8gT1kM=",
+  };
+  const ok = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...armed });
+  expect(ok.logs).toEqual([]);
+  expect(ok.calls).toContain("agent-router");
+  for (const patch of [
+    { PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: "yes" },
+    { PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: undefined },
+    { PRIVATE_CLOUD_TRANSCRIPTION_API_URL: "http://ptx-batch.invalid" },
+    { PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: "" },
+  ]) {
+    const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...armed, ...patch });
+    expect(result.logs.join(" ")).toContain("PRIVATE_CLOUD_TRANSCRIPTION_");
+    expect(result.logs.join(" ")).not.toContain("synthetic-ptx-batch-key");
+    expect(result.logs.join(" ")).not.toContain("q3Jm8V0t");
+    expect(result.calls).toEqual(["exit"]);
   }
 });
