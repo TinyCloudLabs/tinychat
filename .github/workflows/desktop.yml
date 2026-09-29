@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - "desktop/**"
+      - "frontend/**"
+      - "packages/**"
       - ".github/workflows/desktop.yml"
   push:
     branches: [main]
