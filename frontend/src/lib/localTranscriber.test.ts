@@ -9,18 +9,28 @@
 //     transcript-only fallback, no audio path in metadata;
 //   - the start/stop invoke order and error surfacing (missing audio_path,
 //     transcription failed, capture error);
-//   - saveLocalTranscript delegates to upsertMeeting with the normalized pair.
+//   - capture is only "stopped" on its matching terminal event: a timed-out,
+//     failed, or hung stop keeps the session for Retry stop; unmount waits for
+//     confirmation and a remount never starts over an unconfirmed capture;
+//   - saveLocalTranscript delegates to upsertMeeting with the prepared pair, a
+//     retried save repairs a partial write, and silence is never saved.
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
 import {
+  CaptureStopUnconfirmedError,
   createLocalTranscriber,
   normalizeLocalTranscript,
   LOCAL_MEETING_SOURCE,
+  LOCAL_WHISPER_MODELS,
+  NO_SPEECH_MESSAGE,
+  prepareLocalTranscript,
   saveLocalTranscript,
   type LocalTranscriberBridge,
   type LocalTranscriptResult,
 } from "./localTranscriber";
+import { transcriptKvKey } from "./connectors/connectorStore";
 import type {
   CaptureLifecycleEvent,
   TranscriptionEvent,
@@ -103,6 +113,35 @@ function makeBridge(opts: {
   };
   return bridge;
 }
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function stoppedEvent(
+  sessionId: string,
+  patch: Partial<Extract<CaptureLifecycleEvent, { type: "stopped" }>> = {},
+): CaptureLifecycleEvent {
+  return {
+    type: "stopped",
+    session_id: sessionId,
+    audio_path: "/vault/sessions/x/audio.mp3",
+    requested_live_transcription: false,
+    live_transcription_active: false,
+    error: null,
+    ...patch,
+  };
+}
+
+function completedEvent(sessionId: string): TranscriptionEvent {
+  return {
+    type: "completed",
+    session_id: sessionId,
+    response: batchResponse([{ word: "hi", start: 0, end: 0.5, channel: 0 }]) as never,
+    mode: "streamed",
+  };
+}
+
+const startCaptureCalls = (bridge: FakeBridge) => bridge.calls.filter((c) => c.startsWith("start_capture")).length;
+const stopCaptureCalls = (bridge: FakeBridge) => bridge.calls.filter((c) => c === "stop_capture").length;
 
 function batchResponse(words: { word: string; start: number; end: number; channel?: number; punctuated_word?: string }[]) {
   return {
@@ -277,28 +316,164 @@ describe("createLocalTranscriber", () => {
     expect(result.response.results.channels[0]!.alternatives[0]!.words?.[0]?.word).toBe("immediate");
   });
 
-  test("leaving the view stops an active native capture", async () => {
+  test("leaving the view stops an active native capture and waits for its stopped event", async () => {
     const bridge = makeBridge({ modelDownloaded: true });
     const transcriber = createLocalTranscriber(bridge);
-    await transcriber.start({ model: "QuantizedTinyEn", language: "en" });
-    await transcriber.stopCaptureOnUnmount();
+    const { sessionId } = await transcriber.start({ model: "QuantizedTinyEn", language: "en" });
+    let settled = false;
+    const closing = transcriber.stopCaptureOnUnmount().then(() => { settled = true; });
+    await tick();
     expect(bridge.calls).toContain("stop_capture");
+    // stop_capture returning is only a dispatch, not proof the capture ended.
+    expect(settled).toBe(false);
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await closing;
+    expect(settled).toBe(true);
   });
 
   test("leaving during start still stops capture once it starts", async () => {
     const bridge = makeBridge({ modelDownloaded: true });
     let finishStart!: () => void;
-    bridge.transcription.startCapture = async () => {
+    let session = "";
+    bridge.transcription.startCapture = async (params) => {
+      session = params.session_id;
       await new Promise<void>((resolve) => { finishStart = resolve; });
       return { status: "ok", data: null };
     };
     const transcriber = createLocalTranscriber(bridge);
     const starting = transcriber.start({ model: "QuantizedTinyEn", language: "en" });
     while (!finishStart) await Promise.resolve();
-    await transcriber.stopCaptureOnUnmount();
+    const closing = transcriber.stopCaptureOnUnmount();
     finishStart();
     await expect(starting).rejects.toThrow("view closed");
+    await tick();
     expect(bridge.calls).toContain("stop_capture");
+    bridge.emitCaptureLifecycle(stoppedEvent(session));
+    await expect(closing).resolves.toBeUndefined();
+  });
+
+  test("stop_capture success without a stopped event times out and keeps the session for Retry stop", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    const statuses: string[] = [];
+    t.onStatus((s) => statuses.push(s.kind));
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+
+    const first = t.stop();
+    await expect(first).rejects.toBeInstanceOf(CaptureStopUnconfirmedError);
+    await expect(first).rejects.toThrow("Timed out waiting for native capture to confirm it stopped");
+    expect(statuses.at(-1)).toBe("error");
+    // The capture may still be live, so nothing may start over it.
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("already active");
+
+    // Retry stop: this time native capture confirms.
+    const retry = t.stop();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(retry).resolves.toMatchObject({ sessionId });
+    expect(stopCaptureCalls(bridge)).toBe(2);
+  });
+
+  test("a stop_capture error is unconfirmed, not stopped", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    bridge.transcription.stopCapture = async () => ({ status: "error", error: "root actor busy" });
+    const t = createLocalTranscriber(bridge);
+    await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const stopping = t.stop();
+    await expect(stopping).rejects.toBeInstanceOf(CaptureStopUnconfirmedError);
+    await expect(stopping).rejects.toThrow("stop_capture: root actor busy");
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("already active");
+  });
+
+  test("a stop_capture that never returns still times out; a late stopped event lets Retry stop finish", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let stopCalls = 0;
+    bridge.transcription.stopCapture = () => {
+      stopCalls++;
+      return new Promise(() => {});
+    };
+    const t = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(t.stop()).rejects.toBeInstanceOf(CaptureStopUnconfirmedError);
+
+    // Native capture reports the stop after the timeout; the lifetime listener records it.
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    const retry = t.stop();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(retry).resolves.toMatchObject({ sessionId });
+    expect(stopCalls).toBe(1);
+  });
+
+  test("a hung download_model invoke is bounded by the same timer", async () => {
+    const bridge = makeBridge();
+    bridge.localStt.downloadModel = () => new Promise(() => {});
+    const t = createLocalTranscriber(bridge, { timeouts: { modelDownloadMs: 20 } });
+    await expect(t.ensureModel("QuantizedTinyEn")).rejects.toThrow("Timed out waiting for model download");
+  });
+
+  test("an actor-failure stopped event ends the capture and surfaces the failure", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge);
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const stopping = t.stop();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId, { audio_path: null, error: "ActorFailed(mic stream closed)" }));
+    const err = await stopping.catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(CaptureStopUnconfirmedError);
+    expect((err as Error).message).toBe("Capture failed: ActorFailed(mic stream closed)");
+    // The terminal event proved capture ended, so a new recording may start.
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("a capture that fails before Stop is reported without a no-op stop_capture", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge);
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId, { audio_path: null, error: "ActorFailed(audio device lost)" }));
+    await expect(t.stop()).rejects.toThrow("Capture failed: ActorFailed(audio device lost)");
+    expect(stopCaptureCalls(bridge)).toBe(0);
+  });
+
+  test("an unconfirmed close-time stop blocks a remounted view until native capture is inactive", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let nativeState: "active" | "finalizing" | "inactive" = "active";
+    bridge.transcription.getCaptureState = async () => ({ status: "ok", data: nativeState });
+    const closed = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    // Unmount issues the stop but does not claim it succeeded.
+    await expect(closed.stopCaptureOnUnmount()).rejects.toThrow("Timed out");
+    expect(stopCaptureCalls(bridge)).toBe(1);
+
+    // Remount: a new transcriber on the same native listener.
+    const remounted = createLocalTranscriber(bridge);
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
+      "has not confirmed it stopped (native capture is active)",
+    );
+    expect(startCaptureCalls(bridge)).toBe(1);
+
+    nativeState = "inactive";
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    expect(startCaptureCalls(bridge)).toBe(2);
+  });
+
+  test("a remounted view waits for the closed view's stop to confirm before starting", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge);
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    const closing = closed.stopCaptureOnUnmount();
+
+    const remounted = createLocalTranscriber(bridge);
+    const starting = remounted.start({ model: "QuantizedTinyEn", language: "en" });
+    await tick();
+    expect(startCaptureCalls(bridge)).toBe(1);
+
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await closing;
+    await expect(starting).resolves.toBeTruthy();
+    expect(startCaptureCalls(bridge)).toBe(2);
   });
 
   test("stop() rejects when Stopped carries no audio path", async () => {
@@ -386,8 +561,91 @@ describe("createLocalTranscriber", () => {
   });
 });
 
+/** Connector store backed by real SQLite plus an in-memory KV whose next puts can be failed. */
+function sqliteStore() {
+  const sqlite = new Database(":memory:");
+  const kv = new Map<string, string>();
+  let failingKvPuts = 0;
+  const tcw = {
+    did: `did:test:${crypto.randomUUID()}`,
+    sql: {
+      db: () => ({
+        query: async (sql: string, params: unknown[] = []) => {
+          try {
+            return { ok: true, data: { rows: sqlite.query(sql).values(...(params as never[])) } };
+          } catch (error) {
+            return { ok: false, error: { code: "SQL", message: String(error) } };
+          }
+        },
+        execute: async (sql: string, params: unknown[] = []) => {
+          try {
+            sqlite.query(sql).run(...(params as never[]));
+            return { ok: true, data: { rows: [] } };
+          } catch (error) {
+            return { ok: false, error: { code: "SQL", message: String(error) } };
+          }
+        },
+      }),
+    },
+    kv: {
+      put: async (key: string, value: string) => {
+        if (failingKvPuts > 0) {
+          failingKvPuts--;
+          return { ok: false, error: { code: "KV_UNAVAILABLE", message: "kv write failed" } };
+        }
+        kv.set(key, value);
+        return { ok: true, data: null };
+      },
+    },
+  } as never;
+  return { tcw, sqlite, kv, failNextKvPut: () => { failingKvPuts++; } };
+}
+
+describe("prepareLocalTranscript", () => {
+  test("refuses a transcript with no speech so silence is never saved as a meeting", () => {
+    expect(() => prepareLocalTranscript(resultWith([]))).toThrow(NO_SPEECH_MESSAGE);
+    expect(NO_SPEECH_MESSAGE).toBe("No speech was transcribed — nothing was saved.");
+    expect(prepareLocalTranscript(resultWith([{ word: "hi", start: 0, end: 1, channel: 0 }])).sentences).toHaveLength(1);
+  });
+});
+
+describe("LOCAL_WHISPER_MODELS", () => {
+  test("sizes match anarlog's model_size_bytes in decimal MB", () => {
+    const bytes: Record<string, number> = {
+      QuantizedTiny: 43537433,
+      QuantizedTinyEn: 43550795,
+      QuantizedBase: 81768585,
+      QuantizedBaseEn: 81781811,
+      QuantizedSmall: 264464607,
+      QuantizedSmallEn: 264477561,
+      QuantizedLargeTurbo: 874188075,
+    };
+    for (const m of LOCAL_WHISPER_MODELS) {
+      expect(m.approxSizeMb).toBe(Math.round(bytes[m.id]! / 1_000_000));
+    }
+  });
+});
+
 describe("saveLocalTranscript", () => {
-  test("delegates to upsertMeeting with the normalized meeting and sentences", async () => {
+  test("a retry of the identical prepared transcript repairs a failed KV write with one meeting", async () => {
+    const store = sqliteStore();
+    const prepared = prepareLocalTranscript(resultWith([{ word: "hello", start: 0, end: 1, channel: 0 }]));
+
+    store.failNextKvPut();
+    const first = await saveLocalTranscript(store.tcw, prepared);
+    expect(first.ok).toBe(false);
+    // The partial write: the row landed, the transcript body did not.
+    expect(store.sqlite.query("SELECT COUNT(*) FROM connector_meeting").values()[0]![0]).toBe(1);
+    expect(store.kv.size).toBe(0);
+
+    const retry = await saveLocalTranscript(store.tcw, prepared);
+    expect(retry).toEqual({ ok: true, data: expect.objectContaining({ id: prepared.meeting.id, inserted: false }) });
+    const rows = store.sqlite.query("SELECT id, source, source_id FROM connector_meeting").values();
+    expect(rows).toEqual([[prepared.meeting.id, LOCAL_MEETING_SOURCE, "local:sess-1"]]);
+    expect(JSON.parse(store.kv.get(transcriptKvKey(LOCAL_MEETING_SOURCE, "local:sess-1"))!)).toEqual(prepared.sentences);
+  });
+
+  test("delegates to upsertMeeting with the prepared meeting and sentences", async () => {
     // upsertMeeting is module-bound; drive the real store contract with a tcw
     // fake that captures the SQL INSERT row and KV put.
     const writes: { sql: string; params: unknown[] }[] = [];
@@ -415,7 +673,7 @@ describe("saveLocalTranscript", () => {
       },
     } as never;
 
-    const r = await saveLocalTranscript(tcw, resultWith([{ word: "hi", start: 0, end: 1, channel: 0 }]));
+    const r = await saveLocalTranscript(tcw, prepareLocalTranscript(resultWith([{ word: "hi", start: 0, end: 1, channel: 0 }])));
     expect(r.ok).toBe(true);
     const insert = writes.find((w) => w.sql.startsWith("INSERT INTO connector_meeting"));
     expect(insert).toBeTruthy();

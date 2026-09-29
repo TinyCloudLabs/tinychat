@@ -22,6 +22,13 @@ import {
   type TranscriberViewProps,
 } from "./TranscriberSection";
 import {
+  LocalTranscriberView,
+  isLocalWorkflowActive,
+  localRetryAction,
+  type LocalTranscriberViewProps,
+} from "./LocalTranscriber";
+import { NO_SPEECH_MESSAGE } from "@/lib/localTranscriber";
+import {
   createTranscriberClient,
   type TranscriberMeeting,
   type TranscriberMeetingStatus,
@@ -295,6 +302,78 @@ describe("TranscriberView local mode", () => {
     });
     expect(html).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
     expect(html).toContain("recording");
+  });
+});
+
+function renderLocal(patch: Partial<LocalTranscriberViewProps> = {}): string {
+  const props: LocalTranscriberViewProps = {
+    state: "ready",
+    model: "QuantizedTinyEn",
+    mics: { status: "loaded", devices: ["MacBook Mic"] },
+    micDevice: "",
+    downloadPct: null,
+    statusText: null,
+    onModelChange: noop,
+    onMicChange: noop,
+    onDownload: noop,
+    onRetry: noop,
+    onStart: noop,
+    onStop: noop,
+    ...patch,
+  };
+  return renderToStaticMarkup(<LocalTranscriberView {...props} />);
+}
+
+describe("LocalTranscriberView", () => {
+  test("model sizes match anarlog's model files", () => {
+    const html = renderLocal({ state: "needs-download" });
+    expect(html).toContain("Download model (~44 MB)");
+    expect(html).toContain("Whisper Base (English) · ~82 MB");
+    expect(html).toContain("Whisper Small (multilingual) · ~264 MB");
+    expect(html).toContain("Whisper Large Turbo · ~874 MB");
+  });
+
+  test("a failed microphone listing is an alert, distinct from an empty list", () => {
+    const failed = renderLocal({ mics: { status: "failed", message: "list_microphone_devices: CoreAudio unavailable" } });
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain("Couldn&#x27;t list microphones: list_microphone_devices: CoreAudio unavailable");
+    expect(failed).not.toContain("No microphones were found");
+
+    const empty = renderLocal({ mics: { status: "loaded", devices: [] } });
+    expect(empty).toContain("No microphones were found on this Mac.");
+    expect(empty).not.toContain('role="alert"');
+
+    const loading = renderLocal({ mics: { status: "loading" } });
+    expect(loading).not.toContain("No microphones were found");
+    expect(loading).not.toContain("list microphones");
+  });
+
+  test("an unconfirmed stop offers Retry stop and keeps the capture locked", () => {
+    const html = renderLocal({ state: "stop-failed", statusText: "Stopping was not confirmed: timed out." });
+    expect(html).toContain(">Retry stop</button>");
+    expect(html).toContain("Stopping was not confirmed");
+    expect(html).toContain("Keep this view open while recording");
+    expect(html).not.toContain("Start recording");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localRetryAction("stop-failed")).toBe("stop");
+    expect(isLocalWorkflowActive("stop-failed")).toBe(true);
+  });
+
+  test("a failed save offers Retry save for the transcript it keeps", () => {
+    const html = renderLocal({ state: "save-failed", statusText: "putTranscriptBody: [KV_UNAVAILABLE] kv write failed" });
+    expect(html).toContain(">Retry save</button>");
+    expect(html).toContain("The transcript is kept here until it saves.");
+    expect(html).not.toContain("Start recording");
+    expect(localRetryAction("save-failed")).toBe("save");
+    expect(isLocalWorkflowActive("save-failed")).toBe(true);
+  });
+
+  test("an empty transcript is a visible error with the ordinary Retry", () => {
+    const html = renderLocal({ state: "error", statusText: NO_SPEECH_MESSAGE });
+    expect(html).toContain("No speech was transcribed — nothing was saved.");
+    expect(html).toContain(">Retry</button>");
+    expect(localRetryAction("error")).toBe("readiness");
+    expect(isLocalWorkflowActive("error")).toBe(false);
   });
 });
 

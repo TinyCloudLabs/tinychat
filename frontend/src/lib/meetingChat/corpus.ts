@@ -25,6 +25,9 @@ function isSupportedMeetingSource(source: string): boolean {
   return (SUPPORTED_MEETING_SOURCES as readonly string[]).includes(source);
 }
 
+/** SQL literal list for the allowlist; the entries are fixed constants, never input. */
+const SUPPORTED_MEETING_SOURCES_SQL = SUPPORTED_MEETING_SOURCES.map((source) => `'${source}'`).join(", ");
+
 /** The server list's documented maximum page size. */
 export const SERVER_DISCOVERY_PAGE_SIZE = 200;
 /** The server keeps at most this many meetings for one user. */
@@ -49,7 +52,7 @@ export const SQL_MEETING_METADATA_QUERY = `SELECT
   created_at,
   updated_at
 FROM connector_meeting
-WHERE source IN ('fireflies', 'google-meet', 'tinycloud-transcriber')
+WHERE source IN (${SUPPORTED_MEETING_SOURCES_SQL})
 ORDER BY started_at DESC, id ASC
 LIMIT ${SQL_DISCOVERY_MAX_MEETINGS + 1}`;
 

@@ -12,13 +12,16 @@ import { Loader2Icon, MicIcon, SquareIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
+  CaptureStopUnconfirmedError,
   createLocalTranscriber,
   DEFAULT_LOCAL_MODEL,
   LOCAL_MODEL_STORAGE_KEY,
   LOCAL_WHISPER_MODELS,
+  prepareLocalTranscript,
   saveLocalTranscript,
   type LocalTranscriber,
   type LocalTranscriberStatus,
+  type PreparedLocalTranscript,
   type WhisperModel,
 } from "@/lib/localTranscriber";
 
@@ -32,12 +35,42 @@ export type LocalPanelState =
   | "transcribing"
   | "saving"
   | "saved"
+  /** Native capture did not confirm Stop; the recording may still be running. */
+  | "stop-failed"
+  /** The transcript is held in the panel; Retry re-runs the identical save. */
+  | "save-failed"
   | "error";
+
+/** "loaded" with no devices is a real answer; "failed" is an enumeration error. */
+export type MicDeviceList =
+  | { status: "loading" }
+  | { status: "loaded"; devices: readonly string[] }
+  | { status: "failed"; message: string };
+
+/** States where a capture may be live or a transcript is not yet saved: the
+ *  mode switch and pickers stay locked, and model checks never replace them. */
+export function isLocalWorkflowActive(state: LocalPanelState): boolean {
+  return (
+    state === "starting" ||
+    state === "recording" ||
+    state === "transcribing" ||
+    state === "saving" ||
+    state === "stop-failed" ||
+    state === "save-failed"
+  );
+}
+
+/** What the Retry button does in each failed state. */
+export function localRetryAction(state: LocalPanelState): "stop" | "save" | "readiness" {
+  if (state === "stop-failed") return "stop";
+  if (state === "save-failed") return "save";
+  return "readiness";
+}
 
 export interface LocalTranscriberViewProps {
   state: LocalPanelState;
   model: WhisperModel;
-  micDevices: readonly string[];
+  mics: MicDeviceList;
   micDevice: string;
   downloadPct: number | null;
   /** Status line; for `error` this is the message. */
@@ -56,7 +89,7 @@ const selectClass =
 export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   state,
   model,
-  micDevices,
+  mics,
   micDevice,
   downloadPct,
   statusText,
@@ -69,6 +102,8 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
 }) => {
   const modelInfo = LOCAL_WHISPER_MODELS.find((m) => m.id === model);
   const recording = state === "recording";
+  const micDevices = mics.status === "loaded" ? mics.devices : [];
+  const locked = isLocalWorkflowActive(state);
   const busy =
     state === "checking-model" ||
     state === "downloading" ||
@@ -93,7 +128,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           aria-label="Whisper model"
           className={`${selectClass} sm:max-w-[16rem]`}
           value={model}
-          disabled={recording || busy}
+          disabled={locked || busy}
           onChange={(e) => onModelChange(e.target.value as WhisperModel)}
         >
           {LOCAL_WHISPER_MODELS.map((m) => (
@@ -113,7 +148,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
               aria-label="Microphone"
               className={`${selectClass} sm:max-w-[16rem]`}
               value={micDevice}
-              disabled={recording || busy}
+              disabled={locked || busy}
               onChange={(e) => onMicChange(e.target.value)}
             >
               <option value="">System default</option>
@@ -126,6 +161,15 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           </>
         )}
       </div>
+
+      {mics.status === "failed" && (
+        <p role="alert" className="text-xs text-destructive">
+          Couldn&apos;t list microphones: {mics.message}
+        </p>
+      )}
+      {mics.status === "loaded" && micDevices.length === 0 && (
+        <p className="text-xs text-muted-foreground">No microphones were found on this Mac.</p>
+      )}
 
       <div className="flex items-center gap-2">
         {state === "needs-download" && (
@@ -182,12 +226,27 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             Retry
           </Button>
         )}
+        {state === "stop-failed" && (
+          <Button type="button" size="sm" variant="destructive" onClick={onRetry} className="h-9">
+            Retry stop
+          </Button>
+        )}
+        {state === "save-failed" && (
+          <Button type="button" size="sm" onClick={onRetry} className="h-9">
+            Retry save
+          </Button>
+        )}
       </div>
 
       {state === "saved" && (
         <p className="text-xs text-muted-foreground">Saved to Meetings as Exo Local.</p>
       )}
-      {recording && (
+      {state === "save-failed" && (
+        <p className="text-xs text-muted-foreground">
+          The transcript is kept here until it saves. Leaving this view discards it.
+        </p>
+      )}
+      {(recording || state === "stop-failed") && (
         <p className="text-xs text-muted-foreground">
           Keep this view open while recording. Leaving it stops capture without saving a transcript.
         </p>
@@ -231,18 +290,21 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   }, [t]);
 
   const [model, setModel] = useState<WhisperModel>(readSavedModel);
-  const [micDevices, setMicDevices] = useState<string[]>([]);
+  const [mics, setMics] = useState<MicDeviceList>({ status: "loading" });
   const [micDevice, setMicDevice] = useState("");
   const [downloadPct, setDownloadPct] = useState<number | null>(null);
   const [state, setState] = useState<LocalPanelState>("checking-model");
   const [retryCount, setRetryCount] = useState(0);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // The transcript waiting to be saved; kept until a save succeeds so Retry
+  // re-runs that exact save.
+  const [pendingSave, setPendingSave] = useState<PreparedLocalTranscript | null>(null);
   // Recording/transcribing progress is driven by plugin events through onStatus;
   // panel state mirrors the last lifecycle-relevant status.
   const lastStatus = useRef<LocalTranscriberStatus>({ kind: "idle" });
 
   useEffect(() => {
-    onWorkflowActiveChange?.(state === "starting" || state === "recording" || state === "transcribing" || state === "saving");
+    onWorkflowActiveChange?.(isLocalWorkflowActive(state));
     return () => onWorkflowActiveChange?.(false);
   }, [onWorkflowActiveChange, state]);
 
@@ -254,7 +316,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   // Model readiness + mic list on mount and when the model changes.
   useEffect(() => {
     let cancelled = false;
-    setState((s) => (s === "starting" || s === "recording" || s === "transcribing" || s === "saving" ? s : "checking-model"));
+    setState((s) => (isLocalWorkflowActive(s) ? s : "checking-model"));
     void t
       .isModelDownloaded(model)
       .then((downloaded) => {
@@ -264,13 +326,14 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       .catch((err) => {
         if (!cancelled) fail(err);
       });
+    setMics({ status: "loading" });
     void t
       .listMicrophoneDevices()
       .then((devices) => {
-        if (!cancelled) setMicDevices(devices);
+        if (!cancelled) setMics({ status: "loaded", devices });
       })
-      .catch(() => {
-        // A mic list failure shouldn't block recording — the default device is used.
+      .catch((err) => {
+        if (!cancelled) setMics({ status: "failed", message: err instanceof Error ? err.message : String(err) });
       });
     return () => {
       cancelled = true;
@@ -304,24 +367,71 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       .catch(fail);
   };
 
-  const onStop = () => {
-    setState("transcribing");
-    void t
-      .stop()
-      .then(async (result) => {
-        setState("saving");
-        const saved = await saveLocalTranscript(tcw, result);
-        if (saved.ok) setState("saved");
-        else throw new Error(saved.error.message);
+  const save = (prepared: PreparedLocalTranscript) => {
+    setErrorText(null);
+    setState("saving");
+    void saveLocalTranscript(tcw, prepared)
+      .then((saved) => {
+        if (!saved.ok) throw new Error(saved.error.message);
+        setPendingSave(null);
+        setState("saved");
       })
-      .catch(fail);
+      .catch((err) => {
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setState("save-failed");
+      });
+  };
+
+  const onStop = () => {
+    setErrorText(null);
+    setState("transcribing");
+    void t.stop().then(
+      (result) => {
+        let prepared: PreparedLocalTranscript;
+        try {
+          prepared = prepareLocalTranscript(result);
+        } catch (err) {
+          fail(err);
+          return;
+        }
+        setPendingSave(prepared);
+        save(prepared);
+      },
+      (err) => {
+        if (err instanceof CaptureStopUnconfirmedError) {
+          setErrorText(err.message);
+          setState("stop-failed");
+          return;
+        }
+        fail(err);
+      },
+    );
+  };
+
+  const onRetry = () => {
+    switch (localRetryAction(state)) {
+      case "stop":
+        onStop();
+        return;
+      case "save":
+        if (pendingSave === null) {
+          fail(new Error("No transcript is waiting to be saved"));
+          return;
+        }
+        save(pendingSave);
+        return;
+      case "readiness":
+        setErrorText(null);
+        setRetryCount((count) => count + 1);
+        return;
+    }
   };
 
   return (
     <LocalTranscriberView
       state={state}
       model={model}
-      micDevices={micDevices}
+      mics={mics}
       micDevice={micDevice}
       downloadPct={downloadPct}
       statusText={errorText}
@@ -335,10 +445,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       }}
       onMicChange={setMicDevice}
       onDownload={onDownload}
-      onRetry={() => {
-        setErrorText(null);
-        setRetryCount((count) => count + 1);
-      }}
+      onRetry={onRetry}
       onStart={onStart}
       onStop={onStop}
     />

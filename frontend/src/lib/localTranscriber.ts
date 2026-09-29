@@ -73,14 +73,15 @@ export interface LocalWhisperModel {
   approxSizeMb: number;
 }
 
-/** Quantized whisper.cpp models exposed at the pinned rev. */
+/** Quantized whisper.cpp models exposed at the pinned rev. Sizes are anarlog's
+ *  `WhisperModel::model_size_bytes` (crates/whisper-local-model) in decimal MB. */
 export const LOCAL_WHISPER_MODELS: readonly LocalWhisperModel[] = [
-  { id: "QuantizedTinyEn", label: "Whisper Tiny (English)", englishOnly: true, approxSizeMb: 32 },
-  { id: "QuantizedTiny", label: "Whisper Tiny (multilingual)", englishOnly: false, approxSizeMb: 32 },
-  { id: "QuantizedBaseEn", label: "Whisper Base (English)", englishOnly: true, approxSizeMb: 58 },
-  { id: "QuantizedBase", label: "Whisper Base (multilingual)", englishOnly: false, approxSizeMb: 58 },
-  { id: "QuantizedSmallEn", label: "Whisper Small (English)", englishOnly: true, approxSizeMb: 182 },
-  { id: "QuantizedSmall", label: "Whisper Small (multilingual)", englishOnly: false, approxSizeMb: 182 },
+  { id: "QuantizedTinyEn", label: "Whisper Tiny (English)", englishOnly: true, approxSizeMb: 44 },
+  { id: "QuantizedTiny", label: "Whisper Tiny (multilingual)", englishOnly: false, approxSizeMb: 44 },
+  { id: "QuantizedBaseEn", label: "Whisper Base (English)", englishOnly: true, approxSizeMb: 82 },
+  { id: "QuantizedBase", label: "Whisper Base (multilingual)", englishOnly: false, approxSizeMb: 82 },
+  { id: "QuantizedSmallEn", label: "Whisper Small (English)", englishOnly: true, approxSizeMb: 264 },
+  { id: "QuantizedSmall", label: "Whisper Small (multilingual)", englishOnly: false, approxSizeMb: 264 },
   { id: "QuantizedLargeTurbo", label: "Whisper Large Turbo", englishOnly: false, approxSizeMb: 874 },
 ];
 
@@ -205,21 +206,58 @@ export interface LocalTranscriber {
   ensureModel(model: WhisperModel, onProgress?: (pct: number) => void): Promise<void>;
   /** Mic device names for an optional picker. */
   listMicrophoneDevices(): Promise<string[]>;
-  /** Start the local Whisper server (idempotent) and begin capturing mic+system audio. */
+  /** Start the local Whisper server (idempotent) and begin capturing mic+system audio.
+   *  First waits for a closed view's capture to confirm it stopped. */
   start(opts: { model: WhisperModel; language: string; micDevice?: string }): Promise<{ sessionId: string }>;
-  /** Stop capture, batch-transcribe the recording, return the raw response. */
+  /** Stop capture, batch-transcribe the recording, return the raw response.
+   *  Rejects with CaptureStopUnconfirmedError, keeping the session so stop()
+   *  can be retried, when native capture does not confirm it stopped. */
   stop(): Promise<LocalTranscriptResult>;
-  /** Stop an unfinished native capture when its UI is removed. */
+  /** Stop an unfinished native capture when its UI is removed. Resolves only
+   *  once native capture confirms it stopped; rejects otherwise. */
   stopCaptureOnUnmount(): Promise<void>;
   /** Subscribe to capture/transcription status; returns unsubscribe. */
   onStatus(cb: (s: LocalTranscriberStatus) => void): () => void;
 }
 
+/** How long to wait for a native command plus its terminal event. */
+export interface LocalTranscriberTimeouts {
+  captureStopMs: number;
+  transcribeMs: number;
+  modelDownloadMs: number;
+}
 
-const CAPTURE_STOP_TIMEOUT_MS = 120_000;
-const TRANSCRIBE_TIMEOUT_MS = 30 * 60_000;
-const MODEL_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_TIMEOUTS: LocalTranscriberTimeouts = {
+  captureStopMs: 120_000,
+  transcribeMs: 30 * 60_000,
+  modelDownloadMs: 30 * 60_000,
+};
 
+/**
+ * Native capture did not confirm it stopped: stop_capture failed or never
+ * returned, or its matching `stopped` event did not arrive in time. The
+ * recording may still be running, so the session is kept for a retried stop().
+ */
+export class CaptureStopUnconfirmedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CaptureStopUnconfirmedError";
+  }
+}
+
+type CaptureStoppedEvent = Extract<CaptureLifecycleEvent, { type: "stopped" }>;
+
+const VIEW_CLOSED_MESSAGE = "Recording stopped because the Local recording view closed";
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Registers the listener, then runs the command and waits for its matching
+ * terminal event. One timer covers both, so a command that never returns
+ * cannot outlive the timeout.
+ */
 async function invokeAndWaitForEvent<T>(
   subscribe: (cb: (e: { payload: T }) => void) => Promise<Unlisten>,
   match: (payload: T) => boolean,
@@ -229,42 +267,81 @@ async function invokeAndWaitForEvent<T>(
   onEvent?: (payload: T) => void,
 ): Promise<T> {
   let resolveEvent!: (payload: T) => void;
-  let rejectEvent!: (error: Error) => void;
-  const event = new Promise<T>((resolve, reject) => {
+  const event = new Promise<T>((resolve) => {
     resolveEvent = resolve;
-    rejectEvent = reject;
   });
-  // A command can fail after the timeout but before we reach `await event`.
-  void event.catch(() => {});
   // Await registration before invoking: a native command may emit its terminal
   // event before its own promise resolves.
   const unlisten = await subscribe((e) => {
     onEvent?.(e.payload);
     if (match(e.payload)) resolveEvent(e.payload);
   });
-  const timer = setTimeout(() => rejectEvent(new Error(`Timed out waiting for ${label}`)), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs);
+  });
   try {
-    await invoke();
-    return await event;
+    const [, payload] = await Promise.race([Promise.all([invoke(), event]), timeout]);
+    return payload;
   } finally {
     clearTimeout(timer);
     unlisten();
   }
 }
 
-export function createLocalTranscriber(injected?: LocalTranscriberBridge): LocalTranscriber {
+/** Identity of the real native listener, which is process-wide. An injected
+ *  (test) bridge is its own identity. */
+const NATIVE_CAPTURE = {};
+
+/**
+ * Close-time stops that may not have confirmed yet, keyed by native identity.
+ * A remounted view gets a new transcriber, so this is how its start() learns
+ * that the previous view's capture could still be live.
+ */
+const closingCaptures = new WeakMap<object, Promise<void>>();
+
+async function awaitClosingCapture(nativeKey: object, b: LocalTranscriberBridge): Promise<void> {
+  const closing = closingCaptures.get(nativeKey);
+  if (closing === undefined) return;
+  const confirmed = await closing.then(() => true, () => false);
+  if (!confirmed) {
+    // The closed view never received its terminal event; only native state can
+    // say whether that capture is still running.
+    const state = await b.transcription.getCaptureState();
+    if (state.status === "error") throw new Error(`get_capture_state: ${state.error}`);
+    if (state.data !== "inactive") {
+      throw new Error(
+        `A previous local recording has not confirmed it stopped (native capture is ${state.data}). Try again once it finishes.`,
+      );
+    }
+  }
+  if (closingCaptures.get(nativeKey) === closing) closingCaptures.delete(nativeKey);
+}
+
+export function createLocalTranscriber(
+  injected?: LocalTranscriberBridge,
+  options: { timeouts?: Partial<LocalTranscriberTimeouts> } = {},
+): LocalTranscriber {
+  const timeouts: LocalTranscriberTimeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
   let bridgePromise: Promise<LocalTranscriberBridge> | null = injected
     ? Promise.resolve(injected)
     : null;
   const bridge = () => (bridgePromise ??= loadBridge());
+  const nativeKey: object = injected ?? NATIVE_CAPTURE;
 
   let sessionId: string | null = null;
   let model: WhisperModel = DEFAULT_LOCAL_MODEL;
   let language = "en";
   let baseUrl: string | null = null;
   let startedAt: string | null = null;
+  /** True from a successful start_capture until this session's `stopped` event. */
   let captureActive = false;
-  let captureStopping = false;
+  /** This session's terminal `stopped` event, once native capture has sent it. */
+  let captureStopped: CaptureStoppedEvent | null = null;
+  /** The one in-flight stop_capture + terminal wait, shared by stop() and unmount. */
+  let captureStop: Promise<CaptureStoppedEvent> | null = null;
+  let starting: Promise<unknown> | null = null;
+  let stopping = false;
   let lifecycleGeneration = 0;
   const statusCbs = new Set<(s: LocalTranscriberStatus) => void>();
   let status: LocalTranscriberStatus = { kind: "idle" };
@@ -272,6 +349,20 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
   const emit = (s: LocalTranscriberStatus) => {
     status = s;
     for (const cb of statusCbs) cb(s);
+  };
+
+  // Only the session's terminal event ends a capture. stop_capture returns once
+  // the stop is dispatched, so its success proves nothing.
+  const markCaptureStopped = (p: CaptureStoppedEvent) => {
+    if (p.session_id !== sessionId) return;
+    captureActive = false;
+    captureStopped = p;
+  };
+
+  const releaseSession = () => {
+    sessionId = null;
+    startedAt = null;
+    captureStopped = null;
   };
 
   // Event listeners live for the transcriber's lifetime; each is subscribed
@@ -283,6 +374,9 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
         if (e.payload.session_id !== sessionId) return;
         if (e.payload.type === "started") emit({ kind: "recording" });
         if (e.payload.type === "finalizing") emit({ kind: "stopping" });
+        // Also records a capture that ended on its own (e.g. a failed audio
+        // actor) before Stop, so stop() uses it instead of waiting on a no-op.
+        if (e.payload.type === "stopped") markCaptureStopped(e.payload);
       }),
       b.transcription.events.captureStatusEvent.listen((e) => {
         if (e.payload.session_id !== sessionId) return;
@@ -300,6 +394,32 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
         }
       }),
     ]));
+
+  /** Ask native capture to stop, then wait for this session's `stopped` event. */
+  const confirmCaptureStopped = (b: LocalTranscriberBridge): Promise<CaptureStoppedEvent> => {
+    if (captureStopped !== null) return Promise.resolve(captureStopped);
+    if (captureStop !== null) return captureStop;
+    const session = sessionId;
+    captureStop = invokeAndWaitForEvent<CaptureLifecycleEvent>(
+      (cb) => b.transcription.events.captureLifecycleEvent.listen(cb),
+      (p) => p.type === "stopped" && p.session_id === session,
+      timeouts.captureStopMs,
+      "native capture to confirm it stopped",
+      async () => {
+        const r = await b.transcription.stopCapture();
+        if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
+      },
+    )
+      .then((p) => {
+        if (p.type !== "stopped") throw new Error("Unexpected capture lifecycle state");
+        markCaptureStopped(p);
+        return p;
+      })
+      .finally(() => {
+        captureStop = null;
+      });
+    return captureStop;
+  };
 
   return {
     async isModelDownloaded(m) {
@@ -324,7 +444,7 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
       const done = await invokeAndWaitForEvent<DownloadProgressPayload>(
         (cb) => b.localStt.events.downloadProgressPayload.listen(cb),
         (p) => p.model === m && (p.status === "completed" || (typeof p.status === "object" && "failed" in p.status)),
-        MODEL_DOWNLOAD_TIMEOUT_MS,
+        timeouts.modelDownloadMs,
         "model download",
         async () => {
           const r = await b.localStt.downloadModel(m);
@@ -349,21 +469,25 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
     },
 
     async start(opts) {
-      if (sessionId !== null) throw new Error("A local recording is already active");
+      if (sessionId !== null || starting !== null) throw new Error("A local recording is already active");
       const generation = lifecycleGeneration;
       model = opts.model;
       language = opts.language;
       emit({ kind: "starting" });
-      try {
+      const run = (async () => {
         const b = await bridge();
+        // Never start over a closed view's capture that is not yet confirmed stopped.
+        await awaitClosingCapture(nativeKey, b);
+        if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
         await ensureListeners(b);
         const server = await b.localStt.startServer(model);
         if (server.status === "error") throw new Error(`start_server: ${server.error}`);
         baseUrl = server.data;
-        sessionId = crypto.randomUUID();
+        const session = crypto.randomUUID();
+        sessionId = session;
         startedAt = new Date().toISOString();
         const r = await b.transcription.startCapture({
-          session_id: sessionId,
+          session_id: session,
           languages: [language],
           onboarding: false,
           model,
@@ -375,17 +499,22 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
         });
         if (r.status === "error") throw new Error(`start_capture: ${r.error}`);
         captureActive = true;
-        if (generation !== lifecycleGeneration) {
-          await b.transcription.stopCapture();
-          captureActive = false;
-          throw new Error("Recording stopped because the Local recording view closed");
-        }
+        // The view closed while capture was starting: its close-time teardown
+        // (stopCaptureOnUnmount) stops this capture and waits for confirmation.
+        if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
         emit({ kind: "recording" });
-        return { sessionId };
+        return { sessionId: session };
+      })();
+      starting = run;
+      try {
+        return await run;
       } catch (err) {
-        sessionId = null;
-        emit({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+        // A capture that did start stays owned until native capture confirms it stopped.
+        if (!captureActive) releaseSession();
+        emit({ kind: "error", message: errorMessage(err) });
         throw err;
+      } finally {
+        starting = null;
       }
     },
 
@@ -393,69 +522,72 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
       if (sessionId === null || baseUrl === null || startedAt === null) {
         throw new Error("No local recording is active");
       }
-      const b = await bridge();
-      emit({ kind: "stopping" });
-      captureStopping = true;
-      // Any failure releases the session so the user can start a fresh recording.
+      if (stopping) throw new Error("The local recording is already stopping");
+      const session = sessionId;
+      const sessionStartedAt = startedAt;
+      const serverUrl = baseUrl;
+      stopping = true;
       try {
-        const stopped = await invokeAndWaitForEvent<CaptureLifecycleEvent>(
-          (cb) => b.transcription.events.captureLifecycleEvent.listen(cb),
-          (p) => p.type === "stopped" && p.session_id === sessionId,
-          CAPTURE_STOP_TIMEOUT_MS,
-          "capture to finish writing",
-          async () => {
-            const r = await b.transcription.stopCapture();
-            if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
-            captureActive = false;
-          },
-        );
-        captureStopping = false;
-        if (stopped.type !== "stopped") throw new Error("Unexpected capture lifecycle state");
-        if (stopped.error) throw new Error(`Capture failed: ${stopped.error}`);
-        const audioPath = stopped.audio_path;
-        if (!audioPath) throw new Error("Recording produced no audio file");
-
-        emit({ kind: "transcribing", progress: null });
-        const done = await invokeAndWaitForEvent<TranscriptionEvent>(
-          (cb) => b.transcription.events.transcriptionEvent.listen(cb),
-          (p) =>
-            p.session_id === sessionId && (p.type === "completed" || p.type === "failed"),
-          TRANSCRIBE_TIMEOUT_MS,
-          "on-device transcription",
-          async () => {
-            const r = await b.transcription.startTranscription({
-              session_id: sessionId!,
-              provider: "whispercpp",
-              file_path: audioPath,
-              model,
-              base_url: baseUrl!,
-              api_key: "",
-              languages: [language],
-              keywords: [],
-            });
-            if (r.status === "error") throw new Error(`start_transcription: ${r.error}`);
-          },
-        );
-        if (done.type === "failed") {
-          throw new Error(`Transcription failed (${done.code}): ${done.error}`);
-        }
-        if (done.type !== "completed") {
-          throw new Error(`Transcription ended unexpectedly (${done.type})`);
+        const b = await bridge();
+        emit({ kind: "stopping" });
+        let stopped: CaptureStoppedEvent;
+        try {
+          stopped = await confirmCaptureStopped(b);
+        } catch (err) {
+          // Without the terminal event the capture may still be live: keep the
+          // session so the user can retry Stop instead of being told it stopped.
+          const message = `Stopping was not confirmed: ${errorMessage(err)}. The recording may still be running.`;
+          emit({ kind: "error", message });
+          throw new CaptureStopUnconfirmedError(message);
         }
 
-        const result: LocalTranscriptResult = {
-          sessionId,
-          startedAt,
-          model,
-          language,
-          response: done.response,
-        };
-        emit({ kind: "done" });
-        return result;
+        // Native capture has ended; every outcome from here releases the session.
+        try {
+          if (stopped.error) throw new Error(`Capture failed: ${stopped.error}`);
+          const audioPath = stopped.audio_path;
+          if (!audioPath) throw new Error("Recording produced no audio file");
+
+          emit({ kind: "transcribing", progress: null });
+          const done = await invokeAndWaitForEvent<TranscriptionEvent>(
+            (cb) => b.transcription.events.transcriptionEvent.listen(cb),
+            (p) => p.session_id === session && (p.type === "completed" || p.type === "failed"),
+            timeouts.transcribeMs,
+            "on-device transcription",
+            async () => {
+              const r = await b.transcription.startTranscription({
+                session_id: session,
+                provider: "whispercpp",
+                file_path: audioPath,
+                model,
+                base_url: serverUrl,
+                api_key: "",
+                languages: [language],
+                keywords: [],
+              });
+              if (r.status === "error") throw new Error(`start_transcription: ${r.error}`);
+            },
+          );
+          if (done.type === "failed") {
+            throw new Error(`Transcription failed (${done.code}): ${done.error}`);
+          }
+          if (done.type !== "completed") {
+            throw new Error(`Transcription ended unexpectedly (${done.type})`);
+          }
+
+          const result: LocalTranscriptResult = {
+            sessionId: session,
+            startedAt: sessionStartedAt,
+            model,
+            language,
+            response: done.response,
+          };
+          emit({ kind: "done" });
+          return result;
+        } finally {
+          releaseSession();
+        }
       } finally {
-        captureStopping = false;
-        sessionId = null;
-        startedAt = null;
+        stopping = false;
       }
     },
 
@@ -464,13 +596,20 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
       const activeListeners = listeners;
       listeners = null;
       void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten())).catch(() => {});
-      if (!captureActive || captureStopping) return;
-      const b = await bridge();
-      const r = await b.transcription.stopCapture();
-      if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
-      captureActive = false;
-      sessionId = null;
-      startedAt = null;
+      const pendingStart = starting;
+      if (!captureActive && pendingStart === null) return;
+      // The view is going away, but the stop still has to be confirmed. Until it
+      // is, a remounted view's start() waits on (or re-checks) this capture.
+      const closing = (async () => {
+        // A start in flight sees the new generation and leaves its capture here;
+        // its own rejection is delivered to its caller.
+        if (pendingStart !== null) await pendingStart.then(() => {}, () => {});
+        if (!captureActive) return;
+        await confirmCaptureStopped(await bridge());
+        releaseSession();
+      })();
+      closingCaptures.set(nativeKey, closing);
+      await closing;
     },
 
     onStatus(cb) {
@@ -605,11 +744,25 @@ export function normalizeLocalTranscript(
   };
 }
 
-/** Write the local transcript into the user's space. Idempotent by (source, sourceId). */
+/** A normalized transcript with speech, ready to save (and to re-save verbatim on retry). */
+export type PreparedLocalTranscript = ReturnType<typeof normalizeLocalTranscript>;
+
+export const NO_SPEECH_MESSAGE = "No speech was transcribed — nothing was saved.";
+
+/** Normalize once for the save and every retry of it. Throws when there is no
+ *  speech, so silence never becomes an empty meeting. */
+export function prepareLocalTranscript(r: LocalTranscriptResult): PreparedLocalTranscript {
+  const prepared = normalizeLocalTranscript(r);
+  if (prepared.sentences.length === 0) throw new Error(NO_SPEECH_MESSAGE);
+  return prepared;
+}
+
+/** Write the local transcript into the user's space. upsertMeeting is keyed on
+ *  (source, sourceId) and rewrites the transcript KV body, so re-running it
+ *  with the same prepared value repairs a partial earlier write. */
 export async function saveLocalTranscript(
   tcw: TinyCloudWeb,
-  r: LocalTranscriptResult,
+  prepared: PreparedLocalTranscript,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
-  const { meeting, sentences } = normalizeLocalTranscript(r);
-  return upsertMeeting(tcw, meeting, sentences);
+  return upsertMeeting(tcw, prepared.meeting, prepared.sentences);
 }
