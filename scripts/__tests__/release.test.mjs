@@ -747,6 +747,7 @@ test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built f
   assert.match(text, /## Web app \(bundled, @tinychat\/frontend@0\.2\.0-beta\.3\)\n\n### Minor Changes\n\n- def5678: Web feature X\n/);
   assert.match(text, /CFBundleShortVersionString 0\.2\.0, CFBundleVersion 200003/);
   assert.match(text, new RegExp(`built from \`${sha}\``));
+  assert.match(text, /Developer ID signed, notarized and stapled/);
   assert.doesNotMatch(text, /- Old|Rewritten later/);
 });
 
@@ -781,16 +782,20 @@ test('desktop-release-plan.mjs refuses bad tags, tags off main and version misma
 
 test('the Exo build is defined once and shared by CI and releases', () => {
   for (const name of ['desktop.yml', 'desktop-release.yml', 'desktop-build.yml']) {
-    const builds = (read(repo, `.github/workflows/${name}`).match(/^\s+run: .*tauri build/gm) ?? []).length;
-    assert.equal(builds, name === 'desktop-build.yml' ? 1 : 0, `${name} runs tauri build ${builds} times`);
+    const text = read(repo, `.github/workflows/${name}`);
+    for (const command of ['tauri build', 'tauri bundle']) {
+      const runs = (text.match(new RegExp(`^\\s+(?:run: )?bun run --cwd desktop ${command}`, 'gm')) ?? []).length;
+      assert.equal(runs, name === 'desktop-build.yml' ? 1 : 0, `${name} runs ${command} ${runs} times`);
+    }
   }
   assert.match(triggers('.github/workflows/desktop-build.yml'), /^ {2}workflow_call:/m);
   for (const name of ['desktop.yml', 'desktop-release.yml']) assert.match(read(repo, `.github/workflows/${name}`), /uses: \.\/\.github\/workflows\/desktop-build\.yml/);
   const build = read(repo, '.github/workflows/desktop-build.yml');
   assert.match(build, /shared-key: exo-desktop-macos-arm64/);
-  assert.match(build, /--config "\$TAURI_BUNDLE_CONFIG"/);
-  // Only main's own CI builds write the cache; release builds (which pass a ref) only restore it.
-  assert.match(build, /SAVE_CACHE: \$\{\{ github\.ref == 'refs\/heads\/main' && inputs\.ref == '' \}\}/);
+  assert.match(build, /tauri build --no-bundle --config "\$TAURI_BUNDLE_CONFIG"/);
+  assert.match(build, /tauri bundle --config "\$TAURI_BUNDLE_CONFIG"/);
+  // Only main's own CI builds write the cache; release and signing builds only restore it.
+  assert.match(build, /SAVE_CACHE: \$\{\{ github\.ref == 'refs\/heads\/main' && inputs\.ref == '' && !inputs\.sign \}\}/);
   assert.match(build, /ref: \$\{\{ inputs\.ref \|\| github\.sha \}\}/);
 });
 
@@ -836,4 +841,48 @@ test('deploy-target.mjs gates an older release commit from main\'s checkout (rol
   assert.equal(rollback.status, 0, rollback.stderr);
   assert.match(rollback.stdout, new RegExp(`^sha=${stable}$`, 'm'));
   assert.match(rollback.stdout, /^label=@tinychat\/backend@0\.1\.1$/m);
+});
+
+// Signing: only main's release workflow reaches the desktop-release environment, compiles without secrets, and
+// verifies signing and notarization before anything is uploaded or published.
+test('release builds are signed from main only, compiled without secrets, and verified before upload', () => {
+  const build = read(repo, '.github/workflows/desktop-build.yml');
+  assert.match(build, /environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}/);
+  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: true\n/);
+  assert.doesNotMatch(read(repo, '.github/workflows/desktop.yml'), /sign:/);
+  assert.doesNotMatch(build, /continue-on-error/);
+
+  const steps = ['Verify signing provenance', 'Check signing secrets', 'Build Exo desktop app', 'Write the App Store Connect API key',
+    'Bundle Exo (signed and notarized for releases)', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Package .app', 'Upload dmg + app'];
+  const order = steps.map(name => build.indexOf(`- name: ${name}\n`));
+  assert.ok(order.every(index => index !== -1), `steps: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'provenance and secrets are checked first; verification passes before packaging and upload');
+  assert.ok(build.indexOf('${{ secrets.') > build.indexOf('- name: Verify signing provenance\n'), 'no secret is referenced before the provenance check');
+  for (const name of ['Verify signing provenance', 'Check signing secrets', 'Write the App Store Connect API key', 'Notarize and staple the DMG', 'Verify signing and notarization']) {
+    assert.match(build, new RegExp(`- name: ${name}\\n(?:\\s+id: \\w+\\n)?\\s+if: inputs\\.sign\\n`));
+  }
+  const provenance = build.slice(build.indexOf('- name: Verify signing provenance'), build.indexOf('- name: Check signing secrets'));
+  assert.match(provenance, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/desktop-release\.yml@refs\/heads\/main/);
+  assert.match(provenance, /\[ "\$GITHUB_REF" != refs\/heads\/main \]/);
+  assert.match(provenance, /git merge-base --is-ancestor "\$WORKFLOW_SHA" origin\/main/);
+  assert.match(provenance, /git merge-base --is-ancestor "\$sha" origin\/main/);
+  assert.match(provenance, /git tag --points-at "\$sha"/);
+
+  // Signing secrets reach only the bundle step (tauri bundle compiles nothing), never the compile step.
+  const step = name => build.slice(build.indexOf(`- name: ${name}\n`), build.indexOf('\n\n', build.indexOf(`- name: ${name}\n`)));
+  assert.doesNotMatch(step('Build Exo desktop app'), /secrets\./);
+  assert.match(step('Bundle Exo (signed and notarized for releases)'), /secrets\.APPLE_CERTIFICATE/);
+  assert.match(build, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
+
+  const conf = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
+  assert.equal(conf.bundle.macOS.hardenedRuntime, true);
+  assert.equal(conf.bundle.macOS.entitlements, 'Entitlements.plist');
+  assert.match(read(repo, 'desktop/src-tauri/Entitlements.plist'), /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/);
+  assert.equal(conf.bundle.macOS.signingIdentity, undefined, 'the identity comes from CI only, so local builds stay unsigned');
+});
+
+test('verify-desktop-signing.sh rejects a missing app before running any check', t => {
+  const result = spawnSync('bash', [join(repo, 'scripts/release/verify-desktop-signing.sh'), join(tempDir(t), 'Exo.app'), 'Exo.dmg', 'ABCDE12345'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /::error::no app bundle at/);
 });

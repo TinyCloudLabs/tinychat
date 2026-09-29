@@ -38,6 +38,7 @@
   "bundle": {
     "macOS": {
       "entitlements": "Entitlements.plist",
+      "hardenedRuntime": true,
       "minimumSystemVersion": "14.2"
     },
     "active": true,
