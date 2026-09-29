@@ -862,6 +862,7 @@ export function App() {
                 sidebarOpen={sidebarOpen}
                 setSidebarOpen={setSidebarOpen}
                 showConnectors={showConnectors}
+                showSettings={showSettings}
                 pendingMeetings={pendingMeetings}
                 onToggleConnectors={() =>
                   !LOCAL_VALIDATION && (showConnectors ? onBack() : navigate(CONNECTORS_SOURCES_PATH))
@@ -1244,6 +1245,7 @@ function ChatWorkspace(props: {
   sidebarOpen: boolean;
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
   showConnectors: boolean;
+  showSettings: boolean;
   pendingMeetings: number;
   onToggleConnectors: () => void;
   onOpenChat: () => void;
@@ -1361,7 +1363,7 @@ function ChatWorkspace(props: {
     closeSidebar();
     props.onToggleConnectors();
   }, [closeSidebar, props.onToggleConnectors]);
-  const { showConnectors, pendingMeetings } = props;
+  const { showConnectors, showSettings, pendingMeetings } = props;
   const connectorsNavigation = (
     <Button
       variant="ghost"
@@ -1419,15 +1421,19 @@ function ChatWorkspace(props: {
           />
         </SheetContent>
       </Sheet>
-      {/* C3: first-time enablement + expired-delegation reconnect affordance. */}
-      <AgentEnablementBanner
-        capability={capability}
-        enableError={enableError}
-        enabling={enabling}
-        onEnable={onEnable}
-        reconnectReason={reconnectReason}
-        silentlyEnabled={silentlyEnabled}
-      />
+      {/* C3: first-time enablement + expired-delegation reconnect affordance.
+          Chat views only — never over Connectors (Sources | Library) or
+          Settings; Settings keeps its own AgentAccessControls. */}
+      {!showConnectors && !showSettings && (
+        <AgentEnablementBanner
+          capability={capability}
+          enableError={enableError}
+          enabling={enabling}
+          onEnable={onEnable}
+          reconnectReason={reconnectReason}
+          silentlyEnabled={silentlyEnabled}
+        />
+      )}
     </AssistantRuntimeProvider>
   );
 }
