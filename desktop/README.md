@@ -21,8 +21,25 @@ bun install                 # repo root
 bun run dev:desktop         # = tauri dev (transcription enabled by default)
 ```
 
-Prereqs: Rust stable, plus on Linux `webkit2gtk-4.1`, `libgtk-3-dev`,
-`libayatana-appindicator3-dev`, `librsvg2-dev` (standard Tauri 2 deps).
+Prereqs: Rust stable, Bun 1.3.9, and full Xcode (not just the Command Line
+Tools) with the Metal Toolchain component installed
+(`xcodebuild -downloadComponent MetalToolchain`) — the local transcription
+engine compiles whisper.cpp/MLX Metal shaders and SwiftPM packages. Exo desktop
+is macOS-only (Apple Silicon, macOS 14.2+), because the default `transcription`
+feature targets Core Audio process taps and Metal; CI builds macOS only.
+Use `cargo check --no-default-features` to check the shell on other platforms.
+
+Build notes:
+
+- The vendored `swift-rs` (`desktop/vendor/swift-rs`) forces SwiftPM's
+  `native` build system; Xcode 27's default `swiftbuild` hides the Swift
+  bridge symbols from the release link. See its `PROVENANCE.md`.
+- `src-tauri/.cargo/config.toml` forces an empty `POSTHOG_API_KEY`: anarlog's
+  transitive analytics crate reads it at compile time, and Exo never
+  registers that plugin or embeds a vendor key. Cargo only reads this file
+  when run under `desktop/src-tauri` (the tauri CLI does).
+- `[profile.release.build-override] strip = "none"` works around macOS 27
+  rejecting stripped proc-macro dylibs (rust-lang/rust#157750).
 
 `bun run build:desktop` produces installers with local transcription enabled
 (builds the frontend first with production env: `VITE_BACKEND_URL=https://api.tinycloud.chat`).
@@ -37,9 +54,7 @@ with source `exo-local` (label "Exo Local") — so it shows up in Meetings,
 meeting chat, and retrieval like any other connector.
 
 The `transcription` Cargo feature is enabled by default in desktop dev and
-release builds. The local engine currently targets macOS/Metal and compiles a
-large native dependency graph. To check the shell without it, use
-`cargo check --no-default-features` in `desktop/src-tauri/`. The feature wires up:
+release builds. The feature wires up:
 
 - `audio-actual` → a managed `Arc<dyn AudioProvider>` (the transcription plugin's
   setup panics without it);
@@ -71,7 +86,10 @@ Whisper models download on first use from `hyprnote.s3.us-east-1.amazonaws.com`
 anarlog hardcodes `anarlog`/`hyprnote` folders for release builds; the vendored
 `storage` crate (`desktop/vendor/anarlog-storage`, MIT — see its
 `PROVENANCE.md`) is patched via `[patch]` to use the host bundle identifier, so
-Exo never shares or follows another app's vault redirect.
+Exo never shares or follows another app's vault redirect. The only remaining
+redirects are explicit: a `vault_path` in Exo's own
+`xyz.tinycloud.exo/global.json` (Exo never writes one) or the
+`CHAR_VAULT_BASE` environment variable (developer override).
 
 macOS prompts: Microphone (`NSMicrophoneUsageDescription`) and system-audio
 capture (`NSAudioCaptureUsageDescription`, process tap — macOS 14.2+). Dev

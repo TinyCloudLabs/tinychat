@@ -322,6 +322,14 @@ impl SwiftLinker {
             command
                 // Build the package (duh)
                 .arg("build")
+                // Exo patch: force SwiftPM's classic build system. Swift 6.4 /
+                // Xcode 27 default to `swiftbuild`, which prelinks each target with
+                // `ld -r` and demotes SwiftRs's private-extern @_cdecl bridge
+                // symbols (retain_object, release_object, data_from_bytes,
+                // string_from_bytes) to locals -> undefined at the final release
+                // link. `native` archives raw objects (and is already the default
+                // in Swift <= 6.3). See ../PROVENANCE.md.
+                .args(["--build-system", "native"])
                 // SDK path for regular compilation (idk)
                 .args(["--sdk", sdk_path.trim()])
                 // Release/Debug configuration
@@ -352,15 +360,6 @@ impl SwiftLinker {
 
             println!("cargo:rerun-if-changed={}", package_path.display());
             println!("cargo:rustc-link-search=native={}", search_path.display());
-            // Newer SwiftPM (Xcode ≥16.3) writes products to
-            // <build-path>/out/Products/<Config>/ instead of the classic
-            // <build-path>/<arch>-<os>/<config>/ layout this file assumes.
-            // Emit both so linking works regardless of toolchain vintage.
-            let products_dir = out_path
-                .join("out")
-                .join("Products")
-                .join(if debug { "Debug" } else { "Release" });
-            println!("cargo:rustc-link-search=native={}", products_dir.display());
             println!("cargo:rustc-link-lib=static={}", package.name);
 
             // Link binary framework dependencies (xcframeworks downloaded by SPM)
