@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
+      - name: Install the existing deployment client
+        run: npm install --global phala@1.1.22
       - name: Inspect deployment prerequisites with GET requests only
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -35,6 +37,7 @@ jobs:
           import json
           import os
           import re
+          import subprocess
           import urllib.error
           import urllib.request
           from pathlib import Path
@@ -54,6 +57,21 @@ jobs:
                   return None
           def get(url, headers):
               assert url in URLS
+              if url.startswith(BASE + '/'):
+                  # Match the production workflow's pinned, authenticated client.
+                  # Capture all raw output; only the projection below is published.
+                  try:
+                      result = subprocess.run(['phala', 'api', url.removeprefix(BASE), '-X', 'GET'],
+                                              capture_output=True, text=True, timeout=30, cwd='/tmp')
+                  except Exception:
+                      return {'status': 'client_transport_error'}, None
+                  if result.returncode != 0:
+                      return {'status': 'client_error', 'exitCode': result.returncode,
+                              'reportsExpiredKey': 'api key expired' in (result.stdout + result.stderr).lower()}, None
+                  try:
+                      return {'httpStatus': 200, 'client': 'phala@1.1.22'}, json.loads(result.stdout)
+                  except ValueError:
+                      return {'status': 'client_non_json'}, None
               request = urllib.request.Request(url, method='GET', headers=headers)
               try:
                   response = urllib.request.build_opener(NoRedirects).open(request, timeout=25)
