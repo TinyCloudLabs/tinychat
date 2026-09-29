@@ -232,6 +232,75 @@ describe("createLocalTranscriber", () => {
     ]);
   });
 
+  test("registers terminal listeners before commands can emit immediately", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let activeSessionId = "";
+    const startCapture = bridge.transcription.startCapture;
+    bridge.transcription.startCapture = async (params) => {
+      activeSessionId = params.session_id;
+      return startCapture(params);
+    };
+    const captureListen = bridge.transcription.events.captureLifecycleEvent.listen;
+    bridge.transcription.events.captureLifecycleEvent.listen = async (cb) => {
+      await Promise.resolve();
+      return captureListen(cb);
+    };
+    const transcriptionListen = bridge.transcription.events.transcriptionEvent.listen;
+    bridge.transcription.events.transcriptionEvent.listen = async (cb) => {
+      await Promise.resolve();
+      return transcriptionListen(cb);
+    };
+    bridge.transcription.stopCapture = async () => {
+      bridge.emitCaptureLifecycle({
+        type: "stopped",
+        session_id: activeSessionId,
+        audio_path: "/vault/sessions/x/audio.mp3",
+        requested_live_transcription: false,
+        live_transcription_active: false,
+        error: null,
+      });
+      return { status: "ok", data: null };
+    };
+    bridge.transcription.startTranscription = async () => {
+      bridge.emitTranscription({
+        type: "completed",
+        session_id: activeSessionId,
+        response: batchResponse([{ word: "immediate", start: 0, end: 1 }]) as never,
+        mode: "streamed",
+      });
+      return { status: "ok", data: null };
+    };
+
+    const transcriber = createLocalTranscriber(bridge);
+    await transcriber.start({ model: "QuantizedTinyEn", language: "en" });
+    const result = await transcriber.stop();
+    expect(result.response.results.channels[0]!.alternatives[0]!.words?.[0]?.word).toBe("immediate");
+  });
+
+  test("leaving the view stops an active native capture", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const transcriber = createLocalTranscriber(bridge);
+    await transcriber.start({ model: "QuantizedTinyEn", language: "en" });
+    await transcriber.stopCaptureOnUnmount();
+    expect(bridge.calls).toContain("stop_capture");
+  });
+
+  test("leaving during start still stops capture once it starts", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let finishStart!: () => void;
+    bridge.transcription.startCapture = async () => {
+      await new Promise<void>((resolve) => { finishStart = resolve; });
+      return { status: "ok", data: null };
+    };
+    const transcriber = createLocalTranscriber(bridge);
+    const starting = transcriber.start({ model: "QuantizedTinyEn", language: "en" });
+    while (!finishStart) await Promise.resolve();
+    await transcriber.stopCaptureOnUnmount();
+    finishStart();
+    await expect(starting).rejects.toThrow("view closed");
+    expect(bridge.calls).toContain("stop_capture");
+  });
+
   test("stop() rejects when Stopped carries no audio path", async () => {
     const bridge = makeBridge();
     const t = createLocalTranscriber(bridge);

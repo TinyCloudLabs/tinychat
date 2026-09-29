@@ -209,6 +209,8 @@ export interface LocalTranscriber {
   start(opts: { model: WhisperModel; language: string; micDevice?: string }): Promise<{ sessionId: string }>;
   /** Stop capture, batch-transcribe the recording, return the raw response. */
   stop(): Promise<LocalTranscriptResult>;
+  /** Stop an unfinished native capture when its UI is removed. */
+  stopCaptureOnUnmount(): Promise<void>;
   /** Subscribe to capture/transcription status; returns unsubscribe. */
   onStatus(cb: (s: LocalTranscriberStatus) => void): () => void;
 }
@@ -218,37 +220,36 @@ const CAPTURE_STOP_TIMEOUT_MS = 120_000;
 const TRANSCRIBE_TIMEOUT_MS = 30 * 60_000;
 const MODEL_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 
-function waitForEvent<T>(
+async function invokeAndWaitForEvent<T>(
   subscribe: (cb: (e: { payload: T }) => void) => Promise<Unlisten>,
   match: (payload: T) => boolean,
   timeoutMs: number,
   label: string,
+  invoke: () => Promise<void>,
+  onEvent?: (payload: T) => void,
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    let unlisten: Unlisten | null = null;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      unlisten?.();
-      fn();
-    };
-    const timer = setTimeout(
-      () => finish(() => reject(new Error(`Timed out waiting for ${label}`))),
-      timeoutMs,
-    );
-    void subscribe((e) => {
-      if (match(e.payload)) finish(() => resolve(e.payload));
-    }).then(
-      (un) => {
-        unlisten = un;
-        if (settled) un();
-      },
-      (err) =>
-        finish(() => reject(err instanceof Error ? err : new Error(String(err)))),
-    );
+  let resolveEvent!: (payload: T) => void;
+  let rejectEvent!: (error: Error) => void;
+  const event = new Promise<T>((resolve, reject) => {
+    resolveEvent = resolve;
+    rejectEvent = reject;
   });
+  // A command can fail after the timeout but before we reach `await event`.
+  void event.catch(() => {});
+  // Await registration before invoking: a native command may emit its terminal
+  // event before its own promise resolves.
+  const unlisten = await subscribe((e) => {
+    onEvent?.(e.payload);
+    if (match(e.payload)) resolveEvent(e.payload);
+  });
+  const timer = setTimeout(() => rejectEvent(new Error(`Timed out waiting for ${label}`)), timeoutMs);
+  try {
+    await invoke();
+    return await event;
+  } finally {
+    clearTimeout(timer);
+    unlisten();
+  }
 }
 
 export function createLocalTranscriber(injected?: LocalTranscriberBridge): LocalTranscriber {
@@ -262,6 +263,9 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
   let language = "en";
   let baseUrl: string | null = null;
   let startedAt: string | null = null;
+  let captureActive = false;
+  let captureStopping = false;
+  let lifecycleGeneration = 0;
   const statusCbs = new Set<(s: LocalTranscriberStatus) => void>();
   let status: LocalTranscriberStatus = { kind: "idle" };
 
@@ -315,30 +319,25 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
         onProgress?.(100);
         return;
       }
-      // download_model returns as soon as the task is SPAWNED; completion is
-      // the "completed"/{failed} status on downloadProgressPayload. Subscribe
-      // first so a small model can't finish before the listener attaches.
-      const finished = waitForEvent<DownloadProgressPayload>(
+      // download_model returns as soon as the task is spawned. Wait for its
+      // terminal event, with the listener registered before the command runs.
+      const done = await invokeAndWaitForEvent<DownloadProgressPayload>(
         (cb) => b.localStt.events.downloadProgressPayload.listen(cb),
         (p) => p.model === m && (p.status === "completed" || (typeof p.status === "object" && "failed" in p.status)),
         MODEL_DOWNLOAD_TIMEOUT_MS,
         "model download",
+        async () => {
+          const r = await b.localStt.downloadModel(m);
+          if (r.status === "error") throw new Error(`download_model: ${r.error}`);
+        },
+        (p) => {
+          if (p.model !== m) return;
+          if (typeof p.status === "object" && "downloading" in p.status) onProgress?.(p.status.downloading);
+          if (p.status === "completed") onProgress?.(100);
+        },
       );
-      const onProgressUn = await b.localStt.events.downloadProgressPayload.listen((e) => {
-        if (e.payload.model !== m) return;
-        const s = e.payload.status;
-        if (typeof s === "object" && "downloading" in s) onProgress?.(s.downloading);
-        if (s === "completed") onProgress?.(100);
-      });
-      try {
-        const r = await b.localStt.downloadModel(m);
-        if (r.status === "error") throw new Error(`download_model: ${r.error}`);
-        const done = await finished;
-        if (typeof done.status === "object" && "failed" in done.status) {
-          throw new Error(`Model download failed: ${done.status.failed}`);
-        }
-      } finally {
-        onProgressUn();
+      if (typeof done.status === "object" && "failed" in done.status) {
+        throw new Error(`Model download failed: ${done.status.failed}`);
       }
     },
 
@@ -351,6 +350,7 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
 
     async start(opts) {
       if (sessionId !== null) throw new Error("A local recording is already active");
+      const generation = lifecycleGeneration;
       model = opts.model;
       language = opts.language;
       emit({ kind: "starting" });
@@ -374,6 +374,12 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
           transcription_mode: "batch",
         });
         if (r.status === "error") throw new Error(`start_capture: ${r.error}`);
+        captureActive = true;
+        if (generation !== lifecycleGeneration) {
+          await b.transcription.stopCapture();
+          captureActive = false;
+          throw new Error("Recording stopped because the Local recording view closed");
+        }
         emit({ kind: "recording" });
         return { sessionId };
       } catch (err) {
@@ -389,43 +395,47 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
       }
       const b = await bridge();
       emit({ kind: "stopping" });
+      captureStopping = true;
       // Any failure releases the session so the user can start a fresh recording.
       try {
-        // Subscribe before invoking so a fast Stopped event can't race past us.
-        const stoppedPromise = waitForEvent<CaptureLifecycleEvent>(
+        const stopped = await invokeAndWaitForEvent<CaptureLifecycleEvent>(
           (cb) => b.transcription.events.captureLifecycleEvent.listen(cb),
           (p) => p.type === "stopped" && p.session_id === sessionId,
           CAPTURE_STOP_TIMEOUT_MS,
           "capture to finish writing",
+          async () => {
+            const r = await b.transcription.stopCapture();
+            if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
+            captureActive = false;
+          },
         );
-        const stopRes = await b.transcription.stopCapture();
-        if (stopRes.status === "error") throw new Error(`stop_capture: ${stopRes.error}`);
-        const stopped = await stoppedPromise;
+        captureStopping = false;
         if (stopped.type !== "stopped") throw new Error("Unexpected capture lifecycle state");
         if (stopped.error) throw new Error(`Capture failed: ${stopped.error}`);
         const audioPath = stopped.audio_path;
         if (!audioPath) throw new Error("Recording produced no audio file");
 
-        const donePromise = waitForEvent<TranscriptionEvent>(
+        emit({ kind: "transcribing", progress: null });
+        const done = await invokeAndWaitForEvent<TranscriptionEvent>(
           (cb) => b.transcription.events.transcriptionEvent.listen(cb),
           (p) =>
             p.session_id === sessionId && (p.type === "completed" || p.type === "failed"),
           TRANSCRIBE_TIMEOUT_MS,
           "on-device transcription",
+          async () => {
+            const r = await b.transcription.startTranscription({
+              session_id: sessionId!,
+              provider: "whispercpp",
+              file_path: audioPath,
+              model,
+              base_url: baseUrl!,
+              api_key: "",
+              languages: [language],
+              keywords: [],
+            });
+            if (r.status === "error") throw new Error(`start_transcription: ${r.error}`);
+          },
         );
-        emit({ kind: "transcribing", progress: null });
-        const txRes = await b.transcription.startTranscription({
-          session_id: sessionId,
-          provider: "whispercpp",
-          file_path: audioPath,
-          model,
-          base_url: baseUrl,
-          api_key: "",
-          languages: [language],
-          keywords: [],
-        });
-        if (txRes.status === "error") throw new Error(`start_transcription: ${txRes.error}`);
-        const done = await donePromise;
         if (done.type === "failed") {
           throw new Error(`Transcription failed (${done.code}): ${done.error}`);
         }
@@ -443,9 +453,24 @@ export function createLocalTranscriber(injected?: LocalTranscriberBridge): Local
         emit({ kind: "done" });
         return result;
       } finally {
+        captureStopping = false;
         sessionId = null;
         startedAt = null;
       }
+    },
+
+    async stopCaptureOnUnmount() {
+      lifecycleGeneration++;
+      const activeListeners = listeners;
+      listeners = null;
+      void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten())).catch(() => {});
+      if (!captureActive || captureStopping) return;
+      const b = await bridge();
+      const r = await b.transcription.stopCapture();
+      if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
+      captureActive = false;
+      sessionId = null;
+      startedAt = null;
     },
 
     onStatus(cb) {

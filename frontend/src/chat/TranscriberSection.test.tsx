@@ -285,6 +285,17 @@ describe("TranscriberView local mode", () => {
     expect(html).not.toContain('id="transcriber-meeting-url"');
     expect(html).not.toContain("No meetings yet");
   });
+
+  test("cannot switch away while a local recording workflow is active", () => {
+    const html = render({
+      kind: "local",
+      localWorkflowActive: true,
+      localPanel: <div>recording</div>,
+      onKindChange: noop,
+    });
+    expect(html).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
+    expect(html).toContain("recording");
+  });
 });
 
 describe("transcriber client", () => {

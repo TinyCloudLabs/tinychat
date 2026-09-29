@@ -27,6 +27,7 @@ export type LocalPanelState =
   | "needs-download"
   | "downloading"
   | "ready"
+  | "starting"
   | "recording"
   | "transcribing"
   | "saving"
@@ -41,10 +42,10 @@ export interface LocalTranscriberViewProps {
   downloadPct: number | null;
   /** Status line; for `error` this is the message. */
   statusText: string | null;
-  signedIn: boolean;
   onModelChange: (model: WhisperModel) => void;
   onMicChange: (device: string) => void;
   onDownload: () => void;
+  onRetry: () => void;
   onStart: () => void;
   onStop: () => void;
 }
@@ -59,10 +60,10 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   micDevice,
   downloadPct,
   statusText,
-  signedIn,
   onModelChange,
   onMicChange,
   onDownload,
+  onRetry,
   onStart,
   onStop,
 }) => {
@@ -71,6 +72,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   const busy =
     state === "checking-model" ||
     state === "downloading" ||
+    state === "starting" ||
     state === "transcribing" ||
     state === "saving";
 
@@ -137,7 +139,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             <span>Downloading model{downloadPct !== null ? ` · ${downloadPct}%` : "…"}</span>
           </Button>
         )}
-        {(state === "ready" || state === "saved" || state === "error") && !recording && (
+        {(state === "ready" || state === "saved") && !recording && (
           <Button
             type="button"
             size="sm"
@@ -163,10 +165,10 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             <span>Stop &amp; transcribe</span>
           </Button>
         )}
-        {(state === "transcribing" || state === "saving") && (
+        {(state === "starting" || state === "transcribing" || state === "saving") && (
           <Button type="button" size="sm" disabled className="h-9 gap-1.5">
             <Loader2Icon className="size-4 animate-spin" />
-            <span>{state === "transcribing" ? "Transcribing…" : "Saving…"}</span>
+            <span>{state === "starting" ? "Starting recording…" : state === "transcribing" ? "Transcribing…" : "Saving…"}</span>
           </Button>
         )}
         {state === "checking-model" && (
@@ -175,17 +177,22 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             <span>Checking model…</span>
           </Button>
         )}
+        {state === "error" && (
+          <Button type="button" size="sm" onClick={onRetry} className="h-9">
+            Retry
+          </Button>
+        )}
       </div>
 
       {state === "saved" && (
         <p className="text-xs text-muted-foreground">Saved to Meetings as Exo Local.</p>
       )}
-      {!signedIn && (
+      {recording && (
         <p className="text-xs text-muted-foreground">
-          Sign in to save transcripts to your space — recording works signed out, saving waits.
+          Keep this view open while recording. Leaving it stops capture without saving a transcript.
         </p>
       )}
-      {statusText !== null && state === "error" && (
+      {statusText !== null && (
         <p role="alert" className="text-xs text-destructive">
           {statusText}
         </p>
@@ -195,7 +202,8 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
 };
 
 export interface LocalTranscriberPanelProps {
-  tcw?: TinyCloudWeb;
+  tcw: TinyCloudWeb;
+  onWorkflowActiveChange?: (active: boolean) => void;
   /** Injectable for tests; defaults to the real bridge-backed transcriber. */
   transcriber?: LocalTranscriber;
 }
@@ -209,22 +217,34 @@ function readSavedModel(): WhisperModel {
 }
 
 /** Stateful owner: bridge instance, model readiness, capture lifecycle, save. */
-export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, transcriber }) => {
+export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, transcriber, onWorkflowActiveChange }) => {
   const transcriberRef = useRef<LocalTranscriber | null>(null);
   if (transcriberRef.current === null) {
     transcriberRef.current = transcriber ?? createLocalTranscriber();
   }
   const t = transcriberRef.current;
 
+  useEffect(() => () => {
+    void t.stopCaptureOnUnmount().catch((err) => {
+      console.error("Failed to stop local recording when leaving the view", err);
+    });
+  }, [t]);
+
   const [model, setModel] = useState<WhisperModel>(readSavedModel);
   const [micDevices, setMicDevices] = useState<string[]>([]);
   const [micDevice, setMicDevice] = useState("");
   const [downloadPct, setDownloadPct] = useState<number | null>(null);
   const [state, setState] = useState<LocalPanelState>("checking-model");
+  const [retryCount, setRetryCount] = useState(0);
   const [errorText, setErrorText] = useState<string | null>(null);
   // Recording/transcribing progress is driven by plugin events through onStatus;
   // panel state mirrors the last lifecycle-relevant status.
   const lastStatus = useRef<LocalTranscriberStatus>({ kind: "idle" });
+
+  useEffect(() => {
+    onWorkflowActiveChange?.(state === "starting" || state === "recording" || state === "transcribing" || state === "saving");
+    return () => onWorkflowActiveChange?.(false);
+  }, [onWorkflowActiveChange, state]);
 
   const fail = (err: unknown) => {
     setErrorText(err instanceof Error ? err.message : String(err));
@@ -234,7 +254,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   // Model readiness + mic list on mount and when the model changes.
   useEffect(() => {
     let cancelled = false;
-    setState((s) => (s === "recording" || s === "transcribing" || s === "saving" ? s : "checking-model"));
+    setState((s) => (s === "starting" || s === "recording" || s === "transcribing" || s === "saving" ? s : "checking-model"));
     void t
       .isModelDownloaded(model)
       .then((downloaded) => {
@@ -255,7 +275,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
     return () => {
       cancelled = true;
     };
-  }, [t, model]);
+  }, [t, model, retryCount]);
 
   useEffect(() => t.onStatus((s) => {
     lastStatus.current = s;
@@ -264,15 +284,20 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
 
   const onDownload = () => {
     setDownloadPct(0);
+    setErrorText(null);
     setState("downloading");
     void t
       .ensureModel(model, (pct) => setDownloadPct(pct))
       .then(() => setState("ready"))
-      .catch(fail);
+      .catch((err) => {
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setState("needs-download");
+      });
   };
 
   const onStart = () => {
     setErrorText(null);
+    setState("starting");
     void t
       .start({ model, language: "en", micDevice: micDevice || undefined })
       .then(() => setState("recording"))
@@ -284,13 +309,6 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
     void t
       .stop()
       .then(async (result) => {
-        if (!tcw) {
-          // No signed-in session: keep the transcript unsaved rather than
-          // pretending it persisted.
-          setState("ready");
-          setErrorText(null);
-          return;
-        }
         setState("saving");
         const saved = await saveLocalTranscript(tcw, result);
         if (saved.ok) setState("saved");
@@ -307,7 +325,6 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       micDevice={micDevice}
       downloadPct={downloadPct}
       statusText={errorText}
-      signedIn={tcw !== undefined}
       onModelChange={(m) => {
         setModel(m);
         try {
@@ -318,6 +335,10 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       }}
       onMicChange={setMicDevice}
       onDownload={onDownload}
+      onRetry={() => {
+        setErrorText(null);
+        setRetryCount((count) => count + 1);
+      }}
       onStart={onStart}
       onStop={onStop}
     />

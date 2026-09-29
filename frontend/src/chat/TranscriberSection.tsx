@@ -67,6 +67,7 @@ export interface TranscriberViewProps {
    * the card renders exactly the bot form as before (web).
    */
   kind?: TranscriberKind;
+  localWorkflowActive?: boolean;
   /** Rendered in place of the bot form when `kind === "local"`. */
   localPanel?: ReactNode;
   onKindChange?: (kind: TranscriberKind) => void;
@@ -159,6 +160,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   busyId,
   open,
   kind,
+  localWorkflowActive,
   localPanel,
   onKindChange,
   onUrlChange,
@@ -188,6 +190,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               type="button"
               role="tab"
               aria-selected={kind === k}
+              disabled={kind === "local" && localWorkflowActive && k !== kind}
               onClick={() => onKindChange(k)}
               className={`rounded px-3 py-1.5 ${
                 kind === k
@@ -664,7 +667,9 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
 
   // Desktop only: a second, on-device transcription surface. On the web the
   // flag is false and the card renders exactly the bot path.
-  const localAvailable = isDesktopLocalTranscriptionAvailable();
+  // Connectors only persists meetings with a signed-in space. Do not expose a
+  // recording path that would discard its transcript when no tcw is present.
+  const localAvailable = isDesktopLocalTranscriptionAvailable() && tcw !== undefined;
   const [kind, setKind] = useState<TranscriberKind>(() => {
     if (!localAvailable) return "meeting-bot";
     try {
@@ -673,14 +678,16 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
       return "meeting-bot";
     }
   });
+  const [localWorkflowActive, setLocalWorkflowActive] = useState(false);
   const onKindChange = useCallback((next: TranscriberKind) => {
+    if (localWorkflowActive) return;
     setKind(next);
     try {
       localStorage.setItem(LOCAL_KIND_STORAGE_KEY, next);
     } catch {
       // best-effort preference; ignore storage failures
     }
-  }, []);
+  }, [localWorkflowActive]);
 
   const load = useCallback(async () => {
     setListStatus((s) => (s === "ready" ? s : "loading"));
@@ -832,10 +839,11 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
       form={{ url, botName, submitting, error: formError }}
       busyId={busyId}
       open={open}
-      {...(localAvailable
+      {...(localAvailable && tcw
         ? {
             kind,
-            localPanel: <LocalTranscriberPanel tcw={tcw} />,
+            localWorkflowActive,
+            localPanel: <LocalTranscriberPanel tcw={tcw} onWorkflowActiveChange={setLocalWorkflowActive} />,
             onKindChange,
           }
         : {})}
