@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFESTS = [
@@ -73,9 +74,14 @@ function commitAll(root, message) {
 }
 
 // A copy of this repo's real manifests, Changesets state and desktop version files.
+// Normalized to the 0.1.0 baseline in beta pre mode, so tests don't depend on the versions main is at right now.
 function manifests(t) {
   const root = tempDir(t);
   for (const rel of MANIFESTS) write(root, rel, read(repo, rel));
+  for (const dir of ['desktop', 'frontend', 'backend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.1.0'; });
+  write(root, 'desktop/src-tauri/Cargo.toml', setCargoTomlVersion(read(root, 'desktop/src-tauri/Cargo.toml'), '0.1.0'));
+  write(root, 'desktop/src-tauri/Cargo.lock', setCargoLockVersion(read(root, 'desktop/src-tauri/Cargo.lock'), '0.1.0'));
+  write(root, '.changeset/pre.json', '{\n  "mode": "pre",\n  "tag": "beta"\n}\n');
   return root;
 }
 
