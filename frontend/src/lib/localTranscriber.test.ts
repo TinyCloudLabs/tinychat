@@ -5,8 +5,9 @@
 //
 // Asserted behavior:
 //   - normalizeLocalTranscript: exo-local source, `local:<session>` identity,
-//     Speaker N channel labels, 1.5 s gap split, word-timing and
-//     transcript-only fallback, no audio path in metadata;
+//     You (mic) / Others (system audio) turns with mic echo dropped (turn
+//     shaping itself is covered in localTranscriptTurns.test.ts), word-timing
+//     and transcript-only fallback, no audio path in metadata;
 //   - the start/stop invoke order and error surfacing (missing audio_path,
 //     transcription failed, capture error);
 //   - capture is only "stopped" on its matching terminal event: a timed-out,
@@ -204,14 +205,14 @@ function resultWith(words: Parameters<typeof batchResponse>[0]): LocalTranscript
 }
 
 describe("normalizeLocalTranscript", () => {
-  test("groups words into channel-labeled sentences, splitting on gaps and channel changes", () => {
+  test("groups words into You (mic) / Others (system audio) turns, merging a speaker's consecutive segments", () => {
     const { meeting, sentences } = normalizeLocalTranscript(
       resultWith([
         { word: "hello", punctuated_word: "Hello", start: 0.0, end: 0.4, channel: 0 },
         { word: "there", punctuated_word: "there.", start: 0.5, end: 0.9, channel: 0 },
-        // 2.6 s gap → new sentence, same channel
+        // 2.6 s gap: a new segment, but the same speaker's turn continues
         { word: "again", start: 3.5, end: 3.9, channel: 0 },
-        // channel change → new sentence
+        // the other channel: a new turn
         { word: "hi", punctuated_word: "Hi", start: 4.0, end: 4.2, channel: 1 },
         { word: "back", punctuated_word: "back.", start: 4.3, end: 4.6, channel: 1 },
       ]),
@@ -227,23 +228,72 @@ describe("normalizeLocalTranscript", () => {
     expect(meeting.metadata.model).toBe("QuantizedTinyEn");
     expect(Object.keys(meeting.metadata).join(",")).not.toContain("audio_path");
 
-    expect(sentences).toHaveLength(3);
+    expect(meeting.metadata.speaker_labels).toBe("channel-you-others");
+
+    expect(sentences).toHaveLength(2);
     expect(sentences[0]).toMatchObject({
       index: 0,
-      speaker_name: "Speaker 1",
-      text: "Hello there.",
+      speaker_name: "You",
+      text: "Hello there. again",
       start_time: 0,
-      end_time: 0.9,
+      end_time: 3.9,
     });
-    expect(sentences[1]).toMatchObject({ speaker_name: "Speaker 1", text: "again" });
-    expect(sentences[2]).toMatchObject({
-      speaker_name: "Speaker 2",
+    expect(sentences[1]).toMatchObject({
+      index: 1,
+      speaker_name: "Others",
       text: "Hi back.",
       start_time: 4.0,
       end_time: 4.6,
     });
     // participants carry the distinct speaker labels
-    expect(meeting.participants.map((p) => p.name)).toEqual(["Speaker 1", "Speaker 2"]);
+    expect(meeting.participants.map((p) => p.name)).toEqual(["You", "Others"]);
+  });
+
+  test("drops mic echo of system audio from a two-channel whisper response", () => {
+    // Real whisper-local output: one results channel per audio channel, each
+    // word tagged with its channel and spread evenly across its VAD chunk.
+    const spread = (channel: number, start: number, end: number, text: string) => {
+      const parts = text.split(" ");
+      const step = (end - start) / parts.length;
+      return parts.map((word, i) => ({ word, start: start + i * step, end: start + (i + 1) * step, channel }));
+    };
+    const remote = "Ship the release on Thursday. Blue kites fly over the harbor.";
+    const { meeting, sentences } = normalizeLocalTranscript({
+      ...resultWith([]),
+      response: {
+        metadata: {},
+        results: {
+          channels: [
+            { alternatives: [{ transcript: "", confidence: 1, words: [
+              ...spread(0, 0, 2, "Can everyone hear me?"),
+              ...spread(0, 3.2, 9.3, remote),
+            ] }] },
+            { alternatives: [{ transcript: "", confidence: 1, words: spread(1, 3, 9, remote) }] },
+          ],
+        },
+      } as never,
+    });
+
+    expect(sentences.map((s) => `${s.speaker_name}: ${s.text}`)).toEqual([
+      "You: Can everyone hear me?",
+      `Others: ${remote}`,
+    ]);
+    expect(meeting.metadata.transcript_text).toBe(`Can everyone hear me?\n${remote}`);
+    expect(meeting.participants.map((p) => p.name)).toEqual(["You", "Others"]);
+  });
+
+  test("duration is the latest turn end, not the last turn's end", () => {
+    const { meeting, sentences } = normalizeLocalTranscript(
+      resultWith([
+        // A long mic turn that starts first and ends last…
+        { word: "one", start: 0, end: 10, channel: 0 },
+        { word: "two", start: 10, end: 30, channel: 0 },
+        // …and a short system-audio turn inside it, ordered after it.
+        { word: "hi", start: 5, end: 6, channel: 1 },
+      ]),
+    );
+    expect(sentences.map((s) => s.speaker_name)).toEqual(["You", "Others"]);
+    expect(meeting.durationSecs).toBe(30);
   });
 
   test("falls back to whole-channel transcript when words have no timings", () => {
@@ -262,7 +312,7 @@ describe("normalizeLocalTranscript", () => {
       } as never,
     });
     expect(sentences).toHaveLength(1);
-    expect(sentences[0]).toMatchObject({ speaker_name: "Speaker 1", text: "full sentence without words." });
+    expect(sentences[0]).toMatchObject({ speaker_name: "You", text: "full sentence without words." });
   });
 
   test("empty response yields an empty sentence list and no duration", () => {

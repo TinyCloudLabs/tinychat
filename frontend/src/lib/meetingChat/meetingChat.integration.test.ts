@@ -197,7 +197,7 @@ describe("exo-local recordings in meeting chat", () => {
       // Local recordings have no server copy.
       meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
     } as never);
-    const outcome = await retriever.retrieve({ threadId: "exo-thread", question: "What did Speaker 1 say in the latest meeting?" });
+    const outcome = await retriever.retrieve({ threadId: "exo-thread", question: "What did you say in the latest meeting?" });
 
     expect(outcome).toEqual(expect.objectContaining({
       status: "grounded",
