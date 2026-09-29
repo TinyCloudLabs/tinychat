@@ -118,6 +118,47 @@ if the browser shows a TLS warning page; WebAuthn is not supported on sites
 with TLS certificate errors. Do not commit `.auth/`, browser traces,
 screenshots, videos, or reports from real-auth runs.
 
+## Releases
+
+Versions and changelogs are managed with [Changesets](https://changesets.dev)
+v3. There are three release units, versioned independently:
+
+| Unit | Path | Tag |
+|---|---|---|
+| `exo-desktop` | `desktop/` | `exo-desktop@X.Y.Z` |
+| `@tinychat/frontend` | `frontend/` | `@tinychat/frontend@X.Y.Z` |
+| `@tinychat/backend` | `backend/` | `@tinychat/backend@X.Y.Z` |
+
+`packages/*` (`@tinyboilerplate/*`) and `test/` are private and ignored by
+Changesets. Nothing in this repo is ever published to npm. Releases are stable
+`X.Y.Z` only (no prerelease mode).
+
+**Every PR needs a changeset**; the `Changeset` PR check fails without one:
+
+```bash
+bunx changeset                                        # pick units and bumps interactively
+bunx changeset --minor exo-desktop -m "Describe the change"
+bunx changeset add --empty                            # nothing ships (docs, CI, refactors)
+```
+
+Name the deliverable a change affects, not the library it touches: a
+`packages/core` change that alters the API needs a `@tinychat/backend`
+changeset. The desktop app bundles `frontend/`, so add an `exo-desktop`
+changeset as well when desktop users should get a frontend change (the check
+posts a notice as a reminder).
+
+After a merge to main, the `Release` workflow opens or updates a
+**chore(release): version packages** PR that bumps versions and writes each
+unit's `CHANGELOG.md`. Merging that PR makes the next `Release` run tag every
+bumped unit (`<name>@<version>`) on the commit that merged it. The PR text
+written by the Changesets action mentions npm; nothing is published. Tags do
+not drive deploys yet: production still deploys from pushes to main.
+
+`desktop/package.json` is the single source of the desktop version:
+`tauri.conf.json` reads it (`"version": "../package.json"`), and
+`bun run release:version` copies it into `desktop/src-tauri/Cargo.toml` and
+`Cargo.lock`. `bun run release:check` fails if they drift.
+
 ## Chat Sharing
 
 TinyCloud Chat supports read-only sharing for saved threads. The active chat
