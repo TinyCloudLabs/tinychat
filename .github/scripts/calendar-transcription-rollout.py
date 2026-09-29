@@ -5,11 +5,13 @@ import copy
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.server
 import json
 import os
 import subprocess
 import tempfile
 import time
+import threading
 import unittest
 import urllib.error
 import urllib.request
@@ -29,6 +31,7 @@ VOLUMES = {
     "signal-profile-3", "signal-runtime", "signal-health", "signal-health-2",
     "signal-health-3", "signal-control-1", "signal-control-2", "signal-control-3",
 }
+FAILURE_EVIDENCE_DIR = None
 
 
 class RolloutError(Exception):
@@ -116,23 +119,49 @@ def runtime_matches(composition, image):
 
 def phala(endpoint, yaml_body=None):
     command = ["phala", "api", f"/cvms/{CVM_ID}{endpoint}", "-X", "PATCH" if yaml_body is not None else "GET"]
-    if yaml_body is not None:
-        command += ["-H", "Content-Type: text/yaml", "--input", "-"]
     # Capture all output: compose metadata and CLI errors can contain credentials.
     try:
-        result = subprocess.run(command, input=yaml_body, text=True, capture_output=True,
-                                timeout=120, cwd="/tmp", check=False)
-    except (subprocess.TimeoutExpired, OSError):
+        with tempfile.TemporaryDirectory(prefix="calendar-transcription-request-") as tmp:
+            if yaml_body is not None:
+                # phala 1.1.22 parses --input twice. A pipe is consumed by the first
+                # parse and sends an empty PATCH; a private file is safely reread.
+                source = Path(tmp) / "compose.yaml"
+                descriptor = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "w") as stream:
+                    stream.write(yaml_body)
+                command += ["-H", "Content-Type: text/yaml", "--input", str(source), "--include"]
+            result = subprocess.run(command, text=True, capture_output=True,
+                                    timeout=120, cwd="/tmp", check=False)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        capture_phala_failure(endpoint, None, getattr(error, "stdout", None), getattr(error, "stderr", None))
         raise RolloutError("phala_request_failed") from None
+    output = result.stdout
+    http_status = None
+    if output.startswith("HTTP/"):
+        first_line = output.splitlines()[0].split()
+        if len(first_line) > 1 and first_line[1].isdigit():
+            http_status = int(first_line[1])
+        output = output.partition("\n\n")[2]
     if result.returncode:
-        raise RolloutError("phala_request_failed")
+        capture_phala_failure(endpoint, result.returncode, result.stdout, result.stderr)
+        code = f"phala_http_{http_status}" if http_status and 100 <= http_status <= 599 else "phala_request_failed"
+        raise RolloutError(code)
     try:
-        body = json.loads(result.stdout)
+        body = json.loads(output)
         if not isinstance(body, dict):
             raise ValueError()
         return body
     except ValueError:
+        capture_phala_failure(endpoint, result.returncode, result.stdout, result.stderr)
         raise RolloutError("phala_response_invalid") from None
+
+
+def capture_phala_failure(endpoint, returncode, stdout, stderr):
+    if FAILURE_EVIDENCE_DIR is not None:
+        diagnostic = {"endpoint": endpoint, "returncode": returncode,
+                      "stdout": stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout,
+                      "stderr": stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr}
+        encrypt_backup(diagnostic, FAILURE_EVIDENCE_DIR / f"phala-failure-{uuid.uuid4()}.cms")
 
 
 def prepare(report, evidence):
@@ -341,14 +370,24 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(runtime_matches(composition, NEW_IMAGE))
 
     @mock.patch("subprocess.run")
-    def test_patch_uses_stdin_and_never_retries_or_exposes_failure(self, run):
+    def test_patch_uses_private_file_and_never_retries_or_exposes_failure(self, run):
         run.return_value = mock.Mock(returncode=1, stdout="secret response", stderr="secret error")
+        paths = []
+        def inspect_request(command, **kwargs):
+            path = Path(command[command.index("--input") + 1])
+            self.assertNotEqual(str(path), "-")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.read_text(), "sensitive compose")
+            paths.append(path)
+            return run.return_value
+        run.side_effect = inspect_request
         with self.assertRaisesRegex(RolloutError, "^phala_request_failed$"):
             phala("/docker-compose", "sensitive compose")
         self.assertEqual(run.call_count, 1)
         args, kwargs = run.call_args
         self.assertNotIn("sensitive compose", args[0])
-        self.assertEqual(kwargs["input"], "sensitive compose")
+        self.assertNotIn("input", kwargs)
+        self.assertFalse(paths[0].exists())
 
 
 class ExecutionTests(unittest.TestCase):
@@ -416,7 +455,38 @@ class ExecutionTests(unittest.TestCase):
             self.assertNotIn(b"synthetic confidential fixture", output.read_bytes())
 
 
+class CliTransportTests(unittest.TestCase):
+    def test_real_cli_patch_sends_complete_non_json_yaml(self):
+        seen = []
+        payload = "services:\n  api:\n    image: example.invalid/synthetic\n"
+        class Receiver(http.server.BaseHTTPRequestHandler):
+            def do_PATCH(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                seen.append((body, self.headers.get("Content-Type")))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"in_progress"}')
+            def log_message(self, *args):
+                pass
+        server = http.server.HTTPServer(("127.0.0.1", 0), Receiver)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.dict(os.environ, {
+                "PHALA_CLOUD_API_KEY": "synthetic-loopback-only",
+                "PHALA_CLOUD_API_PREFIX": f"http://127.0.0.1:{server.server_port}/api/v1",
+            }):
+                self.assertEqual(phala("/docker-compose", payload), {"status": "in_progress"})
+            self.assertEqual(seen, [(payload.encode(), "text/yaml")])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
 def main():
+    global FAILURE_EVIDENCE_DIR
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--self-test", action="store_true")
@@ -431,6 +501,7 @@ def main():
     evidence = root / "calendar-transcription-evidence"
     private = root / "calendar-transcription-private"
     evidence.mkdir(mode=0o700, exist_ok=True)
+    FAILURE_EVIDENCE_DIR = evidence
     private.mkdir(mode=0o700, exist_ok=True)
     report_path = evidence / "report.json"
     plan_path = private / "plan.json"
