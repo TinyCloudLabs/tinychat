@@ -38,6 +38,10 @@ import {
   TRANSCRIBER_MEETING_SOURCE,
   TRANSCRIBER_MEETING_SOURCE_LABEL,
 } from "../transcriberSave";
+import {
+  LOCAL_MEETING_SOURCE,
+  LOCAL_MEETING_SOURCE_LABEL,
+} from "../localTranscriber";
 import { CONNECTORS } from "./registry";
 
 /**
@@ -52,6 +56,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
   "fireflies",
   GMEET_MEETING_SOURCE,
   TRANSCRIBER_MEETING_SOURCE,
+  LOCAL_MEETING_SOURCE,
 ];
 
 /**
@@ -62,6 +67,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
  */
 export function meetingSourceLabel(source: string): string {
   if (source === TRANSCRIBER_MEETING_SOURCE) return TRANSCRIBER_MEETING_SOURCE_LABEL;
+  if (source === LOCAL_MEETING_SOURCE) return LOCAL_MEETING_SOURCE_LABEL;
   return CONNECTORS.find((c) => c.source === source)?.name ?? source;
 }
 

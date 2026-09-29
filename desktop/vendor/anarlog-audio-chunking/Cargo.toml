@@ -1,0 +1,33 @@
+# Vendored from https://github.com/fastrepl/anarlog @ 864ddc1f692116d128eea2692fd72b0a51007768
+# (crates/audio-chunking, MIT-licensed). See PROVENANCE.md for the local change and why.
+[package]
+name = "audio-chunking"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["vad"]
+vad = [
+  "dep:futures-util",
+  "dep:anlg-audio-interface",
+  "dep:anlg-onnx",
+  "dep:anlg-vad",
+  "dep:pin-project",
+]
+segmentation = []
+
+[dev-dependencies]
+anlg-data = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "data" }
+futures-util = "0.3.31"
+hound = "3.5.1"
+rodio = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dependencies]
+anlg-audio-interface = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "audio-interface", optional = true }
+anlg-onnx = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "onnx", optional = true }
+anlg-vad = { git = "https://github.com/fastrepl/anarlog", rev = "864ddc1f692116d128eea2692fd72b0a51007768", package = "vad", features = ["silero-onnx"], optional = true }
+
+futures-util = { version = "0.3.31", optional = true }
+pin-project = { version = "1", optional = true }
+thiserror = "2"

@@ -22,10 +22,10 @@ serde_json = "1"
 
 # --- Transcription (anarlog, MIT layer) -------------------------------------
 # Local meeting capture + on-device Whisper, reused from fastrepl/anarlog's
-# MIT-licensed Tauri plugins. Feature-gated because they pull in a large crate
-# graph (whisper.cpp native build). Enable with:
-#   cargo tauri dev --features transcription
-# and add the matching entries in capabilities/default.json (see ../README.md).
+# MIT-licensed Tauri plugins. This is a first-class desktop feature, included
+# by default despite its large native dependency graph.
+# Plugin permissions are injected at runtime from
+# capabilities-transcription/ (see src/lib.rs and ../README.md).
 [dependencies.tauri-plugin-transcription]
 git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
@@ -37,7 +37,69 @@ rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 # GPU backends are per-platform Cargo features on tauri-plugin-local-stt:
 # metal/coreml (macOS), cuda/directml/vulkan/openblas (Windows/Linux).
+# `metal` implies `whisper-cpp` — the in-process Whisper server this app uses.
+features = ["metal"]
+
+# The transcription plugin's `setup` reads `app.state::<Arc<dyn AudioProvider>>`,
+# so the host must manage `ActualAudio` before the plugin registers. The anarlog
+# app does exactly this (apps/desktop/src-tauri/src/lib.rs).
+[dependencies.audio-actual]
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+# `vault_base()` (session audio + settings) is read from the StartupSnapshot
+# state that only tauri-plugin-settings::init() manages, and the local-stt
+# models dir resolves through the same plugin.
+[dependencies.tauri-plugin-settings]
+git = "https://github.com/fastrepl/anarlog"
+rev = "864ddc1f692116d128eea2692fd72b0a51007768"
+optional = true
+
+# Debug-only smoke runner (src/smoke.rs) needs tokio::time.
+[dependencies.tokio]
+version = "1"
+features = ["time"]
+optional = true
+
+# anarlog's `storage` crate hardcodes `~/Library/Application Support/anarlog`
+# for release builds, which would share (or be redirected by) a real anarlog
+# install's vault and models. The vendored copy keeps every build under the
+# app's own bundle-identifier folder. See vendor/anarlog-storage/PROVENANCE.md.
+#
+# The in-process whisper.cpp server (`transcribe-whisper-local`, mounted by
+# tauri-plugin-local-stt) went quiet on its event stream while receiving,
+# decoding, VAD-scanning or transcribing audio, so long or mostly-silent
+# recordings hit the clients' 30 s / 60 s stream-idle timeouts; it also had no
+# bound on decoded temp storage. The vendored copy reports every unit of work
+# as it happens (using per-frame / per-token hooks added to the vendored
+# `audio-chunking` and `whisper-local`) and supports recordings up to 8 hours.
+# See vendor/anarlog-transcribe-whisper-local/PROVENANCE.md.
+[patch."https://github.com/fastrepl/anarlog"]
+storage = { path = "../vendor/anarlog-storage" }
+transcribe-whisper-local = { path = "../vendor/anarlog-transcribe-whisper-local" }
+whisper-local = { path = "../vendor/anarlog-whisper-local" }
+audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
+
+# The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build
+# system. Xcode 27's default (`swiftbuild`) prelinks targets and hides the
+# SwiftRs bridge symbols from the release link; the vendored copy forces
+# `--build-system native`. See vendor/swift-rs/PROVENANCE.md.
+[patch."https://github.com/yujonglee/swift-rs"]
+swift-rs = { path = "../vendor/swift-rs" }
 
 [features]
-default = []
-transcription = ["dep:tauri-plugin-transcription", "dep:tauri-plugin-local-stt"]
+default = ["transcription"]
+transcription = [
+    "dep:tauri-plugin-transcription",
+    "dep:tauri-plugin-local-stt",
+    "dep:audio-actual",
+    "dep:tauri-plugin-settings",
+    "dep:tokio",
+]
+
+# macOS 27 dyld rejects some stripped proc-macro dylibs with a misaligned
+# LINKEDIT string pool (rust-lang/rust#157750). Keep build-time crates unstripped
+# until the toolchain fixes the alignment bug.
+[profile.release.build-override]
+strip = "none"

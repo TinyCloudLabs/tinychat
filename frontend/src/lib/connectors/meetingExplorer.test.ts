@@ -155,11 +155,11 @@ describe("listMeetings", () => {
     expect(sqlCalls[0].sql).toContain("ORDER BY started_at DESC");
   });
 
-  it("defaults to fireflies, google-meet AND the tinycloud transcriber", async () => {
+  it("defaults to fireflies, google-meet, the transcriber AND exo local", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
     await listMeetings(tcw);
-    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber"]);
-    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber"]);
+    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"]);
+    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"]);
   });
 
   it("runs no query at all for an empty source list", async () => {

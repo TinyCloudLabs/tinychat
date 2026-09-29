@@ -6,6 +6,7 @@ import {
   SERVER_DISCOVERY_PAGE_SIZE,
   SQL_DISCOVERY_MAX_MEETINGS,
   SQL_MEETING_METADATA_QUERY,
+  SUPPORTED_MEETING_SOURCES,
   discoverKvMeetings,
   discoverMeetingCorpus,
   discoverServerMeetings,
@@ -211,7 +212,13 @@ describe("SQL meeting metadata discovery", () => {
     const unsupported = [...validRow];
     unsupported[1] = "granola";
     const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [unsupported] } })));
-    expect(SQL_MEETING_METADATA_QUERY).toContain("source IN ('fireflies', 'google-meet', 'tinycloud-transcriber')");
+    expect(SQL_MEETING_METADATA_QUERY).toContain(
+      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local')",
+    );
+    // The SQL filter and the row/KV allowlist are one definition: none can drift.
+    for (const source of SUPPORTED_MEETING_SOURCES) {
+      expect(SQL_MEETING_METADATA_QUERY).toContain(`'${source}'`);
+    }
     expect(result).toEqual({ candidates: [], lane: { state: "partial", malformedRows: 1 } });
   });
 });
