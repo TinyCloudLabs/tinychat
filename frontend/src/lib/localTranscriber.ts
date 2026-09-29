@@ -199,6 +199,14 @@ export type LocalTranscriberStatus =
   | { kind: "done" }
   | { kind: "error"; message: string };
 
+/** A capture no open view owns that native capture has not confirmed stopped. */
+export interface PreviousRecording {
+  /** Its native capture session. */
+  sessionId: string;
+  /** Why it is unconfirmed and what native capture reports now. */
+  message: string;
+}
+
 export interface LocalTranscriber {
   /** True when the model file is already on disk. */
   isModelDownloaded(model: WhisperModel): Promise<boolean>;
@@ -207,7 +215,10 @@ export interface LocalTranscriber {
   /** Mic device names for an optional picker. */
   listMicrophoneDevices(): Promise<string[]>;
   /** Start the local Whisper server (idempotent) and begin capturing mic+system audio.
-   *  First waits for a closed view's capture to confirm it stopped. */
+   *  First waits for a closed view's capture to confirm it stopped, and rejects
+   *  with PreviousCaptureUnconfirmedError while a previous recording is not
+   *  confirmed stopped. A start_capture that times out may still start, so it
+   *  becomes such a previous recording rather than being assumed not started. */
   start(opts: { model: WhisperModel; language: string; micDevice?: string }): Promise<{ sessionId: string }>;
   /** Stop capture, batch-transcribe the recording, return the raw response.
    *  Rejects with CaptureStopUnconfirmedError, keeping the session so stop()
@@ -222,22 +233,50 @@ export interface LocalTranscriber {
   /** Give up on the kept recording without transcribing it. Its audio file
    *  stays on disk. */
   discardRecording(): void;
+  /** A capture that no open view owns and native capture has not confirmed
+   *  stopped (a closed view's stop, or a start_capture, timed out or failed),
+   *  or null. Waits (bounded) for a closed view's in-flight stop first,
+   *  calling `onWaiting` when it has to. */
+  previousRecording(onWaiting?: () => void): Promise<PreviousRecording | null>;
+  /** Stop the previous recording: stop_capture, wait (bounded) for that
+   *  session's `stopped` event, then confirm native capture is inactive.
+   *  Rejects with PreviousCaptureUnconfirmedError, keeping it to try again,
+   *  when that is not confirmed. */
+  stopPreviousRecording(): Promise<void>;
   /** Stop an unfinished native capture when its UI is removed. Resolves only
-   *  once native capture confirms it stopped; rejects otherwise. */
+   *  once native capture confirms it stopped; otherwise rejects and leaves it
+   *  as the previous recording for the next view to stop. */
   stopCaptureOnUnmount(): Promise<void>;
   /** Subscribe to capture/transcription status; returns unsubscribe. */
   onStatus(cb: (s: LocalTranscriberStatus) => void): () => void;
 }
 
-/** How long to wait for a native command plus its terminal event. */
+/** Bounds on every wait for the native plugins. A timeout is surfaced like
+ *  any other failure, with its recovery action. */
 export interface LocalTranscriberTimeouts {
+  /** Loading the plugin bindings, and registering the capture event listeners. */
+  listenMs: number;
+  /** Quick native reads: is_model_downloaded, list_microphone_devices, get_capture_state. */
+  queryMs: number;
+  /** start_server: starting whisper.cpp and loading the model. */
+  serverStartMs: number;
+  /** start_capture: starting the session and opening the mic and system audio. */
+  captureStartMs: number;
+  /** stop_capture plus the session's `stopped` event. */
   captureStopMs: number;
+  /** start_transcription plus its terminal event. */
   transcribeMs: number;
+  /** download_model plus its terminal event. */
   modelDownloadMs: number;
 }
 
 const DEFAULT_TIMEOUTS: LocalTranscriberTimeouts = {
-  captureStopMs: 120_000,
+  listenMs: 10_000,
+  queryMs: 15_000,
+  // Loads the chosen model into whisper.cpp; Large Turbo is ~874 MB.
+  serverStartMs: 2 * 60_000,
+  captureStartMs: 60_000,
+  captureStopMs: 2 * 60_000,
   transcribeMs: 30 * 60_000,
   modelDownloadMs: 30 * 60_000,
 };
@@ -266,7 +305,30 @@ export class TranscriptionFailedError extends Error {
   }
 }
 
+/**
+ * A capture this app started is not confirmed stopped and no open view owns
+ * it: a closed view's stop was not confirmed, or start_capture timed out and
+ * may yet start. Nothing new starts until stopPreviousRecording() confirms
+ * native capture is inactive.
+ */
+export class PreviousCaptureUnconfirmedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PreviousCaptureUnconfirmedError";
+  }
+}
+
+/** A bounded wait on a native command or event ran out. */
+class LocalTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalTimeoutError";
+  }
+}
+
 type CaptureStoppedEvent = Extract<CaptureLifecycleEvent, { type: "stopped" }>;
+
+type NativeCaptureState = "active" | "finalizing" | "inactive";
 
 /** A stopped recording's audio file plus what its transcription and save need. */
 interface StoppedRecording {
@@ -279,14 +341,25 @@ interface StoppedRecording {
 
 const VIEW_CLOSED_MESSAGE = "Recording stopped because the Local recording view closed";
 
+const ignore = () => {};
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Rejects with LocalTimeoutError when `work` has not settled within `timeoutMs`. */
+function withTimeout<T>(work: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new LocalTimeoutError(`Timed out waiting for ${label}`)), timeoutMs);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Registers the listener, then runs the command and waits for its matching
- * terminal event. One timer covers both, so a command that never returns
- * cannot outlive the timeout.
+ * terminal event. One timer covers all three, so neither a registration nor a
+ * command that never returns can outlive the timeout.
  */
 async function invokeAndWaitForEvent<T>(
   subscribe: (cb: (e: { payload: T }) => void) => Promise<Unlisten>,
@@ -300,23 +373,79 @@ async function invokeAndWaitForEvent<T>(
   const event = new Promise<T>((resolve) => {
     resolveEvent = resolve;
   });
-  // Await registration before invoking: a native command may emit its terminal
-  // event before its own promise resolves.
-  const unlisten = await subscribe((e) => {
+  const subscription = subscribe((e) => {
     onEvent?.(e.payload);
     if (match(e.payload)) resolveEvent(e.payload);
   });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs);
-  });
-  try {
-    const [, payload] = await Promise.race([Promise.all([invoke(), event]), timeout]);
+  let abandoned = false;
+  const run = async () => {
+    // Await registration before invoking: a native command may emit its
+    // terminal event before its own promise resolves.
+    await subscription;
+    if (abandoned) throw new Error(`Abandoned ${label}`);
+    const [, payload] = await Promise.all([invoke(), event]);
     return payload;
+  };
+  try {
+    return await withTimeout(run(), timeoutMs, label);
   } finally {
-    clearTimeout(timer);
-    unlisten();
+    abandoned = true;
+    // Also releases a registration that lands after the timeout.
+    void subscription.then((unlisten) => unlisten(), ignore);
   }
+}
+
+/** stop_capture, then wait for `session`'s terminal `stopped` event.
+ *  stop_capture returns once the stop is dispatched, so its success proves nothing. */
+async function stopNativeSession(
+  b: LocalTranscriberBridge,
+  session: string,
+  timeoutMs: number,
+  label: string,
+): Promise<CaptureStoppedEvent> {
+  const p = await invokeAndWaitForEvent<CaptureLifecycleEvent>(
+    (cb) => b.transcription.events.captureLifecycleEvent.listen(cb),
+    (e) => e.type === "stopped" && e.session_id === session,
+    timeoutMs,
+    label,
+    async () => {
+      const r = await b.transcription.stopCapture();
+      if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
+    },
+  );
+  if (p.type !== "stopped") throw new Error("Unexpected capture lifecycle state");
+  return p;
+}
+
+async function readCaptureState(b: LocalTranscriberBridge, timeoutMs: number): Promise<NativeCaptureState> {
+  const r = await withTimeout(b.transcription.getCaptureState(), timeoutMs, "get_capture_state");
+  if (r.status === "error") throw new Error(`get_capture_state: ${r.error}`);
+  return r.data;
+}
+
+/**
+ * Registers every listener or none: when one fails or registration times out,
+ * the ones that did register (now or late) are released before rejecting.
+ */
+async function registerListeners(
+  registrations: readonly (() => Promise<Unlisten>)[],
+  timeoutMs: number,
+): Promise<Unlisten[]> {
+  const pending = registrations.map((register) => register());
+  let results: PromiseSettledResult<Unlisten>[];
+  try {
+    results = await withTimeout(Promise.allSettled(pending), timeoutMs, "capture event listeners to register");
+  } catch (err) {
+    for (const p of pending) void p.then((unlisten) => unlisten(), ignore);
+    throw err;
+  }
+  const registered = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failed !== undefined) {
+    for (const unlisten of registered) unlisten();
+    throw new Error(`Registering capture event listeners failed: ${errorMessage(failed.reason)}`);
+  }
+  return registered;
 }
 
 /** Identity of the real native listener, which is process-wide. An injected
@@ -324,28 +453,127 @@ async function invokeAndWaitForEvent<T>(
 const NATIVE_CAPTURE = {};
 
 /**
- * Close-time stops that may not have confirmed yet, keyed by native identity.
- * A remounted view gets a new transcriber, so this is how its start() learns
- * that the previous view's capture could still be live.
+ * Close-time stops still in flight, keyed by native identity. A remounted view
+ * gets a new transcriber, so this is how its start() learns that the previous
+ * view's capture could still be live.
  */
 const closingCaptures = new WeakMap<object, Promise<void>>();
 
-async function awaitClosingCapture(nativeKey: object, b: LocalTranscriberBridge): Promise<void> {
+/**
+ * A capture this app may have started that no open view owns: a closed view's
+ * stop was not confirmed, or start_capture timed out. Kept process-wide, with
+ * what it takes to stop it, until native capture confirms it is inactive.
+ */
+interface OrphanedCapture {
+  sessionId: string;
+  /** Why it is not confirmed stopped; shown with the recovery action. */
+  reason: string;
+  /** A timed-out start_capture that may still start this session; null once it returns. */
+  pendingStart: Promise<unknown> | null;
+  /** stop_capture, then wait (bounded) for this session's `stopped` event. */
+  stop: (timeoutMs: number) => Promise<unknown>;
+  /** The one recovery in flight, shared by every caller. */
+  recovering: Promise<void> | null;
+}
+
+const orphanedCaptures = new WeakMap<object, OrphanedCapture>();
+
+function adoptOrphan(
+  nativeKey: object,
+  bridge: () => Promise<LocalTranscriberBridge>,
+  sessionId: string,
+  reason: string,
+  pendingStart: Promise<unknown> | null,
+): OrphanedCapture {
+  const orphan: OrphanedCapture = {
+    sessionId,
+    reason,
+    pendingStart,
+    stop: async (timeoutMs) =>
+      stopNativeSession(await bridge(), sessionId, timeoutMs, "the previous recording to confirm it stopped"),
+    recovering: null,
+  };
+  const started = () => {
+    orphan.pendingStart = null;
+  };
+  pendingStart?.then(started, started);
+  orphanedCaptures.set(nativeKey, orphan);
+  return orphan;
+}
+
+function orphanMessage(orphan: OrphanedCapture, nativeState: string): string {
+  const starting =
+    orphan.pendingStart === null
+      ? ""
+      : " Its start_capture has not returned yet; if that persists, quit and reopen Exo.";
+  return `${orphan.reason} Native capture is ${nativeState}.${starting} Stop it before starting a new recording.`;
+}
+
+/** Nothing can still be recording for this orphan: native capture is inactive
+ *  and no timed-out start_capture can still start it. */
+function orphanSettled(orphan: OrphanedCapture, nativeState: NativeCaptureState): boolean {
+  return orphan.pendingStart === null && nativeState === "inactive";
+}
+
+/**
+ * Waits (bounded) for a closed view's in-flight stop, then reports a previous
+ * recording that native capture has not confirmed stopped. One it confirms
+ * inactive is cleared.
+ */
+async function unconfirmedPreviousCapture(
+  nativeKey: object,
+  bridge: () => Promise<LocalTranscriberBridge>,
+  queryMs: number,
+  onWaiting?: () => void,
+): Promise<PreviousRecording | null> {
   const closing = closingCaptures.get(nativeKey);
-  if (closing === undefined) return;
-  const confirmed = await closing.then(() => true, () => false);
-  if (!confirmed) {
-    // The closed view never received its terminal event; only native state can
-    // say whether that capture is still running.
-    const state = await b.transcription.getCaptureState();
-    if (state.status === "error") throw new Error(`get_capture_state: ${state.error}`);
-    if (state.data !== "inactive") {
-      throw new Error(
-        `A previous local recording has not confirmed it stopped (native capture is ${state.data}). Try again once it finishes.`,
-      );
-    }
+  const recovering = orphanedCaptures.get(nativeKey)?.recovering ?? null;
+  if (closing !== undefined || recovering !== null) {
+    onWaiting?.();
+    // Bounded by the closed view's own start and stop timeouts, or by the
+    // recovery's; a failure leaves the orphan record read below.
+    await closing?.then(ignore, ignore);
+    await recovering?.then(ignore, ignore);
   }
-  if (closingCaptures.get(nativeKey) === closing) closingCaptures.delete(nativeKey);
+  const orphan = orphanedCaptures.get(nativeKey);
+  if (orphan === undefined) return null;
+  const nativeState = await readCaptureState(await bridge(), queryMs);
+  if (orphanSettled(orphan, nativeState)) {
+    if (orphanedCaptures.get(nativeKey) === orphan) orphanedCaptures.delete(nativeKey);
+    return null;
+  }
+  return { sessionId: orphan.sessionId, message: orphanMessage(orphan, nativeState) };
+}
+
+/** Stops the previous recording and confirms native capture is inactive. */
+function recoverPreviousCapture(
+  nativeKey: object,
+  bridge: () => Promise<LocalTranscriberBridge>,
+  timeouts: LocalTranscriberTimeouts,
+): Promise<void> {
+  const orphan = orphanedCaptures.get(nativeKey);
+  if (orphan === undefined) return Promise.resolve();
+  orphan.recovering ??= (async () => {
+    try {
+      const b = await bridge();
+      let nativeState = await readCaptureState(b, timeouts.queryMs);
+      if (!orphanSettled(orphan, nativeState)) {
+        try {
+          await orphan.stop(timeouts.captureStopMs);
+        } catch (err) {
+          orphan.reason = `Stopping the previous recording was not confirmed (${errorMessage(err)}).`;
+        }
+        nativeState = await readCaptureState(b, timeouts.queryMs);
+        if (!orphanSettled(orphan, nativeState)) {
+          throw new PreviousCaptureUnconfirmedError(orphanMessage(orphan, nativeState));
+        }
+      }
+      if (orphanedCaptures.get(nativeKey) === orphan) orphanedCaptures.delete(nativeKey);
+    } finally {
+      orphan.recovering = null;
+    }
+  })();
+  return orphan.recovering;
 }
 
 export function createLocalTranscriber(
@@ -356,7 +584,17 @@ export function createLocalTranscriber(
   let bridgePromise: Promise<LocalTranscriberBridge> | null = injected
     ? Promise.resolve(injected)
     : null;
-  const bridge = () => (bridgePromise ??= loadBridge());
+  /** The plugin bridge, loaded once; a failed load is retried by the next call. */
+  const bridge = (): Promise<LocalTranscriberBridge> => {
+    if (bridgePromise === null) {
+      const loading = loadBridge();
+      bridgePromise = loading;
+      loading.catch(() => {
+        if (bridgePromise === loading) bridgePromise = null;
+      });
+    }
+    return withTimeout(bridgePromise, timeouts.listenMs, "the local transcription plugins to load");
+  };
   const nativeKey: object = injected ?? NATIVE_CAPTURE;
 
   let sessionId: string | null = null;
@@ -398,53 +636,59 @@ export function createLocalTranscriber(
     captureStopped = null;
   };
 
-  // Event listeners live for the transcriber's lifetime; each is subscribed
-  // lazily so nothing touches the bridge before it's needed.
+  // Event listeners live for the transcriber's lifetime; they are subscribed
+  // lazily so nothing touches the bridge before it's needed, and all-or-nothing
+  // so a failed registration leaks no handle and the next start() retries it.
   let listeners: Promise<Unlisten[]> | null = null;
-  const ensureListeners = (b: LocalTranscriberBridge): Promise<Unlisten[]> =>
-    (listeners ??= Promise.all([
-      b.transcription.events.captureLifecycleEvent.listen((e) => {
-        if (e.payload.session_id !== sessionId) return;
-        if (e.payload.type === "started") emit({ kind: "recording" });
-        if (e.payload.type === "finalizing") emit({ kind: "stopping" });
-        // Also records a capture that ended on its own (e.g. a failed audio
-        // actor) before Stop, so stop() uses it instead of waiting on a no-op.
-        if (e.payload.type === "stopped") markCaptureStopped(e.payload);
-      }),
-      b.transcription.events.captureStatusEvent.listen((e) => {
-        if (e.payload.session_id !== sessionId) return;
-        if (e.payload.type === "audio_error" && e.payload.is_fatal) {
-          emit({ kind: "error", message: e.payload.error });
-        }
-        if (e.payload.type === "connection_error") {
-          emit({ kind: "error", message: e.payload.error });
-        }
-      }),
-      b.transcription.events.transcriptionEvent.listen((e) => {
-        if (e.payload.session_id !== sessionId) return;
-        if (e.payload.type === "progress" && e.payload.event.type === "progress") {
-          emit({ kind: "transcribing", progress: Math.round(e.payload.event.percentage) });
-        }
-      }),
-    ]));
+  const ensureListeners = (b: LocalTranscriberBridge): Promise<Unlisten[]> => {
+    if (listeners === null) {
+      const registering = registerListeners(
+        [
+          () =>
+            b.transcription.events.captureLifecycleEvent.listen((e) => {
+              if (e.payload.session_id !== sessionId) return;
+              if (e.payload.type === "started") emit({ kind: "recording" });
+              if (e.payload.type === "finalizing") emit({ kind: "stopping" });
+              // Also records a capture that ended on its own (e.g. a failed audio
+              // actor) before Stop, so stop() uses it instead of waiting on a no-op.
+              if (e.payload.type === "stopped") markCaptureStopped(e.payload);
+            }),
+          () =>
+            b.transcription.events.captureStatusEvent.listen((e) => {
+              if (e.payload.session_id !== sessionId) return;
+              if (e.payload.type === "audio_error" && e.payload.is_fatal) {
+                emit({ kind: "error", message: e.payload.error });
+              }
+              if (e.payload.type === "connection_error") {
+                emit({ kind: "error", message: e.payload.error });
+              }
+            }),
+          () =>
+            b.transcription.events.transcriptionEvent.listen((e) => {
+              if (e.payload.session_id !== sessionId) return;
+              if (e.payload.type === "progress" && e.payload.event.type === "progress") {
+                emit({ kind: "transcribing", progress: Math.round(e.payload.event.percentage) });
+              }
+            }),
+        ],
+        timeouts.listenMs,
+      );
+      listeners = registering;
+      registering.catch(() => {
+        if (listeners === registering) listeners = null;
+      });
+    }
+    return listeners;
+  };
 
   /** Ask native capture to stop, then wait for this session's `stopped` event. */
   const confirmCaptureStopped = (b: LocalTranscriberBridge): Promise<CaptureStoppedEvent> => {
     if (captureStopped !== null) return Promise.resolve(captureStopped);
     if (captureStop !== null) return captureStop;
     const session = sessionId;
-    captureStop = invokeAndWaitForEvent<CaptureLifecycleEvent>(
-      (cb) => b.transcription.events.captureLifecycleEvent.listen(cb),
-      (p) => p.type === "stopped" && p.session_id === session,
-      timeouts.captureStopMs,
-      "native capture to confirm it stopped",
-      async () => {
-        const r = await b.transcription.stopCapture();
-        if (r.status === "error") throw new Error(`stop_capture: ${r.error}`);
-      },
-    )
+    if (session === null) return Promise.reject(new Error("No local recording is active"));
+    captureStop = stopNativeSession(b, session, timeouts.captureStopMs, "native capture to confirm it stopped")
       .then((p) => {
-        if (p.type !== "stopped") throw new Error("Unexpected capture lifecycle state");
         markCaptureStopped(p);
         return p;
       })
@@ -454,9 +698,15 @@ export function createLocalTranscriber(
     return captureStop;
   };
 
+  const modelDownloaded = async (b: LocalTranscriberBridge, m: WhisperModel): Promise<boolean> => {
+    const r = await withTimeout(b.localStt.isModelDownloaded(m), timeouts.queryMs, "is_model_downloaded");
+    if (r.status === "error") throw new Error(`is_model_downloaded: ${r.error}`);
+    return r.data;
+  };
+
   /** Start (or reuse) the in-process Whisper server; returns its base URL. */
   const startWhisperServer = async (b: LocalTranscriberBridge, m: WhisperModel): Promise<string> => {
-    const server = await b.localStt.startServer(m);
+    const server = await withTimeout(b.localStt.startServer(m), timeouts.serverStartMs, "the local Whisper server to start");
     if (server.status === "error") throw new Error(`start_server: ${server.error}`);
     return server.data;
   };
@@ -503,19 +753,12 @@ export function createLocalTranscriber(
 
   return {
     async isModelDownloaded(m) {
-      const b = await bridge();
-      const r = await b.localStt.isModelDownloaded(m);
-      if (r.status === "error") throw new Error(`is_model_downloaded: ${r.error}`);
-      return r.data;
+      return modelDownloaded(await bridge(), m);
     },
 
     async ensureModel(m, onProgress) {
       const b = await bridge();
-      const downloaded = await b.localStt.isModelDownloaded(m);
-      if (downloaded.status === "error") {
-        throw new Error(`is_model_downloaded: ${downloaded.error}`);
-      }
-      if (downloaded.data) {
+      if (await modelDownloaded(b, m)) {
         onProgress?.(100);
         return;
       }
@@ -543,7 +786,7 @@ export function createLocalTranscriber(
 
     async listMicrophoneDevices() {
       const b = await bridge();
-      const r = await b.transcription.listMicrophoneDevices();
+      const r = await withTimeout(b.transcription.listMicrophoneDevices(), timeouts.queryMs, "list_microphone_devices");
       if (r.status === "error") throw new Error(`list_microphone_devices: ${r.error}`);
       return r.data;
     },
@@ -559,15 +802,17 @@ export function createLocalTranscriber(
       emit({ kind: "starting" });
       const run = (async () => {
         const b = await bridge();
-        // Never start over a closed view's capture that is not yet confirmed stopped.
-        await awaitClosingCapture(nativeKey, b);
+        // Never start over a capture that is not confirmed stopped.
+        const previous = await unconfirmedPreviousCapture(nativeKey, bridge, timeouts.queryMs);
+        if (previous !== null) throw new PreviousCaptureUnconfirmedError(previous.message);
         if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
         await ensureListeners(b);
         baseUrl = await startWhisperServer(b, model);
+        if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
         const session = crypto.randomUUID();
         sessionId = session;
         startedAt = new Date().toISOString();
-        const r = await b.transcription.startCapture({
+        const capture = b.transcription.startCapture({
           session_id: session,
           languages: [language],
           onboarding: false,
@@ -578,6 +823,30 @@ export function createLocalTranscriber(
           mic_device: opts.micDevice ?? null,
           transcription_mode: "batch",
         });
+        let r: Result<null>;
+        try {
+          r = await withTimeout(capture, timeouts.captureStartMs, "start_capture");
+        } catch (err) {
+          if (!(err instanceof LocalTimeoutError)) throw err;
+          // start_capture may have started this session, or still may. No view
+          // owns it as a recording: leave it as the previous recording, which
+          // must be stopped and confirmed inactive before anything else starts.
+          releaseSession();
+          const orphan = adoptOrphan(
+            nativeKey,
+            bridge,
+            session,
+            `Starting the recording was not confirmed (${err.message}); it may be recording.`,
+            capture,
+          );
+          let nativeState: string;
+          try {
+            nativeState = await readCaptureState(b, timeouts.queryMs);
+          } catch (stateErr) {
+            nativeState = `unknown (${errorMessage(stateErr)})`;
+          }
+          throw new PreviousCaptureUnconfirmedError(orphanMessage(orphan, nativeState));
+        }
         if (r.status === "error") throw new Error(`start_capture: ${r.error}`);
         captureActive = true;
         // The view closed while capture was starting: its close-time teardown
@@ -609,10 +878,11 @@ export function createLocalTranscriber(
       const serverUrl = baseUrl;
       stopping = true;
       try {
-        const b = await bridge();
         emit({ kind: "stopping" });
+        let b: LocalTranscriberBridge;
         let stopped: CaptureStoppedEvent;
         try {
+          b = await bridge();
           stopped = await confirmCaptureStopped(b);
         } catch (err) {
           // Without the terminal event the capture may still be live: keep the
@@ -683,24 +953,49 @@ export function createLocalTranscriber(
       emit({ kind: "idle" });
     },
 
+    previousRecording(onWaiting) {
+      return unconfirmedPreviousCapture(nativeKey, bridge, timeouts.queryMs, onWaiting);
+    },
+
+    stopPreviousRecording() {
+      return recoverPreviousCapture(nativeKey, bridge, timeouts);
+    },
+
     async stopCaptureOnUnmount() {
       lifecycleGeneration++;
       const activeListeners = listeners;
       listeners = null;
-      void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten())).catch(() => {});
+      void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()), ignore);
       const pendingStart = starting;
       if (!captureActive && pendingStart === null) return;
       // The view is going away, but the stop still has to be confirmed. Until it
-      // is, a remounted view's start() waits on (or re-checks) this capture.
+      // is, a remounted view's start() waits on it; if it is not confirmed, the
+      // capture is left as the previous recording for the next view to stop.
       const closing = (async () => {
-        // A start in flight sees the new generation and leaves its capture here;
-        // its own rejection is delivered to its caller.
-        if (pendingStart !== null) await pendingStart.then(() => {}, () => {});
-        if (!captureActive) return;
-        await confirmCaptureStopped(await bridge());
+        // Bounded, like every wait in start(). A start in flight sees the new
+        // generation and leaves its capture here; its own rejection goes to its caller.
+        if (pendingStart !== null) await pendingStart.then(ignore, ignore);
+        const session = sessionId;
+        if (!captureActive || session === null) return;
+        try {
+          await confirmCaptureStopped(await bridge());
+        } catch (err) {
+          adoptOrphan(
+            nativeKey,
+            bridge,
+            session,
+            `The Local recording view closed before its recording confirmed it stopped (${errorMessage(err)}).`,
+            null,
+          );
+          throw err;
+        }
         releaseSession();
       })();
       closingCaptures.set(nativeKey, closing);
+      const forget = () => {
+        if (closingCaptures.get(nativeKey) === closing) closingCaptures.delete(nativeKey);
+      };
+      closing.then(forget, forget);
       await closing;
     },
 
@@ -857,4 +1152,45 @@ export async function saveLocalTranscript(
   prepared: PreparedLocalTranscript,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   return upsertMeeting(tcw, prepared.meeting, prepared.sentences);
+}
+
+/** How long one TinyCloud save (meeting row + transcript body) may take. */
+const LOCAL_SAVE_TIMEOUT_MS = 60_000;
+
+export type LocalTranscriptSaver = (
+  prepared: PreparedLocalTranscript,
+) => Promise<StoreResult<UpsertMeetingOutcome>>;
+
+/**
+ * Saves one prepared transcript at a time, each bounded by `timeoutMs`. A save
+ * that timed out may still be writing, so the next one first waits (also
+ * bounded) for it to settle instead of writing beside it.
+ */
+export function createLocalTranscriptSaver(
+  tcw: TinyCloudWeb,
+  options: { timeoutMs?: number; save?: typeof saveLocalTranscript } = {},
+): LocalTranscriptSaver {
+  const timeoutMs = options.timeoutMs ?? LOCAL_SAVE_TIMEOUT_MS;
+  const save = options.save ?? saveLocalTranscript;
+  /** The last save started, until it settles — even after its caller timed out. */
+  let writing: Promise<unknown> | null = null;
+  let busy = false;
+  return async (prepared) => {
+    if (busy) throw new Error("The transcript is already being saved");
+    busy = true;
+    try {
+      if (writing !== null) {
+        await withTimeout(writing.then(ignore, ignore), timeoutMs, "the previous save to finish");
+      }
+      const attempt = save(tcw, prepared);
+      writing = attempt;
+      const settled = () => {
+        if (writing === attempt) writing = null;
+      };
+      attempt.then(settled, settled);
+      return await withTimeout(attempt, timeoutMs, "TinyCloud to save the transcript");
+    } finally {
+      busy = false;
+    }
+  };
 }

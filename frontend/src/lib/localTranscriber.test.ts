@@ -12,8 +12,18 @@
 //   - capture is only "stopped" on its matching terminal event: a timed-out,
 //     failed, or hung stop keeps the session for Retry stop; unmount waits for
 //     confirmation and a remount never starts over an unconfirmed capture;
+//   - a close-time stop that is not confirmed, or a start_capture that times
+//     out, leaves a process-wide previous recording: a remounted view reports
+//     it, stops it (stop_capture + that session's stopped event), and only
+//     then starts; a start_capture that may still return keeps it unconfirmed;
+//   - every native wait is bounded (bridge/listener registration, readiness
+//     reads, get_capture_state, start_server, start_capture), and unmount
+//     never waits forever on a pending start;
+//   - lifetime listeners register all-or-nothing and a failure is retryable;
 //   - saveLocalTranscript delegates to upsertMeeting with the prepared pair, a
-//     retried save repairs a partial write, and silence is never saved;
+//     retried save repairs a partial write, and silence is never saved; saves
+//     are bounded and a retry after a timed-out save waits for it, never
+//     writing beside it;
 //   - a failed transcription keeps the stopped recording: retryTranscription
 //     restarts the server and re-transcribes the same audio file until it
 //     succeeds, and discardRecording releases it without transcribing.
@@ -24,11 +34,13 @@ import { describe, expect, test } from "bun:test";
 import {
   CaptureStopUnconfirmedError,
   createLocalTranscriber,
+  createLocalTranscriptSaver,
   normalizeLocalTranscript,
   LOCAL_MEETING_SOURCE,
   LOCAL_WHISPER_MODELS,
   NO_SPEECH_MESSAGE,
   prepareLocalTranscript,
+  PreviousCaptureUnconfirmedError,
   saveLocalTranscript,
   TranscriptionFailedError,
   type LocalTranscriberBridge,
@@ -45,6 +57,8 @@ type Handler<T> = (e: { payload: T }) => void;
 
 interface FakeBridge extends LocalTranscriberBridge {
   calls: string[];
+  /** Registered (not yet unlistened) lifetime + per-operation listeners, by event. */
+  listenerCounts(): { lifecycle: number; status: number; transcription: number };
   emitCaptureLifecycle(p: CaptureLifecycleEvent): void;
   emitTranscription(p: TranscriptionEvent): void;
   emitDownloadProgress(p: DownloadProgressPayload): void;
@@ -64,6 +78,7 @@ function makeBridge(opts: {
 
   const bridge: FakeBridge = {
     calls,
+    listenerCounts: () => ({ lifecycle: lifecycle.size, status: status.size, transcription: transcription.size }),
     emitCaptureLifecycle: (p) => lifecycle.forEach((cb) => cb({ payload: p })),
     emitTranscription: (p) => transcription.forEach((cb) => cb({ payload: p })),
     emitDownloadProgress: (p) => downloads.forEach((cb) => cb({ payload: p })),
@@ -458,26 +473,75 @@ describe("createLocalTranscriber", () => {
     expect(stopCaptureCalls(bridge)).toBe(0);
   });
 
-  test("an unconfirmed close-time stop blocks a remounted view until native capture is inactive", async () => {
+  test("a close-time stop that times out leaves a previous recording the remounted view stops before it can start", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let nativeState: "active" | "finalizing" | "inactive" = "active";
+    bridge.transcription.getCaptureState = async () => ({ status: "ok", data: nativeState });
+    const closed = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    // Unmount issues the stop but does not claim it succeeded; native capture stays active.
+    await expect(closed.stopCaptureOnUnmount()).rejects.toThrow("Timed out");
+    expect(stopCaptureCalls(bridge)).toBe(1);
+
+    // Remount: a new transcriber on the same native listener is told why, and what native reports.
+    const remounted = createLocalTranscriber(bridge);
+    const previous = await remounted.previousRecording();
+    expect(previous?.sessionId).toBe(sessionId);
+    expect(previous?.message).toContain(
+      "The Local recording view closed before its recording confirmed it stopped (Timed out waiting for native capture to confirm it stopped).",
+    );
+    expect(previous?.message).toContain("Native capture is active.");
+    // Nothing starts over it, however long the user waits.
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toBeInstanceOf(
+      PreviousCaptureUnconfirmedError,
+    );
+    expect(startCaptureCalls(bridge)).toBe(1);
+
+    // "Stop previous recording" issues a second stop and waits for that session's stopped event.
+    let recovered = false;
+    const recovering = remounted.stopPreviousRecording().then(() => { recovered = true; });
+    await tick();
+    expect(stopCaptureCalls(bridge)).toBe(2);
+    expect(recovered).toBe(false);
+    nativeState = "inactive";
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await recovering;
+
+    expect(await remounted.previousRecording()).toBeNull();
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    expect(startCaptureCalls(bridge)).toBe(2);
+  });
+
+  test("a recovery stop that is not confirmed keeps the previous recording for another try", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    bridge.transcription.getCaptureState = async () => ({ status: "ok", data: "active" });
+    const closed = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(closed.stopCaptureOnUnmount()).rejects.toThrow("Timed out");
+
+    const remounted = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    const failed = remounted.stopPreviousRecording();
+    await expect(failed).rejects.toBeInstanceOf(PreviousCaptureUnconfirmedError);
+    await expect(failed).rejects.toThrow(
+      "Stopping the previous recording was not confirmed (Timed out waiting for the previous recording to confirm it stopped). Native capture is active.",
+    );
+    expect(stopCaptureCalls(bridge)).toBe(2);
+    expect((await remounted.previousRecording())?.sessionId).toBe(sessionId);
+  });
+
+  test("a previous recording that native capture already reports inactive is cleared without another stop", async () => {
     const bridge = makeBridge({ modelDownloaded: true });
     let nativeState: "active" | "finalizing" | "inactive" = "active";
     bridge.transcription.getCaptureState = async () => ({ status: "ok", data: nativeState });
     const closed = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
     await closed.start({ model: "QuantizedTinyEn", language: "en" });
-    // Unmount issues the stop but does not claim it succeeded.
     await expect(closed.stopCaptureOnUnmount()).rejects.toThrow("Timed out");
-    expect(stopCaptureCalls(bridge)).toBe(1);
-
-    // Remount: a new transcriber on the same native listener.
-    const remounted = createLocalTranscriber(bridge);
-    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
-      "has not confirmed it stopped (native capture is active)",
-    );
-    expect(startCaptureCalls(bridge)).toBe(1);
 
     nativeState = "inactive";
+    const remounted = createLocalTranscriber(bridge);
+    expect(await remounted.previousRecording()).toBeNull();
     await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
-    expect(startCaptureCalls(bridge)).toBe(2);
+    expect(stopCaptureCalls(bridge)).toBe(1);
   });
 
   test("a remounted view waits for the closed view's stop to confirm before starting", async () => {
@@ -680,6 +744,136 @@ describe("createLocalTranscriber", () => {
     await t.start({ model: "QuantizedTinyEn", language: "en" });
     await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("already active");
   });
+
+  test("a timed-out start_capture is reconciled with native state and left as a previous recording to stop", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let nativeState: "active" | "finalizing" | "inactive" = "active";
+    bridge.transcription.getCaptureState = async () => ({ status: "ok", data: nativeState });
+    const startCapture = bridge.transcription.startCapture;
+    let session = "";
+    let finishStart!: (r: { status: "ok"; data: null }) => void;
+    bridge.transcription.startCapture = (params) => {
+      session = params.session_id;
+      bridge.calls.push("start_capture:hung");
+      return new Promise((resolve) => { finishStart = resolve; });
+    };
+    const t = createLocalTranscriber(bridge, { timeouts: { captureStartMs: 20 } });
+
+    const err = await t.start({ model: "QuantizedTinyEn", language: "en" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PreviousCaptureUnconfirmedError);
+    expect((err as Error).message).toContain(
+      "Starting the recording was not confirmed (Timed out waiting for start_capture); it may be recording. Native capture is active.",
+    );
+    expect((err as Error).message).toContain("start_capture has not returned yet");
+    // Not assumed stopped: nothing new starts over it.
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toBeInstanceOf(
+      PreviousCaptureUnconfirmedError,
+    );
+    expect(startCaptureCalls(bridge)).toBe(1);
+
+    // The late start lands; "Stop previous recording" stops that exact session.
+    finishStart({ status: "ok", data: null });
+    const recovering = t.stopPreviousRecording();
+    await tick();
+    expect(stopCaptureCalls(bridge)).toBe(1);
+    nativeState = "inactive";
+    bridge.emitCaptureLifecycle(stoppedEvent(session));
+    await recovering;
+
+    bridge.transcription.startCapture = startCapture;
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("a start_capture that may still return keeps the previous recording unconfirmed even while native reads inactive", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    let finishStart!: (r: { status: "error"; error: string }) => void;
+    bridge.transcription.startCapture = () => new Promise((resolve) => { finishStart = resolve; });
+    const t = createLocalTranscriber(bridge, { timeouts: { captureStartMs: 20, captureStopMs: 20 } });
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
+      "Native capture is inactive. Its start_capture has not returned yet",
+    );
+
+    // Native reads inactive, but the start could still begin a capture: stop it and keep waiting.
+    await expect(t.stopPreviousRecording()).rejects.toThrow("start_capture has not returned yet");
+    expect(stopCaptureCalls(bridge)).toBe(1);
+
+    // Once start_capture returns (here: it failed), inactive is conclusive.
+    finishStart({ status: "error", error: "mic unavailable" });
+    await tick();
+    expect(await t.previousRecording()).toBeNull();
+    expect(stopCaptureCalls(bridge)).toBe(1);
+  });
+
+  test("a hung start_server is bounded, and unmount does not wait on the pending start forever", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const startServer = bridge.localStt.startServer;
+    bridge.localStt.startServer = () => new Promise(() => {});
+    const t = createLocalTranscriber(bridge, { timeouts: { serverStartMs: 20 } });
+    const starting = t.start({ model: "QuantizedTinyEn", language: "en" });
+    await tick();
+    const closing = t.stopCaptureOnUnmount();
+    await expect(starting).rejects.toThrow("Timed out waiting for the local Whisper server to start");
+    await expect(closing).resolves.toBeUndefined();
+    expect(startCaptureCalls(bridge)).toBe(0);
+
+    bridge.localStt.startServer = startServer;
+    await expect(createLocalTranscriber(bridge).start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("readiness reads, get_capture_state and listener registration are bounded", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    bridge.localStt.isModelDownloaded = () => new Promise(() => {});
+    bridge.transcription.listMicrophoneDevices = () => new Promise(() => {});
+    const t = createLocalTranscriber(bridge, { timeouts: { queryMs: 20, listenMs: 20, captureStopMs: 20 } });
+    await expect(t.isModelDownloaded("QuantizedTinyEn")).rejects.toThrow("Timed out waiting for is_model_downloaded");
+    await expect(t.ensureModel("QuantizedTinyEn")).rejects.toThrow("Timed out waiting for is_model_downloaded");
+    await expect(t.listMicrophoneDevices()).rejects.toThrow("Timed out waiting for list_microphone_devices");
+
+    // A previous recording whose native state cannot be read is an error, never "inactive".
+    const closed = createLocalTranscriber(bridge, { timeouts: { captureStopMs: 20 } });
+    await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(closed.stopCaptureOnUnmount()).rejects.toThrow("Timed out");
+    bridge.transcription.getCaptureState = () => new Promise(() => {});
+    await expect(t.previousRecording()).rejects.toThrow("Timed out waiting for get_capture_state");
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
+      "Timed out waiting for get_capture_state",
+    );
+    bridge.transcription.getCaptureState = async () => ({ status: "ok", data: "inactive" });
+
+    // A listener registration that never completes fails the start instead of hanging it.
+    const statusListen = bridge.transcription.events.captureStatusEvent.listen;
+    bridge.transcription.events.captureStatusEvent.listen = () => new Promise(() => {});
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
+      "Timed out waiting for capture event listeners to register",
+    );
+    expect(bridge.listenerCounts().lifecycle).toBe(0);
+    bridge.transcription.events.captureStatusEvent.listen = statusListen;
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("listener registration is all-or-nothing: a failed second listener releases the first, and Start retries cleanly", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const statusListen = bridge.transcription.events.captureStatusEvent.listen;
+    let failNext = true;
+    bridge.transcription.events.captureStatusEvent.listen = async (cb) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("event.listen not allowed");
+      }
+      return statusListen(cb);
+    };
+    const t = createLocalTranscriber(bridge);
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
+      "Registering capture event listeners failed: event.listen not allowed",
+    );
+    // The first listener registered, then was unlistened; the third was too.
+    expect(bridge.listenerCounts()).toEqual({ lifecycle: 0, status: 0, transcription: 0 });
+    expect(startCaptureCalls(bridge)).toBe(0);
+
+    // The rejection was not memoized: the next Start registers every listener once.
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    expect(bridge.listenerCounts()).toEqual({ lifecycle: 1, status: 1, transcription: 1 });
+  });
 });
 
 /** Connector store backed by real SQLite plus an in-memory KV whose next puts can be failed. */
@@ -801,5 +995,51 @@ describe("saveLocalTranscript", () => {
     expect(insert!.params[1]).toBe(LOCAL_MEETING_SOURCE);
     expect(insert!.params[2]).toBe("local:sess-1");
     expect(kvPuts.some((k) => k.includes("exo-local/transcript/local:sess-1"))).toBe(true);
+  });
+
+  test("a timed-out save keeps the transcript; its retry waits for the first write instead of writing beside it", async () => {
+    const prepared = prepareLocalTranscript(resultWith([{ word: "hello", start: 0, end: 1, channel: 0 }]));
+    let calls = 0;
+    let writing = 0;
+    let maxWriting = 0;
+    let finishFirst!: () => void;
+    const saved = { ok: true as const, data: { id: prepared.meeting.id, inserted: true, createdAt: "2026-09-28T18:00:00.000Z" } };
+    const save = async (_tcw: unknown, p: typeof prepared) => {
+      expect(p).toBe(prepared);
+      calls++;
+      writing++;
+      maxWriting = Math.max(maxWriting, writing);
+      try {
+        if (calls === 1) await new Promise<void>((resolve) => { finishFirst = resolve; });
+        return saved;
+      } finally {
+        writing--;
+      }
+    };
+    const saveTranscript = createLocalTranscriptSaver({} as never, { timeoutMs: 50, save: save as never });
+
+    await expect(saveTranscript(prepared)).rejects.toThrow("Timed out waiting for TinyCloud to save the transcript");
+    const retry = saveTranscript(prepared);
+    // A concurrent second retry is refused rather than queued beside it.
+    await expect(saveTranscript(prepared)).rejects.toThrow("already being saved");
+    await tick();
+    expect(calls).toBe(1);
+    finishFirst();
+    await expect(retry).resolves.toEqual(saved);
+    expect(calls).toBe(2);
+    expect(maxWriting).toBe(1);
+  });
+
+  test("a retry while the timed-out save is still writing is itself bounded and writes nothing", async () => {
+    const prepared = prepareLocalTranscript(resultWith([{ word: "hello", start: 0, end: 1, channel: 0 }]));
+    let calls = 0;
+    const save = () => {
+      calls++;
+      return new Promise<never>(() => {});
+    };
+    const saveTranscript = createLocalTranscriptSaver({} as never, { timeoutMs: 20, save: save as never });
+    await expect(saveTranscript(prepared)).rejects.toThrow("Timed out waiting for TinyCloud to save the transcript");
+    await expect(saveTranscript(prepared)).rejects.toThrow("Timed out waiting for the previous save to finish");
+    expect(calls).toBe(1);
   });
 });

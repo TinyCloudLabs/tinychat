@@ -6,7 +6,7 @@
 // pinned anarlog rev is batch-only, so the UI always says transcription happens
 // after Stop.
 
-import { useEffect, useRef, useState, type FC } from "react";
+import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon, MicIcon, SquareIcon } from "lucide-react";
 
@@ -14,11 +14,12 @@ import { Button } from "@/components/ui/button";
 import {
   CaptureStopUnconfirmedError,
   createLocalTranscriber,
+  createLocalTranscriptSaver,
   DEFAULT_LOCAL_MODEL,
   LOCAL_MODEL_STORAGE_KEY,
   LOCAL_WHISPER_MODELS,
+  PreviousCaptureUnconfirmedError,
   prepareLocalTranscript,
-  saveLocalTranscript,
   TranscriptionFailedError,
   type LocalTranscriber,
   type LocalTranscriberStatus,
@@ -29,6 +30,10 @@ import {
 
 export type LocalPanelState =
   | "checking-model"
+  /** A closed view's capture, or a previous recording, is being stopped and confirmed. */
+  | "stopping-previous"
+  /** A capture no open view owns is not confirmed stopped; nothing starts until it is stopped. */
+  | "previous-recording"
   | "needs-download"
   | "downloading"
   | "ready"
@@ -55,6 +60,8 @@ export type MicDeviceList =
  *  mode switch and pickers stay locked, and model checks never replace them. */
 export function isLocalWorkflowActive(state: LocalPanelState): boolean {
   return (
+    state === "stopping-previous" ||
+    state === "previous-recording" ||
     state === "starting" ||
     state === "recording" ||
     state === "transcribing" ||
@@ -66,17 +73,23 @@ export function isLocalWorkflowActive(state: LocalPanelState): boolean {
 }
 
 /** What the Retry button does in each failed state. */
-export function localRetryAction(state: LocalPanelState): "stop" | "transcribe" | "save" | "readiness" {
+export function localRetryAction(
+  state: LocalPanelState,
+): "stop" | "transcribe" | "save" | "stop-previous" | "readiness" {
   if (state === "stop-failed") return "stop";
   if (state === "transcribe-failed") return "transcribe";
   if (state === "save-failed") return "save";
+  if (state === "previous-recording") return "stop-previous";
   return "readiness";
 }
 
-/** The panel state a rejected stop() or retryTranscription() lands in. */
-export function localFailureState(err: unknown): "stop-failed" | "transcribe-failed" | "error" {
+/** The panel state a rejected start(), stop() or retryTranscription() lands in. */
+export function localFailureState(
+  err: unknown,
+): "stop-failed" | "transcribe-failed" | "previous-recording" | "error" {
   if (err instanceof CaptureStopUnconfirmedError) return "stop-failed";
   if (err instanceof TranscriptionFailedError) return "transcribe-failed";
+  if (err instanceof PreviousCaptureUnconfirmedError) return "previous-recording";
   return "error";
 }
 
@@ -122,6 +135,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   const locked = isLocalWorkflowActive(state);
   const busy =
     state === "checking-model" ||
+    state === "stopping-previous" ||
     state === "downloading" ||
     state === "starting" ||
     state === "transcribing" ||
@@ -237,6 +251,17 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             <span>Checking model…</span>
           </Button>
         )}
+        {state === "stopping-previous" && (
+          <Button type="button" size="sm" disabled className="h-9 gap-1.5">
+            <Loader2Icon className="size-4 animate-spin" />
+            <span>Stopping previous recording…</span>
+          </Button>
+        )}
+        {state === "previous-recording" && (
+          <Button type="button" size="sm" variant="destructive" onClick={onRetry} className="h-9">
+            Stop previous recording
+          </Button>
+        )}
         {state === "error" && (
           <Button type="button" size="sm" onClick={onRetry} className="h-9">
             Retry
@@ -270,6 +295,12 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       {state === "save-failed" && (
         <p className="text-xs text-muted-foreground">
           The transcript is kept here until it saves. Leaving this view discards it.
+        </p>
+      )}
+      {state === "previous-recording" && (
+        <p className="text-xs text-muted-foreground">
+          A new recording can&apos;t start until the previous one is confirmed stopped. Stopping it does
+          not transcribe it; any audio it recorded stays on this Mac.
         </p>
       )}
       {state === "transcribe-failed" && (
@@ -315,11 +346,16 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   }
   const t = transcriberRef.current;
 
+  // A stop that is not confirmed here is left as the previous recording,
+  // which the next mounted panel shows with "Stop previous recording".
   useEffect(() => () => {
     void t.stopCaptureOnUnmount().catch((err) => {
       console.error("Failed to stop local recording when leaving the view", err);
     });
   }, [t]);
+
+  // Saves are bounded and serialized: a timed-out save may still be writing.
+  const saveToSpace = useMemo(() => createLocalTranscriptSaver(tcw), [tcw]);
 
   const [model, setModel] = useState<WhisperModel>(readSavedModel);
   const [mics, setMics] = useState<MicDeviceList>({ status: "loading" });
@@ -345,19 +381,28 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
     setState("error");
   };
 
-  // Model readiness + mic list on mount and when the model changes.
+  // Model readiness + mic list on mount and when the model changes. A previous
+  // recording that is not confirmed stopped comes first: nothing starts over it.
   useEffect(() => {
     let cancelled = false;
     setState((s) => (isLocalWorkflowActive(s) ? s : "checking-model"));
-    void t
-      .isModelDownloaded(model)
-      .then((downloaded) => {
-        if (cancelled) return;
-        setState((s) => (s === "checking-model" ? (downloaded ? "ready" : "needs-download") : s));
-      })
-      .catch((err) => {
-        if (!cancelled) fail(err);
+    void (async () => {
+      const previous = await t.previousRecording(() => {
+        if (!cancelled) setState((s) => (s === "checking-model" ? "stopping-previous" : s));
       });
+      if (cancelled) return;
+      if (previous !== null) {
+        setErrorText(previous.message);
+        setState("previous-recording");
+        return;
+      }
+      setState((s) => (s === "stopping-previous" ? "checking-model" : s));
+      const downloaded = await t.isModelDownloaded(model);
+      if (cancelled) return;
+      setState((s) => (s === "checking-model" ? (downloaded ? "ready" : "needs-download") : s));
+    })().catch((err) => {
+      if (!cancelled) fail(err);
+    });
     setMics({ status: "loading" });
     void t
       .listMicrophoneDevices()
@@ -390,19 +435,26 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       });
   };
 
+  // A rejected start, stop or transcription lands in the state that offers its
+  // recovery: a failed transcription keeps its recording in the transcriber for
+  // Retry, and an unconfirmed previous capture offers "Stop previous recording".
+  const failWithRecovery = (err: unknown) => {
+    setErrorText(err instanceof Error ? err.message : String(err));
+    setState(localFailureState(err));
+  };
+
   const onStart = () => {
     setErrorText(null);
     setState("starting");
     void t
       .start({ model, language: "en", micDevice: micDevice || undefined })
-      .then(() => setState("recording"))
-      .catch(fail);
+      .then(() => setState("recording"), failWithRecovery);
   };
 
   const save = (prepared: PreparedLocalTranscript) => {
     setErrorText(null);
     setState("saving");
-    void saveLocalTranscript(tcw, prepared)
+    void saveToSpace(prepared)
       .then((saved) => {
         if (!saved.ok) throw new Error(saved.error.message);
         setPendingSave(null);
@@ -426,16 +478,27 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
     save(prepared);
   };
 
-  // A failed transcription keeps its recording in the transcriber for Retry.
-  const failAfterStop = (err: unknown) => {
-    setErrorText(err instanceof Error ? err.message : String(err));
-    setState(localFailureState(err));
-  };
-
   const onStop = () => {
     setErrorText(null);
     setState("transcribing");
-    void t.stop().then(saveTranscript, failAfterStop);
+    void t.stop().then(saveTranscript, failWithRecovery);
+  };
+
+  // Stops the previous recording, then re-runs readiness once native capture
+  // is confirmed inactive; otherwise stays here with the new failure.
+  const onStopPrevious = () => {
+    setErrorText(null);
+    setState("stopping-previous");
+    void t.stopPreviousRecording().then(
+      () => {
+        setState("checking-model");
+        setRetryCount((count) => count + 1);
+      },
+      (err) => {
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setState("previous-recording");
+      },
+    );
   };
 
   const onDiscardRecording = () => {
@@ -452,7 +515,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       case "transcribe":
         setErrorText(null);
         setState("transcribing");
-        void t.retryTranscription().then(saveTranscript, failAfterStop);
+        void t.retryTranscription().then(saveTranscript, failWithRecovery);
         return;
       case "save":
         if (pendingSave === null) {
@@ -460,6 +523,9 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
           return;
         }
         save(pendingSave);
+        return;
+      case "stop-previous":
+        onStopPrevious();
         return;
       case "readiness":
         setErrorText(null);

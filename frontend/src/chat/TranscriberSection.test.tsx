@@ -28,7 +28,12 @@ import {
   localRetryAction,
   type LocalTranscriberViewProps,
 } from "./LocalTranscriber";
-import { CaptureStopUnconfirmedError, NO_SPEECH_MESSAGE, TranscriptionFailedError } from "@/lib/localTranscriber";
+import {
+  CaptureStopUnconfirmedError,
+  NO_SPEECH_MESSAGE,
+  PreviousCaptureUnconfirmedError,
+  TranscriptionFailedError,
+} from "@/lib/localTranscriber";
 import {
   createTranscriberClient,
   type TranscriberMeeting,
@@ -389,10 +394,32 @@ describe("LocalTranscriberView", () => {
     }
   });
 
-  test("a rejected stop or transcription retry lands in its own failed state", () => {
+  test("a rejected start, stop or transcription retry lands in its own failed state", () => {
     expect(localFailureState(new CaptureStopUnconfirmedError("Stopping was not confirmed"))).toBe("stop-failed");
     expect(localFailureState(new TranscriptionFailedError("Transcription failed (x): y"))).toBe("transcribe-failed");
+    expect(localFailureState(new PreviousCaptureUnconfirmedError("Native capture is active."))).toBe("previous-recording");
     expect(localFailureState(new Error("Capture failed: ActorFailed(mic stream closed)"))).toBe("error");
+  });
+
+  test("an unconfirmed previous recording is shown with why, and offers only Stop previous recording", () => {
+    const message =
+      "The Local recording view closed before its recording confirmed it stopped (Timed out waiting for native capture to confirm it stopped). Native capture is active. Stop it before starting a new recording.";
+    const html = renderLocal({ state: "previous-recording", statusText: message });
+    expect(html).toContain(">Stop previous recording</button>");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("closed before its recording confirmed it stopped");
+    expect(html).toContain("A new recording can&#x27;t start until the previous one is confirmed stopped.");
+    expect(html).not.toContain("Start recording");
+    expect(html).not.toContain(">Retry</button>");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localRetryAction("previous-recording")).toBe("stop-previous");
+    expect(isLocalWorkflowActive("previous-recording")).toBe(true);
+
+    const stopping = renderLocal({ state: "stopping-previous" });
+    expect(stopping).toContain("Stopping previous recording…");
+    expect(stopping).not.toContain("Start recording");
+    expect(stopping).not.toContain(">Stop previous recording</button>");
+    expect(isLocalWorkflowActive("stopping-previous")).toBe(true);
   });
 
   test("a failed save offers Retry save for the transcript it keeps", () => {
