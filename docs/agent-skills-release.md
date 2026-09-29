@@ -23,7 +23,7 @@ Before committing a new release, synchronize the helper's `PACK_VERSION`, `pack.
 
 Push the reviewed TinyChat branch and inspect the existing Cloudflare Pages check. Confirm the branch preview's static `/agents/` page, `/agents/setup.md`, every referenced Markdown/JSON file and the archive. Check content bytes, content types and hashes; a 200 response containing the SPA is a failed artifact check. `/agents/*` is routed before the app fallback. Mutable setup routes use revalidation; identified artifacts use immutable caching.
 
-Use the repository's normal reviewed main deployment for the public site. The Settings action and the exact public prompt must resolve the identified artifacts without sign-in. Recheck the npm CLI archive and all public app URLs anonymously, with empty npm configurations and no repository credentials. Public artifact access is separate from consent to private data.
+The public site updates with the next stable `@tinychat/frontend` release (merging the Release stable PR deploys web production; merges to main only build previews). The Settings action and the exact public prompt must resolve the identified artifacts without sign-in. Recheck the npm CLI archive and all public app URLs anonymously, with empty npm configurations and no repository credentials. Public artifact access is separate from consent to private data.
 
 Run the documented `skills@1.7.0 add` commands in a disposable home to prove complete copying, repeat installation, version update/removal and preservation of unrelated settings. Archive installation is not tracked by automatic `skills update`; install the new explicit version URL.
 

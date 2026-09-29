@@ -162,8 +162,17 @@ changeset.
   is stale (main moved on since the plan was recorded) or a changeset no beta
   has released is on main, the release is refused with recovery steps.
 
-Tags do not drive deploys or desktop builds yet; production still deploys
-from pushes to main until that is wired up.
+**Production deploys only on stable releases.** Merging the Release stable PR
+makes the `Release` workflow dispatch `Deploy production` on the stable version
+commit: the backend (Phala) first, then the web app (Cloudflare Pages), each only
+if it got a new stable version, and web only after the backend deploy succeeded.
+Betas and ordinary merges to `main` deploy nothing to production (`main` gets a
+Pages preview build). For a hotfix or redeploy, run `Deploy production` by hand
+(`gh workflow run deploy-production.yml --ref <tag or branch>`, with
+`-f backend=false` or `-f web=false` to deploy one side);
+`Deploy Backend to Phala Cloud` can still be dispatched alone. The web deploy
+advances the `production` branch, which Pages builds as production; never push
+it by hand. See [docs/deployment.md](docs/deployment.md).
 
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release

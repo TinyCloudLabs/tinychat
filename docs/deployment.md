@@ -23,11 +23,24 @@ variables. (`wrangler.toml` `[vars]` are runtime Pages Functions bindings and do
 **not** feed `vite build` — don't rely on them for `VITE_*`.) Keep the
 `.env.production` values and the dashboard build env vars in sync.
 
-### Option A — Pages Git integration (recommended; auto-deploys on push to main)
+### Option A — Pages Git integration (production = the `production` branch)
+
+Production web deploys happen only through the **Deploy production** workflow
+(`.github/workflows/deploy-production.yml`), which the `Release` workflow
+dispatches for a stable `@tinychat/frontend` release, after the backend deploy.
+It creates a commit whose tree is exactly the released commit's, fast-forwards
+the `production` branch to it, waits for the Pages production build (the
+`Cloudflare Pages` check on that commit) and checks that `tinycloud.chat` serves
+that deployment. Every other branch, `main` included, only gets preview builds.
+Don't push `production` by hand; dispatch the workflow instead (hotfix: `gh
+workflow run deploy-production.yml --ref <branch> -f backend=false`). To roll
+back, dispatch it on the older release tag, or use Pages' own rollback.
 
 In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**:
 
-- Repository: `TinyCloudLabs/tinychat`, production branch `main`
+- Repository: `TinyCloudLabs/tinychat`, production branch **`production`**
+  (Settings → Builds → Branch control; the branch must exist before you can
+  select it). Keep preview deployments on for all non-production branches.
 - Framework preset: **None**
 - Build command: `bun run build:packages && bun run build:frontend`
 - Build output directory: `frontend/dist`
@@ -92,11 +105,15 @@ The ingress sidecar also sets a CAA record automatically (`SET_CAA=true`).
 
 ### Deploy
 
-**Via GitHub Actions (production CD):** push to `main` touching `backend/**`,
-`packages/**`, compose/phala/Dockerfile, etc., or run the
-**Deploy Backend to Phala Cloud** workflow manually (`workflow_dispatch`). It
-builds + pushes the backend and ingress images to GHCR, verifies DNS, deploys to
-the CVM, waits for `running`, and probes `/health` + `/api/server-info`.
+**Via GitHub Actions (production CD):** a stable `@tinychat/backend` release
+(merging the Release stable PR) runs **Deploy production**, which calls
+**Deploy Backend to Phala Cloud** on the stable version commit before the web
+deploy. Pushes to `main` and beta versions do not deploy. For a hotfix or
+redeploy, dispatch **Deploy production** (`-f web=false` for backend only) or
+**Deploy Backend to Phala Cloud** manually (`workflow_dispatch`). It builds +
+pushes the backend and ingress images to GHCR, verifies DNS, deploys to the CVM,
+syncs the CVM's `allowed_envs` (frozen at CVM creation), waits for `running`,
+and probes `/health` + `/api/server-info`.
 
 **Manually from your machine:**
 

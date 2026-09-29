@@ -1,23 +1,14 @@
 name: Deploy Backend to Phala Cloud
 
+# Production backend deploys run only for stable releases: deploy-production.yml calls this workflow on the stable
+# version commit (backend first, then web) after the "Release stable" PR merges. Pushes to main and beta versions
+# deploy nothing. Manual dispatch stays as the backend-only hotfix/redeploy path:
+#   gh workflow run deploy-backend-phala.yml --ref <tag or branch>
+# Whatever the entry point, this is the one deploy definition: the env var list below, the allowed_envs sync and the
+# public API probes apply to every deploy.
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "packages/**"
-      - "patches/**"
-      - "backend/Dockerfile"
-      - "docker-compose.phala.yml"
-      - "phala.toml"
-      - "manifest.json"
-      - "package.json"
-      - "bun.lock"
-      - "frontend/package.json"
-      - "tsconfig.base.json"
-      - "turbo.json"
-      - "infra/phala-ingress/**"
-      - ".github/workflows/deploy-backend-phala.yml"
+  workflow_call:
   workflow_dispatch:
 
 concurrency:

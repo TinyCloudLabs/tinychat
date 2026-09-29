@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
+import { classifyPagesCheckRuns, planDispatches, setCargoLockVersion, setCargoTomlVersion } from '../release/lib.mjs';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFESTS = [
@@ -394,6 +394,7 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   const betaCommit = git(root, 'rev-parse', 'HEAD');
   assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.2\.0-beta\.0 @tinychat\/frontend@0\.2\.0-beta\.0 @tinychat\/backend@0\.1\.1-beta\.0$/m);
   assert.equal(tagCommit(root, '@tinychat/backend@0.1.1-beta.0'), betaCommit);
+  assert.doesNotMatch(step('dispatch.mjs', ['--channel', 'beta', '--tags', 'exo-desktop@0.2.0-beta.0 @tinychat/frontend@0.2.0-beta.0 @tinychat/backend@0.1.1-beta.0', '--dry-run']), /deploy-production/);
 
   write(root, '.changeset/web-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Web fix'));
   commitAll(root, 'fix: web (#2)');
@@ -465,6 +466,8 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   const stableCommit = git(root, 'rev-parse', 'HEAD');
   assert.match(step('tag.mjs'), /^tags=exo-desktop@0\.2\.0 @tinychat\/frontend@0\.2\.0 @tinychat\/backend@0\.1\.1$/m);
   assert.equal(tagCommit(root, 'exo-desktop@0.2.0'), stableCommit);
+  const stableDispatch = step('dispatch.mjs', ['--channel', 'stable', '--tags', 'exo-desktop@0.2.0 @tinychat/frontend@0.2.0 @tinychat/backend@0.1.1', '--dry-run']);
+  assert.match(stableDispatch, /^gh workflow run deploy-production\.yml --repo \S+ --ref refs\/tags\/@tinychat\/backend@0\.1\.1 -f backend=true -f web=true$/m);
   assert.match(step('stable-pr.mjs', ['--body', body]), /^open=false$/m);
 
   // The next change starts a new beta cycle from the stable versions.
@@ -472,4 +475,111 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   commitAll(root, 'feat: next api (#6)');
   assert.match(step('version.mjs'), /^channel=beta$/m);
   assert.deepEqual(versions(), ['0.2.0', '0.2.0', '0.2.0-beta.0']);
+});
+
+// Production deploys: only stable releases, backend first, then web.
+test('planDispatches deploys production only for stable tags, backend then web', () => {
+  const deploys = (channel, tags) => planDispatches({ channel, tags }).filter(({ workflow }) => workflow === 'deploy-production.yml');
+  assert.deepEqual(deploys('stable', ['exo-desktop@0.2.0', '@tinychat/frontend@0.2.0', '@tinychat/backend@0.1.1']), [{
+    workflow: 'deploy-production.yml',
+    ref: 'refs/tags/@tinychat/backend@0.1.1',
+    inputs: { backend: 'true', web: 'true' },
+    tags: ['@tinychat/backend@0.1.1', '@tinychat/frontend@0.2.0'],
+  }]);
+  assert.deepEqual(deploys('stable', ['exo-desktop@0.3.0', '@tinychat/frontend@0.3.0']).map(({ ref, inputs }) => ({ ref, inputs })),
+    [{ ref: 'refs/tags/@tinychat/frontend@0.3.0', inputs: { backend: 'false', web: 'true' } }]);
+  assert.deepEqual(deploys('stable', ['@tinychat/backend@0.1.2']).map(({ inputs }) => inputs), [{ backend: 'true', web: 'false' }]);
+  // Betas, and the 0.1.0 baseline tags of the first run (channel "none"), never deploy.
+  assert.deepEqual(deploys('beta', ['@tinychat/frontend@0.2.0-beta.1', '@tinychat/backend@0.1.1-beta.0']), []);
+  assert.deepEqual(deploys('none', ['exo-desktop@0.1.0', '@tinychat/frontend@0.1.0', '@tinychat/backend@0.1.0']), []);
+  assert.throws(() => planDispatches({ channel: 'rc', tags: [] }), /Unknown release channel/);
+});
+
+test('dispatch.mjs refuses a production deploy whose stable tags are on different commits', t => {
+  const root = tagRepo(t);
+  const first = commitAll(root, 'versions');
+  git(root, 'tag', '-a', '@tinychat/backend@0.1.1', '-m', 'backend', first);
+  write(root, 'README.md', 'later\n');
+  const later = commitAll(root, 'later');
+  git(root, 'tag', '-a', '@tinychat/frontend@0.2.0', '-m', 'frontend', later);
+  const result = run('dispatch.mjs', ['--root', root, '--channel', 'stable', '--tags', '@tinychat/frontend@0.2.0 @tinychat/backend@0.1.1', '--dry-run']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must all tag one commit/);
+  assert.doesNotMatch(result.stdout, /gh workflow run/);
+});
+
+test('pages-production-commit.mjs deploys the exact target tree as a fast-forward of production', t => {
+  const root = tagRepo(t);
+  const old = commitAll(root, 'old release');
+  git(root, 'branch', 'production', old);
+  write(root, 'frontend/src/app.ts', 'export const v = 2;\n');
+  const target = commitAll(root, 'chore(release): stable versions [skip ci]');
+  const make = args => run('pages-production-commit.mjs', ['--root', root, '--production', 'refs/heads/production', ...args]);
+
+  const result = make(['--label', '@tinychat/frontend@0.2.0', '--body', 'Run https://example.invalid/run']);
+  assert.equal(result.status, 0, result.stderr);
+  const commit = /^commit=([0-9a-f]{40})$/m.exec(result.stdout)[1];
+  assert.equal(git(root, 'rev-parse', `${commit}^{tree}`), git(root, 'rev-parse', `${target}^{tree}`));
+  assert.equal(git(root, 'log', '-1', '--format=%P', commit), `${old} ${target}`);
+  assert.equal(git(root, 'log', '-1', '--format=%B', commit), `deploy(web): @tinychat/frontend@0.2.0\n\nSource: ${target}\nRun https://example.invalid/run`);
+  git(root, 'merge-base', '--is-ancestor', 'production', commit);
+
+  // Rolling back to an older release is also a fast-forward commit with that release's tree.
+  git(root, 'branch', '-f', 'production', commit);
+  const rollback = make(['--target', old, '--label', 'hotfix']);
+  assert.equal(rollback.status, 0, rollback.stderr);
+  const back = /^commit=([0-9a-f]{40})$/m.exec(rollback.stdout)[1];
+  assert.equal(git(root, 'rev-parse', `${back}^{tree}`), git(root, 'rev-parse', `${old}^{tree}`));
+  assert.equal(git(root, 'log', '-1', '--format=%P', back), `${commit} ${old}`);
+
+  git(root, 'branch', '-D', 'production');
+  const missing = make(['--label', 'x']);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /refs\/heads\/production does not exist.*Cloudflare Pages production branch/);
+});
+
+// Real Cloudflare Pages check-run summaries (production f33cd32, preview 9545f4b), trimmed.
+const pagesRun = (id, fields) => ({ id, name: 'Cloudflare Pages', app: { slug: 'cloudflare-workers-and-pages' }, details_url: `https://dash.cloudflare.com/${id}`, ...fields });
+const PRODUCTION_SUMMARY = "<table><tr><td><strong>Latest commit:</strong> </td><td>\n<code>f33cd32</code>\n</td></tr>\n<tr><td><strong>Status:</strong></td><td>&nbsp;✅&nbsp; Deploy successful!</td></tr>\n<tr><td><strong>Preview URL:</strong></td><td>\n<a href='https://465be04b.tinychat-4jq.pages.dev'>https://465be04b.tinychat-4jq.pages.dev</a>\n</td></tr>\n</table>";
+const PREVIEW_SUMMARY = PRODUCTION_SUMMARY.replace('</table>', "<tr><td><strong>Branch Preview URL:</strong></td><td>\n<a href='https://production.tinychat-4jq.pages.dev'>https://production.tinychat-4jq.pages.dev</a>\n</td></tr>\n</table>");
+
+test('classifyPagesCheckRuns tells a live production deploy from waiting, failed and preview builds', () => {
+  assert.deepEqual(classifyPagesCheckRuns([]), { state: 'waiting' });
+  assert.deepEqual(classifyPagesCheckRuns([{ ...pagesRun(1, { status: 'completed', conclusion: 'success' }), app: { slug: 'other' } }]), { state: 'waiting' });
+  assert.deepEqual(classifyPagesCheckRuns([pagesRun(1, { status: 'in_progress', conclusion: null })]), { state: 'waiting' });
+
+  const production = classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } })]);
+  assert.equal(production.state, 'production');
+  assert.equal(production.deploymentUrl, 'https://465be04b.tinychat-4jq.pages.dev');
+
+  assert.equal(classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'success', output: { summary: PREVIEW_SUMMARY } })]).state, 'preview');
+  const failed = classifyPagesCheckRuns([pagesRun(1, { status: 'completed', conclusion: 'failure', output: { title: 'Build failed', summary: '' } })]);
+  assert.equal(failed.state, 'failed');
+  assert.match(failed.reason, /failure: Build failed/);
+
+  // The newest run (a retry) decides.
+  assert.equal(classifyPagesCheckRuns([
+    pagesRun(1, { status: 'completed', conclusion: 'failure', output: { summary: '' } }),
+    pagesRun(2, { status: 'completed', conclusion: 'success', output: { summary: PRODUCTION_SUMMARY } }),
+  ]).state, 'production');
+});
+
+// The `on:` block of a workflow file.
+const triggers = rel => /^on:\n((?:[ \t]+.*\n|\n)*)/m.exec(read(repo, rel))[1];
+
+test('pushes to main no longer deploy production; stable releases and manual dispatch do', () => {
+  const phala = triggers('.github/workflows/deploy-backend-phala.yml');
+  assert.doesNotMatch(phala, /^\s+push:/m);
+  assert.match(phala, /^ {2}workflow_call:/m);
+  assert.match(phala, /^ {2}workflow_dispatch:/m);
+
+  const production = read(repo, '.github/workflows/deploy-production.yml');
+  assert.doesNotMatch(triggers('.github/workflows/deploy-production.yml'), /^\s+(push|pull_request):/m);
+  assert.match(production, /uses: \.\/\.github\/workflows\/deploy-backend-phala\.yml/);
+  assert.match(production, /needs: \[target, backend\]/);
+  assert.match(production, /needs\.backend\.result == 'success' \|\| needs\.backend\.result == 'skipped'/);
+
+  const release = read(repo, '.github/workflows/release.yml');
+  assert.ok(release.indexOf('node scripts/release/dispatch.mjs') > release.indexOf('push --atomic origin HEAD:refs/heads/main'),
+    'the Release job dispatches only after the tags are pushed');
 });
