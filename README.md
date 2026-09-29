@@ -204,9 +204,9 @@ no manual step:
   `Exo 0.2.0-beta.3 (beta)`, never marked latest;
 - a stable version becomes a published Release marked **latest**.
 
-**Publishing requires a Developer ID signed and notarized build**, for both
-channels. Until signing is wired up, releases build and then refuse to publish,
-so no unsigned Exo is ever released. Assets are `Exo_<version>_aarch64.dmg`,
+**Both channels are Developer ID signed, notarized and stapled** (see Signing
+below); publishing requires the build to report `signed=true`, so no unsigned
+Exo is ever released. Assets are `Exo_<version>_aarch64.dmg`,
 the matching `.app.zip` and `SHA256SUMS.txt`; the notes combine the desktop and
 web changelog entries of the tagged commit. A published release is never
 rebuilt (cut a new version).
@@ -227,6 +227,75 @@ fails if the built Info.plist doesn't match.
 
 Beta desktop builds embed the beta web app, which talks to the production API
 (betas don't deploy the backend).
+
+**Signing.** Release builds (`desktop-build.yml` with `sign: true`) run in the
+`desktop-release` GitHub environment, the only place the Apple secrets live. It
+allows deployments from **`main` only** and has no required reviewer (fully
+automatic releases), so only `Desktop release (Exo)` dispatched on main reaches
+it; a run on a tag or another branch cannot. The signing job first re-checks
+that (`github.workflow_ref` is main's `desktop-release.yml`, the workflow commit
+and the release commit are on freshly fetched `main`, and an `exo-desktop@*`
+release tag points at the commit being built). The app is then compiled with no
+signing secret in reach (`tauri build --no-bundle` runs the frontend build and
+every dependency build script); only `tauri bundle`, which compiles nothing,
+gets them. Tauri signs the app and the DMG with the Developer ID certificate
+(hardened runtime, `desktop/src-tauri/Entitlements.plist` with
+`com.apple.security.device.audio-input`) and notarizes and staples the app with
+an App Store Connect API key; the workflow notarizes and staples the DMG, then
+`scripts/release/verify-desktop-signing.sh` requires `codesign --verify --deep
+--strict`, the Developer ID authority and team, the hardened runtime, the
+audio-input entitlement (and no `get-task-allow`), `spctl` accepting both as
+`Notarized Developer ID`, and `stapler validate` on both. A missing secret
+fails before the build starts. There is no unsigned fallback. Local builds stay
+unsigned (no identity in `tauri.conf.json`).
+
+Residual risk: `main` is not protected (team workflow), so anyone who can push
+to `main` can change `desktop-release.yml` and reach the signing secrets. The
+environment's `main`-only policy and the release-tag ruleset (see
+[docs/deployment.md](docs/deployment.md)) stop tag- and branch-controlled code,
+not a malicious writer. Treat write access as signing access.
+
+Environment secrets (`desktop-release`):
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the Developer ID Application certificate + private key, exported as `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <Org name> (<TEAMID>)`, exactly as `security find-identity -v -p codesigning` prints it |
+| `APPLE_TEAM_ID` | the 10-character Team ID |
+| `APPLE_API_KEY` | App Store Connect API key ID |
+| `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
+| `APPLE_API_PRIVATE_KEY` | full contents of `AuthKey_<key id>.p8`; the workflow writes it to a temp file after compiling and sets `APPLE_API_KEY_PATH` |
+
+One-time setup (repo admin):
+
+```bash
+repo=TinyCloudLabs/tinychat
+# Environment deployable from main only, no reviewers.
+gh api -X PUT repos/$repo/environments/desktop-release \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/$repo/environments/desktop-release/deployment-branch-policies \
+  -f name=main -f type=branch
+
+# Developer ID Application certificate: Keychain Access > My Certificates > select
+# "Developer ID Application: ..." (with its private key) > Export > .p12 with a strong password.
+base64 -i DeveloperIDApplication.p12 | tr -d '\n' | gh secret set APPLE_CERTIFICATE --env desktop-release --repo $repo
+gh secret set APPLE_CERTIFICATE_PASSWORD --env desktop-release --repo $repo      # prompts
+security find-identity -v -p codesigning                                         # copy the identity string
+gh secret set APPLE_SIGNING_IDENTITY --env desktop-release --repo $repo --body 'Developer ID Application: <Org name> (<TEAMID>)'
+gh secret set APPLE_TEAM_ID --env desktop-release --repo $repo --body '<TEAMID>'
+
+# App Store Connect > Users and Access > Integrations > App Store Connect API > Team Keys:
+# generate a key with the Developer role, note the Key ID and Issuer ID, download AuthKey_<id>.p8 (once).
+gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
+gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'
+gh secret set APPLE_API_PRIVATE_KEY --env desktop-release --repo $repo < AuthKey_<id>.p8
+```
+
+Keep the `.p12`, its password and the `.p8` in the team password manager; the
+`.p8` cannot be downloaded again. Never add these as repository secrets, which
+any branch's workflow can read.
 
 ## Chat Sharing
 
