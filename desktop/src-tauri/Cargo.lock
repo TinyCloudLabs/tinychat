@@ -735,7 +735,6 @@ dependencies = [
 [[package]]
 name = "audio-chunking"
 version = "0.1.0"
-source = "git+https://github.com/fastrepl/anarlog?rev=864ddc1f692116d128eea2692fd72b0a51007768#864ddc1f692116d128eea2692fd72b0a51007768"
 dependencies = [
  "audio-interface",
  "futures-util",
@@ -11062,6 +11061,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "hound",
+ "libc",
  "model-manager",
  "owhisper-interface",
  "pyannote-local",
@@ -11930,7 +11930,6 @@ dependencies = [
 [[package]]
 name = "whisper-local"
 version = "0.1.0"
-source = "git+https://github.com/fastrepl/anarlog?rev=864ddc1f692116d128eea2692fd72b0a51007768#864ddc1f692116d128eea2692fd72b0a51007768"
 dependencies = [
  "audio-interface",
  "audio-utils",

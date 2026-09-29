@@ -68,13 +68,18 @@ optional = true
 # app's own bundle-identifier folder. See vendor/anarlog-storage/PROVENANCE.md.
 #
 # The in-process whisper.cpp server (`transcribe-whisper-local`, mounted by
-# tauri-plugin-local-stt) sent no stream events while decoding a recording or
-# scanning speech-free audio, so long or mostly-silent recordings hit the
-# clients' 30 s / 60 s stream-idle timeouts; it also rejected recordings over
-# 100 MiB (~109 min). See vendor/anarlog-transcribe-whisper-local/PROVENANCE.md.
+# tauri-plugin-local-stt) went quiet on its event stream while receiving,
+# decoding, VAD-scanning or transcribing audio, so long or mostly-silent
+# recordings hit the clients' 30 s / 60 s stream-idle timeouts; it also had no
+# bound on decoded temp storage. The vendored copy reports every unit of work
+# as it happens (using per-frame / per-token hooks added to the vendored
+# `audio-chunking` and `whisper-local`) and supports recordings up to 8 hours.
+# See vendor/anarlog-transcribe-whisper-local/PROVENANCE.md.
 [patch."https://github.com/fastrepl/anarlog"]
 storage = { path = "../vendor/anarlog-storage" }
 transcribe-whisper-local = { path = "../vendor/anarlog-transcribe-whisper-local" }
+whisper-local = { path = "../vendor/anarlog-whisper-local" }
+audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
 
 # The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build
 # system. Xcode 27's default (`swiftbuild`) prelinks targets and hides the

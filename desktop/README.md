@@ -84,11 +84,15 @@ Whisper models download on first use from `hyprnote.s3.us-east-1.amazonaws.com`
 `models/stt/` under the app-data dir. Recordings land in `sessions/<id>/`.
 
 Long recordings: the vendored `transcribe-whisper-local`
-(`desktop/vendor/anarlog-transcribe-whisper-local`, see its `PROVENANCE.md`)
-emits progress while decoding and scanning silence, so multi-hour, mostly
-quiet recordings don't trip the 30 s stream-idle timeout, and accepts uploads
-up to 1 GiB (~18 h). `NSAppSleepDisabled` keeps App Nap from starving
-background transcription. If transcription still fails, the panel keeps the
+(`desktop/vendor/anarlog-transcribe-whisper-local`, see its `PROVENANCE.md`,
+with small progress hooks in the vendored `audio-chunking` and
+`whisper-local`) reports progress while it receives, decodes, VAD-scans and
+transcribes audio, so long, mostly quiet recordings and slow machines don't
+trip the 30 s / 60 s stream-idle timeouts, while a stalled server still does.
+Supported maximum: **8 hours** (stereo). Longer recordings, or a temp volume
+without room for the decoded audio (~0.5 GB per stereo hour + 0.5 GB), are
+rejected before decoding with a clear error. `NSAppSleepDisabled` keeps App
+Nap from starving background transcription. If transcription still fails, the panel keeps the
 recording: **Retry transcription** re-runs Whisper on the same audio.
 
 ### Storage paths

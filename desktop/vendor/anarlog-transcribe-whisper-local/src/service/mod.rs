@@ -92,7 +92,18 @@ pub(crate) fn transcribe_chunk(
     samples: &[f32],
     chunk_start_sec: f64,
 ) -> Result<Vec<Segment>, crate::Error> {
-    let raw_segments = model.transcribe(samples)?;
+    transcribe_chunk_with_progress(model, samples, chunk_start_sec, &mut || {})
+}
+
+/// Exo patch: `transcribe_chunk`, with `on_token` run once per decoded token
+/// (the vendored whisper-local's progress hook).
+pub(crate) fn transcribe_chunk_with_progress(
+    model: &mut anlg_whisper_local::Whisper,
+    samples: &[f32],
+    chunk_start_sec: f64,
+    on_token: &mut (dyn FnMut() + Send),
+) -> Result<Vec<Segment>, crate::Error> {
+    let raw_segments = model.transcribe_with_progress(samples, on_token)?;
     let chunk_duration_sec = samples.len() as f64 / TARGET_SAMPLE_RATE as f64;
 
     Ok(build_chunk_segments(

@@ -196,6 +196,20 @@ impl Service<Request<Body>> for TranscribeService {
                     .and_then(|value| value.to_str().ok())
                     .unwrap_or("")
                     .to_string();
+
+                // Exo patch: the SSE path spools the upload behind an already
+                // open event stream (see `batch::handle_batch_sse`).
+                if accept.contains("text/event-stream") {
+                    return Ok(batch::handle_batch_sse(
+                        req.into_body(),
+                        content_type,
+                        params,
+                        manager,
+                        model_path,
+                        permit,
+                    ));
+                }
+
                 let audio_file =
                     match batch::spool_batch_audio(req.into_body(), &content_type).await {
                         Ok(audio_file) => audio_file,
@@ -206,17 +220,7 @@ impl Service<Request<Body>> for TranscribeService {
                     return Ok((StatusCode::BAD_REQUEST, "request body is empty").into_response());
                 }
 
-                if accept.contains("text/event-stream") {
-                    Ok(
-                        batch::handle_batch_sse(audio_file, &params, &manager, &model_path, permit)
-                            .await,
-                    )
-                } else {
-                    Ok(
-                        batch::handle_batch(audio_file, &params, &manager, &model_path, permit)
-                            .await,
-                    )
-                }
+                Ok(batch::handle_batch(audio_file, &params, &manager, &model_path, permit).await)
             }
         })
     }
