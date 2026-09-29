@@ -26,7 +26,12 @@
 //     writing beside it;
 //   - a failed transcription keeps the stopped recording: retryTranscription
 //     restarts the server and re-transcribes the same audio file until it
-//     succeeds, and discardRecording releases it without transcribing.
+//     succeeds, and discardRecording releases it without transcribing;
+//   - a capture that fails but leaves an audio file keeps it as a partial
+//     recording to transcribe or discard;
+//   - a transcription outlives its view: closing the view during the first
+//     attempt or a retry hands it to the next view, which alone takes its
+//     outcome (once), and no capture starts while it is running or kept.
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
@@ -39,6 +44,7 @@ import {
   LOCAL_MEETING_SOURCE,
   LOCAL_WHISPER_MODELS,
   NO_SPEECH_MESSAGE,
+  PartialRecordingError,
   prepareLocalTranscript,
   PreviousCaptureUnconfirmedError,
   saveLocalTranscript,
@@ -464,6 +470,41 @@ describe("createLocalTranscriber", () => {
     await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
   });
 
+  test("a failed capture that left an audio file keeps it as a partial recording to transcribe or discard", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge);
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const stopping = t.stop();
+    await tick();
+    bridge.emitCaptureLifecycle(
+      stoppedEvent(sessionId, { audio_path: "/vault/sessions/x/partial.mp3", error: "ActorFailed(mic stream closed)" }),
+    );
+    const err = await stopping.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PartialRecordingError);
+    expect(err).toBeInstanceOf(TranscriptionFailedError);
+    expect((err as Error).message).toBe("Capture failed: ActorFailed(mic stream closed). A partial recording was kept.");
+    // Kept untranscribed until the user chooses; nothing new records over it.
+    expect(startTranscriptionCalls(bridge)).toBe(0);
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("waiting to be transcribed");
+
+    // "Transcribe partial recording" transcribes that file.
+    const transcribing = t.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(transcribing).resolves.toMatchObject({ sessionId });
+    expect(bridge.calls.at(-1)).toBe("start_transcription:whispercpp:/vault/sessions/x/partial.mp3");
+
+    // "Discard recording" drops another partial one without transcribing it.
+    const second = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const stoppingSecond = t.stop();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(second.sessionId, { error: "ActorFailed(device lost)" }));
+    await expect(stoppingSecond).rejects.toBeInstanceOf(PartialRecordingError);
+    t.discardRecording();
+    expect(startTranscriptionCalls(bridge)).toBe(1);
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
   test("a capture that fails before Stop is reported without a no-op stop_capture", async () => {
     const bridge = makeBridge({ modelDownloaded: true });
     const t = createLocalTranscriber(bridge);
@@ -702,6 +743,84 @@ describe("createLocalTranscriber", () => {
     await expect(t.retryTranscription()).rejects.toThrow("No recording is waiting to be transcribed");
     expect(startTranscriptionCalls(bridge)).toBe(1);
     await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("closing the view during transcription hands the job to the next view, which takes its transcript once", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge);
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    const stopping = closed.stop().catch((e: unknown) => e);
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await tick();
+    expect(startTranscriptionCalls(bridge)).toBe(1);
+    // Capture has ended, so unmount has nothing to stop; the transcription keeps running natively.
+    await closed.stopCaptureOnUnmount();
+
+    const remounted = createLocalTranscriber(bridge);
+    // The single-job Whisper server is busy: no new capture meanwhile.
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("still being transcribed");
+    const adopted = remounted.adoptTranscription();
+    expect(adopted).not.toBeNull();
+    expect(createLocalTranscriber(bridge).adoptTranscription()).toBeNull();
+
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(adopted).resolves.toMatchObject({ sessionId });
+    // The closed view's stop() never delivers it, so its stale callback cannot save it.
+    expect(((await stopping) as Error).message).toContain("the next one takes over this transcription");
+    expect(createLocalTranscriber(bridge).adoptTranscription()).toBeNull();
+
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    expect(startCaptureCalls(bridge)).toBe(2);
+    expect(startTranscriptionCalls(bridge)).toBe(1);
+  });
+
+  test("closing the view during a retry hands it on too; a transcript that lands with no view open waits for the next one", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge);
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(stopWith(bridge, closed, sessionId, failedTranscription(sessionId, "stalled"))).rejects.toBeInstanceOf(
+      TranscriptionFailedError,
+    );
+    const retrying = closed.retryTranscription().catch((e: unknown) => e);
+    await tick();
+    await closed.stopCaptureOnUnmount();
+    bridge.emitTranscription(completedEvent(sessionId));
+    expect(((await retrying) as Error).message).toContain("the next one takes over this transcription");
+
+    const remounted = createLocalTranscriber(bridge);
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow(
+      "waiting to be transcribed or saved",
+    );
+    await expect(remounted.adoptTranscription()).resolves.toMatchObject({ sessionId });
+    expect(createLocalTranscriber(bridge).adoptTranscription()).toBeNull();
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    expect(startTranscriptionCalls(bridge)).toBe(2);
+  });
+
+  test("a transcription that fails after its view closed is kept for the next view's Retry or Discard", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge);
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    const stopping = closed.stop().catch((e: unknown) => e);
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await tick();
+    await closed.stopCaptureOnUnmount();
+    bridge.emitTranscription(failedTranscription(sessionId, "decoder crashed"));
+    expect(await stopping).not.toBeInstanceOf(TranscriptionFailedError);
+
+    const remounted = createLocalTranscriber(bridge);
+    await expect(remounted.adoptTranscription()).rejects.toThrow(
+      "Transcription failed (progressive_stream_timeout): decoder crashed",
+    );
+    // Recovery lives in the view that adopted it, not the closed one.
+    await expect(closed.retryTranscription()).rejects.toThrow("No recording is waiting to be transcribed");
+    const retry = remounted.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(retry).resolves.toMatchObject({ sessionId });
+    await expect(remounted.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
   });
 
   test("start() surfaces capture errors and frees the session", async () => {

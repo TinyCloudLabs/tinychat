@@ -218,21 +218,31 @@ export interface LocalTranscriber {
    *  First waits for a closed view's capture to confirm it stopped, and rejects
    *  with PreviousCaptureUnconfirmedError while a previous recording is not
    *  confirmed stopped. A start_capture that times out may still start, so it
-   *  becomes such a previous recording rather than being assumed not started. */
+   *  becomes such a previous recording rather than being assumed not started.
+   *  Also refuses while a recording is being, or waiting to be, transcribed. */
   start(opts: { model: WhisperModel; language: string; micDevice?: string }): Promise<{ sessionId: string }>;
   /** Stop capture, batch-transcribe the recording, return the raw response.
    *  Rejects with CaptureStopUnconfirmedError, keeping the session so stop()
    *  can be retried, when native capture does not confirm it stopped. Rejects
    *  with TranscriptionFailedError, keeping the stopped recording for
-   *  retryTranscription(), when transcribing its audio file fails. */
+   *  retryTranscription(), when transcribing its audio file fails, and with
+   *  PartialRecordingError, keeping it untranscribed, when capture failed but
+   *  left an audio file. If this view closes first, the transcription is
+   *  handed to the next view (adoptTranscription) and this rejects. */
   stop(): Promise<LocalTranscriptResult>;
-  /** Re-transcribe the kept recording: same audio file, session, model and
+  /** Transcribe the kept recording: same audio file, session, model and
    *  language, after starting the local Whisper server again. Rejects with
    *  TranscriptionFailedError, still keeping the recording, if it fails again. */
   retryTranscription(): Promise<LocalTranscriptResult>;
   /** Give up on the kept recording without transcribing it. Its audio file
    *  stays on disk. */
   discardRecording(): void;
+  /** Take over a transcription whose view closed: the one still running, or
+   *  the outcome it left. Resolves with the transcript (exactly once, to this
+   *  view) or rejects like stop(), keeping a failed or partial recording for
+   *  this view's retryTranscription()/discardRecording(). Null when there is
+   *  none to take over. */
+  adoptTranscription(): Promise<LocalTranscriptResult> | null;
   /** A capture that no open view owns and native capture has not confirmed
    *  stopped (a closed view's stop, or a start_capture, timed out or failed),
    *  or null. Waits (bounded) for a closed view's in-flight stop first,
@@ -243,7 +253,8 @@ export interface LocalTranscriber {
    *  Rejects with PreviousCaptureUnconfirmedError, keeping it to try again,
    *  when that is not confirmed. */
   stopPreviousRecording(): Promise<void>;
-  /** Stop an unfinished native capture when its UI is removed. Resolves only
+  /** Called when the view is removed. Hands a transcription this view owns to
+   *  the next view, and stops an unfinished native capture: resolves only
    *  once native capture confirms it stopped; otherwise rejects and leaves it
    *  as the previous recording for the next view to stop. */
   stopCaptureOnUnmount(): Promise<void>;
@@ -315,6 +326,18 @@ export class PreviousCaptureUnconfirmedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "PreviousCaptureUnconfirmedError";
+  }
+}
+
+/**
+ * Native capture ended with an error but left an audio file (e.g. an input
+ * that failed near the end). The partial recording is kept, untranscribed,
+ * for retryTranscription() or discardRecording().
+ */
+export class PartialRecordingError extends TranscriptionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = "PartialRecordingError";
   }
 }
 
@@ -576,6 +599,51 @@ function recoverPreviousCapture(
   return orphan.recovering;
 }
 
+type TranscriptionOutcome =
+  | { ok: true; result: LocalTranscriptResult }
+  | { ok: false; error: TranscriptionFailedError };
+
+/**
+ * A stopped recording handed to on-device transcription, kept process-wide:
+ * native start_transcription returns once the batch job is spawned and the
+ * local Whisper server runs one job at a time, so the job outlives the view
+ * that started it. It lasts until its transcript is taken or a failed or
+ * partial recording is discarded, and no capture starts meanwhile.
+ */
+interface TranscriptionJob {
+  recording: StoppedRecording;
+  /** Identity of the transcriber whose view takes the outcome; null while no open view owns it. */
+  owner: object | null;
+  /** The latest attempt's outcome; never rejects. */
+  attempt: Promise<TranscriptionOutcome>;
+  /** True while an attempt runs. */
+  running: boolean;
+}
+
+const transcriptionJobs = new WeakMap<object, TranscriptionJob>();
+
+/** A new job's attempt until runAttempt() replaces it, in the same tick. */
+const NOT_ATTEMPTED: Promise<TranscriptionOutcome> = new Promise(() => {});
+
+const HANDED_OFF_MESSAGE = "The Local recording view closed; the next one takes over this transcription";
+
+/**
+ * The job's latest outcome, for `owner` only. A transcript is taken exactly
+ * once, ending the job; a failure keeps the recording for Retry or Discard.
+ * If the owner's view closed meanwhile, the outcome waits for the next view.
+ */
+async function takeTranscription(
+  nativeKey: object,
+  job: TranscriptionJob,
+  owner: object,
+): Promise<LocalTranscriptResult> {
+  const outcome = await job.attempt;
+  if (job.owner !== owner || transcriptionJobs.get(nativeKey) !== job) throw new Error(HANDED_OFF_MESSAGE);
+  if (!outcome.ok) throw outcome.error;
+  transcriptionJobs.delete(nativeKey);
+  return outcome.result;
+}
+
 export function createLocalTranscriber(
   injected?: LocalTranscriberBridge,
   options: { timeouts?: Partial<LocalTranscriberTimeouts> } = {},
@@ -596,6 +664,8 @@ export function createLocalTranscriber(
     return withTimeout(bridgePromise, timeouts.listenMs, "the local transcription plugins to load");
   };
   const nativeKey: object = injected ?? NATIVE_CAPTURE;
+  /** This transcriber's identity as the owner of a transcription job. */
+  const ownerId: object = {};
 
   let sessionId: string | null = null;
   let model: WhisperModel = DEFAULT_LOCAL_MODEL;
@@ -610,9 +680,6 @@ export function createLocalTranscriber(
   let captureStop: Promise<CaptureStoppedEvent> | null = null;
   let starting: Promise<unknown> | null = null;
   let stopping = false;
-  /** A stopped recording whose transcription failed, kept for retryTranscription(). */
-  let untranscribed: StoppedRecording | null = null;
-  let retrying = false;
   let lifecycleGeneration = 0;
   const statusCbs = new Set<(s: LocalTranscriberStatus) => void>();
   let status: LocalTranscriberStatus = { kind: "idle" };
@@ -751,6 +818,24 @@ export function createLocalTranscriber(
     };
   };
 
+  /** Run one transcription attempt for `job`. Every failure becomes an outcome
+   *  that keeps the recording for Retry or Discard. */
+  const runAttempt = (job: TranscriptionJob, serverUrl: string | null): void => {
+    job.running = true;
+    job.attempt = (async (): Promise<TranscriptionOutcome> => {
+      try {
+        const b = await bridge();
+        // A retry never assumes the server from the recording is still up.
+        const url = serverUrl ?? (await startWhisperServer(b, job.recording.model));
+        return { ok: true, result: await transcribe(b, job.recording, url) };
+      } catch (err) {
+        return { ok: false, error: new TranscriptionFailedError(errorMessage(err)) };
+      } finally {
+        job.running = false;
+      }
+    })();
+  };
+
   return {
     async isModelDownloaded(m) {
       return modelDownloaded(await bridge(), m);
@@ -793,8 +878,15 @@ export function createLocalTranscriber(
 
     async start(opts) {
       if (sessionId !== null || starting !== null) throw new Error("A local recording is already active");
-      if (untranscribed !== null) {
-        throw new Error("A stopped recording is waiting to be transcribed; retry or discard it first");
+      // The local Whisper server runs one job at a time, and a kept recording
+      // must be transcribed or discarded before another replaces it.
+      const job = transcriptionJobs.get(nativeKey);
+      if (job !== undefined) {
+        throw new Error(
+          job.running
+            ? "A previous recording is still being transcribed; wait for it to finish"
+            : "A stopped recording is waiting to be transcribed or saved; finish or discard it first",
+        );
       }
       const generation = lifecycleGeneration;
       model = opts.model;
@@ -876,14 +968,13 @@ export function createLocalTranscriber(
       const session = sessionId;
       const sessionStartedAt = startedAt;
       const serverUrl = baseUrl;
+      const generation = lifecycleGeneration;
       stopping = true;
       try {
         emit({ kind: "stopping" });
-        let b: LocalTranscriberBridge;
         let stopped: CaptureStoppedEvent;
         try {
-          b = await bridge();
-          stopped = await confirmCaptureStopped(b);
+          stopped = await confirmCaptureStopped(await bridge());
         } catch (err) {
           // Without the terminal event the capture may still be live: keep the
           // session so the user can retry Stop instead of being told it stopped.
@@ -894,10 +985,11 @@ export function createLocalTranscriber(
 
         // Native capture has ended; every outcome from here releases the session.
         try {
-          if (stopped.error) throw new Error(`Capture failed: ${stopped.error}`);
+          // Capture can fail and still leave a usable audio file; only its absence loses the recording.
           const audioPath = stopped.audio_path;
-          if (!audioPath) throw new Error("Recording produced no audio file");
-
+          if (!audioPath) {
+            throw new Error(stopped.error ? `Capture failed: ${stopped.error}` : "Recording produced no audio file");
+          }
           const recording: StoppedRecording = {
             sessionId: session,
             startedAt: sessionStartedAt,
@@ -905,15 +997,27 @@ export function createLocalTranscriber(
             model,
             language,
           };
-          emit({ kind: "transcribing", progress: null });
-          let result: LocalTranscriptResult;
-          try {
-            result = await transcribe(b, recording, serverUrl);
-          } catch (err) {
-            // The audio file exists: keep it so transcription can be retried.
-            untranscribed = recording;
-            throw new TranscriptionFailedError(errorMessage(err));
+          // The job outlives this view: if it closed while capture was stopping,
+          // the next view takes the job over.
+          const job: TranscriptionJob = {
+            recording,
+            owner: generation === lifecycleGeneration ? ownerId : null,
+            // A failed capture's partial recording is kept untranscribed until
+            // the user chooses to transcribe or discard it.
+            attempt: stopped.error
+              ? Promise.resolve({
+                  ok: false,
+                  error: new PartialRecordingError(`Capture failed: ${stopped.error}. A partial recording was kept.`),
+                })
+              : NOT_ATTEMPTED,
+            running: false,
+          };
+          if (!stopped.error) {
+            emit({ kind: "transcribing", progress: null });
+            runAttempt(job, serverUrl);
           }
+          transcriptionJobs.set(nativeKey, job);
+          const result = await takeTranscription(nativeKey, job, ownerId);
           emit({ kind: "done" });
           return result;
         } finally {
@@ -925,32 +1029,30 @@ export function createLocalTranscriber(
     },
 
     async retryTranscription() {
-      const recording = untranscribed;
-      if (recording === null) throw new Error("No recording is waiting to be transcribed");
-      if (retrying) throw new Error("The recording is already being transcribed");
-      retrying = true;
-      try {
-        emit({ kind: "transcribing", progress: null });
-        let result: LocalTranscriptResult;
-        try {
-          const b = await bridge();
-          // Never assume the server from the recording is still up.
-          const serverUrl = await startWhisperServer(b, recording.model);
-          result = await transcribe(b, recording, serverUrl);
-        } catch (err) {
-          throw new TranscriptionFailedError(errorMessage(err));
-        }
-        untranscribed = null;
-        emit({ kind: "done" });
-        return result;
-      } finally {
-        retrying = false;
-      }
+      const job = transcriptionJobs.get(nativeKey);
+      if (job === undefined || job.owner !== ownerId) throw new Error("No recording is waiting to be transcribed");
+      if (job.running) throw new Error("The recording is already being transcribed");
+      emit({ kind: "transcribing", progress: null });
+      runAttempt(job, null);
+      const result = await takeTranscription(nativeKey, job, ownerId);
+      emit({ kind: "done" });
+      return result;
     },
 
     discardRecording() {
-      untranscribed = null;
+      const job = transcriptionJobs.get(nativeKey);
+      if (job === undefined || job.owner !== ownerId) throw new Error("No recording is waiting to be transcribed");
+      if (job.running) throw new Error("The recording is being transcribed; it can be discarded if that fails");
+      transcriptionJobs.delete(nativeKey);
       emit({ kind: "idle" });
+    },
+
+    adoptTranscription() {
+      const job = transcriptionJobs.get(nativeKey);
+      if (job === undefined || job.owner !== null) return null;
+      job.owner = ownerId;
+      if (job.running) emit({ kind: "transcribing", progress: null });
+      return takeTranscription(nativeKey, job, ownerId);
     },
 
     previousRecording(onWaiting) {
@@ -963,6 +1065,10 @@ export function createLocalTranscriber(
 
     async stopCaptureOnUnmount() {
       lifecycleGeneration++;
+      // A transcription outlives its view: hand it, or the outcome it will
+      // leave, to the next view (adoptTranscription).
+      const job = transcriptionJobs.get(nativeKey);
+      if (job?.owner === ownerId) job.owner = null;
       const activeListeners = listeners;
       listeners = null;
       void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()), ignore);

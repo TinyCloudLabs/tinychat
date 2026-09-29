@@ -31,6 +31,7 @@ import {
 import {
   CaptureStopUnconfirmedError,
   NO_SPEECH_MESSAGE,
+  PartialRecordingError,
   PreviousCaptureUnconfirmedError,
   TranscriptionFailedError,
 } from "@/lib/localTranscriber";
@@ -374,8 +375,8 @@ describe("LocalTranscriberView", () => {
     expect(html).toContain(">Retry transcription</button>");
     expect(html).toContain(">Discard recording</button>");
     expect(html).toContain("Transcription failed (progressive_stream_timeout)");
-    expect(html).toContain("The recording is kept here until it transcribes.");
-    expect(html).toContain("the audio file stays on this Mac.");
+    expect(html).toContain("The recording is kept until it transcribes or you discard it.");
+    expect(html).toContain("Discarding leaves its audio file on this Mac.");
     expect(html).not.toContain("Start recording");
     expect(html).not.toContain(">Retry</button>");
     expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
@@ -394,10 +395,28 @@ describe("LocalTranscriberView", () => {
     }
   });
 
+  test("a partial recording offers Transcribe partial recording and Discard recording, with the capture warning", () => {
+    const html = renderLocal({
+      state: "partial-recording",
+      statusText: "Capture failed: ActorFailed(mic stream closed). A partial recording was kept.",
+    });
+    expect(html).toContain(">Transcribe partial recording</button>");
+    expect(html).toContain(">Discard recording</button>");
+    expect(html).toContain("Capture failed: ActorFailed(mic stream closed)");
+    expect(html).toContain("Capture stopped with an error, but the audio recorded until then was kept.");
+    expect(html).not.toContain("Start recording");
+    expect(html).not.toContain(">Retry transcription</button>");
+    expect(localRetryAction("partial-recording")).toBe("transcribe");
+    expect(isLocalWorkflowActive("partial-recording")).toBe(true);
+  });
+
   test("a rejected start, stop or transcription retry lands in its own failed state", () => {
     expect(localFailureState(new CaptureStopUnconfirmedError("Stopping was not confirmed"))).toBe("stop-failed");
     expect(localFailureState(new TranscriptionFailedError("Transcription failed (x): y"))).toBe("transcribe-failed");
     expect(localFailureState(new PreviousCaptureUnconfirmedError("Native capture is active."))).toBe("previous-recording");
+    expect(localFailureState(new PartialRecordingError("Capture failed: x. A partial recording was kept."))).toBe(
+      "partial-recording",
+    );
     expect(localFailureState(new Error("Capture failed: ActorFailed(mic stream closed)"))).toBe("error");
   });
 

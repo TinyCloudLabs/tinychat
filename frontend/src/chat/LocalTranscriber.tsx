@@ -18,6 +18,7 @@ import {
   DEFAULT_LOCAL_MODEL,
   LOCAL_MODEL_STORAGE_KEY,
   LOCAL_WHISPER_MODELS,
+  PartialRecordingError,
   PreviousCaptureUnconfirmedError,
   prepareLocalTranscript,
   TranscriptionFailedError,
@@ -46,6 +47,8 @@ export type LocalPanelState =
   | "stop-failed"
   /** Transcribing the stopped recording failed; Retry re-transcribes the same audio file. */
   | "transcribe-failed"
+  /** Capture failed but kept a partial recording; it can be transcribed or discarded. */
+  | "partial-recording"
   /** The transcript is held in the panel; Retry re-runs the identical save. */
   | "save-failed"
   | "error";
@@ -68,6 +71,7 @@ export function isLocalWorkflowActive(state: LocalPanelState): boolean {
     state === "saving" ||
     state === "stop-failed" ||
     state === "transcribe-failed" ||
+    state === "partial-recording" ||
     state === "save-failed"
   );
 }
@@ -77,7 +81,7 @@ export function localRetryAction(
   state: LocalPanelState,
 ): "stop" | "transcribe" | "save" | "stop-previous" | "readiness" {
   if (state === "stop-failed") return "stop";
-  if (state === "transcribe-failed") return "transcribe";
+  if (state === "transcribe-failed" || state === "partial-recording") return "transcribe";
   if (state === "save-failed") return "save";
   if (state === "previous-recording") return "stop-previous";
   return "readiness";
@@ -86,8 +90,9 @@ export function localRetryAction(
 /** The panel state a rejected start(), stop() or retryTranscription() lands in. */
 export function localFailureState(
   err: unknown,
-): "stop-failed" | "transcribe-failed" | "previous-recording" | "error" {
+): "stop-failed" | "transcribe-failed" | "partial-recording" | "previous-recording" | "error" {
   if (err instanceof CaptureStopUnconfirmedError) return "stop-failed";
+  if (err instanceof PartialRecordingError) return "partial-recording";
   if (err instanceof TranscriptionFailedError) return "transcribe-failed";
   if (err instanceof PreviousCaptureUnconfirmedError) return "previous-recording";
   return "error";
@@ -105,7 +110,7 @@ export interface LocalTranscriberViewProps {
   onMicChange: (device: string) => void;
   onDownload: () => void;
   onRetry: () => void;
-  /** Leaves `transcribe-failed` without transcribing; the audio file stays on disk. */
+  /** Leaves `transcribe-failed` or `partial-recording` without transcribing; the audio file stays on disk. */
   onDiscardRecording: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -272,10 +277,10 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             Retry stop
           </Button>
         )}
-        {state === "transcribe-failed" && (
+        {(state === "transcribe-failed" || state === "partial-recording") && (
           <>
             <Button type="button" size="sm" onClick={onRetry} className="h-9">
-              Retry transcription
+              {state === "partial-recording" ? "Transcribe partial recording" : "Retry transcription"}
             </Button>
             <Button type="button" size="sm" variant="outline" onClick={onDiscardRecording} className="h-9">
               Discard recording
@@ -305,8 +310,14 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       )}
       {state === "transcribe-failed" && (
         <p className="text-xs text-muted-foreground">
-          The recording is kept here until it transcribes. Leaving this view or discarding it gives up
-          on transcribing it; the audio file stays on this Mac.
+          The recording is kept until it transcribes or you discard it. Discarding leaves its audio
+          file on this Mac.
+        </p>
+      )}
+      {state === "partial-recording" && (
+        <p className="text-xs text-muted-foreground">
+          Capture stopped with an error, but the audio recorded until then was kept. Transcribe it, or
+          discard it; discarding leaves its audio file on this Mac.
         </p>
       )}
       {(recording || state === "stop-failed") && (
@@ -347,7 +358,8 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   const t = transcriberRef.current;
 
   // A stop that is not confirmed here is left as the previous recording,
-  // which the next mounted panel shows with "Stop previous recording".
+  // which the next mounted panel shows with "Stop previous recording"; a
+  // running or failed transcription is handed to the next panel to adopt.
   useEffect(() => () => {
     void t.stopCaptureOnUnmount().catch((err) => {
       console.error("Failed to stop local recording when leaving the view", err);
@@ -397,6 +409,14 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
         return;
       }
       setState((s) => (s === "stopping-previous" ? "checking-model" : s));
+      // A transcription whose panel closed is shown and finished here: its
+      // transcript is saved by this panel, once; a failure offers Retry/Discard.
+      const adopted = t.adoptTranscription();
+      if (adopted !== null) {
+        setState("transcribing");
+        void adopted.then(saveTranscript, failWithRecovery);
+        return;
+      }
       const downloaded = await t.isModelDownloaded(model);
       if (cancelled) return;
       setState((s) => (s === "checking-model" ? (downloaded ? "ready" : "needs-download") : s));
@@ -502,7 +522,12 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
   };
 
   const onDiscardRecording = () => {
-    t.discardRecording();
+    try {
+      t.discardRecording();
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : String(err));
+      return;
+    }
     setErrorText(null);
     setState("ready");
   };
