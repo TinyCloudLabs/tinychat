@@ -1,0 +1,9 @@
+{
+  "name": "tinychat-deploy-tools",
+  "private": true,
+  "description": "Deploy-time tooling for .github/workflows/deploy-backend-phala.yml, installed with `npm ci --ignore-scripts` from the committed lockfile before any secret is in scope.",
+  "dependencies": {
+    "@phala/cloud": "0.3.0",
+    "phala": "1.1.22"
+  }
+}

@@ -69,9 +69,10 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Check the checkout is the deploy commit
         run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
@@ -101,6 +102,20 @@ jobs:
             echo "- Ingress domain: \`${PHALA_INGRESS_DOMAIN}\`"
             echo "- Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Deploy tooling (the phala CLI and @phala/cloud for the allowed_envs sync) installs from the committed lockfile in
+      # .github/deploy-tools: `npm ci` verifies every package's integrity hash and --ignore-scripts runs no package code,
+      # and this happens before any step references a secret. Later steps only run the installed binaries.
+      # phala is pinned for reproducibility: 1.1.21 restored compatibility with the current CVM schema when resolving
+      # the env encryption public key; 1.1.22 is the latest stable patch release.
+      - name: Install deploy tools
+        run: |
+          tools="$RUNNER_TEMP/deploy-tools"
+          mkdir -p "$tools"
+          cp .github/deploy-tools/package.json .github/deploy-tools/package-lock.json .github/scripts/phala-sync-allowed-envs.mjs "$tools/"
+          (cd "$tools" && npm ci --ignore-scripts --no-audit --no-fund)
+          echo "$tools/node_modules/.bin" >> "$GITHUB_PATH"
+          "$tools/node_modules/.bin/phala" --version || true
 
       - name: Check deployment configuration
         env:
@@ -163,14 +178,6 @@ jobs:
 
           echo "All required deployment config is present and valid."
 
-      - name: Install Phala CLI
-        run: |
-          # Keep the deploy client pinned for reproducibility. 1.1.21 restored
-          # compatibility with the current CVM schema when resolving the env
-          # encryption public key; 1.1.22 is the latest stable patch release.
-          npm install -g phala@1.1.22
-          phala --version || true
-
       - name: Validate Phala access
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -183,18 +190,18 @@ jobs:
           echo "$RAW" | jq '{success, username, workspace, profile}'
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: backend/Dockerfile
@@ -213,7 +220,7 @@ jobs:
 
       - name: Build and push ingress image
         id: ingress-build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: infra/phala-ingress
           file: infra/phala-ingress/Dockerfile
@@ -553,11 +560,7 @@ jobs:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           ENV_FILE: ${{ runner.temp }}/phala-prod.env
         run: |
-          mkdir -p "$RUNNER_TEMP/phala-sync"
-          cp .github/scripts/phala-sync-allowed-envs.mjs "$RUNNER_TEMP/phala-sync/"
-          cd "$RUNNER_TEMP/phala-sync"
-          npm init -y >/dev/null
-          npm install @phala/cloud@0.3.0
+          cd "$RUNNER_TEMP/deploy-tools"
           node phala-sync-allowed-envs.mjs
 
       - name: Wait for CVM to report running

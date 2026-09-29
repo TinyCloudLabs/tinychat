@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -807,6 +807,19 @@ test('desktop releases run main\'s workflow on a validated tag and never publish
   assert.match(release, /ref: \$\{\{ needs\.plan\.outputs\.sha \}\}/);
   const publish = release.slice(release.indexOf('  publish:'));
   assert.ok(publish.indexOf('if [ "$SIGNED" != true ]; then') < publish.indexOf('gh release create'), 'the signed check precedes any release write');
+});
+
+// Tags are mutable: every non-local action runs from a full commit SHA, with the version it was resolved from noted.
+test('every workflow pins its actions to a full commit SHA', () => {
+  const unpinned = [];
+  for (const name of readdirSync(join(repo, '.github/workflows')).filter(file => /\.ya?ml$/.test(file))) {
+    read(repo, `.github/workflows/${name}`).split('\n').forEach((line, index) => {
+      const use = /^\s*(?:-\s+)?uses:\s*(\S+)(.*)$/.exec(line);
+      if (!use || use[1].startsWith('./')) return;
+      if (!/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(use[1]) || !/^\s+#\s*\S/.test(use[2])) unpinned.push(`${name}:${index + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepEqual(unpinned, [], 'pin each action as owner/repo@<40-hex SHA> # vX.Y.Z');
 });
 
 // Release tags and the production branch are pushed only with the release-push deploy key (ruleset bypass).
