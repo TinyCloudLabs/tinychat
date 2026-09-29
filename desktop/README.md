@@ -74,7 +74,7 @@ voiceprint and export commands Exo doesn't use.
 
 | Engine | Mode | Status |
 |---|---|---|
-| Whisper via whisper.cpp | Batch, after Stop | Implemented; real audio capture/transcription smoke still pending |
+| Whisper via whisper.cpp | Batch, after Stop | Shipped. Verified on-Mac in the release app: record → transcribe → save as Exo Local → relaunch |
 | Apple Speech | Live, macOS 26+ | Follow-up; needs locale-asset download + availability gate |
 | Soniqo Parakeet | Live or batch | Built but not exposed: third-party speech-swift + model weights unreviewed |
 | AM / Argmax | Requires proprietary sidecar + `AM_API_KEY` | Out of scope |
@@ -82,6 +82,14 @@ voiceprint and export commands Exo doesn't use.
 Whisper models download on first use from `hyprnote.s3.us-east-1.amazonaws.com`
 (size + checksum validated by anarlog's `model-downloader`) into
 `models/stt/` under the app-data dir. Recordings land in `sessions/<id>/`.
+
+Long recordings: the vendored `transcribe-whisper-local`
+(`desktop/vendor/anarlog-transcribe-whisper-local`, see its `PROVENANCE.md`)
+emits progress while decoding and scanning silence, so multi-hour, mostly
+quiet recordings don't trip the 30 s stream-idle timeout, and accepts uploads
+up to 1 GiB (~18 h). `NSAppSleepDisabled` keeps App Nap from starving
+background transcription. If transcription still fails, the panel keeps the
+recording: **Retry transcription** re-runs Whisper on the same audio.
 
 ### Storage paths
 
@@ -101,21 +109,21 @@ builds attribute these to the launching terminal. `Entitlements.plist` adds
 
 ### Known gaps
 
-- Speaker labels are channel-numbered (`Speaker 1`, `Speaker 2`) because the
-  channel → mic/system order isn't yet confirmed by a real capture.
+- Speaker labels are channel-numbered. A real capture confirmed the order:
+  `Speaker 1` = microphone, `Speaker 2` = system audio (the remote side of a
+  call). The mic also picks up speaker output acoustically.
 - One capture at a time: the shared RootActor rejects a second `start_capture`.
 - Calling any other plugin command needs an explicit grant in
   `capabilities-transcription/transcription.json`.
 
 ## Known constraints
 
-- **Sign-in:** tinycloud.chat is OpenKey-passkey-only in the browser; WebAuthn
-  inside Tauri webviews is unreliable. Options: SIWE session against the
-  backend (`GET /api/auth/nonce` → `POST /api/auth/verify`, needs
-  `X-Requested-With`), or a deep-link browser handoff. Decide before shipping.
-  The native engine can run locally, but the current Connectors UI shows Local
-  recording only with a signed-in space so a finished transcript can be saved.
-  Offline save/export is not implemented.
+- **Sign-in:** OpenKey **email** sign-in (one-time code) works inside Exo's
+  webview, including the capability consent, and the session survives
+  relaunch. Passkeys inside the ad-hoc-signed app are not expected to work
+  (WebAuthn in a third-party WKWebView needs an associated domain). Local
+  recording is shown only with a signed-in space so a finished transcript can
+  be saved; offline save/export is not implemented.
 - **Web deploy rename** (tinycloud.chat → exo.tinycloud.xyz) is intentionally
   not part of this scaffold: it touches the Cloudflare Pages project,
   production env vars, and the backend CORS/hostname config.
