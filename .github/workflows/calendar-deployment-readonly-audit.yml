@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install the existing deployment client
         run: npm install --global phala@1.1.22
+      - name: Install the compose parser
+        run: python3 -m pip install PyYAML==6.0.3
       - name: Inspect deployment prerequisites with GET requests only
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -31,6 +33,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+          import base64
           import concurrent.futures
           import datetime
           import hashlib
@@ -40,6 +43,7 @@ jobs:
           import subprocess
           import urllib.error
           import urllib.request
+          import yaml
           from pathlib import Path
 
           BASE = 'https://cloud-api.phala.com/api/v1'
@@ -49,7 +53,7 @@ jobs:
           }
           TRANSCRIPTION = 'https://7fd569fb6ac2cae943cea1d1aff247cd8ea61fdc-8080.dstack-pha-prod5.phala.network'
           URLS = {BASE + '/cvms/' + uuid + suffix for uuid, app in TARGETS.values()
-                  for suffix in ('', '/compose_file', '/composition')}
+                  for suffix in ('', '/compose_file', '/composition', '/user_config')}
           LOOKUP = TRANSCRIPTION + '/v1/meetings/by-idempotency-key'
           URLS.add(LOOKUP)
           class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -102,7 +106,7 @@ jobs:
               uuid, app = identity
               headers = {'X-API-Key': os.environ['PHALA_CLOUD_API_KEY'], 'X-Phala-Version': '2026-01-21'}
               result = {}
-              for suffix in ('', '/compose_file', '/composition'):
+              for suffix in ('', '/compose_file', '/composition', '/user_config'):
                   status, data = get(BASE + '/cvms/' + uuid + suffix, headers)
                   key = suffix.strip('/') or 'info'
                   result[key] = status
@@ -115,6 +119,14 @@ jobs:
                       result[key]['inProgress'] = progress if isinstance(progress, bool) else None
                   elif suffix == '/compose_file':
                       text = data.get('docker_compose_file', '')
+                      try:
+                          compose = yaml.safe_load(text)
+                      except yaml.YAMLError:
+                          result[key]['composeParseStatus'] = 'invalid_yaml'
+                          continue
+                      if not isinstance(compose, dict):
+                          result[key]['composeParseStatus'] = 'invalid_root'
+                          continue
                       allowed = data.get('allowed_envs', [])
                       allowed = sorted(v for v in allowed if isinstance(v, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*', v))
                       # Never output raw compose, encrypted payloads, scripts, or env values.
@@ -123,10 +135,24 @@ jobs:
                                           'images': [safe_text(v) for v in images],
                                           'encryptedFieldPresent': 'encrypted_env' in data,
                                           'preLaunchSha256': digest(data.get('pre_launch_script')),
-                                          'volumeNames': re.findall(r'^  ([a-zA-Z0-9_-]+):\s*\{\}\s*$', text, re.M)})
+                                          'volumeNames': sorted(v for v in (compose.get('volumes') or {}) if safe_text(v)),
+                                          'serviceVolumes': {safe_text(name): [safe_text(v) if isinstance(v, str) else
+                                              {k: safe_text(v.get(k)) for k in ('type', 'source', 'target')} for v in service.get('volumes', [])]
+                                              for name, service in compose.get('services', {}).items()}})
                       if name == 'tinychat':
                           result[key]['namesOmittedByDeployFile'] = sorted(set(allowed) - set(deploy_names))
                           result[key]['deployFileNamesNotAllowed'] = sorted(set(deploy_names) - set(allowed))
+                  elif suffix == '/user_config':
+                      fingerprints = []
+                      keys = data.get('ssh_authorized_keys', [])
+                      for public_key in keys:
+                          match = re.search(r'(?:^|\s)(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) ([A-Za-z0-9+/]+=*)(?:\s|$)', public_key)
+                          if not match:
+                              continue
+                          blob = base64.b64decode(match.group(1), validate=True)
+                          fingerprints.append('SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('='))
+                      result[key].update({'sshKeyFingerprints': sorted(fingerprints),
+                                          'unparsedKeyCount': len(keys) - len(fingerprints)})
                   else:
                       rows = data.get('containers', [])
                       online = data.get('is_online')
