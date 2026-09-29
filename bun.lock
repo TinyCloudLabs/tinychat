@@ -135,6 +135,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@tinycloud/node-sdk@2.5.1": "patches/@tinycloud%2Fnode-sdk@2.5.1.patch",
+  },
   "overrides": {
     "@tinycloud/node-sdk": "2.5.1",
     "@tinycloud/node-sdk-wasm": "1.7.4",

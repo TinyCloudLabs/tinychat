@@ -92,15 +92,39 @@ describe("Calendar control request ordering", () => {
     stale.reject(new Error("old request failed")); await refresh;
     expect(error).toBeNull();
   });
-  test("only the latest refresh may publish its result", async () => {
-    const old = deferred<CalendarAutojoinStatus>();
+  test("polls coalesce while a delayed status read is pending, then refresh again after success", async () => {
+    const pending = deferred<CalendarAutojoinStatus>();
     let reads = 0;
-    let shown = on;
-    const actions = createCalendarAutojoinActions({ status: () => ++reads === 1 ? old.promise : Promise.resolve(off), disable: async () => off },
+    let shown: CalendarAutojoinStatus | null = null;
+    const actions = createCalendarAutojoinActions({ status: () => ++reads === 1 ? pending.promise : Promise.resolve(off), disable: async () => off },
       (update) => { if (update.status) shown = update.status; });
     const first = actions.refresh();
+    const poll = actions.refresh();
+    pending.resolve(on);
+    await Promise.all([first, poll]);
+    expect(reads).toBe(1);
+    expect(shown).toEqual(on);
     await actions.refresh();
-    old.resolve(on); await first;
+    expect(reads).toBe(2);
+    expect(shown).toEqual(off);
+  });
+  test("a delayed failure remains visible despite another poll, and the next read can recover", async () => {
+    const pending = deferred<CalendarAutojoinStatus>();
+    let reads = 0;
+    let error: string | null = null;
+    let shown: CalendarAutojoinStatus | null = null;
+    const actions = createCalendarAutojoinActions({ status: () => ++reads === 1 ? pending.promise : Promise.resolve(off), disable: async () => off },
+      (update) => { if (update.error !== undefined) error = update.error; if (update.status) shown = update.status; });
+    const first = actions.refresh();
+    const poll = actions.refresh();
+    pending.reject(new Error("upstream unavailable"));
+    await Promise.all([first, poll]);
+    expect(reads).toBe(1);
+    expect(error).toBe("Calendar autojoin status is unavailable. Try again shortly.");
+    expect(shown).toBeNull();
+    await actions.refresh();
+    expect(reads).toBe(2);
+    expect(error).toBeNull();
     expect(shown).toEqual(off);
   });
   test("unmount discards late refreshes and mutations", async () => {

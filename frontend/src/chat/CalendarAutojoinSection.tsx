@@ -15,16 +15,21 @@ export function createCalendarAutojoinActions(
   let revision = 0;
   let disposed = false;
   let mutating = false;
+  let refreshing = false;
   const current = (request: number) => !disposed && request === revision;
   return {
     async refresh() {
-      if (disposed || mutating) return;
+      if (disposed || mutating || refreshing) return;
+      // A slow read must settle before polling can supersede its result.
+      refreshing = true;
       const request = ++revision;
       try {
         const status = await api.status();
         if (current(request)) onUpdate({ status, error: null });
       } catch {
         if (current(request)) onUpdate({ error: "Calendar autojoin status is unavailable. Try again shortly." });
+      } finally {
+        refreshing = false;
       }
     },
     async disable() {

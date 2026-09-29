@@ -19,6 +19,7 @@ export function createCalendarAutojoinClient(backendUrl: string, sessionStore: S
       method: body === undefined ? "GET" : "POST",
       headers: { Authorization: `Bearer ${token}`, "X-Requested-With": "XMLHttpRequest",
         ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      ...(body === undefined ? { signal: AbortSignal.timeout(20_000) } : {}),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!response.ok) throw new Error(response.status === 404

@@ -153,6 +153,9 @@ export function createTranscriberClient(
       return { status: "unauthenticated" };
     }
 
+    // Read-only polling must settle during a storage outage. Mutations retain
+    // their existing semantics: aborting a create does not prove no bot was sent.
+    const signal = init.method === "GET" ? AbortSignal.timeout(20_000) : undefined;
     let response: Response;
     try {
       response = await fetchImpl(`${backendUrl}${TRANSCRIBER_BASE_PATH}${path}`, {
@@ -163,8 +166,10 @@ export function createTranscriberClient(
           ...(init.body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        ...(signal ? { signal } : {}),
       });
     } catch {
+      if (signal?.aborted) return { status: "retryable", httpStatus: 504, code: "request_timeout" };
       return { status: "offline" };
     }
 
@@ -186,6 +191,7 @@ export function createTranscriberClient(
       const value = init.read ? await init.read(response) : ((await response.json()) as T);
       return { status: "ok", value };
     } catch {
+      if (signal?.aborted) return { status: "retryable", httpStatus: 504, code: "request_timeout" };
       return { status: "rejected", httpStatus: response.status, code: null, message: null };
     }
   }
