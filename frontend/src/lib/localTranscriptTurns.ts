@@ -18,8 +18,9 @@
 //
 // Timing caveat: at the pinned anarlog rev, whisper-local transcribes each VAD
 // chunk (3–25 s) as one segment and spreads its words evenly across it, so word
-// times are only accurate to the chunk. Echo matching therefore compares word
-// order within a window of seconds rather than per-word timestamps.
+// times are only accurate to the chunk. Echo matching therefore aligns word
+// order with a timing tolerance of about a second, and requires the recording
+// to show a consistent echo lag before anything is dropped.
 
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 
@@ -43,9 +44,23 @@ export const ECHO_PHRASE_GAP_SECONDS = 0.5;
  *  Whisper emits a long stretch without punctuation or pauses. */
 export const ECHO_MAX_PHRASE_WORDS = 64;
 
-/** System-audio words starting within this many seconds of a mic phrase can
- *  explain it as echo. Wide because word times are only chunk-accurate. */
+/** Survey pass: a mic word and a system-audio word with the same text pair up
+ *  only when their start times are within this many seconds. The pairs measure
+ *  the recording's echo lag. Wide because word times are only chunk-accurate. */
 export const ECHO_WINDOW_SECONDS = 3;
+
+/** Acoustic echo is near-simultaneous: the recording's measured echo lag (mic
+ *  minus system-audio start) must be within this many seconds of zero. */
+export const ECHO_MAX_LAG_SECONDS = 1;
+
+/** Confirm pass: every aligned word pair's lag must be within this many
+ *  seconds of the recording's echo lag. */
+export const ECHO_LAG_TOLERANCE_SECONDS = 1;
+
+/** Confirm pass: the aligned mic words and the (lag-shifted) system-audio words
+ *  they repeat must overlap in time by at least this share of the shorter
+ *  span. A reply spoken after the other side finished does not overlap. */
+export const ECHO_MIN_OVERLAP = 0.5;
 
 /** Share of a mic phrase's words that must align, in order, with system-audio
  *  words for the phrase to count as echo. */
@@ -61,9 +76,14 @@ export const ECHO_MIN_CONTENT_MATCHES = 2;
 export const ECHO_MIN_PHRASES = 2;
 
 /** …and they are at least this share of the system-audio phrases that could
- *  have been echoed. On a headphone call the mic hears no echo, so a user's
- *  occasional verbatim confirmation ("Friday at noon.") stays below it. */
+ *  have been echoed. */
 export const ECHO_MIN_SHARE = 0.2;
+
+/** A mic phrase with more system-audio words than this in its time window is
+ *  not matched (both copies are kept). Real speech stays far below it; only
+ *  collapsed or degenerate timestamps reach it, and they would make matching
+ *  quadratic. */
+export const ECHO_MAX_CANDIDATES = 320;
 
 export interface LocalWord {
   text: string;
@@ -100,7 +120,8 @@ const FUNCTION_WORDS = new Set(
 
 /** Lowercase letters and digits only: "Friday." → "friday", "It's" → "its". */
 function normalizedToken(text: string): string {
-  return text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  // toLowerCase, not toLocaleLowerCase: locale-independent, and far faster.
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 /** Equality key: a trailing plural "s" is ignored, so "elephants" matches "elephant". */
@@ -140,14 +161,14 @@ function phrasesOf(channelWords: readonly LocalWord[]): LocalWord[][] {
   return phrases;
 }
 
-/** Longest order-preserving alignment of equal, non-empty keys, as index pairs. */
-function alignKeys(a: readonly string[], b: readonly string[]): [number, number][] {
-  const cols = b.length + 1;
-  // lengths[i * cols + j] = LCS length of a[i..] and b[j..].
-  const lengths = new Uint16Array((a.length + 1) * cols);
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lengths[i * cols + j] = a[i] !== "" && a[i] === b[j]
+/** Longest order-preserving alignment of a[0..n) with b[0..m) under `match`, as index pairs. */
+function align(n: number, m: number, match: (i: number, j: number) => boolean): [number, number][] {
+  const cols = m + 1;
+  // lengths[i * cols + j] = alignment length of a[i..] and b[j..].
+  const lengths = new Uint16Array((n + 1) * cols);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lengths[i * cols + j] = match(i, j)
         ? lengths[(i + 1) * cols + j + 1]! + 1
         : Math.max(lengths[(i + 1) * cols + j]!, lengths[i * cols + j + 1]!);
     }
@@ -155,8 +176,10 @@ function alignKeys(a: readonly string[], b: readonly string[]): [number, number]
   const pairs: [number, number][] = [];
   let i = 0;
   let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] !== "" && a[i] === b[j]) {
+  while (i < n && j < m) {
+    // Taking a match is always optimal: any alignment that pairs i or j
+    // elsewhere can swap that pair for (i, j).
+    if (match(i, j)) {
       pairs.push([i, j]);
       i++;
       j++;
@@ -169,23 +192,114 @@ function alignKeys(a: readonly string[], b: readonly string[]): [number, number]
   return pairs;
 }
 
+/** First index whose value is >= t (`after`: > t) in an ascending array. */
+function searchSorted(values: readonly number[], t: number, after: boolean): number {
+  let lo = 0;
+  let hi = values.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (after ? values[mid]! <= t : values[mid]! < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+interface EchoMatch {
+  phrase: LocalWord[];
+  /** Median mic-minus-system start time over the aligned word pairs. */
+  lag: number;
+}
+
 /**
- * The mic words that are echo of system audio, to be dropped.
+ * Mic phrases that repeat system audio: at least two words, at least
+ * ECHO_MIN_MATCH_RATIO of them aligned in order with unused system-audio words,
+ * each pair's lag (mic start − system start) within `tolerance` of `lag`, and at
+ * least ECHO_MIN_CONTENT_MATCHES aligned content words. With `requireOverlap`,
+ * the aligned spans must also overlap once shifted by `lag`. Each system-audio
+ * word explains at most one mic phrase.
+ */
+function matchEchoPhrases(
+  phrases: readonly LocalWord[][],
+  phraseTokens: readonly string[][],
+  system: readonly LocalWord[],
+  systemStarts: readonly number[],
+  systemKeys: readonly string[],
+  lag: number,
+  tolerance: number,
+  requireOverlap: boolean,
+): EchoMatch[] {
+  const used = new Array<boolean>(system.length).fill(false);
+  const matches: EchoMatch[] = [];
+  for (const [p, phrase] of phrases.entries()) {
+    const tokens = phraseTokens[p]!;
+    const scored = tokens.filter((t) => t !== "").length;
+    if (scored < 2) continue;
+
+    // Phrase words are sorted by start, so this covers every pairable word.
+    const lo = searchSorted(systemStarts, phrase[0]!.start - lag - tolerance, false);
+    const hi = searchSorted(systemStarts, phrase[phrase.length - 1]!.start - lag + tolerance, true);
+    if (hi - lo > ECHO_MAX_CANDIDATES) continue;
+    const candidates: number[] = [];
+    for (let i = lo; i < hi; i++) {
+      if (!used[i] && systemKeys[i] !== "") candidates.push(i);
+    }
+    if (candidates.length === 0) continue;
+
+    const keys = tokens.map(matchKey);
+    const pairs = align(phrase.length, candidates.length, (i, j) => {
+      const other = candidates[j]!;
+      return keys[i] !== ""
+        && keys[i] === systemKeys[other]
+        && Math.abs(phrase[i]!.start - system[other]!.start - lag) <= tolerance;
+    });
+    const contentMatches = pairs.filter(([t]) => isContentToken(tokens[t]!)).length;
+    if (pairs.length / scored < ECHO_MIN_MATCH_RATIO || contentMatches < ECHO_MIN_CONTENT_MATCHES) continue;
+
+    if (requireOverlap) {
+      const [firstMic, firstSys] = pairs[0]!;
+      const [lastMic, lastSys] = pairs[pairs.length - 1]!;
+      const micStart = phrase[firstMic]!.start;
+      const micEnd = phrase[lastMic]!.end;
+      const sysStart = system[candidates[firstSys]!]!.start + lag;
+      const sysEnd = system[candidates[lastSys]!]!.end + lag;
+      const overlap = Math.min(micEnd, sysEnd) - Math.max(micStart, sysStart);
+      if (!(overlap > 0 && overlap >= ECHO_MIN_OVERLAP * Math.min(micEnd - micStart, sysEnd - sysStart))) continue;
+    }
+
+    matches.push({
+      phrase,
+      lag: median(pairs.map(([t, c]) => phrase[t]!.start - system[candidates[c]!]!.start)),
+    });
+    for (const [, c] of pairs) used[candidates[c]!] = true;
+  }
+  return matches;
+}
+
+/**
+ * The mic words that are echo of system audio, to be dropped. Genuine speech
+ * must never be dropped, so a phrase is dropped only when all of this holds;
+ * otherwise it is kept, even if that leaves both copies:
  *
- * A mic phrase (split at sentence punctuation and pauses) is echo only when
- * all of these hold, and otherwise it is kept, even if that leaves both copies:
- *  - it has at least two words;
- *  - at least ECHO_MIN_MATCH_RATIO of its words align, in order, with unused
- *    system-audio words starting within ECHO_WINDOW_SECONDS of it;
- *  - at least ECHO_MIN_CONTENT_MATCHES of the aligned words are content words.
- * System-audio words explain at most one mic phrase, so a user repeating what
- * the other side just said, after its echo was matched, is kept. A lone word
- * ("Friday.") is never dropped: it can be a genuine reply. And nothing is
- * dropped unless the recording shows echo throughout (ECHO_MIN_PHRASES,
- * ECHO_MIN_SHARE), which keeps verbatim confirmations on headphone calls.
+ *  1. Survey: phrases pair with system-audio words of the same text starting
+ *     within ECHO_WINDOW_SECONDS (see matchEchoPhrases). At least
+ *     ECHO_MIN_PHRASES of them have a small lag (ECHO_MAX_LAG_SECONDS); their
+ *     median is the recording's echo lag. No stable small lag, no echo.
+ *  2. Confirm: each phrase re-aligns with every word pair within
+ *     ECHO_LAG_TOLERANCE_SECONDS of that lag, and the aligned spans overlap in
+ *     time (ECHO_MIN_OVERLAP). A reply that repeats the other side ("Friday at
+ *     noon.") comes after it, so it does not overlap and is kept.
+ *  3. Gate: at least ECHO_MIN_PHRASES phrases confirm, and at least
+ *     ECHO_MIN_SHARE of the system-audio phrases that could be echoed.
  *
- * `words` must be sorted by start time. Recordings without both channels have
- * no echo.
+ * A lone word ("Friday.") is never dropped, and neither is a phrase whose time
+ * window holds more than ECHO_MAX_CANDIDATES system-audio words. `words` must
+ * be sorted by start time. Recordings without both channels have no echo.
  */
 export function findMicEcho(words: readonly LocalWord[]): Set<LocalWord> {
   const echo = new Set<LocalWord>();
@@ -193,40 +307,22 @@ export function findMicEcho(words: readonly LocalWord[]): Set<LocalWord> {
   const system = words.filter((w) => w.channel === SYSTEM_CHANNEL);
   if (mic.length === 0 || system.length === 0) return echo;
 
+  const phrases = phrasesOf(mic);
+  const phraseTokens = phrases.map((phrase) => phrase.map((w) => normalizedToken(w.text)));
+  const systemStarts = system.map((w) => w.start);
   const systemKeys = system.map((w) => matchKey(normalizedToken(w.text)));
-  const used = new Array<boolean>(system.length).fill(false);
-  // Phrase starts never decrease, so the window's lower edge only moves forward.
-  let lower = 0;
 
-  const echoPhrases: LocalWord[][] = [];
-  for (const phrase of phrasesOf(mic)) {
-    const tokens = phrase.map((w) => normalizedToken(w.text));
-    const scored = tokens.filter((t) => t !== "").length;
-    if (scored < 2) continue;
+  const surveyed = matchEchoPhrases(phrases, phraseTokens, system, systemStarts, systemKeys, 0, ECHO_WINDOW_SECONDS, false);
+  const smallLags = surveyed.map((m) => m.lag).filter((l) => Math.abs(l) <= ECHO_MAX_LAG_SECONDS);
+  if (smallLags.length < ECHO_MIN_PHRASES) return echo;
+  const lag = median(smallLags);
 
-    const from = phrase[0]!.start - ECHO_WINDOW_SECONDS;
-    const to = phrase[phrase.length - 1]!.end + ECHO_WINDOW_SECONDS;
-    while (lower < system.length && system[lower]!.start < from) lower++;
-    const candidates: number[] = [];
-    for (let i = lower; i < system.length && system[i]!.start <= to; i++) {
-      if (!used[i] && systemKeys[i] !== "") candidates.push(i);
-    }
-    if (candidates.length === 0) continue;
-
-    const pairs = alignKeys(
-      tokens.map(matchKey),
-      candidates.map((i) => systemKeys[i]!),
-    );
-    const contentMatches = pairs.filter(([t]) => isContentToken(tokens[t]!)).length;
-    if (pairs.length / scored < ECHO_MIN_MATCH_RATIO || contentMatches < ECHO_MIN_CONTENT_MATCHES) continue;
-
-    echoPhrases.push(phrase);
-    for (const [, c] of pairs) used[candidates[c]!] = true;
-  }
-
+  const confirmed = matchEchoPhrases(
+    phrases, phraseTokens, system, systemStarts, systemKeys, lag, ECHO_LAG_TOLERANCE_SECONDS, true,
+  );
   const echoable = phrasesOf(system).filter((phrase) => contentWords(phrase) >= ECHO_MIN_CONTENT_MATCHES).length;
-  if (echoPhrases.length < ECHO_MIN_PHRASES || echoPhrases.length < ECHO_MIN_SHARE * echoable) return echo;
-  for (const phrase of echoPhrases) for (const w of phrase) echo.add(w);
+  if (confirmed.length < ECHO_MIN_PHRASES || confirmed.length < ECHO_MIN_SHARE * echoable) return echo;
+  for (const { phrase } of confirmed) for (const w of phrase) echo.add(w);
   return echo;
 }
 
@@ -240,8 +336,8 @@ interface Turn {
 /**
  * Readable speaker turns from a recording's words (sorted by start time):
  * mic echo dropped, each channel segmented on its own pauses, segments ordered
- * by start time, and consecutive same-speaker segments merged up to
- * MAX_TURN_SECONDS.
+ * by start time, and consecutive same-speaker segments merged. No turn spans
+ * more than MAX_TURN_SECONDS unless a single word does.
  */
 export function localTranscriptTurns(words: readonly LocalWord[]): FirefliesSentence[] {
   const echo = findMicEcho(words);
@@ -257,7 +353,13 @@ export function localTranscriptTurns(words: readonly LocalWord[]): FirefliesSent
       continue;
     }
     const segment = open.get(w.channel);
-    if (segment !== undefined && w.start - segment.end <= SEGMENT_GAP_SECONDS) {
+    // Continuous speech is also split, at a word boundary, before a segment
+    // would span more than MAX_TURN_SECONDS.
+    if (
+      segment !== undefined
+      && w.start - segment.end <= SEGMENT_GAP_SECONDS
+      && Math.max(segment.end, w.end) - segment.start <= MAX_TURN_SECONDS
+    ) {
       segment.words.push(w);
       segment.end = Math.max(segment.end, w.end);
       continue;

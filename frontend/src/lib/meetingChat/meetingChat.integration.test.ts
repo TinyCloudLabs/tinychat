@@ -207,6 +207,50 @@ describe("exo-local recordings in meeting chat", () => {
   });
 });
 
+describe("exo-local You/Others turns in meeting chat", () => {
+  test("\"What did you say\" grounds on You turns in a transcript with more than four excerpts", async () => {
+    const space = sqliteSpace();
+    // Whisper-local words: one channel per results entry, spread over each chunk.
+    const words = (channel: number, start: number, text: string) =>
+      text.split(" ").map((word, i) => ({ word, start: start + i * 0.4, end: start + (i + 1) * 0.4, channel }));
+    const saved = await saveLocalTranscript(space as never, prepareLocalTranscript({
+      sessionId: "exo-mixed",
+      startedAt: NOW,
+      model: "QuantizedTinyEn",
+      language: "en",
+      response: {
+        metadata: {},
+        results: {
+          channels: [
+            { alternatives: [{ transcript: "", confidence: 1, words: words(0, 600, "EXO_YOU_CANARY I will own the hiring plan.") }] },
+            {
+              alternatives: [{
+                transcript: "",
+                confidence: 1,
+                // Five Others turns 100 s apart: five separate excerpts, all before the You turn.
+                words: Array.from({ length: 5 }, (_, i) => words(1, i * 100, `Agenda item ${i + 1} is the budget.`)).flat(),
+              }],
+            },
+          ],
+        },
+      } as never,
+    }));
+    expect(saved.ok).toBe(true);
+
+    const retriever = createBrowserMeetingTurnRetriever({
+      tcw: space,
+      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
+    } as never);
+    const outcome = await retriever.retrieve({ threadId: "exo-mixed-thread", question: "What did you say in the latest meeting?" });
+
+    expect(outcome).toEqual(expect.objectContaining({
+      status: "grounded",
+      meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE, sourceId: "local:exo-mixed" }),
+      systemMessage: expect.stringContaining("[M1:E1, You, 00:10:00] EXO_YOU_CANARY"),
+    }));
+  });
+});
+
 describe("seeded meeting-chat browser integration", () => {
   test("reads a SQL-only summary and a server-only transcript as transient, bounded evidence", async () => {
     const sqlOnly = seededRetriever({

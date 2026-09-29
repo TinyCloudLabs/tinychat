@@ -5,20 +5,25 @@
 // Asserted behavior:
 //   - channels are segmented on their own and ordered by start time, so
 //     simultaneous speech never interleaves word by word;
-//   - consecutive same-speaker segments merge into one turn, capped at
-//     MAX_TURN_SECONDS;
+//   - consecutive same-speaker segments merge into one turn, and no turn
+//     (continuous speech included) spans more than MAX_TURN_SECONDS;
 //   - mic phrases that substantially repeat system audio from the same moment
 //     are dropped (kept as Others), including Whisper-garbled echo, once the
-//     recording shows echo throughout;
+//     recording shows a stable small echo lag;
 //   - distinct mic speech is kept: overlapping different speech, shared
-//     function words or backchannels, lone-word replies, a repeat after the
-//     echo was matched, the same words outside the echo window, verbatim
-//     confirmations on a headphone call, a single echo-like phrase;
-//   - one-channel, empty, channel-less, and extra-channel recordings.
+//     function words or backchannels, lone-word replies, immediate verbatim
+//     repetitions in a recording with echo, a repeat after the echo was
+//     matched, long phrases repeated seconds apart, echo-like text off the
+//     recording's echo lag, confirmations on a headphone call, a single
+//     echo-like phrase;
+//   - one-channel, empty, channel-less, and extra-channel recordings;
+//   - an 8-hour recording and collapsed timestamps finish quickly, and
+//     collapsed timestamps drop nothing.
 
 import { describe, expect, test } from "bun:test";
 
 import {
+  ECHO_MAX_CANDIDATES,
   ECHO_MIN_SHARE,
   findMicEcho,
   localChannelLabel,
@@ -56,6 +61,28 @@ function recording(...chunks: LocalWord[][]): LocalWord[] {
 
 function lines(words: LocalWord[]): string[] {
   return localTranscriptTurns(words).map((s) => `${s.speaker_name}: ${s.text}`);
+}
+
+/** Two clean echoes (mic 0.2 s behind system audio) starting at `at`: enough
+ *  to open the echo gate and measure the recording's echo lag. */
+function cleanEchoes(at: number): LocalWord[][] {
+  return [
+    chunk(SYS, at, at + 3, "Ship the release on Thursday."),
+    chunk(MIC, at + 0.2, at + 3.1, "Ship the release on Thursday."),
+    chunk(SYS, at + 5, at + 8, "Blue kites fly over the harbor."),
+    chunk(MIC, at + 5.2, at + 8.1, "Blue kites fly over the harbor."),
+  ];
+}
+
+/** 32 words without punctuation or pauses: one long phrase. */
+const LONG_PHRASE = (
+  "quarterly revenue grew across every region while hiring stayed flat and the board asked "
+  + "for a clearer plan covering pricing churn support costs partner margins and the launch "
+  + "schedule for next spring"
+);
+
+function micWordsBetween(words: Iterable<LocalWord>, from: number, to: number): LocalWord[] {
+  return [...words].filter((w) => w.channel === MIC && w.start >= from && w.start < to);
 }
 
 describe("localChannelLabel", () => {
@@ -115,19 +142,19 @@ describe("localTranscriptTurns: echo", () => {
     ]);
   });
 
-  test("echo inside a mixed mic chunk is dropped when chunk timing offsets it by a couple of seconds", () => {
+  test("echo-like text off the recording's echo lag is kept on both channels", () => {
     const words = recording(
       // The mic chunk starts earlier with the user's own speech, so the echo's
-      // evenly spread word times land ~2 s before the system-audio original.
-      chunk(MIC, 0, 8, "I can hear you now. Blue kites fly over the harbor."),
-      chunk(SYS, 5.5, 9.5, "Blue kites fly over the harbor."),
-      chunk(SYS, 20, 23, "Ship the release on Thursday."),
-      chunk(MIC, 20.1, 23.2, "Ship the release on Thursday."),
+      // evenly spread word times land ~1.9 s before the system-audio original:
+      // indistinguishable from a repetition, so it is kept.
+      chunk(MIC, 0, 8, "I can hear you now. Deploy the canary build tonight."),
+      chunk(SYS, 5.5, 9.5, "Deploy the canary build tonight."),
+      ...cleanEchoes(20),
     );
 
     expect(lines(words)).toEqual([
-      "You: I can hear you now.",
-      "Others: Blue kites fly over the harbor. Ship the release on Thursday.",
+      "You: I can hear you now. Deploy the canary build tonight.",
+      "Others: Deploy the canary build tonight. Ship the release on Thursday. Blue kites fly over the harbor.",
     ]);
   });
 });
@@ -205,6 +232,55 @@ describe("localTranscriptTurns: distinct speech is never dropped", () => {
       "Others: Meet on the third floor?",
       "You: Third floor.",
     ]);
+  });
+
+  test("immediate verbatim repetitions survive in a recording with echo", () => {
+    const words = recording(
+      ...cleanEchoes(0),
+      // Not echoed on the mic; the user confirms right after.
+      chunk(SYS, 10, 12, "Friday at noon?"),
+      chunk(MIC, 12.3, 13.3, "Friday at noon."),
+      // Echoed on the mic, then confirmed.
+      chunk(SYS, 20, 22.5, "Meet on the third floor?"),
+      chunk(MIC, 20.2, 22.6, "Meet on the third floor?"),
+      chunk(MIC, 22.8, 23.8, "Third floor."),
+      // Repeated in full, starting 0.1 s after the other side stops.
+      chunk(SYS, 30, 33, "Send the budget draft tonight."),
+      chunk(MIC, 33.1, 35.5, "Send the budget draft tonight."),
+    );
+
+    expect(lines(words)).toEqual([
+      "Others: Ship the release on Thursday. Blue kites fly over the harbor. Friday at noon?",
+      "You: Friday at noon.",
+      "Others: Meet on the third floor?",
+      "You: Third floor.",
+      "Others: Send the budget draft tonight.",
+      "You: Send the budget draft tonight.",
+    ]);
+  });
+
+  test("a long phrase repeated 10 s later is kept, word timing checked per word", () => {
+    const words = recording(
+      chunk(SYS, 0, 20, LONG_PHRASE),
+      chunk(MIC, 10, 30, LONG_PHRASE),
+      ...cleanEchoes(100),
+    );
+    const echo = findMicEcho(words);
+
+    expect(micWordsBetween(words, 10, 30)).toHaveLength(32);
+    expect(micWordsBetween(echo, 10, 30)).toHaveLength(0);
+    // The real echoes elsewhere are still dropped.
+    expect(micWordsBetween(echo, 100, 110)).toHaveLength(11);
+  });
+
+  test("long overlapping phrases staggered by 2.5 s are kept", () => {
+    const words = recording(
+      chunk(SYS, 0, 20, LONG_PHRASE),
+      chunk(MIC, 2.5, 22.5, LONG_PHRASE),
+      ...cleanEchoes(100),
+    );
+
+    expect(micWordsBetween(findMicEcho(words), 0, 30)).toHaveLength(0);
   });
 
   test("a single echo-like phrase is not enough evidence: both copies are kept", () => {
@@ -286,6 +362,19 @@ describe("localTranscriptTurns: turns", () => {
     );
   });
 
+  test(`continuous 120 s speech is split at word boundaries into turns of at most ${MAX_TURN_SECONDS} s`, () => {
+    // Back-to-back 20 s chunks: 0.1 s between them, never a segment-ending pause.
+    const texts = Array.from({ length: 6 }, (_, i) => `Section ${i + 1} walks through the plan in detail.`);
+    const turns = localTranscriptTurns(recording(...texts.map((t, i) => chunk(SYS, i * 20, i * 20 + 20, t))));
+
+    expect(turns.length).toBeGreaterThanOrEqual(2);
+    for (const t of turns) {
+      expect(t.speaker_name).toBe("Others");
+      expect(t.end_time - t.start_time).toBeLessThanOrEqual(MAX_TURN_SECONDS);
+    }
+    expect(turns.map((t) => t.text).join(" ")).toBe(texts.join(" "));
+  });
+
   test("a mic-only recording is all You, merged into one turn", () => {
     const words = recording(chunk(MIC, 0, 3, "Testing one two."), chunk(MIC, 6, 9, "Still testing."));
     expect(lines(words)).toEqual(["You: Testing one two. Still testing."]);
@@ -317,5 +406,51 @@ describe("localTranscriptTurns: turns", () => {
   test("no words yield no turns", () => {
     expect(localTranscriptTurns([])).toEqual([]);
     expect(findMicEcho([]).size).toBe(0);
+  });
+});
+
+describe("localTranscriptTurns: scale", () => {
+  const SENTENCES = [
+    "Ship the release on Thursday.",
+    "Blue kites fly over the harbor.",
+    "Deploy the canary build tonight.",
+    "Review the budget draft with finance.",
+    "Purple elephants dance on Tuesday.",
+    "Green bicycles race on Friday.",
+  ];
+
+  test("an 8-hour continuous call with echo: echo dropped, every turn at most 60 s, fast", () => {
+    // Back-to-back 24 s system-audio chunks for 8 h, each echoed on the mic.
+    const chunks: LocalWord[][] = [];
+    for (let at = 0; at < 8 * 3600; at += 24) {
+      const text = Array.from({ length: 12 }, (_, i) => SENTENCES[(at / 24 + i) % SENTENCES.length]).join(" ");
+      chunks.push(chunk(SYS, at, at + 24, text), chunk(MIC, at + 0.2, at + 24.2, text));
+    }
+    const words = recording(...chunks);
+    expect(words.length).toBeGreaterThan(140_000);
+
+    const started = performance.now();
+    const turns = localTranscriptTurns(words);
+    const elapsed = performance.now() - started;
+
+    expect(turns.every((t) => t.speaker_name === "Others")).toBe(true);
+    expect(turns.every((t) => t.end_time - t.start_time <= MAX_TURN_SECONDS)).toBe(true);
+    expect(turns.length).toBeGreaterThanOrEqual(8 * 60);
+    expect(elapsed).toBeLessThan(3_000);
+  }, 30_000);
+
+  test(`collapsed timestamps: more than ${ECHO_MAX_CANDIDATES} candidates keeps both copies, fast`, () => {
+    // Every word at t = 0 on both channels: identical text, no usable timing.
+    const text = Array.from({ length: 4_000 }, (_, i) => SENTENCES[i % SENTENCES.length]).join(" ");
+    const collapse = (channel: number) => chunk(channel, 0, 0, text).map((w) => ({ ...w, start: 0, end: 0 }));
+    const words = recording(collapse(SYS), collapse(MIC));
+    expect(words.length).toBeGreaterThan(40_000);
+
+    const started = performance.now();
+    const echo = findMicEcho(words);
+    const elapsed = performance.now() - started;
+
+    expect(echo.size).toBe(0);
+    expect(elapsed).toBeLessThan(1_000);
   });
 });
