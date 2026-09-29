@@ -13,7 +13,10 @@
 //     failed, or hung stop keeps the session for Retry stop; unmount waits for
 //     confirmation and a remount never starts over an unconfirmed capture;
 //   - saveLocalTranscript delegates to upsertMeeting with the prepared pair, a
-//     retried save repairs a partial write, and silence is never saved.
+//     retried save repairs a partial write, and silence is never saved;
+//   - a failed transcription keeps the stopped recording: retryTranscription
+//     restarts the server and re-transcribes the same audio file until it
+//     succeeds, and discardRecording releases it without transcribing.
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
@@ -27,6 +30,7 @@ import {
   NO_SPEECH_MESSAGE,
   prepareLocalTranscript,
   saveLocalTranscript,
+  TranscriptionFailedError,
   type LocalTranscriberBridge,
   type LocalTranscriptResult,
 } from "./localTranscriber";
@@ -142,6 +146,22 @@ function completedEvent(sessionId: string): TranscriptionEvent {
 
 const startCaptureCalls = (bridge: FakeBridge) => bridge.calls.filter((c) => c.startsWith("start_capture")).length;
 const stopCaptureCalls = (bridge: FakeBridge) => bridge.calls.filter((c) => c === "stop_capture").length;
+const startTranscriptionCalls = (bridge: FakeBridge) =>
+  bridge.calls.filter((c) => c.startsWith("start_transcription")).length;
+
+function failedTranscription(sessionId: string, error: string): TranscriptionEvent {
+  return { type: "failed", session_id: sessionId, code: "progressive_stream_timeout", error };
+}
+
+/** Start, then Stop with a stopped event and the given transcription outcome. */
+async function stopWith(bridge: FakeBridge, t: ReturnType<typeof createLocalTranscriber>, sessionId: string, outcome: TranscriptionEvent) {
+  const stopping = t.stop();
+  await tick();
+  bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+  await tick();
+  bridge.emitTranscription(outcome);
+  return stopping;
+}
 
 function batchResponse(words: { word: string; start: number; end: number; channel?: number; punctuated_word?: string }[]) {
   return {
@@ -423,6 +443,7 @@ describe("createLocalTranscriber", () => {
     bridge.emitCaptureLifecycle(stoppedEvent(sessionId, { audio_path: null, error: "ActorFailed(mic stream closed)" }));
     const err = await stopping.catch((e: unknown) => e);
     expect(err).not.toBeInstanceOf(CaptureStopUnconfirmedError);
+    expect(err).not.toBeInstanceOf(TranscriptionFailedError);
     expect((err as Error).message).toBe("Capture failed: ActorFailed(mic stream closed)");
     // The terminal event proved capture ended, so a new recording may start.
     await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
@@ -517,6 +538,106 @@ describe("createLocalTranscriber", () => {
       error: "server exploded",
     });
     await expect(stopPromise).rejects.toThrow("server exploded");
+  });
+
+  test("a failed transcription keeps the recording; retryTranscription restarts the server, re-transcribes the same file, and it saves once", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const params: Parameters<LocalTranscriberBridge["transcription"]["startTranscription"]>[0][] = [];
+    const startTranscription = bridge.transcription.startTranscription;
+    bridge.transcription.startTranscription = async (p) => {
+      params.push(p);
+      return startTranscription(p);
+    };
+    let serverStarts = 0;
+    bridge.localStt.startServer = async (model) => {
+      bridge.calls.push(`start_server:${model}`);
+      serverStarts++;
+      return { status: "ok", data: `http://127.0.0.1:4870${serverStarts}/v1` };
+    };
+    const t = createLocalTranscriber(bridge);
+    const { sessionId } = await t.start({ model: "QuantizedBaseEn", language: "en" });
+
+    const err = await stopWith(bridge, t, sessionId, failedTranscription(sessionId, "no progress for 120s")).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TranscriptionFailedError);
+    expect((err as Error).message).toBe("Transcription failed (progressive_stream_timeout): no progress for 120s");
+
+    const retry = t.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    const result = await retry;
+    expect(result).toMatchObject({ sessionId, model: "QuantizedBaseEn", language: "en" });
+    expect(bridge.calls).toEqual([
+      "start_server:QuantizedBaseEn",
+      "start_capture:batch:http://127.0.0.1:48701/v1:default",
+      "stop_capture",
+      "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+      "start_server:QuantizedBaseEn",
+      "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+    ]);
+    // Same session, file, model and language; only the freshly started server URL differs.
+    expect(params[1]).toEqual({ ...params[0]!, base_url: "http://127.0.0.1:48702/v1" });
+
+    const store = sqliteStore();
+    const saved = await saveLocalTranscript(store.tcw, prepareLocalTranscript(result));
+    expect(saved.ok).toBe(true);
+    expect(store.sqlite.query("SELECT source, source_id FROM connector_meeting").values()).toEqual([
+      [LOCAL_MEETING_SOURCE, `local:${sessionId}`],
+    ]);
+
+    // A transcribed recording is released: nothing left to retry, and a new recording may start.
+    await expect(t.retryTranscription()).rejects.toThrow("No recording is waiting to be transcribed");
+    await expect(t.start({ model: "QuantizedBaseEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("a retry that fails again keeps the recording and reports the new error", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, { timeouts: { transcribeMs: 20 } });
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+
+    // No terminal transcription event: the transcription wait times out.
+    const stopping = t.stop();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await expect(stopping).rejects.toBeInstanceOf(TranscriptionFailedError);
+    await expect(stopping).rejects.toThrow("Timed out waiting for on-device transcription");
+
+    // The server does not come up: surfaced, and nothing is transcribed without it.
+    const startServer = bridge.localStt.startServer;
+    bridge.localStt.startServer = async () => ({ status: "error", error: "whisper server failed to bind" });
+    const second = t.retryTranscription();
+    await expect(second).rejects.toBeInstanceOf(TranscriptionFailedError);
+    await expect(second).rejects.toThrow("start_server: whisper server failed to bind");
+    expect(startTranscriptionCalls(bridge)).toBe(1);
+
+    bridge.localStt.startServer = startServer;
+    const third = t.retryTranscription();
+    await tick();
+    bridge.emitTranscription(failedTranscription(sessionId, "decoder crashed"));
+    await expect(third).rejects.toBeInstanceOf(TranscriptionFailedError);
+    await expect(third).rejects.toThrow("Transcription failed (progressive_stream_timeout): decoder crashed");
+
+    // Still kept: the next retry transcribes the same recording.
+    const fourth = t.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(fourth).resolves.toMatchObject({ sessionId });
+    expect(startTranscriptionCalls(bridge)).toBe(3);
+  });
+
+  test("discarding the kept recording releases it without transcribing", async () => {
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge);
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(stopWith(bridge, t, sessionId, failedTranscription(sessionId, "stalled"))).rejects.toBeInstanceOf(
+      TranscriptionFailedError,
+    );
+    // A new recording never replaces one still waiting to be transcribed.
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("waiting to be transcribed");
+
+    t.discardRecording();
+    await expect(t.retryTranscription()).rejects.toThrow("No recording is waiting to be transcribed");
+    expect(startTranscriptionCalls(bridge)).toBe(1);
+    await expect(t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
   });
 
   test("start() surfaces capture errors and frees the session", async () => {

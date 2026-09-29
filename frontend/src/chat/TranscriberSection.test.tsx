@@ -24,10 +24,11 @@ import {
 import {
   LocalTranscriberView,
   isLocalWorkflowActive,
+  localFailureState,
   localRetryAction,
   type LocalTranscriberViewProps,
 } from "./LocalTranscriber";
-import { NO_SPEECH_MESSAGE } from "@/lib/localTranscriber";
+import { CaptureStopUnconfirmedError, NO_SPEECH_MESSAGE, TranscriptionFailedError } from "@/lib/localTranscriber";
 import {
   createTranscriberClient,
   type TranscriberMeeting,
@@ -317,6 +318,7 @@ function renderLocal(patch: Partial<LocalTranscriberViewProps> = {}): string {
     onMicChange: noop,
     onDownload: noop,
     onRetry: noop,
+    onDiscardRecording: noop,
     onStart: noop,
     onStop: noop,
     ...patch,
@@ -357,6 +359,40 @@ describe("LocalTranscriberView", () => {
     expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
     expect(localRetryAction("stop-failed")).toBe("stop");
     expect(isLocalWorkflowActive("stop-failed")).toBe(true);
+  });
+
+  test("a failed transcription offers Retry transcription and Discard recording, and keeps the mode locked", () => {
+    const html = renderLocal({
+      state: "transcribe-failed",
+      statusText: "Transcription failed (progressive_stream_timeout): no progress for 120s",
+    });
+    expect(html).toContain(">Retry transcription</button>");
+    expect(html).toContain(">Discard recording</button>");
+    expect(html).toContain("Transcription failed (progressive_stream_timeout)");
+    expect(html).toContain("The recording is kept here until it transcribes.");
+    expect(html).toContain("the audio file stays on this Mac.");
+    expect(html).not.toContain("Start recording");
+    expect(html).not.toContain(">Retry</button>");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localRetryAction("transcribe-failed")).toBe("transcribe");
+    expect(isLocalWorkflowActive("transcribe-failed")).toBe(true);
+    const card = render({
+      kind: "local",
+      localWorkflowActive: isLocalWorkflowActive("transcribe-failed"),
+      localPanel: <div>awaiting transcription</div>,
+      onKindChange: noop,
+    });
+    expect(card).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
+    // Discard belongs to the kept recording only.
+    for (const state of ["stop-failed", "save-failed", "error"] as const) {
+      expect(renderLocal({ state })).not.toContain("Discard recording");
+    }
+  });
+
+  test("a rejected stop or transcription retry lands in its own failed state", () => {
+    expect(localFailureState(new CaptureStopUnconfirmedError("Stopping was not confirmed"))).toBe("stop-failed");
+    expect(localFailureState(new TranscriptionFailedError("Transcription failed (x): y"))).toBe("transcribe-failed");
+    expect(localFailureState(new Error("Capture failed: ActorFailed(mic stream closed)"))).toBe("error");
   });
 
   test("a failed save offers Retry save for the transcript it keeps", () => {

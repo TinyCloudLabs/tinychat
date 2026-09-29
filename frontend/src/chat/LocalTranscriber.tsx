@@ -19,8 +19,10 @@ import {
   LOCAL_WHISPER_MODELS,
   prepareLocalTranscript,
   saveLocalTranscript,
+  TranscriptionFailedError,
   type LocalTranscriber,
   type LocalTranscriberStatus,
+  type LocalTranscriptResult,
   type PreparedLocalTranscript,
   type WhisperModel,
 } from "@/lib/localTranscriber";
@@ -37,6 +39,8 @@ export type LocalPanelState =
   | "saved"
   /** Native capture did not confirm Stop; the recording may still be running. */
   | "stop-failed"
+  /** Transcribing the stopped recording failed; Retry re-transcribes the same audio file. */
+  | "transcribe-failed"
   /** The transcript is held in the panel; Retry re-runs the identical save. */
   | "save-failed"
   | "error";
@@ -56,15 +60,24 @@ export function isLocalWorkflowActive(state: LocalPanelState): boolean {
     state === "transcribing" ||
     state === "saving" ||
     state === "stop-failed" ||
+    state === "transcribe-failed" ||
     state === "save-failed"
   );
 }
 
 /** What the Retry button does in each failed state. */
-export function localRetryAction(state: LocalPanelState): "stop" | "save" | "readiness" {
+export function localRetryAction(state: LocalPanelState): "stop" | "transcribe" | "save" | "readiness" {
   if (state === "stop-failed") return "stop";
+  if (state === "transcribe-failed") return "transcribe";
   if (state === "save-failed") return "save";
   return "readiness";
+}
+
+/** The panel state a rejected stop() or retryTranscription() lands in. */
+export function localFailureState(err: unknown): "stop-failed" | "transcribe-failed" | "error" {
+  if (err instanceof CaptureStopUnconfirmedError) return "stop-failed";
+  if (err instanceof TranscriptionFailedError) return "transcribe-failed";
+  return "error";
 }
 
 export interface LocalTranscriberViewProps {
@@ -79,6 +92,8 @@ export interface LocalTranscriberViewProps {
   onMicChange: (device: string) => void;
   onDownload: () => void;
   onRetry: () => void;
+  /** Leaves `transcribe-failed` without transcribing; the audio file stays on disk. */
+  onDiscardRecording: () => void;
   onStart: () => void;
   onStop: () => void;
 }
@@ -97,6 +112,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   onMicChange,
   onDownload,
   onRetry,
+  onDiscardRecording,
   onStart,
   onStop,
 }) => {
@@ -231,6 +247,16 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             Retry stop
           </Button>
         )}
+        {state === "transcribe-failed" && (
+          <>
+            <Button type="button" size="sm" onClick={onRetry} className="h-9">
+              Retry transcription
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={onDiscardRecording} className="h-9">
+              Discard recording
+            </Button>
+          </>
+        )}
         {state === "save-failed" && (
           <Button type="button" size="sm" onClick={onRetry} className="h-9">
             Retry save
@@ -244,6 +270,12 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       {state === "save-failed" && (
         <p className="text-xs text-muted-foreground">
           The transcript is kept here until it saves. Leaving this view discards it.
+        </p>
+      )}
+      {state === "transcribe-failed" && (
+        <p className="text-xs text-muted-foreground">
+          The recording is kept here until it transcribes. Leaving this view or discarding it gives up
+          on transcribing it; the audio file stays on this Mac.
         </p>
       )}
       {(recording || state === "stop-failed") && (
@@ -382,36 +414,45 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       });
   };
 
+  const saveTranscript = (result: LocalTranscriptResult) => {
+    let prepared: PreparedLocalTranscript;
+    try {
+      prepared = prepareLocalTranscript(result);
+    } catch (err) {
+      fail(err);
+      return;
+    }
+    setPendingSave(prepared);
+    save(prepared);
+  };
+
+  // A failed transcription keeps its recording in the transcriber for Retry.
+  const failAfterStop = (err: unknown) => {
+    setErrorText(err instanceof Error ? err.message : String(err));
+    setState(localFailureState(err));
+  };
+
   const onStop = () => {
     setErrorText(null);
     setState("transcribing");
-    void t.stop().then(
-      (result) => {
-        let prepared: PreparedLocalTranscript;
-        try {
-          prepared = prepareLocalTranscript(result);
-        } catch (err) {
-          fail(err);
-          return;
-        }
-        setPendingSave(prepared);
-        save(prepared);
-      },
-      (err) => {
-        if (err instanceof CaptureStopUnconfirmedError) {
-          setErrorText(err.message);
-          setState("stop-failed");
-          return;
-        }
-        fail(err);
-      },
-    );
+    void t.stop().then(saveTranscript, failAfterStop);
+  };
+
+  const onDiscardRecording = () => {
+    t.discardRecording();
+    setErrorText(null);
+    setState("ready");
   };
 
   const onRetry = () => {
     switch (localRetryAction(state)) {
       case "stop":
         onStop();
+        return;
+      case "transcribe":
+        setErrorText(null);
+        setState("transcribing");
+        void t.retryTranscription().then(saveTranscript, failAfterStop);
         return;
       case "save":
         if (pendingSave === null) {
@@ -446,6 +487,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({ tcw, tra
       onMicChange={setMicDevice}
       onDownload={onDownload}
       onRetry={onRetry}
+      onDiscardRecording={onDiscardRecording}
       onStart={onStart}
       onStop={onStop}
     />

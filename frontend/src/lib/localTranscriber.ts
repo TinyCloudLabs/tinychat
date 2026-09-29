@@ -211,8 +211,17 @@ export interface LocalTranscriber {
   start(opts: { model: WhisperModel; language: string; micDevice?: string }): Promise<{ sessionId: string }>;
   /** Stop capture, batch-transcribe the recording, return the raw response.
    *  Rejects with CaptureStopUnconfirmedError, keeping the session so stop()
-   *  can be retried, when native capture does not confirm it stopped. */
+   *  can be retried, when native capture does not confirm it stopped. Rejects
+   *  with TranscriptionFailedError, keeping the stopped recording for
+   *  retryTranscription(), when transcribing its audio file fails. */
   stop(): Promise<LocalTranscriptResult>;
+  /** Re-transcribe the kept recording: same audio file, session, model and
+   *  language, after starting the local Whisper server again. Rejects with
+   *  TranscriptionFailedError, still keeping the recording, if it fails again. */
+  retryTranscription(): Promise<LocalTranscriptResult>;
+  /** Give up on the kept recording without transcribing it. Its audio file
+   *  stays on disk. */
+  discardRecording(): void;
   /** Stop an unfinished native capture when its UI is removed. Resolves only
    *  once native capture confirms it stopped; rejects otherwise. */
   stopCaptureOnUnmount(): Promise<void>;
@@ -245,7 +254,28 @@ export class CaptureStopUnconfirmedError extends Error {
   }
 }
 
+/**
+ * Native capture stopped with an audio file, but transcribing it failed
+ * (start_server or start_transcription error, a failed event, or a timeout).
+ * The recording is kept until retryTranscription() succeeds or it is discarded.
+ */
+export class TranscriptionFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TranscriptionFailedError";
+  }
+}
+
 type CaptureStoppedEvent = Extract<CaptureLifecycleEvent, { type: "stopped" }>;
+
+/** A stopped recording's audio file plus what its transcription and save need. */
+interface StoppedRecording {
+  sessionId: string;
+  startedAt: string;
+  audioPath: string;
+  model: WhisperModel;
+  language: string;
+}
 
 const VIEW_CLOSED_MESSAGE = "Recording stopped because the Local recording view closed";
 
@@ -342,6 +372,9 @@ export function createLocalTranscriber(
   let captureStop: Promise<CaptureStoppedEvent> | null = null;
   let starting: Promise<unknown> | null = null;
   let stopping = false;
+  /** A stopped recording whose transcription failed, kept for retryTranscription(). */
+  let untranscribed: StoppedRecording | null = null;
+  let retrying = false;
   let lifecycleGeneration = 0;
   const statusCbs = new Set<(s: LocalTranscriberStatus) => void>();
   let status: LocalTranscriberStatus = { kind: "idle" };
@@ -421,6 +454,53 @@ export function createLocalTranscriber(
     return captureStop;
   };
 
+  /** Start (or reuse) the in-process Whisper server; returns its base URL. */
+  const startWhisperServer = async (b: LocalTranscriberBridge, m: WhisperModel): Promise<string> => {
+    const server = await b.localStt.startServer(m);
+    if (server.status === "error") throw new Error(`start_server: ${server.error}`);
+    return server.data;
+  };
+
+  /** Batch-transcribe a stopped recording's audio file and wait for its terminal event. */
+  const transcribe = async (
+    b: LocalTranscriberBridge,
+    recording: StoppedRecording,
+    serverUrl: string,
+  ): Promise<LocalTranscriptResult> => {
+    const done = await invokeAndWaitForEvent<TranscriptionEvent>(
+      (cb) => b.transcription.events.transcriptionEvent.listen(cb),
+      (p) => p.session_id === recording.sessionId && (p.type === "completed" || p.type === "failed"),
+      timeouts.transcribeMs,
+      "on-device transcription",
+      async () => {
+        const r = await b.transcription.startTranscription({
+          session_id: recording.sessionId,
+          provider: "whispercpp",
+          file_path: recording.audioPath,
+          model: recording.model,
+          base_url: serverUrl,
+          api_key: "",
+          languages: [recording.language],
+          keywords: [],
+        });
+        if (r.status === "error") throw new Error(`start_transcription: ${r.error}`);
+      },
+    );
+    if (done.type === "failed") {
+      throw new Error(`Transcription failed (${done.code}): ${done.error}`);
+    }
+    if (done.type !== "completed") {
+      throw new Error(`Transcription ended unexpectedly (${done.type})`);
+    }
+    return {
+      sessionId: recording.sessionId,
+      startedAt: recording.startedAt,
+      model: recording.model,
+      language: recording.language,
+      response: done.response,
+    };
+  };
+
   return {
     async isModelDownloaded(m) {
       const b = await bridge();
@@ -470,6 +550,9 @@ export function createLocalTranscriber(
 
     async start(opts) {
       if (sessionId !== null || starting !== null) throw new Error("A local recording is already active");
+      if (untranscribed !== null) {
+        throw new Error("A stopped recording is waiting to be transcribed; retry or discard it first");
+      }
       const generation = lifecycleGeneration;
       model = opts.model;
       language = opts.language;
@@ -480,9 +563,7 @@ export function createLocalTranscriber(
         await awaitClosingCapture(nativeKey, b);
         if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
         await ensureListeners(b);
-        const server = await b.localStt.startServer(model);
-        if (server.status === "error") throw new Error(`start_server: ${server.error}`);
-        baseUrl = server.data;
+        baseUrl = await startWhisperServer(b, model);
         const session = crypto.randomUUID();
         sessionId = session;
         startedAt = new Date().toISOString();
@@ -547,40 +628,22 @@ export function createLocalTranscriber(
           const audioPath = stopped.audio_path;
           if (!audioPath) throw new Error("Recording produced no audio file");
 
-          emit({ kind: "transcribing", progress: null });
-          const done = await invokeAndWaitForEvent<TranscriptionEvent>(
-            (cb) => b.transcription.events.transcriptionEvent.listen(cb),
-            (p) => p.session_id === session && (p.type === "completed" || p.type === "failed"),
-            timeouts.transcribeMs,
-            "on-device transcription",
-            async () => {
-              const r = await b.transcription.startTranscription({
-                session_id: session,
-                provider: "whispercpp",
-                file_path: audioPath,
-                model,
-                base_url: serverUrl,
-                api_key: "",
-                languages: [language],
-                keywords: [],
-              });
-              if (r.status === "error") throw new Error(`start_transcription: ${r.error}`);
-            },
-          );
-          if (done.type === "failed") {
-            throw new Error(`Transcription failed (${done.code}): ${done.error}`);
-          }
-          if (done.type !== "completed") {
-            throw new Error(`Transcription ended unexpectedly (${done.type})`);
-          }
-
-          const result: LocalTranscriptResult = {
+          const recording: StoppedRecording = {
             sessionId: session,
             startedAt: sessionStartedAt,
+            audioPath,
             model,
             language,
-            response: done.response,
           };
+          emit({ kind: "transcribing", progress: null });
+          let result: LocalTranscriptResult;
+          try {
+            result = await transcribe(b, recording, serverUrl);
+          } catch (err) {
+            // The audio file exists: keep it so transcription can be retried.
+            untranscribed = recording;
+            throw new TranscriptionFailedError(errorMessage(err));
+          }
           emit({ kind: "done" });
           return result;
         } finally {
@@ -589,6 +652,35 @@ export function createLocalTranscriber(
       } finally {
         stopping = false;
       }
+    },
+
+    async retryTranscription() {
+      const recording = untranscribed;
+      if (recording === null) throw new Error("No recording is waiting to be transcribed");
+      if (retrying) throw new Error("The recording is already being transcribed");
+      retrying = true;
+      try {
+        emit({ kind: "transcribing", progress: null });
+        let result: LocalTranscriptResult;
+        try {
+          const b = await bridge();
+          // Never assume the server from the recording is still up.
+          const serverUrl = await startWhisperServer(b, recording.model);
+          result = await transcribe(b, recording, serverUrl);
+        } catch (err) {
+          throw new TranscriptionFailedError(errorMessage(err));
+        }
+        untranscribed = null;
+        emit({ kind: "done" });
+        return result;
+      } finally {
+        retrying = false;
+      }
+    },
+
+    discardRecording() {
+      untranscribed = null;
+      emit({ kind: "idle" });
     },
 
     async stopCaptureOnUnmount() {
