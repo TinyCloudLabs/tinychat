@@ -1,60 +1,60 @@
 diff --git a/dist/core.cjs b/dist/core.cjs
-index 55f6de45edc62b6aa3a1c628da97d30830565c47..29c06d9f5335ae47c1880bead389e26cc8fafea3 100644
+index 908bb68e3bf2eec9f4ac8bce1e0fea8083f6fa47..30b046286f374881f475684f5cf6f9081795faef 100644
 --- a/dist/core.cjs
 +++ b/dist/core.cjs
-@@ -922,8 +922,8 @@ var NodeUserAuthorization = class {
+@@ -999,8 +999,8 @@ var NodeUserAuthorization = class {
      const address = this._address;
      const chainId = this._chainId;
      await this.resolveTinyCloudHostsForSignIn(address, chainId);
 -    const keyId = `session-${Date.now()}`;
--    this.sessionManager.renameSessionKeyId("default", keyId);
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
 +    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 +    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
-       throw new Error("Failed to create session key");
 diff --git a/dist/core.js b/dist/core.js
-index 22fb38a20330138cbca6d81deed593db281eb5b2..9e158ec4a1bcf211eb5929f5e6dce173d24a4c56 100644
+index 4b819f472ed18e8f46065601a99d74e0ca43a8de..94b5f880bfd43410e10aedca70781ace4d284bec 100644
 --- a/dist/core.js
 +++ b/dist/core.js
-@@ -840,8 +840,8 @@ var NodeUserAuthorization = class {
+@@ -928,8 +928,8 @@ var NodeUserAuthorization = class {
      const address = this._address;
      const chainId = this._chainId;
      await this.resolveTinyCloudHostsForSignIn(address, chainId);
 -    const keyId = `session-${Date.now()}`;
--    this.sessionManager.renameSessionKeyId("default", keyId);
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
 +    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 +    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
-       throw new Error("Failed to create session key");
 diff --git a/dist/index.cjs b/dist/index.cjs
-index 575b2792d1f06065faedf37e93bdf10816f22f73..acdf61a007e07efe1a208014f183e57d3a8d8c62 100644
+index 631b772f316f0531070902abec1814eac1d26633..5a8cd2ed2063ce7dc46401f2500884298416dea3 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
-@@ -17942,8 +17942,8 @@ var NodeUserAuthorization = class {
+@@ -18030,8 +18030,8 @@ var NodeUserAuthorization = class {
      const address = this._address;
      const chainId = this._chainId;
      await this.resolveTinyCloudHostsForSignIn(address, chainId);
 -    const keyId = `session-${Date.now()}`;
--    this.sessionManager.renameSessionKeyId("default", keyId);
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
 +    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 +    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
-       throw new Error("Failed to create session key");
 diff --git a/dist/index.js b/dist/index.js
-index 4a909f5835d3c483e72120eb879815cbe86a7717..9dc3b2c4e96b26352de47327d675b4a1f5998b71 100644
+index 053319682de70ae735b2c70adee0179c489ee97e..ec345454a537fabe2f2078e8095e1e82c1c994ab 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -17888,8 +17888,8 @@ var NodeUserAuthorization = class {
+@@ -18000,8 +18000,8 @@ var NodeUserAuthorization = class {
      const address = this._address;
      const chainId = this._chainId;
      await this.resolveTinyCloudHostsForSignIn(address, chainId);
 -    const keyId = `session-${Date.now()}`;
--    this.sessionManager.renameSessionKeyId("default", keyId);
+-    this.sessionManager.renameSessionKeyId(this.activeSessionKeyId, keyId);
 +    const keyId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 +    this.sessionManager.createSessionKey(keyId);
+     this.activeSessionKeyId = keyId;
      const jwkString = this.sessionManager.jwk(keyId);
      if (!jwkString) {
-       throw new Error("Failed to create session key");

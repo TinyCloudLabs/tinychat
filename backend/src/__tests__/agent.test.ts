@@ -238,6 +238,15 @@ describe("agent delegation courier", () => {
     expect((calls[0].body as { session?: unknown }).session).toEqual(session);
   });
 
+  it("couriers a transcript grant valid for 29 days (30-day session window)", async () => {
+    const { app, calls } = createApp();
+    const expiry = new Date(Date.now() + 29 * DAY_MS);
+    const session = v2Session({}, { overrides: { expiry: expiry.toISOString() }, jwtClaims: { exp: Math.floor(expiry.getTime() / 1_000) } });
+    const res = await postSession(app, session);
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
   it("couriers the SDK's CID-backed multi-resource transcript attenuation", async () => {
     const { app, calls } = createApp();
     const session = cidBackedV2Session();
@@ -291,10 +300,10 @@ describe("agent delegation courier", () => {
       v2Session({}, { overrides: { delegateDID: OTHER_DID } })],
     ["an expired transcript grant", "delegation_expired", () =>
       v2Session({}, { overrides: { expiry: new Date(Date.now() - 1_000).toISOString() } })],
-    ["a transcript grant valid for more than seven days", "delegation_expiry_too_long", () =>
-      v2Session({}, { overrides: { expiry: new Date(Date.now() + 8 * DAY_MS).toISOString() } })],
+    ["a transcript grant valid for more than thirty days", "delegation_expiry_too_long", () =>
+      v2Session({}, { overrides: { expiry: new Date(Date.now() + 31 * DAY_MS).toISOString() } })],
     ["a short summary expiry hiding a long SIGNED expiry", "delegation_expiry_too_long", () =>
-      v2Session({}, { jwtClaims: { exp: Math.floor((Date.now() + 30 * DAY_MS) / 1_000) } })],
+      v2Session({}, { jwtClaims: { exp: Math.floor((Date.now() + 45 * DAY_MS) / 1_000) } })],
   ];
 
   for (const [label, code, build] of rejected) {

@@ -16,7 +16,7 @@ async function build(t, args = [], env = {}) {
 }
 const decodeHtml = value => value.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 const pageContext = instructions => JSON.parse(instructions.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? '{}');
-const expectedPrompt = 'How did my last meeting go? Check TinyCloud: https://tinycloud.chat/agents/setup.md';
+const expectedPrompt = 'How did my last meeting go? Check TinyCloud: https://raw.githubusercontent.com/TinyCloudLabs/prompts/refs/heads/docs/initial-setup-split/apps/tinychat/setup.md';
 
 test('public instructions, HTML and saved app context agree on pinned versions and production configuration', async t => {
   const { output, result } = await build(t);
