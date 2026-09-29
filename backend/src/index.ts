@@ -32,6 +32,7 @@ import { createNrasProxyRouter } from "./routes/nras-proxy.js";
 import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
 import { createAttestationSelfRouter } from "./routes/attestation-self.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
+import { readBackendBuildInfo } from "./build-info.js";
 import { createBillingRouter } from "./routes/billing.js";
 import { createBillingWebhookHandler } from "./routes/billing-webhook.js";
 import {
@@ -580,7 +581,7 @@ async function main() {
     res.json({ ok: true, app: APP_ID });
   });
   app.use("/api/manifest", createManifestRouter());
-  app.use("/api/server-info", createServerInfoRouter(did));
+  app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
   app.use(
     "/api/auth",
     createAuthRouter({

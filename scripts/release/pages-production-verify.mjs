@@ -2,8 +2,9 @@
 /**
  * Wait for Cloudflare Pages to deploy a production-branch commit and prove it is live (see classifyPagesCheckRuns):
  *  1. the "Cloudflare Pages" check run on --commit succeeds as a production (not preview) deployment;
- *  2. --url (the production domain) serves the same index.html as that deployment's unique URL.
- * Fails loudly on a failed build, a preview build, or a timeout. Needs GH_TOKEN and GITHUB_REPOSITORY.
+ *  2. --url (the production domain) serves the same index.html as that deployment's unique URL;
+ *  3. the production branch still points at --commit before and after (nothing else moved it meanwhile).
+ * Fails loudly on a failed build, a preview build, a moved branch, or a timeout. Needs GH_TOKEN and GITHUB_REPOSITORY.
  */
 import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -21,6 +22,13 @@ const { values } = parseArgs({
 if (!values.commit || !values.url) throw new Error('--commit and --url are required');
 const repo = process.env.GITHUB_REPOSITORY;
 if (!repo) throw new Error('GITHUB_REPOSITORY is required');
+
+function requireTip(when) {
+  const tip = run(repoRoot, 'gh', ['api', `repos/${repo}/git/ref/heads/${BRANCH_PRODUCTION}`, '--jq', '.object.sha']);
+  if (tip !== values.commit) throw new Error(`${when}, ${BRANCH_PRODUCTION} points at ${tip}, not the deploy commit ${values.commit}: something else pushed it.`);
+  console.log(`${when}: ${BRANCH_PRODUCTION} is at ${values.commit}`);
+}
+requireTip('Before waiting for Pages');
 
 async function poll(minutes, attempt) {
   const deadline = Date.now() + Number(minutes) * 60_000;
@@ -59,6 +67,7 @@ const live = await poll(values['live-minutes'], async () => {
   return served === expected ? true : undefined;
 });
 if (!live) throw new Error(`${values.url} does not serve deployment ${pages.deploymentUrl} after ${values['live-minutes']} minutes`);
+requireTip('After verifying tinycloud.chat');
 
 const summary = `- Web: ${values.url} serves Cloudflare Pages deployment ${pages.deploymentUrl} ([logs](${pages.detailsUrl})) from \`${values.commit}\`\n`;
 console.log(summary.trim());

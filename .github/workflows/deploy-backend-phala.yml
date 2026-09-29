@@ -1,15 +1,24 @@
 name: Deploy Backend to Phala Cloud
 
-# Production backend deploys run only for stable releases: deploy-production.yml calls this workflow on the stable
-# version commit (backend first, then web) after the "Release stable" PR merges. Pushes to main and beta versions
-# deploy nothing. Manual dispatch stays as the backend-only hotfix/redeploy path:
-#   gh workflow run deploy-backend-phala.yml --ref <tag or branch>
-# Whatever the entry point, this is the one deploy definition: the env var list below, the allowed_envs sync and the
-# public API probes apply to every deploy.
+# Only deploy-production.yml calls this (backend first, then web), for a stable release or a confirmed hotfix; it has
+# no trigger of its own, so the release gate there cannot be bypassed. Backend-only deploy or rollback:
+#   gh workflow run deploy-production.yml --ref refs/tags/@tinychat/backend@<version> -f web=false
+# This is the one deploy definition: the env var list below, the allowed_envs sync and the public API probes apply
+# to every deploy. It proves the new build is live (server-info backendRevision == the deployed commit and
+# backendVersion == backend/package.json) and always reports whether the production backend changed.
 
 on:
   workflow_call:
-  workflow_dispatch:
+    outputs:
+      state:
+        description: unchanged | changed-verified | changed-unverified
+        value: ${{ jobs.deploy.outputs.state }}
+      revision:
+        description: backendRevision served by the production API after the deploy
+        value: ${{ jobs.deploy.outputs.revision }}
+      version:
+        description: backendVersion served by the production API after the deploy
+        value: ${{ jobs.deploy.outputs.version }}
 
 concurrency:
   group: tinychat-backend-phala-production
@@ -40,6 +49,10 @@ jobs:
       contents: read
       packages: write
       statuses: write
+    outputs:
+      state: ${{ steps.state.outputs.state }}
+      revision: ${{ steps.live.outputs.revision }}
+      version: ${{ steps.live.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -302,6 +315,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy to Phala Cloud
+        id: deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           BACKEND_PRIVATE_KEY: ${{ secrets.BACKEND_PRIVATE_KEY }}
@@ -835,6 +849,61 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Generic 2xx probes can pass against a stale gateway or the old container; require the new build itself.
+      - name: Verify the deployed revision and version
+        id: live
+        run: |
+          expected_version=$(jq -r .version backend/package.json)
+          url="${PRODUCTION_API_URL%/}/api/server-info"
+          revision='' version=''
+          for i in {1..30}; do
+            if info=$(curl -fsS --connect-timeout 5 --max-time 15 "$url"); then
+              revision=$(jq -r '.backendRevision // ""' <<<"$info")
+              version=$(jq -r '.backendVersion // ""' <<<"$info")
+            fi
+            echo "Attempt $i/30: backendRevision=${revision:-?} backendVersion=${version:-?}"
+            if [ "$revision" = "$GITHUB_SHA" ] && [ "$version" = "$expected_version" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$revision" != "$GITHUB_SHA" ] || [ "$version" != "$expected_version" ]; then
+            echo "::error title=Deployed build not live::$url serves backendRevision=${revision:-none} backendVersion=${version:-none}, expected $GITHUB_SHA / $expected_version"
+            exit 1
+          fi
+          echo "- Live: \`$url\` serves backendRevision \`$revision\`, backendVersion \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # A red run does not mean production is unchanged: once `phala deploy` has run, the CVM may be on the new image.
+      - name: Report production backend state
+        id: state
+        if: always()
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          LIVE_REVISION: ${{ steps.live.outputs.revision }}
+          LIVE_VERSION: ${{ steps.live.outputs.version }}
+        run: |
+          if [ "$DEPLOY_OUTCOME" = skipped ] || [ -z "$DEPLOY_OUTCOME" ]; then
+            state=unchanged
+            detail="The run stopped before \`phala deploy\`; the production backend was not touched."
+          elif [ "$DEPLOY_OUTCOME" = success ] && [ "$LIVE_OUTCOME" = success ]; then
+            state=changed-verified
+            detail="Production runs \`$GITHUB_SHA\` (backendVersion $LIVE_VERSION), verified via server-info."
+          else
+            state=changed-unverified
+            detail="\`phala deploy\` ran (outcome: $DEPLOY_OUTCOME), so the CVM may now run \`${DOCKER_IMAGE}:${GITHUB_SHA}\`, but the post-deploy checks did not pass (server-info last reported backendRevision=${LIVE_REVISION:-none}, backendVersion=${LIVE_VERSION:-none}). Production is CHANGED and UNVERIFIED; web was not deployed. Redeploy the last good backend: \`gh workflow run deploy-production.yml --ref refs/tags/@tinychat/backend@<last good version> -f web=false\`."
+            echo "::error title=Production backend changed but unverified::$detail"
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Production backend state: \`$state\`"
+            echo
+            echo "$detail"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   phala-status:
     runs-on: ubuntu-latest
     needs: deploy
@@ -847,6 +916,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOY_STATE: ${{ needs.deploy.outputs.state }}
           TARGET_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           case "$DEPLOY_RESULT" in
@@ -856,7 +926,11 @@ jobs:
               ;;
             cancelled)
               STATE=error
-              DESCRIPTION="Phala deployment cancelled"
+              if [ "$DEPLOY_STATE" = unchanged ]; then
+                DESCRIPTION="Phala deployment cancelled before changing the CVM"
+              else
+                DESCRIPTION="Phala deployment cancelled after it started: backend may be CHANGED"
+              fi
               ;;
             skipped)
               STATE=error
@@ -864,7 +938,11 @@ jobs:
               ;;
             *)
               STATE=failure
-              DESCRIPTION="Phala deployment or API probe failed"
+              if [ "$DEPLOY_STATE" = unchanged ]; then
+                DESCRIPTION="Phala deployment failed before changing the CVM"
+              else
+                DESCRIPTION="Backend CHANGED but post-deploy checks failed"
+              fi
               ;;
           esac
 

@@ -28,13 +28,16 @@ variables. (`wrangler.toml` `[vars]` are runtime Pages Functions bindings and do
 Production web deploys happen only through the **Deploy production** workflow
 (`.github/workflows/deploy-production.yml`), which the `Release` workflow
 dispatches for a stable `@tinychat/frontend` release, after the backend deploy.
-It creates a commit whose tree is exactly the released commit's, fast-forwards
-the `production` branch to it, waits for the Pages production build (the
-`Cloudflare Pages` check on that commit) and checks that `tinycloud.chat` serves
-that deployment. Every other branch, `main` included, only gets preview builds.
-Don't push `production` by hand; dispatch the workflow instead (hotfix: `gh
-workflow run deploy-production.yml --ref <branch> -f backend=false`). To roll
-back, dispatch it on the older release tag, or use Pages' own rollback.
+It checks that the current `production` tip was made by the workflow (or seeded
+from `main`), creates a commit whose tree is exactly the released commit's,
+fast-forwards `production` to it, waits for the Pages production build (the
+`Cloudflare Pages` check on that commit), checks that `tinycloud.chat` serves
+that deployment, and checks the branch still points at its commit before and
+after. Every other branch, `main` included, only gets preview builds. Only
+GitHub Actions may update `production` (see the rulesets below). To roll back,
+dispatch the workflow on the older release tag (`--ref
+refs/tags/@tinychat/frontend@<version> -f backend=false`), or use Pages' own
+rollback.
 
 In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**:
 
@@ -72,6 +75,49 @@ Pages project → **Custom domains → Set up a domain → `tinycloud.chat`**. B
 the zone is already on Cloudflare, Pages creates the apex `CNAME`/flattening
 record automatically. Add `www` as a redirect to the apex if desired.
 
+### Release trust roots (rulesets)
+
+Two narrow rulesets make GitHub Actions the only writer of the production web
+branch and of release tags. `main` stays unprotected (team workflow). Create the
+`production` branch and switch the Pages production branch to it **before**
+adding the branch ruleset, since the ruleset also blocks creating it by hand.
+
+```bash
+repo=TinyCloudLabs/tinychat
+actions=$(gh api /apps/github-actions --jq .id)   # the GitHub Actions app (15368)
+
+# (a) production: only GitHub Actions can create, push, force-push or delete it.
+gh api -X POST repos/$repo/rulesets --input - <<EOF
+{
+  "name": "production branch: GitHub Actions only",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/heads/production"], "exclude": [] } },
+  "rules": [{ "type": "creation" }, { "type": "update" }, { "type": "deletion" }, { "type": "non_fast_forward" }],
+  "bypass_actors": [{ "actor_id": $actions, "actor_type": "Integration", "bypass_mode": "always" }]
+}
+EOF
+
+# (b) release tags: only GitHub Actions can create, move or delete them.
+gh api -X POST repos/$repo/rulesets --input - <<EOF
+{
+  "name": "release tags: GitHub Actions only",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/tags/exo-desktop@*", "refs/tags/@tinychat/frontend@*", "refs/tags/@tinychat/backend@*"], "exclude": [] } },
+  "rules": [{ "type": "creation" }, { "type": "update" }, { "type": "deletion" }],
+  "bypass_actors": [{ "actor_id": $actions, "actor_type": "Integration", "bypass_mode": "always" }]
+}
+EOF
+```
+
+Residual risk: the bypass actor is the GitHub Actions app, i.e. any workflow
+run with a write token, including a workflow a repo writer pushes on a branch,
+and `main` is unprotected, so a writer can change the release workflows
+themselves. The rulesets stop direct pushes, hand-made release tags, accidents
+and out-of-band deploys; they do not stop a malicious writer. Treat write
+access to this repo as production access.
+
 ---
 
 ## 2. Backend → Phala Cloud (`api.tinycloud.chat`)
@@ -108,12 +154,18 @@ The ingress sidecar also sets a CAA record automatically (`SET_CAA=true`).
 **Via GitHub Actions (production CD):** a stable `@tinychat/backend` release
 (merging the Release stable PR) runs **Deploy production**, which calls
 **Deploy Backend to Phala Cloud** on the stable version commit before the web
-deploy. Pushes to `main` and beta versions do not deploy. For a hotfix or
-redeploy, dispatch **Deploy production** (`-f web=false` for backend only) or
-**Deploy Backend to Phala Cloud** manually (`workflow_dispatch`). It builds +
-pushes the backend and ingress images to GHCR, verifies DNS, deploys to the CVM,
-syncs the CVM's `allowed_envs` (frozen at CVM creation), waits for `running`,
-and probes `/health` + `/api/server-info`.
+deploy. Pushes to `main` and beta versions do not deploy. Deploy production is
+the only manual entry: dispatch it on a stable `@tinychat/backend@X.Y.Z` tag
+with `-f web=false` to redeploy or roll back the backend; an unreleased commit
+needs `-f allow_unreleased=true -f confirm_sha=<its full SHA>`. The Phala
+workflow builds + pushes the backend and ingress images to GHCR, verifies DNS,
+deploys to the CVM, syncs the CVM's `allowed_envs` (frozen at CVM creation),
+waits for `running`, probes `/health` + `/api/server-info`, and then requires
+`/api/server-info` to report `backendRevision` = the deployed commit and
+`backendVersion` = `backend/package.json`. Its summary states the production
+backend afterwards: `unchanged` (failed before `phala deploy`),
+`changed-verified`, or `changed-unverified` (the CVM may run the new image but a
+later check failed; web is not deployed).
 
 **Manually from your machine:**
 
