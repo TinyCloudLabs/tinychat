@@ -1,0 +1,111 @@
+name: Release
+
+# Mirrors TinyCloudLabs/js-sdk's Release workflow, minus npm: nothing here ever publishes a package.
+# main stays in Changesets pre mode (tag "beta"). On every push to main:
+#   1. new changesets become beta versions (X.Y.Z-beta.N), committed with [skip ci];
+#      when the "Release stable" PR (.changeset/pre.json -> "exit") was merged, stable versions instead,
+#      then beta pre mode is re-entered;
+#   2. each unit's version is tagged <name>@<version> on the commit that set it;
+#   3. the "Release stable" PR is rebuilt to show what stable would ship.
+# Web and desktop share one version (fixed group); the backend stays 0.x (minor/patch only).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "major-beta" to release an explicitly reviewed major bump; leave empty to re-run'
+        required: false
+        default: ""
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # [skip ci] version commits, tags, and the release/stable branch
+      pull-requests: write # the Release stable PR
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      # The current tip of main, not the triggering SHA, so a run that starts late never versions an old main.
+      # No persisted token: install scripts and third-party code never see it; only the push steps below get it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Changesets CLI v3 requires Node ^22.11 || ^24.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Check release invariants
+        run: bun run release:check
+
+      - name: Version betas, or stable after the Release stable PR merged
+        id: version
+        env:
+          ALLOW_MAJOR_BETA: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm == 'major-beta' }}
+        run: node scripts/release/version.mjs
+
+      - name: Tag versions
+        id: tag
+        run: node scripts/release/tag.mjs
+
+      # --atomic: the [skip ci] version commit and its tags land together, and only as a fast-forward of main.
+      - name: Push version commit and tags
+        if: steps.version.outputs.channel != 'none' || steps.tag.outputs.tags != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ steps.tag.outputs.tags }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          read -ra tags <<< "$TAGS"
+          refs=()
+          for tag in "${tags[@]}"; do refs+=("refs/tags/$tag"); done
+          git -c "http.https://github.com/.extraheader=$auth" push --atomic origin HEAD:refs/heads/main "${refs[@]}"
+
+      - name: Prepare the Release stable PR
+        id: stable
+        run: node scripts/release/stable-pr.mjs --body "$RUNNER_TEMP/release-stable.md"
+
+      - name: Open or update the Release stable PR
+        if: steps.stable.outputs.open == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$auth" push --force origin release/stable:refs/heads/release/stable
+          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head release/stable --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --title "chore(release): release stable" --body-file "$RUNNER_TEMP/release-stable.md"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head release/stable --title "chore(release): release stable" --body-file "$RUNNER_TEMP/release-stable.md"
+          fi
+
+      # Hooks for follow-up PRs (not wired yet; betas deploy nothing):
+      #   PR C: for each new exo-desktop@* tag in steps.tag.outputs.tags, dispatch the desktop build:
+      #         a GitHub pre-release for channel "beta", the signed + notarized Exo release (PR D) for "stable".
+      #   PR E: when steps.version.outputs.channel == 'stable', dispatch the production deploy for the new
+      #         @tinychat/backend@* then @tinychat/frontend@* tags.

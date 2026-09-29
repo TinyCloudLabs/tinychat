@@ -1,0 +1,50 @@
+name: Changeset
+
+# Every PR must add a changeset (`bunx changeset`, or `bunx changeset add --empty` when nothing ships).
+# The one exception is the Release stable PR, whose only changes are .changeset/pre.json -> "exit" and its
+# recorded plan; that is decided from the diff, not the branch name, and the recorded plan must match what
+# stable would ship. Changesets may only name the release units, and never bump the backend major.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changeset-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changeset:
+    name: Changeset
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_REF: origin/${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Changesets CLI v3 requires Node ^22.11 || ^24.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Changesets status
+        run: bunx changeset status --since="$BASE_REF"
+
+      - name: Release invariants and required changeset
+        run: node scripts/release/check.mjs --since "$BASE_REF"
+
+      - name: Release script tests
+        run: node --test scripts/__tests__/release.test.mjs
