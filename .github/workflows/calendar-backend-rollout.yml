@@ -1,0 +1,449 @@
+# Isolated operator workflow; do not merge into product branches.
+name: Calendar backend production rollout
+concurrency:
+  group: tinychat-backend-phala-production
+  cancel-in-progress: false
+env:
+  DOCKER_IMAGE: ${{ vars.TINYCHAT_BACKEND_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
+  INGRESS_IMAGE: ${{ vars.TINYCHAT_INGRESS_IMAGE || 'ghcr.io/tinycloudlabs/tinychat-backend' }}
+  PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
+  PHALA_INGRESS_DOMAIN: ${{ vars.PHALA_INGRESS_DOMAIN || 'api.tinycloud.chat' }}
+  PRODUCTION_API_URL: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
+  PRODUCTION_FRONTEND_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
+  REDPILL_BASE_URL: ${{ vars.REDPILL_BASE_URL || 'https://api.redpill.ai/v1' }}
+  REDPILL_DEFAULT_MODEL: ${{ vars.REDPILL_DEFAULT_MODEL || 'z-ai/glm-5.2' }}
+  AGENT_STREAM_HEARTBEAT_MS: ${{ vars.AGENT_STREAM_HEARTBEAT_MS }}
+  AGENT_STREAM_TURN_TIMEOUT_MS: ${{ vars.AGENT_STREAM_TURN_TIMEOUT_MS }}
+  AGENT_STREAM_DRAIN_GRACE_MS: ${{ vars.AGENT_STREAM_DRAIN_GRACE_MS }}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: production-api
+      url: ${{ vars.TINYCHAT_BACKEND_URL || 'https://api.tinycloud.chat' }}
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Check deployment configuration
+      env:
+        PHALA_CVM_ID: ${{ vars.PHALA_CVM_ID }}
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        BACKEND_PRIVATE_KEY: ${{ secrets.BACKEND_PRIVATE_KEY }}
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+        REDPILL_API_KEY: ${{ secrets.REDPILL_API_KEY }}
+        AGENT_DID: ${{ vars.AGENT_DID }}
+        ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
+        ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
+      run: |
+        missing=()
+        for item in \
+          PHALA_CVM_ID \
+          PHALA_CLOUD_API_KEY \
+          BACKEND_PRIVATE_KEY \
+          CLOUDFLARE_API_TOKEN \
+          CERTBOT_EMAIL \
+          REDPILL_API_KEY \
+          AGENT_DID \
+          ELIZA_SERVICE_URL \
+          ELIZA_SERVICE_SECRET; do
+          if [ -z "${!item}" ]; then
+            missing+=("$item")
+            echo "::error title=Missing deployment config::$item is not configured"
+          fi
+        done
+
+        if [ ${#missing[@]} -gt 0 ]; then
+          {
+            echo "### Missing deployment configuration"
+            echo
+            printf -- "- \`%s\`\n" "${missing[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+        # Match backend/src/agent-stream-policy.ts before building or changing the CVM.
+        # This deployment already requires all four agent-chat enablement settings above.
+        python3 - <<'PY' || exit 1
+        import os
+        import re
+        import sys
+
+        invalid = False
+        for setting in (
+            "AGENT_STREAM_HEARTBEAT_MS",
+            "AGENT_STREAM_TURN_TIMEOUT_MS",
+            "AGENT_STREAM_DRAIN_GRACE_MS",
+        ):
+            value = os.environ.get(setting, "")
+            digits = value.lstrip("0")
+            if not re.fullmatch(r"[0-9]+", value) or not digits or len(digits) > 10 or int(digits) > 2147483647:
+                print(f"::error title=Invalid agent stream configuration::Invalid agent stream configuration: {setting}")
+                invalid = True
+        sys.exit(1 if invalid else 0)
+        PY
+
+        echo "All required deployment config is present and valid."
+    - name: Install Phala CLI
+      run: |
+        # Keep the deploy client pinned for reproducibility. 1.1.21 restored
+        # compatibility with the current CVM schema when resolving the env
+        # encryption public key; 1.1.22 is the latest stable patch release.
+        npm install -g phala@1.1.22
+        phala --version || true
+    - name: Install compose parser
+      run: python3 -m pip install PyYAML==6.0.3
+    - name: Validate Phala access
+      env:
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+      run: |
+        if ! RAW="$(phala whoami --json)"; then
+          echo "::error title=Phala authentication failed::The configured API key could not access its workspace"
+          echo "$RAW" | jq '{success, error, details}'
+          exit 1
+        fi
+        echo "$RAW" | jq '{success, username, workspace, profile}'
+    - name: Resolve Phala gateway CNAME
+      env:
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+      run: |
+        RAW="$(phala cvms get "$PHALA_CVM_ID" --json)"
+        PHALA_GATEWAY_CNAME="$(echo "$RAW" | jq -r '.gateway.cname // empty')"
+        PHALA_APP_ID="$(echo "$RAW" | jq -r '.app_id // empty')"
+
+        if [ -z "$PHALA_GATEWAY_CNAME" ]; then
+          echo "::error title=Missing Phala gateway CNAME::Could not resolve .gateway.cname for CVM ${PHALA_CVM_ID}"
+          echo "$RAW" | jq '{id, name, status, app_id, gateway}'
+          exit 1
+        fi
+
+        echo "PHALA_GATEWAY_CNAME=$PHALA_GATEWAY_CNAME" >> "$GITHUB_ENV"
+        echo "PHALA_APP_ID=$PHALA_APP_ID" >> "$GITHUB_ENV"
+        {
+          echo
+          echo "### Phala gateway"
+          echo
+          echo "- Gateway CNAME: \`$PHALA_GATEWAY_CNAME\`"
+          echo "- App ID: \`$PHALA_APP_ID\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Verify custom domain DNS
+      run: |
+        node <<'NODE'
+        const dns = require("node:dns").promises;
+
+        const domain = process.env.PHALA_INGRESS_DOMAIN;
+        const expectedCname = process.env.PHALA_GATEWAY_CNAME.replace(/\.$/, "");
+        // Older Phala custom domains use the underscore alias for the same gateway.
+        // Keep the advertised target for ingress; accept only this exact legacy alias.
+        const gatewayDomain = expectedCname.match(/^gateway\.(dstack-[a-z0-9-]+\.phala\.network)$/)?.[1];
+        const acceptedCnames = [expectedCname, ...(gatewayDomain ? [`_.${gatewayDomain}`] : [])];
+        const expectedTxt = `${process.env.PHALA_APP_ID}:443`;
+        const txtName = `_dstack-app-address.${domain}`;
+
+        async function main() {
+          const fail = (title, message) => {
+            console.error(`::error title=${title}::${message}`);
+            process.exitCode = 1;
+          };
+
+          const cnameRecords = await dns.resolveCname(domain).catch(() => []);
+          const txtRecords = await dns.resolveTxt(txtName).catch(() => []);
+          const actualCname = cnameRecords.map((value) => value.replace(/\.$/, ""));
+          const actualTxt = txtRecords.map((parts) => parts.join(""));
+
+          console.log(`CNAME ${domain}: ${actualCname.join(", ") || "<missing>"}`);
+          console.log(`TXT ${txtName}: ${actualTxt.join(", ") || "<missing>"}`);
+
+          if (!actualCname.some(value => acceptedCnames.includes(value))) {
+            fail("Phala DNS CNAME mismatch", `${domain} must CNAME to ${acceptedCnames.join(" or ")}`);
+          }
+          if (!actualTxt.includes(expectedTxt)) {
+            fail("Phala DNS TXT mismatch", `${txtName} must contain ${expectedTxt}`);
+          }
+
+          if (process.exitCode) process.exit(process.exitCode);
+        }
+
+        main().catch((error) => {
+          console.error(error);
+          process.exit(1);
+        });
+        NODE
+
+        {
+          echo
+          echo "### Custom domain DNS"
+          echo
+          echo "- CNAME target: \`${PHALA_GATEWAY_CNAME}\`"
+          echo "- TXT target: \`${PHALA_APP_ID}:443\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Prepare complete existing deployment environment
+      env:
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        BACKEND_PRIVATE_KEY: ${{ secrets.BACKEND_PRIVATE_KEY }}
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+        REDPILL_API_KEY: ${{ secrets.REDPILL_API_KEY }}
+        AGENT_DID: ${{ vars.AGENT_DID }}
+        ELIZA_SERVICE_URL: ${{ vars.ELIZA_SERVICE_URL }}
+        ELIZA_SERVICE_SECRET: ${{ secrets.ELIZA_SERVICE_SECRET }}
+        ELIZA_TASKS_ENABLED: ${{ vars.ELIZA_TASKS_ENABLED || 'false' }}
+        ELIZA_TASKS_TEST_ACCOUNTS: ${{ vars.ELIZA_TASKS_TEST_ACCOUNTS }}
+        MEETING_CONTENT_RETRIEVAL_ENABLED: ${{ vars.MEETING_CONTENT_RETRIEVAL_ENABLED || 'false' }}
+        MEETING_CONTENT_TEST_ACCOUNTS: ${{ vars.MEETING_CONTENT_TEST_ACCOUNTS }}
+        MEETING_CONTENT_MODELS: ${{ vars.MEETING_CONTENT_MODELS }}
+        PAYWALL_ENABLED: ${{ secrets.PAYWALL_ENABLED || vars.PAYWALL_ENABLED || 'false' }}
+        STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+        STRIPE_PRICE_PLUS_MONTHLY: ${{ secrets.STRIPE_PRICE_PLUS_MONTHLY || vars.STRIPE_PRICE_PLUS_MONTHLY }}
+        STRIPE_PRICE_PLUS_YEARLY: ${{ secrets.STRIPE_PRICE_PLUS_YEARLY || vars.STRIPE_PRICE_PLUS_YEARLY }}
+        STRIPE_PRICE_PRO_MONTHLY: ${{ secrets.STRIPE_PRICE_PRO_MONTHLY || vars.STRIPE_PRICE_PRO_MONTHLY }}
+        STRIPE_PRICE_PRO_MONTHLY_LEGACY: ${{ secrets.STRIPE_PRICE_PRO_MONTHLY_LEGACY || vars.STRIPE_PRICE_PRO_MONTHLY_LEGACY
+          }}
+        STRIPE_PRICE_PRO_YEARLY: ${{ secrets.STRIPE_PRICE_PRO_YEARLY || vars.STRIPE_PRICE_PRO_YEARLY }}
+        CREDIT_BUDGET_FREE: ${{ secrets.CREDIT_BUDGET_FREE || vars.CREDIT_BUDGET_FREE }}
+        CREDIT_BUDGET_PLUS_WEEKLY: ${{ secrets.CREDIT_BUDGET_PLUS_WEEKLY || vars.CREDIT_BUDGET_PLUS_WEEKLY }}
+        CREDIT_BUDGET_PRO_WEEKLY: ${{ secrets.CREDIT_BUDGET_PRO_WEEKLY || vars.CREDIT_BUDGET_PRO_WEEKLY }}
+        LEDGER_SERVICE_URL: ${{ secrets.LEDGER_SERVICE_URL || vars.LEDGER_SERVICE_URL }}
+        LEDGER_SERVICE_SECRET: ${{ secrets.LEDGER_SERVICE_SECRET }}
+        LEDGER_AUTHORITATIVE: ${{ secrets.LEDGER_AUTHORITATIVE || vars.LEDGER_AUTHORITATIVE || 'false' }}
+        LEDGER_OUTAGE_POLICY: ${{ secrets.LEDGER_OUTAGE_POLICY || vars.LEDGER_OUTAGE_POLICY || 'bounded_k' }}
+        CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
+        WEBHOOK_HMAC_MASTER: ${{ secrets.WEBHOOK_HMAC_MASTER }}
+        WEBHOOK_HMAC_MASTER_PREV: ${{ secrets.WEBHOOK_HMAC_MASTER_PREV }}
+        LOG_HASH_SALT: ${{ secrets.LOG_HASH_SALT }}
+        CONNECTOR_WEBHOOK_PUBLIC_ORIGIN: ${{ vars.CONNECTOR_WEBHOOK_PUBLIC_ORIGIN }}
+        CONNECTOR_WEBHOOK_HOST_ALLOWLIST: ${{ vars.CONNECTOR_WEBHOOK_HOST_ALLOWLIST }}
+        CONNECTOR_INGEST_INSTANCE_ID: ${{ vars.CONNECTOR_INGEST_INSTANCE_ID }}
+        CONNECTOR_BACKEND_INGEST_ENABLED: ${{ vars.CONNECTOR_BACKEND_INGEST_ENABLED || 'false' }}
+        CONNECTOR_CREDENTIAL_MASTER: ${{ secrets.CONNECTOR_CREDENTIAL_MASTER }}
+        CONNECTOR_CONTENT_MASTER: ${{ secrets.CONNECTOR_CONTENT_MASTER }}
+        FIREFLIES_OAUTH_CLIENT_ID: ${{ secrets.FIREFLIES_OAUTH_CLIENT_ID }}
+        FIREFLIES_OAUTH_CLIENT_SECRET: ${{ secrets.FIREFLIES_OAUTH_CLIENT_SECRET }}
+        FIREFLIES_OAUTH_REDIRECT_URI: ${{ vars.FIREFLIES_OAUTH_REDIRECT_URI }}
+        GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+        GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        GOOGLE_OAUTH_REDIRECT_URI: ${{ secrets.GOOGLE_OAUTH_REDIRECT_URI }}
+        GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
+        CONNECTOR_DRAIN_INTERVAL_MS: ${{ vars.CONNECTOR_DRAIN_INTERVAL_MS }}
+        CONNECTOR_A_FETCH_CEILING_PER_HOUR: ${{ vars.CONNECTOR_A_FETCH_CEILING_PER_HOUR }}
+        CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR: ${{ vars.CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR }}
+        TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
+        TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
+        TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+      run: |+
+        umask 077
+        ENV_FILE="$RUNNER_TEMP/phala-prod.env"
+        DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        {
+          printf '%s\n' "BACKEND_PRIVATE_KEY=$BACKEND_PRIVATE_KEY"
+          printf '%s\n' "TINYCLOUD_HOST=https://tee.node.tinycloud.xyz"
+          printf '%s\n' "FRONTEND_URL=$PRODUCTION_FRONTEND_URL"
+          printf '%s\n' "REDPILL_API_KEY=$REDPILL_API_KEY"
+          printf '%s\n' "REDPILL_BASE_URL=$REDPILL_BASE_URL"
+          printf '%s\n' "REDPILL_DEFAULT_MODEL=$REDPILL_DEFAULT_MODEL"
+          printf '%s\n' "AGENT_DID=$AGENT_DID"
+          printf '%s\n' "ELIZA_SERVICE_URL=$ELIZA_SERVICE_URL"
+          printf '%s\n' "ELIZA_SERVICE_SECRET=$ELIZA_SERVICE_SECRET"
+          printf '%s\n' "ELIZA_TASKS_ENABLED=${ELIZA_TASKS_ENABLED:-false}"
+          printf '%s\n' "ELIZA_TASKS_TEST_ACCOUNTS=${ELIZA_TASKS_TEST_ACCOUNTS:-}"
+          printf '%s\n' "MEETING_CONTENT_RETRIEVAL_ENABLED=${MEETING_CONTENT_RETRIEVAL_ENABLED:-false}"
+          printf '%s\n' "MEETING_CONTENT_TEST_ACCOUNTS=${MEETING_CONTENT_TEST_ACCOUNTS:-}"
+          printf '%s\n' "MEETING_CONTENT_MODELS=${MEETING_CONTENT_MODELS:-}"
+          printf '%s\n' "AGENT_STREAM_HEARTBEAT_MS=$AGENT_STREAM_HEARTBEAT_MS"
+          printf '%s\n' "AGENT_STREAM_TURN_TIMEOUT_MS=$AGENT_STREAM_TURN_TIMEOUT_MS"
+          printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"
+          printf '%s\n' "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"
+          printf '%s\n' "CERTBOT_EMAIL=$CERTBOT_EMAIL"
+          printf '%s\n' "TINYCHAT_BACKEND_IMAGE=ghcr.io/tinycloudlabs/tinychat-backend:calendar-autojoin-76e800725200594382f6715e80e33eea7fba3251@sha256:de34c711fe0e872d8b91fc70fce8e99bd0e15f3b1bcc0033103a4eca6aab3dc1"
+          printf '%s\n' "TINYCHAT_INGRESS_IMAGE=ghcr.io/tinycloudlabs/tinychat-backend:ingress-add998813ea473b3396320cfbcadd30bf62e6d57@sha256:78d764c10c1cd386234496d125af25ce14ce835498d9319b8396fa5877913efa"
+          printf '%s\n' "TINYCHAT_BUILD_SHA=76e800725200594382f6715e80e33eea7fba3251"
+          printf '%s\n' "TINYCHAT_DEPLOY_RUN_URL=$DEPLOY_RUN_URL"
+          printf '%s\n' "PORT=3001"
+          printf '%s\n' "PHALA_INGRESS_DOMAIN=$PHALA_INGRESS_DOMAIN"
+          printf '%s\n' "PHALA_GATEWAY_CNAME=$PHALA_GATEWAY_CNAME"
+          printf '%s\n' "PAYWALL_ENABLED=${PAYWALL_ENABLED:-false}"
+          printf '%s\n' "STRIPE_SECRET_KEY=$STRIPE_SECRET_KEY"
+          printf '%s\n' "STRIPE_WEBHOOK_SECRET=$STRIPE_WEBHOOK_SECRET"
+          printf '%s\n' "STRIPE_PRICE_PLUS_MONTHLY=$STRIPE_PRICE_PLUS_MONTHLY"
+          printf '%s\n' "STRIPE_PRICE_PLUS_YEARLY=$STRIPE_PRICE_PLUS_YEARLY"
+          printf '%s\n' "STRIPE_PRICE_PRO_MONTHLY=$STRIPE_PRICE_PRO_MONTHLY"
+          printf '%s\n' "STRIPE_PRICE_PRO_MONTHLY_LEGACY=$STRIPE_PRICE_PRO_MONTHLY_LEGACY"
+          printf '%s\n' "STRIPE_PRICE_PRO_YEARLY=$STRIPE_PRICE_PRO_YEARLY"
+          printf '%s\n' "CREDIT_BUDGET_FREE=$CREDIT_BUDGET_FREE"
+          printf '%s\n' "CREDIT_BUDGET_PLUS_WEEKLY=$CREDIT_BUDGET_PLUS_WEEKLY"
+          printf '%s\n' "CREDIT_BUDGET_PRO_WEEKLY=$CREDIT_BUDGET_PRO_WEEKLY"
+          printf '%s\n' "LEDGER_SERVICE_URL=$LEDGER_SERVICE_URL"
+          printf '%s\n' "LEDGER_SERVICE_SECRET=$LEDGER_SERVICE_SECRET"
+          printf '%s\n' "LEDGER_AUTHORITATIVE=${LEDGER_AUTHORITATIVE:-false}"
+          printf '%s\n' "LEDGER_OUTAGE_POLICY=${LEDGER_OUTAGE_POLICY:-bounded_k}"
+          printf '%s\n' "CONNECTOR_WEBHOOKS_ENABLED=${CONNECTOR_WEBHOOKS_ENABLED:-false}"
+          printf '%s\n' "WEBHOOK_HMAC_MASTER=$WEBHOOK_HMAC_MASTER"
+          printf '%s\n' "WEBHOOK_HMAC_MASTER_PREV=$WEBHOOK_HMAC_MASTER_PREV"
+          printf '%s\n' "LOG_HASH_SALT=$LOG_HASH_SALT"
+          printf '%s\n' "CONNECTOR_WEBHOOK_PUBLIC_ORIGIN=$CONNECTOR_WEBHOOK_PUBLIC_ORIGIN"
+          printf '%s\n' "CONNECTOR_WEBHOOK_HOST_ALLOWLIST=$CONNECTOR_WEBHOOK_HOST_ALLOWLIST"
+          printf '%s\n' "CONNECTOR_INGEST_INSTANCE_ID=$CONNECTOR_INGEST_INSTANCE_ID"
+          printf '%s\n' "CONNECTOR_BACKEND_INGEST_ENABLED=${CONNECTOR_BACKEND_INGEST_ENABLED:-false}"
+          printf '%s\n' "CONNECTOR_CREDENTIAL_MASTER=$CONNECTOR_CREDENTIAL_MASTER"
+          printf '%s\n' "CONNECTOR_CONTENT_MASTER=$CONNECTOR_CONTENT_MASTER"
+          printf '%s\n' "FIREFLIES_OAUTH_CLIENT_ID=$FIREFLIES_OAUTH_CLIENT_ID"
+          printf '%s\n' "FIREFLIES_OAUTH_CLIENT_SECRET=$FIREFLIES_OAUTH_CLIENT_SECRET"
+          printf '%s\n' "FIREFLIES_OAUTH_REDIRECT_URI=$FIREFLIES_OAUTH_REDIRECT_URI"
+          printf '%s\n' "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID"
+          printf '%s\n' "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET"
+          printf '%s\n' "GOOGLE_OAUTH_REDIRECT_URI=$GOOGLE_OAUTH_REDIRECT_URI"
+          printf '%s\n' "GOOGLE_MEET_OAUTH_ENABLED=${GOOGLE_MEET_OAUTH_ENABLED:-false}"
+          printf '%s\n' "CONNECTOR_DRAIN_INTERVAL_MS=$CONNECTOR_DRAIN_INTERVAL_MS"
+          printf '%s\n' "CONNECTOR_A_FETCH_CEILING_PER_HOUR=$CONNECTOR_A_FETCH_CEILING_PER_HOUR"
+          printf '%s\n' "CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR=$CONNECTOR_A_SECRET_READ_CEILING_PER_HOUR"
+          printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
+          printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
+          printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+        } > "$ENV_FILE"
+
+        echo "::group::Deploy environment keys"
+        awk -F= '/^[A-Z0-9_]+=/ {print $1"=<set>"}' "$ENV_FILE"
+        echo "::endgroup::"
+
+    - name: Prepare and encrypt complete deployment recovery
+      env: &id001
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: python3 .github/scripts/calendar-backend-rollout.py --prepare-only
+    - name: Save encrypted recovery before changing production
+      uses: actions/upload-artifact@v4
+      with:
+        name: calendar-backend-recovery
+        path: ${{ runner.temp }}/calendar-backend-evidence/
+        retention-days: 90
+        if-no-files-found: error
+    - name: Stop old writer, deploy tested image and verify replacement
+      env: *id001
+      run: python3 .github/scripts/calendar-backend-rollout.py --execute
+    - name: Save replacement receipt
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: calendar-backend-receipt
+        path: ${{ runner.temp }}/calendar-backend-evidence/receipt.json
+        retention-days: 90
+    - name: Verify public API
+      env:
+        CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
+        GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
+      run: "probe_url() {\n  local label=\"$1\"\n  local url=\"$2\"\n  local body_file err_file status exit_code\n\n  echo\
+        \ \"Probing $label at $url\"\n  for i in {1..30}; do\n    body_file=\"$(mktemp)\"\n    err_file=\"$(mktemp)\"\n  \
+        \  set +e\n    status=\"$(curl -sS -o \"$body_file\" -w \"%{http_code}\" --connect-timeout 5 --max-time 15 \"$url\"\
+        \ 2>\"$err_file\")\"\n    exit_code=$?\n    set -e\n\n    echo \"Attempt $i/30: curl_exit=$exit_code http_status=$status\"\
+        \n    if [ -s \"$err_file\" ]; then\n      sed 's/^/curl: /' \"$err_file\"\n    fi\n    if [ -s \"$body_file\" ];\
+        \ then\n      echo \"Response body (first 1000 bytes):\"\n      head -c 1000 \"$body_file\"\n      echo\n    fi\n\n\
+        \    if [ \"$exit_code\" -eq 0 ] && [[ \"$status\" =~ ^2 ]]; then\n      echo \"$label probe passed.\"\n      rm -f\
+        \ \"$body_file\" \"$err_file\"\n      return 0\n    fi\n\n    rm -f \"$body_file\" \"$err_file\"\n    sleep 10\n \
+        \ done\n\n  echo \"::error title=Public API probe failed::$label did not return a 2xx response\"\n  echo \"::group::Verbose\
+        \ curl diagnostics for $label\"\n  curl -v --max-time 20 \"$url\" || true\n  echo \"::endgroup::\"\n  return 1\n}\n\
+        \nHEALTH_URL=\"${PRODUCTION_API_URL%/}/health\"\nINFO_URL=\"${PRODUCTION_API_URL%/}/api/server-info\"\nif ! probe_url\
+        \ \"health\" \"$HEALTH_URL\"; then\n  if [ -n \"${PHALA_RAW_API_URL:-}\" ]; then\n    echo \"::notice title=Raw Phala\
+        \ gateway diagnostic::Custom domain failed; probing ${PHALA_RAW_API_URL}/health\"\n    probe_url \"raw gateway health\"\
+        \ \"${PHALA_RAW_API_URL%/}/health\" || true\n  fi\n  exit 1\nfi\n\nif ! probe_url \"server-info\" \"$INFO_URL\"; then\n\
+        \  if [ -n \"${PHALA_RAW_API_URL:-}\" ]; then\n    echo \"::notice title=Raw Phala gateway diagnostic::Custom domain\
+        \ failed; probing ${PHALA_RAW_API_URL}/api/server-info\"\n    probe_url \"raw gateway server-info\" \"${PHALA_RAW_API_URL%/}/api/server-info\"\
+        \ || true\n  fi\n  exit 1\nfi\n\n# /api/agent mounts only when AGENT_DID / ELIZA_SERVICE_URL /\n# ELIZA_SERVICE_SECRET\
+        \ all reach the backend. Mounted \u2192 401\n# (auth-gated); 404 means the agent env was dropped and web\n# search\
+        \ is silently dead (2026-07-07 regression).\nAGENT_URL=\"${PRODUCTION_API_URL%/}/api/agent/session\"\necho \"Probing\
+        \ agent route at $AGENT_URL (expect 401)\"\nAGENT_STATUS=0\nfor i in {1..30}; do\n  AGENT_STATUS=\"$(curl -s -o /dev/null\
+        \ -w \"%{http_code}\" --connect-timeout 5 --max-time 15 \"$AGENT_URL\" || echo 000)\"\n  echo \"Attempt $i/30: http_status=$AGENT_STATUS\"\
+        \n  if [ \"$AGENT_STATUS\" = \"401\" ]; then\n    break\n  fi\n  sleep 10\ndone\nif [ \"$AGENT_STATUS\" != \"401\"\
+        \ ]; then\n  echo \"::error title=Agent route probe failed::GET /api/agent/session returned $AGENT_STATUS (expected\
+        \ 401). The agent router is not mounted \u2014 AGENT_DID / ELIZA_SERVICE_URL / ELIZA_SERVICE_SECRET did not reach\
+        \ the backend, so web search is disabled.\"\n  exit 1\nfi\necho \"Agent route probe passed (401 = mounted, auth-gated).\"\
+        \n\n# The connector-webhook mount canary, modeled on the agent probe above.\n# The raw delivery route mounts only\
+        \ when CONNECTOR_WEBHOOKS_ENABLED=true\n# AND the HMAC master / log salt reached the backend \u2014 the flag alone\
+        \ is\n# not enough, because startup refuses to boot the mount on a weak secret.\n#\n#   flag on  -> 401 (mounted;\
+        \ a junk signature on an unregistered token is\n#               the same generic invalid_signature as every other\
+        \ rejection)\n#   flag off -> 404 (nothing mounted \u2014 the dark-ship state)\n#\n# A 404 with the flag ON is the\
+        \ silently-dropped-env failure this exists to\n# catch (the 2026-07-07 class): background sync would be dead with\
+        \ no other\n# signal. A 401 with the flag OFF means the route shipped hot.\nWEBHOOK_URL=\"${PRODUCTION_API_URL%/}/api/connectors/webhooks/fireflies/probe-token\"\
+        \nif [ \"${CONNECTOR_WEBHOOKS_ENABLED:-false}\" = \"true\" ]; then\n  WEBHOOK_EXPECT=401\nelse\n  WEBHOOK_EXPECT=404\n\
+        fi\necho \"Probing connector webhook route at $WEBHOOK_URL (expect $WEBHOOK_EXPECT; flag=${CONNECTOR_WEBHOOKS_ENABLED:-false})\"\
+        \nWEBHOOK_STATUS=0\nfor i in {1..10}; do\n  # Junk signature, junk token, minimal JSON body. Nothing here is a valid\n\
+        \  # delivery, so this never enqueues and never touches a real user's queue.\n  # X-Requested-With satisfies the global\
+        \ CSRF gate (packages/server/src/csrf.ts),\n  # which otherwise 403s every header-less POST BEFORE routing and masks\
+        \ the dark\n  # arm's 404. The mounted arm is unaffected: the delivery route matches in the raw\n  # window ahead\
+        \ of CSRF and still answers 401 to the junk signature.\n  WEBHOOK_STATUS=\"$(curl -s -o /dev/null -w \"%{http_code}\"\
+        \ \\\n    --connect-timeout 5 --max-time 15 \\\n    -X POST \"$WEBHOOK_URL\" \\\n    -H 'Content-Type: application/json'\
+        \ \\\n    -H 'X-Requested-With: XMLHttpRequest' \\\n    -H 'x-hub-signature: sha256=00000000000000000000000000000000000000000000000000000000deadbeef'\
+        \ \\\n    --data '{\"eventType\":\"probe\",\"meetingId\":\"deploy-probe\"}' || echo 000)\"\n  echo \"Attempt $i/10:\
+        \ http_status=$WEBHOOK_STATUS\"\n  if [ \"$WEBHOOK_STATUS\" = \"$WEBHOOK_EXPECT\" ]; then\n    break\n  fi\n  sleep\
+        \ 6\ndone\nif [ \"$WEBHOOK_STATUS\" != \"$WEBHOOK_EXPECT\" ]; then\n  if [ \"$WEBHOOK_EXPECT\" = \"401\" ]; then\n\
+        \    echo \"::error title=Connector webhook probe failed::POST /api/connectors/webhooks/fireflies/probe-token returned\
+        \ $WEBHOOK_STATUS (expected 401). CONNECTOR_WEBHOOKS_ENABLED is true but the route is not mounted \u2014 WEBHOOK_HMAC_MASTER\
+        \ / LOG_HASH_SALT did not reach the backend (or were rejected as weak), so background sync is silently dead.\"\n \
+        \ else\n    echo \"::error title=Connector webhook probe failed::POST /api/connectors/webhooks/fireflies/probe-token\
+        \ returned $WEBHOOK_STATUS (expected 404 while CONNECTOR_WEBHOOKS_ENABLED is not 'true'). The route is mounted on\
+        \ a deploy that was meant to ship dark.\"\n  fi\n  exit 1\nfi\nif [ \"$WEBHOOK_EXPECT\" = \"401\" ]; then\n  echo\
+        \ \"Connector webhook probe passed (401 = mounted, signature-gated).\"\nelse\n  echo \"Connector webhook probe passed\
+        \ (404 = flag off, nothing mounted).\"\nfi\n\n# WP-A's Google Meet OAuth mount canary, modeled on the webhook probe\
+        \ above.\n# The five /api/connectors/google/oauth/* routes mount only when\n# GOOGLE_MEET_OAUTH_ENABLED=true AND the\
+        \ three client vars reached the\n# backend \u2014 the flag alone is not enough, because startup refuses to build\n\
+        # the router when any of id/secret/redirect_uri is missing.\n#\n#   flag on  -> 400 (mounted; `/start` validates `state`\
+        \ + `challenge` BEFORE\n#               anything else and a bare param-less GET is `invalid_request`.\n#         \
+        \      A valid pair would 302 to Google, which we deliberately do not\n#               send: this probe must not mint\
+        \ a real authorize URL.)\n#   flag off -> 404 (nothing mounted \u2014 the dark-ship state)\n#\n# `/start` is unauthenticated\
+        \ by design (a top-level browser navigation), so\n# the 400 arm is reachable from CI with no credential. A 404 with\
+        \ the flag ON\n# is the silently-dropped-env failure this exists to catch (the 2026-07-07\n# class); a 400 with the\
+        \ flag OFF means the OAuth proxy shipped hot.\nGOOGLE_URL=\"${PRODUCTION_API_URL%/}/api/connectors/google/oauth/start\"\
+        \nif [ \"${GOOGLE_MEET_OAUTH_ENABLED:-false}\" = \"true\" ]; then\n  GOOGLE_EXPECT=400\nelse\n  GOOGLE_EXPECT=404\n\
+        fi\necho \"Probing Google Meet OAuth route at $GOOGLE_URL (expect $GOOGLE_EXPECT; flag=${GOOGLE_MEET_OAUTH_ENABLED:-false})\"\
+        \nGOOGLE_STATUS=0\nfor i in {1..10}; do\n  # No `state`, no `challenge`, no credential \u2014 this can never become\
+        \ a real\n  # authorization attempt, and nothing here is logged or persisted.\n  GOOGLE_STATUS=\"$(curl -s -o /dev/null\
+        \ -w \"%{http_code}\" \\\n    --connect-timeout 5 --max-time 15 \"$GOOGLE_URL\" || echo 000)\"\n  echo \"Attempt $i/10:\
+        \ http_status=$GOOGLE_STATUS\"\n  if [ \"$GOOGLE_STATUS\" = \"$GOOGLE_EXPECT\" ]; then\n    break\n  fi\n  sleep 6\n\
+        done\nif [ \"$GOOGLE_STATUS\" != \"$GOOGLE_EXPECT\" ]; then\n  if [ \"$GOOGLE_EXPECT\" = \"400\" ]; then\n    echo\
+        \ \"::error title=Google Meet OAuth probe failed::GET /api/connectors/google/oauth/start returned $GOOGLE_STATUS (expected\
+        \ 400). GOOGLE_MEET_OAUTH_ENABLED is true but the routes are not mounted \u2014 GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET\
+        \ / GOOGLE_OAUTH_REDIRECT_URI did not reach the backend, so the Google Meet connector is silently dead.\"\n  else\n\
+        \    echo \"::error title=Google Meet OAuth probe failed::GET /api/connectors/google/oauth/start returned $GOOGLE_STATUS\
+        \ (expected 404 while GOOGLE_MEET_OAUTH_ENABLED is not 'true'). The OAuth proxy is mounted on a deploy that was meant\
+        \ to ship dark.\"\n  fi\n  exit 1\nfi\nif [ \"$GOOGLE_EXPECT\" = \"400\" ]; then\n  # Mounted, so also pin the popup\
+        \ contract: /start must answer with\n  # `Cross-Origin-Opener-Policy: unsafe-none`. Helmet's app-wide default is\n\
+        \  # `same-origin`, which severs `window.opener` at the popup's very first\n  # response \u2014 the callback postMessage\
+        \ then never reaches the app and every\n  # connect attempt reports \"cancelled\". The router-level exemption is the\n\
+        \  # fix; this catches the helmet default resurfacing on the popup surfaces.\n  GOOGLE_COOP=\"$(curl -s -o /dev/null\
+        \ -D - \\\n    --connect-timeout 5 --max-time 15 \"$GOOGLE_URL\" \\\n    | tr -d '\\r' | tr '[:upper:]' '[:lower:]'\
+        \ \\\n    | sed -n 's/^cross-origin-opener-policy: *//p' | head -n 1)\"\n  echo \"Google Meet OAuth /start cross-origin-opener-policy=${GOOGLE_COOP:-<absent>}\"\
+        \n  if [ \"$GOOGLE_COOP\" != \"unsafe-none\" ]; then\n    echo \"::error title=Google Meet OAuth COOP probe failed::GET\
+        \ /api/connectors/google/oauth/start answered with Cross-Origin-Opener-Policy '${GOOGLE_COOP:-<absent>}' (expected\
+        \ 'unsafe-none'). Helmet's same-origin default severs window.opener in the OAuth popup, so the callback postMessage\
+        \ never reaches the app and every Google Meet connect attempt fails as 'cancelled'.\"\n    exit 1\n  fi\n  echo \"\
+        Google Meet OAuth probe passed (400 = mounted, param-gated; COOP=unsafe-none).\"\nelse\n  echo \"Google Meet OAuth\
+        \ probe passed (404 = flag off, nothing mounted).\"\nfi\n\n{\n  echo\n  echo \"### Public API probes\"\n  echo\n \
+        \ echo \"- ${HEALTH_URL}: passed\"\n  echo \"- ${INFO_URL}: passed\"\n  echo \"- ${AGENT_URL}: passed (401 = agent\
+        \ route mounted)\"\n  if [ \"$WEBHOOK_EXPECT\" = \"401\" ]; then\n    echo \"- ${WEBHOOK_URL}: passed (401 = connector\
+        \ webhook route mounted)\"\n  else\n    echo \"- ${WEBHOOK_URL}: passed (404 = connector webhooks shipped dark)\"\n\
+        \  fi\n  if [ \"$GOOGLE_EXPECT\" = \"400\" ]; then\n    echo \"- ${GOOGLE_URL}: passed (400 = Google Meet OAuth routes\
+        \ mounted)\"\n  else\n    echo \"- ${GOOGLE_URL}: passed (404 = Google Meet OAuth shipped dark)\"\n  fi\n} >> \"$GITHUB_STEP_SUMMARY\"\
+        \n"
+    - name: Verify autojoin route
+      run: |
+        python3 - <<'PY'
+        import json, urllib.request, urllib.error
+        url='https://api.tinycloud.chat/api/connectors/google/autojoin/status'
+        try:
+            response=urllib.request.urlopen(url,timeout=20)
+        except urllib.error.HTTPError as error:
+            response=error
+        assert response.code==401, 'Autojoin route did not mount behind authentication'
+        print(json.dumps({'autojoinUnauthenticatedStatus':401}))
+        PY
+'on':
+  workflow_dispatch: {}
+  push:
+    branches:
+    - Codex/roman/calendar-production-rollout-20260929
+    paths:
+    - .github/calendar-backend-rollout.trigger

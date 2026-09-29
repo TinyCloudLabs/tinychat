@@ -1,0 +1,64 @@
+# Isolated operator workflow; do not merge into product branches.
+name: Calendar transcription production rollout
+concurrency:
+  group: calendar-transcription-phala-production
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install pinned operator tools
+      run: |
+        npm install --global phala@1.1.22
+        python3 -m pip install PyYAML==6.0.2
+    - name: Verify runner safety checks
+      run: python3 .github/scripts/calendar-transcription-rollout.py --self-test
+    - name: Prepare exact compose plan and encrypted recovery
+      env:
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
+      run: python3 .github/scripts/calendar-transcription-rollout.py --prepare-only
+    - name: Preserve encrypted recovery before mutation
+      uses: actions/upload-artifact@v4
+      with:
+        name: calendar-transcription-recovery
+        path: |
+          ${{ runner.temp }}/calendar-transcription-evidence/transcription-before.cms
+          ${{ runner.temp }}/calendar-transcription-evidence/transcription-after.cms
+        retention-days: 90
+        if-no-files-found: error
+    - name: Apply compose-only update and verify runtime
+      env:
+        PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
+      run: python3 .github/scripts/calendar-transcription-rollout.py --execute
+    - name: Save sanitized rollout evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: calendar-transcription-evidence
+        path: ${{ runner.temp }}/calendar-transcription-evidence/
+        retention-days: 90
+        if-no-files-found: warn
+    - name: Remove private plan
+      if: always()
+      run: rm -f -- "$RUNNER_TEMP/calendar-transcription-private/plan.json"
+'on':
+  workflow_dispatch: null
+  push:
+    branches:
+    - Codex/roman/calendar-production-rollout-20260929
+    paths:
+    - .github/calendar-transcription-rollout.trigger
