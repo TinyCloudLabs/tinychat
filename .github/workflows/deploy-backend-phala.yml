@@ -6,6 +6,7 @@ on:
     paths:
       - "backend/**"
       - "packages/**"
+      - "patches/**"
       - "backend/Dockerfile"
       - "docker-compose.phala.yml"
       - "phala.toml"

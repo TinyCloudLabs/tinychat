@@ -1,27 +1,6 @@
-/**
- * WP-A — the Google Meet OAuth client (gmeet-connector plan §4.1, §6 WP-A).
- *
- * `fireflies-oauth.ts` is the in-repo PKCE S256 precedent and this module mirrors its shape:
- * `authorizeUrl({state, challenge})`, `exchangeCode({code, verifier})`, `revoke`, and an
- * env→config that THROWS at boot when the feature is armed but the OAuth app is unregistered.
- * The deltas are Google's endpoints, the refresh grant, and two Google-specific authorize params.
- *
- * Three rules this module exists to keep:
- *
- *  1. **PERSISTS NOTHING.** It performs HTTP and returns payloads. No KV, no SQL, no files — the
- *     browser is the only place a Google token ever lands (plan §4.1: "tokens travel exclusively
- *     in the authenticated XHR response"). A store import here is a design regression, and
- *     `google-oauth.test.ts` pins the absence structurally.
- *  2. **No token ever reaches a log or an error.** Unlike `fireflies-oauth.ts`, which discards
- *     provider error bodies wholesale, this module PRESERVES Google's structured error
- *     (`status` + `error` + `error_description`) so the UI can tell reconnect from no-access from
- *     slow-down — Listen threw that away and could not. Preservation is field-scoped (only those
- *     two strings, capped and control-stripped) and every secret the request carried is redacted
- *     out of the surfaced text as a belt-and-braces second pass.
- *  3. **`access_type=offline` AND `prompt=consent`.** Spike-verified 2026-08-17: without BOTH,
- *     Google mints no refresh token and the connector silently becomes single-session. Neither
- *     param exists in the Fireflies template, so neither is inherited — they are set here.
- */
+/** Google OAuth transport. Browser-only grants remain stateless; autojoin custody is
+ * explicitly managed by CalendarAutojoinConnection after transaction-bound consent. */
+import { OAuth2Client } from "google-auth-library";
 
 /** The authorize endpoint the popup is 302'd to. */
 export const GOOGLE_AUTHORIZE_ENDPOINT =
@@ -43,6 +22,9 @@ export const GOOGLE_MEET_SCOPES = [
   "https://www.googleapis.com/auth/drive.metadata.readonly",
   "https://www.googleapis.com/auth/documents.readonly",
 ].join(" ");
+
+export const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned.readonly";
+export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_MEET_SCOPES} ${GOOGLE_CALENDAR_SCOPE} openid`;
 
 /** The arming flag. Mirrors `connectorWebhooksEnabled()` (index.ts :140-142) exactly. */
 export const GOOGLE_MEET_OAUTH_ENABLED_ENV = "GOOGLE_MEET_OAUTH_ENABLED";
@@ -131,6 +113,8 @@ export interface GoogleTokenPayload {
   expires_in?: number;
   refresh_token?: string;
   scope?: string;
+  /** Internal only: verified OIDC subject; never returned to the browser. */
+  subject?: string;
 }
 
 /**
@@ -195,16 +179,19 @@ function redactSecrets(value: string, secrets: readonly string[]): string {
 export interface GoogleOAuthClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** Tests can substitute verification; production uses Google's signature/issuer/audience/expiry validator. */
+  verifyIdToken?: (idToken: string, audience: string) => Promise<{ sub?: string; nonce?: string }>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** The port the router talks to — the seam tests substitute. */
 export interface GoogleOAuthPort {
-  authorizeUrl(input: { state: string; challenge: string }): string;
+  authorizeUrl(input: { state: string; challenge: string; purpose?: "autojoin"; nonce?: string }): string;
   exchangeCode(input: {
     code: string;
     verifier: string;
+    nonce?: string;
   }): Promise<GoogleTokenPayload>;
   refresh(refreshToken: string): Promise<GoogleTokenPayload>;
   revoke(token: string): Promise<void>;
@@ -213,6 +200,7 @@ export interface GoogleOAuthPort {
 export class GoogleOAuthClient implements GoogleOAuthPort {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly verifyIdToken: NonNullable<GoogleOAuthClientOptions["verifyIdToken"]>;
 
   constructor(
     private readonly config: GoogleOAuthConfig,
@@ -220,6 +208,13 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
   ) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const verifier = new OAuth2Client({ clientId: config.clientId,
+      transporterOptions: { fetchImplementation: this.fetchImpl, timeout: this.timeoutMs },
+    });
+    this.verifyIdToken = options.verifyIdToken ?? (async (idToken, audience) => {
+      const ticket = await verifier.verifyIdToken({ idToken, audience });
+      return ticket.getPayload() as { sub?: string; nonce?: string };
+    });
   }
 
   /**
@@ -230,12 +225,17 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
    * later session into a silent re-consent. `prompt=consent` also means a re-connect always
    * re-issues the refresh token rather than returning an access token the SPA cannot renew.
    */
-  authorizeUrl(input: { state: string; challenge: string }): string {
+  authorizeUrl(input: { state: string; challenge: string; purpose?: "autojoin"; nonce?: string }): string {
     const url = new URL(this.config.authorizeEndpoint);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", this.config.clientId);
     url.searchParams.set("redirect_uri", this.config.redirectUri);
-    url.searchParams.set("scope", this.config.scope);
+    url.searchParams.set("scope", input.purpose === "autojoin" ? GOOGLE_AUTOJOIN_SCOPES : this.config.scope);
+    if (input.purpose === "autojoin") {
+      if (!input.nonce) throw new Error("autojoin requires an OIDC nonce");
+      url.searchParams.set("nonce", input.nonce);
+      url.searchParams.set("include_granted_scopes", "true");
+    }
     url.searchParams.set("state", input.state);
     url.searchParams.set("code_challenge", input.challenge);
     url.searchParams.set("code_challenge_method", "S256");
@@ -252,6 +252,7 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
   async exchangeCode(input: {
     code: string;
     verifier: string;
+    nonce?: string;
   }): Promise<GoogleTokenPayload> {
     const body = new URLSearchParams({
       grant_type: "authorization_code",
@@ -266,7 +267,19 @@ export class GoogleOAuthClient implements GoogleOAuthPort {
       input.verifier,
       this.config.clientSecret,
     ]);
-    return toTokenPayload(payload, "exchange");
+    const tokens = toTokenPayload(payload, "exchange");
+    if (input.nonce !== undefined) {
+      try {
+        const idToken = (payload as Record<string, unknown>).id_token;
+        if (typeof idToken !== "string") throw new Error("missing identity");
+        const identity = await this.verifyIdToken(idToken, this.config.clientId);
+        if (!identity?.sub || identity.nonce !== input.nonce) throw new Error("invalid identity");
+        tokens.subject = identity.sub;
+      } catch {
+        throw new GoogleOAuthError({ status: 400, error: "invalid_identity", operation: "exchange" });
+      }
+    }
+    return tokens;
   }
 
   /**

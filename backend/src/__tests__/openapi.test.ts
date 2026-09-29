@@ -394,6 +394,36 @@ describe("connector webhook paths", () => {
  * while `GOOGLE_MEET_OAUTH_ENABLED` is off every path here 404s. Documented because the SPA is the
  * only client and these five routes are the entire contract between it and Google.
  */
+describe("Calendar autojoin API contract", () => {
+  const prefix = "/api/connectors/google/autojoin";
+  const names = ["status", "begin", "exchange", "enable", "disable", "disconnect"];
+  test("publishes six session-authenticated routes and status is the only GET", () => {
+    expect(Object.keys(paths()).filter(path => path.startsWith(`${prefix}/`)).sort())
+      .toEqual(names.map(name => `${prefix}/${name}`).sort());
+    for (const name of names) {
+      const methods = paths()[`${prefix}/${name}`];
+      const method = name === "status" ? "get" : "post";
+      expect(Object.keys(methods)).toEqual([method]);
+      expect(methods[method].security ?? spec.security).toEqual([{ bearerAuth: [] }]);
+      expect(methods[method].responses["401"]).toEqual({ $ref: "#/components/responses/Unauthenticated" });
+    }
+  });
+  test("pins consent, browser-first finalization and truthful disable/disconnect custody", () => {
+    const begin = paths()[`${prefix}/begin`].post;
+    expect(begin.requestBody.content["application/json"].schema.properties.consent.const).toBe(true);
+    expect(begin.description).toMatch(/authenticated tenant.*purpose.*consent.*PKCE challenge.*nonce/i);
+    const exchange = paths()[`${prefix}/exchange`].post.description;
+    expect(exchange).toMatch(/actual exchange response/);
+    expect(exchange).toMatch(/enabling record before encrypted custody/);
+    expect(exchange).toMatch(/never an ID token or Google subject/i);
+    expect(exchange).toMatch(/browser must store its importer secret before calling enable/i);
+    expect(paths()[`${prefix}/enable`].post.description).toMatch(/Probes primary Calendar access before enabling/i);
+    expect(paths()[`${prefix}/disable`].post.description).toMatch(/Keeps the browser importer and recordings/i);
+    expect(paths()[`${prefix}/disconnect`].post.responses["502"]).toBeTruthy();
+    expect(paths()[`${prefix}/disconnect`].post.description).toMatch(/even when upstream revocation fails/i);
+  });
+});
+
 describe("google meet oauth paths", () => {
   const START = "/api/connectors/google/oauth/start";
   const CALLBACK = "/api/connectors/google/oauth/callback";
@@ -401,14 +431,14 @@ describe("google meet oauth paths", () => {
   const REFRESH = "/api/connectors/google/oauth/refresh";
   const REVOKE = "/api/connectors/google/oauth/revoke";
 
-  test("publishes exactly the five routes, on the sibling prefix", () => {
+  test("publishes exactly five browser OAuth routes, with autojoin on a separate authenticated prefix", () => {
     expect(Object.keys(paths())).toEqual(
       expect.arrayContaining([START, CALLBACK, EXCHANGE, REFRESH, REVOKE]),
     );
     // A SIBLING of /api/connectors/webhooks, never a child: a path under the webhook prefix
     // would be caught by that group's one-segment rule (or worse, by the public raw mount).
     const googlePaths = Object.keys(paths()).filter((p) =>
-      p.startsWith("/api/connectors/google/"),
+      p.startsWith("/api/connectors/google/oauth/"),
     );
     expect(googlePaths.sort()).toEqual([CALLBACK, EXCHANGE, REFRESH, REVOKE, START].sort());
     for (const p of googlePaths) {
@@ -463,7 +493,7 @@ describe("google meet oauth paths", () => {
     expect(code.required).toBe(false);
   });
 
-  test("descriptions state the invariants: persists nothing, pinned origin, whitelisted payload", () => {
+  test("descriptions state browser-only custody, pinned origin and whitelisted payload invariants", () => {
     const start = paths()[START].get.description as string;
     const callback = paths()[CALLBACK].get.description as string;
     const exchange = paths()[EXCHANGE].post.description as string;
@@ -478,7 +508,9 @@ describe("google meet oauth paths", () => {
     // The scope pair is a compliance boundary, not a code tweak — a Drive scope is Restricted.
     expect(start).toMatch(/meetings\.space\.readonly/);
     expect(start).toMatch(/meetings\.space\.settings/);
-    expect(start).toMatch(/no Drive/i);
+    expect(start).toMatch(/drive\.metadata\.readonly/);
+    expect(start).toMatch(/documents\.readonly/);
+    expect(start).toMatch(/Calendar.*only.*autojoin/i);
     // The server holds the challenge, never the verifier.
     expect(start).toMatch(/never the verifier/i);
 
@@ -489,7 +521,8 @@ describe("google meet oauth paths", () => {
     expect(callback).toMatch(/no-referrer/);
 
     // The reason this proxy exists at all, on the route where a token first appears.
-    expect(exchange).toMatch(/stores NOTHING/);
+    expect(exchange).toMatch(/browser-only flow takes no server custody/);
+    expect(exchange).toMatch(/disables unattended access/);
     expect(exchange).toMatch(/id_token/);
     expect(exchange).toMatch(/invalid_grant/);
     expect(refresh).toMatch(/BROWSER holds the refresh token/);

@@ -345,7 +345,12 @@ describe("Connectors page wiring", () => {
     // the transcription key, and the user's space is written through the shared connector store.
     const section = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
     expect(section).not.toContain("connectorSecrets");
-    expect(section).toContain("saveTranscriberMeeting");
+    expect(section).not.toContain("saveTranscriberMeeting");
+    expect(section).toContain("useTranscriberSavedState");
+    const shell = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
+    expect(shell.match(/<TranscriberLibrarySyncProvider /g)).toHaveLength(1);
+    const sync = readFileSync(join(import.meta.dir, "useTranscriberLibrarySync.tsx"), "utf8");
+    expect(sync).toContain("saveTranscriberMeeting");
   });
 });
 

@@ -5,6 +5,8 @@ import {
   GLOBAL_LIMIT,
   GOOGLE_OAUTH_LIMIT,
   GOOGLE_OAUTH_PATHS,
+  CALENDAR_AUTOJOIN_LIMIT,
+  CALENDAR_AUTOJOIN_PATHS,
 } from "../rate-limits.js";
 
 const realFetch = globalThis.fetch;
@@ -149,6 +151,27 @@ describe("google oauth rate limit bucket (WP-A)", () => {
       }
       const over = await realFetch(`http://localhost:${port}${path}`);
       expect(over.status).toBe(429);
+    });
+  });
+});
+
+
+describe("Calendar autojoin rate limit bucket", () => {
+  it("isolates authenticated status polling from chat and popup OAuth limits", async () => {
+    const app = express();
+    applyRateLimiters(app);
+    expect(CALENDAR_AUTOJOIN_PATHS).toEqual(["/api/connectors/google/autojoin"]);
+    app.get("/api/connectors/google/autojoin/status", (_req, res) => res.json({ ok: true }));
+    app.get("/api/connectors/google/oauth/start", (_req, res) => res.json({ ok: true }));
+    app.post("/api/chat", (_req, res) => res.json({ ok: true }));
+    await withServer(app, async port => {
+      const base = `http://localhost:${port}`;
+      for (let i = 0; i < CALENDAR_AUTOJOIN_LIMIT; i++) {
+        expect((await realFetch(`${base}/api/connectors/google/autojoin/status`)).status).toBe(200);
+      }
+      expect((await realFetch(`${base}/api/connectors/google/autojoin/status`)).status).toBe(429);
+      expect((await realFetch(`${base}/api/connectors/google/oauth/start`)).status).toBe(200);
+      expect((await realFetch(`${base}/api/chat`, { method: "POST" })).status).toBe(200);
     });
   });
 });

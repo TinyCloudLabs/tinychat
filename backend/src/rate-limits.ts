@@ -76,6 +76,10 @@ export const DELEGATION_PATHS = ["/api/delegations"] as const;
 export const GOOGLE_OAUTH_LIMIT = 30;
 export const GOOGLE_OAUTH_PATHS = ["/api/connectors/google/oauth"] as const;
 
+/** Authenticated autojoin status polls once a minute; it must not exhaust chat or popup OAuth. */
+export const CALENDAR_AUTOJOIN_LIMIT = 240;
+export const CALENDAR_AUTOJOIN_PATHS = ["/api/connectors/google/autojoin"] as const;
+
 /**
  * The transcriber surface (routes/transcriber.ts) polls: while a bot is joining or in a meeting
  * the settings card re-reads the list every few seconds, and that alone would exhaust the
@@ -90,6 +94,7 @@ const DEDICATED_PATHS = [
   ...CONNECTOR_MEETINGS_PATHS,
   ...DELEGATION_PATHS,
   ...GOOGLE_OAUTH_PATHS,
+  ...CALENDAR_AUTOJOIN_PATHS,
   ...TRANSCRIBER_PATHS,
 ] as const;
 
@@ -132,6 +137,12 @@ export function applyRateLimiters(app: Express): void {
     standardHeaders: "draft-7",
     legacyHeaders: false,
   });
+  const calendarAutojoinLimiter = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: CALENDAR_AUTOJOIN_LIMIT,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+  });
   const transcriberLimiter = rateLimit({
     windowMs: WINDOW_MS,
     limit: TRANSCRIBER_LIMIT,
@@ -151,5 +162,6 @@ export function applyRateLimiters(app: Express): void {
   for (const p of CONNECTOR_MEETINGS_PATHS) app.use(p, connectorMeetingsLimiter);
   for (const p of DELEGATION_PATHS) app.use(p, delegationLimiter);
   for (const p of GOOGLE_OAUTH_PATHS) app.use(p, googleOAuthLimiter);
+  for (const p of CALENDAR_AUTOJOIN_PATHS) app.use(p, calendarAutojoinLimiter);
   for (const p of TRANSCRIBER_PATHS) app.use(p, transcriberLimiter);
 }

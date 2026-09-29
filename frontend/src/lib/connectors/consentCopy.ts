@@ -44,7 +44,7 @@
  * cannot reach fails B2 wherever it is written.
  */
 
-export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest" | "google-oauth";
+export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin";
 
 export interface BackgroundSyncConsentCopy {
   /** Which §3.8 branch this text is. Read by B2 to pick its assertion set. */
@@ -315,3 +315,20 @@ export function consentCopyText(copy: BackgroundSyncConsentCopy): string {
     ...(copy.disconnectNote === undefined ? [] : [copy.disconnectNote]),
   ].join("\n");
 }
+
+/** Separate custody consent: ordinary browser import remains stateless on the server. */
+export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  variant: "google-calendar-autojoin",
+  heading: "Enable Calendar autojoin",
+  intro: "TinyChat can send a notetaker to eligible Google Meet events while your browser is closed.",
+  changesHeading: "What you authorize",
+  bullets: [
+    "TinyChat reads events on your primary Google calendar in the background. The Calendar permission can read events on calendars you own; primary-calendar-only is TinyChat’s policy. Confirmed timed Meet events qualify when you organize them or have accepted. Declined, tentative, unanswered and all-day events are skipped.",
+    "Our server stores your Google refresh token encrypted and uses it without your browser. This token retains your existing Meet, Drive metadata and Docs permissions and adds read access to Calendar events and a stable Google account identifier. We do not request your profile or email.",
+    "The bot may be sent from one minute before start until the earlier of five minutes after start or the event end. It requests admission; the host decides whether to admit it. Meeting title, scheduled start and recording remain available for your return.",
+    "Your browser saves completed recordings into your own space after you return and unlock it. Enabling grants the server no new permission to write to your space.",
+    "Turning off stops new sends, requests stops for active autojoined bots and deletes the server’s token. Your browser importer and Google’s existing grant remain. Turning on again requires this consent again. Reconnecting the browser importer turns autojoin off until you explicitly re-enable it.",
+  ],
+  consentCheckbox: "I authorize unattended Calendar reading and encrypted server storage of my Google refresh token to autojoin eligible meetings.",
+  disconnectNote: "Disconnecting also asks Google to revoke access and removes the browser token. A failed revoke is reported; local token copies are still removed. Your recordings remain available.",
+};
