@@ -12,10 +12,9 @@
 // "whispercpp")`). There is no live transcript while recording.
 //
 // Speaker labels: batch results carry a `channel` per word (0 = mic,
-// 1 = system audio in the recorded stereo file — inferred, not yet confirmed by
-// a two-source smoke test), so sentences are labeled "Speaker 1"/"Speaker 2"
-// rather than asserting which side is the user. Flip to You/Others once the
-// channel order is verified on a real capture.
+// 1 = system audio in the recorded stereo file, confirmed on a real capture),
+// so sentences are labeled "You" and "Others". Mic echo of system audio is
+// dropped and same-speaker segments merge into turns (localTranscriptTurns.ts).
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -26,6 +25,7 @@ import {
   type UpsertMeetingOutcome,
 } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
+import { localChannelLabel, localTranscriptTurns, type LocalWord } from "./localTranscriptTurns";
 // Type-only imports: erased at build time, so the web bundle never pulls the
 // vendored bindings (or @tauri-apps/api) in. Runtime access goes through the
 // lazy dynamic import in loadBridge().
@@ -1115,22 +1115,6 @@ export function createLocalTranscriber(
 
 // ── Normalization → Meetings store ─────────────────────────────────────
 
-/** Sentence-boundary split: a channel change or a pause longer than this. */
-const SEGMENT_GAP_SECONDS = 1.5;
-
-/** Conservative label: channel order (mic vs system) is unverified, so we
- *  number speakers instead of asserting "You"/"Others". */
-export function localChannelLabel(channel: number | undefined): string | null {
-  return channel === undefined ? null : `Speaker ${channel + 1}`;
-}
-
-interface LocalWord {
-  text: string;
-  start: number;
-  end: number;
-  channel: number | undefined;
-}
-
 function collectWords(response: BatchResponse): LocalWord[] {
   const words: LocalWord[] = [];
   for (const channel of response.results?.channels ?? []) {
@@ -1147,40 +1131,10 @@ function collectWords(response: BatchResponse): LocalWord[] {
   return words.sort((a, b) => a.start - b.start);
 }
 
-function wordsToSentences(words: LocalWord[]): FirefliesSentence[] {
-  const sentences: FirefliesSentence[] = [];
-  let cur: LocalWord[] = [];
-  let curChannel: number | undefined;
-
-  const flush = () => {
-    if (cur.length === 0) return;
-    sentences.push({
-      index: sentences.length,
-      speaker_name: localChannelLabel(curChannel),
-      text: cur.map((w) => w.text).join(" "),
-      start_time: cur[0]!.start,
-      end_time: cur[cur.length - 1]!.end,
-    });
-    cur = [];
-  };
-
-  for (const w of words) {
-    const prev = cur[cur.length - 1];
-    if (prev !== undefined && (w.channel !== curChannel || w.start - prev.end > SEGMENT_GAP_SECONDS)) {
-      flush();
-    }
-    curChannel = w.channel;
-    cur.push(w);
-  }
-  flush();
-  return sentences;
-}
-
 export function normalizeLocalTranscript(
   r: LocalTranscriptResult,
 ): { meeting: NormalizedMeeting; sentences: FirefliesSentence[] } {
-  const words = collectWords(r.response);
-  const sentences = wordsToSentences(words);
+  const sentences = localTranscriptTurns(collectWords(r.response));
 
   // Fallback: a channel alternative with a transcript but no word timings still
   // saves as one sentence, rather than silently dropping speech.
@@ -1198,7 +1152,8 @@ export function normalizeLocalTranscript(
     }
   }
 
-  const lastEnd = sentences.length > 0 ? sentences[sentences.length - 1]!.end_time : 0;
+  // Turns are ordered by start, so the last one need not end last.
+  const lastEnd = sentences.reduce((end, s) => Math.max(end, s.end_time), 0);
   const transcriptText = sentences.map((s) => s.text).join("\n");
   const speakerNames = [...new Set(sentences.map((s) => s.speaker_name).filter((n): n is string => n !== null))];
   const started = r.startedAt;
@@ -1230,7 +1185,7 @@ export function normalizeLocalTranscript(
         transcript_text: transcriptText || null,
         // Deliberately no audio_path: the recording stays on this Mac and the
         // space must not learn a local filesystem path.
-        speaker_labels: "channel-numbered-unverified",
+        speaker_labels: "channel-you-others",
       },
     },
     sentences,

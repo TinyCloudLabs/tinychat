@@ -237,6 +237,30 @@ function scoreExcerpt(questionTerms: ReadonlySet<string>, excerpt: MeetingExcerp
   return matchingTerms * 10 + Math.min(usefulMomentBoost, 4);
 }
 
+/**
+ * Exo Local transcripts label the app's user "You" (mic) and the far side of a
+ * call "Others" (system audio). A question about what the user or the other
+ * side said asks for that speaker, which term scoring cannot see: "I" and
+ * "you" are stop words and speaker labels are not scored.
+ */
+const SPEAKER_INTENTS: readonly { speaker: string; pattern: RegExp }[] = [
+  {
+    speaker: "you",
+    pattern: /\b(?:did\s+(?:i|you)\s+(?:say|mention|ask|talk\s+about)|what\s+(?:i|you)\s+(?:said|mentioned|asked))\b/iu,
+  },
+  {
+    speaker: "others",
+    pattern: /\b(?:did\s+(?:the\s+)?(?:others|other\s+(?:side|person|people|party)|they)\s+(?:say|mention|ask|talk\s+about)|what\s+(?:the\s+)?(?:others|other\s+(?:side|person|people|party)|they)\s+(?:said|mentioned|asked))\b/iu,
+  },
+];
+
+/** The lowercased speaker label a question asks about, or null when it asks
+ *  about none (or both). */
+function requestedSpeaker(question: string): string | null {
+  const asked = SPEAKER_INTENTS.filter(({ pattern }) => pattern.test(question));
+  return asked.length === 1 ? asked[0]!.speaker : null;
+}
+
 function compareExcerptIdentity(left: MeetingExcerpt, right: MeetingExcerpt): number {
   const leftStart = left.startSecs ?? Number.POSITIVE_INFINITY;
   const rightStart = right.startSecs ?? Number.POSITIVE_INFINITY;
@@ -270,15 +294,26 @@ export function formatExcerptCitation(index: number, excerpt: MeetingExcerpt): s
  * Select a small, deterministic set of query-relevant transcript chunks.
  * The comparison includes evidence values rather than source-array position so
  * storage page order cannot alter the chosen excerpts or their citations.
+ * When the question asks what "You" or "Others" said, that speaker's excerpts
+ * rank first (by score among themselves), and other excerpts fill any
+ * remaining slots.
  */
 export function rankMeetingExcerpts(
   question: string,
   chunks: readonly MeetingExcerpt[],
 ): readonly CitedMeetingExcerpt[] {
   const terms = queryTerms(question);
+  const speaker = requestedSpeaker(question);
   return chunks
-    .map((excerpt) => ({ excerpt, score: scoreExcerpt(terms, excerpt) }))
-    .sort((left, right) => right.score - left.score || compareExcerptIdentity(left.excerpt, right.excerpt))
+    .map((excerpt) => ({
+      excerpt,
+      requested: speaker !== null && excerpt.speaker?.trim().toLowerCase() === speaker ? 1 : 0,
+      score: scoreExcerpt(terms, excerpt),
+    }))
+    .sort((left, right) =>
+      right.requested - left.requested
+      || right.score - left.score
+      || compareExcerptIdentity(left.excerpt, right.excerpt))
     .slice(0, MAX_EXCERPTS)
     .map(({ excerpt }, index) => ({ ...excerpt, citation: formatExcerptCitation(index, excerpt) }));
 }

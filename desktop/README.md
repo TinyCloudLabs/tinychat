@@ -113,9 +113,11 @@ builds attribute these to the launching terminal. `Entitlements.plist` adds
 
 ### Known gaps
 
-- Speaker labels are channel-numbered. A real capture confirmed the order:
-  `Speaker 1` = microphone, `Speaker 2` = system audio (the remote side of a
-  call). The mic also picks up speaker output acoustically.
+- Speakers are labelled by channel: **You** = microphone, **Others** = system
+  audio (the remote side of a call); a real capture confirmed the order.
+  Without headphones the mic also hears the speakers; the saved transcript
+  drops mic phrases that clearly echo system audio and merges consecutive
+  segments per speaker (`frontend/src/lib/localTranscriptTurns.ts`).
 - One capture at a time: the shared RootActor rejects a second `start_capture`.
 - Calling any other plugin command needs an explicit grant in
   `capabilities-transcription/transcription.json`.
