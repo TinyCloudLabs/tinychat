@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 /**
  * Release invariants. Fails when:
- *  - a release unit has no stable X.Y.Z version or is not private (Changesets silently skips unversioned packages);
  *  - any workspace package is not private (nothing in this repo may ever reach npm);
- *  - a pending changeset names anything other than the release units, or pre mode is on (stable only);
+ *  - a release unit has no X.Y.Z / X.Y.Z-beta.N version (Changesets silently skips unversioned packages);
+ *  - web and desktop versions differ (one fixed group), or the backend leaves 0.x;
+ *  - .changeset/pre.json is not beta pre mode (or its "exit" for a stable release);
+ *  - a changeset names anything other than the release units, or bumps the backend `major`;
  *  - desktop/package.json, Cargo.toml and Cargo.lock disagree, or tauri.conf.json does not read package.json.
- * With --since <ref> (PR check) it also requires the branch to add at least one changeset.
+ * With --since <ref> (PR check) it also requires the branch to add a changeset, except for the Release stable PR,
+ * whose only change is flipping .changeset/pre.json to "exit".
  */
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { DESKTOP, STABLE_VERSION, UNITS, readCargoLockVersion, readCargoTomlVersion, readJson, repoRoot } from './units.mjs';
-
-const CHANGESET_FILE = /^\.changeset\/(?!README\.md$)[^/]+\.md$/;
-const RELEASE_LINE = /^(["']?)([^"'\s:]+)\1\s*:\s*(major|minor|patch|none)$/;
+import {
+  BACKEND, DESKTOP, FIXED, PRE_TAG, UNITS, VERSION, git, readCargoLockVersion, readCargoTomlVersion, readChangesets,
+  readJson, readPreState, repoRoot,
+} from './lib.mjs';
 
 function workspaceDirs(root) {
   const dirs = [];
@@ -33,22 +35,6 @@ function workspaceDirs(root) {
   return dirs;
 }
 
-function parseChangeset(text) {
-  const match = /^---\r?\n([\s\S]*?)^---\s*$/m.exec(text);
-  if (!match || match.index !== 0) throw new Error('missing --- frontmatter');
-  return match[1].split(/\r?\n/).filter(line => line.trim()).map(line => {
-    const release = RELEASE_LINE.exec(line.trim());
-    if (!release) throw new Error(`unparseable release line ${JSON.stringify(line)}`);
-    return { name: release[2], type: release[3] };
-  });
-}
-
-function git(root, args) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
-  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr.trim()}`);
-  return result.stdout.split('\n').filter(Boolean);
-}
-
 function checkRelease(root, { since } = {}) {
   const errors = [];
   const notices = [];
@@ -60,25 +46,32 @@ function checkRelease(root, { since } = {}) {
     if (pkg.private !== true) errors.push(`${dir}/package.json (${pkg.name}) must be "private": true so it can never be published to npm`);
   }
 
+  const versions = new Map();
   for (const unit of UNITS) {
     const pkg = readJson(root, `${unit.dir}/package.json`);
     if (pkg.name !== unit.name) errors.push(`${unit.dir}/package.json must be named ${unit.name}, found ${JSON.stringify(pkg.name)}`);
-    if (!STABLE_VERSION.test(pkg.version ?? '')) errors.push(`${unit.dir}/package.json needs a stable X.Y.Z "version" (Changesets silently skips unversioned packages), found ${JSON.stringify(pkg.version)}`);
+    if (!VERSION.test(pkg.version ?? '')) errors.push(`${unit.dir}/package.json needs an X.Y.Z or X.Y.Z-beta.N "version" (Changesets silently skips unversioned packages), found ${JSON.stringify(pkg.version)}`);
+    versions.set(unit.name, pkg.version);
+  }
+  if (new Set(FIXED.map(name => versions.get(name))).size !== 1) {
+    errors.push(`${FIXED.join(' and ')} share one version (Changesets fixed group), found ${FIXED.map(name => `${name}@${versions.get(name)}`).join(', ')}`);
+  }
+  if (!/^0\./.test(versions.get(BACKEND) ?? '')) errors.push(`${BACKEND} stays on 0.x, found ${versions.get(BACKEND)}`);
+
+  const pre = readPreState(root);
+  if (pre && (pre.tag !== PRE_TAG || !['pre', 'exit'].includes(pre.mode))) {
+    errors.push(`.changeset/pre.json must be {"mode": "pre" | "exit", "tag": "${PRE_TAG}"}, found ${JSON.stringify(pre)}`);
   }
 
-  if (existsSync(join(root, '.changeset/pre.json'))) errors.push('.changeset/pre.json exists: prerelease mode is not allowed (stable channel only)');
-  const pending = new Map();
-  for (const file of readdirSync(join(root, '.changeset')).map(name => `.changeset/${name}`).filter(file => CHANGESET_FILE.test(file))) {
-    let releases;
-    try {
-      releases = parseChangeset(readFileSync(join(root, file), 'utf8'));
-    } catch (error) {
-      errors.push(`${file}: ${error.message}`);
+  const changesets = readChangesets(root);
+  for (const { file, error, releases } of changesets) {
+    if (error) {
+      errors.push(`${file}: ${error}`);
       continue;
     }
-    pending.set(file, releases);
-    for (const { name } of releases) {
+    for (const { name, type } of releases) {
       if (!unitNames.has(name)) errors.push(`${file} names ${name}; changesets may only name ${[...unitNames].join(', ')}`);
+      if (name === BACKEND && type === 'major') errors.push(`${file} bumps ${BACKEND} major; the backend stays on 0.x and takes only minor or patch`);
     }
   }
 
@@ -97,14 +90,17 @@ function checkRelease(root, { since } = {}) {
   }
 
   if (since) {
-    const added = git(root, ['diff', '--name-only', '--diff-filter=A', `${since}...HEAD`]).filter(file => CHANGESET_FILE.test(file));
-    if (added.length === 0) {
+    const changed = git(root, ['diff', '--name-only', `${since}...HEAD`]).split('\n').filter(Boolean);
+    const added = git(root, ['diff', '--name-only', '--diff-filter=A', `${since}...HEAD`]).split('\n')
+      .filter(file => /^\.changeset\/(?!README\.md$)[^/]+\.md$/.test(file));
+    const releaseStablePr = changed.length === 1 && changed[0] === '.changeset/pre.json' && pre?.mode === 'exit';
+    if (added.length === 0 && !releaseStablePr) {
       errors.push(`No changeset added since ${since}. Every PR needs one: run \`bunx changeset\`, or \`bunx changeset add --empty\` if nothing ships.`);
     }
-    const changed = git(root, ['diff', '--name-only', `${since}...HEAD`]);
-    const namesDesktop = added.some(file => pending.get(file)?.some(release => release.name === 'exo-desktop'));
-    if (!namesDesktop && changed.some(file => file.startsWith('frontend/src/'))) {
-      notices.push('frontend/src changed without an exo-desktop changeset. The desktop app bundles the frontend; add one if desktop users should get this change.');
+    const majors = changesets.filter(({ file }) => added.includes(file))
+      .flatMap(({ releases = [] }) => releases.filter(release => release.type === 'major' && release.name !== BACKEND));
+    if (majors.length) {
+      notices.push(`Major bump for ${[...new Set(majors.map(release => release.name))].join(', ')}: after merge the Release workflow refuses it until someone runs it with confirm=major-beta.`);
     }
   }
 

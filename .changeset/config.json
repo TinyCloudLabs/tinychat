@@ -1,12 +1,12 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
-  "changelog": ["@changesets/changelog-github", { "repo": "TinyCloudLabs/tinychat" }],
+  "changelog": "@changesets/cli/changelog",
   "commit": false,
   "baseBranch": "main",
   "access": "restricted",
   "privatePackages": { "version": true, "tag": false },
   "updateInternalDependencies": "patch",
   "ignore": ["@tinyboilerplate/*", "tinyboilerplate-e2e"],
-  "fixed": [],
+  "fixed": [["@tinychat/frontend", "exo-desktop"]],
   "linked": []
 }

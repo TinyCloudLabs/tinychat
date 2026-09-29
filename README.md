@@ -121,43 +121,51 @@ screenshots, videos, or reports from real-auth runs.
 ## Releases
 
 Versions and changelogs are managed with [Changesets](https://changesets.dev)
-v3. There are three release units, versioned independently:
+v3, following the same beta/stable model as `TinyCloudLabs/js-sdk`. Nothing in
+this repo is ever published to npm.
 
-| Unit | Path | Tag |
-|---|---|---|
-| `exo-desktop` | `desktop/` | `exo-desktop@X.Y.Z` |
-| `@tinychat/frontend` | `frontend/` | `@tinychat/frontend@X.Y.Z` |
-| `@tinychat/backend` | `backend/` | `@tinychat/backend@X.Y.Z` |
+| Unit | Path | Tag | Version |
+|---|---|---|---|
+| `@tinychat/frontend` | `frontend/` | `@tinychat/frontend@X.Y.Z` | shared with desktop |
+| `exo-desktop` | `desktop/` | `exo-desktop@X.Y.Z` | shared with web |
+| `@tinychat/backend` | `backend/` | `@tinychat/backend@X.Y.Z` | independent, stays `0.x` |
 
-`packages/*` (`@tinyboilerplate/*`) and `test/` are private and ignored by
-Changesets. Nothing in this repo is ever published to npm. Releases are stable
-`X.Y.Z` only (no prerelease mode).
+Web and desktop (and, later, mobile) are one product version: a Changesets
+`fixed` group, so a changeset for either bumps both. The backend takes only
+`minor` and `patch` bumps; a `major` backend changeset fails the checks.
+`packages/*` (`@tinyboilerplate/*`) and `test/` are private and ignored.
 
 **Every PR needs a changeset**; the `Changeset` PR check fails without one:
 
 ```bash
-bunx changeset                                        # pick units and bumps interactively
-bunx changeset --minor exo-desktop -m "Describe the change"
-bunx changeset add --empty                            # nothing ships (docs, CI, refactors)
+bunx changeset                                          # pick units and bumps interactively
+bunx changeset --minor @tinychat/frontend -m "Describe the change"
+bunx changeset add --empty                              # nothing ships (docs, CI, refactors)
 ```
 
 Name the deliverable a change affects, not the library it touches: a
 `packages/core` change that alters the API needs a `@tinychat/backend`
-changeset. The desktop app bundles `frontend/`, so add an `exo-desktop`
-changeset as well when desktop users should get a frontend change (the check
-posts a notice as a reminder).
+changeset.
 
-After a merge to main, the `Release` workflow opens or updates a
-**chore(release): version packages** PR that bumps versions and writes each
-unit's `CHANGELOG.md`. Merging that PR makes the next `Release` run tag every
-bumped unit (`<name>@<version>`) on the commit that merged it. The PR text
-written by the Changesets action mentions npm; nothing is published. Tags do
-not drive deploys yet: production still deploys from pushes to main.
+`main` stays in Changesets pre mode (`.changeset/pre.json`, tag `beta`):
+
+- **Beta.** After each merge that adds changesets, the `Release` workflow
+  versions betas (for example `0.3.0-beta.2`), commits them to main with
+  `[skip ci]`, and tags each bumped unit `<name>@<version>`. Betas do not
+  deploy web or backend. A major web/desktop bump is refused until someone
+  runs the `Release` workflow with `confirm=major-beta`.
+- **Stable.** The workflow keeps a **chore(release): release stable** PR open
+  that only flips `.changeset/pre.json` to `"exit"`, and its description lists
+  what stable would ship. Merging it versions the stable releases, tags them,
+  and puts main back into beta pre mode.
+
+Tags do not drive deploys or desktop builds yet; production still deploys
+from pushes to main until that is wired up.
 
 `desktop/package.json` is the single source of the desktop version:
-`tauri.conf.json` reads it (`"version": "../package.json"`), and
-`bun run release:version` copies it into `desktop/src-tauri/Cargo.toml` and
-`Cargo.lock`. `bun run release:check` fails if they drift.
+`tauri.conf.json` reads it (`"version": "../package.json"`), and the release
+workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
+`bun run release:check` fails if they drift.
 
 ## Chat Sharing
 
