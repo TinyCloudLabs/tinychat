@@ -8,7 +8,10 @@
 //   6. only a relative `/uploads/<id>` path is returned — anything else is upstream_bad_response;
 //   7. upstream failures map to stable public codes with a correlation id, and PTX 401/403 is an
 //      operator fault logged with alert=true; logs are content-free;
-//   8. no route accepts audio.
+//   8. no route accepts audio;
+//   9. every success body is rebuilt by a strict DTO (unknown fields dropped, off-contract values
+//      rejected), PTX bodies are read under per-route size caps, and responses are no-store;
+//  10. the served OpenAPI omits the feature while dark; the deploy canary probes the mount.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -24,14 +27,17 @@ import { createAuthMiddleware } from "../middleware/auth.js";
 import { applyRateLimiters, TRANSCRIBER_LIMIT, TRANSCRIBER_PATHS } from "../rate-limits.js";
 import { createPrivateCloudTranscriptionRouter } from "../routes/private-cloud-transcription.js";
 import {
-  MAX_RECORDING_BYTES,
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
   PUBLIC_ERRORS,
+  PtxResponseTooLargeError,
+  RESPONSE_LIMITS,
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
   tenantRefFor,
+  withoutPrivateCloudOpenApi,
   type PrivateCloudTranscriptionConfig,
 } from "../services/private-cloud-transcription.js";
+import { JOB_ERRORS, MAX_RECORDING_BYTES } from "../services/private-cloud-transcription-dto.js";
 import { runPrivateCloudE2E } from "../../scripts/e2e-private-cloud-transcription.js";
 
 const SESSION_KEY = "synthetic-session-signing-key";
@@ -74,6 +80,27 @@ function sha256(bytes: Uint8Array | string): string {
 
 // ── Mock PTX batch API (plan §4.2) ──────────────────────────────────
 
+function completedResult() {
+  return {
+    status: "completed",
+    language: "en",
+    duration_seconds: 26,
+    provider: "tinfoil",
+    model: "voxtral-small-24b",
+    channels: 2,
+    speakers: [
+      { id: "channel_0", name: "Speaker 1", channel: 0 },
+      { id: "channel_1", name: "Speaker 2", channel: 1 },
+    ],
+    segments: [
+      { id: "seg_1", speaker_id: "channel_0", channel: 0, start: 0, end: 3, text: TRANSCRIPT_TEXT },
+      { id: "seg_2", speaker_id: "channel_1", channel: 1, start: 13, end: 15.5, text: "bob: good morning" },
+    ],
+    text: TRANSCRIPT_TEXT,
+    stats: { tinfoil_calls: 2, tinfoil_audio_seconds: 5.5 },
+  };
+}
+
 type Job = {
   id: string;
   tenant: string;
@@ -84,7 +111,15 @@ type Job = {
   capability: string;
   reads: number;
 };
-type Override = { status: number; body?: unknown; raw?: string; headers?: Record<string, string>; delayMs?: number };
+type Override = {
+  status: number;
+  body?: unknown;
+  raw?: string;
+  headers?: Record<string, string>;
+  delayMs?: number;
+  /** Stream `count` chunks with no Content-Length. */
+  chunked?: { chunk: string; count: number };
+};
 
 async function startMockPtx() {
   const requests: { method: string; url: string; headers: Record<string, unknown>; body: string }[] = [];
@@ -100,7 +135,13 @@ async function startMockPtx() {
     if (override) {
       if (override.delayMs) await new Promise((r) => setTimeout(r, override.delayMs));
       for (const [k, v] of Object.entries(override.headers ?? {})) res.setHeader(k, v);
-      if (override.raw !== undefined) res.status(override.status).type("text/plain").send(override.raw);
+      if (override.chunked) {
+        res.status(override.status).type("application/json");
+        for (let i = 0; i < override.chunked.count && !res.destroyed; i++) {
+          if (!res.write(override.chunked.chunk)) await new Promise((r) => setTimeout(r, 1));
+        }
+        res.end();
+      } else if (override.raw !== undefined) res.status(override.status).type("text/plain").send(override.raw);
       else if (override.body === undefined) res.status(override.status).end();
       else res.status(override.status).json(override.body);
       return;
@@ -113,14 +154,21 @@ async function startMockPtx() {
   });
   const ptxError = (res: express.Response, status: number, code: string, extra: object = {}) =>
     res.status(status).json({ error: { type: "invalid_request_error", code, message: `upstream says ${code}`, ...extra } });
+  // The full §4.2 status shape, plus fields TinyChat must drop (request_id, tenant_ref, storage_path).
   const view = (job: Job) => ({
     id: job.id,
     status: job.status,
     byte_size: job.byte_size,
-    request_id: "req_mock",
-    progress: { stage: job.status, queue_position: 0, regions_completed: 0, regions_total: 0 },
+    duration_seconds: job.status === "completed" ? 26 : null,
+    channels: job.status === "awaiting_upload" ? null : 2,
+    progress: { stage: job.status === "processing" ? "transcribe" : "waiting", queue_position: 0, regions_completed: 0, regions_total: 0 },
     retention: { audio: "stored", audio_deleted_at: null, transcript_expires_at: null },
     error: null,
+    created_at: "2026-09-29T10:00:00.000Z",
+    updated_at: "2026-09-29T10:00:05.000Z",
+    request_id: "req_mock",
+    tenant_ref: job.tenant,
+    storage_path: `/data/uploads/${job.id}.mp3`,
   });
   const owned = (req: express.Request, res: express.Response): Job | null => {
     const job = jobs.get(String(req.params.id));
@@ -192,18 +240,7 @@ async function startMockPtx() {
     const job = owned(req, res);
     if (!job) return;
     if (job.status !== "completed") return res.status(202).json({ id: job.id, status: job.status });
-    res.json({
-      status: "completed",
-      language: "en",
-      duration_seconds: 26,
-      provider: "tinfoil",
-      model: "voxtral-small-24b",
-      channels: 2,
-      speakers: [{ id: "channel_0", name: "Speaker 1", channel: 0 }],
-      segments: [{ id: "seg_1", speaker_id: "channel_0", channel: 0, start: 0, end: 3, text: TRANSCRIPT_TEXT }],
-      text: TRANSCRIPT_TEXT,
-      stats: { tinfoil_calls: 1, tinfoil_audio_seconds: 3 },
-    });
+    res.json(completedResult());
   });
   app.post("/v1/transcriptions/:id/cancel", (req, res) => {
     const job = owned(req, res);
@@ -671,41 +708,87 @@ describe("status, result, list, cancel, delete", () => {
 // ── Error mapping, correlation ids, logs ────────────────────────────
 
 describe("error mapping", () => {
-  const TABLE: [string, Override, number, string, PrivateCloudClass][] = [
-    ["key refused (401)", { status: 401, body: { error: { code: "invalid_api_key" } } }, 503, "service_misconfigured", "operator_fault"],
-    ["scope refused (403)", { status: 403, body: { error: { code: "insufficient_scope" } } }, 503, "service_misconfigured", "operator_fault"],
-    ["route missing (404, no code)", { status: 404, raw: "Not Found" }, 503, "service_misconfigured", "operator_fault"],
-    ["redirect", { status: 302, headers: { Location: "https://elsewhere.example/" } }, 503, "service_misconfigured", "operator_fault"],
-    ["paused", { status: 503, body: { error: { code: "service_paused" } }, headers: { "Retry-After": "120" } }, 503, "service_paused", "transient"],
-    ["unavailable", { status: 503, body: { error: { code: "service_unavailable" } } }, 503, "service_unavailable", "transient"],
-    ["busy", { status: 429, body: { error: { code: "service_busy", retry_after_seconds: 30 } } }, 429, "service_busy", "transient"],
-    ["quota", { status: 429, body: { error: { code: "quota_exceeded", retry_after_seconds: 3600 } } }, 429, "quota_exceeded", "transient"],
-    ["bare 429", { status: 429, raw: "slow down", headers: { "Retry-After": "7" } }, 429, "service_busy", "transient"],
-    ["500", { status: 500, body: { error: { code: "internal_error" } } }, 503, "service_unavailable", "transient"],
-    ["502 from the gateway", { status: 502, raw: "Bad Gateway" }, 503, "service_unavailable", "transient"],
-    ["unexpected 4xx", { status: 418, body: { error: { code: "teapot" } } }, 502, "upstream_bad_response", "transient"],
-    ["too large", { status: 413, body: { error: { code: "recording_too_large" } } }, 413, "recording_too_large", "client"],
-    ["not found", { status: 404, body: { error: { code: "transcription_not_found" } } }, 404, "transcription_not_found", "client"],
-  ];
   type PrivateCloudClass = "client" | "transient" | "operator_fault";
+  type Route = "capabilities" | "create" | "list" | "get" | "result" | "cancel" | "delete";
+  const JOB = "trn_0123456789ABCDEFGHJKMNPQRS";
+  const ERR = (code: string, extra: object = {}) => ({ error: { type: "x", code, ...extra } });
+  // [name, route, upstream answer, our status, our code, class]. Relayed only as an exact
+  // (route, status, code) contract tuple; everything else is classified, never trusted by code.
+  const TABLE: [string, Route, Override, number, string, PrivateCloudClass][] = [
+    ["key refused (401)", "get", { status: 401, body: ERR("invalid_api_key") }, 503, "service_misconfigured", "operator_fault"],
+    ["scope refused (403)", "create", { status: 403, body: ERR("insufficient_scope") }, 503, "service_misconfigured", "operator_fault"],
+    ["route missing (404, no code)", "get", { status: 404, raw: "Not Found" }, 503, "service_misconfigured", "operator_fault"],
+    ["not-found on a route that has no job", "capabilities", { status: 404, body: ERR("transcription_not_found") }, 503, "service_misconfigured", "operator_fault"],
+    ["not-found on list", "list", { status: 404, body: ERR("transcription_not_found") }, 503, "service_misconfigured", "operator_fault"],
+    ["method not allowed", "cancel", { status: 405, raw: "Method Not Allowed" }, 503, "service_misconfigured", "operator_fault"],
+    ["redirect", "get", { status: 302, headers: { Location: "https://elsewhere.example/" } }, 503, "service_misconfigured", "operator_fault"],
+    ["job not found", "get", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
+    ["job not found (result)", "result", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
+    ["job not found (cancel)", "cancel", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
+    ["job not found (delete)", "delete", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
+    ["paused", "create", { status: 503, body: ERR("service_paused"), headers: { "Retry-After": "120" } }, 503, "service_paused", "transient"],
+    ["unavailable", "get", { status: 503, body: ERR("service_unavailable") }, 503, "service_unavailable", "transient"],
+    ["unavailable (capabilities)", "capabilities", { status: 503, body: ERR("service_unavailable") }, 503, "service_unavailable", "transient"],
+    ["busy", "create", { status: 429, body: ERR("service_busy", { retry_after_seconds: 30 }) }, 429, "service_busy", "transient"],
+    ["quota", "create", { status: 429, body: ERR("quota_exceeded", { retry_after_seconds: 3600 }) }, 429, "quota_exceeded", "transient"],
+    ["too large", "create", { status: 413, body: ERR("recording_too_large") }, 413, "recording_too_large", "client"],
+    ["invalid", "create", { status: 400, body: ERR("invalid_request") }, 400, "invalid_request", "client"],
+    ["idempotency conflict", "create", { status: 409, body: ERR("idempotency_conflict") }, 409, "idempotency_conflict", "client"],
+    ["500 internal_error", "get", { status: 500, body: ERR("internal_error") }, 503, "service_unavailable", "transient"],
+    ["502 from the gateway", "list", { status: 502, raw: "Bad Gateway" }, 503, "service_unavailable", "transient"],
+    // Impossible pairings: a known code on the wrong route or status is off-contract.
+    ["400 service_paused", "create", { status: 400, body: ERR("service_paused") }, 502, "upstream_bad_response", "transient"],
+    ["paused on a read", "get", { status: 503, body: ERR("service_paused") }, 502, "upstream_bad_response", "transient"],
+    ["quota on a read", "result", { status: 429, body: ERR("quota_exceeded") }, 502, "upstream_bad_response", "transient"],
+    ["too large on a read", "get", { status: 413, body: ERR("recording_too_large") }, 502, "upstream_bad_response", "transient"],
+    ["503 carrying a client code", "get", { status: 503, body: ERR("transcription_not_found") }, 502, "upstream_bad_response", "transient"],
+    ["bare 429", "create", { status: 429, raw: "slow down", headers: { "Retry-After": "7" } }, 502, "upstream_bad_response", "transient"],
+    ["active job without an id", "create", { status: 409, body: ERR("active_transcription_exists") }, 502, "upstream_bad_response", "transient"],
+    ["active job with a bad id", "create", { status: 409, body: ERR("active_transcription_exists", { id: "../x" }) }, 502, "upstream_bad_response", "transient"],
+    ["unexpected 4xx", "delete", { status: 418, body: ERR("teapot") }, 502, "upstream_bad_response", "transient"],
+    ["unexpected 409 on delete", "delete", { status: 409, body: ERR("idempotency_conflict") }, 502, "upstream_bad_response", "transient"],
+    ["unexpected 2xx", "get", { status: 201, body: { id: JOB, status: "queued" } }, 502, "upstream_bad_response", "transient"],
+  ];
 
-  test.each(TABLE)("%s", async (_name, override, status, code, klass) => {
+  function hit(base: string, route: Route, cid: string) {
+    const headers = { "X-Correlation-Id": cid };
+    switch (route) {
+      case "capabilities": return call(base, "GET", "/capabilities", { headers });
+      case "create": return call(base, "POST", "/transcriptions", { headers: { ...headers, "Idempotency-Key": randomUUID() }, body: createBody() });
+      case "list": return call(base, "GET", "/transcriptions", { headers });
+      case "get": return call(base, "GET", `/transcriptions/${JOB}`, { headers });
+      case "result": return call(base, "GET", `/transcriptions/${JOB}/result`, { headers });
+      case "cancel": return call(base, "POST", `/transcriptions/${JOB}/cancel`, { headers });
+      case "delete": return call(base, "DELETE", `/transcriptions/${JOB}`, { headers });
+    }
+  }
+
+  test.each(TABLE)("%s", async (_name, route, override, status, code, klass) => {
     const { ptx, backend } = await setup();
     ptx.state.override = () => ({ ...override, body: override.body === undefined ? undefined : withSecretMessage(override.body) });
     const cid = randomUUID();
-    const r = await call(backend.url, "GET", `/transcriptions/${newId()}`, { headers: { "X-Correlation-Id": cid } });
+    const r = await hit(backend.url, route, cid);
     expect(r.status).toBe(status);
     expect(r.json.error.code).toBe(code);
     expect(r.json.error.message).toBe(PUBLIC_ERRORS[code as keyof typeof PUBLIC_ERRORS].message);
     expect(r.json.error.correlation_id).toBe(cid);
+    expect(r.headers.get("cache-control")).toBe("no-store");
     expect(r.text).not.toContain("UPSTREAM-DETAIL");
     expect(PUBLIC_ERRORS[code as keyof typeof PUBLIC_ERRORS].class).toBe(klass);
     const log = backend.logs.at(-1)!;
+    expect(log.line).toContain(`route=${route}`);
     expect(log.line).toContain(`code=${code}`);
     expect(log.line).toContain(`class=${klass}`);
     expect(log.line).toContain(`cid=${cid}`);
     expect(log.alert).toBe(klass === "operator_fault");
     expect(log.line.includes("alert=true")).toBe(klass === "operator_fault");
+  });
+
+  test("active_transcription_exists relays the valid job id it names", async () => {
+    const { ptx, backend } = await setup();
+    ptx.state.override = () => ({ status: 409, body: ERR("active_transcription_exists", { id: JOB }) });
+    const r = await create(backend.url);
+    expect([r.status, r.json.error.code, r.json.error.id]).toEqual([409, "active_transcription_exists", JOB]);
   });
 
   function withSecretMessage(body: unknown) {
@@ -743,6 +826,7 @@ describe("error mapping", () => {
     expect(spec.components.schemas.PrivateCloudError.properties.error.properties.code.enum.sort()).toEqual(
       Object.keys(PUBLIC_ERRORS).sort(),
     );
+    expect(spec.components.schemas.PrivateCloudJobError.properties.code.enum.sort()).toEqual(Object.keys(JOB_ERRORS).sort());
     for (const [path, methods] of [
       ["/capabilities", ["get"]],
       ["/transcriptions", ["get", "post"]],
@@ -882,7 +966,7 @@ describe("e2e script", () => {
       pollIntervalMs: 1,
       log: (line) => lines.push(line),
     });
-    expect(result.segments).toBe(1);
+    expect(result.segments).toBe(2);
     expect(ptx.jobs.size).toBe(0);
     // The audio went to PTX's /uploads path, never through the backend.
     expect(ptx.requests.filter((q) => q.method === "PUT").map((q) => q.url)).toEqual([`/uploads/${result.id}`]);
@@ -890,5 +974,315 @@ describe("e2e script", () => {
     expect(output).not.toContain(bearer);
     expect(output).not.toContain("tcu_");
     expect(output).not.toContain(TRANSCRIPT_TEXT);
+  });
+});
+
+// ── Strict response DTOs (Sol #1) ───────────────────────────────────
+
+describe("response DTOs", () => {
+  const ID = "trn_0123456789ABCDEFGHJKMNPQRS";
+  const JOB_KEYS = ["byte_size", "channels", "created_at", "duration_seconds", "error", "id", "progress", "retention", "status", "updated_at"];
+  const job = (patch: Record<string, unknown> = {}) => ({
+    id: ID,
+    status: "processing",
+    byte_size: 1000,
+    duration_seconds: 26,
+    channels: 2,
+    progress: { stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7, internal_worker: "w-1" },
+    retention: { audio: "stored", audio_deleted_at: null, transcript_expires_at: null, volume: "/data" },
+    error: null,
+    created_at: "2026-09-29T10:00:00Z",
+    updated_at: "2026-09-29T10:00:05.123Z",
+    ...patch,
+  });
+  const LEAKS = { tenant_ref: "f".repeat(64), storage_path: "/data/uploads/x.mp3", capability: "tcu_leakleakleakleakleak", provider_diagnostics: "UPSTREAM-DETAIL" };
+
+  test("status and list are rebuilt: exact contract keys, unknown and sensitive fields dropped", async () => {
+    const { ptx, backend } = await setup();
+    ptx.state.override = () => ({ status: 200, body: { ...job(), ...LEAKS } });
+    const status = await call(backend.url, "GET", `/transcriptions/${ID}`);
+    expect(status.status).toBe(200);
+    expect(Object.keys(status.json).sort()).toEqual(JOB_KEYS);
+    expect(status.json.progress).toEqual({ stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7 });
+    expect(status.json.retention).toEqual({ audio: "stored", audio_deleted_at: null, transcript_expires_at: null });
+    ptx.state.override = () => ({ status: 200, body: { transcriptions: [{ ...job(), ...LEAKS }], cursor: "UPSTREAM-DETAIL" } });
+    const list = await call(backend.url, "GET", "/transcriptions");
+    expect(Object.keys(list.json)).toEqual(["transcriptions"]);
+    expect(Object.keys(list.json.transcriptions[0]).sort()).toEqual(JOB_KEYS);
+    // Absent nullable fields come back as explicit nulls.
+    ptx.state.override = () => ({ status: 200, body: { id: ID, status: "queued", byte_size: 5, retention: job().retention, created_at: "2026-09-29T10:00:00Z", updated_at: "2026-09-29T10:00:00Z" } });
+    const sparse = await call(backend.url, "GET", `/transcriptions/${ID}`);
+    expect(sparse.json).toMatchObject({ duration_seconds: null, channels: null, progress: null, error: null });
+    for (const r of [status, list, sparse]) {
+      for (const leak of Object.values(LEAKS)) expect(r.text).not.toContain(leak);
+      expect(r.text).not.toContain("internal_worker");
+      expect(r.text).not.toContain("/data");
+    }
+  });
+
+  test("a job error is rebuilt as { code, our message }; the upstream message never passes", async () => {
+    const { ptx, backend } = await setup();
+    const upstreamError = { type: "processing_error", code: "no_speech", message: "UPSTREAM-DETAIL at /data/x", detail: { region: 4 } };
+    ptx.state.override = () => ({ status: 200, body: job({ status: "failed", error: upstreamError }) });
+    const status = await call(backend.url, "GET", `/transcriptions/${ID}`);
+    expect(status.json.error).toEqual({ code: "no_speech", message: JOB_ERRORS.no_speech });
+    ptx.state.override = () => ({ status: 200, body: { status: "failed", error: upstreamError, ...LEAKS } });
+    const result = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    expect(result.json).toEqual({ id: ID, status: "failed", error: { code: "no_speech", message: JOB_ERRORS.no_speech } });
+    ptx.state.override = () => ({ status: 200, body: { status: "cancelled", error: null } });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json).toEqual({ id: ID, status: "cancelled", error: null });
+    expect(status.text + result.text).not.toContain("UPSTREAM-DETAIL");
+  });
+
+  test("capabilities and a completed result are rebuilt exactly", async () => {
+    const { ptx, backend } = await setup();
+    ptx.state.override = () => ({
+      status: 200,
+      body: { max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "drain", tinfoil_key_id: "UPSTREAM-DETAIL" },
+    });
+    const caps = await call(backend.url, "GET", "/capabilities");
+    expect(caps.json).toEqual({ max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "drain" });
+    const leaky = completedResult() as any;
+    leaky.provider_request_ids = ["UPSTREAM-DETAIL"];
+    leaky.speakers[0].address = ADDRESS_A;
+    leaky.segments[0].audio_path = "/data/regions/1.wav";
+    leaky.stats.tinfoil_key = "UPSTREAM-DETAIL";
+    ptx.state.override = () => ({ status: 200, body: leaky });
+    const result = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    const expected = completedResult();
+    expect(result.json).toEqual({ id: ID, ...expected });
+    expect(result.text).not.toContain("UPSTREAM-DETAIL");
+    expect(result.text.toLowerCase()).not.toContain(ADDRESS_A.toLowerCase());
+    expect(result.text).not.toContain("/data");
+  });
+
+  test("an off-contract value anywhere in a success body is upstream_bad_response", async () => {
+    const { ptx, backend } = await setup();
+    const done = completedResult();
+    const cases: [string, number, unknown][] = [
+      // status
+      [`/transcriptions/${ID}`, 200, job({ id: newId() })],
+      [`/transcriptions/${ID}`, 200, job({ status: "done" })],
+      [`/transcriptions/${ID}`, 200, job({ status: "failed" })],
+      [`/transcriptions/${ID}`, 200, job({ error: { code: "no_speech" } })],
+      [`/transcriptions/${ID}`, 200, job({ status: "failed", error: { code: "disk_full" } })],
+      [`/transcriptions/${ID}`, 200, job({ byte_size: "1000" })],
+      [`/transcriptions/${ID}`, 200, job({ byte_size: MAX_RECORDING_BYTES + 1 })],
+      [`/transcriptions/${ID}`, 200, job({ channels: 3 })],
+      [`/transcriptions/${ID}`, 200, job({ progress: { stage: "transcribe", queue_position: 0, regions_completed: 8, regions_total: 7 } })],
+      [`/transcriptions/${ID}`, 200, job({ progress: { stage: "../x", queue_position: 0, regions_completed: 0, regions_total: 0 } })],
+      [`/transcriptions/${ID}`, 200, job({ retention: { audio: "archived", audio_deleted_at: null, transcript_expires_at: null } })],
+      [`/transcriptions/${ID}`, 200, job({ retention: undefined })],
+      [`/transcriptions/${ID}`, 200, job({ created_at: "yesterday" })],
+      [`/transcriptions/${ID}`, 200, [job()]],
+      // list
+      ["/transcriptions?limit=1", 200, { transcriptions: [job(), job({ id: newId() })] }],
+      ["/transcriptions", 200, { transcriptions: [job({ status: "done" })] }],
+      ["/transcriptions", 200, { data: [job()] }],
+      // capabilities
+      ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 1, admission: "maybe" }],
+      ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 3, content_types: ["audio/mpeg"], transcript_ttl_seconds: 1, admission: "open" }],
+      ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["video/mp4"], transcript_ttl_seconds: 1, admission: "open" }],
+      ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["audio/mpeg"], admission: "open" }],
+      // result
+      [`/transcriptions/${ID}/result`, 202, { id: ID, status: "completed" }],
+      [`/transcriptions/${ID}/result`, 202, { id: newId(), status: "queued" }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, provider: "openai" }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, status: "processing" }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, text: undefined }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, stats: undefined }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, channels: 1 }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, speakers: [{ id: "channel_1", name: "Speaker 1", channel: 0 }] }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], speaker_id: "channel_9" }] }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], channel: 1 }] }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], start: 5, end: 4 }] }],
+      [`/transcriptions/${ID}/result`, 200, { status: "failed", error: null }],
+      [`/transcriptions/${ID}/result`, 200, { status: "cancelled", error: { code: "made_up" } }],
+    ];
+    for (const [path, status, body] of cases) {
+      ptx.state.override = () => ({ status, body });
+      const r = await call(backend.url, "GET", path);
+      expect([path, JSON.stringify(body).slice(0, 60), r.status, r.json.error.code]).toEqual([path, JSON.stringify(body).slice(0, 60), 502, "upstream_bad_response"]);
+    }
+    for (const body of [{ id: ID, status: "processing" }, { id: newId(), status: "cancelled" }, { id: ID }]) {
+      ptx.state.override = () => ({ status: 200, body });
+      const r = await call(backend.url, "POST", `/transcriptions/${ID}/cancel`);
+      expect([r.status, r.json.error.code]).toEqual([502, "upstream_bad_response"]);
+    }
+    expect(backend.logs.every((l) => !l.line.includes("reason=") || l.line.includes("reason=off_contract"))).toBe(true);
+  });
+});
+
+// ── Bounded upstream reads (Sol #2) ─────────────────────────────────
+
+describe("bounded upstream reads", () => {
+  test("a declared or streamed body over the route limit is upstream_bad_response; a transcript-sized result passes", async () => {
+    const { ptx, backend } = await setup();
+    const ID = "trn_0123456789ABCDEFGHJKMNPQRS";
+    // Declared (express sets Content-Length) and just over the metadata limit.
+    ptx.state.override = () => ({ status: 200, raw: "x".repeat(RESPONSE_LIMITS.get + 1) });
+    const declared = await call(backend.url, "GET", `/transcriptions/${ID}`);
+    expect([declared.status, declared.json.error.code]).toEqual([502, "upstream_bad_response"]);
+    expect(backend.logs.at(-1)!.line).toContain("reason=body_too_large");
+    // Streamed without Content-Length, past the result limit.
+    ptx.state.override = () => ({ status: 200, chunked: { chunk: "y".repeat(64 * 1024), count: 128 } });
+    const streamed = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    expect([streamed.status, streamed.json.error.code]).toEqual([502, "upstream_bad_response"]);
+    expect(backend.logs.at(-1)!.line).toContain("reason=body_too_large");
+    // An error body is capped the same way.
+    ptx.state.override = () => ({ status: 503, chunked: { chunk: "z".repeat(64 * 1024), count: 4 } });
+    expect((await call(backend.url, "GET", "/capabilities")).json.error.code).toBe("upstream_bad_response");
+    // A ~1 MB two-hour transcript is well inside the result limit.
+    const big = completedResult();
+    big.segments = Array.from({ length: 4000 }, (_, i) => ({ id: `seg_${i}`, speaker_id: "channel_0", channel: 0, start: i, end: i + 1, text: "w".repeat(120) }));
+    big.text = "w".repeat(500_000);
+    ptx.state.override = () => ({ status: 200, body: big });
+    const ok = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    expect(ok.status).toBe(200);
+    expect(ok.json.segments).toHaveLength(4000);
+  });
+
+  test("the client refuses an oversized Content-Length unread and stops an endless stream at the cap", async () => {
+    let pulls = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new Uint8Array(16 * 1024));
+      },
+    });
+    const client = createPtxClient({ baseUrl: "https://ptx.invalid", apiKey: PTX_KEY, fetchImpl: (async () => new Response(endless, { status: 200 })) as unknown as typeof fetch });
+    await expect(client.request({ method: "GET", path: "/x", correlationId: randomUUID(), maxBytes: 64 * 1024 })).rejects.toBeInstanceOf(PtxResponseTooLargeError);
+    expect(pulls).toBeLessThan(10);
+
+    let read = false;
+    // highWaterMark 0: nothing is pulled until someone actually reads.
+    const guarded = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          read = true;
+          throw new Error("must not be read");
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const declared = createPtxClient({
+      baseUrl: "https://ptx.invalid",
+      apiKey: PTX_KEY,
+      fetchImpl: (async () => new Response(guarded, { status: 200, headers: { "content-length": String(10 * 1024 * 1024) } })) as unknown as typeof fetch,
+    });
+    await expect(declared.request({ method: "GET", path: "/x", correlationId: randomUUID(), maxBytes: 64 * 1024 })).rejects.toBeInstanceOf(PtxResponseTooLargeError);
+    expect(read).toBe(false);
+    expect(RESPONSE_LIMITS.result).toBeGreaterThan(RESPONSE_LIMITS.list);
+    expect(RESPONSE_LIMITS.list).toBeGreaterThan(RESPONSE_LIMITS.get);
+  });
+});
+
+// ── Cache-Control, auth/CSRF exception, key separation, OpenAPI, canary (Sol #3–#7) ──
+
+describe("no-store", () => {
+  test("every answer under the mount is no-store; the hidden 404 stays identical to dark", async () => {
+    const { ptx, backend } = await setup();
+    const created = await create(backend.url);
+    const id = created.json.id;
+    await fetch(`${ptx.url}${created.json.upload.path}`, { method: "PUT", headers: { Authorization: `Bearer ${created.json.upload.capability}` }, body: AUDIO });
+    const responses = [
+      created,
+      await call(backend.url, "GET", "/capabilities"),
+      await call(backend.url, "GET", "/transcriptions"),
+      await call(backend.url, "GET", `/transcriptions/${id}`),
+      await call(backend.url, "GET", `/transcriptions/${id}`),
+      await call(backend.url, "GET", `/transcriptions/${id}/result`),
+      await call(backend.url, "GET", `/transcriptions/${newId()}`),
+      await call(backend.url, "POST", "/transcriptions", { headers: { "Idempotency-Key": "nope" }, body: createBody() }),
+      await call(backend.url, "DELETE", `/transcriptions/${id}`),
+    ];
+    expect(responses[5]!.json.text).toBe(TRANSCRIPT_TEXT);
+    for (const r of responses) expect(r.headers.get("cache-control")).toBe("no-store");
+    const hidden = await call(backend.url, "GET", "/capabilities", { as: ADDRESS_C });
+    expect(hidden.headers.get("cache-control")).toBeNull();
+  });
+});
+
+describe("auth and CSRF (documented exception to the error shape)", () => {
+  test("401 and 403 csrf_rejected keep the backend-wide { error, message } shape, before the caller is known", async () => {
+    const { backend } = await setup();
+    const unauth = await call(backend.url, "GET", "/transcriptions", { as: null });
+    expect(unauth.status).toBe(401);
+    expect(Object.keys(unauth.json).sort()).toEqual(["error", "message"]);
+    expect(typeof unauth.json.error).toBe("string");
+    const csrf = await call(backend.url, "POST", "/transcriptions", { csrf: false, headers: { "Idempotency-Key": randomUUID() }, body: createBody() });
+    expect([csrf.status, csrf.json.error]).toEqual([403, "csrf_rejected"]);
+    for (const r of [unauth, csrf]) expect(r.headers.get("x-correlation-id")).toBeNull();
+    const source = readFileSync(resolve(import.meta.dir, "../routes/private-cloud-transcription.ts"), "utf8");
+    expect(source).toContain("Documented exception to the error shape");
+    const spec = loadYaml(readFileSync(resolve(import.meta.dir, "../../openapi.yaml"), "utf8")) as any;
+    expect(spec.paths[`${BASE}/capabilities`].get.description).toContain("EXCEPT 401");
+  });
+});
+
+describe("credential separation", () => {
+  test("armed, the batch key and tenant key must differ from the meeting TRANSCRIPTION_API_KEY", () => {
+    const env = enabledEnv("https://ptx-batch.example");
+    expect(() => privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: PTX_KEY })).toThrow("distinct key from TRANSCRIPTION_API_KEY");
+    expect(() => privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: ` ${PTX_KEY} ` })).toThrow("TRANSCRIPTION_API_KEY");
+    expect(() => privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: TENANT_KEY })).toThrow("must not reuse TRANSCRIPTION_API_KEY");
+    expect(privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: "tc_live_meeting_key" }).enabled).toBe(true);
+    expect(privateCloudTranscriptionConfigFromEnv({ ...env, TRANSCRIPTION_API_KEY: "" }).enabled).toBe(true);
+  });
+});
+
+describe("served OpenAPI while dark", () => {
+  test("drops every private-cloud path and PrivateCloud component, leaves no dangling $ref, and does not mutate the source", () => {
+    const spec = loadYaml(readFileSync(resolve(import.meta.dir, "../../openapi.yaml"), "utf8")) as any;
+    const before = JSON.stringify(spec);
+    const dark = withoutPrivateCloudOpenApi(spec) as any;
+    expect(JSON.stringify(spec)).toBe(before);
+    const text = JSON.stringify(dark);
+    expect(text).not.toContain("private-cloud");
+    expect(text).not.toContain("PrivateCloud");
+    const refs: string[] = [];
+    (function walk(o: unknown) {
+      if (!o || typeof o !== "object") return;
+      for (const [k, v] of Object.entries(o)) {
+        if (k === "$ref") refs.push(v as string);
+        else walk(v);
+      }
+    })(dark);
+    for (const ref of refs) {
+      const [, , section, name] = ref.split("/");
+      expect(dark.components[section!][name!]).toBeDefined();
+    }
+    expect(Object.keys(dark.paths).length).toBe(Object.keys(spec.paths).filter((p: string) => !p.startsWith(BASE)).length);
+    const index = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
+    expect(index).toContain("privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec)");
+  });
+});
+
+describe("deploy canary", () => {
+  const root = resolve(import.meta.dir, "../../..");
+  const workflow = loadYaml(readFileSync(resolve(root, ".github/workflows/deploy-backend-phala.yml"), "utf8")) as {
+    jobs: { deploy: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
+  };
+  const verify = workflow.jobs.deploy.steps.find((s) => s.name === "Verify public API")!;
+  const run = verify.run!;
+  const block = run.slice(run.indexOf("# >>> private-cloud canary"), run.indexOf("# <<< private-cloud canary"));
+
+  test("the probe expects what this deploy shipped", () => {
+    expect(verify.env!.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED).toBe("${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}");
+    expect(block).toContain("/api/transcriber/private-cloud/capabilities");
+  });
+
+  test.each([
+    ["true", "401", 0],
+    ["true", "404", 1],
+    ["false", "404", 0],
+    ["false", "401", 1],
+    ["", "404", 0],
+  ])("flag=%p answered %s → exit %d", (flag, status, exit) => {
+    const script = `curl() { printf '%s' "$STUB_STATUS"; }\nsleep() { :; }\n${block}`;
+    const result = Bun.spawnSync(["/bin/bash", "-c", script], {
+      env: { PRODUCTION_API_URL: "https://api.example", PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: flag, STUB_STATUS: status },
+    });
+    expect(result.exitCode).toBe(exit);
   });
 });

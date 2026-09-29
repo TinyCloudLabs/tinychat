@@ -64,6 +64,7 @@ import {
   PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
   createPtxClient,
   privateCloudTranscriptionConfigFromEnv,
+  withoutPrivateCloudOpenApi,
   type PrivateCloudTranscriptionConfig,
 } from "./services/private-cloud-transcription.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
@@ -938,7 +939,9 @@ async function main() {
   }
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const spec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
+  const fullSpec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
+  // Dark means undiscoverable too: while the flag is off the served spec omits private cloud.
+  const spec = privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec);
   app.get("/api/openapi.json", (_req, res) => res.json(spec));
   app.use("/api/docs", apiReference({ spec: { content: spec } }));
 

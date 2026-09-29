@@ -1707,9 +1707,13 @@ paths:
         PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: otherwise every path under
         /api/transcriber/private-cloud answers the server's ordinary 404, so a dark
         deployment and a non-cohort address look the same. Relays the TinyCloud
-        Private Transcription batch service's capabilities (max_bytes,
-        max_duration_seconds, max_channels, content_types, transcript_ttl_seconds,
-        admission).
+        Private Transcription batch service's capabilities. Every success body under
+        this prefix is rebuilt field by field from the upstream answer (fields outside
+        the contract are dropped; an off-contract value is `upstream_bad_response`),
+        and every response is `Cache-Control: no-store`. Errors are PrivateCloudError
+        with a correlation id, EXCEPT 401 (session auth) and 403 `csrf_rejected`, which
+        the backend-wide middleware answers before the caller is known, in the
+        backend-wide `{error, message}` shape.
       security:
         - bearerAuth: []
       responses:
@@ -1718,23 +1722,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [max_bytes]
-                additionalProperties: true
-                properties:
-                  max_bytes:
-                    type: integer
-                  max_duration_seconds:
-                    type: integer
-                  max_channels:
-                    type: integer
-                  content_types:
-                    type: array
-                    items:
-                      type: string
-                  transcript_ttl_seconds:
-                    type: integer
-                  admission: {}
+                $ref: "#/components/schemas/PrivateCloudCapabilities"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "404":
@@ -1905,14 +1893,13 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: >-
-            Completed: {language, duration_seconds, provider, model, channels,
-            speakers, segments, text, stats}. Failed or cancelled: {status, error}.
+          description: The transcript, or the failed/cancelled outcome
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                oneOf:
+                  - $ref: "#/components/schemas/PrivateCloudTranscript"
+                  - $ref: "#/components/schemas/PrivateCloudOutcome"
         "202":
           description: Not ready yet
           content:
@@ -2128,19 +2115,174 @@ components:
     PrivateCloudJobStatus:
       type: string
       enum: [awaiting_upload, queued, processing, completed, failed, cancelled]
+    PrivateCloudJobError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - upload_expired
+            - upload_integrity_failed
+            - invalid_audio
+            - recording_too_long
+            - unsupported_recording
+            - no_speech
+            - provider_unavailable
+            - provider_outcome_unknown
+            - processing_timeout
+            - transcription_failed
+        message:
+          type: string
+    PrivateCloudCapabilities:
+      type: object
+      required: [max_bytes, max_duration_seconds, max_channels, content_types, transcript_ttl_seconds, admission]
+      properties:
+        max_bytes:
+          type: integer
+          maximum: 120960000
+        max_duration_seconds:
+          type: integer
+        max_channels:
+          type: integer
+          maximum: 2
+        content_types:
+          type: array
+          items:
+            type: string
+            enum: [audio/mpeg, audio/wav, audio/ogg]
+        transcript_ttl_seconds:
+          type: integer
+        admission:
+          type: string
+          enum: [open, drain, closed]
     PrivateCloudJob:
       type: object
-      required: [id, status]
-      additionalProperties: true
-      description: >-
-        Relayed from the batch service: byte_size, duration_seconds, channels,
-        progress, retention, error, request_id and timestamps.
+      required: [id, status, byte_size, duration_seconds, channels, progress, retention, error, created_at, updated_at]
       properties:
         id:
           type: string
           pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
         status:
           $ref: "#/components/schemas/PrivateCloudJobStatus"
+        byte_size:
+          type: integer
+        duration_seconds:
+          type: [number, "null"]
+        channels:
+          type: [integer, "null"]
+        progress:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [stage, queue_position, regions_completed, regions_total]
+              properties:
+                stage:
+                  type: string
+                queue_position:
+                  type: [integer, "null"]
+                regions_completed:
+                  type: integer
+                regions_total:
+                  type: integer
+        retention:
+          type: object
+          required: [audio, audio_deleted_at, transcript_expires_at]
+          properties:
+            audio:
+              type: string
+              enum: [stored, deletion_pending, deleted]
+            audio_deleted_at:
+              type: [string, "null"]
+              format: date-time
+            transcript_expires_at:
+              type: [string, "null"]
+              format: date-time
+        error:
+          description: Set exactly when status is failed.
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/PrivateCloudJobError"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PrivateCloudTranscript:
+      type: object
+      required: [id, status, language, duration_seconds, provider, model, channels, speakers, segments, text, stats]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [completed]
+        language:
+          type: string
+        duration_seconds:
+          type: number
+        provider:
+          type: string
+          enum: [tinfoil]
+        model:
+          type: string
+        channels:
+          type: integer
+        speakers:
+          type: array
+          items:
+            type: object
+            required: [id, name, channel]
+            properties:
+              id:
+                type: string
+                pattern: "^channel_[01]$"
+              name:
+                type: string
+              channel:
+                type: integer
+        segments:
+          type: array
+          items:
+            type: object
+            required: [id, speaker_id, channel, start, end, text]
+            properties:
+              id:
+                type: string
+              speaker_id:
+                type: string
+              channel:
+                type: integer
+              start:
+                type: number
+              end:
+                type: number
+              text:
+                type: string
+        text:
+          type: string
+        stats:
+          type: object
+          required: [tinfoil_calls, tinfoil_audio_seconds]
+          properties:
+            tinfoil_calls:
+              type: integer
+            tinfoil_audio_seconds:
+              type: number
+    PrivateCloudOutcome:
+      type: object
+      required: [id, status, error]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [failed, cancelled]
+        error:
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/PrivateCloudJobError"
     PrivateCloudCreateRequest:
       type: object
       required: [content_type, byte_size, sha256]
@@ -2211,9 +2353,6 @@ components:
                 - invalid_idempotency_key
                 - unsupported_media_type
                 - recording_too_large
-                - recording_too_long
-                - unsupported_recording
-                - invalid_audio
                 - transcription_not_found
                 - active_transcription_exists
                 - idempotency_conflict

@@ -470,6 +470,8 @@ test("armed private cloud transcription with a bad or missing value refuses boot
     { PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: undefined },
     { PRIVATE_CLOUD_TRANSCRIPTION_API_URL: "http://ptx-batch.invalid" },
     { PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: "" },
+    // The batch key must be a distinct credential from the meeting transcriber's.
+    { TRANSCRIPTION_API_KEY: "synthetic-ptx-batch-key" },
   ]) {
     const result = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ...armed, ...patch });
     expect(result.logs.join(" ")).toContain("PRIVATE_CLOUD_TRANSCRIPTION_");
