@@ -1,0 +1,154 @@
+name: Calendar deployment read-only audit
+
+# Isolated operator branch only. Never merge this audit into a release branch.
+on:
+  push:
+    branches: [Codex/roman/calendar-deployment-audit-20260929]
+    paths: [.github/workflows/calendar-deployment-readonly-audit.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect deployment prerequisites with GET requests only
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          CONNECTOR_CREDENTIAL_MASTER: ${{ secrets.CONNECTOR_CREDENTIAL_MASTER }}
+          BACKEND_PRIVATE_KEY: ${{ secrets.BACKEND_PRIVATE_KEY }}
+          GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REDIRECT_URI: ${{ secrets.GOOGLE_OAUTH_REDIRECT_URI }}
+          TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
+          TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures
+          import datetime
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          BASE = 'https://cloud-api.phala.com/api/v1'
+          TARGETS = {
+              'tinychat': ('7bf0a49d-b12b-46f2-b684-bebc5407e64a', '2faaa9242e190fe9cbbff7bc8667b5c4e52c3acf'),
+              'transcription': ('9a79a27e-8243-4fd7-b17d-fc9300333784', '7fd569fb6ac2cae943cea1d1aff247cd8ea61fdc'),
+          }
+          TRANSCRIPTION = 'https://7fd569fb6ac2cae943cea1d1aff247cd8ea61fdc-8080.dstack-pha-prod5.phala.network'
+          URLS = {BASE + '/cvms/' + uuid + suffix for uuid, app in TARGETS.values()
+                  for suffix in ('', '/compose_file', '/composition')}
+          LOOKUP = TRANSCRIPTION + '/v1/meetings/by-idempotency-key'
+          URLS.add(LOOKUP)
+          class NoRedirects(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+          def get(url, headers):
+              assert url in URLS
+              request = urllib.request.Request(url, method='GET', headers=headers)
+              try:
+                  response = urllib.request.build_opener(NoRedirects).open(request, timeout=25)
+              except urllib.error.HTTPError as error:
+                  response = error
+              except Exception:
+                  return {'status': 'transport_error'}, None
+              try:
+                  with response:
+                      status = response.code
+                      raw = response.read(16 * 1024 * 1024 + 1)
+              except Exception:
+                  return {'status': 'body_read_error'}, None
+              if len(raw) > 16 * 1024 * 1024:
+                  return {'httpStatus': status, 'status': 'oversize'}, None
+              try:
+                  data = json.loads(raw)
+              except (ValueError, UnicodeError):
+                  return {'httpStatus': status, 'status': 'non_json'}, None
+              return {'httpStatus': status}, data
+          def digest(value):
+              return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+          def safe_text(value):
+              return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:/@+-]{1,250}', value) else None
+          workflow = Path('.github/workflows/deploy-backend-phala.yml').read_text()
+          deploy_names = sorted(set(re.findall(r'printf .+?"([A-Z][A-Z0-9_]+)=', workflow)))
+          def inspect(name, identity):
+              uuid, app = identity
+              headers = {'X-API-Key': os.environ['PHALA_CLOUD_API_KEY'], 'X-Phala-Version': '2026-01-21'}
+              result = {}
+              for suffix in ('', '/compose_file', '/composition'):
+                  status, data = get(BASE + '/cvms/' + uuid + suffix, headers)
+                  key = suffix.strip('/') or 'info'
+                  result[key] = status
+                  if status.get('httpStatus') != 200 or not isinstance(data, dict):
+                      continue
+                  if not suffix:
+                      result[key].update({k: safe_text(data.get(k)) for k in ('id', 'app_id', 'vm_uuid', 'name', 'status', 'compose_hash')})
+                      result[key]['expectedIdentity'] = data.get('app_id') == app and data.get('vm_uuid') == uuid
+                      progress = data.get('in_progress')
+                      result[key]['inProgress'] = progress if isinstance(progress, bool) else None
+                  elif suffix == '/compose_file':
+                      text = data.get('docker_compose_file', '')
+                      allowed = data.get('allowed_envs', [])
+                      allowed = sorted(v for v in allowed if isinstance(v, str) and re.fullmatch(r'[A-Z][A-Z0-9_]*', v))
+                      # Never output raw compose, encrypted payloads, scripts, or env values.
+                      images = re.findall(r'^    image: (\S+)$', text, re.M)
+                      result[key].update({'sha256': digest(data), 'allowedNames': allowed,
+                                          'images': [safe_text(v) for v in images],
+                                          'encryptedFieldPresent': 'encrypted_env' in data,
+                                          'preLaunchSha256': digest(data.get('pre_launch_script')),
+                                          'volumeNames': re.findall(r'^  ([a-zA-Z0-9_-]+):\s*\{\}\s*$', text, re.M)})
+                      if name == 'tinychat':
+                          result[key]['namesOmittedByDeployFile'] = sorted(set(allowed) - set(deploy_names))
+                          result[key]['deployFileNamesNotAllowed'] = sorted(set(deploy_names) - set(allowed))
+                  else:
+                      rows = data.get('containers', [])
+                      online = data.get('is_online')
+                      result[key].update({'online': online if isinstance(online, bool) else None, 'containers': [
+                          {k: ([safe_text(v) for v in row.get(k, [])] if k == 'names' else safe_text(row.get(k)))
+                           for k in ('id', 'names', 'image', 'image_id', 'state', 'created')} for row in rows]})
+              return result
+          presence = {name: bool(os.environ.get(name)) for name in (
+              'PHALA_CLOUD_API_KEY', 'CONNECTOR_CREDENTIAL_MASTER', 'BACKEND_PRIVATE_KEY',
+              'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET', 'TRANSCRIPTION_API_KEY')}
+          out = {'observedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                 'remoteMutations': 0, 'credentialPresence': presence,
+                 'credentialScope': 'repository_and_inherited_organization_only; compare production-api overrides separately',
+                 'googleEnabled': os.environ.get('GOOGLE_MEET_OAUTH_ENABLED') == 'true',
+                 'callbackMatchesProduction': os.environ.get('GOOGLE_OAUTH_REDIRECT_URI') == 'https://api.tinycloud.chat/api/connectors/google/oauth/callback',
+                 'transcriptionTargetMatches': os.environ.get('TRANSCRIPTION_API_URL', '').rstrip('/') == TRANSCRIPTION,
+                 'deployFileNames': deploy_names}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+              futures = {name: pool.submit(inspect, name, identity) for name, identity in TARGETS.items()}
+              out['targets'] = {name: future.result() for name, future in futures.items()}
+          if out['transcriptionTargetMatches'] and presence['TRANSCRIPTION_API_KEY']:
+              probes = {}
+              # The old /:id route can also return meeting_not_found for this path.
+              # A missing header must instead produce 400 invalid_request on the new route.
+              for probe in ('withoutKey', 'withKey'):
+                  headers = {'Authorization': 'Bearer ' + os.environ['TRANSCRIPTION_API_KEY']}
+                  if probe == 'withKey':
+                      headers['Idempotency-Key'] = 'calendar-readonly-preflight-76e8007-20260929'
+                  status, body = get(LOOKUP, headers)
+                  error = body.get('error') if isinstance(body, dict) else None
+                  code = error.get('code') if isinstance(error, dict) else error
+                  status['errorCode'] = code if code in ('meeting_not_found', 'not_found', 'unauthorized', 'invalid_api_key', 'invalid_request') else None
+                  probes[probe] = status
+              out['projectAuthenticatedLookup'] = probes
+          Path('calendar-deployment-audit.json').write_text(json.dumps(out, indent=2) + '\n')
+          print(json.dumps(out, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: calendar-deployment-audit
+          path: calendar-deployment-audit.json
+          retention-days: 7
