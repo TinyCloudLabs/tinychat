@@ -8,13 +8,17 @@ name: Desktop build (Exo)
 # number XYYZZSSS (stage = beta number, 999 for stable). The app's own version stays the semver.
 #
 # Cache: the Rust target dir and cargo registry/git (whisper.cpp, MLX, anarlog and ~1,100 crates; SwiftPM build
-# products live in the Rust target dir) share one key across CI and release jobs. Only main writes it (pushes and
-# the weekly warm-up in desktop.yml); PRs and release tags restore main's cache. SwiftPM's repository cache (mlx-swift,
-# speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
+# products live in the Rust target dir) share one key across CI and release jobs. Only main's own CI builds write it
+# (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
+# (mlx-swift, speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
 
 on:
   workflow_call:
     inputs:
+      ref:
+        description: Commit to build (release builds pass the release tag's commit); default is the caller's commit
+        type: string
+        default: ""
       artifact-name:
         description: Workflow artifact name for the .dmg and .app.zip
         type: string
@@ -26,6 +30,9 @@ on:
       bundle-version:
         description: CFBundleVersion of the built app
         value: ${{ jobs.build.outputs.bundle-version }}
+      signed:
+        description: true only for a Developer ID signed and notarized build (not available yet)
+        value: ${{ jobs.build.outputs.signed }}
 
 permissions:
   contents: read
@@ -40,15 +47,17 @@ jobs:
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      SAVE_CACHE: ${{ github.ref == 'refs/heads/main' }}
+      SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' }}
     # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs.
     timeout-minutes: 150
     outputs:
       version: ${{ steps.bundle.outputs.version }}
       bundle-version: ${{ steps.bundle.outputs.bundle-version }}
+      signed: "false"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0

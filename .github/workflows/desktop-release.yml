@@ -1,13 +1,16 @@
 name: Desktop release (Exo)
 
-# Builds and publishes Exo for one exo-desktop@<version> tag. The Release workflow dispatches this on every new
-# exo-desktop tag (tags pushed with GITHUB_TOKEN trigger nothing by themselves). Retry by hand with:
-#   gh workflow run desktop-release.yml --ref refs/tags/exo-desktop@<version>
+# Builds and publishes Exo for one exo-desktop@<version> tag. It always runs from main, so the workflow code is
+# main's, never a tag's: the Release workflow dispatches it for every new exo-desktop tag with
+#   gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>
+# (the same command retries a failed release). The plan job refuses any other ref, requires the tag to point at a
+# commit of main (fetched fresh) and builds exactly that commit.
 # - beta (X.Y.Z-beta.N): a GitHub pre-release, never "latest";
-# - stable (X.Y.Z): a published GitHub Release marked latest; refused unless the build is signed and notarized.
-# Fully automatic: no approval and no human draft step. The release is created as a draft only while its assets
-# upload, then published by the same job; a draft left by a failed run is reused, a published release is never
-# touched again (cut a new version instead). A re-run reads this file from the tag's commit.
+# - stable (X.Y.Z): a published GitHub Release marked latest.
+# Publishing requires a signed, notarized build: until signing lands, both channels build and then refuse to publish,
+# so no unsigned Exo is ever released. The release is created as a draft only while its assets upload, then
+# published by the same job; a draft left by a failed run is reused, a published release is never touched again
+# (cut a new version instead).
 #
 # TODO(updater, PR F, right after the first signed release): add tauri-plugin-updater with
 # bundle.createUpdaterArtifacts, sign Exo.app.tar.gz with TAURI_SIGNING_PRIVATE_KEY from the desktop-release
@@ -16,9 +19,14 @@ name: Desktop release (Exo)
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, e.g. exo-desktop@0.2.0-beta.3 (run this workflow from main)
+        type: string
+        required: true
 
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 permissions:
@@ -31,18 +39,34 @@ jobs:
     timeout-minutes: 5
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
       version: ${{ steps.plan.outputs.version }}
       prerelease: ${{ steps.plan.outputs.prerelease }}
       title: ${{ steps.plan.outputs.title }}
       asset-prefix: ${{ steps.plan.outputs.asset-prefix }}
     steps:
+      - name: Require the release workflow from main
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/desktop-release.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::Desktop releases run only from main (got $GITHUB_REF, $WORKFLOW_REF). Use: gh workflow run desktop-release.yml --ref main -f tag=<exo-desktop tag>"
+            exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Plan the release
         id: plan
-        run: node scripts/release/desktop-release-plan.mjs --ref "$GITHUB_REF" --notes "$RUNNER_TEMP/release-notes.md"
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/$TAG:refs/tags/$TAG"
+          node scripts/release/desktop-release-plan.mjs --tag "$TAG" --notes "$RUNNER_TEMP/release-notes.md"
 
       - name: Refuse to touch a published release
         env:
@@ -66,6 +90,7 @@ jobs:
     needs: plan
     uses: ./.github/workflows/desktop-build.yml
     with:
+      ref: ${{ needs.plan.outputs.sha }}
       artifact-name: exo-${{ needs.plan.outputs.version }}-macos-arm64
 
   publish:
@@ -82,13 +107,18 @@ jobs:
       PRERELEASE: ${{ needs.plan.outputs.prerelease }}
       PREFIX: ${{ needs.plan.outputs.asset-prefix }}
     steps:
-      - name: Check the build is the planned version
+      - name: Require the planned, signed build
         env:
           PLANNED: ${{ needs.plan.outputs.version }}
           BUILT: ${{ needs.build.outputs.version }}
+          SIGNED: ${{ needs.build.outputs.signed }}
         run: |
           if [ "$PLANNED" != "$BUILT" ]; then
             echo "::error::Planned $PLANNED but built $BUILT"
+            exit 1
+          fi
+          if [ "$SIGNED" != true ]; then
+            echo "::error::Refusing to publish $TAG: the build is not Developer ID signed and notarized. Exo is never released unsigned, beta or stable."
             exit 1
           fi
 

@@ -192,24 +192,24 @@ the rulesets and their residual risk.
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
 
-**Desktop releases.** Every new `exo-desktop@<version>` tag makes the
-`Release` workflow dispatch `Desktop release (Exo)` on that tag, which builds
-Exo with the same job as desktop CI (`.github/workflows/desktop-build.yml`) and
-publishes a GitHub Release with no manual step:
+**Desktop releases.** For every new `exo-desktop@<version>` tag the `Release`
+workflow runs `Desktop release (Exo)` **from main** with the tag as an input
+(`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`,
+which is also how to retry). It refuses any other ref, requires the tag to point
+at a commit of `main`, builds exactly that commit with the same job as desktop
+CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
+no manual step:
 
 - a beta (`0.2.0-beta.3`) becomes a **pre-release** titled
-  `Exo 0.2.0-beta.3 (beta, unsigned)`, never marked latest; its assets carry
-  `_UNSIGNED` in their names and the notes say how to open an unsigned build;
-- a stable version becomes a published Release marked **latest**. It is refused
-  unless the build is Developer ID signed and notarized; an unsigned stable
-  release is never published.
+  `Exo 0.2.0-beta.3 (beta)`, never marked latest;
+- a stable version becomes a published Release marked **latest**.
 
-Assets are `Exo_<version>_aarch64[_UNSIGNED].dmg`, the matching `.app.zip`
-and `SHA256SUMS.txt`. The notes combine the desktop and web changelog entries
-for the version. A published release is never rebuilt (cut a new version); a
-failed run can be retried with
-`gh workflow run desktop-release.yml --ref refs/tags/exo-desktop@<version>`,
-which reads the workflow from the tag's commit.
+**Publishing requires a Developer ID signed and notarized build**, for both
+channels. Until signing is wired up, releases build and then refuse to publish,
+so no unsigned Exo is ever released. Assets are `Exo_<version>_aarch64.dmg`,
+the matching `.app.zip` and `SHA256SUMS.txt`; the notes combine the desktop and
+web changelog entries of the tagged commit. A published release is never
+rebuilt (cut a new version).
 
 Apple needs numeric bundle versions, so every build maps the semver:
 

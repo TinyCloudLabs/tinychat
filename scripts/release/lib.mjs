@@ -45,8 +45,8 @@ export function parseTag(tag) {
 /**
  * The workflows the Release job starts for the tags one run created (tags pushed with GITHUB_TOKEN trigger
  * nothing; workflow_dispatch is the one event that token may start). Returns [{ workflow, ref, inputs, tags }].
- *  - every new exo-desktop tag of a "beta" or "stable" run: one desktop release build (a GitHub pre-release for a
- *    beta, a published Release for stable);
+ *  - every new exo-desktop tag of a "beta" or "stable" run: one desktop release build, dispatched on main with the tag
+ *    as an input (a GitHub pre-release for a beta, a published Release for stable);
  *  - channel "stable": one production deploy on the stable version commit, backend first, then web, for the units
  *    that got a new stable tag;
  *  - channel "beta": no production deploy. Betas never deploy web or backend;
@@ -58,8 +58,9 @@ export function planDispatches({ channel, tags }) {
   const dispatches = [];
   const releaseVersion = channel === 'stable' ? STABLE_VERSION : /^\d+\.\d+\.\d+-beta\.\d+$/;
   if (channel !== 'none') {
+    // Always run from main (trusted workflow code); the tag is an input the workflow validates.
     for (const { tag } of parsed.filter(tag => tag.name === DESKTOP.crate && releaseVersion.test(tag.version))) {
-      dispatches.push({ workflow: DESKTOP_RELEASE_WORKFLOW, ref: `refs/tags/${tag}`, inputs: {}, tags: [tag] });
+      dispatches.push({ workflow: DESKTOP_RELEASE_WORKFLOW, ref: 'main', inputs: { tag }, tags: [tag] });
     }
   }
   if (channel === 'stable') {

@@ -396,7 +396,7 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   assert.equal(tagCommit(root, '@tinychat/backend@0.1.1-beta.0'), betaCommit);
   const betaDispatch = step('dispatch.mjs', ['--channel', 'beta', '--tags', 'exo-desktop@0.2.0-beta.0 @tinychat/frontend@0.2.0-beta.0 @tinychat/backend@0.1.1-beta.0', '--dry-run']);
   assert.doesNotMatch(betaDispatch, /deploy-production/);
-  assert.match(betaDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref refs\/tags\/exo-desktop@0\.2\.0-beta\.0$/m);
+  assert.match(betaDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref main -f tag=exo-desktop@0\.2\.0-beta\.0$/m);
 
   write(root, '.changeset/web-fix.md', changesetFile({ '@tinychat/frontend': 'patch' }, 'Web fix'));
   commitAll(root, 'fix: web (#2)');
@@ -470,7 +470,7 @@ test('release cycle: betas with one web/desktop version, the Release stable PR, 
   assert.equal(tagCommit(root, 'exo-desktop@0.2.0'), stableCommit);
   const stableDispatch = step('dispatch.mjs', ['--channel', 'stable', '--tags', 'exo-desktop@0.2.0 @tinychat/frontend@0.2.0 @tinychat/backend@0.1.1', '--dry-run']);
   assert.match(stableDispatch, /^gh workflow run deploy-production\.yml --repo \S+ --ref main -f tag=@tinychat\/backend@0\.1\.1 -f backend=true -f web=true$/m);
-  assert.match(stableDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref refs\/tags\/exo-desktop@0\.2\.0$/m);
+  assert.match(stableDispatch, /^gh workflow run desktop-release\.yml --repo \S+ --ref main -f tag=exo-desktop@0\.2\.0$/m);
   assert.match(step('stable-pr.mjs', ['--body', body]), /^open=false$/m);
 
   // The next change starts a new beta cycle from the stable versions.
@@ -661,11 +661,13 @@ test('deploy-target.mjs refuses unreleased commits unless allow_unreleased and t
   const off = commitAll(side, 'off main');
   git(side, 'tag', '-f', '-a', '@tinychat/backend@0.1.1', '-m', 'moved', off);
   assert.match(target(side, '--backend', 'true', '--web', 'false').stderr, /is not on main/);
+});
+
 // Desktop releases: one build per new exo-desktop tag, numeric Apple bundle versions, release plan and notes.
-test('planDispatches builds a desktop release for each new beta or stable exo-desktop tag, never for baselines', () => {
-  const desktop = (channel, tags) => planDispatches({ channel, tags }).filter(({ workflow }) => workflow === 'desktop-release.yml').map(({ ref }) => ref);
-  assert.deepEqual(desktop('beta', ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3']), ['refs/tags/exo-desktop@0.2.0-beta.3']);
-  assert.deepEqual(desktop('stable', ['exo-desktop@0.2.0', '@tinychat/frontend@0.2.0', '@tinychat/backend@0.1.1']), ['refs/tags/exo-desktop@0.2.0']);
+test('planDispatches builds a desktop release from main for each new beta or stable exo-desktop tag, never for baselines', () => {
+  const desktop = (channel, tags) => planDispatches({ channel, tags }).filter(({ workflow }) => workflow === 'desktop-release.yml').map(({ ref, inputs }) => `${ref} ${inputs.tag}`);
+  assert.deepEqual(desktop('beta', ['exo-desktop@0.2.0-beta.3', '@tinychat/frontend@0.2.0-beta.3']), ['main exo-desktop@0.2.0-beta.3']);
+  assert.deepEqual(desktop('stable', ['exo-desktop@0.2.0', '@tinychat/frontend@0.2.0', '@tinychat/backend@0.1.1']), ['main exo-desktop@0.2.0']);
   assert.deepEqual(desktop('beta', ['@tinychat/backend@0.1.2-beta.0']), []);
   assert.deepEqual(desktop('none', ['exo-desktop@0.1.0', '@tinychat/frontend@0.1.0', '@tinychat/backend@0.1.0']), []);
 });
@@ -709,44 +711,72 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   assert.match(plist, /<key>CFBundleVersion<\/key>\n\t<string>300004<\/string>/);
 });
 
-function releasePlan(t, version, ref = `refs/tags/exo-desktop@${version}`) {
+// A repo whose main has a release commit at `version`, tagged `exo-desktop@<version>`.
+function releasePlanRepo(t, version) {
   const root = manifests(t);
   for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = version; });
   write(root, 'desktop/CHANGELOG.md', `# exo-desktop\n\n## ${version}\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n\n## 0.1.0\n\n- Old\n`);
   write(root, 'frontend/CHANGELOG.md', `# @tinychat/frontend\n\n## ${version}\n\n### Minor Changes\n\n- def5678: Web feature X\n`);
+  initRepo(root);
+  const sha = commitAll(root, 'chore(release): versions [skip ci]');
+  git(root, 'tag', '-a', `exo-desktop@${version}`, '-m', version, sha);
+  return { root, sha };
+}
+function releasePlan(t, root, tag) {
   const notes = join(tempDir(t), 'notes.md');
-  return { result: run('desktop-release-plan.mjs', ['--root', root, '--ref', ref, '--notes', notes]), notes };
+  return { result: run('desktop-release-plan.mjs', ['--root', root, '--tag', tag, '--notes', notes, '--main', 'main']), notes };
 }
 
-test('desktop-release-plan.mjs: a beta tag becomes a clearly labelled unsigned pre-release', t => {
-  const { result, notes } = releasePlan(t, '0.2.0-beta.3');
+test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built from that commit', t => {
+  const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
+  // Later main work must not leak into the release: data comes from the tag's commit, not the checkout.
+  editJson(root, 'desktop/package.json', pkg => { pkg.version = '0.2.0-beta.4'; });
+  write(root, 'desktop/CHANGELOG.md', '# exo-desktop\n\n## 0.2.0-beta.3\n\n- Rewritten later\n');
+  commitAll(root, 'later');
+  const { result, notes } = releasePlan(t, root, 'exo-desktop@0.2.0-beta.3');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^tag=exo-desktop@0\.2\.0-beta\.3$/m);
+  assert.match(result.stdout, new RegExp(`^sha=${sha}$`, 'm'));
   assert.match(result.stdout, /^channel=beta$/m);
   assert.match(result.stdout, /^prerelease=true$/m);
-  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta, unsigned\)$/m);
-  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64_UNSIGNED$/m);
+  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta\)$/m);
+  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
   const text = readFileSync(notes, 'utf8');
   assert.match(text, /\*\*Beta\.\*\* A pre-release of Exo 0\.2\.0/);
-  assert.match(text, /\*\*Unsigned\.\*\*/);
   assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
   assert.match(text, /## Web app \(bundled, @tinychat\/frontend@0\.2\.0-beta\.3\)\n\n### Minor Changes\n\n- def5678: Web feature X\n/);
   assert.match(text, /CFBundleShortVersionString 0\.2\.0, CFBundleVersion 200003/);
-  assert.doesNotMatch(text, /- Old/);
+  assert.match(text, new RegExp(`built from \`${sha}\``));
+  assert.doesNotMatch(text, /- Old|Rewritten later/);
 });
 
-test('desktop-release-plan.mjs refuses wrong refs, version mismatches and unsigned stable releases', t => {
-  const branch = releasePlan(t, '0.2.0-beta.3', 'refs/heads/main').result;
-  assert.equal(branch.status, 1);
-  assert.match(branch.stderr, /run on an exo-desktop@<version> tag, got refs\/heads\/main/);
+test('desktop-release-plan.mjs: a stable tag becomes the latest release', t => {
+  const { root } = releasePlanRepo(t, '0.2.0');
+  const { result, notes } = releasePlan(t, root, 'exo-desktop@0.2.0');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^channel=stable$/m);
+  assert.match(result.stdout, /^prerelease=false$/m);
+  assert.match(result.stdout, /^title=Exo 0\.2\.0$/m);
+  assert.doesNotMatch(readFileSync(notes, 'utf8'), /Beta/);
+});
 
-  const mismatch = releasePlan(t, '0.2.0-beta.3', 'refs/tags/exo-desktop@0.2.0-beta.2').result;
-  assert.equal(mismatch.status, 1);
-  assert.match(mismatch.stderr, /does not match desktop\/package\.json version 0\.2\.0-beta\.3/);
+test('desktop-release-plan.mjs refuses bad tags, tags off main and version mismatches', t => {
+  const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
+  assert.match(releasePlan(t, root, 'refs/heads/main').result.stderr, /need an exo-desktop@<X\.Y\.Z or X\.Y\.Z-beta\.N> tag/);
+  assert.match(releasePlan(t, root, '@tinychat/frontend@0.2.0-beta.3').result.stderr, /need an exo-desktop@/);
+  assert.match(releasePlan(t, root, 'exo-desktop@0.2.0-beta.9').result.stderr, /Tag exo-desktop@0\.2\.0-beta\.9 does not exist/);
 
-  const stable = releasePlan(t, '0.2.0').result;
-  assert.equal(stable.status, 1);
-  assert.match(stable.stderr, /Refusing to publish exo-desktop@0\.2\.0 unsigned/);
+  git(root, 'tag', '-a', 'exo-desktop@0.2.0-beta.2', '-m', 'wrong version', sha);
+  assert.match(releasePlan(t, root, 'exo-desktop@0.2.0-beta.2').result.stderr, /does not match desktop\/package\.json version 0\.2\.0-beta\.3/);
+
+  git(root, 'checkout', '-q', '-b', 'side');
+  editJson(root, 'desktop/package.json', pkg => { pkg.version = '0.2.0-beta.5'; });
+  editJson(root, 'frontend/package.json', pkg => { pkg.version = '0.2.0-beta.5'; });
+  const off = commitAll(root, 'not on main');
+  git(root, 'tag', '-a', 'exo-desktop@0.2.0-beta.5', '-m', 'off main', off);
+  const offMain = releasePlan(t, root, 'exo-desktop@0.2.0-beta.5').result;
+  assert.equal(offMain.status, 1);
+  assert.match(offMain.stderr, /is not on main: only release tags on main are built/);
 });
 
 test('the Exo build is defined once and shared by CI and releases', () => {
@@ -759,6 +789,19 @@ test('the Exo build is defined once and shared by CI and releases', () => {
   const build = read(repo, '.github/workflows/desktop-build.yml');
   assert.match(build, /shared-key: exo-desktop-macos-arm64/);
   assert.match(build, /--config "\$TAURI_BUNDLE_CONFIG"/);
+  // Only main's own CI builds write the cache; release builds (which pass a ref) only restore it.
+  assert.match(build, /SAVE_CACHE: \$\{\{ github\.ref == 'refs\/heads\/main' && inputs\.ref == '' \}\}/);
+  assert.match(build, /ref: \$\{\{ inputs\.ref \|\| github\.sha \}\}/);
+});
+
+test('desktop releases run main\'s workflow on a validated tag and never publish an unsigned build', () => {
+  const release = read(repo, '.github/workflows/desktop-release.yml');
+  assert.match(triggers('.github/workflows/desktop-release.yml'), /^ {2}workflow_dispatch:\n {4}inputs:\n {6}tag:/m);
+  assert.match(release, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
+  assert.match(release, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/desktop-release\.yml@refs\/heads\/main/);
+  assert.match(release, /ref: \$\{\{ needs\.plan\.outputs\.sha \}\}/);
+  const publish = release.slice(release.indexOf('  publish:'));
+  assert.ok(publish.indexOf('if [ "$SIGNED" != true ]; then') < publish.indexOf('gh release create'), 'the signed check precedes any release write');
 });
 
 // Release tags and the production branch are pushed only with the release-push deploy key (ruleset bypass).
