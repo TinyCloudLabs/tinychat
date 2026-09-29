@@ -111,6 +111,42 @@ capture (`NSAudioCaptureUsageDescription`, process tap — macOS 14.2+). Dev
 builds attribute these to the launching terminal. `Entitlements.plist` adds
 `com.apple.security.device.audio-input` for signed/hardened-runtime bundles.
 
+### Private cloud engine (hidden)
+
+Local recording has a second engine, **Private cloud**: after Stop, the
+recording is uploaded to TinyCloud Private Transcription (a dedicated
+confidential VM that sends speech segments to Tinfoil) and the transcript is
+saved as the same Exo Local meeting, with `transcription_engine:
+"private-cloud"` in its metadata. It is **hidden in this build**:
+`src-tauri/src/cloud/origins.rs` compiles in no PTX origin
+(`PTX_UPLOAD_ORIGIN = None`), so `cloud_transcription_status` reports
+`configured: false`, the capture registry never opens a file, and the picker
+never appears. The engine shows only when a build sets that origin *and* the
+backend answers `GET /api/transcriber/private-cloud/capabilities` with 200
+(flag on, account in the cohort).
+
+Native side (`src-tauri/src/cloud/`):
+
+- `registry.rs`: on the transcription plugin's `stopped` event for a
+  cloud-bound capture (the webview gives those `cloud-<uuid>` session ids;
+  on-device captures are never opened), opens
+  `vault/sessions/<session>/audio.{mp3,wav,ogg}` with `openat` + `O_NOFOLLOW`
+  at each step, requires a regular file ≤ 120,960,000 bytes (2 h), keeps the
+  descriptor, and emits `exo://capture-ready` with a random 128-bit handle.
+  The webview never passes a path.
+- `commands.rs`: `cloud_transcription_submit` hashes the descriptor, creates
+  the job at the compiled backend origin (bearer + `Idempotency-Key`), and PUTs
+  the same descriptor to `PTX_UPLOAD_ORIGIN` + the backend's relative
+  `/uploads/trn_…` path, with an exact `Content-Length` and no redirects.
+  After acceptance, recovery goes through job status only: PTX deletes a job's
+  upload capabilities when it accepts the upload, so a replayed PUT gets 401.
+  `cloud_transcription_cancel` aborts an upload and releases the handle.
+- The commands are declared in `build.rs` (app ACL manifest) and granted only
+  by `capabilities-transcription/transcription.json`, which also denies the
+  webview `event:emit`, so it cannot forge the plugin's `stopped` event.
+- Debug builds only: `EXO_DEBUG_PTX_ORIGIN=http://127.0.0.1:<port>` points
+  the uploader at a local PTX stand-in.
+
 ### Known gaps
 
 - Speakers are labelled by channel: **You** = microphone, **Others** = system

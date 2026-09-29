@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-exo-desktop-smoke"
+description = "Enables the exo_desktop_smoke command without any pre-configured scope."
+commands.allow = ["exo_desktop_smoke"]
+
+[[permission]]
+identifier = "deny-exo-desktop-smoke"
+description = "Denies the exo_desktop_smoke command without any pre-configured scope."
+commands.deny = ["exo_desktop_smoke"]

@@ -36,6 +36,24 @@ import type {
   TranscriptionEvent,
 } from "./anarlog/transcription.gen";
 import type { DownloadProgressPayload } from "./anarlog/localStt.gen";
+import {
+  isTransientCloudError,
+  loadPrivateCloudNative,
+  localStoragePendingCloudStore,
+  privateCloudMessage,
+  PrivateCloudError,
+  toPrivateCloudError,
+  type CaptureReadyEvent,
+  type PendingCloudStore,
+  type PrivateCloudApi,
+  type PrivateCloudAvailability,
+  type PrivateCloudJob,
+  type PrivateCloudNative,
+  type PrivateCloudTranscript,
+  type TranscriptionEngine,
+} from "./privateCloud";
+
+export type { TranscriptionEngine } from "./privateCloud";
 
 export type TranscriberKind = "meeting-bot" | "local";
 
@@ -180,7 +198,9 @@ async function loadBridge(): Promise<LocalTranscriberBridge> {
 
 // ── Public interface ───────────────────────────────────────────────────
 
-export interface LocalTranscriptResult {
+/** A transcript made on this Mac by whisper.cpp. */
+export interface OnDeviceTranscriptResult {
+  engine?: "on-device";
   sessionId: string;
   /** ISO timestamp captured at start(), used for the meeting's startedAt. */
   startedAt: string;
@@ -190,12 +210,39 @@ export interface LocalTranscriptResult {
   response: BatchResponse;
 }
 
+/** A transcript made by TinyCloud Private Transcription from the uploaded recording. */
+export interface CloudTranscriptResult {
+  engine: "private-cloud";
+  sessionId: string;
+  startedAt: string;
+  language: string;
+  /** The PTX job, deleted once the transcript is saved (finishCloudTranscript). */
+  transcriptionId: string;
+  transcript: PrivateCloudTranscript;
+  /** Native's opaque upload handle, released by finishCloudTranscript; null after a relaunch. */
+  captureHandle: string | null;
+}
+
+export type LocalTranscriptResult = OnDeviceTranscriptResult | CloudTranscriptResult;
+
 export type LocalTranscriberStatus =
   | { kind: "idle" }
   | { kind: "starting" }
   | { kind: "recording" }
   | { kind: "stopping" }
   | { kind: "transcribing"; progress: number | null }
+  /** Private cloud: sending the recording (percent of bytes). */
+  | { kind: "uploading"; pct: number | null }
+  /** Private cloud: the job is waiting or being transcribed. */
+  | {
+      kind: "cloud-processing";
+      stage: "queued" | "processing";
+      queuePosition: number | null;
+      regionsCompleted: number | null;
+      regionsTotal: number | null;
+    }
+  /** Private cloud: finishing an earlier job of this account (its transcript is saved on its own). */
+  | { kind: "cloud-recovering" }
   | { kind: "done" }
   | { kind: "error"; message: string };
 
@@ -220,7 +267,13 @@ export interface LocalTranscriber {
    *  confirmed stopped. A start_capture that times out may still start, so it
    *  becomes such a previous recording rather than being assumed not started.
    *  Also refuses while a recording is being, or waiting to be, transcribed. */
-  start(opts: { model: WhisperModel; language: string; micDevice?: string }): Promise<{ sessionId: string }>;
+  start(opts: {
+    model: WhisperModel;
+    language: string;
+    micDevice?: string;
+    /** Default on-device. Private cloud records the same way but never starts Whisper. */
+    engine?: TranscriptionEngine;
+  }): Promise<{ sessionId: string }>;
   /** Stop capture, batch-transcribe the recording, return the raw response.
    *  Rejects with CaptureStopUnconfirmedError, keeping the session so stop()
    *  can be retried, when native capture does not confirm it stopped. Rejects
@@ -233,7 +286,10 @@ export interface LocalTranscriber {
   /** Transcribe the kept recording: same audio file, session, model and
    *  language, after starting the local Whisper server again. Rejects with
    *  TranscriptionFailedError, still keeping the recording, if it fails again. */
-  retryTranscription(): Promise<LocalTranscriptResult>;
+  retryTranscription(opts?: {
+    /** Explicitly move a private cloud recording to on-device Whisper with this model. */
+    onDevice?: { model: WhisperModel };
+  }): Promise<LocalTranscriptResult>;
   /** Give up on the kept recording without transcribing it. Its audio file
    *  stays on disk. */
   discardRecording(): void;
@@ -260,6 +316,24 @@ export interface LocalTranscriber {
   stopCaptureOnUnmount(): Promise<void>;
   /** Subscribe to capture/transcription status; returns unsubscribe. */
   onStatus(cb: (s: LocalTranscriberStatus) => void): () => void;
+  /** Private cloud is offered only when this build can upload (native) and the
+   *  backend admits this account (capabilities 200). A clean 404 also forgets
+   *  a pending job, which can no longer be finished here. */
+  privateCloudAvailability(): Promise<PrivateCloudAvailability>;
+  /** True when any Whisper model is on disk (decides the default engine). */
+  anyModelDownloaded(): Promise<boolean>;
+  /** A private cloud job left by a previous launch, finished in this view like
+   *  adoptTranscription(); null when there is none. Resolves null (and forgets
+   *  it) when that job no longer exists. Call only while the engine is available. */
+  resumeCloudTranscription(): Promise<LocalTranscriptResult | null> | null;
+  /** Tenant-list recovery: finishes this account's jobs no view on this Mac
+   *  knows about (a lost pending record, a relaunch), handing each transcript
+   *  to `saveRecovered`. Resolves with how many were finished. */
+  recoverCloudTranscripts(): Promise<number>;
+  /** After a private cloud transcript is saved: delete it from PTX and release
+   *  the recording's upload handle. Rejects if the deletion fails (PTX then
+   *  deletes it on its 24 h schedule; a relaunch retries). */
+  finishCloudTranscript(result: CloudTranscriptResult): Promise<void>;
 }
 
 /** Bounds on every wait for the native plugins. A timeout is surfaced like
@@ -279,6 +353,8 @@ export interface LocalTranscriberTimeouts {
   transcribeMs: number;
   /** download_model plus its terminal event. */
   modelDownloadMs: number;
+  /** Private cloud: native's capture handle after the `stopped` event. */
+  captureReadyMs: number;
 }
 
 const DEFAULT_TIMEOUTS: LocalTranscriberTimeouts = {
@@ -290,7 +366,51 @@ const DEFAULT_TIMEOUTS: LocalTranscriberTimeouts = {
   captureStopMs: 2 * 60_000,
   transcribeMs: 30 * 60_000,
   modelDownloadMs: 30 * 60_000,
+  captureReadyMs: 10_000,
 };
+
+/** Private cloud polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of
+ *  transient failures, and "connection lost" (not failed) after 10 minutes. */
+export interface CloudPolling {
+  intervalMs: number;
+  slowIntervalMs: number;
+  slowAfterMs: number;
+  giveUpAfterMs: number;
+}
+
+const DEFAULT_CLOUD_POLLING: CloudPolling = {
+  intervalMs: 5_000,
+  slowIntervalMs: 30_000,
+  slowAfterMs: 60_000,
+  giveUpAfterMs: 10 * 60_000,
+};
+
+export interface CloudClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  /** [0, 1): polling jitter. */
+  random(): number;
+}
+
+const REAL_CLOCK: CloudClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  random: () => Math.random(),
+};
+
+/** What the private cloud engine needs; absent means the engine is never offered. */
+export interface PrivateCloudDeps {
+  api: PrivateCloudApi;
+  /** Injected in tests; the real one is loaded lazily. */
+  native?: PrivateCloudNative;
+  pending?: PendingCloudStore;
+  clock?: CloudClock;
+  polling?: Partial<CloudPolling>;
+  newAttemptId?: () => string;
+  /** Saves a transcript recovered from a job no recording on this Mac owns
+   *  (tenant-list recovery) as its own Exo Local meeting, then deletes it. */
+  saveRecovered?: (result: CloudTranscriptResult) => Promise<void>;
+}
 
 /**
  * Native capture did not confirm it stopped: stop_capture failed or never
@@ -310,9 +430,34 @@ export class CaptureStopUnconfirmedError extends Error {
  * The recording is kept until retryTranscription() succeeds or it is discarded.
  */
 export class TranscriptionFailedError extends Error {
-  constructor(message: string) {
+  /** False when Retry cannot help (the recording is gone, too long, …): only Discard. */
+  readonly retryable: boolean;
+  /** Private cloud: the stable error code and the reference shown to the user. */
+  readonly code: string | null;
+  readonly correlationId: string | null;
+  /** Private cloud: this recording can be transcribed on this Mac instead. */
+  readonly offerOnDevice: boolean;
+  constructor(
+    message: string,
+    extra: { retryable?: boolean; code?: string | null; correlationId?: string | null; offerOnDevice?: boolean } = {},
+  ) {
     super(message);
     this.name = "TranscriptionFailedError";
+    this.retryable = extra.retryable ?? true;
+    this.code = extra.code ?? null;
+    this.correlationId = extra.correlationId ?? null;
+    this.offerOnDevice = extra.offerOnDevice ?? false;
+  }
+}
+
+/**
+ * Private cloud: polling failed transiently for 10 minutes. The job may still
+ * be running; Retry ("Keep waiting") resumes polling the same job.
+ */
+export class CloudConnectionLostError extends TranscriptionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = "CloudConnectionLostError";
   }
 }
 
@@ -357,9 +502,24 @@ type NativeCaptureState = "active" | "finalizing" | "inactive";
 interface StoppedRecording {
   sessionId: string;
   startedAt: string;
+  /** Empty for a private cloud job resumed after a relaunch (only its PTX id is known). */
   audioPath: string;
   model: WhisperModel;
   language: string;
+  engine: TranscriptionEngine;
+}
+
+/** Where a private cloud recording's job stands, and what Retry does next. */
+interface CloudJobState {
+  /** Native's opaque handle for the recording; null until `exo://capture-ready`. */
+  captureHandle: string | null;
+  /** True for a job resumed after a relaunch: native no longer holds the recording. */
+  handleLost: boolean;
+  /** Idempotency-Key of the current PTX job; a new one creates a new job. */
+  attemptId: string;
+  transcriptionId: string | null;
+  /** submit: (re)upload with attemptId · resolve: ask status first · poll: wait for the transcript. */
+  next: "submit" | "resolve" | "poll";
 }
 
 const VIEW_CLOSED_MESSAGE = "Recording stopped because the Local recording view closed";
@@ -614,6 +774,10 @@ interface TranscriptionJob {
   recording: StoppedRecording;
   /** Identity of the transcriber whose view takes the outcome; null while no open view owns it. */
   owner: object | null;
+  /** The owning view's status sink (progress of an attempt that outlives its view). */
+  report: ((s: LocalTranscriberStatus) => void) | null;
+  /** Private cloud state; null for on-device recordings. */
+  cloud: CloudJobState | null;
   /** The latest attempt's outcome; never rejects. */
   attempt: Promise<TranscriptionOutcome>;
   /** True while an attempt runs. */
@@ -644,9 +808,134 @@ async function takeTranscription(
   return outcome.result;
 }
 
+/**
+ * The latest `exo://capture-ready` per session. Process-wide like the capture:
+ * its listener is registered once and never removed, so a view closing between
+ * Stop and the event cannot lose the recording's upload handle.
+ */
+interface CaptureReadyStore {
+  ready: Map<string, CaptureReadyEvent>;
+  waiters: Map<string, Set<(e: CaptureReadyEvent) => void>>;
+  registering: Promise<void> | null;
+}
+
+const captureReadyStores = new WeakMap<object, CaptureReadyStore>();
+
+/** Session ids of cloud-bound captures; native opens only these (registry.rs). */
+export const CLOUD_SESSION_PREFIX = "cloud-";
+
+/** Recoveries of other jobs in flight, per native identity and job id, so two
+ *  paths (a submit blocked by the job, relaunch recovery) finish it once. */
+const cloudRecoveries = new WeakMap<object, Map<string, Promise<CloudRecoveryOutcome>>>();
+
+/** finished: its transcript went to saveRecovered · ended: nothing to save ·
+ *  unfinishable: it awaits an upload only its own recording can make. */
+type CloudRecoveryOutcome = "finished" | "ended" | "unfinishable";
+const MAX_READY_EVENTS = 16;
+
+function captureReadyStore(key: object): CaptureReadyStore {
+  let store = captureReadyStores.get(key);
+  if (store === undefined) {
+    store = { ready: new Map(), waiters: new Map(), registering: null };
+    captureReadyStores.set(key, store);
+  }
+  return store;
+}
+
+function listenCaptureReady(store: CaptureReadyStore, native: PrivateCloudNative, timeoutMs: number): Promise<void> {
+  if (store.registering === null) {
+    const registering = withTimeout(
+      native.onCaptureReady((e) => {
+        store.ready.set(e.sessionId, e);
+        while (store.ready.size > MAX_READY_EVENTS) {
+          const oldest = store.ready.keys().next().value;
+          if (oldest === undefined) break;
+          store.ready.delete(oldest);
+        }
+        const waiting = store.waiters.get(e.sessionId);
+        store.waiters.delete(e.sessionId);
+        waiting?.forEach((resolve) => resolve(e));
+      }),
+      timeoutMs,
+      "the private cloud capture listener to register",
+    ).then(ignore);
+    store.registering = registering;
+    registering.catch(() => {
+      if (store.registering === registering) store.registering = null;
+    });
+  }
+  return store.registering;
+}
+
+/** The session's capture-ready event, waiting up to `timeoutMs` after Stop. */
+function waitCaptureReady(store: CaptureReadyStore, sessionId: string, timeoutMs: number): Promise<CaptureReadyEvent> {
+  const ready = store.ready.get(sessionId);
+  if (ready !== undefined) return Promise.resolve(ready);
+  return new Promise((resolve, reject) => {
+    const waiting = store.waiters.get(sessionId) ?? new Set();
+    store.waiters.set(sessionId, waiting);
+    const timer = setTimeout(() => {
+      waiting.delete(done);
+      reject(new PrivateCloudError("capture_not_available", "Exo did not hand over the recording for upload"));
+    }, timeoutMs);
+    function done(e: CaptureReadyEvent) {
+      clearTimeout(timer);
+      resolve(e);
+    }
+    waiting.add(done);
+  });
+}
+
+/** Failures after which Retry starts a new PTX job (a new Idempotency-Key):
+ *  the old job is terminal (or gone), so it no longer holds the account's one
+ *  active slot. */
+const NEW_CLOUD_JOB_CODES: ReadonlySet<string> = new Set([
+  "failed",
+  "cancelled",
+  "upload_expired",
+  "upload_integrity_failed",
+  "provider_unavailable",
+  "provider_outcome_unknown",
+  "processing_timeout",
+  "processing_failed",
+  "transcription_failed",
+  "transcript_expired",
+  "transcription_not_found",
+  "idempotency_conflict",
+]);
+
+/** Failures Retry cannot fix: only Discard (or Transcribe on this Mac). */
+const NOT_RETRYABLE_CLOUD_CODES: ReadonlySet<string> = new Set([
+  "file_changed",
+  "capture_not_available",
+  "upload_interrupted_by_quit",
+  "recording_too_long_for_cloud",
+  "recording_too_large",
+  "recording_too_long",
+  "unsupported_recording",
+  "invalid_audio",
+  "no_speech",
+  "origin_not_configured",
+  "backend_origin_mismatch",
+  "service_misconfigured",
+  "feature_unavailable",
+  "invalid_argument",
+]);
+
+/** Failures where on-device Whisper may still work, if a model is downloaded. */
+const ON_DEVICE_ALTERNATIVE_CODES: ReadonlySet<string> = new Set([
+  "active_transcription_exists",
+  "recording_too_long_for_cloud",
+  "recording_too_large",
+  "recording_too_long",
+  "unsupported_recording",
+  "invalid_audio",
+  "no_speech",
+]);
+
 export function createLocalTranscriber(
   injected?: LocalTranscriberBridge,
-  options: { timeouts?: Partial<LocalTranscriberTimeouts> } = {},
+  options: { timeouts?: Partial<LocalTranscriberTimeouts>; cloud?: PrivateCloudDeps } = {},
 ): LocalTranscriber {
   const timeouts: LocalTranscriberTimeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
   let bridgePromise: Promise<LocalTranscriberBridge> | null = injected
@@ -667,7 +956,32 @@ export function createLocalTranscriber(
   /** This transcriber's identity as the owner of a transcription job. */
   const ownerId: object = {};
 
+  // Private cloud engine (absent → never offered).
+  const cloud = options.cloud ?? null;
+  const cloudClock = cloud?.clock ?? REAL_CLOCK;
+  const cloudPolling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...cloud?.polling };
+  const pendingStore = cloud?.pending ?? localStoragePendingCloudStore;
+  const newAttemptId = cloud?.newAttemptId ?? (() => crypto.randomUUID());
+  const readyStore = captureReadyStore(nativeKey);
+  let cloudNativePromise: Promise<PrivateCloudNative> | null = cloud?.native ? Promise.resolve(cloud.native) : null;
+  /** Native cloud commands, loaded once; a failed load is retried by the next call. */
+  const cloudNative = (): Promise<PrivateCloudNative> => {
+    if (cloudNativePromise === null) {
+      const loading = loadPrivateCloudNative();
+      cloudNativePromise = loading;
+      loading.catch(() => {
+        if (cloudNativePromise === loading) cloudNativePromise = null;
+      });
+    }
+    return withTimeout(cloudNativePromise, timeouts.listenMs, "the private cloud commands to load");
+  };
+  const requireCloud = (): PrivateCloudDeps => {
+    if (cloud === null) throw new Error("Private cloud transcription is not available");
+    return cloud;
+  };
+
   let sessionId: string | null = null;
+  let sessionEngine: TranscriptionEngine = "on-device";
   let model: WhisperModel = DEFAULT_LOCAL_MODEL;
   let language = "en";
   let baseUrl: string | null = null;
@@ -783,7 +1097,7 @@ export function createLocalTranscriber(
     b: LocalTranscriberBridge,
     recording: StoppedRecording,
     serverUrl: string,
-  ): Promise<LocalTranscriptResult> => {
+  ): Promise<OnDeviceTranscriptResult> => {
     const done = await invokeAndWaitForEvent<TranscriptionEvent>(
       (cb) => b.transcription.events.transcriptionEvent.listen(cb),
       (p) => p.session_id === recording.sessionId && (p.type === "completed" || p.type === "failed"),
@@ -818,17 +1132,361 @@ export function createLocalTranscriber(
     };
   };
 
+  // ── Private cloud attempt ──────────────────────────────────────────
+
+  const persistPending = (job: TranscriptionJob) => {
+    const c = job.cloud;
+    if (c === null) return;
+    pendingStore.write({
+      attemptId: c.attemptId,
+      transcriptionId: c.transcriptionId,
+      sessionId: job.recording.sessionId,
+      startedAt: job.recording.startedAt,
+      language: job.recording.language,
+    });
+  };
+
+  const cloudSleep = (baseMs: number) => cloudClock.sleep(Math.round(baseMs * (0.8 + 0.4 * cloudClock.random())));
+
+  /** Rides out transient failures (plan §4.7): waits and returns while they
+   *  last under 10 minutes, backing off after one; then "connection lost". */
+  const transientTolerance = () => {
+    let failingSince: number | null = null;
+    return {
+      reset: () => {
+        failingSince = null;
+      },
+      rideOut: async (err: unknown) => {
+        if (!isTransientCloudError(err)) throw err;
+        const now = cloudClock.now();
+        failingSince ??= now;
+        const failingFor = now - failingSince;
+        if (failingFor >= cloudPolling.giveUpAfterMs) {
+          throw new CloudConnectionLostError(
+            "Lost contact with private cloud transcription for 10 minutes. The job may still be running; the recording is kept on this Mac.",
+          );
+        }
+        await cloudSleep(failingFor >= cloudPolling.slowAfterMs ? cloudPolling.slowIntervalMs : cloudPolling.intervalMs);
+      },
+    };
+  };
+
+  /** The job's status, riding out transient failures. */
+  const readCloudJob = async (id: string): Promise<PrivateCloudJob> => {
+    const api = requireCloud().api;
+    const tolerance = transientTolerance();
+    for (;;) {
+      try {
+        return await api.get(id);
+      } catch (err) {
+        await tolerance.rideOut(err);
+      }
+    }
+  };
+
+  /** Poll a PTX job to its transcript (plan §4.7): transient failures are
+   *  ridden out for 10 minutes, then the job is "connection lost", not failed. */
+  const pollCloudJob = async (
+    id: string,
+    report: (s: LocalTranscriberStatus) => void,
+  ): Promise<PrivateCloudTranscript> => {
+    const api = requireCloud().api;
+    const tolerance = transientTolerance();
+    const rideOut = tolerance.rideOut;
+    for (;;) {
+      let job: PrivateCloudJob;
+      try {
+        job = await api.get(id);
+      } catch (err) {
+        await rideOut(err);
+        continue;
+      }
+      if (job.status === "completed") {
+        let result: Awaited<ReturnType<PrivateCloudApi["result"]>>;
+        try {
+          result = await api.result(id);
+        } catch (err) {
+          await rideOut(err);
+          continue;
+        }
+        tolerance.reset();
+        if (result.status === "completed") return result.transcript;
+        if (result.status !== "pending") throw result.error;
+      } else {
+        tolerance.reset();
+        if (job.status === "failed" || job.status === "cancelled") {
+          throw new PrivateCloudError(job.error?.code ?? job.status, job.error?.message ?? `The transcription ${job.status}`, {
+            transcriptionId: id,
+          });
+        }
+        if (job.status === "awaiting_upload") {
+          throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
+        }
+        report({
+          kind: "cloud-processing",
+          stage: job.status === "queued" ? "queued" : "processing",
+          queuePosition: job.progress?.queue_position ?? null,
+          regionsCompleted: job.progress?.regions_completed ?? null,
+          regionsTotal: job.progress?.regions_total ?? null,
+        });
+      }
+      await cloudSleep(cloudPolling.intervalMs);
+    }
+  };
+
+  /** When a recovered job's recording started: its upload time minus its length. */
+  const recoveredStartedAt = (job: PrivateCloudJob): string => {
+    const created = job.created_at ? Date.parse(job.created_at) : Number.NaN;
+    if (Number.isNaN(created)) return new Date(cloudClock.now()).toISOString();
+    const duration = typeof job.duration_seconds === "number" ? job.duration_seconds : 0;
+    return new Date(created - duration * 1000).toISOString();
+  };
+
+  /**
+   * Finish another job of this account and hand its transcript to
+   * saveRecovered. Shared per job id, so concurrent callers finish it once.
+   * A save that fails is logged and left for the next recovery (the job keeps
+   * its transcript until PTX's 24 h schedule).
+   */
+  const recoverCloudJob = (id: string, report?: (s: LocalTranscriberStatus) => void): Promise<CloudRecoveryOutcome> => {
+    let inflight = cloudRecoveries.get(nativeKey);
+    if (inflight === undefined) {
+      inflight = new Map();
+      cloudRecoveries.set(nativeKey, inflight);
+    }
+    const running = inflight.get(id);
+    if (running !== undefined) return running;
+    const deps = requireCloud();
+    const recovering = (async (): Promise<CloudRecoveryOutcome> => {
+      let first: PrivateCloudJob;
+      try {
+        first = await readCloudJob(id);
+      } catch (err) {
+        if (err instanceof PrivateCloudError && err.code === "transcription_not_found") return "ended";
+        throw err;
+      }
+      if (first.status === "awaiting_upload") return "unfinishable";
+      if (first.status === "failed" || first.status === "cancelled") return "ended";
+      report?.({ kind: "cloud-recovering" });
+      let transcript: PrivateCloudTranscript;
+      try {
+        transcript = await pollCloudJob(id, () => report?.({ kind: "cloud-recovering" }));
+      } catch (err) {
+        // The job ended without a transcript, or vanished: nothing to save.
+        if (err instanceof PrivateCloudError && (err.transcriptionId === id || err.code === "transcription_not_found")) {
+          return "ended";
+        }
+        throw err;
+      }
+      const result: CloudTranscriptResult = {
+        engine: "private-cloud",
+        sessionId: id,
+        startedAt: recoveredStartedAt(first),
+        language: transcript.language ?? "en",
+        transcriptionId: id,
+        transcript,
+        captureHandle: null,
+      };
+      try {
+        await deps.saveRecovered?.(result);
+      } catch (err) {
+        console.error("Saving a recovered private cloud transcript failed; it is retried on the next launch", err);
+      }
+      return "finished";
+    })();
+    inflight.set(id, recovering);
+    const forget = () => {
+      if (inflight.get(id) === recovering) inflight.delete(id);
+    };
+    recovering.then(forget, forget);
+    return recovering;
+  };
+
+  /** Upload (or re-join) the recording's PTX job and wait for its transcript. */
+  const cloudTranscribe = async (job: TranscriptionJob): Promise<CloudTranscriptResult> => {
+    const deps = requireCloud();
+    const c = job.cloud;
+    if (c === null) throw new Error("Not a private cloud recording");
+    const rec = job.recording;
+    const report = (s: LocalTranscriberStatus) => job.report?.(s);
+
+    if (c.next === "resolve") {
+      if (c.transcriptionId === null) {
+        c.next = "submit";
+      } else {
+        // Ask before re-uploading: an upload whose answer was lost may have landed.
+        const current = await readCloudJob(c.transcriptionId);
+        if (current.status === "awaiting_upload") c.next = "submit";
+        else if (current.status === "failed" || current.status === "cancelled") {
+          throw new PrivateCloudError(current.error?.code ?? current.status, current.error?.message ?? `The transcription ${current.status}`, {
+            transcriptionId: c.transcriptionId,
+          });
+        } else c.next = "poll";
+      }
+    }
+
+    if (c.next === "submit") {
+      if (c.handleLost) {
+        throw new PrivateCloudError(
+          "upload_interrupted_by_quit",
+          "The upload was interrupted when Exo quit. The recording is kept on this Mac.",
+        );
+      }
+      if (c.captureHandle === null) {
+        const ready = await waitCaptureReady(readyStore, rec.sessionId, timeouts.captureReadyMs);
+        if (ready.error) throw new PrivateCloudError(ready.error.code, ready.error.message);
+        if (!ready.captureHandle) throw new PrivateCloudError("capture_not_available", "No upload handle for this recording");
+        c.captureHandle = ready.captureHandle;
+      }
+      const bearer = deps.api.bearer();
+      if (bearer === null) throw new PrivateCloudError("unauthenticated", "Not signed in");
+      persistPending(job);
+      const native = await cloudNative();
+      const handle = c.captureHandle;
+      for (let recovered = 0; ; ) {
+        report({ kind: "uploading", pct: 0 });
+        const unlisten = await withTimeout(
+          native.onUploadProgress((e) => {
+            if (e.captureHandle !== handle || e.totalBytes <= 0) return;
+            report({ kind: "uploading", pct: Math.min(100, Math.floor((e.sentBytes * 100) / e.totalBytes)) });
+          }),
+          timeouts.listenMs,
+          "upload progress to register",
+        );
+        try {
+          const submitted = await native.submit({
+            captureHandle: handle,
+            attemptId: c.attemptId,
+            backendUrl: deps.api.backendUrl,
+            bearer,
+            language: rec.language,
+          });
+          c.transcriptionId = submitted.transcriptionId;
+          break;
+        } catch (err) {
+          const e = toPrivateCloudError(err);
+          if (e.code === "active_transcription_exists") {
+            // The account's one active job is another recording's (the backend
+            // scopes it to this account): a previous launch's whose record was
+            // lost, or another Mac's. Finish it and save its transcript as its
+            // own meeting, then upload this recording.
+            if (e.transcriptionId === null || e.transcriptionId === c.transcriptionId || recovered >= 2) throw err;
+            recovered++;
+            const outcome = await recoverCloudJob(e.transcriptionId, report);
+            if (outcome === "unfinishable") throw err;
+            continue;
+          }
+          // After the job exists, only its status says whether the upload
+          // landed: PTX answers a replayed or duplicate PUT with 401, and a
+          // lost 201 looks like any transport failure.
+          if (e.transcriptionId === null) throw err;
+          c.transcriptionId = e.transcriptionId;
+          c.next = "resolve";
+          persistPending(job);
+          const current = await readCloudJob(e.transcriptionId);
+          if (current.status === "awaiting_upload") throw err; // Retry re-uploads (same job)
+          if (current.status === "failed" || current.status === "cancelled") {
+            throw new PrivateCloudError(current.error?.code ?? current.status, current.error?.message ?? `The transcription ${current.status}`, {
+              transcriptionId: e.transcriptionId,
+              correlationId: e.correlationId,
+            });
+          }
+          // Accepted despite the error: carry on as if the 201 had arrived.
+          break;
+        } finally {
+          unlisten();
+        }
+      }
+      persistPending(job);
+      c.next = "poll";
+    }
+
+    const transcriptionId = c.transcriptionId;
+    if (transcriptionId === null) throw new Error("The private cloud job has no id");
+    report({ kind: "cloud-processing", stage: "queued", queuePosition: null, regionsCompleted: null, regionsTotal: null });
+    const transcript = await pollCloudJob(transcriptionId, report);
+    return {
+      engine: "private-cloud",
+      sessionId: rec.sessionId,
+      startedAt: rec.startedAt,
+      language: rec.language,
+      transcriptionId,
+      transcript,
+      captureHandle: c.captureHandle,
+    };
+  };
+
+  /** A failed cloud attempt as a kept-recording failure, and what Retry does next. */
+  const cloudFailure = (err: unknown, job: TranscriptionJob): TranscriptionFailedError => {
+    const c = job.cloud;
+    if (err instanceof CloudConnectionLostError) {
+      // Only poll a job this recording owns. A connection lost before it exists (e.g. while
+      // recovering another job during submit) re-enters submit, where the idempotency key
+      // re-joins or re-creates this recording's job.
+      if (c !== null && c.transcriptionId !== null) c.next = "poll";
+      return err;
+    }
+    const e = toPrivateCloudError(err);
+    if (c === null) return new TranscriptionFailedError(privateCloudMessage(e), { code: e.code });
+    // Native names the job it created; active_transcription_exists names someone else's.
+    if (e.transcriptionId !== null && e.code !== "active_transcription_exists" && c.transcriptionId === null) {
+      c.transcriptionId = e.transcriptionId;
+      persistPending(job);
+    }
+    if (NEW_CLOUD_JOB_CODES.has(e.code)) {
+      c.attemptId = newAttemptId();
+      c.transcriptionId = null;
+      c.next = "submit";
+      persistPending(job);
+    } else if (c.next === "submit" && c.transcriptionId !== null) {
+      c.next = "resolve";
+    }
+    return new TranscriptionFailedError(privateCloudMessage(e), {
+      retryable: !NOT_RETRYABLE_CLOUD_CODES.has(e.code),
+      code: e.code,
+      correlationId: e.correlationId,
+      offerOnDevice: ON_DEVICE_ALTERNATIVE_CODES.has(e.code) && job.recording.audioPath !== "",
+    });
+  };
+
+  /** Stops using the cloud for this job: releases the upload handle, deletes
+   *  the PTX job, and forgets it. The recording stays on disk. */
+  const releaseCloud = (job: TranscriptionJob) => {
+    const c = job.cloud;
+    if (c === null) return;
+    const pending = pendingStore.read();
+    if (pending === null || pending.sessionId === job.recording.sessionId) pendingStore.clear();
+    const handle = c.captureHandle;
+    const id = c.transcriptionId;
+    void (async () => {
+      if (handle !== null) await (await cloudNative()).cancel(handle);
+      if (id !== null) {
+        const api = requireCloud().api;
+        try {
+          await api.cancel(id);
+        } catch (err) {
+          console.warn("Cancelling the private cloud job failed (it may already be finished)", err);
+        }
+        await api.remove(id);
+      }
+    })().catch((err) => {
+      console.error("Releasing the private cloud job failed; PTX deletes it on its own schedule", err);
+    });
+  };
+
   /** Run one transcription attempt for `job`. Every failure becomes an outcome
    *  that keeps the recording for Retry or Discard. */
   const runAttempt = (job: TranscriptionJob, serverUrl: string | null): void => {
     job.running = true;
     job.attempt = (async (): Promise<TranscriptionOutcome> => {
       try {
+        if (job.recording.engine === "private-cloud") return { ok: true, result: await cloudTranscribe(job) };
         const b = await bridge();
         // A retry never assumes the server from the recording is still up.
         const url = serverUrl ?? (await startWhisperServer(b, job.recording.model));
         return { ok: true, result: await transcribe(b, job.recording, url) };
       } catch (err) {
+        if (job.recording.engine === "private-cloud") return { ok: false, error: cloudFailure(err, job) };
         return { ok: false, error: new TranscriptionFailedError(errorMessage(err)) };
       } finally {
         job.running = false;
@@ -888,9 +1546,12 @@ export function createLocalTranscriber(
             : "A stopped recording is waiting to be transcribed or saved; finish or discard it first",
         );
       }
+      const engine = opts.engine ?? "on-device";
+      if (engine === "private-cloud" && cloud === null) throw new Error("Private cloud transcription is not available");
       const generation = lifecycleGeneration;
       model = opts.model;
       language = opts.language;
+      sessionEngine = engine;
       emit({ kind: "starting" });
       const run = (async () => {
         const b = await bridge();
@@ -899,16 +1560,25 @@ export function createLocalTranscriber(
         if (previous !== null) throw new PreviousCaptureUnconfirmedError(previous.message);
         if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
         await ensureListeners(b);
-        baseUrl = await startWhisperServer(b, model);
+        if (engine === "private-cloud") {
+          // Batch capture never contacts a transcription server; the recording
+          // is uploaded after Stop through native's capture handle, whose
+          // event must be listened for before the capture can stop.
+          await listenCaptureReady(readyStore, await cloudNative(), timeouts.listenMs);
+          baseUrl = "";
+        } else {
+          baseUrl = await startWhisperServer(b, model);
+        }
         if (generation !== lifecycleGeneration) throw new Error(VIEW_CLOSED_MESSAGE);
-        const session = crypto.randomUUID();
+        // Native opens (and hands a capture handle for) cloud-bound sessions only.
+        const session = engine === "private-cloud" ? `${CLOUD_SESSION_PREFIX}${crypto.randomUUID()}` : crypto.randomUUID();
         sessionId = session;
         startedAt = new Date().toISOString();
         const capture = b.transcription.startCapture({
           session_id: session,
           languages: [language],
           onboarding: false,
-          model,
+          model: engine === "private-cloud" ? "" : model,
           base_url: baseUrl,
           api_key: "",
           keywords: [],
@@ -996,12 +1666,19 @@ export function createLocalTranscriber(
             audioPath,
             model,
             language,
+            engine: sessionEngine,
           };
+          const open = generation === lifecycleGeneration;
           // The job outlives this view: if it closed while capture was stopping,
           // the next view takes the job over.
           const job: TranscriptionJob = {
             recording,
-            owner: generation === lifecycleGeneration ? ownerId : null,
+            owner: open ? ownerId : null,
+            report: open ? emit : null,
+            cloud:
+              sessionEngine === "private-cloud"
+                ? { captureHandle: null, handleLost: false, attemptId: newAttemptId(), transcriptionId: null, next: "submit" }
+                : null,
             // A failed capture's partial recording is kept untranscribed until
             // the user chooses to transcribe or discard it.
             attempt: stopped.error
@@ -1028,10 +1705,19 @@ export function createLocalTranscriber(
       }
     },
 
-    async retryTranscription() {
+    async retryTranscription(opts) {
       const job = transcriptionJobs.get(nativeKey);
       if (job === undefined || job.owner !== ownerId) throw new Error("No recording is waiting to be transcribed");
       if (job.running) throw new Error("The recording is already being transcribed");
+      if (opts?.onDevice) {
+        // An explicit user choice, never automatic: the same audio file, now on-device.
+        if (job.recording.engine !== "private-cloud" || job.recording.audioPath === "") {
+          throw new Error("This recording cannot be transcribed on this Mac");
+        }
+        releaseCloud(job);
+        job.cloud = null;
+        job.recording = { ...job.recording, engine: "on-device", model: opts.onDevice.model };
+      }
       emit({ kind: "transcribing", progress: null });
       runAttempt(job, null);
       const result = await takeTranscription(nativeKey, job, ownerId);
@@ -1044,6 +1730,7 @@ export function createLocalTranscriber(
       if (job === undefined || job.owner !== ownerId) throw new Error("No recording is waiting to be transcribed");
       if (job.running) throw new Error("The recording is being transcribed; it can be discarded if that fails");
       transcriptionJobs.delete(nativeKey);
+      releaseCloud(job);
       emit({ kind: "idle" });
     },
 
@@ -1051,6 +1738,7 @@ export function createLocalTranscriber(
       const job = transcriptionJobs.get(nativeKey);
       if (job === undefined || job.owner !== null) return null;
       job.owner = ownerId;
+      job.report = emit;
       if (job.running) emit({ kind: "transcribing", progress: null });
       return takeTranscription(nativeKey, job, ownerId);
     },
@@ -1068,7 +1756,10 @@ export function createLocalTranscriber(
       // A transcription outlives its view: hand it, or the outcome it will
       // leave, to the next view (adoptTranscription).
       const job = transcriptionJobs.get(nativeKey);
-      if (job?.owner === ownerId) job.owner = null;
+      if (job?.owner === ownerId) {
+        job.owner = null;
+        job.report = null;
+      }
       const activeListeners = listeners;
       listeners = null;
       void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()), ignore);
@@ -1110,6 +1801,110 @@ export function createLocalTranscriber(
       cb(status);
       return () => statusCbs.delete(cb);
     },
+
+    async privateCloudAvailability() {
+      if (cloud === null) return "hidden";
+      try {
+        const { configured } = await (await cloudNative()).status();
+        if (!configured) return "hidden";
+        if ((await cloud.api.capabilities()) === null) {
+          // Dark, or this account left the cohort: a pending job cannot be
+          // finished here (tenant-list recovery picks it up if it comes back).
+          pendingStore.clear();
+          return "hidden";
+        }
+        return "available";
+      } catch (err) {
+        console.warn("Checking private cloud transcription failed", err);
+        return "failed";
+      }
+    },
+
+    async anyModelDownloaded() {
+      const b = await bridge();
+      for (const m of LOCAL_WHISPER_MODELS) {
+        if (await modelDownloaded(b, m.id)) return true;
+      }
+      return false;
+    },
+
+    resumeCloudTranscription() {
+      if (cloud === null || transcriptionJobs.has(nativeKey)) return null;
+      const pending = pendingStore.read();
+      if (pending === null) return null;
+      const job: TranscriptionJob = {
+        recording: {
+          sessionId: pending.sessionId,
+          startedAt: pending.startedAt,
+          audioPath: "",
+          model: DEFAULT_LOCAL_MODEL,
+          language: pending.language,
+          engine: "private-cloud",
+        },
+        owner: ownerId,
+        report: emit,
+        cloud: {
+          captureHandle: null,
+          handleLost: true,
+          attemptId: pending.attemptId,
+          transcriptionId: pending.transcriptionId,
+          next: "resolve",
+        },
+        attempt: NOT_ATTEMPTED,
+        running: false,
+      };
+      transcriptionJobs.set(nativeKey, job);
+      emit({ kind: "transcribing", progress: null });
+      runAttempt(job, null);
+      return takeTranscription(nativeKey, job, ownerId).then(
+        (result): LocalTranscriptResult | null => {
+          emit({ kind: "done" });
+          return result;
+        },
+        (err: unknown) => {
+          // The job is gone (deleted, or expired past its transcript's 24 h):
+          // nothing is left to finish, so forget it instead of failing.
+          if (err instanceof TranscriptionFailedError && err.code === "transcription_not_found") {
+            if (transcriptionJobs.get(nativeKey) === job) transcriptionJobs.delete(nativeKey);
+            pendingStore.clear();
+            emit({ kind: "idle" });
+            return null;
+          }
+          throw err;
+        },
+      );
+    },
+
+    async recoverCloudTranscripts() {
+      if (cloud === null) return 0;
+      const known = new Set<string>();
+      const current = transcriptionJobs.get(nativeKey)?.cloud?.transcriptionId;
+      if (current) known.add(current);
+      const pending = pendingStore.read()?.transcriptionId;
+      if (pending) known.add(pending);
+      let finished = 0;
+      for (const listed of await cloud.api.list()) {
+        if (known.has(listed.id)) continue;
+        // awaiting_upload: only its own recording can upload it; it expires on its own.
+        if (listed.status !== "queued" && listed.status !== "processing" && listed.status !== "completed") continue;
+        try {
+          if ((await recoverCloudJob(listed.id)) === "finished") finished++;
+        } catch (err) {
+          console.warn("Recovering a private cloud transcription failed; the next launch retries", err);
+        }
+      }
+      return finished;
+    },
+
+    async finishCloudTranscript(result) {
+      const deps = requireCloud();
+      if (result.captureHandle !== null) await (await cloudNative()).cancel(result.captureHandle);
+      await deps.api.remove(result.transcriptionId);
+      // Only once PTX has deleted it: until then a relaunch resumes (and
+      // idempotently re-saves) the job instead of recovering it as a stranger.
+      const pending = pendingStore.read();
+      if (pending !== null && pending.sessionId === result.sessionId) pendingStore.clear();
+    },
   };
 }
 
@@ -1131,9 +1926,71 @@ function collectWords(response: BatchResponse): LocalWord[] {
   return words.sort((a, b) => a.start - b.start);
 }
 
+/** PTX segments (one VAD region each, per channel) as sentences, in time order. */
+function cloudSentences(transcript: PrivateCloudTranscript): FirefliesSentence[] {
+  return transcript.segments
+    .map((seg) => ({ ...seg, text: seg.text.trim() }))
+    .filter((seg) => seg.text.length > 0 && Number.isFinite(seg.start) && Number.isFinite(seg.end))
+    .sort((a, b) => a.start - b.start || a.channel - b.channel)
+    .map((seg, index) => ({
+      index,
+      speaker_name: localChannelLabel(seg.channel),
+      text: seg.text,
+      start_time: seg.start,
+      end_time: seg.end,
+    }));
+}
+
+/** The same `exo-local` meeting either engine saves; the engine is metadata. */
+function normalizeCloudTranscript(r: CloudTranscriptResult): { meeting: NormalizedMeeting; sentences: FirefliesSentence[] } {
+  const sentences = cloudSentences(r.transcript);
+  const lastEnd = sentences.length > 0 ? Math.max(...sentences.map((s) => s.end_time)) : 0;
+  const duration = r.transcript.duration_seconds ?? (lastEnd > 0 ? lastEnd : null);
+  const speakerNames = [...new Set(sentences.map((s) => s.speaker_name).filter((n): n is string => n !== null))];
+  return {
+    meeting: {
+      id: crypto.randomUUID(),
+      source: LOCAL_MEETING_SOURCE,
+      sourceId: `local:${r.sessionId}`,
+      title: localRecordingTitle(r.startedAt),
+      startedAt: r.startedAt,
+      durationSecs: duration !== null ? Math.round(duration) : null,
+      organizerEmail: null,
+      participants: speakerNames.map((name) => ({ name, email: null })),
+      summaryOverview: null,
+      summaryActionItems: null,
+      keywords: null,
+      meetingType: null,
+      metadata: {
+        capture: "local",
+        transcription_engine: "private-cloud",
+        transcript_provider: "tinycloud-private-transcription",
+        inference_provider: "tinfoil",
+        model: r.transcript.model ?? null,
+        language: r.transcript.language ?? r.language,
+        transcript_text: sentences.map((s) => s.text).join("\n") || null,
+        // Channel 0 = mic (You), 1 = system audio (Others); one sentence per
+        // detected speech region, no audio path. Mic-echo removal is on-device only.
+        speaker_labels: "channel-you-others",
+      },
+    },
+    sentences,
+  };
+}
+
+function localRecordingTitle(startedAt: string): string {
+  return `Local recording ${new Date(startedAt).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
 export function normalizeLocalTranscript(
   r: LocalTranscriptResult,
 ): { meeting: NormalizedMeeting; sentences: FirefliesSentence[] } {
+  if (r.engine === "private-cloud") return normalizeCloudTranscript(r);
   const sentences = localTranscriptTurns(collectWords(r.response));
 
   // Fallback: a channel alternative with a transcript but no word timings still

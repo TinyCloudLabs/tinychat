@@ -23,6 +23,7 @@ import {
 } from "./TranscriberSection";
 import {
   LocalTranscriberView,
+  cloudProgressText,
   isLocalWorkflowActive,
   localFailureState,
   localRetryAction,
@@ -30,6 +31,7 @@ import {
 } from "./LocalTranscriber";
 import {
   CaptureStopUnconfirmedError,
+  CloudConnectionLostError,
   NO_SPEECH_MESSAGE,
   PartialRecordingError,
   PreviousCaptureUnconfirmedError,
@@ -596,5 +598,125 @@ describe("recording departure diagnostics", () => {
     const html = render({ meetings: [meeting({ status: "completed", capture: { completion_reason: "evicted", stop_requested_by: "user" } })] });
     expect(html).toContain("removed or disconnected");
     expect(html).not.toContain("Bot was stopped.");
+  });
+});
+
+describe("LocalTranscriberView: private cloud engine", () => {
+  test("the engine picker appears only when private cloud is available", () => {
+    const hidden = renderLocal();
+    expect(hidden).not.toContain("Private cloud");
+    expect(hidden).not.toContain('role="radiogroup"');
+    const shown = renderLocal({ cloudAvailable: true });
+    expect(shown).toContain('aria-label="Transcription engine"');
+    expect(shown).toMatch(/role="radio" aria-checked="true"[^>]*>On this Mac/);
+    expect(shown).toMatch(/role="radio" aria-checked="false"[^>]*>Private cloud/);
+  });
+
+  test("private cloud shows separate PTX and Tinfoil claims, no model picker, and asks once before the first use", () => {
+    const html = renderLocal({ cloudAvailable: true, engine: "private-cloud" });
+    expect(html).toContain("TinyCloud Private Transcription</strong>, a dedicated confidential virtual machine");
+    expect(html).toContain("deletes the audio once transcription finishes or fails");
+    expect(html).toContain("scheduled for deletion 24 hours after transcription");
+    expect(html).toContain("anonymous account identifier, not your wallet address");
+    expect(html).toContain("Tinfoil processes the segments inside hardware enclaves");
+    expect(html).toContain('href="https://tinfoil.sh/security-and-privacy-faq"');
+    expect(html).toContain('href="https://tinfoil.sh/privacy"');
+    expect(html).toContain("It never receives your audio.");
+    expect(html).toContain("The original recording stays on this Mac.");
+    expect(html).not.toMatch(/verified|attested|end-to-end|no one can access|at most/i);
+    expect(html).not.toContain("local-transcriber-model");
+    expect(html).not.toContain("Download model");
+    expect(html).toContain(">Use private cloud</button>");
+    expect(html).not.toContain("Start recording");
+
+    const consented = renderLocal({ cloudAvailable: true, engine: "private-cloud", cloudConsented: true });
+    expect(consented).toContain("Start recording");
+    expect(consented).not.toContain("Use private cloud");
+  });
+
+  test("an unavailable cloud choice is told, not silently switched", () => {
+    const html = renderLocal({ cloudUnavailable: true });
+    expect(html).toContain("Private cloud transcription isn&#x27;t available right now");
+  });
+
+  test("progress, failure reference and non-retryable failures", () => {
+    expect(renderLocal({ state: "transcribing", engine: "private-cloud", progressText: "Uploading… 42%" })).toContain(
+      "Uploading… 42%",
+    );
+    const failed = renderLocal({
+      state: "transcribe-failed",
+      engine: "private-cloud",
+      statusText: "Private cloud transcription takes recordings up to 2 hours.",
+      referenceId: "c0ffee",
+      retryable: false,
+      onDeviceOffer: true,
+    });
+    expect(failed).not.toContain(">Retry transcription</button>");
+    expect(failed).toContain(">Transcribe on this Mac</button>");
+    expect(failed).toContain(">Discard recording</button>");
+    expect(failed).toContain("Reference: c0ffee");
+
+    const lost = renderLocal({ state: "connection-lost", engine: "private-cloud", statusText: "Lost contact" });
+    expect(lost).toContain(">Keep waiting</button>");
+    expect(lost).toContain(">Discard recording</button>");
+    expect(localFailureState(new CloudConnectionLostError("Lost contact"))).toBe("connection-lost");
+    expect(localRetryAction("connection-lost")).toBe("transcribe");
+    expect(isLocalWorkflowActive("connection-lost")).toBe(true);
+  });
+
+  test("a failed availability check is shown as unavailable right now, not hidden", () => {
+    const failed = renderLocal({ engine: "private-cloud", cloudCheckFailed: true });
+    expect(failed).toContain('aria-label="Transcription engine"');
+    expect(failed).toContain("Private cloud transcription is unavailable right now");
+    expect(failed).toContain(">Check again</button>");
+    expect(failed).not.toContain("Start recording");
+    expect(failed).not.toContain("Use private cloud");
+    // With On this Mac selected the picker stays, so private cloud can be chosen again.
+    const onDevice = renderLocal({ cloudCheckFailed: true });
+    expect(onDevice).toContain('aria-label="Transcription engine"');
+    expect(onDevice).toContain("Start recording");
+    expect(onDevice).not.toContain("Check again");
+
+    const checking = renderLocal({ engine: "private-cloud", cloudChecking: true });
+    expect(checking).toContain("Checking private cloud…");
+    expect(checking).not.toContain("Start recording");
+  });
+
+  test("a too-long cloud recording with no local model offers the model download", () => {
+    const html = renderLocal({
+      state: "transcribe-failed",
+      engine: "private-cloud",
+      statusText: "Private cloud transcription takes recordings up to 2 hours.",
+      retryable: false,
+      onDeviceNeedsModel: true,
+    });
+    expect(html).toContain("Download model (~44 MB)");
+    expect(html).toContain("To transcribe this recording on this Mac instead, download a Whisper model first.");
+    expect(html).not.toContain(">Transcribe on this Mac</button>");
+    const downloading = renderLocal({
+      state: "transcribe-failed",
+      engine: "private-cloud",
+      retryable: false,
+      onDeviceNeedsModel: true,
+      modelDownloading: true,
+      downloadPct: 30,
+    });
+    expect(downloading).toContain("Downloading model · 30%");
+  });
+
+  test("the 1 h 50 min hint shows only while recording on private cloud", () => {
+    expect(renderLocal({ state: "recording", engine: "private-cloud", nearCloudLimit: true })).toContain("up to 2 hours");
+    expect(renderLocal({ state: "recording", nearCloudLimit: true })).not.toContain("up to 2 hours");
+  });
+
+  test("cloud progress text", () => {
+    expect(cloudProgressText({ kind: "uploading", pct: 7 })).toBe("Uploading… 7%");
+    expect(
+      cloudProgressText({ kind: "cloud-processing", stage: "queued", queuePosition: 3, regionsCompleted: null, regionsTotal: null }),
+    ).toBe("Queued (position 3)…");
+    expect(
+      cloudProgressText({ kind: "cloud-processing", stage: "processing", queuePosition: null, regionsCompleted: 4, regionsTotal: 10 }),
+    ).toBe("Transcribing in private cloud… 4/10");
+    expect(cloudProgressText({ kind: "transcribing", progress: 10 })).toBeNull();
   });
 });
