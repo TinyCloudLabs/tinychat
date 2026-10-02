@@ -152,7 +152,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     invalidate(); // Synchronous: neither old browser results nor old ceremonies can win.
     const currentOperation = operation;
     update({ capability: agentEnabledRef.current ? "available" : "unavailable", status: null,
-      revision: null, disconnecting: true, enableError: null });
+      revision: null, disconnecting: true, enableError: null, reconnectReason: null });
     signalChange();
     stopping = (async () => {
       try {
@@ -169,8 +169,18 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     return stopping;
   };
   const onDelegationError = (code: AgentDelegationErrorCode) => {
+    // The backend reports missing access on every public-only turn. When this
+    // browser already knows access is off (never connected or disconnected),
+    // keep the Connect copy rather than announcing a reconnect.
+    const knownOff = state.capability === "available" && state.status === "none";
+    if (knownOff && (code === "delegation_required" || code === "delegation_unverified")) return;
     invalidate();
-    update({ capability: "available", status: code === "delegation_expired" ? "expired" : "stale", reconnectReason: code });
+    update({
+      capability: "available",
+      // A failed check is unknown, not stale: Settings shows "could not be verified".
+      status: code === "delegation_expired" ? "expired" : code === "delegation_unverified" ? null : "stale",
+      reconnectReason: code,
+    });
   };
   return {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, onEnable, onDisconnect, onDelegationError,

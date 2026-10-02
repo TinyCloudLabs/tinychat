@@ -188,7 +188,42 @@ describe("shared private access controller", () => {
   });
 });
 
-describe("Connect failures", () => {
+describe("turn admission reports", () => {
+  it("flips a connected browser to reconnect when a turn had no private access", async () => {
+    globalThis.fetch = (async () => Response.json(active)) as typeof fetch;
+    const c = controller(); await c.refresh();
+    expect(c.getSnapshot().capability).toBe("enabled");
+    c.onDelegationError("delegation_required");
+    expect(c.getSnapshot()).toMatchObject({ capability: "available", status: "stale", reconnectReason: "delegation_required" });
+    expect(c.privateAccessRef.current.active).toBe(false);
+    c.dispose();
+  });
+
+  it("reports a failed check as unknown, not as an expired or missing grant", async () => {
+    globalThis.fetch = (async () => Response.json(active)) as typeof fetch;
+    const c = controller(); await c.refresh();
+    c.onDelegationError("delegation_unverified");
+    expect(c.getSnapshot()).toMatchObject({ capability: "available", status: null, reconnectReason: "delegation_unverified" });
+    expect(c.privateAccessRef.current.active).toBe(false);
+    // A later healthy probe clears the prompt.
+    await c.refresh();
+    expect(c.getSnapshot()).toMatchObject({ capability: "enabled", reconnectReason: null });
+    c.dispose();
+  });
+
+  it("keeps Connect copy when the browser already knows access is off", async () => {
+    globalThis.fetch = (async () => Response.json({ status: "none", revision: "r0" })) as typeof fetch;
+    const c = controller(); await c.refresh();
+    const before = c.privateAccessRef.current;
+    c.onDelegationError("delegation_required");
+    c.onDelegationError("delegation_unverified");
+    expect(c.getSnapshot()).toMatchObject({ capability: "available", status: "none", reconnectReason: null });
+    expect(c.privateAccessRef.current).toBe(before);
+    c.onDelegationError("delegation_expired");
+    expect(c.getSnapshot()).toMatchObject({ status: "expired", reconnectReason: "delegation_expired" });
+    c.dispose();
+  });
+
   it("names the server's rejection code instead of a generic Connect failure", async () => {
     for (const [code, copy] of [
       ["delegation_expiry_too_long", "device clock"],

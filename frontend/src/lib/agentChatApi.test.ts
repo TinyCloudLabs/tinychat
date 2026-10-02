@@ -482,7 +482,7 @@ describe("streamAgentChat", () => {
     expect(ids).toEqual(["cmpl-x"]);
   });
 
-  it.each(["delegation_expired", "delegation_revoked"])("surfaces %s for reconnect UI", async (code) => {
+  it.each(["delegation_expired", "delegation_revoked", "delegation_required", "delegation_unverified"])("surfaces %s for reconnect UI", async (code) => {
     const errors: string[] = [];
     globalThis.fetch = (async () =>
       sseResponse([

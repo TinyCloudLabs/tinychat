@@ -64,7 +64,17 @@ export interface ToolActivity {
   id?: string;
 }
 
-export type AgentDelegationErrorCode = "delegation_required" | "delegation_expired" | "delegation_revoked";
+/**
+ * `delegation_unverified`: the backend could not check access for this turn
+ * and answered from public tools only. It does not mean the grant is gone.
+ */
+export type AgentDelegationErrorCode = "delegation_required" | "delegation_expired" | "delegation_revoked" | "delegation_unverified";
+const DELEGATION_ERROR_CODES: ReadonlySet<string> = new Set<AgentDelegationErrorCode>([
+  "delegation_required", "delegation_expired", "delegation_revoked", "delegation_unverified",
+]);
+function isDelegationErrorCode(value: unknown): value is AgentDelegationErrorCode {
+  return typeof value === "string" && DELEGATION_ERROR_CODES.has(value);
+}
 
 export type AgentStreamErrorCode =
   | "transport"
@@ -109,7 +119,11 @@ export interface StreamAgentChatOptions {
   abortSignal?: AbortSignal;
   /** Fired per tool_activity frame (e.g. to render "Searching the web…"). */
   onToolActivity?: (activity: ToolActivity) => void;
-  /** Fired when a private-data tool reports that its delegation needs renewal. */
+  /**
+   * Fired when a private-data tool reports that its delegation needs renewal,
+   * or when the backend admitted this turn without private access. Non-fatal:
+   * the public answer keeps streaming.
+   */
   onDelegationError?: (code: AgentDelegationErrorCode) => void;
   /**
    * Called once with the completion id from the first frame that carries one.
@@ -297,10 +311,7 @@ export async function* streamAgentChat(
             }
           }
           const delegationCode = json?.delegation_error?.code;
-          if (
-            onDelegationError &&
-            (delegationCode === "delegation_required" || delegationCode === "delegation_expired" || delegationCode === "delegation_revoked")
-          ) {
+          if (onDelegationError && isDelegationErrorCode(delegationCode)) {
             try {
               onDelegationError(delegationCode);
             } catch {
