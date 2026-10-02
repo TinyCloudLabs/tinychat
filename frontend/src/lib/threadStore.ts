@@ -166,20 +166,91 @@ function authUnauthorized(err: unknown): boolean {
   return false;
 }
 
+/** Result code for a SQL call that hit the client-side deadline below. */
+const SQL_TIMEOUT_CODE = "TIMEOUT";
+
 /** Wrap a SqlError in a throwable that preserves `.code` for authUnauthorized. */
-class SqlOpError extends Error {
+export class SqlOpError extends Error {
   readonly code: string;
+  /**
+   * True when the outcome is unknown rather than refused (the call timed out),
+   * so the same operation may be retried. appendMessage retries are safe: they
+   * reconcile by message id before inserting.
+   */
+  readonly retryable: boolean;
   constructor(error: SqlError, context: string) {
     super(`${context}: [${error.code}] ${error.message}`);
     this.name = "SqlOpError";
     this.code = error.code;
+    this.retryable = error.code === SQL_TIMEOUT_CODE;
   }
 }
 
+// ── Per-call deadline ────────────────────────────────────────────────
+//
+// A dropped TinyCloud SQL response otherwise never settles: the SDK's own
+// `timeout` config is not applied, and nothing else aborts the request. A hung
+// call inside enqueueThreadWrite would then block every later write to that
+// thread for the rest of the session. Every call below gets an AbortSignal
+// deadline (which cancels the fetch) AND is raced against it, so the caller
+// sees a `{ ok: false, code: TIMEOUT }` Result even if the SDK ignores the
+// signal. Normal calls take ~1.5–3s, and up to ~5–20s only under 7-way
+// concurrency, which the app avoids (see historyPrefetch.ts), hence 15s.
+const SQL_CALL_TIMEOUT_MS = 15_000;
+/** Bulk import writes one large batch per conversation; allow it longer. */
+const SQL_IMPORT_TIMEOUT_MS = 60_000;
+let sqlCallTimeoutMs = SQL_CALL_TIMEOUT_MS;
+
+/** Tests only: shorten the per-call deadline. Returns a restore function. */
+export function setSqlCallTimeoutForTests(ms: number): () => void {
+  const previous = sqlCallTimeoutMs;
+  sqlCallTimeoutMs = ms;
+  return () => {
+    sqlCallTimeoutMs = previous;
+  };
+}
+
+type SqlDb = ReturnType<TinyCloudWeb["sql"]["db"]>;
+type SqlTimeoutResult = { ok: false; error: SqlError & { service: string } };
+
+function withDeadline<R>(
+  timeoutMs: number,
+  call: (signal: AbortSignal) => Promise<R>,
+): Promise<R | SqlTimeoutResult> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  let onTimeout = () => {};
+  // Register before issuing the call so this listener runs before the SDK's
+  // own abort handling: the outcome is always reported as TIMEOUT.
+  const deadline = new Promise<SqlTimeoutResult>((resolve) => {
+    onTimeout = () =>
+      resolve({
+        ok: false,
+        error: { code: SQL_TIMEOUT_CODE, message: `no response within ${timeoutMs}ms`, service: "sql" },
+      });
+    signal.addEventListener("abort", onTimeout, { once: true });
+  });
+  return Promise.race([call(signal), deadline]).finally(() => {
+    signal.removeEventListener("abort", onTimeout);
+  });
+}
+
+/** The three SqlDb calls threadStore uses, each bounded by a deadline. */
+function bounded(db: SqlDb, timeoutMs?: number) {
+  const ms = () => timeoutMs ?? sqlCallTimeoutMs;
+  return {
+    query: (sql: string, params?: Parameters<SqlDb["query"]>[1]) =>
+      withDeadline(ms(), (signal) => db.query(sql, params, { signal })),
+    execute: (sql: string, params?: Parameters<SqlDb["execute"]>[1]) =>
+      withDeadline(ms(), (signal) => db.execute(sql, params, { signal })),
+    batch: (statements: Parameters<SqlDb["batch"]>[0]) =>
+      withDeadline(ms(), (signal) => db.batch(statements, { signal })),
+  };
+}
+
 /** A SQL database handle bound to the granted per-space resource. */
-function store(tcw: TinyCloudWeb) {
+function store(tcw: TinyCloudWeb, timeoutMs?: number) {
   if (localStores.has(tcw)) throw new Error("Local validation cannot access the production chat store");
-  return tcw.sql.db(SQL_DB_NAME);
+  return bounded(tcw.sql.db(SQL_DB_NAME), timeoutMs);
 }
 
 function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
@@ -925,7 +996,8 @@ async function coldLoad(tcw: TinyCloudWeb): Promise<ThreadSummary[]> {
 // A queue is captured by account + thread at call entry. This serializes the
 // thread row, its ordered message positions, and the matching summary-cache
 // updates without ever retargeting work after navigation. A rejected operation
-// is observed by its caller but cannot poison the tail of the FIFO.
+// is observed by its caller but cannot poison the tail of the FIFO, and every
+// SQL call is deadline-bounded (see withDeadline), so each operation settles.
 const threadWriteQueues = new Map<string, Promise<void>>();
 
 function threadWriteKey(tcw: TinyCloudWeb, id: string): string {
@@ -1011,8 +1083,9 @@ export async function appendMessage(
     await ensureSchema(tcw);
 
     // Reconcile a prior uncertain batch before replaying. The message id is the
-    // idempotency key; if the server committed but the response was lost, the
-    // retry succeeds without appending a duplicate position.
+    // idempotency key; if the server committed but the response was lost (or
+    // timed out: SqlOpError.retryable), the retry succeeds without appending a
+    // duplicate position.
     const messageId = (item.message as { id?: unknown } | undefined)?.id;
     if (typeof messageId === "string") {
       const existing = await store(tcw).query(
@@ -1150,7 +1223,7 @@ export async function importThread(
     });
   });
 
-  const res = await store(tcw).batch(stmts);
+  const res = await store(tcw, SQL_IMPORT_TIMEOUT_MS).batch(stmts);
   if (!res.ok) throw new SqlOpError(res.error, "importThread");
 
   patchCacheEntry(tcw, {
