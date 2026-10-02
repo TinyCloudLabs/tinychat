@@ -247,6 +247,26 @@ describe("agent delegation courier", () => {
     expect(calls).toHaveLength(1);
   });
 
+  // The browser mints 29-day grants so its clock can run ahead of this server
+  // without crossing the 30-day ceiling; a full 30 days fails on seconds of skew.
+  it("couriers a 29-day grant minted on a browser clock an hour fast", async () => {
+    const { app, calls } = createApp();
+    const browserNow = Date.now() + 60 * 60 * 1000;
+    const expiry = new Date(browserNow + 29 * DAY_MS);
+    const res = await postSession(app, v2Session({}, { overrides: { expiry: expiry.toISOString() }, jwtClaims: { exp: Math.floor(expiry.getTime() / 1_000) } }));
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects a full 30-day grant minted on a browser clock five seconds fast", async () => {
+    const { app, calls } = createApp();
+    const expiry = new Date(Date.now() + 5_000 + 30 * DAY_MS);
+    const res = await postSession(app, v2Session({}, { overrides: { expiry: expiry.toISOString() }, jwtClaims: { exp: Math.floor(expiry.getTime() / 1_000) } }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("delegation_expiry_too_long");
+    expect(calls).toHaveLength(0);
+  });
+
   it("couriers the SDK's CID-backed multi-resource transcript attenuation", async () => {
     const { app, calls } = createApp();
     const session = cidBackedV2Session();

@@ -3,11 +3,23 @@ import type React from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import {
-  clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
+  AgentSessionError, clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
   isActiveAgentBundle, mintAgentSessionViaFreshSignIn,
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
+
+/** Connect failure copy. Shows the server's stable error code, never its free-text detail. */
+export function connectErrorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === "NotAllowedError") return "Passkey sign was cancelled. Try connecting again.";
+  const code = error instanceof AgentSessionError ? error.code : null;
+  if (code === "delegation_expiry_too_long") {
+    return "The agent grant was rejected because it lasts longer than 30 days (delegation_expiry_too_long). Check that your device clock is correct, then try again.";
+  }
+  return code
+    ? `Failed to connect private agent access (${code}). Please try again.`
+    : "Failed to connect private agent access. Please try again.";
+}
 
 export type AgentCapability = "probing" | "unavailable" | "available" | "enabled";
 export interface PrivateAgentAccess { active: boolean; revision: string | null; generation: number }
@@ -129,9 +141,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
           signalChange();
           // Cancellation/mint failure leaves the old server bundle untouched.
           await refresh();
-          if (isCurrent()) update({ enableError: error instanceof DOMException && error.name === "NotAllowedError"
-            ? "Passkey sign was cancelled. Try connecting again."
-            : "Failed to connect private agent access. Please try again." });
+          if (isCurrent()) update({ enableError: connectErrorMessage(error) });
         }
       } finally { ceremony = null; update({ enabling: false }); }
     })();

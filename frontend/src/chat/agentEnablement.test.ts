@@ -187,3 +187,22 @@ describe("shared private access controller", () => {
     c.dispose();
   });
 });
+
+describe("Connect failures", () => {
+  it("names the server's rejection code instead of a generic Connect failure", async () => {
+    for (const [code, copy] of [
+      ["delegation_expiry_too_long", "device clock"],
+      ["transcript_policy_exceeded", "Failed to connect private agent access (transcript_policy_exceeded)"],
+    ] as const) {
+      globalThis.fetch = (async (_url, init) => init?.method === "POST"
+        ? Response.json({ error: code, message: "free text the UI must not echo" }, { status: 400 })
+        : Response.json({ status: "none", revision: "r0" })) as typeof fetch;
+      const c = controller(); await c.refresh();
+      await c.onEnable();
+      expect(c.getSnapshot().enableError).toContain(code);
+      expect(c.getSnapshot().enableError).toContain(copy);
+      expect(c.getSnapshot().enableError).not.toContain("free text");
+      c.dispose();
+    }
+  });
+});
