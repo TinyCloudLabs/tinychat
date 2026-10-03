@@ -25,7 +25,11 @@ import {
   encodeForScript,
   isValidOAuthState,
   isValidPkceChallenge,
+  NATIVE_OAUTH_NOT_COMPLETED,
+  NATIVE_OAUTH_RETURN_URL,
   normalizeAppOrigin,
+  oauthReturnClient,
+  renderCallbackPage,
 } from "../routes/google-oauth.js";
 import { applySecurityDefaults } from "../security.js";
 
@@ -606,6 +610,216 @@ describe("GET /callback", () => {
     const html = await response.text();
     expect(html).not.toContain("postMessage");
     expect(html).not.toContain(APP_ORIGIN);
+  });
+
+  test("an untagged state still gets exactly the postMessage page, byte for byte", async () => {
+    // Every state the web SPA mints is untagged base64url. The TC-521 native branch must not
+    // change one byte of what that flow receives: same status, same CSP, same document.
+    const response = await fetch(
+      `${base}/callback?code=fake-auth-code&state=${STATE}`,
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    const csp = response.headers.get("content-security-policy") ?? "";
+    const nonce = /'nonce-([^']+)'/.exec(csp)?.[1] ?? "";
+    expect(nonce.length).toBeGreaterThan(0);
+    expect(csp).toBe(
+      `default-src 'none'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+    );
+    expect(await response.text()).toBe(
+      renderCallbackPage({ code: "fake-auth-code", state: STATE, appOrigin: APP_ORIGIN, nonce }),
+    );
+  });
+});
+
+// ── Native (Exo app) return — TC-521 ─────────────────────────────────
+//
+// The Exo app runs the flow in the system browser and tags its state `native.<nonce>`. For that
+// tag ONLY, the callback 302s to a constant deep link; an unknown tag is refused, never defaulted.
+
+/** A native state as the app mints it: the tag, then a 32-char base64url nonce. */
+const NATIVE_STATE = "native.Q2hhbmdlTWVQbGVhc2VfMDEyMzQ1Njc4OQ";
+
+/** The query of a native deep link, parsed; `null` if the target is not the constant. */
+function nativeReturnQuery(location: string | null): URLSearchParams | null {
+  if (location === null || !location.startsWith(`${NATIVE_OAUTH_RETURN_URL}?`)) return null;
+  return new URLSearchParams(location.slice(NATIVE_OAUTH_RETURN_URL.length + 1));
+}
+
+describe("oauthReturnClient", () => {
+  test("an untagged state (every state the web SPA mints) selects the web", () => {
+    expect(oauthReturnClient(STATE)).toBe("web");
+    expect(oauthReturnClient("AbC_-0123456789abcdefghijklmnopq")).toBe("web");
+  });
+
+  test("exactly `native.<base64url nonce>` selects the native app", () => {
+    expect(oauthReturnClient(NATIVE_STATE)).toBe("native");
+  });
+
+  for (const [label, state] of [
+    ["an unknown tag", "desktop.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["a look-alike tag", "Native.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["a tag with a prefix", "xnative.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["a tag with a suffix", "native-x.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["an empty tag", ".Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["a doubled tag", "native.native.Q2hhbmdlTWVQbGVhc2U"],
+    ["a short nonce", "native.abc"],
+    ["a nonce outside base64url", "native.Q2hhbmdlTWVQbGVh~c2VfMDEy"],
+    ["an empty nonce", "native."],
+  ] as const) {
+    test(`refuses ${label}`, () => {
+      expect(oauthReturnClient(state)).toBeNull();
+    });
+  }
+});
+
+describe("GET /start (native)", () => {
+  test("passes a native state through to Google unchanged", async () => {
+    const response = await fetch(
+      `${base}/start?state=${NATIVE_STATE}&challenge=${CHALLENGE}`,
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.host).toBe("accounts.google.com");
+    expect(location.searchParams.get("state")).toBe(NATIVE_STATE);
+    // Same registered redirect URI as the web: the native return happens AFTER our callback.
+    expect(location.searchParams.get("redirect_uri")).toBe(REDIRECT_URI);
+  });
+
+  for (const state of ["desktop.Q2hhbmdlTWVQbGVhc2VfMDEy", "native.abc", "Native.Q2hhbmdlTWVQbGVhc2VfMDEy"]) {
+    test(`400s an unknown or malformed client tag before Google (${state})`, async () => {
+      const response = await fetch(
+        `${base}/start?state=${state}&challenge=${CHALLENGE}`,
+        { redirect: "manual" },
+      );
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      expect(await response.json()).toEqual({ error: "invalid_request" });
+      expect(port.authorizeCalls).toEqual([]);
+    });
+  }
+});
+
+describe("GET /callback (native)", () => {
+  const callback = (query: string) =>
+    fetch(`${base}/callback?${query}`, { redirect: "manual" });
+
+  test("302s { code, state } to the fixed app deep link: no page, no postMessage", async () => {
+    const response = await callback(`code=fake-auth-code&state=${NATIVE_STATE}`);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      `xyz.tinycloud.exo://oauth/google?code=fake-auth-code&state=${NATIVE_STATE}`,
+    );
+    expect(await response.text()).toBe("");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+  });
+
+  test("the target is a constant: no request parameter can choose or alter it", async () => {
+    for (const extra of [
+      "redirect_uri=https%3A%2F%2Fevil.example%2F",
+      "return_to=https%3A%2F%2Fevil.example%2F",
+      "client=evil",
+      "app=evil%3A%2F%2Fsteal",
+      "scheme=evil",
+    ]) {
+      const response = await callback(`code=fake-auth-code&state=${NATIVE_STATE}&${extra}`);
+      expect(response.status).toBe(302);
+      const location = response.headers.get("location");
+      expect(location).not.toContain("evil");
+      const query = nativeReturnQuery(location);
+      expect(query).not.toBeNull();
+      expect([...query!.keys()]).toEqual(["code", "state"]);
+    }
+  });
+
+  test("a hostile code is URL-encoded: it adds no parameter, fragment, header or target", async () => {
+    const hostile = "a&state=forged&code=second#frag/../evil://x?\r\nSet-Cookie: pwned=1</script>";
+    const response = await callback(
+      `code=${encodeURIComponent(hostile)}&state=${NATIVE_STATE}`,
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    const location = response.headers.get("location") ?? "";
+    expect(location).not.toMatch(/[#\r\n<> ]/);
+    const query = nativeReturnQuery(location);
+    expect(query).not.toBeNull();
+    expect([...query!.keys()]).toEqual(["code", "state"]);
+    expect(query!.get("code")).toBe(hostile);
+    expect(query!.get("state")).toBe(NATIVE_STATE);
+  });
+
+  test("a denial returns to the app with the constant error, never Google's words", async () => {
+    const response = await callback(
+      `error=access_denied&error_description=${encodeURIComponent("<b>phish</b>")}&state=${NATIVE_STATE}`,
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      `${NATIVE_OAUTH_RETURN_URL}?error=${NATIVE_OAUTH_NOT_COMPLETED}&state=${NATIVE_STATE}`,
+    );
+  });
+
+  test("an absurd code is a not-completed return too, and the code is dropped", async () => {
+    const response = await callback(`code=${"a".repeat(4096)}&state=${NATIVE_STATE}`);
+    expect(response.status).toBe(302);
+    const query = nativeReturnQuery(response.headers.get("location"));
+    expect(query?.get("error")).toBe(NATIVE_OAUTH_NOT_COMPLETED);
+    expect(query?.has("code")).toBe(false);
+  });
+
+  for (const [label, state] of [
+    ["an unknown client tag", "desktop.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["a look-alike tag", "Native.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+    ["a short native nonce", "native.abc"],
+    ["a native nonce outside base64url", "native.Q2hhbmdlTWVQbGVh~c2VfMDEy"],
+    ["an overlong native state", `native.${"a".repeat(600)}`],
+    ["a URL smuggled as the tag", "https://evil.example/.Q2hhbmdlTWVQbGVhc2VfMDEy"],
+  ] as const) {
+    test(`refuses ${label}: the no-code page, no redirect, no postMessage`, async () => {
+      const response = await callback(
+        `code=fake-auth-code&state=${encodeURIComponent(state)}`,
+      );
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      const html = await response.text();
+      expect(html).not.toContain("postMessage");
+      expect(html).not.toContain("fake-auth-code");
+      expect(html).not.toContain(APP_ORIGIN);
+    });
+  }
+
+  test("a repeated state never reaches the native branch", async () => {
+    const response = await callback(
+      `code=fake-auth-code&state=${NATIVE_STATE}&state=${NATIVE_STATE}`,
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  test("the native return answers through helmet with the router's headers", async () => {
+    const app = express();
+    applySecurityDefaults(app);
+    app.use(
+      "/api/connectors/google/oauth",
+      createGoogleOAuthRouter({ oauth: port, config: TEST_CONFIG, appOrigin: APP_ORIGIN }),
+    );
+    const helmetServer = app.listen(0);
+    await new Promise<void>((resolve) => helmetServer.once("listening", resolve));
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${(helmetServer.address() as AddressInfo).port}/api/connectors/google/oauth/callback?code=fake-auth-code&state=${NATIVE_STATE}`,
+        { redirect: "manual" },
+      );
+      expect(response.status).toBe(302);
+      expect(nativeReturnQuery(response.headers.get("location"))?.get("code")).toBe("fake-auth-code");
+      expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      await new Promise<void>((resolve) => helmetServer.close(() => resolve()));
+    }
   });
 });
 
