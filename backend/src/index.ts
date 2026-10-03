@@ -50,6 +50,7 @@ import { createConnectorCredentialRouter } from "./routes/connector-credentials.
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
+import { ASSEMBLYAI_DELETE_MOUNT, createAssemblyAiDeleteRouter } from "./routes/assemblyai-delete.js";
 import { createPrivateCloudTranscriptionRouter } from "./routes/private-cloud-transcription.js";
 import { createCalendarAutojoinRouter } from "./routes/calendar-autojoin.js";
 import { CalendarAutojoinConnection } from "./services/calendar-autojoin-connection.js";
@@ -924,6 +925,11 @@ async function main() {
       "[startup] TRANSCRIPTION_API_URL / TRANSCRIPTION_API_KEY not set — /api/transcriber is disabled.",
     );
   }
+
+  // AssemblyAI delete proxy for Exo uploads (routes/assemblyai-delete.ts). Always mounted: the
+  // user brings their own AssemblyAI key, so there is nothing to configure here. Browsers cannot
+  // DELETE at AssemblyAI (its CORS allows POST/PUT/GET only), so every client deletes through this.
+  app.use(ASSEMBLYAI_DELETE_MOUNT, authMiddleware, createAssemblyAiDeleteRouter());
 
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
   // deployment (`ptx-batch`) and key from the meeting transcriber above. Flag off = never mounted,

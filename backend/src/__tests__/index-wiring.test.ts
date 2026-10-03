@@ -423,6 +423,16 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
   });
 
+  test("the AssemblyAI delete proxy mounts once, unconditionally, behind auth, CSRF and the transcriber limiter", () => {
+    // Two-space indent = the top level of main(), not inside any feature-flag branch.
+    const mount = INDEX.indexOf("\n  app.use(ASSEMBLYAI_DELETE_MOUNT, authMiddleware, createAssemblyAiDeleteRouter());");
+    expect(mount).toBeGreaterThan(-1);
+    expect(INDEX.match(/app\.use\(\s*ASSEMBLYAI_DELETE_MOUNT/g)).toHaveLength(1);
+    expect(mount).toBeGreaterThan(INDEX.indexOf("const globalJsonParser"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+  });
+
   test("large NRAS JSON parsing happens after auth on the route mount", () => {
     expect(INDEX).not.toContain('app.use("/api/nras-proxy", express.json({ limit: "4mb" }))');
     expect(INDEX).toContain(

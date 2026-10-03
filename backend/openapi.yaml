@@ -1697,6 +1697,85 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
+  /api/transcriber/assemblyai/transcripts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The AssemblyAI transcript id.
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9-]{8,64}$"
+    delete:
+      operationId: deleteAssemblyAiTranscript
+      summary: Delete an AssemblyAI transcript (and its uploaded audio) with the user's own key
+      description: >-
+        Exo transcribes uploads with AssemblyAI directly from the client using the
+        user's own key, then deletes the AssemblyAI copy through this route,
+        because browsers cannot send DELETE to AssemblyAI (its CORS allows only
+        POST, PUT and GET). The key travels in the `X-AssemblyAI-Key` header and
+        is forwarded once to `DELETE https://api.assemblyai.com/v2/transcript/{id}`;
+        it is never logged, stored or echoed. The upstream host is fixed. Requires
+        `X-Requested-With: XMLHttpRequest`. Every response is
+        `Cache-Control: no-store`; errors carry a fixed message and never
+        AssemblyAI's text. A rejected key is 422, never 401 (401 means the session
+        expired). Deleting an already-deleted transcript succeeds again (204).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-AssemblyAI-Key
+          in: header
+          required: true
+          description: The user's AssemblyAI API key.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: AssemblyAI deleted the transcript (or it was already deleted)
+        "400":
+          description: Malformed id, or missing/empty key (invalid_request); AssemblyAI was not called
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiDeleteError"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Missing X-Requested-With (CSRF)
+        "404":
+          description: >-
+            AssemblyAI has no such transcript (assemblyai_transcript_not_found).
+            AssemblyAI itself answers an unknown id with 400 "Transcript lookup
+            error, transcript id not found", not 404; that answer maps here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiDeleteError"
+        "422":
+          description: AssemblyAI rejected the key (assemblyai_key_rejected)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiDeleteError"
+        "429":
+          description: >-
+            AssemblyAI is rate limiting (assemblyai_rate_limited), or this backend's
+            /api/transcriber bucket is exhausted. A numeric Retry-After from
+            AssemblyAI is relayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiDeleteError"
+        "502":
+          description: >-
+            AssemblyAI failed, timed out, could not be reached, or gave any other
+            answer (assemblyai_unavailable). Never carries Retry-After; an
+            unexpected 4xx will not succeed on retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiDeleteError"
+
   /api/transcriber/private-cloud/capabilities:
     get:
       operationId: getPrivateCloudTranscriptionCapabilities
@@ -2120,6 +2199,20 @@ components:
       properties:
         error:
           type: string
+        message:
+          type: string
+    AssemblyAiDeleteError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - assemblyai_transcript_not_found
+            - assemblyai_key_rejected
+            - assemblyai_rate_limited
+            - assemblyai_unavailable
         message:
           type: string
     PrivateCloudJobStatus:

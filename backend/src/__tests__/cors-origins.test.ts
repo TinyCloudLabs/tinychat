@@ -94,4 +94,23 @@ describe("app CORS origins", () => {
       "x-requested-with",
     );
   });
+
+  test.each([WEB_ORIGIN, EXO_DESKTOP_ORIGIN, EXO_DESKTOP_WINDOWS_ORIGIN])(
+    "allows the AssemblyAI delete preflight (DELETE + X-AssemblyAI-Key) from %s",
+    async (origin) => {
+      const response = await fetch(`${baseUrl}/health`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: origin,
+          "Access-Control-Request-Method": "DELETE",
+          "Access-Control-Request-Headers": "authorization,x-requested-with,x-assemblyai-key",
+        },
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("access-control-allow-methods")).toContain("DELETE");
+      expect(response.headers.get("access-control-allow-headers")).toContain("x-assemblyai-key");
+    },
+  );
 });
