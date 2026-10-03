@@ -194,6 +194,28 @@ export function alignActivePath(
   return changed ? { canvas: { ...canvas, nodes, activeHeadId: parentId }, changed } : { canvas, changed };
 }
 
+/**
+ * Record a message the chat just saved: a node under its chat parent (even one
+ * this copy has not seen yet — aligning with the chat history repairs that),
+ * which becomes the active head. Recording the same message twice is a no-op.
+ */
+export function recordChatMessage(
+  canvas: ConversationCanvas,
+  message: PathMessage,
+  parentId: string | null,
+): ConversationCanvas {
+  if (canvas.nodes.some((node) => node.id === message.id)) return { ...canvas, activeHeadId: message.id };
+  const node: CanvasMessage = {
+    id: message.id,
+    parentId,
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt ?? new Date().toISOString(),
+    ...(message.payload === undefined ? {} : { payload: message.payload }),
+  };
+  return { ...canvas, nodes: [...canvas.nodes, node], activeHeadId: message.id };
+}
+
 /** The active branch as chat message items, oldest first (payloads where known). */
 export function activePathItems(canvas: ConversationCanvas): StoredMessageItem[] {
   return activeBranch(canvas).map((node) => {

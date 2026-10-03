@@ -4,10 +4,16 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { applyNodeChanges, Background, Controls, ReactFlow, type Edge, type Node, type NodeChange } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
-import { openCanvas, promoteLegacyThread, saveCanvas, selectCanvasBranch } from "../../lib/conversationCanvasStore";
+import {
+  CANVAS_MISSING_MESSAGE,
+  mutateCanvas,
+  openCanvas,
+  promoteLegacyThread,
+  selectCanvasBranch,
+  subscribeCanvasChanges,
+} from "../../lib/conversationCanvasStore";
 import {
   activeAncestry,
-  branchAt,
   createDocument,
   moveDocumentPlacementTo,
   placeDocument,
@@ -70,21 +76,43 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
     }).finally(() => setSwitching(false));
   }, [tcw, threadId]);
 
-  const update = useCallback((next: CanvasModel, semantic = true) => {
+  const fail = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)), []);
+
+  // Messages sent while this view is open (its composer stays visible) re-read it.
+  useEffect(() => {
     if (!promoted) return;
-    const branchChanged = canvas?.activeHeadId !== next.activeHeadId;
+    let cancelled = false;
+    const unsubscribe = subscribeCanvasChanges(threadId, () => {
+      void openCanvas(tcw, threadId).then((value) => { if (!cancelled) setCanvas(value.canvas); }).catch(fail);
+    });
+    return () => { cancelled = true; unsubscribe(); };
+  }, [fail, promoted, tcw, threadId]);
+
+  /**
+   * Every edit is a change applied to a fresh read in the store, never a save
+   * of this view's copy, so edits made elsewhere meanwhile are kept.
+   */
+  const change = useCallback((mutation: (current: CanvasModel) => CanvasModel, semantic = true) => {
+    if (!promoted) return;
     if (semantic) resetRequestAttempt(threadId);
-    setCanvas(next);
     setError(null);
-    const fail = (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason));
-    if (branchChanged) {
-      // The chat history is rewritten to the picked branch before the chat
-      // view shows it, so every reader agrees.
-      void selectCanvasBranch(tcw, next).then(() => onCanvasChange?.(next)).catch(fail);
-      return;
-    }
-    void saveCanvas(tcw, next).catch(fail);
-  }, [canvas?.activeHeadId, onCanvasChange, promoted, tcw, threadId]);
+    void mutateCanvas(tcw, threadId, (fresh) => {
+      if (!fresh) throw new Error(CANVAS_MISSING_MESSAGE);
+      return mutation(fresh);
+    }).then(setCanvas).catch(fail);
+  }, [fail, promoted, tcw, threadId]);
+
+  const selectBranch = useCallback((headId: string) => {
+    if (!promoted) return;
+    resetRequestAttempt(threadId);
+    setError(null);
+    // The chat history is rewritten to the picked branch before the chat view
+    // shows it, so every reader agrees.
+    void selectCanvasBranch(tcw, threadId, headId).then((selected) => {
+      setCanvas(selected);
+      onCanvasChange?.(selected);
+    }).catch(fail);
+  }, [fail, onCanvasChange, promoted, tcw, threadId]);
 
   const ancestry = useMemo(() => canvas ? activeAncestry(canvas) : new Set<string>(), [canvas]);
   const nodes = useMemo<Node[]>(() => (canvas?.nodes ?? []).map((node, index) => ({
@@ -116,7 +144,7 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
       {error && <p role="alert" className="border-b border-border px-3 py-2 text-xs text-destructive">{error}</p>}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_18rem]">
         <div className="min-h-[18rem]">
-          <ReactFlow nodes={flowNodes.length > 0 ? flowNodes : nodes} edges={edges} onNodesChange={onNodesChange} nodesDraggable={promoted && !editingDisabled} onNodeDragStop={(_event, node) => update({ ...canvas, nodes: canvas.nodes.map((item) => item.id === node.id ? { ...item, position: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } : item) }, false)} fitView nodesConnectable={false} deleteKeyCode={null} aria-label="Conversation branches">
+          <ReactFlow nodes={flowNodes.length > 0 ? flowNodes : nodes} edges={edges} onNodesChange={onNodesChange} nodesDraggable={promoted && !editingDisabled} onNodeDragStop={(_event, node) => { const position = { x: Math.round(node.position.x), y: Math.round(node.position.y) }; change((current) => ({ ...current, nodes: current.nodes.map((item) => item.id === node.id ? { ...item, position } : item) }), false); }} fitView nodesConnectable={false} deleteKeyCode={null} aria-label="Conversation branches">
             <Background />
             <Controls />
           </ReactFlow>
@@ -136,19 +164,19 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
             canvas={canvas}
             newUserMessage={composerDraft}
             disabled={editingDisabled}
-            onReorder={(placementId, target, order) => update(moveDocumentPlacementTo(canvas, placementId, target, order))}
+            onReorder={(placementId, target, order) => change((current) => moveDocumentPlacementTo(current, placementId, target, order))}
           />
           <div className="mb-4">
             <h3 className="mb-2 font-medium">Branch from message</h3>
             <div className="flex flex-col gap-1">
-              {canvas.nodes.map((node) => <Button key={node.id} type="button" disabled={editingDisabled} variant={node.id === canvas.activeHeadId ? "default" : "outline"} size="sm" className="justify-start truncate" onClick={() => update(branchAt(canvas, node.id))}>Continue after {node.role}</Button>)}
+              {canvas.nodes.map((node) => <Button key={node.id} type="button" disabled={editingDisabled} variant={node.id === canvas.activeHeadId ? "default" : "outline"} size="sm" className="justify-start truncate" onClick={() => selectBranch(node.id)}>Continue after {node.role}</Button>)}
             </div>
           </div>
           <div>
             <h3 className="mb-2 font-medium">Documents</h3>
             <input disabled={editingDisabled} value={documentTitle} onChange={(event) => setDocumentTitle(event.currentTarget.value)} placeholder="Document title" className="mb-2 h-9 w-full rounded-md border border-input bg-background px-2" aria-label="Document title" />
             <textarea disabled={editingDisabled} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} placeholder="Markdown document…" className="mb-2 min-h-20 w-full rounded-md border border-input bg-background p-2" aria-label="Markdown document" />
-            <Button disabled={editingDisabled || !draft.trim()} type="button" size="sm" className="mb-3 w-full" onClick={() => { if (!draft.trim()) return; const id = `doc-${crypto.randomUUID()}`; update(placeDocument(createDocument(canvas, { id, title: documentTitle.trim() || "Canvas note", markdown: draft }), id, `${id}:v1`)); setDraft(""); setDocumentTitle("Canvas note"); }}>Create document v1</Button>
+            <Button disabled={editingDisabled || !draft.trim()} type="button" size="sm" className="mb-3 w-full" onClick={() => { if (!draft.trim()) return; const id = `doc-${crypto.randomUUID()}`; const title = documentTitle.trim() || "Canvas note"; const markdown = draft; change((current) => placeDocument(createDocument(current, { id, title, markdown }), id, `${id}:v1`)); setDraft(""); setDocumentTitle("Canvas note"); }}>Create document v1</Button>
             {documents.map((doc) => {
               const latest = doc.versions.at(-1)!;
               const pinned = canvas.placements.find((placement) => placement.documentId === doc.id);
@@ -159,11 +187,11 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
                     v{latest.version}{pinned ? ` · pinned v${doc.versions.find((version) => version.id === pinned.versionId)?.version ?? "?"}` : ""}
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1">
-                    <Button disabled={editingDisabled || !draft.trim()} type="button" variant="outline" size="sm" onClick={() => update(saveDocumentVersion(canvas, doc.id, draft))}>Save v{latest.version + 1}</Button>
+                    <Button disabled={editingDisabled || !draft.trim()} type="button" variant="outline" size="sm" onClick={() => { const markdown = draft; change((current) => saveDocumentVersion(current, doc.id, markdown)); }}>Save v{latest.version + 1}</Button>
                     {pinned ? (
-                      <Button disabled={editingDisabled} type="button" variant="outline" size="sm" onClick={() => update(removeDocumentPlacement(canvas, pinned.id))}>Remove from request</Button>
+                      <Button disabled={editingDisabled} type="button" variant="outline" size="sm" onClick={() => change((current) => removeDocumentPlacement(current, pinned.id))}>Remove from request</Button>
                     ) : (
-                      <Button disabled={editingDisabled} type="button" variant="outline" size="sm" onClick={() => update(placeDocument(canvas, doc.id, latest.id, { slot: "next-user" }))}>Include in request</Button>
+                      <Button disabled={editingDisabled} type="button" variant="outline" size="sm" onClick={() => change((current) => placeDocument(current, doc.id, latest.id, { slot: "next-user" }))}>Include in request</Button>
                     )}
                   </div>
                 </div>

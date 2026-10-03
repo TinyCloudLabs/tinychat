@@ -42,11 +42,11 @@ import {
   type ThreadDoc,
 } from "../lib/threadStore";
 import {
-  appendPromotedCanvasMessage,
   deleteCanvas,
   isCanvasPromoted,
   loadCanvasState,
-  promotedCanvasForTurn,
+  notifyCanvasChanged,
+  recordPromotedChatMessage,
 } from "../lib/conversationCanvasStore";
 import { activePathItems, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
@@ -459,11 +459,12 @@ export function createHistoryAdapter(
       const firstInsert = role === "user" && selection.needsFirstInsert(origin);
       const persist = async () => {
         // The chat history stays the one history every reader uses. A chat
-        // switched to Canvas also records the message in its Canvas first, so
-        // a Canvas failure saves nothing; other chats never touch Canvas.
-        const canvas = await promotedCanvasForTurn(tcw, threadId);
-        if (canvas) await appendPromotedCanvasMessage(tcw, canvas, item);
+        // switched to Canvas also records the message in its Canvas first
+        // (additive, so a Canvas failure saves nothing and overwrites
+        // nothing); other chats never touch Canvas.
+        const recorded = await recordPromotedChatMessage(tcw, threadId, item);
         await appendMessage(tcw, threadId, item, origin!.model);
+        if (recorded) notifyCanvasChanged(threadId);
       };
       const retryFirstInsert = firstInsert && origin
         ? () => persist()

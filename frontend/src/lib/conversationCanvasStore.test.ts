@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { StoredMessageItem } from "./threadStore";
 import { appendMessage, getThread, setSetting, useLocalThreadStorage } from "./threadStore";
 import {
@@ -13,14 +14,15 @@ import {
   loadCanvasState,
   openCanvas,
   promoteLegacyThread,
+  mutateCanvas,
   promotedCanvasForTurn,
-  saveCanvas,
+  recordPromotedChatMessage,
   sanitizeCanvas,
   selectCanvasBranch,
   setCanvasEnabled,
   useLocalCanvasStorage,
 } from "./conversationCanvasStore";
-import { branchAt } from "../chat/canvas/model";
+import { activeAncestry, createDocument, placeDocument } from "../chat/canvas/model";
 
 type Client = Parameters<typeof useLocalCanvasStorage>[0];
 
@@ -58,8 +60,8 @@ function recordingClient(did: string, options: {
         const [from, to] = params;
         return { ok: true, data: { rows: [...settings].filter(([key]) => key >= from && key < to) } };
       }
-      if (sql.includes("FROM canvas_threads")) {
-        return { ok: true, data: { rows: canvasThreads.has(params[0]) ? [[null]] : [] } };
+      if (sql.includes("UNION ALL")) {
+        return { ok: true, data: { rows: canvasThreads.has(params[0]) ? [["h", null, null, null, null, null, null]] : [] } };
       }
       return { ok: true, data: { rows: [] } };
     },
@@ -114,7 +116,7 @@ describe("conversation canvas store", () => {
       documents: [],
       placements: [],
     };
-    await saveCanvas(tcw, value);
+    await mutateCanvas(tcw, value.threadId, () => value);
     expect(isLocalCanvasStorage(tcw)).toBe(true);
     expect(await getCanvas(tcw, "thread-1")).toEqual(value);
   });
@@ -130,7 +132,7 @@ describe("conversation canvas store", () => {
         { id: "a1", parentId: "meeting", role: "assistant" as const, content: "durable", createdAt: "3" },
       ], documents: [], placements: [],
     };
-    await saveCanvas(tcw, value);
+    await mutateCanvas(tcw, value.threadId, () => value);
     expect(await getCanvas(tcw, "thread-transient")).toMatchObject({ activeHeadId: "u1", nodes: [{ id: "u1", parentId: null }, { id: "a1", parentId: "u1" }] });
     expect(sanitizeCanvas(value).nodes.map((node) => node.id)).toEqual(["u1", "a1"]);
   });
@@ -216,14 +218,14 @@ describe("conversation canvas store", () => {
       item("u2", "user", "three"),
       item("a2", "assistant", "four"),
     ]);
-    const canvas = await promoteLegacyThread(tcw, "chat");
-    await selectCanvasBranch(tcw, branchAt(canvas, "a1"));
+    await promoteLegacyThread(tcw, "chat");
+    await selectCanvasBranch(tcw, "chat", "a1");
     expect(await chatIds(tcw, "chat")).toEqual(["u1", "a1"]);
     expect((await getThread(tcw, "chat"))?.messages[1]).toMatchObject({ receipt });
     // The other branch is kept in Canvas and can be picked back, intact.
     const reopened = await openCanvas(tcw, "chat");
     expect(reopened.canvas.nodes.map((node) => node.id)).toEqual(["u1", "a1", "u2", "a2"]);
-    await selectCanvasBranch(tcw, branchAt(reopened.canvas, "a2"));
+    await selectCanvasBranch(tcw, "chat", "a2");
     expect(await chatIds(tcw, "chat")).toEqual(["u1", "a1", "u2", "a2"]);
     expect((await getThread(tcw, "chat"))?.messages[3]).toMatchObject({ message: { id: "a2", content: [{ type: "text", text: "four" }] } });
   });
@@ -236,5 +238,171 @@ describe("conversation canvas store", () => {
     expect(opened.canvas.activeHeadId).toBe("u2");
     expect(opened.canvas.nodes.find((node) => node.id === "u2")).toMatchObject({ parentId: "a1", content: "from another device" });
     expect(await chatIds(tcw, "chat")).toEqual(["u1", "a1", "u2"]);
+  });
+});
+
+// ── Real SQLite, run the way the node runs a batch ──────────────────────────
+
+/**
+ * One shared "space" backed by real SQLite. Like the TinyCloud node, a batch
+ * runs statement by statement and stops at the first error with the earlier
+ * statements applied (not a transaction). Every client made by `device()`
+ * is a separate tab or device with its own in-memory state.
+ */
+let spaces = 0;
+
+class SharedSpace {
+  private readonly did = `did:test:shared-space-${++spaces}`;
+  private readonly databases = new Map<string, Database>();
+  private devices = 0;
+  /** Runs once, right before the next batch whose first statement matches. */
+  private interleave: { match: string; run: () => Promise<void> } | null = null;
+
+  private database(name: string): Database {
+    let database = this.databases.get(name);
+    if (!database) {
+      database = new Database(":memory:");
+      this.databases.set(name, database);
+    }
+    return database;
+  }
+
+  beforeNextBatch(match: string, run: () => Promise<void>): void {
+    this.interleave = { match, run };
+  }
+
+  rows(name: string, sql: string, ...params: (string | number | null)[]): unknown[][] {
+    return this.database(name).query(sql).values(...params) as unknown[][];
+  }
+
+  device(): Client {
+    const handle = (name: string) => ({
+      query: async (sql: string, params: (string | number | null)[] = []) => {
+        try {
+          return { ok: true as const, data: { rows: this.database(name).query(sql).values(...params) } };
+        } catch (error) {
+          return { ok: false as const, error: { code: "SQL", message: String(error) } };
+        }
+      },
+      execute: async (sql: string, params: (string | number | null)[] = []) => {
+        try {
+          this.database(name).query(sql).run(...params);
+          return { ok: true as const, data: { rows: [] } };
+        } catch (error) {
+          return { ok: false as const, error: { code: "SQL", message: String(error) } };
+        }
+      },
+      batch: async (operations: Array<{ sql: string; params?: (string | number | null)[] }>) => {
+        const interleave = this.interleave;
+        if (interleave && operations[0]?.sql.includes(interleave.match)) {
+          this.interleave = null;
+          await interleave.run();
+        }
+        for (const operation of operations) {
+          try {
+            this.database(name).query(operation.sql).run(...(operation.params ?? []));
+          } catch (error) {
+            return { ok: false as const, error: { code: "SQL", message: String(error) } };
+          }
+        }
+        return { ok: true as const, data: { rows: [] } };
+      },
+    });
+    return {
+      did: this.did,
+      // Another tab or device is another process: give it its own per-chat
+      // write queues (threadStore keys them by spaceId first).
+      spaceId: `${this.did}#device-${++this.devices}`,
+      sql: { db: handle },
+      requestPermissions: async () => ({ approved: true }),
+    } as unknown as Client;
+  }
+}
+
+/** A space whose chat `chat` holds `messages` and is switched to Canvas by device A. */
+async function sharedSwitchedChat(messages: StoredMessageItem[]) {
+  const space = new SharedSpace();
+  const a = space.device();
+  for (const message of messages) await appendMessage(a, "chat", message);
+  await setCanvasEnabled(a, true);
+  await promoteLegacyThread(a, "chat");
+  return { space, a };
+}
+
+/** How the chat runtime saves a sent message: Canvas record first, then the chat history. */
+async function send(tcw: Client, message: StoredMessageItem) {
+  await recordPromotedChatMessage(tcw, "chat", message);
+  await appendMessage(tcw, "chat", message);
+}
+
+const childOf = (parentId: string, message: StoredMessageItem) => ({ ...message, parentId }) as StoredMessageItem;
+const nodeIds = (canvas: { nodes: Array<{ id: string }> } | null) => (canvas?.nodes ?? []).map((node) => node.id).sort();
+
+describe("Canvas never loses messages or edits made elsewhere", () => {
+  test("regression: messages sent while the Canvas view is open survive picking an earlier branch", async () => {
+    const { a } = await sharedSwitchedChat([item("u0", "user", "zero"), item("a0", "assistant", "zero reply")]);
+    const view = await openCanvas(a, "chat"); // the view's copy: [u0, a0]
+    expect(view.canvas.nodes.map((node) => node.id)).toEqual(["u0", "a0"]);
+    await send(a, childOf("a0", item("u1", "user", "one")));
+    await send(a, childOf("u1", item("a1", "assistant", "one reply")));
+
+    await selectCanvasBranch(a, "chat", "u0"); // "Continue after" u0
+
+    expect(await chatIds(a, "chat")).toEqual(["u0"]);
+    const canvas = await getCanvas(a, "chat");
+    expect(nodeIds(canvas)).toEqual(["a0", "a1", "u0", "u1"]);
+    expect(canvas?.nodes.find((node) => node.id === "a1")?.parentId).toBe("u1");
+    await selectCanvasBranch(a, "chat", "a1");
+    expect(await chatIds(a, "chat")).toEqual(["u0", "a0", "u1", "a1"]);
+  });
+
+  test("a message only an older app wrote to the chat is kept as a branch when another branch is picked", async () => {
+    const { a } = await sharedSwitchedChat([item("u0", "user", "zero"), item("a0", "assistant", "zero reply")]);
+    await openCanvas(a, "chat");
+    await appendMessage(a, "chat", item("u1", "user", "from an older app")); // no Canvas record
+    await selectCanvasBranch(a, "chat", "u0");
+    expect(await chatIds(a, "chat")).toEqual(["u0"]);
+    const canvas = await getCanvas(a, "chat");
+    expect(canvas?.nodes.find((node) => node.id === "u1")).toMatchObject({ parentId: "a0", content: "from an older app" });
+  });
+
+  test("two devices: a send landing between a branch switch's read and write is kept, never erased", async () => {
+    const { space, a } = await sharedSwitchedChat([item("u0", "user", "zero"), item("a0", "assistant", "zero reply")]);
+    const b = space.device();
+    // Device B, an older Exo build that only knows the chat history, sends right
+    // after device A read the chat for its switch and before A writes.
+    space.beforeNextBatch("SELECT NULL, NULL, NULL, NULL", () => appendMessage(b, "chat", childOf("a0", item("u1", "user", "from device B"))));
+
+    await selectCanvasBranch(a, "chat", "u0");
+
+    expect(await chatIds(a, "chat")).toEqual(["u0"]);
+    const canvas = await getCanvas(b, "chat");
+    expect(canvas?.nodes.find((node) => node.id === "u1")).toMatchObject({ parentId: "a0", content: "from device B" });
+    expect(canvas?.activeHeadId).toBe("u0");
+    // Device B can bring its message back.
+    await selectCanvasBranch(b, "chat", "u1");
+    expect(await chatIds(b, "chat")).toEqual(["u0", "a0", "u1"]);
+  });
+
+  test("two tabs: concurrent Canvas edits keep both sides' documents and branches", async () => {
+    const { space, a } = await sharedSwitchedChat([item("u0", "user", "zero"), item("a0", "assistant", "zero reply")]);
+    const b = space.device();
+    await openCanvas(a, "chat");
+    await openCanvas(b, "chat"); // both tabs hold a copy now
+
+    // Tab B adds a branch and a document; tab A's document write is interleaved with B's.
+    await selectCanvasBranch(b, "chat", "u0");
+    await send(b, childOf("u0", item("u1", "user", "tab B branch")));
+    space.beforeNextBatch("INSERT INTO canvas_revisions (thread_id, revision) SELECT", () =>
+      mutateCanvas(b, "chat", (current) => placeDocument(createDocument(current!, { id: "doc-b", title: "B", markdown: "from B", now: "2" }), "doc-b", "doc-b:v1", { slot: "next-user" })).then(() => undefined));
+    await mutateCanvas(a, "chat", (current) => placeDocument(createDocument(current!, { id: "doc-a", title: "A", markdown: "from A", now: "1" }), "doc-a", "doc-a:v1", { slot: "next-user" }));
+
+    const canvas = await getCanvas(a, "chat");
+    expect(canvas?.documents.map((doc) => doc.id).sort()).toEqual(["doc-a", "doc-b"]);
+    expect(canvas?.placements.map((placement) => placement.id).sort()).toEqual(["doc-a:doc-a:v1", "doc-b:doc-b:v1"]);
+    expect(nodeIds(canvas)).toEqual(["a0", "u0", "u1"]);
+    expect(activeAncestry(canvas!)).toEqual(new Set(["u0", "u1"]));
+    // Nothing was written over: each row exists once.
+    expect(space.rows(CANVAS_SQL_DB_NAME, "SELECT COUNT(*) FROM canvas_document_versions")).toEqual([[2]]);
   });
 });

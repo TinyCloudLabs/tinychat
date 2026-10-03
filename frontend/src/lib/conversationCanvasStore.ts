@@ -1,12 +1,13 @@
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
-import { getSettingsByPrefix, getThread, replaceThreadMessages, setSetting, type StoredMessageItem } from "./threadStore";
+import { getSettingsByPrefix, getThread, rewriteThreadMessages, setSetting, type StoredMessageItem } from "./threadStore";
 import {
   activePathItems,
   alignActivePath,
-  appendCanvasMessage,
+  branchAt,
   normalizeLegacyMessages,
   normalizeLegacyThread,
   pathFromMessages,
+  recordChatMessage,
   type ConversationCanvas,
 } from "../chat/canvas/model";
 
@@ -17,6 +18,12 @@ import {
 // Picking a branch rewrites the chat history to that branch, and chat
 // messages Canvas has not seen are folded in, so no reader ever sees a stale
 // or diverging history.
+//
+// Writes never replace a whole Canvas from a possibly stale copy: every
+// change is a mutation applied to a fresh read and written as upserts behind
+// a revision check, so edits from another tab or device are kept. Rows are
+// only deleted when the Canvas itself is (placements excepted: unpinning
+// removes one, still behind the revision check).
 
 export const CANVAS_SQL_DB_NAME = "xyz.tinycloud.tinychat/canvas";
 export const CANVAS_SETTING_PREFIX = "conversation-canvas-";
@@ -35,6 +42,7 @@ export const CANVAS_MISSING_MESSAGE = "This chat uses Conversation Canvas, but i
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS canvas_threads (thread_id TEXT PRIMARY KEY, active_head_id TEXT, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS canvas_revisions (thread_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS canvas_nodes (thread_id TEXT NOT NULL, id TEXT NOT NULL, parent_id TEXT, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, position_json TEXT, PRIMARY KEY (thread_id, id))`,
   `CREATE TABLE IF NOT EXISTS canvas_node_payloads (thread_id TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (thread_id, id))`,
   `CREATE TABLE IF NOT EXISTS canvas_documents (thread_id TEXT NOT NULL, id TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (thread_id, id))`,
@@ -44,7 +52,6 @@ const SCHEMA = [
 
 type LocalCanvas = Map<string, ConversationCanvas>;
 const localStores = new WeakMap<TinyCloudWeb, LocalCanvas>();
-const remoteCaches = new WeakMap<TinyCloudWeb, LocalCanvas>();
 const writeQueues = new WeakMap<TinyCloudWeb, Map<string, Promise<void>>>();
 const schemaReady = new WeakSet<object>();
 const accessGranted = new WeakSet<object>();
@@ -143,20 +150,13 @@ export async function ensureCanvasAccess(tcw: TinyCloudWeb): Promise<void> {
 
 // ── Storage ──────────────────────────────────────────────────────────────
 
-function remoteCache(tcw: TinyCloudWeb): LocalCanvas {
-  let cache = remoteCaches.get(tcw);
-  if (!cache) {
-    cache = new Map();
-    remoteCaches.set(tcw, cache);
-  }
-  return cache;
-}
+const WRITE_ATTEMPTS = 3;
 
-async function enqueueCanvasWrite(
+async function enqueueCanvasWrite<T>(
   tcw: TinyCloudWeb,
   threadId: string,
-  write: () => Promise<void>,
-): Promise<void> {
+  write: () => Promise<T>,
+): Promise<T> {
   let queues = writeQueues.get(tcw);
   if (!queues) {
     queues = new Map();
@@ -164,12 +164,27 @@ async function enqueueCanvasWrite(
   }
   const previous = queues.get(threadId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(write);
-  queues.set(threadId, next);
+  const tail = next.then(() => undefined, () => undefined);
+  queues.set(threadId, tail);
   try {
-    await next;
+    return await next;
   } finally {
-    if (queues.get(threadId) === next) queues.delete(threadId);
+    if (queues.get(threadId) === tail) queues.delete(threadId);
   }
+}
+
+// In-tab change notifications, so an open Canvas view re-reads after a send.
+const listeners = new Map<string, Set<() => void>>();
+
+export function subscribeCanvasChanges(threadId: string, listener: () => void): () => void {
+  const set = listeners.get(threadId) ?? new Set<() => void>();
+  set.add(listener);
+  listeners.set(threadId, set);
+  return () => { set.delete(listener); };
+}
+
+export function notifyCanvasChanged(threadId: string): void {
+  for (const listener of listeners.get(threadId) ?? []) listener();
 }
 
 export function sanitizeCanvas(canvas: ConversationCanvas): ConversationCanvas {
@@ -180,7 +195,7 @@ export function sanitizeCanvas(canvas: ConversationCanvas): ConversationCanvas {
     while (current && !seen.has(current)) {
       seen.add(current);
       const node = byId.get(current);
-      if (!node) return null;
+      if (!node) return current;
       if (!node.transient) return node.id;
       current = node.parentId;
     }
@@ -210,106 +225,195 @@ async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
   schemaReady.add(tcw as unknown as object);
 }
 
-function cell(row: unknown[], index: number, fallback = ""): string {
-  return typeof row[index] === "string" ? row[index] as string : fallback;
+function cell(row: unknown[], index: number): string {
+  return typeof row[index] === "string" ? row[index] as string : "";
 }
 
-async function queryRows(tcw: TinyCloudWeb, sql: string, params: string[]): Promise<unknown[][]> {
-  const result = await db(tcw).query(sql, params);
+function optional(row: unknown[], index: number): string | null {
+  return typeof row[index] === "string" ? row[index] as string : null;
+}
+
+/**
+ * All of one chat's Canvas rows in one round trip: [kind, a, b, c, d, e, f,
+ * rowid]. rowid keeps insertion order (upserts keep a row's rowid), which is
+ * the order nodes and documents are shown in.
+ */
+const READ_SQL = [
+  "SELECT 'r', CAST(revision AS TEXT), NULL, NULL, NULL, NULL, NULL, rowid FROM canvas_revisions WHERE thread_id = ?",
+  "SELECT 'h', active_head_id, NULL, NULL, NULL, NULL, NULL, rowid FROM canvas_threads WHERE thread_id = ?",
+  "SELECT 'n', id, parent_id, role, content, created_at, position_json, rowid FROM canvas_nodes WHERE thread_id = ?",
+  "SELECT 'p', id, payload, NULL, NULL, NULL, NULL, rowid FROM canvas_node_payloads WHERE thread_id = ?",
+  "SELECT 'd', id, title, created_at, updated_at, NULL, NULL, rowid FROM canvas_documents WHERE thread_id = ?",
+  "SELECT 'v', id, document_id, CAST(version AS TEXT), markdown, created_at, NULL, rowid FROM canvas_document_versions WHERE thread_id = ?",
+  "SELECT 'l', id, document_id, version_id, CAST(placement_order AS TEXT), before_message_id, slot, rowid FROM canvas_document_placements WHERE thread_id = ?",
+].join(" UNION ALL ");
+
+interface StoredCanvas {
+  canvas: ConversationCanvas | null;
+  revision: number;
+}
+
+async function readStoredCanvas(tcw: TinyCloudWeb, threadId: string): Promise<StoredCanvas> {
+  await ensureSchema(tcw);
+  const result = await db(tcw).query(READ_SQL, Array(7).fill(threadId));
   if (!result.ok) throw new Error(`Conversation Canvas could not be read: ${result.error.message}`);
-  return result.data.rows;
-}
-
-function fromRows(threadId: string, head: string | null, nodes: unknown[][], payloads: unknown[][], docs: unknown[][], versions: unknown[][], placements: unknown[][]): ConversationCanvas {
-  const documents = docs.map((row) => ({ id: cell(row, 0), title: cell(row, 1), createdAt: cell(row, 2), updatedAt: cell(row, 3), versions: [] as ConversationCanvas["documents"][number]["versions"] }));
-  for (const row of versions) {
-    const doc = documents.find((item) => item.id === cell(row, 1));
-    if (!doc) continue;
-    doc.versions.push({ id: cell(row, 0), documentId: cell(row, 1), version: Number(row[2]) || 1, markdown: cell(row, 3), createdAt: cell(row, 4) });
+  let revision = 0;
+  let hasHead = false;
+  let head: string | null = null;
+  const nodes: ConversationCanvas["nodes"] = [];
+  const payloads = new Map<string, string>();
+  const documents: ConversationCanvas["documents"] = [];
+  const versions: ConversationCanvas["documents"][number]["versions"] = [];
+  const placements: ConversationCanvas["placements"] = [];
+  const rows = (result.data.rows as unknown[][]).slice().sort((left, right) => Number(left[7]) - Number(right[7]));
+  for (const row of rows) {
+    switch (row[0]) {
+      case "r": revision = Number(row[1]) || 0; break;
+      case "h": hasHead = true; head = optional(row, 1); break;
+      case "n": nodes.push({
+        id: cell(row, 1),
+        parentId: optional(row, 2),
+        role: cell(row, 3) as "user" | "assistant" | "system",
+        content: cell(row, 4),
+        createdAt: cell(row, 5),
+        ...(typeof row[6] === "string" ? { position: JSON.parse(row[6]) as { x: number; y: number } } : {}),
+      }); break;
+      case "p": payloads.set(cell(row, 1), cell(row, 2)); break;
+      case "d": documents.push({ id: cell(row, 1), title: cell(row, 2), createdAt: cell(row, 3), updatedAt: cell(row, 4), versions: [] }); break;
+      case "v": versions.push({ id: cell(row, 1), documentId: cell(row, 2), version: Number(row[3]) || 1, markdown: cell(row, 4), createdAt: cell(row, 5) }); break;
+      case "l": placements.push({
+        id: cell(row, 1),
+        documentId: cell(row, 2),
+        versionId: cell(row, 3),
+        order: Number(row[4]) || 0,
+        beforeMessageId: optional(row, 5),
+        slot: row[6] === "before" || row[6] === "after" || row[6] === "next-user" ? row[6] : undefined,
+      }); break;
+    }
   }
-  const payloadById = new Map(payloads.filter((row) => typeof row[1] === "string").map((row) => [cell(row, 0), cell(row, 1)]));
+  if (!hasHead) return { canvas: null, revision };
+  for (const version of versions.sort((a, b) => a.version - b.version)) {
+    documents.find((doc) => doc.id === version.documentId)?.versions.push(version);
+  }
   return {
-    version: 1,
-    threadId,
-    activeHeadId: head,
-    nodes: nodes.map((row) => {
-      const payload = payloadById.get(cell(row, 0));
-      return {
-        id: cell(row, 0),
-        parentId: typeof row[1] === "string" ? row[1] : null,
-        role: cell(row, 2) as "user" | "assistant" | "system",
-        content: cell(row, 3),
-        createdAt: cell(row, 4),
-        position: typeof row[5] === "string" ? JSON.parse(row[5]) : undefined,
-        ...(payload === undefined ? {} : { payload }),
-      };
-    }),
-    documents,
-    placements: placements.map((row) => ({ id: cell(row, 0), documentId: cell(row, 1), versionId: cell(row, 2), order: Number(row[3]) || 0, beforeMessageId: typeof row[4] === "string" ? row[4] : null, slot: row[5] === "before" || row[5] === "after" || row[5] === "next-user" ? row[5] : undefined })),
+    revision,
+    canvas: {
+      version: 1,
+      threadId,
+      activeHeadId: head,
+      nodes: nodes.map((node) => payloads.has(node.id) ? { ...node, payload: payloads.get(node.id)! } : node),
+      documents,
+      placements,
+    },
   };
 }
 
+type Statement = { sql: string; params: (string | number | null)[] };
+
+const BUMP_REVISION = "INSERT INTO canvas_revisions (thread_id, revision) VALUES (?, 1) ON CONFLICT(thread_id) DO UPDATE SET revision = canvas_revisions.revision + 1";
+
+function nodeStatements(threadId: string, canvas: Pick<ConversationCanvas, "nodes">): Statement[] {
+  const statements: Statement[] = [];
+  for (const node of canvas.nodes) {
+    statements.push({
+      sql: `INSERT INTO canvas_nodes (thread_id,id,parent_id,role,content,created_at,position_json) VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(thread_id, id) DO UPDATE SET parent_id = excluded.parent_id, role = excluded.role, content = excluded.content, created_at = excluded.created_at, position_json = excluded.position_json`,
+      params: [threadId, node.id, node.parentId, node.role, node.content, node.createdAt, node.position ? JSON.stringify(node.position) : null],
+    });
+    if (node.payload !== undefined) {
+      statements.push({
+        sql: "INSERT INTO canvas_node_payloads (thread_id,id,payload) VALUES (?,?,?) ON CONFLICT(thread_id, id) DO UPDATE SET payload = excluded.payload",
+        params: [threadId, node.id, node.payload],
+      });
+    }
+  }
+  return statements;
+}
+
+function headStatement(threadId: string, activeHeadId: string | null): Statement {
+  return {
+    sql: "INSERT INTO canvas_threads (thread_id, active_head_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET active_head_id = excluded.active_head_id, updated_at = excluded.updated_at",
+    params: [threadId, activeHeadId, new Date().toISOString()],
+  };
+}
+
+/** Upserts for a whole Canvas; placements not in it are the only rows removed. */
+function writeStatements(canvas: ConversationCanvas): Statement[] {
+  const threadId = canvas.threadId;
+  const statements: Statement[] = [headStatement(threadId, canvas.activeHeadId), ...nodeStatements(threadId, canvas)];
+  for (const doc of canvas.documents) {
+    statements.push({
+      sql: "INSERT INTO canvas_documents (thread_id,id,title,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(thread_id, id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at",
+      params: [threadId, doc.id, doc.title, doc.createdAt, doc.updatedAt],
+    });
+    for (const version of doc.versions) {
+      statements.push({
+        sql: "INSERT INTO canvas_document_versions (thread_id,id,document_id,version,markdown,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(thread_id, id) DO NOTHING",
+        params: [threadId, version.id, version.documentId, version.version, version.markdown, version.createdAt],
+      });
+    }
+  }
+  const kept = canvas.placements.map((placement) => placement.id);
+  statements.push(kept.length === 0
+    ? { sql: "DELETE FROM canvas_document_placements WHERE thread_id = ?", params: [threadId] }
+    : { sql: `DELETE FROM canvas_document_placements WHERE thread_id = ? AND id NOT IN (${kept.map(() => "?").join(",")})`, params: [threadId, ...kept] });
+  for (const placement of canvas.placements) {
+    statements.push({
+      sql: `INSERT INTO canvas_document_placements (thread_id,id,document_id,version_id,placement_order,before_message_id,slot) VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(thread_id, id) DO UPDATE SET document_id = excluded.document_id, version_id = excluded.version_id, placement_order = excluded.placement_order, before_message_id = excluded.before_message_id, slot = excluded.slot`,
+      params: [threadId, placement.id, placement.documentId, placement.versionId, placement.order, placement.beforeMessageId ?? null, placement.slot ?? null],
+    });
+  }
+  return statements;
+}
+
+/** The current Canvas of a chat, read fresh (there is no cross-call cache to go stale). */
 export async function getCanvas(tcw: TinyCloudWeb, threadId: string): Promise<ConversationCanvas | null> {
   const local = localStores.get(tcw);
   if (local) return structuredClone(local.get(threadId) ?? null);
-  const cached = remoteCache(tcw).get(threadId);
-  if (cached) return structuredClone(cached);
-  await ensureSchema(tcw);
-  const head = await db(tcw).query("SELECT active_head_id FROM canvas_threads WHERE thread_id = ?", [threadId]);
-  if (!head.ok) throw new Error(`Conversation Canvas could not be read: ${head.error.message}`);
-  if (!head.data.rows.length) return null;
-  const [nodes, payloads, docs, versions, placements] = await Promise.all([
-    queryRows(tcw, "SELECT id, parent_id, role, content, created_at, position_json FROM canvas_nodes WHERE thread_id = ?", [threadId]),
-    queryRows(tcw, "SELECT id, payload FROM canvas_node_payloads WHERE thread_id = ?", [threadId]),
-    queryRows(tcw, "SELECT id, title, created_at, updated_at FROM canvas_documents WHERE thread_id = ?", [threadId]),
-    queryRows(tcw, "SELECT id, document_id, version, markdown, created_at FROM canvas_document_versions WHERE thread_id = ?", [threadId]),
-    queryRows(tcw, "SELECT id, document_id, version_id, placement_order, before_message_id, slot FROM canvas_document_placements WHERE thread_id = ?", [threadId]),
-  ]);
-  const canvas = fromRows(threadId, typeof head.data.rows[0][0] === "string" ? head.data.rows[0][0] : null, nodes, payloads, docs, versions, placements);
-  remoteCache(tcw).set(threadId, structuredClone(canvas));
-  return canvas;
+  return (await readStoredCanvas(tcw, threadId)).canvas;
 }
 
-export async function saveCanvas(tcw: TinyCloudWeb, canvas: ConversationCanvas): Promise<void> {
-  canvas = sanitizeCanvas(canvas);
+/**
+ * Change a chat's Canvas: `mutate` runs on a fresh read and the result is
+ * written as upserts behind a revision check. Batches are not transactions,
+ * so the check is the first statement — on a mismatch (another tab or device
+ * wrote meanwhile) it fails before anything is written, and the change is
+ * re-applied to a new read.
+ */
+export async function mutateCanvas(
+  tcw: TinyCloudWeb,
+  threadId: string,
+  mutate: (current: ConversationCanvas | null) => ConversationCanvas | Promise<ConversationCanvas>,
+): Promise<ConversationCanvas> {
   const local = localStores.get(tcw);
-  if (local) { local.set(canvas.threadId, structuredClone(canvas)); return; }
-  const snapshot = structuredClone(canvas);
-  const cache = remoteCache(tcw);
-  const previous = cache.get(canvas.threadId);
-  cache.set(canvas.threadId, snapshot);
-  try {
-    await enqueueCanvasWrite(tcw, canvas.threadId, async () => {
-      await ensureSchema(tcw);
-      const now = new Date().toISOString();
-      const statements: { sql: string; params: (string | number | null)[] }[] = [
-        { sql: "DELETE FROM canvas_nodes WHERE thread_id = ?", params: [canvas.threadId] },
-        { sql: "DELETE FROM canvas_node_payloads WHERE thread_id = ?", params: [canvas.threadId] },
-        { sql: "DELETE FROM canvas_threads WHERE thread_id = ?", params: [canvas.threadId] },
-        { sql: "DELETE FROM canvas_documents WHERE thread_id = ?", params: [canvas.threadId] },
-        { sql: "DELETE FROM canvas_document_versions WHERE thread_id = ?", params: [canvas.threadId] },
-        { sql: "DELETE FROM canvas_document_placements WHERE thread_id = ?", params: [canvas.threadId] },
-        { sql: "INSERT INTO canvas_threads (thread_id, active_head_id, updated_at) VALUES (?, ?, ?)", params: [canvas.threadId, canvas.activeHeadId, now] },
-      ];
-      for (const node of canvas.nodes) {
-        statements.push({ sql: "INSERT INTO canvas_nodes (thread_id,id,parent_id,role,content,created_at,position_json) VALUES (?,?,?,?,?,?,?)", params: [canvas.threadId, node.id, node.parentId, node.role, node.content, node.createdAt, node.position ? JSON.stringify(node.position) : null] });
-        if (node.payload !== undefined) statements.push({ sql: "INSERT INTO canvas_node_payloads (thread_id,id,payload) VALUES (?,?,?)", params: [canvas.threadId, node.id, node.payload] });
-      }
-      for (const doc of canvas.documents) {
-        statements.push({ sql: "INSERT INTO canvas_documents (thread_id,id,title,created_at,updated_at) VALUES (?,?,?,?,?)", params: [canvas.threadId, doc.id, doc.title, doc.createdAt, doc.updatedAt] });
-        for (const version of doc.versions) statements.push({ sql: "INSERT INTO canvas_document_versions (thread_id,id,document_id,version,markdown,created_at) VALUES (?,?,?,?,?,?)", params: [canvas.threadId, version.id, version.documentId, version.version, version.markdown, version.createdAt] });
-      }
-      for (const placement of canvas.placements) statements.push({ sql: "INSERT INTO canvas_document_placements (thread_id,id,document_id,version_id,placement_order,before_message_id,slot) VALUES (?,?,?,?,?,?,?)", params: [canvas.threadId, placement.id, placement.documentId, placement.versionId, placement.order, placement.beforeMessageId ?? null, placement.slot ?? null] });
-      const result = await db(tcw).batch(statements);
-      if (!result.ok) throw new Error(`Conversation Canvas could not be saved: ${result.error.message}`);
-    });
-  } catch (error) {
-    if (cache.get(canvas.threadId) === snapshot) {
-      if (previous) cache.set(canvas.threadId, previous);
-      else cache.delete(canvas.threadId);
-    }
-    throw error;
+  if (local) {
+    const next = sanitizeCanvas(await mutate(structuredClone(local.get(threadId) ?? null)));
+    local.set(threadId, structuredClone(next));
+    return next;
   }
+  return enqueueCanvasWrite(tcw, threadId, async () => {
+    let lastError = "conflict";
+    for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+      const stored = await readStoredCanvas(tcw, threadId);
+      const next = sanitizeCanvas(await mutate(stored.canvas));
+      const result = await db(tcw).batch([
+        {
+          // Inserting a NULL revision fails the batch unless nobody wrote since the read.
+          sql: "INSERT INTO canvas_revisions (thread_id, revision) SELECT ?, NULL WHERE COALESCE((SELECT revision FROM canvas_revisions WHERE thread_id = ?), 0) != ?",
+          params: [threadId, threadId, stored.revision],
+        },
+        { sql: BUMP_REVISION, params: [threadId] },
+        ...writeStatements(next),
+      ]);
+      if (result.ok) return next;
+      lastError = result.error.message;
+      // An unchanged revision means the check passed and a real error stopped the batch.
+      const after = await readStoredCanvas(tcw, threadId);
+      if (after.revision === stored.revision) throw new Error(`Conversation Canvas could not be saved: ${result.error.message}`);
+    }
+    throw new Error(`Conversation Canvas kept changing on another device while saving; try again. (${lastError})`);
+  });
 }
 
 export async function deleteCanvas(tcw: TinyCloudWeb, threadId: string): Promise<void> {
@@ -320,16 +424,16 @@ export async function deleteCanvas(tcw: TinyCloudWeb, threadId: string): Promise
     await enqueueCanvasWrite(tcw, threadId, async () => {
       await ensureSchema(tcw);
       const result = await db(tcw).batch([
+        { sql: BUMP_REVISION, params: [threadId] },
+        { sql: "DELETE FROM canvas_threads WHERE thread_id = ?", params: [threadId] },
         { sql: "DELETE FROM canvas_nodes WHERE thread_id = ?", params: [threadId] },
         { sql: "DELETE FROM canvas_node_payloads WHERE thread_id = ?", params: [threadId] },
-        { sql: "DELETE FROM canvas_threads WHERE thread_id = ?", params: [threadId] },
         { sql: "DELETE FROM canvas_documents WHERE thread_id = ?", params: [threadId] },
         { sql: "DELETE FROM canvas_document_versions WHERE thread_id = ?", params: [threadId] },
         { sql: "DELETE FROM canvas_document_placements WHERE thread_id = ?", params: [threadId] },
       ]);
       if (!result.ok) throw new Error(`Conversation Canvas could not be deleted: ${result.error.message}`);
     });
-    remoteCache(tcw).delete(threadId);
   }
   await setSetting(tcw, `${CANVAS_PROMOTION_PREFIX}${threadId}`, "false");
   await updateLoadedState(tcw, (state) => { state.promoted.delete(threadId); });
@@ -348,13 +452,16 @@ export async function openCanvas(
 ): Promise<{ canvas: ConversationCanvas; promoted: boolean }> {
   const state = await loadCanvasState(tcw);
   const legacy = await getThread(tcw, threadId);
-  const messages = legacy?.messages ?? [];
-  if (!state.promoted.has(threadId)) return { canvas: normalizeLegacyMessages(messages, threadId), promoted: false };
-  const canvas = await getCanvas(tcw, threadId);
-  if (!canvas) throw new Error(CANVAS_MISSING_MESSAGE);
-  const aligned = alignActivePath(canvas, pathFromMessages(messages));
-  if (aligned.changed) await saveCanvas(tcw, aligned.canvas);
-  return { canvas: aligned.canvas, promoted: true };
+  const path = pathFromMessages(legacy?.messages ?? []);
+  if (!state.promoted.has(threadId)) return { canvas: normalizeLegacyMessages(legacy?.messages ?? [], threadId), promoted: false };
+  const current = await getCanvas(tcw, threadId);
+  if (!current) throw new Error(CANVAS_MISSING_MESSAGE);
+  if (!alignActivePath(current, path).changed) return { canvas: current, promoted: true };
+  const canvas = await mutateCanvas(tcw, threadId, (fresh) => {
+    if (!fresh) throw new Error(CANVAS_MISSING_MESSAGE);
+    return alignActivePath(fresh, path).canvas;
+  });
+  return { canvas, promoted: true };
 }
 
 /** Switch a chat to Canvas. Only ever called from the user's explicit confirmation. */
@@ -362,11 +469,18 @@ export async function promoteLegacyThread(tcw: TinyCloudWeb, threadId: string): 
   if (!(await loadCanvasState(tcw)).enabled) throw new Error(CANVAS_DISABLED_MESSAGE);
   const legacy = await getThread(tcw, threadId);
   if (!legacy || legacy.messages.length === 0) throw new Error("Send a message before using Canvas for this chat.");
-  const existing = await getCanvas(tcw, threadId);
-  const canvas = existing ? alignActivePath(existing, pathFromMessages(legacy.messages)).canvas : normalizeLegacyThread(legacy);
-  await saveCanvas(tcw, canvas);
+  const canvas = await mutateCanvas(tcw, threadId, (fresh) =>
+    fresh ? alignActivePath(fresh, pathFromMessages(legacy.messages)).canvas : normalizeLegacyThread(legacy));
   await setCanvasPromoted(tcw, threadId);
   return canvas;
+}
+
+async function isPromotedForTurn(tcw: TinyCloudWeb, threadId: string): Promise<boolean> {
+  try {
+    return (await loadCanvasState(tcw)).promoted.has(threadId);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -378,44 +492,68 @@ export async function promoteLegacyThread(tcw: TinyCloudWeb, threadId: string): 
  * because its pinned documents belong in the request.
  */
 export async function promotedCanvasForTurn(tcw: TinyCloudWeb, threadId: string): Promise<ConversationCanvas | null> {
-  let state: CanvasAccountState;
-  try {
-    state = await loadCanvasState(tcw);
-  } catch {
-    return null;
-  }
-  if (!state.promoted.has(threadId)) return null;
+  if (!(await isPromotedForTurn(tcw, threadId))) return null;
   const canvas = await getCanvas(tcw, threadId);
   if (!canvas) throw new Error(CANVAS_MISSING_MESSAGE);
   return canvas;
 }
 
-/** Record a just-saved chat message in a switched chat's Canvas, under its chat parent. */
-export async function appendPromotedCanvasMessage(
+/**
+ * Record a just-sent chat message in a switched chat's Canvas, under its chat
+ * parent; a no-op for every other chat. Purely additive (an upsert plus a
+ * revision bump), so it needs no read and cannot overwrite anything; a parent
+ * Canvas has not seen yet is repaired when the chat history is folded in.
+ */
+export async function recordPromotedChatMessage(
   tcw: TinyCloudWeb,
-  canvas: ConversationCanvas,
+  threadId: string,
   item: StoredMessageItem,
-): Promise<ConversationCanvas> {
+): Promise<boolean> {
+  if (!(await isPromotedForTurn(tcw, threadId))) return false;
   const [message] = pathFromMessages([item]);
-  if (!message) return canvas;
-  let base = canvas;
-  const parentId = item.parentId === undefined ? base.activeHeadId : item.parentId;
-  if (parentId !== null && !base.nodes.some((node) => node.id === parentId)) {
-    // The chat gained messages Canvas has not seen (e.g. from an older app).
-    const legacy = await getThread(tcw, base.threadId);
-    base = alignActivePath(base, pathFromMessages(legacy?.messages ?? [])).canvas;
+  if (!message) return true;
+  const parentId = item.parentId ?? null;
+  const local = localStores.get(tcw);
+  if (local) {
+    const current = local.get(threadId);
+    if (!current) throw new Error(CANVAS_MISSING_MESSAGE);
+    local.set(threadId, recordChatMessage(current, message, parentId));
+    return true;
   }
-  const next = appendCanvasMessage(base, { ...message, createdAt: message.createdAt ?? new Date().toISOString(), parentId });
-  await saveCanvas(tcw, next);
-  return next;
+  const node = recordChatMessage({ version: 1, threadId, nodes: [], activeHeadId: null, documents: [], placements: [] }, message, parentId);
+  await enqueueCanvasWrite(tcw, threadId, async () => {
+    await ensureSchema(tcw);
+    const result = await db(tcw).batch([
+      { sql: BUMP_REVISION, params: [threadId] },
+      ...nodeStatements(threadId, node),
+      headStatement(threadId, message.id),
+    ]);
+    if (!result.ok) throw new Error(`Conversation Canvas could not be saved: ${result.error.message}`);
+  });
+  return true;
 }
 
 /**
- * Make `canvas`'s active branch the chat: save the Canvas, then rewrite the
- * chat history to exactly that branch so share links and every other client
- * show the same messages as this chat.
+ * Make `headId` the chat's branch. Inside the chat's write queue it re-reads
+ * the chat history and a fresh Canvas, folds in every chat message Canvas has
+ * not seen (so switching away keeps them as a branch rather than erasing
+ * them), switches the Canvas head, then rewrites the chat history to exactly
+ * that branch behind a check that the history did not change meanwhile.
  */
-export async function selectCanvasBranch(tcw: TinyCloudWeb, canvas: ConversationCanvas): Promise<void> {
-  await saveCanvas(tcw, canvas);
-  await replaceThreadMessages(tcw, canvas.threadId, activePathItems(canvas));
+export async function selectCanvasBranch(
+  tcw: TinyCloudWeb,
+  threadId: string,
+  headId: string | null,
+): Promise<ConversationCanvas> {
+  let selected: ConversationCanvas | null = null;
+  await rewriteThreadMessages(tcw, threadId, async (current) => {
+    const canvas = await mutateCanvas(tcw, threadId, (fresh) => {
+      if (!fresh) throw new Error(CANVAS_MISSING_MESSAGE);
+      return branchAt(alignActivePath(fresh, pathFromMessages(current)).canvas, headId);
+    });
+    selected = canvas;
+    return activePathItems(canvas);
+  });
+  if (!selected) throw new Error(CANVAS_MISSING_MESSAGE);
+  return selected;
 }

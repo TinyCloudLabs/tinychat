@@ -147,9 +147,14 @@ const sql = {
     if (operations.some((operation) => operation.sql.includes("CREATE TABLE"))) {
       return { ok: true, data: { rows: [] } };
     }
-    if (operations[0]?.sql === "DELETE FROM messages WHERE thread_id = ?" && !operations.some((operation) => operation.sql.includes("DELETE FROM threads"))) {
-      const id = String(operations[0].params?.[0]);
-      const payloads = operations.filter((operation) => operation.sql.startsWith("INSERT INTO messages")).map((operation) => String(operation.params?.[2]));
+    if (operations[0]?.sql.includes("SELECT NULL, NULL, NULL, NULL")) {
+      // Branch rewrite: a guard (expected count + last payload), then the new history.
+      const [id, count, , last] = (operations[0].params ?? []).map(String);
+      const stored = messages.get(id) ?? [];
+      if (String(stored.length) !== count || (stored.at(-1) ?? "") !== last) {
+        return { ok: false, error: { code: "SQL", message: "NOT NULL constraint failed: messages.thread_id" } };
+      }
+      const payloads = operations.filter((operation) => operation.sql.startsWith("INSERT INTO messages (thread_id, position, payload, created_at) VALUES")).map((operation) => String(operation.params?.[2]));
       messages.set(id, payloads);
       events.push(`replace:${id}:${payloads.map((payload) => JSON.parse(payload).message.id).join(",")}`);
       return { ok: true, data: { rows: [] } };
