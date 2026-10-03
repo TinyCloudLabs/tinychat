@@ -50,13 +50,16 @@ if [ -z "$tools" ]; then
   tools=$(find "$sdk/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
 fi
 [ -x "$tools/apksigner" ] && [ -x "$tools/aapt2" ] || fail "no apksigner/aapt2 in build-tools '$tools'"
+echo "Using build-tools $tools"
 
 # --- APK signature: v2+ scheme, exactly one signer, the upload certificate.
 signature=$("$tools/apksigner" verify --verbose --print-certs "$apk" 2>&1) || fail "apksigner rejects $apk:"$'\n'"$signature"
 grep -qE '^Verified using v(2|3|3\.1) scheme .*: true$' <<<"$signature" || fail "APK has no v2/v3 signature:"$'\n'"$signature"
 require "APK signed by one signer" "$signature" "Number of signers: 1"
-apk_cert=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$signature")
-[ "$(digest "$apk_cert")" = "$expected_cert" ] || fail "APK signer certificate is $apk_cert, expected $expected_cert"
+# apksigner 36 prints "Signer #1 certificate SHA-256 digest: <hex>", 37 prints "V2 Signer: certificate SHA-256 digest:
+# <hex>" (one line per scheme). Every signer line must name the same, expected certificate.
+apk_cert=$(grep -E '^(V[0-9.]+ )?Signer[^:]*:? certificate SHA-256 digest: ' <<<"$signature" | sed 's/^.*certificate SHA-256 digest: //' | sort -u || true)
+[ "$(digest "$apk_cert")" = "$expected_cert" ] || fail "APK signer certificate is '$apk_cert', expected $expected_cert:"$'\n'"$signature"
 if grep -qF 'CN=Android Debug' <<<"$signature"; then fail "APK is signed with the Android debug key"; fi
 pass "APK signed with the upload certificate"
 
