@@ -1,0 +1,206 @@
+name: Mobile release (Android)
+
+# Builds a release-signed Exo for Android: an .aab for Google Play and an .apk for sideloading, both signed with the
+# upload key and both bundling the production web app (frontend/dist from a production `vite build`; Capacitor synced
+# without EXO_DEV_SERVER_URL, so there is no live-reload server.url).
+#
+# - workflow_dispatch, from main only: `gh workflow run mobile-release-android.yml --ref main`. The job runs in the
+#   `android-release` environment (deployable from main only), the only place the upload key lives, and refuses any
+#   other ref before a secret is referenced. A missing secret fails the run before anything is built; there is no
+#   unsigned fallback (mobile/android/app/build.gradle refuses an unsigned release build as well). The verified AAB,
+#   APK and SHA256SUMS.txt are uploaded as the workflow artifact exo-android-<versionName>-<versionCode>.
+# - pull_request: a rehearsal of the same build, signed with a throwaway key generated on the runner and verified the
+#   same way, so changes to the Android release build are proven before merge. Nothing is uploaded and no secret is used.
+#
+# Versions (see mobile/README.md, Android release): versionName is frontend/package.json's version, the product version
+# web, desktop and mobile share. versionCode is this workflow's run number: Play needs a strictly greater code for every
+# upload, and the run number grows with every run whatever the product version does (betas share a version across many
+# merges). A re-run keeps its run number, so it rebuilds the same versionCode; dispatch a new run for a new upload.
+#
+# TODO(play, once the Play Console app exists and its first AAB was uploaded by hand): upload the verified AAB to the
+# internal testing track from this job, after "Verify the signed AAB and APK", with a pinned
+# r0adkll/upload-google-play (packageName xyz.tinycloud.exo, track internal, status draft until the first review) and a
+# PLAY_SERVICE_ACCOUNT_JSON secret in the android-release environment. Until then, upload the artifact's .aab in Play
+# Console by hand.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "mobile/android/**"
+      - "mobile/capacitor.config.ts"
+      - "mobile/package.json"
+      - ".github/workflows/mobile-release-android.yml"
+      - "scripts/release/verify-android-release.sh"
+
+concurrency:
+  group: mobile-release-android-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android (signed AAB + APK)
+    runs-on: ubuntu-latest
+    # The upload key lives only in this environment (deployment branches: main; no required reviewer).
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'android-release' || '' }}
+    timeout-minutes: 30
+    env:
+      RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      # Before any secret is referenced: only main's copy of this workflow, dispatched on main.
+      - name: Require the release workflow from main
+        if: env.RELEASE == 'true'
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/mobile-release-android.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::Android releases run only from main (got $GITHUB_REF, $WORKFLOW_REF). Use: gh workflow run mobile-release-android.yml --ref main"
+            exit 1
+          fi
+
+      # Before any build minutes are spent.
+      - name: Check signing secrets
+        if: env.RELEASE == 'true'
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=()
+          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing android-release environment secrets: ${missing[*]} (see mobile/README.md, Android release). Exo for Android is never built unsigned."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.9"
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      # `vite build` runs in production mode, so frontend/.env.production supplies the production service URLs.
+      - name: Build workspace packages and the production frontend
+        run: bun run build:packages && bun run build:frontend
+
+      - name: Sync Capacitor (bundled web app, no dev server)
+        env:
+          EXO_DEV_SERVER_URL: ""
+        run: bun run --cwd mobile sync android
+
+      - name: Version
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          name=$(node -p 'require("./frontend/package.json").version')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Exo for Android $name, versionCode $RUN_NUMBER" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Release: the upload keystore from the environment secret. Rehearsal: a throwaway key that never leaves the
+      # runner. Either way the certificate digest is taken from the keystore, so verification checks the actual signer.
+      - name: Prepare the signing key
+        id: signing
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          dir="$RUNNER_TEMP/android-signing"
+          mkdir -p "$dir"
+          chmod 700 "$dir"
+          keystore="$dir/upload.jks"
+          if [ "$RELEASE" = true ]; then
+            if ! (umask 077 && printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > "$keystore"); then
+              echo "::error::ANDROID_KEYSTORE_B64 is not base64 (store it with: base64 < upload.jks | tr -d '\\n')"
+              exit 1
+            fi
+            alias=$ANDROID_KEY_ALIAS
+          else
+            ANDROID_KEYSTORE_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$ANDROID_KEYSTORE_PASSWORD"
+            export ANDROID_KEYSTORE_PASSWORD
+            alias=rehearsal
+            keytool -genkeypair -keystore "$keystore" -storetype PKCS12 -alias "$alias" -keyalg RSA -keysize 2048 \
+              -validity 1 -dname "CN=Exo CI rehearsal (throwaway)" \
+              -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEYSTORE_PASSWORD
+            echo "REHEARSAL_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          fi
+          if ! listing=$(keytool -list -v -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$alias" 2>&1); then
+            echo "::error::Cannot open key '$alias' in the keystore: wrong ANDROID_KEYSTORE_PASSWORD or ANDROID_KEY_ALIAS, or ANDROID_KEYSTORE_B64 is not the keystore"
+            exit 1
+          fi
+          cert=$(sed -n 's/^[[:space:]]*SHA256: //p' <<<"$listing" | head -n 1)
+          test -n "$cert"
+          echo "keystore=$keystore" >> "$GITHUB_OUTPUT"
+          echo "cert-sha256=$cert" >> "$GITHUB_OUTPUT"
+          echo "Signing certificate SHA-256: $cert" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # app/build.gradle reads ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+      # and EXO_VERSION_CODE, and its verifyExoRelease gate refuses an unsigned release or a dev-server config.
+      - name: Build the signed AAB and APK
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ steps.signing.outputs.keystore }}
+          EXO_VERSION_CODE: ${{ steps.version.outputs.code }}
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ "$RELEASE" = true ]; then
+            export ANDROID_KEYSTORE_PASSWORD="$UPLOAD_KEYSTORE_PASSWORD" ANDROID_KEY_ALIAS="$UPLOAD_KEY_ALIAS" ANDROID_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
+          else
+            export ANDROID_KEYSTORE_PASSWORD="$REHEARSAL_PASSWORD" ANDROID_KEY_ALIAS=rehearsal ANDROID_KEY_PASSWORD="$REHEARSAL_PASSWORD"
+          fi
+          unset UPLOAD_KEYSTORE_PASSWORD UPLOAD_KEY_ALIAS UPLOAD_KEY_PASSWORD
+          ./gradlew bundleRelease assembleRelease --console=plain
+
+      - name: Verify the signed AAB and APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          CERT_SHA256: ${{ steps.signing.outputs.cert-sha256 }}
+        run: |
+          outputs=mobile/android/app/build/outputs
+          scripts/release/verify-android-release.sh "$outputs/apk/release/app-release.apk" \
+            "$outputs/bundle/release/app-release.aab" "$VERSION_NAME" "$VERSION_CODE" "$CERT_SHA256"
+
+      - name: Remove the signing key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/android-signing"
+
+      - name: Name the release files
+        if: env.RELEASE == 'true'
+        env:
+          PREFIX: Exo-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
+        run: |
+          mkdir dist
+          cp mobile/android/app/build/outputs/bundle/release/app-release.aab "dist/$PREFIX.aab"
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk "dist/$PREFIX.apk"
+          (cd dist && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Upload AAB + APK
+        if: env.RELEASE == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-android-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
+          if-no-files-found: error
+          path: dist/*

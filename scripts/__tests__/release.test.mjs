@@ -1191,3 +1191,47 @@ test('TestFlight runs from main only, checks secrets first, archives without the
   assert.match(mobile, /uses: \.\/\.github\/workflows\/ios-build\.yml/);
   assert.doesNotMatch(mobile, /sign:/, 'CI builds stay unsigned');
 });
+
+// Android: only main's dispatched workflow reaches the upload key, PRs rehearse the same build with a throwaway key and
+// no secret, the Gradle build refuses an unsigned or live-reload release, and the signature is verified before upload.
+test('Android releases are signed from main only, verified before upload, and rehearsed on PRs without secrets', () => {
+  const rel = '.github/workflows/mobile-release-android.yml';
+  const workflow = read(repo, rel);
+  const on = triggers(rel);
+  assert.match(on, /^ {2}workflow_dispatch:\n/m);
+  assert.match(on, /^ {2}pull_request:\n/m);
+  assert.doesNotMatch(on, /^ {2}(push|pull_request_target|workflow_run):/m);
+  assert.match(workflow, /environment: \$\{\{ github\.event_name == 'workflow_dispatch' && 'android-release' \|\| '' \}\}/);
+  assert.match(workflow, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/mobile-release-android\.yml@refs\/heads\/main/);
+  assert.match(workflow, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
+  assert.doesNotMatch(workflow, /continue-on-error/);
+
+  const steps = ['Require the release workflow from main', 'Check signing secrets', 'Build workspace packages and the production frontend',
+    'Sync Capacitor (bundled web app, no dev server)', 'Prepare the signing key', 'Build the signed AAB and APK', 'Verify the signed AAB and APK',
+    'Remove the signing key', 'Name the release files', 'Upload AAB + APK'];
+  const order = steps.map(name => workflow.indexOf(`- name: ${name}\n`));
+  assert.ok(order.every(index => index !== -1), `steps: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'main and the secrets are checked first; verification passes before anything is uploaded');
+  assert.ok(workflow.indexOf('${{ secrets.') > workflow.indexOf('- name: Require the release workflow from main\n'), 'no secret is referenced before the main check');
+  for (const name of ['Require the release workflow from main', 'Check signing secrets', 'Name the release files', 'Upload AAB + APK']) {
+    assert.match(workflow, new RegExp(`- name: ${name.replace(/[+()]/g, '\\$&')}\\n\\s+if: env\\.RELEASE == 'true'\\n`));
+  }
+  const step = name => workflow.slice(workflow.indexOf(`- name: ${name}\n`), workflow.indexOf('\n\n', workflow.indexOf(`- name: ${name}\n`)));
+  for (const name of ['Install JS deps', 'Build workspace packages and the production frontend', 'Sync Capacitor (bundled web app, no dev server)']) {
+    assert.doesNotMatch(step(name), /secrets\./, `${name} must not see the upload key`);
+  }
+  assert.match(step('Sync Capacitor (bundled web app, no dev server)'), /EXO_DEV_SERVER_URL: ""/);
+  assert.match(step('Verify the signed AAB and APK'), /scripts\/release\/verify-android-release\.sh/);
+
+  const gradle = read(repo, 'mobile/android/app/build.gradle');
+  assert.match(gradle, /if \(missingReleaseSigning\.isEmpty\(\)\) \{\n\s+signingConfig signingConfigs\.release/);
+  assert.match(gradle, /task\.name == 'preReleaseBuild'\) \{\n\s+task\.dependsOn verifyExoRelease/);
+  assert.match(gradle, /versionName exoVersionName/);
+  assert.match(gradle, /parse\(rootProject\.file\('\.\.\/\.\.\/frontend\/package\.json'\)\)\.version/);
+});
+
+test('verify-android-release.sh rejects a missing APK before running any check', t => {
+  const result = spawnSync('bash', [join(repo, 'scripts/release/verify-android-release.sh'), join(tempDir(t), 'app-release.apk'), 'app-release.aab', '0.2.0', '1', 'ab'.repeat(32)], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /::error::no APK at/);
+});

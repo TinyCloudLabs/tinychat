@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- TinyCloud brand blue, shared with the launcher icon and splash images (mobile/scripts/brand-assets.py BRAND). -->
+    <color name="exo_brand">#4473B9</color>
+</resources>
