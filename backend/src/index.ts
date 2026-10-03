@@ -32,6 +32,7 @@ import { createNrasProxyRouter } from "./routes/nras-proxy.js";
 import { createPhalaVerifyRouter } from "./routes/phala-verify.js";
 import { createAttestationSelfRouter } from "./routes/attestation-self.js";
 import { createServerInfoRouter } from "./routes/server-info.js";
+import { readBackendBuildInfo } from "./build-info.js";
 import { createBillingRouter } from "./routes/billing.js";
 import { createBillingWebhookHandler } from "./routes/billing-webhook.js";
 import {
@@ -49,11 +50,24 @@ import { createConnectorCredentialRouter } from "./routes/connector-credentials.
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
+import { createPrivateCloudTranscriptionRouter } from "./routes/private-cloud-transcription.js";
+import { createCalendarAutojoinRouter } from "./routes/calendar-autojoin.js";
+import { CalendarAutojoinConnection } from "./services/calendar-autojoin-connection.js";
+import { KvCalendarAutojoinStore, TenantCoordinator } from "./services/calendar-autojoin-store.js";
+import { CalendarAutojoinWorker } from "./services/calendar-autojoin-worker.js";
+import { ExternalOperationLimiter, GoogleCalendarClient } from "./services/google-calendar.js";
 import {
   createTranscriptionApiClient,
   transcriptionApiConfigFromEnv,
 } from "./services/transcription-api.js";
 import { KvTranscriberIndexStore } from "./services/transcriber-index.js";
+import {
+  PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+  createPtxClient,
+  privateCloudTranscriptionConfigFromEnv,
+  withoutPrivateCloudOpenApi,
+  type PrivateCloudTranscriptionConfig,
+} from "./services/private-cloud-transcription.js";
 import { BackendStorageLane } from "./services/backend-storage-lane.js";
 import { ConnectorQueue } from "./services/connector-queue.js";
 import { ConnectorTeardownService } from "./services/connector-teardown.js";
@@ -73,6 +87,7 @@ import {
   firefliesOAuthConfigFromEnv,
 } from "./services/fireflies-oauth.js";
 import {
+  GoogleOAuthClient,
   googleMeetOAuthEnabled,
   googleOAuthConfigFromEnv,
 } from "./services/google-oauth.js";
@@ -265,6 +280,17 @@ async function main() {
     return;
   }
 
+  // Exo private cloud transcription: dark unless PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and
+  // armed with a missing or weak var it refuses boot rather than mounting a half-configured proxy.
+  let privateCloudTranscription: PrivateCloudTranscriptionConfig;
+  try {
+    privateCloudTranscription = privateCloudTranscriptionConfigFromEnv(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+    return;
+  }
+
   if (connectorWebhooksEnabled()) {
     const webhookSecrets = validateConnectorWebhookSecrets(process.env);
     if (!webhookSecrets.ok) {
@@ -282,6 +308,10 @@ async function main() {
   if (googleMeetOAuthEnabled()) {
     try {
       googleOAuthConfigFromEnv(process.env);
+      if (transcriptionApiConfigFromEnv() && process.env.CONNECTOR_CREDENTIAL_MASTER) {
+        const custody = validateCredentialCustodyConfig(process.env);
+        if (!custody.ok) throw new Error(custody.error);
+      }
       // The callback page's `postMessage` target, validated at boot rather than at the first
       // consent. This web origin is also one member of the CORS allowlist; Exo's fixed Tauri origin
       // is the other. The callback deliberately stays pinned to the web origin because the desktop
@@ -551,7 +581,7 @@ async function main() {
     res.json({ ok: true, app: APP_ID });
   });
   app.use("/api/manifest", createManifestRouter());
-  app.use("/api/server-info", createServerInfoRouter(did));
+  app.use("/api/server-info", createServerInfoRouter(did, readBackendBuildInfo()));
   app.use(
     "/api/auth",
     createAuthRouter({
@@ -735,6 +765,36 @@ async function main() {
     }
   }
 
+  const transcriptionConfig = transcriptionApiConfigFromEnv();
+  const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
+  const transcriberApi = transcriptionConfig ? createTranscriptionApiClient(transcriptionConfig) : null;
+  const transcriberIndex = new KvTranscriberIndexStore(node, transcriberStorageLane);
+  let calendarAutojoin: CalendarAutojoinConnection | undefined;
+  let calendarAutojoinWorker: CalendarAutojoinWorker | undefined;
+  if (googleMeetOAuthEnabled() && transcriberApi && process.env.CONNECTOR_CREDENTIAL_MASTER) {
+    const limiter = new ExternalOperationLimiter(4);
+    const google = new GoogleOAuthClient(googleOAuthConfigFromEnv(), {
+      fetchImpl: ((...args: Parameters<typeof fetch>) => limiter.run(() => fetch(...args))) as typeof fetch,
+    });
+    const calendar = new GoogleCalendarClient({ limiter });
+    const credentials = new CredentialStore(new KvCredentialRowStore(node, transcriberStorageLane), {
+      upstreamRevoker: async secret => {
+        if (secret.kind === "oauth") await google.revoke(secret.refreshToken ?? secret.accessToken);
+      },
+    });
+    const store = new KvCalendarAutojoinStore(node, transcriberStorageLane);
+    // Fail boot rather than claiming unattended recovery on a KV without prefix listing.
+    await store.listConnections();
+    const coordinator = new TenantCoordinator();
+    calendarAutojoin = new CalendarAutojoinConnection({ store, credentials, oauth: google, coordinator, calendar });
+    calendarAutojoinWorker = new CalendarAutojoinWorker({
+      store, coordinator, calendar, connection: calendarAutojoin, api: transcriberApi,
+      index: transcriberIndex, limiter, botName: process.env.TRANSCRIPTION_BOT_NAME || undefined,
+    });
+    app.use("/api/connectors/google/autojoin", authMiddleware, createCalendarAutojoinRouter({ connection: calendarAutojoin }));
+    console.log("[startup] calendar-autojoin enabled; deployment requires one backend writer, with stop-and-drain replacement.");
+  }
+
   // WP-A — the Google Meet OAuth proxy (gmeet plan §4.1 / §6 WP-A), DARK by default. With the flag
   // off this `app.use` never runs, so all five paths 404: the same canary the webhook mount gives.
   // A SIBLING prefix of `/api/connectors/webhooks`, so it can collide with neither the public
@@ -764,6 +824,7 @@ async function main() {
         void authMiddleware(req, res, next);
       },
       createGoogleOAuthRouter({
+        autojoin: calendarAutojoin,
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
         // env read does not have. CORS also accepts Exo's fixed Tauri origin, but the callback stays
@@ -842,17 +903,15 @@ async function main() {
   // TinyCloud Private Transcription API and read the speaker-attributed transcript back. Mounted
   // only when TRANSCRIPTION_API_URL + TRANSCRIPTION_API_KEY are set — the project key stays in
   // this process, and the browser only ever talks to this authenticated, per-address proxy.
-  const transcriptionConfig = transcriptionApiConfigFromEnv();
   if (transcriptionConfig) {
     // §9.3 — writes to the backend's own space share ONE lane per process. Reuse the connector
     // lane when it exists; a process without connectors gets its own, single one.
-    const transcriberStorageLane = connectorWebhooks?.backendStorageLane ?? new BackendStorageLane();
     app.use(
       "/api/transcriber/meetings",
       authMiddleware,
       createTranscriberRouter({
-        api: createTranscriptionApiClient(transcriptionConfig),
-        index: new KvTranscriberIndexStore(node, transcriberStorageLane),
+        api: transcriberApi!,
+        index: transcriberIndex,
         ...(process.env.TRANSCRIPTION_BOT_NAME
           ? { defaultBotName: process.env.TRANSCRIPTION_BOT_NAME }
           : {}),
@@ -864,8 +923,26 @@ async function main() {
     );
   }
 
+  // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
+  // deployment (`ptx-batch`) and key from the meeting transcriber above. Flag off = never mounted,
+  // so every path 404s; a non-cohort address gets the same 404 from inside the router.
+  if (privateCloudTranscription.enabled) {
+    app.use(
+      PRIVATE_CLOUD_TRANSCRIPTION_MOUNT,
+      authMiddleware,
+      createPrivateCloudTranscriptionRouter({
+        client: createPtxClient(privateCloudTranscription),
+        tenantKey: privateCloudTranscription.tenantKey,
+        accountAllowed: privateCloudTranscription.accountAllowed,
+      }),
+    );
+    console.log("[startup] private cloud transcription enabled for its account allowlist.");
+  }
+
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const spec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
+  const fullSpec = loadYaml(readFileSync(resolve(__dirname, "../openapi.yaml"), "utf-8")) as object;
+  // Dark means undiscoverable too: while the flag is off the served spec omits private cloud.
+  const spec = privateCloudTranscription.enabled ? fullSpec : withoutPrivateCloudOpenApi(fullSpec);
   app.get("/api/openapi.json", (_req, res) => res.json(spec));
   app.use("/api/docs", apiReference({ spec: { content: spec } }));
 
@@ -929,17 +1006,23 @@ async function main() {
       })
     : null;
 
+  calendarAutojoinWorker?.start();
+  let shuttingDown = false;
   const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`${signal} received. Shutting down.`);
     ledgerFlusher?.stop();
     connectorWebhooks?.drain.stop();
     connectorQueueMaintenance?.stop();
-    // Stops the worker AND releases the D4 lease, so the next instance takes the seat
-    // immediately rather than waiting out the 90 s TTL. Best-effort: the 10 s exit timer below
-    // still fires, and an unreleased lease costs one TTL of ingest lag, never correctness.
-    void ingestSupervisor?.stop().catch(() => {});
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 10_000);
+    // Stop the ingest worker and release its lease as part of the same drain.
+    // Stop accepting HTTP writes, then drain BOTH HTTP and scheduling before replacement.
+    // Deployment must wait for this process to exit; the KV lease is not a distributed lock.
+    const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
+    server.closeIdleConnections();
+    void Promise.all([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop()])
+      .then(() => process.exit(0), () => process.exit(1));
+    setTimeout(() => process.exit(1), 120_000).unref();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));

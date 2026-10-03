@@ -1,11 +1,20 @@
 name: Desktop (Exo)
 
+# CI build of the Exo desktop app (unsigned workflow artifact only; releases are desktop-release.yml). The build
+# itself lives in desktop-build.yml. Pushes to main and the weekly run also refresh the shared build cache, which
+# GitHub evicts after 7 days unused.
+
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
   pull_request:
     paths:
       - "desktop/**"
+      - "frontend/**"
+      - "packages/**"
       - ".github/workflows/desktop.yml"
+      - ".github/workflows/desktop-build.yml"
   push:
     branches: [main]
     paths:
@@ -13,48 +22,18 @@ on:
       - "frontend/**"
       - "packages/**"
       - ".github/workflows/desktop.yml"
+      - ".github/workflows/desktop-build.yml"
+
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   build-macos:
-    name: macOS (Apple Silicon)
-    runs-on: macos-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.9"
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-
-      - name: Install JS deps
-        run: bun install --frozen-lockfile
-
-      - name: Build workspace packages
-        run: bun run build:packages
-
-      # tauri build runs the frontend production build itself
-      # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
-      - name: Build Exo desktop app
-        run: bun run build:desktop
-
-      # Zip the .app with ditto to preserve symlinks/permissions;
-      # upload-artifact would flatten them.
-      - name: Package .app
-        run: |
-          cd desktop/src-tauri/target/release/bundle/macos
-          ditto -c -k --sequesterRsrc --keepParent Exo.app Exo-macos-arm64.app.zip
-
-      - name: Upload dmg + app
-        uses: actions/upload-artifact@v4
-        with:
-          name: exo-macos-arm64-${{ github.sha }}
-          if-no-files-found: error
-          path: |
-            desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/macos/Exo-macos-arm64.app.zip
+    name: Build
+    uses: ./.github/workflows/desktop-build.yml
+    with:
+      artifact-name: exo-macos-arm64-${{ github.sha }}

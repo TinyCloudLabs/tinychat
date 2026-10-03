@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { AgentAccessControls, AgentEnablementBanner } from "./AgentEnablementBanner";
@@ -54,5 +56,26 @@ describe("Settings agent controls", () => {
     const failure = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status={null} enableError="Disconnection was not confirmed." />);
     expect(failure).toContain("Access status unknown"); expect(failure).not.toContain(">Disconnected<");
     expect(failure).toContain("Retry disconnect");
+  });
+});
+
+
+// App.tsx pulls in @tinycloud/web-sdk, which a bun test process cannot
+// evaluate, so its wiring is asserted against the source (as
+// connectorsNav.test.tsx does). The route gate itself is unit-tested in
+// chatViewPath.test.ts and exercised on real navigation in
+// test/agent-banner-route.e2e.test.ts.
+describe("App mounts the banner through the chat-view gate", () => {
+  const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
+
+  it("mounts only the chat-view-gated banner, never the bare one", () => {
+    expect(app.split("<ChatViewAgentEnablementBanner />")).toHaveLength(2);
+    expect(app).not.toContain("<AgentEnablementBanner");
+  });
+
+  it("the gate is the positive chat-view classifier", () => {
+    const banner = readFileSync(join(import.meta.dir, "AgentEnablementBanner.tsx"), "utf8");
+    const gate = banner.slice(banner.indexOf("export function ChatViewAgentEnablementBanner("));
+    expect(gate).toContain("if (!isChatViewPath(pathname)) return null;");
   });
 });

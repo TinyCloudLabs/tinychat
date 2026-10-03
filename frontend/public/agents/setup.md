@@ -50,7 +50,7 @@ The app configuration for this setup page is:
 }
 ```
 
-Use automatically supplied context from the copied TinyChat settings prompt when present; preserve its `expectedOwner`. Otherwise select the existing signing identity in OpenKey. One account may contain several keys. No DID, host or space question is required. The setup page's origin is an artifact server, not the data host.
+Use the app configuration above. If separate app context was explicitly supplied, preserve its `expectedOwner`. Otherwise select the existing signing identity in OpenKey. One account may contain several keys. No DID, host or space question is required. The setup page's origin is an artifact server, not the data host.
 
 In OpenCode, write this non-secret configuration to a private temporary JSON file and call `tinychat_setup` with `configPath` set to its absolute path. To reuse saved configuration, call `tinychat_setup` without arguments. Other clients can run:
 

@@ -45,6 +45,9 @@ function fakeApi() {
   const store = new Map<string, TranscriptionMeeting>();
   let nextId = 1;
   const api: TranscriptionApiClient = {
+    async lookupMeetingByIdempotencyKey() {
+      return null;
+    },
     async createMeeting(input) {
       calls.push({ method: "createMeeting", args: [input] });
       const m = meeting(`mtg_${nextId++}`, {

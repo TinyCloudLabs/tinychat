@@ -1,5 +1,6 @@
 {
-  "name": "@exo/desktop",
+  "name": "exo-desktop",
+  "version": "0.2.0-beta.3",
   "private": true,
   "type": "module",
   "scripts": {

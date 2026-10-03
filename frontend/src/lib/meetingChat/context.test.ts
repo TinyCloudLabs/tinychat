@@ -157,6 +157,37 @@ describe("meeting excerpt ranking and citations", () => {
     ]);
   });
 
+  test("a question about what You or Others said ranks that speaker first, past the four-excerpt limit", () => {
+    // Exo Local labels: five early Others chunks, then two You chunks.
+    const excerpts: MeetingExcerpt[] = [
+      ...Array.from({ length: 5 }, (_, i): MeetingExcerpt => ({
+        speaker: "Others",
+        text: `Agenda item ${i + 1} is the budget.`,
+        startSecs: i * 100,
+        endSecs: i * 100 + 30,
+      })),
+      { speaker: "You", text: "I will own the hiring plan.", startSecs: 600, endSecs: 620 },
+      { speaker: "You", text: "The budget needs another pass.", startSecs: 700, endSecs: 720 },
+    ];
+    const speakers = (question: string) => rankMeetingExcerpts(question, excerpts).map((e) => e.speaker);
+
+    // Without speaker intent the earliest chunks win the ties.
+    expect(speakers("Summarize the meeting")).toEqual(["Others", "Others", "Others", "Others"]);
+    expect(speakers("What did you say in the meeting?")).toEqual(["You", "You", "Others", "Others"]);
+    expect(speakers("what did I say")).toEqual(["You", "You", "Others", "Others"]);
+    expect(rankMeetingExcerpts("What did I say about the budget?", excerpts).map((e) => e.text).slice(0, 2)).toEqual([
+      "The budget needs another pass.",
+      "I will own the hiring plan.",
+    ]);
+    expect(rankMeetingExcerpts("What did you say?", excerpts)[0]!.citation).toBe("[M1:E1, You, 00:10:00]");
+    expect(speakers("What did the others say?")).toEqual(["Others", "Others", "Others", "Others"]);
+    expect(speakers("What did the other side mention about hiring?")).toEqual(["Others", "Others", "Others", "Others"]);
+    // Asking about both is no preference; a transcript without the label is unaffected.
+    expect(speakers("What did I say and what did they say?")).toEqual(speakers("Summarize the meeting"));
+    const named = excerpts.map((e) => ({ ...e, speaker: e.speaker === "You" ? "Ada" : "Bea" }));
+    expect(rankMeetingExcerpts("What did you say?", named)).toEqual(rankMeetingExcerpts("Summarize", named));
+  });
+
   test("uses the meeting summary citation and formats known and unavailable excerpt locators honestly", () => {
     expect(MEETING_SUMMARY_CITATION).toBe("[M1]");
     expect(formatExcerptTimestamp(3_661.8)).toBe("01:01:01");

@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "transcription",
+  "description": "Local meeting capture and transcription: on-device (anarlog plugins) or private cloud (Exo's cloud_transcription_* commands). Applied at runtime only when the `transcription` Cargo feature is enabled. Grants exactly the commands the Local recording UI invokes; event listening comes from core:default. The webview may not emit events: Exo's native capture registry trusts the transcription plugin's `stopped` event, so the webview must not be able to forge one.",
+  "windows": ["main"],
+  "permissions": [
+    "transcription:allow-list-microphone-devices",
+    "transcription:allow-start-capture",
+    "transcription:allow-stop-capture",
+    "transcription:allow-get-capture-state",
+    "transcription:allow-start-transcription",
+    "local-stt:allow-is-model-downloaded",
+    "local-stt:allow-download-model",
+    "local-stt:allow-start-server",
+    "allow-cloud-transcription-status",
+    "allow-cloud-transcription-submit",
+    "allow-cloud-transcription-cancel",
+    "core:event:deny-emit",
+    "core:event:deny-emit-to"
+  ]
+}

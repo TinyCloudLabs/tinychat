@@ -4,6 +4,12 @@ export const EXO_DESKTOP_ORIGIN = "tauri://localhost";
 /** The fixed origin Tauri assigns to Exo's bundled frontend on Windows. */
 export const EXO_DESKTOP_WINDOWS_ORIGIN = "http://tauri.localhost";
 
+/** The fixed origin Capacitor assigns to Exo's bundled frontend on Android. */
+export const EXO_ANDROID_ORIGIN = "https://localhost";
+
+/** The fixed origin Capacitor assigns to Exo's bundled frontend on iOS. */
+export const EXO_IOS_ORIGIN = "capacitor://localhost";
+
 /** TinyChat's Cloudflare Pages project, including branch and commit previews. */
 export const TINYCHAT_PAGES_ORIGIN = /^https:\/\/(?:[a-z0-9-]+\.)?tinychat-4jq\.pages\.dev$/;
 
@@ -19,6 +25,8 @@ export function appCorsOrigins(frontendOrigin: string): Array<string | RegExp> {
     frontendOrigin,
     EXO_DESKTOP_ORIGIN,
     EXO_DESKTOP_WINDOWS_ORIGIN,
+    EXO_ANDROID_ORIGIN,
+    EXO_IOS_ORIGIN,
     TINYCHAT_PAGES_ORIGIN,
     ...LOCAL_WEB_ORIGINS,
   ];

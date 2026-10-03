@@ -825,7 +825,7 @@ paths:
   # webhook group has. Two invariants hold across all five:
   #   1. The backend PERSISTS NOTHING. No KV, no SQL, no file, no in-process
   #      credential cache — it is a credential-shaped pipe between the SPA and
-  #      Google, and the browser is the only place a Google token ever lands.
+  #      Google for browser-only connections. Autojoin adds explicit encrypted server custody.
   #   2. The PKCE verifier never leaves the SPA. An authorization code
   #      intercepted anywhere on this surface is useless without it.
   /api/connectors/google/oauth/start:
@@ -836,10 +836,10 @@ paths:
         A 302 to Google's authorize endpoint with the caller's `state` and PKCE
         `code_challenge` attached, plus `access_type=offline` and `prompt=consent`
         — both non-optional, because without either one Google mints no refresh
-        token and the connector silently becomes single-session. Requests EXACTLY
-        two scopes, `meetings.space.readonly` and `meetings.space.settings`; no
-        Drive and no Calendar, which would pull the app into Restricted-scope
-        verification. Unauthenticated by design: this is a top-level browser
+        token and the connector silently becomes single-session. Requests
+        `meetings.space.readonly`, `meetings.space.settings`, `drive.metadata.readonly`
+        and `documents.readonly`. Calendar/openid permissions are requested only by
+        the separate authenticated autojoin consent flow. Unauthenticated by design: this is a top-level browser
         navigation and carries no Bearer, and CSRF exempts GET. The anti-forgery
         control is the `state` param, minted by the SPA and re-checked by it when
         the popup reports back. The server holds only the CHALLENGE, never the
@@ -951,9 +951,9 @@ paths:
       description: >-
         Authenticated, and the first point in the flow where a token exists at all.
         The backend forwards code + verifier + client secret to Google's token
-        endpoint and returns the payload to the caller — it stores NOTHING: no KV,
-        no SQL, no in-process cache. The browser is the only place a Google token
-        lands. The response is field-whitelisted rather than a passthrough, so the
+        endpoint and returns tokens only to the caller. This browser-only flow takes no
+        server custody. If autojoin was configured it first disables unattended access,
+        so browser reconnect cannot silently change the account followed by the server. The response is field-whitelisted rather than a passthrough, so the
         `id_token` some grants carry (a JWT with the user's Google email, name and
         picture) is dropped rather than handed to the SPA. A 4xx from Google is
         surfaced with ITS OWN status and code — `invalid_grant` means reconnect,
@@ -1060,8 +1060,10 @@ paths:
         Upstream revocation, so a disconnect actually ends Google's grant instead
         of only forgetting the token locally. A failure is SURFACED, never
         swallowed — a revoke that silently did not happen is a lie to the user
-        about what they just disconnected. Stateless like the rest of the group;
-        the token arrives in the body, is used once, and is never stored or logged.
+        about what they just disconnected. When autojoin is available this also blocks
+        new joins, requests stops and deletes its server credential even if revocation fails.
+        Its response then matches CalendarAutojoinDisconnect; the body token may be omitted.
+        Without autojoin the token is required and the response status is revoked.
       security:
         - bearerAuth: []
       requestBody:
@@ -1081,7 +1083,10 @@ paths:
                 properties:
                   status:
                     type: string
-                    const: revoked
+                    enum: [revoked, disconnected]
+                  upstreamRevoked:
+                    type: string
+                    enum: [ok, failed, not_applicable]
         "400":
           description: "`invalid_request`, or Google's own 400 forwarded."
           content:
@@ -1100,6 +1105,219 @@ paths:
                 $ref: "#/components/schemas/GoogleOAuthError"
         "502":
           $ref: "#/components/responses/GoogleOAuthUpstreamUnavailable"
+
+  /api/connectors/google/autojoin/status:
+    get:
+      operationId: getCalendarAutojoinStatus
+      summary: Read Calendar autojoin status and recent missed or failed occurrences
+      description: >-
+        Available when Google OAuth, transcription and encrypted credential custody are configured.
+        The tenant always comes from the authenticated session. No credentials or Google subject
+        are returned. Off includes incomplete setup; enabling never permits dispatch.
+      responses:
+        "200":
+          description: Connection status, last complete scan and up to 30 recent outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: Calendar autojoin state is unavailable.
+
+  /api/connectors/google/autojoin/begin:
+    post:
+      operationId: beginCalendarAutojoinConsent
+      summary: Begin explicit unattended Calendar and encrypted refresh-token custody consent
+      description: >-
+        Binds a ten-minute single-use transaction to the authenticated tenant, autojoin purpose,
+        consent, PKCE challenge and a server-generated OIDC nonce. Adds owned Calendar events
+        readonly and openid scopes while preserving Meet, Drive and Docs scopes. The browser
+        opens authorizationUrl in its existing OAuth popup and retains the PKCE verifier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, challenge, consent]
+              properties:
+                state:
+                  type: string
+                  minLength: 16
+                  maxLength: 512
+                challenge:
+                  type: string
+                  minLength: 43
+                  maxLength: 128
+                consent:
+                  type: boolean
+                  const: true
+      responses:
+        "200":
+          description: Google authorization URL for the consent-bound transaction.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl:
+                    type: string
+                    format: uri
+        "400":
+          description: Invalid request or missing explicit consent.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          description: Too many consent transactions or requests.
+
+  /api/connectors/google/autojoin/exchange:
+    post:
+      operationId: exchangeCalendarAutojoinCode
+      summary: Exchange a consent-bound code and prepare encrypted server custody
+      description: >-
+        Checks tenant, state, PKCE and transaction nonce, validates Google's signed ID token,
+        and requires Calendar/openid scopes from Google's actual exchange response plus a refresh
+        token. Browser-supplied scopes and tenant are never authoritative. Persists disabled old
+        scheduling and stop intent, then an enabling record before encrypted custody. Returns
+        browser importer tokens and setupId; never an ID token or Google subject. The browser
+        must store its importer secret before calling enable. Interrupted setup remains off
+        and its credential is cleaned after ten minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, code, verifier]
+              properties:
+                state:
+                  type: string
+                  maxLength: 512
+                code:
+                  type: string
+                  maxLength: 2048
+                verifier:
+                  type: string
+                  minLength: 43
+                  maxLength: 128
+      responses:
+        "200":
+          description: Whitelisted browser token fields and the pending setup identifier.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/GoogleTokenResponse"
+                  - type: object
+                    required: [setupId]
+                    properties:
+                      setupId:
+                        type: string
+        "400":
+          description: Invalid transaction, identity or missing refresh token.
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Google did not grant required Calendar/openid scopes.
+        "409":
+          description: Connection generation changed during authorization.
+        "503":
+          description: Google or durable state is unavailable; autojoin remains off.
+
+  /api/connectors/google/autojoin/enable:
+    post:
+      operationId: enableCalendarAutojoin
+      summary: Finalize setup after the browser has saved the same Google importer secret
+      description: >-
+        Uses only the authenticated tenant's pending setup. Probes primary Calendar access
+        before enabling and rechecks setup expiry and connection generation after the probe.
+        Enabling cannot revive an old dispatch or clear its persisted stop intent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setupId]
+              properties:
+                setupId:
+                  type: string
+                  minLength: 43
+                  maxLength: 43
+      responses:
+        "200":
+          description: Autojoin enabled after Calendar access verification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "409":
+          description: Setup expired, was disabled, or belongs to a different session tenant.
+        "503":
+          description: Calendar verification or durable state is unavailable.
+
+  /api/connectors/google/autojoin/disable:
+    post:
+      operationId: disableCalendarAutojoin
+      summary: Block new joins, request active bot stops and delete server Google credentials
+      description: >-
+        Persists disabled scheduling and a new generation before acknowledgement. Outstanding
+        creates continue lookup and ownership repair and are stopped when found. Keeps the
+        browser importer and recordings; Google's grant may retain Calendar permissions.
+      responses:
+        "200":
+          description: Autojoin is off and local server custody has ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "503":
+          description: Durable disable or local credential deletion failed; retry.
+
+  /api/connectors/google/autojoin/disconnect:
+    post:
+      operationId: disconnectCalendarAutojoin
+      summary: Disable autojoin, remove server custody and revoke Google access
+      description: >-
+        Can operate without a browser token when the browser vault is unavailable. Uses the
+        server credential for revocation when present and optionally revokes the browser token.
+        Removes local server custody even when upstream revocation fails. The browser must
+        remove its local Google secret regardless of the upstream result. Keeps recordings.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+      responses:
+        "200":
+          description: Disconnected; upstream revocation succeeded or no credential was present.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinDisconnect"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "502":
+          description: Local custody ended but Google revocation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarAutojoinDisconnect"
+        "503":
+          description: Durable disable or local credential deletion failed; retry.
 
   /api/connectors/meetings:
     get:
@@ -1479,6 +1697,265 @@ paths:
         "503":
           $ref: "#/components/responses/TranscriberUnavailable"
 
+  /api/transcriber/private-cloud/capabilities:
+    get:
+      operationId: getPrivateCloudTranscriptionCapabilities
+      summary: Exo private cloud transcription limits and admission mode
+      description: >-
+        Exo desktop's "Private cloud" engine. Mounted only when
+        PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true, and then only for addresses in
+        PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: otherwise every path under
+        /api/transcriber/private-cloud answers the server's ordinary 404, so a dark
+        deployment and a non-cohort address look the same. Relays the TinyCloud
+        Private Transcription batch service's capabilities. Every success body under
+        this prefix is rebuilt field by field from the upstream answer (fields outside
+        the contract are dropped; an off-contract value is `upstream_bad_response`),
+        and every response is `Cache-Control: no-store`. Errors are PrivateCloudError
+        with a correlation id, EXCEPT 401 (session auth) and 403 `csrf_rejected`, which
+        the backend-wide middleware answers before the caller is known, in the
+        backend-wide `{error, message}` shape.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudCapabilities"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: Dark, or the address is not in the cohort (the server's ordinary 404)
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions:
+    get:
+      operationId: listPrivateCloudTranscriptions
+      summary: The signed-in address's transcription jobs (resume after relaunch)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: Jobs, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transcriptions]
+                properties:
+                  transcriptions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PrivateCloudJob"
+        "400":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+    post:
+      operationId: createPrivateCloudTranscription
+      summary: Create a job and get a job-scoped upload capability
+      description: >-
+        Metadata only: the audio never passes through this server. The response
+        carries a RELATIVE `upload.path` (`/uploads/<id>`) and a job-scoped
+        `upload.capability`; the desktop PUTs the recording to its compiled-in PTX
+        origin + path with that capability. `upload` is present exactly while the
+        job is `awaiting_upload`. A retry with the same Idempotency-Key and body
+        returns the same job (200). Requires `X-Requested-With: XMLHttpRequest`.
+        The address is never sent upstream: the service receives
+        HMAC-SHA256(tenant key, lower(address)).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Correlation-Id
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrivateCloudCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudCreated"
+        "200":
+          description: Replay of the same Idempotency-Key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudCreated"
+        "400":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: Missing X-Requested-With (CSRF)
+        "409":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "413":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "415":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "429":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    get:
+      operationId: getPrivateCloudTranscription
+      summary: Job status (owner only; anyone else's id is transcription_not_found)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivateCloudJob"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+    delete:
+      operationId: deletePrivateCloudTranscription
+      summary: Delete the job and its transcript upstream
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions/{id}/result:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    get:
+      operationId: getPrivateCloudTranscriptionResult
+      summary: The transcript, 202 while not ready, or the failure
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The transcript, or the failed/cancelled outcome
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/PrivateCloudTranscript"
+                  - $ref: "#/components/schemas/PrivateCloudOutcome"
+        "202":
+          description: Not ready yet
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    $ref: "#/components/schemas/PrivateCloudJobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
+  /api/transcriber/private-cloud/transcriptions/{id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    post:
+      operationId: cancelPrivateCloudTranscription
+      summary: Cancel the job
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The new status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    $ref: "#/components/schemas/PrivateCloudJobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "502":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "503":
+          $ref: "#/components/responses/PrivateCloudFailure"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1488,6 +1965,50 @@ components:
       description: Backend session token returned by SIWE verification.
 
   schemas:
+    CalendarAutojoinStatus:
+      type: object
+      required: [state, enabled, lastScanAt, errorCode, outcomes]
+      properties:
+        state:
+          type: string
+          enum: [off, on, needs_reconnect, error]
+        enabled:
+          type: boolean
+        lastScanAt:
+          type: [number, "null"]
+          description: Last successful complete scan, Unix milliseconds.
+        errorCode:
+          type: [string, "null"]
+          description: Fixed failure code; no provider response or credentials.
+        outcomes:
+          type: array
+          maxItems: 30
+          items:
+            type: object
+            required: [id, title, start, reason]
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              start:
+                type: number
+                description: Scheduled start, Unix milliseconds.
+              reason:
+                type: string
+                description: Fixed missed or failure code.
+              meetingId:
+                type: string
+    CalendarAutojoinDisconnect:
+      type: object
+      required: [status, upstreamRevoked]
+      properties:
+        status:
+          type: string
+          const: disconnected
+        upstreamRevoked:
+          type: string
+          enum: [ok, failed, not_applicable]
     TranscriberMeetingStatus:
       type: string
       enum:
@@ -1591,6 +2112,268 @@ components:
           type: string
         message:
           type: string
+    PrivateCloudJobStatus:
+      type: string
+      enum: [awaiting_upload, queued, processing, completed, failed, cancelled]
+    PrivateCloudJobError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - upload_expired
+            - upload_integrity_failed
+            - invalid_audio
+            - recording_too_long
+            - unsupported_recording
+            - no_speech
+            - provider_unavailable
+            - provider_outcome_unknown
+            - processing_timeout
+            - transcription_failed
+        message:
+          type: string
+    PrivateCloudCapabilities:
+      type: object
+      required: [max_bytes, max_duration_seconds, max_channels, content_types, transcript_ttl_seconds, admission]
+      properties:
+        max_bytes:
+          type: integer
+          maximum: 120960000
+        max_duration_seconds:
+          type: integer
+        max_channels:
+          type: integer
+          maximum: 2
+        content_types:
+          type: array
+          items:
+            type: string
+            enum: [audio/mpeg, audio/wav, audio/ogg]
+        transcript_ttl_seconds:
+          type: integer
+        admission:
+          type: string
+          enum: [open, drain, closed]
+    PrivateCloudJob:
+      type: object
+      required: [id, status, byte_size, duration_seconds, channels, progress, retention, error, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+        status:
+          $ref: "#/components/schemas/PrivateCloudJobStatus"
+        byte_size:
+          type: integer
+        duration_seconds:
+          type: [number, "null"]
+        channels:
+          type: [integer, "null"]
+        progress:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [stage, queue_position, regions_completed, regions_total]
+              properties:
+                stage:
+                  type: string
+                queue_position:
+                  type: [integer, "null"]
+                regions_completed:
+                  type: integer
+                regions_total:
+                  type: integer
+        retention:
+          type: object
+          required: [audio, audio_deleted_at, transcript_expires_at]
+          properties:
+            audio:
+              type: string
+              enum: [stored, deletion_pending, deleted]
+            audio_deleted_at:
+              type: [string, "null"]
+              format: date-time
+            transcript_expires_at:
+              type: [string, "null"]
+              format: date-time
+        error:
+          description: Set exactly when status is failed.
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/PrivateCloudJobError"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PrivateCloudTranscript:
+      type: object
+      required: [id, status, language, duration_seconds, provider, model, channels, speakers, segments, text, stats]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [completed]
+        language:
+          type: string
+        duration_seconds:
+          type: number
+        provider:
+          type: string
+          enum: [tinfoil]
+        model:
+          type: string
+        channels:
+          type: integer
+        speakers:
+          type: array
+          items:
+            type: object
+            required: [id, name, channel]
+            properties:
+              id:
+                type: string
+                pattern: "^channel_[01]$"
+              name:
+                type: string
+              channel:
+                type: integer
+        segments:
+          type: array
+          items:
+            type: object
+            required: [id, speaker_id, channel, start, end, text]
+            properties:
+              id:
+                type: string
+              speaker_id:
+                type: string
+              channel:
+                type: integer
+              start:
+                type: number
+              end:
+                type: number
+              text:
+                type: string
+        text:
+          type: string
+        stats:
+          type: object
+          required: [tinfoil_calls, tinfoil_audio_seconds]
+          properties:
+            tinfoil_calls:
+              type: integer
+            tinfoil_audio_seconds:
+              type: number
+    PrivateCloudOutcome:
+      type: object
+      required: [id, status, error]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [failed, cancelled]
+        error:
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/PrivateCloudJobError"
+    PrivateCloudCreateRequest:
+      type: object
+      required: [content_type, byte_size, sha256]
+      properties:
+        content_type:
+          type: string
+          enum: [audio/mpeg, audio/wav, audio/ogg]
+        byte_size:
+          type: integer
+          minimum: 1
+          maximum: 120960000
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        language:
+          type: string
+          description: e.g. `en` or `en-US`.
+        channel_mode:
+          type: string
+          enum: [separate, mixed]
+        channel_labels:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            type: string
+            maxLength: 64
+    PrivateCloudCreated:
+      type: object
+      required: [id, status, byte_size]
+      properties:
+        id:
+          type: string
+          pattern: "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+        status:
+          $ref: "#/components/schemas/PrivateCloudJobStatus"
+        byte_size:
+          type: integer
+        upload:
+          type: object
+          required: [path, capability, expires_at]
+          properties:
+            path:
+              type: string
+              pattern: "^/uploads/trn_[0-9A-HJKMNP-TV-Z]{26}$"
+              description: Relative; joined to the desktop's compiled-in PTX origin.
+            capability:
+              type: string
+              description: Job-scoped upload bearer for PUT {origin}{path} only.
+            expires_at:
+              type: string
+              format: date-time
+    PrivateCloudError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlation_id]
+          properties:
+            code:
+              type: string
+              description: >-
+                Classes: client (definite), transient (retry later),
+                operator_fault (service_misconfigured: alerted, never retried).
+              enum:
+                - invalid_request
+                - invalid_idempotency_key
+                - unsupported_media_type
+                - recording_too_large
+                - transcription_not_found
+                - active_transcription_exists
+                - idempotency_conflict
+                - quota_exceeded
+                - service_busy
+                - service_paused
+                - service_unavailable
+                - upstream_bad_response
+                - service_misconfigured
+            message:
+              type: string
+            correlation_id:
+              type: string
+              format: uuid
+              description: Also returned as the X-Correlation-Id header.
+            retry_after_seconds:
+              type: integer
+              description: With 429 and 503 when known (also the Retry-After header).
+            id:
+              type: string
+              description: The job already in progress, with active_transcription_exists.
     ApiError:
       type: object
       required: [error, message]
@@ -1662,7 +2445,7 @@ components:
 
     ServerInfo:
       type: object
-      required: [did, status, name, expiry, permissions, policyHash]
+      required: [did, status, name, expiry, permissions, policyHash, backendRevision, backendVersion]
       properties:
         did:
           type: string
@@ -1679,6 +2462,12 @@ components:
         policyHash:
           type: string
           pattern: "^[a-f0-9]{64}$"
+        backendRevision:
+          type: string
+          description: Commit the running image was built from (BUILD_REVISION), or "unknown".
+        backendVersion:
+          type: string
+          description: backend/package.json version of the running image.
 
     DelegationStatus:
       type: string
@@ -2398,6 +3187,12 @@ components:
             (a Google 5xx is answered 502). 0 means the request never completed.
 
   responses:
+    PrivateCloudFailure:
+      description: A stable public error code with a correlation id
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PrivateCloudError"
     TranscriberNotFound:
       description: No such meeting for this address
       content:

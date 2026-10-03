@@ -8,16 +8,17 @@
     "frontend",
     "backend",
     "test",
-    "desktop"
+    "desktop",
+    "mobile"
   ],
   "overrides": {
-    "@tinycloud/sdk-core": "2.5.1",
-    "@tinycloud/sdk-services": "2.4.2",
-    "@tinycloud/web-sdk": "2.5.1",
-    "@tinycloud/node-sdk": "2.5.1",
+    "@tinycloud/sdk-core": "2.11.0",
+    "@tinycloud/sdk-services": "2.11.0",
+    "@tinycloud/web-sdk": "2.11.0",
+    "@tinycloud/node-sdk": "2.11.0",
     "@tinycloud/web-core": "1.7.0",
-    "@tinycloud/node-sdk-wasm": "1.7.4",
-    "@tinycloud/web-sdk-wasm": "1.7.4",
+    "@tinycloud/node-sdk-wasm": "1.7.6",
+    "@tinycloud/web-sdk-wasm": "1.7.6",
     "ethers": "6.16.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -45,16 +46,23 @@
     "docker:backend:push": "docker buildx build --platform linux/amd64 -f backend/Dockerfile -t ${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest} --push .",
     "postinstall": "node packages/client/scripts/fix-web-wasm-init.mjs && node packages/server/scripts/fix-wasm-esm.mjs",
     "dev:desktop": "bun run --cwd desktop dev",
-    "build:desktop": "bun run --cwd desktop build"
+    "build:desktop": "bun run --cwd desktop build",
+    "release:check": "node scripts/release/check.mjs",
+    "dev:mobile:android": "bun run --cwd mobile android",
+    "build:mobile:android": "bun run --cwd mobile build:android"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
-    "@tinycloud/node-sdk": "2.5.1",
+    "@tinycloud/node-sdk": "2.11.0",
     "eslint": "^10.1.0",
     "husky": "^9.1.7",
     "portless": "^0.13.0",
     "prettier": "^3.8.1",
     "turbo": "^2.0.0",
     "typescript-eslint": "^8.57.1"
+  },
+  "patchedDependencies": {
+    "@tinycloud/node-sdk@2.11.0": "patches/@tinycloud%2Fnode-sdk@2.11.0.patch"
   }
 }

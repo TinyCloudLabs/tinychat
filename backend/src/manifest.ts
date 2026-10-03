@@ -30,13 +30,13 @@ export interface BackendDelegationConfig {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(__dirname, "../../manifest.json");
 const BACKEND_DELEGATION_NAME = "TinyChat Backend";
-const BACKEND_DELEGATION_EXPIRY = "7d";
+const BACKEND_DELEGATION_EXPIRY = "30d";
 /**
- * The same 7 days as a number (§3.3). The delegation accept path clamps the stored `expiresAt`
+ * The same 30 days as a number (§3.3; raised from 7 days with SESSION_EXPIRATION_MS). The delegation accept path clamps the stored `expiresAt`
  * to it: the TTL T2/T4 name as the mitigation has to be a bound this backend applies, not a
  * client-supplied field it repeats back.
  */
-export const BACKEND_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+export const BACKEND_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 
 function backendDelegationPermissions(): NonEmptyServerInfoPermissions {
   return [

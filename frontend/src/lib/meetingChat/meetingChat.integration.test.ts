@@ -1,8 +1,10 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
 import { createChatModelAdapter, type AdapterDeps } from "../../chat/chatModelAdapter";
 import { createMeetingMessageRegistry } from "../../chat/pendingHandoff";
 import { CONNECTORS_KV_PREFIX, meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
+import { LOCAL_MEETING_SOURCE, prepareLocalTranscript, saveLocalTranscript } from "../localTranscriber";
 import { buildMeetingContext } from "./context";
 import { mergeMeetingCorpus } from "./corpus";
 import { createBrowserMeetingTurnRetriever } from "./retriever";
@@ -129,6 +131,125 @@ function candidate(source: string, sourceId: string): MeetingCandidate {
     updatedAt: null,
   };
 }
+
+/** The connector store on real SQLite plus in-memory KV: what one writer saves, the retriever reads. */
+function sqliteSpace() {
+  const sqlite = new Database(":memory:");
+  const kv = new Map<string, string>();
+  const run = <T>(fn: () => T) => {
+    try {
+      return { ok: true, data: fn() };
+    } catch (error) {
+      return { ok: false, error: { code: "SQL", message: String(error) } };
+    }
+  };
+  return {
+    did: `did:test:${crypto.randomUUID()}`,
+    sql: {
+      db: () => ({
+        query: async (sql: string, params: unknown[] = []) =>
+          run(() => ({ rows: sqlite.query(sql).values(...(params as never[])) })),
+        execute: async (sql: string, params: unknown[] = []) =>
+          run(() => { sqlite.query(sql).run(...(params as never[])); return { rows: [] }; }),
+      }),
+    },
+    kv: {
+      put: async (key: string, value: string) => { kv.set(key, value); return { ok: true, data: null }; },
+      get: async (key: string) => kv.has(key)
+        ? { ok: true, data: { data: kv.get(key) } }
+        : { ok: false, error: { code: "KV_NOT_FOUND" } },
+      list: async ({ path }: { path: string }) => ({
+        ok: true,
+        data: { keys: [...kv.keys()].filter((key) => key.startsWith(path)) },
+      }),
+    },
+  };
+}
+
+describe("exo-local recordings in meeting chat", () => {
+  test("a saved Exo Local transcript is discovered by SQL and grounds a meeting-chat answer", async () => {
+    const space = sqliteSpace();
+    const saved = await saveLocalTranscript(space as never, prepareLocalTranscript({
+      sessionId: "exo-session",
+      startedAt: NOW,
+      model: "QuantizedTinyEn",
+      language: "en",
+      response: {
+        metadata: {},
+        results: {
+          channels: [{
+            alternatives: [{
+              transcript: "",
+              confidence: 1,
+              words: [
+                { word: "EXO_LOCAL_CANARY", start: 1, end: 1.5, channel: 0 },
+                { word: "shipped", start: 1.6, end: 2, channel: 0 },
+              ],
+            }],
+          }],
+        },
+      } as never,
+    }));
+    expect(saved.ok).toBe(true);
+
+    const retriever = createBrowserMeetingTurnRetriever({
+      tcw: space,
+      // Local recordings have no server copy.
+      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
+    } as never);
+    const outcome = await retriever.retrieve({ threadId: "exo-thread", question: "What did you say in the latest meeting?" });
+
+    expect(outcome).toEqual(expect.objectContaining({
+      status: "grounded",
+      meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE, sourceId: "local:exo-session" }),
+      systemMessage: expect.stringContaining("EXO_LOCAL_CANARY"),
+    }));
+  });
+});
+
+describe("exo-local You/Others turns in meeting chat", () => {
+  test("\"What did you say\" grounds on You turns in a transcript with more than four excerpts", async () => {
+    const space = sqliteSpace();
+    // Whisper-local words: one channel per results entry, spread over each chunk.
+    const words = (channel: number, start: number, text: string) =>
+      text.split(" ").map((word, i) => ({ word, start: start + i * 0.4, end: start + (i + 1) * 0.4, channel }));
+    const saved = await saveLocalTranscript(space as never, prepareLocalTranscript({
+      sessionId: "exo-mixed",
+      startedAt: NOW,
+      model: "QuantizedTinyEn",
+      language: "en",
+      response: {
+        metadata: {},
+        results: {
+          channels: [
+            { alternatives: [{ transcript: "", confidence: 1, words: words(0, 600, "EXO_YOU_CANARY I will own the hiring plan.") }] },
+            {
+              alternatives: [{
+                transcript: "",
+                confidence: 1,
+                // Five Others turns 100 s apart: five separate excerpts, all before the You turn.
+                words: Array.from({ length: 5 }, (_, i) => words(1, i * 100, `Agenda item ${i + 1} is the budget.`)).flat(),
+              }],
+            },
+          ],
+        },
+      } as never,
+    }));
+    expect(saved.ok).toBe(true);
+
+    const retriever = createBrowserMeetingTurnRetriever({
+      tcw: space,
+      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
+    } as never);
+    const outcome = await retriever.retrieve({ threadId: "exo-mixed-thread", question: "What did you say in the latest meeting?" });
+
+    expect(outcome).toEqual(expect.objectContaining({
+      status: "grounded",
+      meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE, sourceId: "local:exo-mixed" }),
+      systemMessage: expect.stringContaining("[M1:E1, You, 00:10:00] EXO_YOU_CANARY"),
+    }));
+  });
+});
 
 describe("seeded meeting-chat browser integration", () => {
   test("reads a SQL-only summary and a server-only transcript as transient, bounded evidence", async () => {

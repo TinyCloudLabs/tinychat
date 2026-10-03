@@ -132,15 +132,18 @@ describe("App wiring", () => {
   const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
 
   test("sign-in passes the composed manifest to createAndSignIn", () => {
-    const signInCall = app.slice(app.indexOf("await createAndSignIn("));
-    const args = signInCall.slice(0, signInCall.indexOf("});"));
+    // The config is built once as `signInConfig` (the local-validation path
+    // signs with the same object), so follow that binding to its literal.
+    expect(app).toContain("await createAndSignIn(web3Provider, signInConfig)");
+    const config = app.slice(app.indexOf("const signInConfig = {"));
+    const args = config.slice(0, config.indexOf("};"));
     expect(args).toContain("tinycloudHosts: TINYCLOUD_HOSTS");
     expect(args).toContain("manifest: withEncryptionDecryptGrant(manifest, connectedAddress)");
   });
 
   test("the restore path passes the plain manifest", () => {
-    const restoreCall = app.slice(app.indexOf("await restoreTinyCloudWebSession("));
-    const args = restoreCall.slice(0, restoreCall.indexOf("});"));
+    const restoreCall = app.slice(app.indexOf("restoreTinyCloudWebSession(storedAddress, {"));
+    const args = restoreCall.slice(0, restoreCall.indexOf("})"));
     expect(args).toContain("tinycloudHosts: TINYCLOUD_HOSTS");
     expect(args).toContain("manifest,");
     expect(args).not.toContain("withEncryptionDecryptGrant");

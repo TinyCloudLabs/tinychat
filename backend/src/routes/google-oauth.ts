@@ -1,3 +1,4 @@
+import { browserTokenPayload, type CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import type { NextFunction, Request, Response } from "express";
@@ -23,14 +24,9 @@ import {
  *  - `POST /exchange|/refresh|/revoke` mount BEHIND `authMiddleware` (global CSRF covers the
  *    unsafe methods automatically).
  *
- * Two invariants:
- *
- *  1. **Nothing persists.** No KV, no SQL, no file writes, no in-process credential cache — this
- *    module is a credential-shaped pipe between the SPA and Google. `google-oauth.test.ts` pins
- *    the absence of any store import structurally, because "we just won't store it" is exactly
- *    the kind of property that erodes by accident.
- *  2. **Only `{ code, state }` transits `postMessage`, to a PINNED origin.** Never `"*"`, never a
- *    token. The code alone is useless without the PKCE verifier, which never leaves SPA memory.
+ * Browser-only exchanges never take custody. When autojoin is wired, reconnect first disables
+ * unattended access and revocation removes its server credential. Only `{ code, state }`
+ * transits `postMessage`, to a pinned origin; tokens stay in authenticated responses.
  */
 
 /** Log shapes and statuses only — never a code, a verifier or a token. */
@@ -189,6 +185,7 @@ export interface GoogleOAuthRouterOptions {
   config?: GoogleOAuthConfig;
   /** Defaults to `googleAppOriginFromEnv()`. Pinned target of the callback `postMessage`. */
   appOrigin?: string;
+  autojoin?: CalendarAutojoinConnection;
 }
 
 export function createGoogleOAuthRouter(
@@ -201,6 +198,7 @@ export function createGoogleOAuthRouter(
   );
 
   const router = Router();
+  router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 
   /**
    * Helmet's app-wide default `Cross-Origin-Opener-Policy: same-origin` severs `window.opener`
@@ -287,11 +285,18 @@ export function createGoogleOAuthRouter(
       return;
     }
     try {
+      if (options.autojoin) {
+        const tenant = req.user?.address;
+        if (!tenant) { res.status(401).json({ error: "unauthorized" }); return; }
+        await options.autojoin.browserReconnect(tenant.toLowerCase());
+      }
       const payload = await oauth.exchangeCode({ code, verifier });
+      // A concurrent autojoin rebind during the network exchange must not outlive this browser account switch.
+      if (options.autojoin) await options.autojoin.browserReconnect(req.user!.address.toLowerCase());
       logGoogleOAuth(
         `op=exchange result=ok refresh_token=${payload.refresh_token === undefined ? "absent" : "present"}`,
       );
-      res.status(200).json(payload);
+      res.status(200).json(browserTokenPayload(payload));
     } catch (error) {
       respondUpstreamError(res, "exchange", error);
     }
@@ -309,7 +314,7 @@ export function createGoogleOAuthRouter(
     try {
       const payload = await oauth.refresh(refreshToken);
       logGoogleOAuth("op=refresh result=ok");
-      res.status(200).json(payload);
+      res.status(200).json(browserTokenPayload(payload));
     } catch (error) {
       respondUpstreamError(res, "refresh", error);
     }
@@ -319,6 +324,15 @@ export function createGoogleOAuthRouter(
   router.post("/revoke", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const token = body.token;
+    if (options.autojoin && (token === undefined || isBoundedString(token, MAX_TOKEN_LENGTH))) {
+      const tenant = req.user?.address;
+      if (!tenant) { res.status(401).json({ error: "unauthorized" }); return; }
+      try {
+        const result = await options.autojoin.disconnect(tenant.toLowerCase(), token as string | undefined);
+        res.status(result.upstreamRevoked === "failed" ? 502 : 200).json(result);
+      } catch (error) { respondUpstreamError(res, "revoke", error); }
+      return;
+    }
     if (!isBoundedString(token, MAX_TOKEN_LENGTH)) {
       logGoogleOAuth("op=revoke result=invalid_request");
       res.status(400).json({ error: "invalid_request" });

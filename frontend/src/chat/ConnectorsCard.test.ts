@@ -267,7 +267,7 @@ describe("Google Meet OAuth connect variant", () => {
     // read from the exchange response alone.
     expect(dialog).not.toMatch(/\.postMessage\(/);
     expect(connectHalf).toContain("GOOGLE_OAUTH_EXCHANGE_PATH");
-    expect(connectHalf).toContain("JSON.stringify({ code, verifier })");
+    expect(connectHalf).toContain("JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}) })");
     // The verifier is dropped before the response is even read.
     expect(connectHalf).toContain("verifierRef.current = null;");
   });
@@ -293,7 +293,7 @@ describe("Google Meet OAuth connect variant", () => {
 
   test("scopes the auto-transcription offer to meetings the user hosts", () => {
     expect(connectHalf).toContain("patchSpaceAutoTranscription");
-    expect(connectHalf).toContain("Turn on transcription for meetings you host");
+    expect(connectHalf).toContain("Google automatic transcription for meetings you host");
     // A 403 is expected host-only semantics — calm, not an error tone.
     expect(connectHalf).toContain('res.reason === "not-host"');
     expect(connectHalf).toContain("Only the meeting host can change this");
@@ -526,5 +526,29 @@ describe("Sync now — engine dispatch", () => {
     expect(card).not.toMatch(/console\.(log|debug|info|warn|error)\(/);
     expect(card).not.toContain("localStorage");
     expect(card).not.toContain("sessionStorage");
+  });
+});
+
+
+describe("Calendar autojoin consent and browser importer separation", () => {
+  const dialog = read("ConnectorDialog.tsx");
+  test("binds unattended setup to an explicit checkbox, PKCE and authenticated transaction", () => {
+    expect(dialog).toContain('if (autojoin && !custodyConsent) return;');
+    expect(dialog).toContain('authorizeDisabled={autojoin && !custodyConsent}');
+    expect(dialog).toContain('JSON.stringify({ state, challenge, consent: true })');
+    expect(dialog).toContain('GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY');
+    const save = dialog.slice(dialog.indexOf('const saveAndSync'), dialog.indexOf('const runExchange'));
+    expect(save.indexOf('saveConnectorKey')).toBeLessThan(save.indexOf('/autojoin/enable'));
+    expect(save).toContain('if (!save.ok)');
+    expect(save).toContain('setupId');
+  });
+  test("disconnect removes server custody before browser vault access and keeps revoke failures visible", () => {
+    const revoke = dialog.slice(dialog.indexOf('async function revokeGoogleUpstream'));
+    expect(revoke.indexOf('/autojoin/disconnect')).toBeLessThan(revoke.indexOf('unlockSecrets'));
+    expect(dialog).toContain('if (!showRevokeWarning) onOpenChange(false)');
+    expect(dialog).toContain('revokeOutcome.status === "server-unavailable"');
+    const calendar = read('CalendarAutojoinSection.tsx');
+    expect(calendar).toContain('api.disable()');
+    expect(calendar).not.toContain('deleteConnectorKey');
   });
 });

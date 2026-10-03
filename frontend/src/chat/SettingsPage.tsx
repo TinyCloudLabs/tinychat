@@ -134,7 +134,7 @@ export function SettingsPage({
           <SectionCard icon={ShieldCheckIcon} title="Agent access">
             <AgentAccessControls {...agentAccess} />
           </SectionCard>
-          <AgentSetupCard did={did} hosts={tcw.hosts} />
+          <AgentSetupCard />
           <SectionCard icon={BrainIcon} title="Memory">
             <MemoryPanel
               variant="inline"

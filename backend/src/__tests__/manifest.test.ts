@@ -141,7 +141,7 @@ describe("TinyChat manifest and backend policy", () => {
     const resolved = backendDelegationResolvedPermissions(backendDid);
 
     expect(config.name).toBe("TinyChat Backend");
-    expect(config.expiry).toBe("7d");
+    expect(config.expiry).toBe("30d");
     expect(config.permissions).toHaveLength(1);
     expect(resolved.map((permission) => permission.path)).toEqual([
       THREADS_KV_PREFIX,

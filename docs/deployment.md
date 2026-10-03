@@ -23,11 +23,26 @@ variables. (`wrangler.toml` `[vars]` are runtime Pages Functions bindings and do
 **not** feed `vite build` — don't rely on them for `VITE_*`.) Keep the
 `.env.production` values and the dashboard build env vars in sync.
 
-### Option A — Pages Git integration (recommended; auto-deploys on push to main)
+### Option A — Pages Git integration (production = the `production` branch)
+
+Production web deploys happen only through the **Deploy production** workflow
+(`.github/workflows/deploy-production.yml`), which the `Release` workflow
+dispatches for a stable `@tinychat/frontend` release, after the backend deploy.
+It checks that the current `production` tip was made by the workflow (or seeded
+from `main`), creates a commit whose tree is exactly the released commit's,
+fast-forwards `production` to it, waits for the Pages production build (the
+`Cloudflare Pages` check on that commit), checks that `tinycloud.chat` serves
+that deployment, and checks the branch still points at its commit before and
+after. Every other branch, `main` included, only gets preview builds. Only
+the `release-push` deploy key may update `production` (see the rulesets below).
+To roll back, dispatch the workflow with the older release tag (`--ref main -f
+tag=@tinychat/frontend@<version> -f backend=false`), or use Pages' own rollback.
 
 In the Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**:
 
-- Repository: `TinyCloudLabs/tinychat`, production branch `main`
+- Repository: `TinyCloudLabs/tinychat`, production branch **`production`**
+  (Settings → Builds → Branch control; the branch must exist before you can
+  select it). Keep preview deployments on for all non-production branches.
 - Framework preset: **None**
 - Build command: `bun run build:packages && bun run build:frontend`
 - Build output directory: `frontend/dist`
@@ -58,6 +73,83 @@ and runs `wrangler pages deploy` using `pages_build_output_dir` from
 Pages project → **Custom domains → Set up a domain → `tinycloud.chat`**. Because
 the zone is already on Cloudflare, Pages creates the apex `CNAME`/flattening
 record automatically. Add `www` as a redirect to the apex if desired.
+
+### Release trust roots (deploy key + rulesets)
+
+Release tags (`exo-desktop@*`, `@tinychat/frontend@*`, `@tinychat/backend@*`)
+and the `production` branch may be written only by **deploy keys**, enforced by
+two rulesets. (The GitHub Actions app cannot be a ruleset bypass actor in this
+organization.) One write deploy key, `release-push`, is the only one the repo
+has; its private half is the `RELEASE_PUSH_SSH_KEY` secret of the
+`release-push` environment, which only `main` can use and which has no required
+reviewer. `release.yml` pushes the `[skip ci]` version commit and its tags
+atomically with it (main itself stays unprotected), and `deploy-production.yml`
+pushes `production` with it, both through `scripts/release/deploy-key-push.sh`.
+`main` stays unprotected (team workflow).
+
+Order: set up the key and environment first, merge the release workflows that
+push with it, then create the rulesets (earlier rulesets would block
+`release.yml`'s tag push). The `production` branch must already exist, since the
+branch ruleset also blocks creating it.
+
+```bash
+repo=TinyCloudLabs/tinychat
+
+# 1. Deploy key with write access (the only write deploy key: every deploy key bypasses the rulesets).
+ssh-keygen -t ed25519 -N '' -C 'tinychat release-push (GitHub Actions)' -f release-push
+gh api -X POST repos/$repo/keys -f title='release-push: release tags + production (GitHub Actions)' \
+  -f key="$(cat release-push.pub)" -F read_only=false
+
+# 2. Environment usable from main only, no reviewers, holding the private key.
+gh api -X PUT repos/$repo/environments/release-push \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/$repo/environments/release-push/deployment-branch-policies -f name=main -f type=branch
+gh secret set RELEASE_PUSH_SSH_KEY --env release-push --repo $repo < release-push
+rm -f release-push release-push.pub   # a lost key is replaced by generating a new one
+
+# 3. After the release workflows are on main: the two rulesets, deploy keys as the only bypass.
+gh api -X POST repos/$repo/rulesets --input - <<'EOF'
+{
+  "name": "production branch: release deploy key only",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/heads/production"], "exclude": [] } },
+  "rules": [
+    { "type": "creation" },
+    { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } },
+    { "type": "deletion" },
+    { "type": "non_fast_forward" }
+  ],
+  "bypass_actors": [{ "actor_id": null, "actor_type": "DeployKey", "bypass_mode": "always" }]
+}
+EOF
+gh api -X POST repos/$repo/rulesets --input - <<'EOF'
+{
+  "name": "release tags: release deploy key only",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/tags/exo-desktop@*", "refs/tags/@tinychat/frontend@*", "refs/tags/@tinychat/backend@*"], "exclude": [] } },
+  "rules": [
+    { "type": "creation" },
+    { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } },
+    { "type": "deletion" }
+  ],
+  "bypass_actors": [{ "actor_id": null, "actor_type": "DeployKey", "bypass_mode": "always" }]
+}
+EOF
+```
+
+Rotate by adding a new key, updating the secret, then deleting the old key
+(`gh api -X DELETE repos/$repo/keys/<id>`). Check that no other write deploy key
+exists: `gh api repos/$repo/keys --jq '.[] | select(.read_only == false) | .title'`.
+
+Residual risk: `main` is unprotected, so a writer can change `release.yml` or
+`deploy-production.yml` on main and use the deploy key through the
+`release-push` environment. The deploy key, its main-only environment and the
+rulesets stop direct pushes, hand-made release tags, branch or tag-controlled
+workflows, accidents and out-of-band deploys; they do not stop a malicious
+writer. Treat write access to this repo as production access.
 
 ---
 
@@ -92,11 +184,21 @@ The ingress sidecar also sets a CAA record automatically (`SET_CAA=true`).
 
 ### Deploy
 
-**Via GitHub Actions (production CD):** push to `main` touching `backend/**`,
-`packages/**`, compose/phala/Dockerfile, etc., or run the
-**Deploy Backend to Phala Cloud** workflow manually (`workflow_dispatch`). It
-builds + pushes the backend and ingress images to GHCR, verifies DNS, deploys to
-the CVM, waits for `running`, and probes `/health` + `/api/server-info`.
+**Via GitHub Actions (production CD):** a stable `@tinychat/backend` release
+(merging the Release stable PR) runs **Deploy production**, which calls
+**Deploy Backend to Phala Cloud** on the stable version commit before the web
+deploy. Pushes to `main` and beta versions do not deploy. Deploy production is
+the only manual entry: dispatch it from main with a stable `@tinychat/backend@X.Y.Z` tag
+with `-f web=false` to redeploy or roll back the backend; an unreleased commit
+needs `-f allow_unreleased=true -f confirm_sha=<its full SHA>`. The Phala
+workflow builds + pushes the backend and ingress images to GHCR, verifies DNS,
+deploys to the CVM, syncs the CVM's `allowed_envs` (frozen at CVM creation),
+waits for `running`, probes `/health` + `/api/server-info`, and then requires
+`/api/server-info` to report `backendRevision` = the deployed commit and
+`backendVersion` = `backend/package.json`. Its summary states the production
+backend afterwards: `unchanged` (failed before `phala deploy`),
+`changed-verified`, or `changed-unverified` (the CVM may run the new image but a
+later check failed; web is not deployed).
 
 **Manually from your machine:**
 

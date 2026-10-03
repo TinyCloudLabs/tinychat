@@ -559,6 +559,11 @@ export class CredentialStore {
     };
   }
 
+  /** End local custody without revoking the provider grant (Calendar autojoin Disable). */
+  async delete(source: string, address: string): Promise<void> {
+    await this.rows.remove(normalizeSource(source), normalizeWebhookAddress(address));
+  }
+
   private async write(
     input: { source: string; address: string; secret: CredentialSecret },
     op: "store" | "rotate",

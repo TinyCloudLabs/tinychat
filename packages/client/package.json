@@ -1,6 +1,7 @@
 {
   "name": "@tinyboilerplate/client",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,7 +20,7 @@
   },
   "dependencies": {
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/sdk-core": "2.5.1"
+    "@tinycloud/sdk-core": "2.11.0"
   },
   "peerDependencies": {
     "@openkey/sdk": ">=0.8.0",
@@ -27,7 +28,7 @@
   },
   "devDependencies": {
     "@openkey/sdk": "^0.10.0",
-    "@tinycloud/web-sdk": "2.5.1",
+    "@tinycloud/web-sdk": "2.11.0",
     "typescript": "^5.7.0"
   }
 }
