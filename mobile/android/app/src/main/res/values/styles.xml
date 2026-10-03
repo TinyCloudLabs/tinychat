@@ -16,7 +16,11 @@
     </style>
 
 
+    <!-- Launch theme. Android 12+ always shows a system splash built from the windowSplashScreen* attributes (left
+         unset, it is the generic Android icon on the window background); older versions draw @drawable/splash. -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <item name="windowSplashScreenBackground">@color/exo_brand</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
     </style>
 </resources>
