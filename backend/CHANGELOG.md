@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.2.0-beta.1
+
+### Patch Changes
+
+- 5c16fb5: Allow the Exo mobile app's fixed origins (`https://localhost` on Android, `capacitor://localhost` on iOS) in CORS.
+
 ## 0.2.0-beta.0
 
 ### Minor Changes
