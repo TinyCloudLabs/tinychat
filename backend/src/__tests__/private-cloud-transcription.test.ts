@@ -996,11 +996,13 @@ describe("e2e script", () => {
 
 describe("response DTOs", () => {
   const ID = "trn_0123456789ABCDEFGHJKMNPQRS";
-  const JOB_KEYS = ["byte_size", "channels", "created_at", "duration_seconds", "error", "id", "progress", "retention", "status", "updated_at"];
+  const JOB_KEYS = ["byte_size", "channel_labels", "channel_mode", "channels", "created_at", "duration_seconds", "error", "id", "progress", "retention", "status", "updated_at"];
   const job = (patch: Record<string, unknown> = {}) => ({
     id: ID,
     status: "processing",
     byte_size: 1000,
+    channel_mode: "separate",
+    channel_labels: ["Speaker 1", "Speaker 2"],
     duration_seconds: 26,
     channels: 2,
     progress: { stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7, internal_worker: "w-1" },
@@ -1031,7 +1033,17 @@ describe("response DTOs", () => {
     // Absent nullable fields come back as explicit nulls.
     ptx.state.override = () => ({ status: 200, body: { id: ID, status: "queued", byte_size: 5, retention: job().retention, created_at: "2026-09-29T10:00:00Z" } });
     const sparse = await call(backend.url, "GET", `/transcriptions/${ID}`);
-    expect(sparse.json).toMatchObject({ duration_seconds: null, channels: null, progress: null, error: null, updated_at: "2026-09-29T10:00:00Z" });
+    expect(sparse.json).toMatchObject({
+      duration_seconds: null,
+      channels: null,
+      progress: null,
+      error: null,
+      channel_mode: null,
+      channel_labels: null,
+      updated_at: "2026-09-29T10:00:00Z",
+    });
+    // The caller's own channel choices are relayed (clients tell their jobs apart by them).
+    expect(status.json).toMatchObject({ channel_mode: "separate", channel_labels: ["Speaker 1", "Speaker 2"] });
     for (const r of [status, list, sparse]) {
       for (const leak of Object.values(LEAKS)) expect(r.text).not.toContain(leak);
       expect(r.text).not.toContain("internal_worker");
@@ -1066,7 +1078,16 @@ describe("response DTOs", () => {
     ptx.state.override = () => ({ status: 200, body: ptxJob({}) });
     const awaiting = await call(backend.url, "GET", `/transcriptions/${ID}`);
     expect(awaiting.status).toBe(200);
-    expect(awaiting.json).toMatchObject({ status: "awaiting_upload", retention: { audio: "not_received" }, updated_at: "2026-10-03T12:00:00.000Z" });
+    expect(awaiting.json).toMatchObject({
+      status: "awaiting_upload",
+      retention: { audio: "not_received" },
+      updated_at: "2026-10-03T12:00:00.000Z",
+      // The caller's channel choices come back: how Exo desktop tells its jobs from a phone's.
+      channel_mode: "separate",
+      channel_labels: ["Speaker 1", "Speaker 2"],
+    });
+    ptx.state.override = () => ({ status: 200, body: ptxJob({ channel_mode: "mixed", channel_labels: ["Exo voice note"] }) });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}`)).json).toMatchObject({ channel_mode: "mixed", channel_labels: ["Exo voice note"] });
     ptx.state.override = () => ({
       status: 200,
       body: ptxJob({
@@ -1144,6 +1165,11 @@ describe("response DTOs", () => {
       [`/transcriptions/${ID}`, 200, job({ created_at: "yesterday" })],
       [`/transcriptions/${ID}`, 200, [job()]],
       [`/transcriptions/${ID}`, 200, job({ finished_at: "later" })],
+      [`/transcriptions/${ID}`, 200, job({ channel_mode: "stereo" })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: [] })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: ["a", "b", "c"] })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: ["  "] })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: ["x".repeat(65)] })],
       // list (PTX answers { object: "list", data })
       ["/transcriptions?limit=1", 200, { object: "list", data: [job(), job({ id: newId() })] }],
       ["/transcriptions", 200, { object: "list", data: [job({ status: "done" })] }],

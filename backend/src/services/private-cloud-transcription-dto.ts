@@ -45,6 +45,7 @@ export const JOB_ERRORS = {
 export type JobErrorCode = keyof typeof JOB_ERRORS;
 
 export const ADMISSION_MODES = ["open", "drain", "closed"] as const;
+export const CHANNEL_MODES = ["separate", "mixed"] as const;
 /** PTX reports `not_received` while a job still awaits its upload (SPEC.md, batch `<job>`). */
 export const AUDIO_RETENTION_STATES = ["not_received", "stored", "deletion_pending", "deleted"] as const;
 
@@ -151,6 +152,21 @@ function retention(value: unknown) {
   };
 }
 
+/**
+ * The caller's own create choices, echoed by PTX on every job. Relayed because they are how a
+ * client tells its jobs from another client's on the same account (Exo desktop's tenant-list
+ * recovery must not adopt an Exo mobile voice note's job): the desktop labels its two channels
+ * "Speaker 1"/"Speaker 2", voice notes send one "Exo voice note" label. Same rules as create.
+ */
+function channelLabels(value: unknown): string[] {
+  check(Array.isArray(value) && value.length >= 1 && value.length <= 2);
+  return (value as unknown[]).map((label) => {
+    const name = text(label, MAX_LABEL_LENGTH);
+    check(name.trim().length > 0);
+    return name;
+  });
+}
+
 /** PTX's lifecycle timestamps, in the order a job reaches them. */
 const LIFECYCLE_TIMESTAMPS = ["uploaded_at", "processing_started_at", "finished_at"] as const;
 
@@ -178,6 +194,8 @@ function job(value: unknown, expectedId?: string) {
     id,
     status,
     byte_size: int(o.byte_size, 1, MAX_RECORDING_BYTES),
+    channel_mode: nullable(o.channel_mode, (v) => oneOf(v, CHANNEL_MODES)),
+    channel_labels: nullable(o.channel_labels, channelLabels),
     duration_seconds: nullable(o.duration_seconds, (v) => num(v)),
     channels: nullable(o.channels, (v) => int(v, 1, 2)),
     progress: nullable(o.progress, progress),
