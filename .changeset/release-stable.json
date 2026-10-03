@@ -1,0 +1,11 @@
+{
+  "versions": {
+    "exo-desktop": "0.3.0",
+    "@tinychat/frontend": "0.3.0",
+    "@tinychat/backend": "0.2.1"
+  },
+  "changesets": [
+    ".changeset/pre/conversation-canvas.md",
+    ".changeset/pre/trusted-release-tooling.md"
+  ]
+}
