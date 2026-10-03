@@ -27,6 +27,26 @@ describe("AgentEnablementBanner", () => {
     expect(markup).toContain("private meeting transcripts again");
   });
 
+  it("says a failed check could not be verified instead of claiming expiry", () => {
+    const markup = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason="delegation_unverified" />,
+    );
+
+    expect(markup).toContain("Couldn&#x27;t verify private agent access");
+    expect(markup).toContain("Reconnect if this keeps happening.");
+    expect(markup).toContain(">Reconnect agent</button>");
+    expect(markup).not.toContain("expired");
+  });
+
+  it("asks to reconnect when a turn reports missing access", () => {
+    const markup = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason="delegation_required" />,
+    );
+
+    expect(markup).toContain("Private agent access needs reconnecting");
+    expect(markup).toContain(">Reconnect agent</button>");
+  });
+
   it("keeps the first-time enablement copy when no prior delegation failed", () => {
     const markup = renderToStaticMarkup(
       <AgentEnablementBanner {...baseProps} reconnectReason={null} />,
@@ -56,6 +76,15 @@ describe("Settings agent controls", () => {
     const failure = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status={null} enableError="Disconnection was not confirmed." />);
     expect(failure).toContain("Access status unknown"); expect(failure).not.toContain(">Disconnected<");
     expect(failure).toContain("Retry disconnect");
+  });
+  it("distinguishes an unverified check from a disconnect and offers Reconnect", () => {
+    const html = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status={null} reconnectReason="delegation_unverified" />);
+    expect(html).toContain("Access could not be verified");
+    expect(html).toContain("Reconnect agent");
+    expect(html).toContain("Disconnect agent");
+    expect(html).not.toContain("Retry disconnect");
+    const expired = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status="expired" reconnectReason="delegation_expired" />);
+    expect(expired).toContain("Disconnected"); expect(expired).toContain("Reconnect agent");
   });
 });
 

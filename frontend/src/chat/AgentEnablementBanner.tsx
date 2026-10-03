@@ -1,7 +1,8 @@
 // Agent access enablement + renewal affordance (C3).
 // Rendered as a fixed bottom banner — consistent with the billingNotice pattern.
 // Hidden when capability is "unavailable" or "probing". Disappears after enable
-// and returns with explicit reconnect copy if a private-data tool reports expiry.
+// and returns with explicit reconnect copy if a private-data tool reports expiry
+// or the backend answers a turn without private access.
 // Provider-agnostic copy: no model/vendor names.
 
 import type { FC } from "react";
@@ -49,6 +50,8 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
 
   const reconnecting = reconnectReason !== null;
   const action = reconnecting ? "Reconnect agent" : "Connect agent";
+  // A failed access check is not a lost grant; say so instead of claiming expiry.
+  const unverified = reconnectReason === "delegation_unverified";
 
   return (
     <div
@@ -78,13 +81,17 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                 {reconnecting
                   ? reconnectReason === "delegation_expired"
                     ? "Private agent access expired"
-                    : "Private agent access needs reconnecting"
+                    : unverified
+                      ? "Couldn't verify private agent access"
+                      : "Private agent access needs reconnecting"
                   : "Connect private agent access"}
               </span>
               <span className="text-[11px] leading-none text-muted-foreground/70">
-                {reconnecting
-                  ? "Reconnect to let the agent read your private meeting transcripts again."
-                  : "You'll be prompted to sign with your passkey once to authorize access."}
+                {unverified
+                  ? "That reply couldn't use your meetings. Reconnect if this keeps happening."
+                  : reconnecting
+                    ? "Reconnect to let the agent read your private meeting transcripts again."
+                    : "You'll be prompted to sign with your passkey once to authorize access."}
               </span>
             </div>
             <button
@@ -129,22 +136,24 @@ export function ChatViewAgentEnablementBanner() {
 export function AgentAccessControls(props: UseAgentEnablementResult) {
   const connected = props.capability === "enabled";
   const unknown = props.status === null;
+  const unverified = unknown && props.reconnectReason === "delegation_unverified";
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">Controls private agent memory and meeting access. Public web search stays available.</p>
       <p role="status" className="text-xs font-medium">
-        {props.disconnecting ? "Disconnecting…" : connected ? "Connected" : unknown ? "Access status unknown" : "Disconnected"}
+        {props.disconnecting ? "Disconnecting…" : connected ? "Connected"
+          : unverified ? "Access could not be verified" : unknown ? "Access status unknown" : "Disconnected"}
       </p>
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={() => void props.onEnable()}
           disabled={props.enabling || props.disconnecting || props.capability === "probing"}
           className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">
-          {props.enabling ? "Connecting…" : connected ? "Reconnect agent" : "Connect agent"}
+          {props.enabling ? "Connecting…" : connected || props.reconnectReason ? "Reconnect agent" : "Connect agent"}
         </button>
         {(connected || props.disconnecting || unknown) && <button type="button" onClick={() => void props.onDisconnect()}
           disabled={props.disconnecting || props.capability === "probing"}
           className="rounded-md border border-border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50">
-          {props.disconnecting ? "Disconnecting…" : unknown ? "Retry disconnect" : "Disconnect agent"}
+          {props.disconnecting ? "Disconnecting…" : unknown && !unverified ? "Retry disconnect" : "Disconnect agent"}
         </button>}
       </div>
       {props.enableError && <p role="alert" className="text-xs text-destructive">{props.enableError}</p>}

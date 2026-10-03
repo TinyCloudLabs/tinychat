@@ -14,7 +14,7 @@
 // Endpoints:
 //   POST /api/agent/session  — courier a freshly minted delegation to eliza /sessions
 //   GET  /api/agent/session  — delegation liveness (proxies eliza GET /sessions/:entityId)
-//                              for the re-mint UX (decision 4)
+//                              for the re-mint UX (decision 4); bounded by a 3s timeout
 
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { Router } from "express";
@@ -32,6 +32,12 @@ import {
 const TRANSCRIPT_SQL = "xyz.tinycloud.tinychat/connectors";
 const TRANSCRIPT_KV = `${TRANSCRIPT_SQL}/`;
 const MAX_TRANSCRIPT_EXPIRY_MS = SESSION_EXPIRATION_MS;
+/**
+ * Bound on eliza's GET /sessions/:entityId, an in-memory lookup. The chat
+ * route awaits it before opening every stream. POST and DELETE stay
+ * unbounded: activation and teardown reach the TinyCloud node (666b5c8).
+ */
+const SESSION_STATUS_TIMEOUT_MS = 3_000;
 
 export interface AgentRoutesConfig {
   /** The agent did:pkh all users delegate to (eliza-service's stable identity). */
@@ -47,6 +53,8 @@ export interface AgentRoutesConfig {
   fetchImpl?: typeof fetch;
   /** Injectable deserializer (tests pass JSON.parse). */
   deserializeDelegationSet?: (serialized: string) => PortableDelegationSet;
+  /** Timeout for session status reads (default 3s; tests shorten it). */
+  sessionStatusTimeoutMs?: number;
   /**
    * When provided, mounts POST /chat (the tool-calling orchestration around the
    * RedPill relay). Omitted when REDPILL_API_KEY is absent.
@@ -66,6 +74,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
   const agentId = config.agentId ?? TINYCHAT_AGENT_ID;
   const fetchImpl = config.fetchImpl ?? fetch;
   const deserialize = config.deserializeDelegationSet ?? deserializePortableDelegationSet;
+  const statusTimeoutMs = config.sessionStatusTimeoutMs ?? SESSION_STATUS_TIMEOUT_MS;
 
   // Each running turn belongs to one account generation. Invalidation is local
   // and synchronous; the service remains the authority for private admission.
@@ -88,32 +97,52 @@ export function createAgentRouter(config: AgentRoutesConfig) {
         } };
       },
       async status(entityId) {
-        const result = await callEliza("GET", `/sessions/${encodeURIComponent(entityId)}`);
-        return result.status === 200 ? result.body : {};
+        const result = await callEliza("GET", `/sessions/${encodeURIComponent(entityId)}`, undefined, statusTimeoutMs);
+        // 404 {status:"none"} is eliza's definite answer for an un-minted or
+        // disconnected entity, not a failed check.
+        if ((result.status === 200 || result.status === 404) && typeof result.body.status === "string") return result.body;
+        // 400 means the stored grant no longer passes policy: definitely unusable.
+        if (result.status === 400 && typeof result.body.error === "string") return { status: "invalid" };
+        // Anything else is unknown; the chat route reports it as unverified.
+        throw new Error(`session status unavailable (${result.status})`);
       },
     }));
   }
 
+  /** `timeoutMs` bounds the whole exchange, including a fetch that ignores its signal. */
   async function callEliza(
     method: "POST" | "GET" | "DELETE",
     path: string,
     payload?: unknown,
+    timeoutMs?: number,
   ): Promise<ElizaResponse> {
-    const res = await fetchImpl(`${config.elizaServiceUrl}${path}`, {
-      method,
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${config.elizaServiceSecret}`,
-      },
-      ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
+    const signal = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+    const exchange = (async (): Promise<ElizaResponse> => {
+      const res = await fetchImpl(`${config.elizaServiceUrl}${path}`, {
+        method,
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${config.elizaServiceSecret}`,
+        },
+        ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
+        ...(signal ? { signal } : {}),
+      });
+      let body: Record<string, unknown>;
+      try {
+        const parsed: unknown = await res.json();
+        body = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+      } catch {
+        body = {};
+      }
+      return { status: res.status, body };
+    })();
+    if (!signal) return exchange;
+    return new Promise<ElizaResponse>((resolve, reject) => {
+      const timedOut = () => reject(signal.reason ?? new Error("eliza request timed out"));
+      if (signal.aborted) { timedOut(); return; }
+      signal.addEventListener("abort", timedOut, { once: true });
+      exchange.then(resolve, reject).finally(() => signal.removeEventListener("abort", timedOut));
     });
-    let body: Record<string, unknown>;
-    try {
-      body = (await res.json()) as Record<string, unknown>;
-    } catch {
-      body = {};
-    }
-    return { status: res.status, body };
   }
 
   router.post("/session", async (req: Request, res: Response) => {
@@ -239,7 +268,7 @@ export function createAgentRouter(config: AgentRoutesConfig) {
 
     const entityId = addressToEntityId(user.address, agentId);
     try {
-      const eliza = await callEliza("GET", `/sessions/${encodeURIComponent(entityId)}`);
+      const eliza = await callEliza("GET", `/sessions/${encodeURIComponent(entityId)}`, undefined, statusTimeoutMs);
       // Liveness normalization: "no session yet" is a valid answer, NOT an error.
       // eliza returns 404 {status:"none"} for an un-minted entityId; passing that
       // 404 through makes the frontend capability probe classify the route as
@@ -399,7 +428,7 @@ const TRANSCRIPT_CEILING: Array<{ service: string; path: string | null; actions:
  * TinyChat never activates this grant; the node verifies it cryptographically
  * on use. This courier gate checks the inline signed claim when available, or
  * the exact CID child request otherwise. In both forms it requires the
- * authenticated owner, configured agent, seven-day ceiling, and fixed
+ * authenticated owner, configured agent, 30-day ceiling, and fixed
  * transcript policy; the host remains the cryptographic authority.
  */
 function validateSignedTranscript(serialized: string, owner: string, agentDid: string): { ok: true } | { ok: false; error: string } {

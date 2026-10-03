@@ -133,3 +133,38 @@ test("the content controller retains its own model guard before capability and r
   expect(result.errorCode).toBe("meeting_feature_unavailable");
   expect(frames.join("")).toBe("Meeting content answers are not available for this model yet.");
 });
+
+test.each([
+  ["delegation_required", "connect or reconnect the agent in Settings > Agent access"],
+  ["delegation_expired", "has expired"],
+  ["delegation_unverified", "could not be verified"],
+] as const)("inactive access (%s) asks the user to reconnect, not to change model", async (issue, phrase) => {
+  // Production leaves MEETING_CONTENT_MODELS empty, so no model is ever admitted.
+  for (const enabled of [false, true]) {
+    const requests: Array<{ messages: Array<{ content: string }>; tools: Array<{ function: { name: string } }> }> = [];
+    const cfg = config((async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return response("I can't access your meetings right now.");
+    }) as typeof fetch);
+    cfg.meetingContentRetrievalEnabled = enabled;
+    cfg.meetingContentModelAllowed = () => false;
+    const result = await orchestrateToolCalling({ config: { ...cfg, privateAccessActive: false, privateAccessIssue: issue }, model: kimi,
+      messages: [{ role: "user", content: "What did we decide in yesterday's meeting?" }], entityId: "entity", write: () => {} });
+    expect(result.errorCode).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    const system = requests[0].messages[0].content;
+    expect(system).toContain(phrase);
+    expect(system).toContain("do not suggest choosing a different model");
+    expect(system).not.toContain("choose a supported model");
+    expect(requests[0].tools.map(tool => tool.function.name)).toEqual(["web_search"]);
+  }
+});
+
+test("with access active, an unadmitted model keeps its model guidance", async () => {
+  const requests: Array<{ messages: Array<{ content: string }> }> = [];
+  const cfg = config((async (_input, init) => { requests.push(JSON.parse(String(init?.body))); return response("Hello!"); }) as typeof fetch);
+  await orchestrateToolCalling({ config: { ...cfg, privateAccessActive: true }, model: kimi,
+    messages: [{ role: "user", content: "Hello" }], entityId: "entity", write: () => {} });
+  expect(requests[0].messages[0].content).toContain("choose a supported model");
+  expect(requests[0].messages[0].content).not.toContain("Agent access");
+});

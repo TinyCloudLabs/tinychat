@@ -9,7 +9,8 @@
 // Ported from tinycloud-agents/tools/delegate-ui/src/delegate.ts (the live-proven
 // mint primitive), minus the DOM UI: the create() call, the lossy-`actions`
 // JWT-recovery fix, and the PortableDelegation assembly. Expiry was shortened to ≤7d
-// (decision 4), raised to 30d with the session window (SESSION_EXPIRATION_MS).
+// (decision 4), raised to the 30d session window (SESSION_EXPIRATION_MS), and the
+// grants are minted for 29d so clock skew cannot push them past the 30d ceiling.
 
 // `serializeDelegation` is loaded LAZILY (dynamic import) from @tinycloud/web-sdk
 // inside mintAgentDelegation — the only place it runs, in-browser. We deliberately
@@ -33,8 +34,14 @@ export const AGENT_DID = viteEnv?.VITE_AGENT_DID?.trim() || DEFAULT_AGENT_DID;
 /** The agent's memory db handle — FIXED (the space varies per user, the path does not). */
 export const AGENT_MEMORY_PATH = "xyz.tinycloud.eliza/memory";
 
-/** Default delegation lifetime — 30d, bounded by the minting session (also 30d). */
-export const AGENT_DELEGATION_EXPIRY_MS = SESSION_EXPIRATION_MS;
+/**
+ * Agent grant lifetime: 29 days. The backend courier and eliza-service reject
+ * a transcript grant that outlives their 30-day ceiling (SESSION_EXPIRATION_MS)
+ * on THEIR clock. A full 30 days minted on a browser clock a few seconds fast
+ * fails that check; the one-day margin absorbs skew. It also keeps each grant
+ * inside its parent consent session (30d, AGENT_CONSENT_MANIFEST.expiry).
+ */
+export const AGENT_DELEGATION_EXPIRY_MS = SESSION_EXPIRATION_MS - 24 * 60 * 60 * 1000;
 
 const SQL_ACTIONS = [
   "tinycloud.sql/read",
@@ -64,6 +71,7 @@ export const AGENT_CONSENT_MANIFEST: Manifest = {
   includePublicSpace: false,
   space: TINYCHAT_DATA_SPACE,
   prefix: "",
+  // The parent consent session. Grants minted from it last 29d (AGENT_DELEGATION_EXPIRY_MS).
   expiry: "30d",
   permissions: [
     {
@@ -366,6 +374,14 @@ export interface EnsureAgentSessionDeps {
 
 export type AgentSessionStatus = "active" | "expired" | "stale" | "none";
 
+/** The server rejected the courier POST; `code` is its stable error code, if it sent one. */
+export class AgentSessionError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string | null) {
+    super(message);
+    this.name = "AgentSessionError";
+  }
+}
+
 // Invalidating a session also prevents an already-open consent flow from posting.
 let sessionGeneration = 0;
 export function clearAgentSessionCache(): void {
@@ -440,13 +456,15 @@ export async function ensureAgentSession(
 
   if (!res.ok) {
     let detail = res.statusText;
+    let code: string | null = null;
     try {
       const err = (await res.json()) as { error?: string; message?: string };
       detail = err.message ?? err.error ?? detail;
+      if (typeof err.error === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(err.error)) code = err.error;
     } catch {
       // non-JSON error body
     }
-    throw new Error(`Failed to register agent session (${res.status}): ${detail}`);
+    throw new AgentSessionError(`Failed to register agent session (${res.status}): ${detail}`, res.status, code);
   }
 
   const body = await res.json() as AgentSessionSnapshot;
