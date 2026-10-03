@@ -15,6 +15,9 @@
 // `tinycloud.kv/metadata`, and a node metadata response carries no stored size
 // anyway (Content-Length is not replayed). A KV put is all-or-nothing, so a
 // listed part key is a fully committed part.
+//
+// Parts are at most MAX_AUDIO_PART_SIZE because the SDK sends a part as the
+// raw request body, and a browser sees an oversized body only as "Failed to fetch".
 
 import type { Result, ServiceError } from "@tinycloud/sdk-core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -53,13 +56,18 @@ export interface PutAudioOptions {
   fileName: string;
   mimeType: string;
   sha256?: string | null;
-  /** Bytes per stored part. Default 8 MiB; callers may pass 4 MiB on mobile. */
+  /** Bytes per stored part, at most (and by default) {@link MAX_AUDIO_PART_SIZE}. */
   partSize?: number;
   signal?: AbortSignal;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
 }
 
-export const DEFAULT_AUDIO_PART_SIZE = 8 * 1024 * 1024;
+/**
+ * The largest request body the production TinyCloud node accepts: nginx/1.27.4
+ * in front of tee.node.tinycloud.xyz caps bodies at 1 MiB (1,048,577 bytes get
+ * a CORS-less 413). Raise this together with that ingress limit.
+ */
+export const MAX_AUDIO_PART_SIZE = 1024 * 1024;
 
 /** Waits before each retry of a transient failure; its length bounds the retries. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -184,9 +192,9 @@ export async function putAudio(
   blob: Blob,
   opts: PutAudioOptions,
 ): Promise<StoredAudioManifest> {
-  const partSize = opts.partSize ?? DEFAULT_AUDIO_PART_SIZE;
-  if (!Number.isSafeInteger(partSize) || partSize <= 0) {
-    throw new RangeError("putAudio: partSize must be a positive integer");
+  const partSize = opts.partSize ?? MAX_AUDIO_PART_SIZE;
+  if (!Number.isSafeInteger(partSize) || partSize <= 0 || partSize > MAX_AUDIO_PART_SIZE) {
+    throw new RangeError(`putAudio: partSize must be an integer from 1 to ${MAX_AUDIO_PART_SIZE}`);
   }
   const { signal, onProgress } = opts;
   const total = blob.size;
@@ -317,13 +325,14 @@ export async function getAudioManifest(
 export async function getAudio(
   kv: TinyCloudKv,
   base: string,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; onProgress?: (loadedBytes: number, totalBytes: number) => void } = {},
 ): Promise<Blob | null> {
-  const { signal } = opts;
+  const { signal, onProgress } = opts;
   if (signal?.aborted) throw abortError();
   const manifest = await getAudioManifest(kv, base);
   if (!manifest) return null;
   const chunks: Blob[] = [];
+  let loaded = 0;
   for (let index = 0; index < manifest.parts.length; index++) {
     const expected = manifest.parts[index].size;
     const key = partKey(base, index);
@@ -344,6 +353,8 @@ export async function getAudio(
     }
     // One Blob per part lets the browser hold the bytes outside the JS heap.
     chunks.push(new Blob([bytes]));
+    loaded += expected;
+    onProgress?.(loaded, manifest.size);
   }
   return new Blob(chunks, { type: manifest.mimeType });
 }

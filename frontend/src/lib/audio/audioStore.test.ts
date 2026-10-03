@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   AudioStoreQuotaError,
+  MAX_AUDIO_PART_SIZE,
   type TinyCloudKv,
   audioBaseKey,
   deleteAudio,
@@ -129,9 +130,19 @@ describe("audioStore", () => {
       { size: 4, etag: `"etag-${BASE}/p/000001"` },
       { size: 2, etag: `"etag-${BASE}/p/000002"` },
     ]);
+
     const blob = await getAudio(fake.kv, BASE);
     expect(blob?.type).toBe("audio/mp4");
     expect(await bytesOf(blob!)).toEqual(await bytesOf(audioBlob()));
+  });
+
+  test("a part larger than the node's request-body cap is refused before any write", async () => {
+    const fake = new FakeKv();
+
+    const result = putAudio(fake.kv, BASE, audioBlob(), { ...OPTS, partSize: MAX_AUDIO_PART_SIZE + 1 });
+
+    await expect(result).rejects.toBeInstanceOf(RangeError);
+    expect(fake.puts).toEqual([]);
   });
 
   test("getAudio refuses a part whose size disagrees with the manifest", async () => {
