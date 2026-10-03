@@ -4,7 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { applyNodeChanges, Background, Controls, ReactFlow, type Edge, type Node, type NodeChange } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
-import { getCanvas, promoteLegacyThread, saveCanvas } from "../../lib/conversationCanvasStore";
+import { openCanvas, promoteLegacyThread, saveCanvas, selectCanvasBranch } from "../../lib/conversationCanvasStore";
 import {
   activeAncestry,
   branchAt,
@@ -14,7 +14,6 @@ import {
   removeDocumentPlacement,
   saveDocumentVersion,
   type ConversationCanvas as CanvasModel,
-  normalizeLegacyMessages,
 } from "./model";
 import { NextRequestRail } from "./NextRequestRail";
 import { resetRequestAttempt } from "./requestContext";
@@ -27,9 +26,20 @@ interface ConversationCanvasProps {
   onCanvasChange?: (canvas: CanvasModel) => void;
 }
 
+/**
+ * Shown before a chat is switched to Canvas. Switching is explicit because
+ * picking a branch later changes the chat everywhere it is read.
+ */
+export const CANVAS_SWITCH_WARNING =
+  "Canvas keeps this chat's other branches and pinned documents in your TinyCloud space. "
+  + "When you continue from an earlier message, the chat itself changes to that branch everywhere: here, on your other devices, in other Exo app versions and in share links. "
+  + "The other branches stay in Canvas. Pinned documents are sent with your next messages but never become part of the chat or its share links.";
+
 export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onSwitchToChat, onCanvasChange }: ConversationCanvasProps) {
   const composerDraft = useAuiState((state) => state.composer.text);
   const [canvas, setCanvas] = useState<CanvasModel | null>(null);
+  const [promoted, setPromoted] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [documentTitle, setDocumentTitle] = useState("Canvas note");
@@ -37,21 +47,44 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
 
   useEffect(() => {
     let cancelled = false;
-    void promoteLegacyThread(tcw, threadId).then((value) => {
-      if (!cancelled) setCanvas(value ?? normalizeLegacyMessages([], threadId));
+    setCanvas(null);
+    setError(null);
+    void openCanvas(tcw, threadId).then((value) => {
+      if (cancelled) return;
+      setCanvas(value.canvas);
+      setPromoted(value.promoted);
     }).catch((reason) => {
       if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
     });
     return () => { cancelled = true; };
   }, [tcw, threadId]);
 
+  const switchToCanvas = useCallback(() => {
+    setSwitching(true);
+    setError(null);
+    void promoteLegacyThread(tcw, threadId).then((value) => {
+      setCanvas(value);
+      setPromoted(true);
+    }).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => setSwitching(false));
+  }, [tcw, threadId]);
+
   const update = useCallback((next: CanvasModel, semantic = true) => {
+    if (!promoted) return;
     const branchChanged = canvas?.activeHeadId !== next.activeHeadId;
     if (semantic) resetRequestAttempt(threadId);
     setCanvas(next);
-    if (branchChanged) onCanvasChange?.(next);
-    void saveCanvas(tcw, next).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [canvas?.activeHeadId, onCanvasChange, tcw, threadId]);
+    setError(null);
+    const fail = (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason));
+    if (branchChanged) {
+      // The chat history is rewritten to the picked branch before the chat
+      // view shows it, so every reader agrees.
+      void selectCanvasBranch(tcw, next).then(() => onCanvasChange?.(next)).catch(fail);
+      return;
+    }
+    void saveCanvas(tcw, next).catch(fail);
+  }, [canvas?.activeHeadId, onCanvasChange, promoted, tcw, threadId]);
 
   const ancestry = useMemo(() => canvas ? activeAncestry(canvas) : new Set<string>(), [canvas]);
   const nodes = useMemo<Node[]>(() => (canvas?.nodes ?? []).map((node, index) => ({
@@ -76,18 +109,29 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div>
           <h2 className="text-sm font-semibold">Conversation Canvas</h2>
-          <p className="text-xs text-muted-foreground">Active branch: {activeNode?.role ?? "new"}</p>
+          <p className="text-xs text-muted-foreground">{promoted ? `Active branch: ${activeNode?.role ?? "new"}` : "Preview — this chat is not using Canvas"}</p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={onSwitchToChat}>Return to Chat</Button>
       </div>
+      {error && <p role="alert" className="border-b border-border px-3 py-2 text-xs text-destructive">{error}</p>}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_18rem]">
         <div className="min-h-[18rem]">
-          <ReactFlow nodes={flowNodes.length > 0 ? flowNodes : nodes} edges={edges} onNodesChange={onNodesChange} onNodeDragStop={(_event, node) => update({ ...canvas, nodes: canvas.nodes.map((item) => item.id === node.id ? { ...item, position: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } : item) }, false)} fitView nodesDraggable={!editingDisabled} nodesConnectable={false} deleteKeyCode={null} aria-label="Conversation branches">
+          <ReactFlow nodes={flowNodes.length > 0 ? flowNodes : nodes} edges={edges} onNodesChange={onNodesChange} nodesDraggable={promoted && !editingDisabled} onNodeDragStop={(_event, node) => update({ ...canvas, nodes: canvas.nodes.map((item) => item.id === node.id ? { ...item, position: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } : item) }, false)} fitView nodesConnectable={false} deleteKeyCode={null} aria-label="Conversation branches">
             <Background />
             <Controls />
           </ReactFlow>
         </div>
         <aside className="overflow-y-auto border-t border-border p-3 text-xs lg:border-l lg:border-t-0">
+          {!promoted ? (
+            <div className="space-y-3">
+              <h3 className="font-medium">Use Canvas for this chat?</h3>
+              <p className="leading-relaxed text-muted-foreground">{CANVAS_SWITCH_WARNING}</p>
+              <Button type="button" size="sm" className="w-full" disabled={editingDisabled || switching || canvas.nodes.length === 0} onClick={switchToCanvas}>
+                {switching ? "Switching…" : "Use Canvas for this chat"}
+              </Button>
+              {canvas.nodes.length === 0 && <p className="text-muted-foreground">Send a message first.</p>}
+            </div>
+          ) : <>
           <NextRequestRail
             canvas={canvas}
             newUserMessage={composerDraft}
@@ -126,6 +170,7 @@ export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onS
               );
             })}
           </div>
+          </>}
         </aside>
       </div>
     </div>

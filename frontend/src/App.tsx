@@ -122,8 +122,7 @@ import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore"
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 import { useConversationCanvasFeature } from "./chat/useExperimentalFeatures";
-import { getCanvas, isCanvasPromoted } from "./lib/conversationCanvasStore";
-import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
+import { promotedCanvasForTurn, useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
@@ -1329,8 +1328,7 @@ function ChatWorkspace(props: {
       meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
       contextTokensFor: props.contextTokensFor,
-      getCanvas: (threadId: string) => getCanvas(props.tcw, threadId),
-      isCanvasPromoted: (threadId: string) => isCanvasPromoted(props.tcw, threadId),
+      getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(props.tcw, threadId),
       getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
       appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
         appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),

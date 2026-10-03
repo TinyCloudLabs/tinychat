@@ -44,7 +44,7 @@ import type { ModelSelectionCoordinator } from "./modelSelection";
 import { meetingSourceLabel } from "../lib/connectors/meetingExplorer";
 import type { MeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import { assembleRequestContext, publishRequestAttempt } from "./canvas/requestContext";
-import type { ConversationCanvas } from "./canvas/model";
+import { alignActivePath, type ConversationCanvas } from "./canvas/model";
 import type { MeetingCandidate, MeetingRetrievalOutcome } from "../lib/meetingChat/types";
 
 /**
@@ -116,10 +116,8 @@ export function subscribeThreadCompaction(cb: () => void): () => void {
 
 /** Subset of ChatRuntimeDeps consumed by the adapter factory. */
 export interface AdapterDeps {
-  /** Optional canvas read hook; omitted in legacy/unit harnesses. */
-  getCanvas?: (threadId: string) => Promise<ConversationCanvas | null>;
-  /** Distinguishes an unpromoted legacy thread from unavailable Canvas data. */
-  isCanvasPromoted?: (threadId: string) => Promise<boolean>;
+  /** The Canvas of a chat switched to Conversation Canvas (null otherwise); omitted in harnesses. */
+  getPromotedCanvas?: (threadId: string) => Promise<ConversationCanvas | null>;
   sessionStore: SessionStore;
   backendUrl: string;
   selection: ModelSelectionCoordinator;
@@ -360,18 +358,16 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       const fixedSystemBlockChars =
         (memoryBlock?.content.length ?? 0) + (meetingSystemBlock?.content.length ?? 0);
       const messageIds = convo.map((m) => m.id);
-      let canvasState: ConversationCanvas | null = null;
-      if (deps.getCanvas) {
-        try {
-          canvasState = await deps.getCanvas(threadId);
-          if (!canvasState && await deps.isCanvasPromoted?.(threadId)) {
-            throw new Error("Conversation Canvas data is unavailable for this promoted chat.");
-          }
-        } catch (error) {
-          if (await deps.isCanvasPromoted?.(threadId)) throw error;
-          canvasState = null;
-        }
-      }
+      // Only a chat switched to Canvas has one. Its active branch is aligned to
+      // this turn's chat history (what every reader sees); Canvas contributes
+      // the pinned documents and their positions.
+      const promotedCanvas = deps.getPromotedCanvas ? await deps.getPromotedCanvas(threadId) : null;
+      const canvasState = promotedCanvas
+        ? alignActivePath(
+            promotedCanvas,
+            convo.flatMap((message) => (message.id ? [{ id: message.id, role: message.role, content: message.content }] : [])),
+          ).canvas
+        : null;
       const latestUserMessage = [...convo].reverse().find((message) => message.role === "user")?.content ?? "";
       const latestUserMessageId = [...convo].reverse().find((message) => message.role === "user")?.id;
 

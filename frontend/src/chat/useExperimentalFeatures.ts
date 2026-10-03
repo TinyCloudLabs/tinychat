@@ -14,6 +14,7 @@ export function useConversationCanvasFeature(tcw: TinyCloudWeb, billingStatus: B
   const eligible = isConversationCanvasEligible(billingStatus);
   const [enabled, setEnabledState] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const cacheKey = useMemo(() => `${CACHE_KEY}:${tcw.did ?? tcw.spaceId ?? "anonymous"}`, [tcw]);
 
   useEffect(() => {
@@ -31,18 +32,28 @@ export function useConversationCanvasFeature(tcw: TinyCloudWeb, billingStatus: B
     void getCanvasEnabled(tcw).then((value) => {
       if (!cancelled) setEnabledState(value);
     }).catch(() => {
-      // Keep the local instant value if the capability is temporarily unavailable.
+      // The thread list surfaces this read's failure; keep the local instant value.
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; window.removeEventListener("tinychat:experimental-feature", onFeatureChange); };
   }, [cacheKey, eligible, tcw]);
 
   const setEnabled = useCallback(async (value: boolean) => {
     if (!eligible) return;
+    setError(null);
+    setLoading(true);
+    try {
+      // Turning Canvas on first confirms (or requests) its storage permission.
+      await setCanvasEnabled(tcw, value);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    } finally {
+      setLoading(false);
+    }
     setEnabledState(value);
     try { window.localStorage.setItem(cacheKey, String(value)); } catch { /* optional cache */ }
     window.dispatchEvent(new CustomEvent("tinychat:experimental-feature", { detail: { key: cacheKey, enabled: value } }));
-    await setCanvasEnabled(tcw, value);
   }, [cacheKey, eligible, tcw]);
 
-  return { eligible, enabled: eligible && enabled, loading, setEnabled };
+  return { eligible, enabled: eligible && enabled, loading, error, setEnabled };
 }

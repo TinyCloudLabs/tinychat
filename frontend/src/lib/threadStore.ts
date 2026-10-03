@@ -345,6 +345,25 @@ export async function setSetting(tcw: TinyCloudWeb, key: string, value: string):
   if (!res.ok) throw new SqlOpError(res.error, "setSetting");
 }
 
+/** Read every cross-device setting whose key starts with `prefix`, in one query. */
+export async function getSettingsByPrefix(tcw: TinyCloudWeb, prefix: string): Promise<Map<string, string>> {
+  const local = localStores.get(tcw);
+  if (local) return new Map([...local.settings].filter(([key]) => key.startsWith(prefix)));
+  await ensureSchema(tcw);
+  // A key range instead of LIKE: `_` and `%` in keys must never act as wildcards.
+  const res = await store(tcw).query(
+    "SELECT key, value FROM settings WHERE key >= ? AND key < ?",
+    [prefix, `${prefix}\uffff`],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "getSettingsByPrefix");
+  const settings = new Map<string, string>();
+  for (const row of res.data.rows) {
+    const key: unknown = row[0];
+    if (typeof key === "string" && key.startsWith(prefix)) settings.set(key, cellStr(row, 1, ""));
+  }
+  return settings;
+}
+
 // ── Memory (per-space user_context doc, single row) ───────────────────
 
 /** localStorage cache key for the per-space memory doc. */
@@ -1086,43 +1105,40 @@ export async function appendMessage(
   });
 }
 
-/** Update/create only the legacy thread index row; never inserts a message payload. */
-export async function upsertThreadIndex(
+/**
+ * Replace a thread's stored messages with exactly `items`, in order. Used by
+ * Conversation Canvas when the user picks another branch: this table stays
+ * the chat's single linear history, so share links and every other client
+ * read the same branch the chat shows instead of a stale one.
+ */
+export async function replaceThreadMessages(
   tcw: TinyCloudWeb,
   id: string,
-  metadata: { title?: string; model?: string },
+  items: readonly StoredMessageItem[],
 ): Promise<void> {
   const local = localStores.get(tcw);
   const now = new Date().toISOString();
   if (local) {
-    const prior = local.threads.get(id);
-    local.threads.set(id, {
-      id,
-      title: metadata.title ?? prior?.title ?? DEFAULT_TITLE,
-      model: metadata.model ?? prior?.model ?? DEFAULT_MODEL,
-      createdAt: prior?.createdAt ?? now,
-      updatedAt: now,
-      messages: prior?.messages ?? [],
-    });
+    const doc = local.threads.get(id);
+    if (!doc) throw new Error("Cannot replace the messages of an unknown chat");
+    local.threads.set(id, { ...doc, messages: structuredClone([...items]), updatedAt: now });
     notifyLocalThreads(tcw, id);
     return;
   }
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
     await ensureSchema(tcw);
-    const prior = await store(tcw).query("SELECT title, model, created_at FROM threads WHERE id = ?", [id]);
-    if (!prior.ok) throw new SqlOpError(prior.error, "upsertThreadIndex(read)");
-    const row = prior.data.rows[0];
-    const title = metadata.title ?? cellStr(row ?? [], 0, DEFAULT_TITLE);
-    const model = metadata.model ?? cellStr(row ?? [], 1, DEFAULT_MODEL);
-    const createdAt = cellStr(row ?? [], 2, now);
-    const result = await store(tcw).execute(
-      `INSERT INTO threads (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET title = excluded.title, model = excluded.model, updated_at = excluded.updated_at`,
-      [id, title, model, createdAt, now],
-    );
-    if (!result.ok) throw new SqlOpError(result.error, "upsertThreadIndex(write)");
-    patchCacheEntry(tcw, { id, title, model, updatedAt: now });
+    const res = await store(tcw).batch([
+      { sql: "DELETE FROM messages WHERE thread_id = ?", params: [id] },
+      ...items.map((item, position) => ({
+        sql: "INSERT INTO messages (thread_id, position, payload, created_at) VALUES (?, ?, ?, ?)",
+        params: [id, position, JSON.stringify(item), now],
+      })),
+      { sql: "UPDATE threads SET updated_at = ? WHERE id = ?", params: [now, id] },
+    ]);
+    if (!res.ok) throw new SqlOpError(res.error, "replaceThreadMessages");
+    const cached = readCache(tcw)?.find((summary) => summary.id === id);
+    if (cached) patchCacheEntry(tcw, { ...cached, updatedAt: now });
     historyPrefetch.invalidate(id);
     notifyThreadIndex(readCache(tcw) ?? []);
   });

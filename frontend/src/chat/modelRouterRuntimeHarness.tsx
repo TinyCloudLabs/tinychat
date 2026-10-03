@@ -9,8 +9,7 @@ import type { SelectionView, ModelSelectionController } from "./modelSelection";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import { DEFAULT_CONTEXT_TOKENS } from "./compaction";
 import {
-  getCanvas,
-  isCanvasPromoted,
+  promotedCanvasForTurn,
   useLocalCanvasStorage,
 } from "../lib/conversationCanvasStore";
 
@@ -31,6 +30,7 @@ declare global {
       releaseRestore: () => void;
       events: string[];
       view: () => SelectionView;
+      messageIds: (id: string) => string[];
     };
   }
 }
@@ -41,6 +41,9 @@ const events: string[] = [];
 const savedId = "saved-thread";
 const rows = new Map<string, { title: string; model: string; updatedAt: string }>();
 const messages = new Map<string, string[]>();
+const settings = new Map<string, string>();
+// `canvas=1` stands for an account that turned Canvas on in Settings.
+if (params.get("canvas") === "1") settings.set("conversation-canvas-enabled", "true");
 if (scenario.includes("reopen") || scenario.includes("restore") || scenario.includes("cancel-lookup")) {
   rows.set(savedId, {
     title: "Saved",
@@ -91,6 +94,10 @@ const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
 
 const sql = {
   async query(statement: string, values: unknown[] = []) {
+    if (statement.includes("FROM settings WHERE key >= ?")) {
+      const [from, to] = values.map(String);
+      return { ok: true, data: { rows: [...settings].filter(([key]) => key >= from && key < to) } };
+    }
     if (statement.includes("SELECT id, title, model, updated_at FROM threads")) {
       return { ok: true, data: { rows: [...rows].map(([id, row]) => [id, row.title, row.model, row.updatedAt]) } };
     }
@@ -125,6 +132,7 @@ const sql = {
     return { ok: true, data: { rows: [] } };
   },
   async execute(statement: string, values: unknown[] = []) {
+    if (statement.startsWith("INSERT INTO settings")) settings.set(String(values[0]), String(values[1]));
     if (statement.startsWith("UPDATE threads SET model")) {
       if (scenario.includes("save-delay")) await saveGate;
       if (failSave) { failSave = false; return { ok: false, error: { code: "SAVE", message: "controlled save failure" } }; }
@@ -137,6 +145,13 @@ const sql = {
   },
   async batch(operations: Array<{ sql: string; params?: unknown[] }>) {
     if (operations.some((operation) => operation.sql.includes("CREATE TABLE"))) {
+      return { ok: true, data: { rows: [] } };
+    }
+    if (operations[0]?.sql === "DELETE FROM messages WHERE thread_id = ?" && !operations.some((operation) => operation.sql.includes("DELETE FROM threads"))) {
+      const id = String(operations[0].params?.[0]);
+      const payloads = operations.filter((operation) => operation.sql.startsWith("INSERT INTO messages")).map((operation) => String(operation.params?.[2]));
+      messages.set(id, payloads);
+      events.push(`replace:${id}:${payloads.map((payload) => JSON.parse(payload).message.id).join(",")}`);
       return { ok: true, data: { rows: [] } };
     }
     const threadInsert = operations.find((operation) => operation.sql.includes("INSERT INTO threads"));
@@ -210,8 +225,7 @@ function Harness() {
     agentEnabledRef,
     privateAccessRef,
     meetingMessageRegistry: registry,
-    getCanvas: (threadId: string) => getCanvas(tcw, threadId),
-    isCanvasPromoted: (threadId: string) => isCanvasPromoted(tcw, threadId),
+    getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(tcw, threadId),
     getCheckpoint: async () => null,
     appendCompaction: async () => { throw new Error("unexpected compaction"); },
     summarize: async () => { throw new Error("unexpected summary"); },
@@ -241,6 +255,7 @@ function Harness() {
       },
       events,
       view: () => viewRef.current,
+      messageIds: (id) => (messages.get(id) ?? []).map((payload) => JSON.parse(payload).message.id),
     };
   }, [runtime]);
 

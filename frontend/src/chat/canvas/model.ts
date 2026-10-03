@@ -11,6 +11,12 @@ export interface CanvasMessage {
   /** Meeting evidence is deliberately runtime-only and never durable. */
   transient?: boolean;
   position?: { x: number; y: number };
+  /**
+   * The full chat message item (JSON) as the chat stores it, so picking this
+   * branch can restore the chat's own history without losing tool activity,
+   * receipts or attachments.
+   */
+  payload?: string;
 }
 
 export interface DocumentVersion {
@@ -61,6 +67,15 @@ export interface LegacyMessageLike {
   createdAt?: string;
 }
 
+/** One message of the chat's linear history, in order. */
+export interface PathMessage {
+  id: string;
+  role: CanvasRole;
+  content: string;
+  createdAt?: string;
+  payload?: string;
+}
+
 export function messageText(item: StoredMessageItem): string {
   return (item.message?.content ?? [])
     .map((part) => {
@@ -70,28 +85,44 @@ export function messageText(item: StoredMessageItem): string {
     .join("");
 }
 
+/** The durable messages of a stored (or legacy-shaped) linear history, in order. */
+export function pathFromMessages(messages: readonly (StoredMessageItem | LegacyMessageLike)[]): PathMessage[] {
+  const path: PathMessage[] = [];
+  for (const item of messages) {
+    const itemMeta = item as StoredMessageItem & { transient?: boolean; meetingEvidence?: boolean };
+    if (itemMeta.transient || itemMeta.meetingEvidence) continue;
+    const stored = "message" in item;
+    const value = stored ? item.message : item;
+    const id = typeof value?.id === "string" ? value.id : "";
+    const role = value?.role;
+    if (!id || (role !== "user" && role !== "assistant" && role !== "system")) continue;
+    path.push({
+      id,
+      role,
+      content: stored ? messageText(item) : item.content,
+      ...(typeof (value as { createdAt?: unknown }).createdAt === "string"
+        ? { createdAt: String((value as { createdAt: unknown }).createdAt) }
+        : {}),
+      ...(stored ? { payload: JSON.stringify(item) } : {}),
+    });
+  }
+  return path;
+}
+
 /** Convert the incumbent linear history to the canonical graph. */
 export function normalizeLegacyMessages(
   messages: readonly (StoredMessageItem | LegacyMessageLike)[],
   threadId = "",
 ): ConversationCanvas {
   const nodes: CanvasMessage[] = [];
-  for (const item of messages) {
-    const itemMeta = item as StoredMessageItem & { transient?: boolean; meetingEvidence?: boolean };
-    if (itemMeta.transient || itemMeta.meetingEvidence) continue;
-    const value = "message" in item ? item.message : item;
-    const id = typeof value?.id === "string" ? value.id : "";
-    const role = value?.role;
-    if (!id || (role !== "user" && role !== "assistant" && role !== "system")) continue;
-    const content = "message" in item ? messageText(item) : item.content;
+  for (const message of pathFromMessages(messages)) {
     nodes.push({
-      id,
+      id: message.id,
       parentId: nodes.at(-1)?.id ?? null,
-      role,
-      content,
-      createdAt: typeof (value as { createdAt?: unknown }).createdAt === "string"
-        ? (value as { createdAt: string }).createdAt
-        : new Date(0).toISOString(),
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt ?? new Date(0).toISOString(),
+      ...(message.payload === undefined ? {} : { payload: message.payload }),
     });
   }
   return {
@@ -118,6 +149,70 @@ export function activeAncestry(canvas: Pick<ConversationCanvas, "nodes" | "activ
     id = byId.get(id)?.parentId ?? null;
   }
   return result;
+}
+
+/**
+ * Make the chat's linear history the Canvas active branch. The chat history is
+ * what share links and every client read, so it wins: messages Canvas has not
+ * seen (e.g. sent from an older app) are added under their chat parent, a node
+ * whose parent disagrees is re-parented, and the active head becomes the last
+ * chat message. Other branches are kept.
+ */
+export function alignActivePath(
+  canvas: ConversationCanvas,
+  path: readonly PathMessage[],
+): { canvas: ConversationCanvas; changed: boolean } {
+  const nodes = [...canvas.nodes];
+  const index = new Map(nodes.map((node, at) => [node.id, at]));
+  let changed = false;
+  let parentId: string | null = null;
+  for (const message of path) {
+    const at = index.get(message.id);
+    if (at === undefined) {
+      index.set(message.id, nodes.length);
+      nodes.push({
+        id: message.id,
+        parentId,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt ?? new Date(0).toISOString(),
+        ...(message.payload === undefined ? {} : { payload: message.payload }),
+      });
+      changed = true;
+    } else {
+      const node = nodes[at];
+      const reparent = node.parentId !== parentId;
+      const fillPayload = node.payload === undefined && message.payload !== undefined;
+      if (reparent || fillPayload) {
+        nodes[at] = { ...node, parentId, ...(fillPayload ? { payload: message.payload } : {}) };
+        changed = true;
+      }
+    }
+    parentId = message.id;
+  }
+  if (canvas.activeHeadId !== parentId) changed = true;
+  return changed ? { canvas: { ...canvas, nodes, activeHeadId: parentId }, changed } : { canvas, changed };
+}
+
+/** The active branch as chat message items, oldest first (payloads where known). */
+export function activePathItems(canvas: ConversationCanvas): StoredMessageItem[] {
+  return activeBranch(canvas).map((node) => {
+    if (node.payload !== undefined) return JSON.parse(node.payload) as StoredMessageItem;
+    const baseMessage = {
+      id: node.id,
+      role: node.role,
+      content: [{ type: "text" as const, text: node.content }],
+      createdAt: node.createdAt,
+    };
+    const message = node.role === "assistant"
+      ? {
+          ...baseMessage,
+          status: { type: "complete" as const, reason: "stop" as const },
+          metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} },
+        }
+      : { ...baseMessage, attachments: [], metadata: { custom: {} } };
+    return { parentId: null, message } as unknown as StoredMessageItem;
+  });
 }
 
 export function branchAt(canvas: ConversationCanvas, parentId: string | null): ConversationCanvas {

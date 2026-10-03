@@ -226,6 +226,7 @@ export function SettingsPage({
                   <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${conversationCanvas.enabled ? "left-6" : "left-1"}`} />
                 </button>
               </div>
+              {conversationCanvas.error && <p role="alert" className="mt-2 text-xs text-destructive">{conversationCanvas.error}</p>}
             </SectionCard>
           )}
         </div>

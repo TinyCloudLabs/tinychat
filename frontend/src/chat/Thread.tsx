@@ -1,5 +1,7 @@
 import {
   createContext,
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -60,9 +62,14 @@ import { getThreadCompaction, subscribeThreadCompaction } from "./chatModelAdapt
 import { ModelVerificationBadge } from "./ModelVerificationBadge";
 import { ToolActivityChip } from "./ToolActivityChip";
 import type { SelectionView } from "./modelSelection";
-import { ConversationCanvas } from "./canvas/ConversationCanvas";
 import { repositoryFromCanvas } from "./runtime";
 import type { ConversationCanvas as CanvasModel } from "./canvas/model";
+
+// Loaded on first use, so the graph library and its CSS stay out of the main
+// bundle for everyone who never opens Canvas.
+const ConversationCanvas = lazy(() =>
+  import("./canvas/ConversationCanvas").then((module) => ({ default: module.ConversationCanvas })),
+);
 
 interface ThreadProps {
   tcw: TinyCloudWeb;
@@ -94,7 +101,11 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
           )}
           <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             {surface === "canvas" ? (
-              <div className="h-full w-full"><ConversationCanvas tcw={tcw} threadId={threadId ?? ""} editingDisabled={isRunning} onCanvasChange={applyCanvasToRuntime} onSwitchToChat={() => setSurface("chat")} /></div>
+              <div className="h-full w-full">
+                <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
+                  <ConversationCanvas tcw={tcw} threadId={threadId ?? ""} editingDisabled={isRunning} onCanvasChange={applyCanvasToRuntime} onSwitchToChat={() => setSurface("chat")} />
+                </Suspense>
+              </div>
             ) : <div className="flex w-full max-w-[46rem] flex-1 flex-col gap-6 pt-8">
                 <CompactionIndicator />
                 {!selection.canSend && selection.message && (
