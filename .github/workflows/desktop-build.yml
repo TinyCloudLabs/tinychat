@@ -7,6 +7,12 @@ name: Desktop build (Exo)
 # CFBundleShortVersionString is numeric X.Y.Z (a beta X.Y.Z-beta.N ships as X.Y.Z) and CFBundleVersion is the build
 # number XYYZZSSS (stage = beta number, 999 for stable). The app's own version stays the semver.
 #
+# Release tooling vs app source: the app is built from `ref` (a release tag's commit for releases), but the scripts
+# this workflow runs (scripts/release: bundle-config, version mapping, signing verification) are checked out
+# separately into .release-tooling at github.workflow_sha, the commit of the calling workflow (main for releases). So
+# the workflow and the tooling it invokes always come from the same trusted commit, and re-releasing an older tag never
+# runs that tag's older scripts (exo-desktop@0.2.0-beta.3 failed on an unknown --ad-hoc-sign that way).
+#
 # Cache: the Rust target dir and cargo registry/git (whisper.cpp, MLX, anarlog and ~1,100 crates; SwiftPM build
 # products live in the Rust target dir) share one key across CI and release jobs. Only main's own CI builds write it
 # (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
@@ -106,6 +112,16 @@ jobs:
           [ -n "$tags" ] || fail "no exo-desktop release tag points at $sha"
           echo "Signing $sha ($tags) with $WORKFLOW_REF at $WORKFLOW_SHA"
 
+      # The release tooling, from the workflow's own commit (verified on main above for signed builds), never from
+      # the commit being built. Only scripts/release; no credentials are kept and no secret is in reach.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tooling
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
       # Before any build minutes are spent. Tauri alone would sign but skip notarization with only a warning when
       # the API key is missing; this check and verify-desktop-signing.sh make that a failure.
       - name: Check signing secrets
@@ -193,13 +209,14 @@ jobs:
         run: bun run build:packages
 
       # Unsigned builds get signingIdentity "-" (ad-hoc); signed builds take APPLE_SIGNING_IDENTITY in the bundle step.
+      # The workflow commit's script reads the version from the built tree (--root).
       - name: Bundle versions
         id: bundle
         run: |
           if [ "$SIGN" = true ]; then
-            node scripts/release/desktop-bundle-config.mjs --out "$RUNNER_TEMP/exo-bundle"
+            node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle"
           else
-            node scripts/release/desktop-bundle-config.mjs --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
+            node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
           fi
 
       # tauri build runs the frontend production build itself
@@ -293,7 +310,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           dmg=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
-          scripts/release/verify-desktop-signing.sh desktop/src-tauri/target/release/bundle/macos/Exo.app "$dmg" "$APPLE_TEAM_ID"
+          .release-tooling/scripts/release/verify-desktop-signing.sh desktop/src-tauri/target/release/bundle/macos/Exo.app "$dmg" "$APPLE_TEAM_ID"
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       # Gatekeeper (spctl) still rejects ad-hoc code; that is expected and not checked.

@@ -214,6 +214,13 @@ are `Exo_<version>_aarch64.dmg`, the matching `.app.zip` and
 web changelog entries of the tagged commit. A published release is never
 rebuilt (cut a new version).
 
+Only the app source comes from the tagged commit: the release tooling the
+workflows run (`scripts/release`: plan, bundle config, signing verification)
+is always checked out at the workflow commit (`github.workflow_sha`, main), so
+releasing an older tag never runs that tag's older scripts. A beta older than
+the latest stable `exo-desktop` tag on main (`0.2.0-beta.3` once `0.2.0` is
+out) is refused by the plan: superseded betas are not published.
+
 Apple needs numeric bundle versions, so every build maps the semver:
 
 | Exo version | `CFBundleShortVersionString` | `CFBundleVersion` (`XYYZZSSS`) |

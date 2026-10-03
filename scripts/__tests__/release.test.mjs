@@ -834,6 +834,37 @@ test('desktop-release-plan.mjs refuses bad tags, tags off main and version misma
   assert.match(offMain.stderr, /is not on main: only release tags on main are built/);
 });
 
+test('desktop-release-plan.mjs refuses a beta older than the latest stable exo-desktop tag on main', t => {
+  const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
+  const plan = tag => releasePlan(t, root, tag);
+  // A lower stable on main, and a higher stable tag that is not on main (never published), don't block the beta.
+  git(root, 'tag', '-a', 'exo-desktop@0.1.0', '-m', '0.1.0', sha);
+  git(root, 'checkout', '-q', '-b', 'side');
+  write(root, 'side.txt', 'off main\n');
+  git(root, 'tag', '-a', 'exo-desktop@0.9.0', '-m', 'off main', commitAll(root, 'not on main'));
+  git(root, 'checkout', '-q', 'main');
+  assert.equal(plan('exo-desktop@0.2.0-beta.3').result.status, 0);
+
+  // Stable 0.2.0 lands on main: its betas are superseded and refused before anything is written.
+  for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.2.0'; });
+  git(root, 'tag', '-a', 'exo-desktop@0.2.0', '-m', '0.2.0', commitAll(root, 'chore(release): stable versions [skip ci]'));
+  const refused = plan('exo-desktop@0.2.0-beta.3');
+  assert.equal(refused.result.status, 1);
+  assert.match(refused.result.stderr, /exo-desktop@0\.2\.0-beta\.3 is older than the latest stable release exo-desktop@0\.2\.0 on main: betas superseded by a stable release are not published/);
+  assert.doesNotMatch(refused.result.stdout, /^(sha|title)=/m);
+  assert.equal(existsSync(refused.notes), false);
+  // The stable itself and the next version's betas still publish.
+  assert.equal(plan('exo-desktop@0.2.0').result.status, 0);
+  for (const dir of ['desktop', 'frontend']) editJson(root, `${dir}/package.json`, pkg => { pkg.version = '0.2.1-beta.0'; });
+  const next = commitAll(root, 'chore(release): beta versions [skip ci]');
+  git(root, 'tag', '-a', 'exo-desktop@0.2.1-beta.0', '-m', '0.2.1-beta.0', next);
+  assert.equal(plan('exo-desktop@0.2.1-beta.0').result.status, 0);
+
+  // Versions compare numerically, not as strings: 0.10.0 is newer than 0.2.1-beta.0.
+  git(root, 'tag', '-a', 'exo-desktop@0.10.0', '-m', '0.10.0', next);
+  assert.match(plan('exo-desktop@0.2.1-beta.0').result.stderr, /is older than the latest stable release exo-desktop@0\.10\.0 on main/);
+});
+
 test('the Exo build is defined once and shared by CI and releases', () => {
   for (const name of ['desktop.yml', 'desktop-release.yml', 'desktop-build.yml']) {
     const text = read(repo, `.github/workflows/${name}`);
@@ -992,7 +1023,7 @@ test('release builds are signed from main only, compiled without secrets, and ve
   assert.match(build, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
 
   // Unsigned builds (CI and EXO_DESKTOP_SIGNING=unsigned releases) are ad-hoc sealed and must pass codesign --verify.
-  assert.match(step('Bundle versions'), /if \[ "\$SIGN" = true \]; then\n\s+node scripts\/release\/desktop-bundle-config\.mjs --out "\$RUNNER_TEMP\/exo-bundle"\n\s+else\n\s+node scripts\/release\/desktop-bundle-config\.mjs --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign\n/);
+  assert.match(step('Bundle versions'), /if \[ "\$SIGN" = true \]; then\n\s+node \.release-tooling\/scripts\/release\/desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle"\n\s+else\n\s+node \.release-tooling\/scripts\/release\/desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign\n/);
   const seal = step('Verify the ad-hoc seal');
   assert.match(seal, /^- name: Verify the ad-hoc seal\n\s+if: \$\{\{ !inputs\.sign \}\}\n/);
   assert.match(seal, /for bundle in desktop\/src-tauri\/target\/release\/bundle\/macos\/Exo\.app "\$mnt\/Exo\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
@@ -1003,6 +1034,57 @@ test('release builds are signed from main only, compiled without secrets, and ve
   assert.equal(conf.bundle.macOS.entitlements, 'Entitlements.plist');
   assert.match(read(repo, 'desktop/src-tauri/Entitlements.plist'), /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/);
   assert.equal(conf.bundle.macOS.signingIdentity, undefined, 'the identity comes from CI only, so local builds stay unsigned');
+});
+
+// Release tooling vs app source: a release builds the tag's commit, but every script the workflows run comes from the
+// workflow commit (github.workflow_sha, main for releases). exo-desktop@0.2.0-beta.3 failed when main's desktop-build.yml
+// passed --ad-hoc-sign to the tag's older desktop-bundle-config.mjs.
+test('desktop builds and releases run release tooling from the workflow commit, never from the built tree', t => {
+  const build = read(repo, '.github/workflows/desktop-build.yml');
+  const at = name => build.indexOf(`- name: ${name}\n`);
+  const tooling = build.slice(at('Check out the release tooling'), build.indexOf('\n\n', at('Check out the release tooling')));
+  assert.match(tooling, /\n\s+uses: actions\/checkout@[0-9a-f]{40} # v\S+\n\s+with:\n/);
+  assert.match(tooling, /\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n/);
+  assert.match(tooling, /\n\s+path: \.release-tooling\n/);
+  assert.match(tooling, /\n\s+persist-credentials: false$/);
+  assert.doesNotMatch(tooling, /secrets\.|inputs\.|if:/);
+  // Checked out after the provenance check verified the workflow commit is on main, before any secret or tooling use.
+  assert.ok(at('Verify signing provenance') < at('Check out the release tooling') && at('Check out the release tooling') < at('Check signing secrets'));
+  // Every script under scripts/release that the build runs (comments aside) is the tooling checkout's.
+  const code = text => text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
+  const scripts = code(build).match(/\S*scripts\/release\/\S+/g) ?? [];
+  assert.deepEqual(scripts, [
+    '.release-tooling/scripts/release/desktop-bundle-config.mjs',
+    '.release-tooling/scripts/release/desktop-bundle-config.mjs',
+    '.release-tooling/scripts/release/verify-desktop-signing.sh',
+  ]);
+
+  // The plan job's only checkout is the workflow commit; no other release job runs scripts/release.
+  const release = read(repo, '.github/workflows/desktop-release.yml');
+  const plan = release.slice(release.indexOf('  plan:'), release.indexOf('  build:'));
+  assert.equal((release.match(/uses: actions\/checkout@/g) ?? []).length, 1);
+  assert.match(plan, /uses: actions\/checkout@[0-9a-f]{40} # v\S+\n\s+with:\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n\s+fetch-depth: 0\n\s+persist-credentials: false\n/);
+  assert.deepEqual(code(release).match(/\S*scripts\/release\/\S+/g), ['scripts/release/desktop-release-plan.mjs']);
+  assert.ok(release.indexOf('scripts/release/desktop-release-plan.mjs') < release.indexOf('  build:'));
+
+  // Run the real "Bundle versions" step in a release tag's tree whose own (older) script would fail: it must use the
+  // tooling checkout's script and read the version from the built tree.
+  const workspace = manifests(t);
+  for (const dir of ['desktop', 'frontend']) editJson(workspace, `${dir}/package.json`, pkg => { pkg.version = '0.2.0-beta.3'; });
+  write(workspace, 'scripts/release/desktop-bundle-config.mjs', "throw new Error('the tag\\'s own release tooling ran');\n");
+  symlinkSync(repo, join(workspace, '.release-tooling'));
+  const temp = tempDir(t);
+  const output = join(temp, 'github-output');
+  writeFileSync(output, '');
+  const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', stepScript(build, 'Bundle versions')], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, SIGN: 'false', GITHUB_WORKSPACE: workspace, RUNNER_TEMP: temp, GITHUB_OUTPUT: output },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(output, 'utf8'), /^version=0\.2\.0-beta\.3$/m);
+  assert.match(readFileSync(output, 'utf8'), /^bundle-version=200003$/m);
+  assert.equal(JSON.parse(read(temp, 'exo-bundle/tauri.bundle.conf.json')).bundle.macOS.signingIdentity, '-');
 });
 
 test('verify-desktop-signing.sh rejects a missing app before running any check', t => {
