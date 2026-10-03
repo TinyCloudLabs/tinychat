@@ -62,7 +62,7 @@ export function ConnectorsPage({
           <LibraryPage tcw={tcw} meetingsSlot={meetingsSlot} />
         ) : (
           <div className="flex flex-col gap-4">
-            <VoiceNotesSection tcw={tcw} />
+            <VoiceNotesSection tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
             <ConnectorsCard
               tcw={tcw}
               backendUrl={backendUrl}

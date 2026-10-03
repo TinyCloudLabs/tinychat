@@ -19,7 +19,10 @@
 //   GET    /api/transcriber/private-cloud/transcriptions/:id/result   (202 = pending)
 //   POST   /api/transcriber/private-cloud/transcriptions/:id/cancel
 //   DELETE /api/transcriber/private-cloud/transcriptions/:id
-// The create call (POST /transcriptions) is made by native code, not here.
+// On the desktop the create call (POST /transcriptions) is made by native
+// code. Exo mobile has no native upload: its voice notes make the create call
+// from the webview with `createPrivateCloudJob` below
+// (lib/voiceNotes/voiceNoteTranscription.ts).
 
 import type { SessionStore } from "@tinyboilerplate/client";
 
@@ -329,6 +332,122 @@ export function createPrivateCloudApi(
       if (!response.ok) throw await readError(response);
     },
   };
+}
+
+// ── Create (webview callers) ───────────────────────────────────────────
+
+/** `trn_` + 26 Crockford base32 characters (PTX ULIDs). */
+export const TRANSCRIPTION_ID_RE = /^trn_[0-9A-HJKMNP-TV-Z]{26}$/;
+/** The only upload path the backend may hand out: relative, pinned to the job. */
+export const UPLOAD_PATH_RE = /^\/uploads\/trn_[0-9A-HJKMNP-TV-Z]{26}$/;
+const CAPABILITY_RE = /^tcu_[A-Za-z0-9_-]{16,256}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The create body (plan §4.4): metadata only, never audio. */
+export interface PrivateCloudCreateBody {
+  content_type: string;
+  byte_size: number;
+  sha256: string;
+  language: string;
+  channel_mode?: "separate" | "mixed";
+  channel_labels?: string[];
+}
+
+export interface PrivateCloudCreated {
+  id: string;
+  status: PrivateCloudJobStatus;
+  /** Present only while the job awaits its upload (a replay after the upload landed has none). */
+  upload: { path: string; capability: string } | null;
+}
+
+const JOB_STATUSES: readonly PrivateCloudJobStatus[] = [
+  "awaiting_upload",
+  "queued",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+];
+
+/** The create answer, strictly (desktop parse_created): anything off-contract is `upstream_bad_response`. */
+export function parseCreatedJob(body: unknown): PrivateCloudCreated {
+  const bad = (why: string) => new PrivateCloudError("upstream_bad_response", `Unexpected create response: ${why}`);
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw bad("not an object");
+  const o = body as Record<string, unknown>;
+  if (typeof o.id !== "string" || !TRANSCRIPTION_ID_RE.test(o.id)) throw bad("id");
+  if (typeof o.status !== "string" || !(JOB_STATUSES as readonly string[]).includes(o.status)) throw bad("status");
+  let upload: PrivateCloudCreated["upload"] = null;
+  if (o.upload !== undefined && o.upload !== null) {
+    const u = o.upload as Record<string, unknown>;
+    if (typeof u.path !== "string" || !UPLOAD_PATH_RE.test(u.path) || u.path !== `/uploads/${o.id}`) throw bad("upload path");
+    if (typeof u.capability !== "string" || !CAPABILITY_RE.test(u.capability)) throw bad("upload capability");
+    upload = { path: u.path, capability: u.capability };
+  }
+  if ((o.status === "awaiting_upload") !== (upload !== null)) throw bad("upload grant does not match status");
+  return { id: o.id, status: o.status as PrivateCloudJobStatus, upload };
+}
+
+/**
+ * POST the job to the backend (bearer, `Idempotency-Key`). Idempotent per
+ * `attemptId`: a replay after a lost answer returns the same job, with a fresh
+ * upload capability while it still awaits its upload. The desktop makes this
+ * call natively; Exo mobile makes it here.
+ */
+export async function createPrivateCloudJob(
+  backendUrl: string,
+  config: { sessionStore: SessionStore; fetchImpl?: typeof fetch },
+  request: { attemptId: string; correlationId: string; body: PrivateCloudCreateBody },
+): Promise<PrivateCloudCreated> {
+  if (!UUID_RE.test(request.attemptId)) throw new PrivateCloudError("invalid_argument", "The attempt id must be a UUID");
+  const token = config.sessionStore.getToken();
+  if (!token || config.sessionStore.isExpired()) throw new PrivateCloudError("unauthenticated", "Not signed in");
+  const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
+  const signal = AbortSignal.timeout(60_000);
+  let response: Response;
+  try {
+    response = await fetchImpl(`${backendUrl}${PRIVATE_CLOUD_BASE_PATH}/transcriptions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+        "Content-Type": "application/json",
+        "Idempotency-Key": request.attemptId,
+        "X-Correlation-Id": request.correlationId,
+      },
+      body: JSON.stringify(request.body),
+      redirect: "manual",
+      signal,
+    });
+  } catch {
+    throw new PrivateCloudError(signal.aborted ? "request_timeout" : "offline", "Could not reach the backend", {
+      correlationId: request.correlationId,
+    });
+  }
+  if (response.status === 401) throw new PrivateCloudError("unauthenticated", "Session expired");
+  // Dark, or this account is not in the cohort: the same 404 every caller gets.
+  if (response.status === 404) {
+    throw new PrivateCloudError("feature_unavailable", "Private cloud transcription is not available for this account");
+  }
+  if (response.status === 200 || response.status === 201) {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new PrivateCloudError("upstream_bad_response", "Unreadable create response");
+    }
+    return parseCreatedJob(body);
+  }
+  if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+    throw new PrivateCloudError("service_misconfigured", "The backend answered with a redirect; it was not followed");
+  }
+  const err = await readError(response);
+  if (err.correlationId !== null) throw err;
+  // The reference shown to the user: ours, when the answer carried none.
+  throw new PrivateCloudError(err.code, err.message, {
+    correlationId: request.correlationId,
+    retryAfterSeconds: err.retryAfterSeconds,
+    transcriptionId: err.transcriptionId,
+  });
 }
 
 // ── Native bridge ──────────────────────────────────────────────────────

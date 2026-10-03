@@ -18,8 +18,18 @@ import type {
 import { DEFAULT_MEETINGS_SOURCE } from "../connectors/meetingsView";
 import type { MeetingCandidate, MeetingCorpus, MeetingLaneHealth, MeetingRef } from "./types";
 
-/** The deliberately small MVP source allowlist, shared by SQL and KV discovery. */
-export const SUPPORTED_MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"] as const;
+/**
+ * The deliberately small MVP source allowlist, shared by SQL and KV discovery.
+ * `exo-local` is a desktop recording and `exo-voice-note` a phone voice note:
+ * both are browser-local rows whose transcript key is filled once transcribed.
+ */
+export const SUPPORTED_MEETING_SOURCES = [
+  "fireflies",
+  "google-meet",
+  "tinycloud-transcriber",
+  "exo-local",
+  "exo-voice-note",
+] as const;
 
 function isSupportedMeetingSource(source: string): boolean {
   return (SUPPORTED_MEETING_SOURCES as readonly string[]).includes(source);

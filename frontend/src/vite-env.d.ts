@@ -12,6 +12,12 @@ interface ImportMetaEnv {
   readonly VITE_FIREFLIES_API_URL?: string;
   /** Browser-e2e lane only — collapses the client's inter-request pacing. */
   readonly VITE_FIREFLIES_DELAY_MS?: string;
+  /**
+   * Exo mobile: the TinyCloud Private Transcription (ptx-batch) origin voice notes are uploaded to,
+   * e.g. `https://<app_id>-8080.<gateway>`. Unset (every build today) = voice-note transcription is
+   * never offered, whatever the backend says; the backend never supplies an upload origin.
+   */
+  readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
 }
 
 interface ImportMeta {
