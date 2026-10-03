@@ -81,7 +81,7 @@ function sha256(bytes: Uint8Array | string): string {
 // ── Mock PTX batch API: PTX main's real shapes (SPEC.md "Batch transcription", src/uploads/) ──
 
 const MAIN_CONTENT_TYPES = ["audio/mpeg", "audio/wav", "audio/ogg"];
-const C1_CONTENT_TYPES = [...MAIN_CONTENT_TYPES, "audio/mp4", "audio/webm", "audio/flac"];
+const AUDIO_CONTENT_TYPES = [...MAIN_CONTENT_TYPES, "audio/mp4", "audio/webm", "audio/flac"];
 
 /** PTX's stored result (src/uploads/worker.ts `assemble`) as `GET …/result` answers it. */
 function completedResult(id: string, options: { language?: string | null; diarized?: boolean } = {}) {
@@ -106,7 +106,7 @@ function completedResult(id: string, options: { language?: string | null; diariz
     provider: "tinfoil",
     model: "voxtral-small-24b",
     channels: options.diarized ? 1 : 2,
-    // PTX main has no `diarized`; a diarization-capable PTX (C2) always sends it.
+    // PTX main has no `diarized`; a diarization-capable PTX always sends it.
     ...(options.diarized === undefined ? {} : { diarized: options.diarized }),
     speakers,
     segments,
@@ -144,7 +144,7 @@ type Override = {
 
 /**
  * `diarization: null` (default) is PTX main: no `diarize` create field (unknown fields are a 400), no
- * `diarization` capability, three content types. A boolean is a C2 PTX with the stage on or off.
+ * `diarization` capability, three content types. A boolean is a diarization-capable PTX with the stage on or off.
  */
 async function startMockPtx() {
   const requests: { method: string; url: string; headers: Record<string, unknown>; body: string }[] = [];
@@ -238,7 +238,7 @@ async function startMockPtx() {
       max_bytes: MAX_RECORDING_BYTES,
       max_duration_seconds: 7200,
       max_channels: 2,
-      content_types: state.diarization === null ? MAIN_CONTENT_TYPES : C1_CONTENT_TYPES,
+      content_types: state.diarization === null ? MAIN_CONTENT_TYPES : AUDIO_CONTENT_TYPES,
       transcript_ttl_seconds: 86400,
       admission: "open",
       ...(state.diarization === null ? {} : { diarization: state.diarization }),
@@ -255,7 +255,7 @@ async function startMockPtx() {
     const fields = ["content_type", "byte_size", "sha256", "language", "channel_mode", "channel_labels"];
     if (state.diarization !== null) fields.push("diarize");
     if (Object.keys(body).some((field) => !fields.includes(field))) return ptxError(res, 400, "invalid_request");
-    const types = state.diarization === null ? MAIN_CONTENT_TYPES : C1_CONTENT_TYPES;
+    const types = state.diarization === null ? MAIN_CONTENT_TYPES : AUDIO_CONTENT_TYPES;
     if (!types.includes(body.content_type)) return ptxError(res, 400, "invalid_request");
     if (body.diarize !== undefined && typeof body.diarize !== "boolean") return ptxError(res, 400, "invalid_request");
     if (body.diarize === true && body.channel_mode === "separate") return ptxError(res, 400, "invalid_request");
@@ -650,7 +650,7 @@ describe("create", () => {
     expect(JSON.parse(ptx.requests.at(-1)!.body)).toEqual(createBody());
 
     const diarize = { ...createBody(), channel_mode: "mixed", channel_labels: undefined, diarize: true };
-    // PTX main does not know the option; a C2 PTX with the stage off says so with its own code.
+    // PTX main does not know the option; a diarization-capable PTX with the stage off says so with its own code.
     const main = await create(backend.url, ADDRESS_B, randomUUID(), diarize);
     expect([main.status, main.json.error.code]).toEqual([400, "invalid_request"]);
     ptx.state.diarization = false;
@@ -801,11 +801,11 @@ describe("status, result, list, cancel, delete", () => {
     expect(ptx.requests.length).toBe(before);
   });
 
-  test("a diarized job on a C2 PTX relays end to end: C1 content type in, speaker_<n> voices out", async () => {
+  test("a diarized M4A job on a diarization-capable PTX relays end to end, speaker_<n> voices out", async () => {
     const { ptx, backend } = await setup();
     ptx.state.diarization = true;
     const caps = await call(backend.url, "GET", "/capabilities");
-    expect([caps.json.diarization, caps.json.content_types]).toEqual([true, C1_CONTENT_TYPES]);
+    expect([caps.json.diarization, caps.json.content_types]).toEqual([true, AUDIO_CONTENT_TYPES]);
     const body = { ...createBody(), content_type: "audio/mp4", language: undefined, channel_mode: "mixed", channel_labels: undefined, diarize: true };
     const created = await create(backend.url, ADDRESS_A, randomUUID(), body);
     expect(created.status).toBe(201);
@@ -1268,8 +1268,8 @@ describe("response DTOs", () => {
     const main = { max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "drain" };
     ptx.state.override = () => ({ status: 200, body: { ...main, ready: true, tinfoil_key_id: "UPSTREAM-DETAIL" } });
     expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, diarization: false });
-    ptx.state.override = () => ({ status: 200, body: { ...main, content_types: C1_CONTENT_TYPES, diarization: true } });
-    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, content_types: C1_CONTENT_TYPES, diarization: true });
+    ptx.state.override = () => ({ status: 200, body: { ...main, content_types: AUDIO_CONTENT_TYPES, diarization: true } });
+    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, content_types: AUDIO_CONTENT_TYPES, diarization: true });
     const done = completedResult(ID);
     const leaky = {
       ...done,

@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 
 const UPLOAD_PATH_RE = /^\/uploads\/trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
-/** C1: file extension → the create's (and the upload's) content type. */
+/** File extension → the create's (and the upload's) content type. */
 const CONTENT_TYPES = {
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",

@@ -15,7 +15,7 @@ export const MAX_RECORDING_BYTES = 120_960_000;
 export const TRANSCRIPTION_ID_RE = /^trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const UPLOAD_PATH_RE = /^\/uploads\/trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const CAPABILITY_RE = /^tcu_[A-Za-z0-9_-]{16,256}$/;
-/** C1: the audio containers PTX accepts; the upload's Content-Type must equal the create's. */
+/** The audio containers PTX accepts; the upload's Content-Type must equal the create's. */
 export const CONTENT_TYPES: readonly string[] = ["audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/webm", "audio/flac"];
 /** PTX's BCP-47 subset (`en`, `pt-BR`, `zh-Hant-TW`), at most 35 characters. */
 export const LANGUAGE_RE = /^(?=.{2,35}$)[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/;
