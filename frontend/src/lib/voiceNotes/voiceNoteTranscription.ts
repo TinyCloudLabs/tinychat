@@ -35,6 +35,7 @@ import {
   PrivateCloudError,
   privateCloudMessage,
   UPLOAD_PATH_RE,
+  VOICE_NOTE_CHANNEL_LABELS,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
   type PrivateCloudCreateBody,
@@ -42,6 +43,7 @@ import {
   type PrivateCloudJob,
   type PrivateCloudTranscript,
 } from "../privateCloud";
+import { nativeHttpFileUploadSupported } from "./nativeVoiceNotes";
 import {
   prepareTranscriptionAudio,
   VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS,
@@ -50,6 +52,7 @@ import {
 } from "./voiceNoteAudio";
 import {
   loadVoiceNoteAudio,
+  readVoiceNoteForTranscription,
   saveVoiceNoteTranscript,
   type VoiceNoteAudio,
   type VoiceNoteTranscriptSave,
@@ -200,9 +203,21 @@ export function interpretUploadResponse(response: PtxPutResponse, correlationId:
   throw fail("upload_outcome_unknown", "PTX's answer to the upload was unclear");
 }
 
-// ── Jobs in flight (per note) ──────────────────────────────────────────
+// ── Jobs in flight (per note), and consent: per account ────────────────
+//
+// Both live in this device's localStorage under keys that end with the
+// account's DID, so a second account signed in on the same phone neither
+// inherits the first one's consent nor resumes its jobs.
 
 export const VOICE_NOTE_PENDING_JOBS_KEY = "exo.voiceNotes.privateCloudJobs";
+/** The one-time "Use private cloud" for voice notes (its own key: the disclosure differs from the desktop's). */
+export const VOICE_NOTE_CONSENT_KEY = "exo.voiceNotes.privateCloudConsent";
+
+export function accountStorageKey(base: string, accountDid: string): string {
+  return `${base}:${accountDid}`;
+}
+
+type KeyValueStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export interface PendingVoiceNoteJob {
   /** The create call's Idempotency-Key: the same key re-joins the same job. */
@@ -218,10 +233,14 @@ export interface VoiceNotePendingStore {
 }
 
 /** Best-effort: without it a relaunch uploads a note again instead of re-joining its job. */
-export function localStorageVoiceNotePendingStore(storage: Pick<Storage, "getItem" | "setItem"> | undefined = globalThis.localStorage): VoiceNotePendingStore {
+export function localStorageVoiceNotePendingStore(
+  accountDid: string,
+  storage: Pick<KeyValueStorage, "getItem" | "setItem"> | undefined = globalThis.localStorage,
+): VoiceNotePendingStore {
+  const key = accountStorageKey(VOICE_NOTE_PENDING_JOBS_KEY, accountDid);
   const readAll = (): Record<string, PendingVoiceNoteJob> => {
     try {
-      const raw = storage?.getItem(VOICE_NOTE_PENDING_JOBS_KEY);
+      const raw = storage?.getItem(key);
       const parsed = raw ? (JSON.parse(raw) as unknown) : null;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
       const out: Record<string, PendingVoiceNoteJob> = {};
@@ -237,7 +256,7 @@ export function localStorageVoiceNotePendingStore(storage: Pick<Storage, "getIte
   };
   const writeAll = (all: Record<string, PendingVoiceNoteJob>) => {
     try {
-      storage?.setItem(VOICE_NOTE_PENDING_JOBS_KEY, JSON.stringify(all));
+      storage?.setItem(key, JSON.stringify(all));
     } catch {
       // Best-effort.
     }
@@ -255,26 +274,33 @@ export function localStorageVoiceNotePendingStore(storage: Pick<Storage, "getIte
   };
 }
 
-// ── Consent ────────────────────────────────────────────────────────────
-
-/** The one-time "Use private cloud" for voice notes (its own key: the disclosure differs from the desktop's). */
-export const VOICE_NOTE_CONSENT_KEY = "exo.voiceNotes.privateCloudConsent";
-
-export function hasVoiceNoteTranscriptionConsent(): boolean {
-  try {
-    return globalThis.localStorage?.getItem(VOICE_NOTE_CONSENT_KEY) === "1";
-  } catch {
-    return false;
-  }
+export interface VoiceNoteConsentStore {
+  get(): boolean;
+  set(consented: boolean): void;
 }
 
-export function setVoiceNoteTranscriptionConsent(consented: boolean): void {
-  try {
-    if (consented) globalThis.localStorage?.setItem(VOICE_NOTE_CONSENT_KEY, "1");
-    else globalThis.localStorage?.removeItem(VOICE_NOTE_CONSENT_KEY);
-  } catch {
-    // Best-effort: the choice then lasts for this session only.
-  }
+export function localStorageVoiceNoteConsentStore(
+  accountDid: string,
+  storage: KeyValueStorage | undefined = globalThis.localStorage,
+): VoiceNoteConsentStore {
+  const key = accountStorageKey(VOICE_NOTE_CONSENT_KEY, accountDid);
+  return {
+    get: () => {
+      try {
+        return storage?.getItem(key) === "1";
+      } catch {
+        return false;
+      }
+    },
+    set: (consented) => {
+      try {
+        if (consented) storage?.setItem(key, "1");
+        else storage?.removeItem(key);
+      } catch {
+        // Best-effort: the choice then lasts for this session only.
+      }
+    },
+  };
 }
 
 // ── Transcript → note ──────────────────────────────────────────────────
@@ -388,7 +414,10 @@ const REAL_CLOCK: CloudClock = {
   random: () => Math.random(),
 };
 
-/** Failures after which the note's job is over: Retry (if any) starts a new one. */
+/**
+ * Failures after which PTX has ended the note's job (or it is gone): it is
+ * forgotten, so Retry (if any) starts a new one.
+ */
 const JOB_ENDED_CODES: ReadonlySet<string> = new Set([
   "failed",
   "cancelled",
@@ -396,7 +425,6 @@ const JOB_ENDED_CODES: ReadonlySet<string> = new Set([
   "upload_integrity_failed",
   "invalid_audio",
   "recording_too_long",
-  "unsupported_recording",
   "no_speech",
   "provider_unavailable",
   "provider_outcome_unknown",
@@ -405,7 +433,25 @@ const JOB_ENDED_CODES: ReadonlySet<string> = new Set([
   "transcription_failed",
   "transcript_expired",
   "transcription_not_found",
+]);
+
+/**
+ * Failures after which the note's job is of no use, though it may still be
+ * waiting for an upload (and so hold the account's one active slot until its
+ * 2 h deadline): it is cancelled at PTX and forgotten.
+ */
+const RELEASE_CODES: ReadonlySet<string> = new Set([
+  "recording_too_large",
+  "unsupported_recording",
+  "service_misconfigured",
+  "recording_too_long_for_phone",
+  "decode_failed",
+  "decode_unavailable",
+  "feature_unavailable",
+  "invalid_argument",
   "idempotency_conflict",
+  "voice_note_not_found",
+  "transcription_off",
 ]);
 
 /** Failures Retry cannot fix for this note. */
@@ -422,7 +468,17 @@ const NOT_RETRYABLE_CODES: ReadonlySet<string> = new Set([
   "service_misconfigured",
   "invalid_argument",
   "voice_note_not_found",
+  "transcription_off",
 ]);
+
+export function voiceNoteErrorCode(err: unknown): string {
+  return err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : "transcription_error";
+}
+
+/** The user turned transcription off while this note was on its way. */
+export function transcriptionOffError(): PrivateCloudError {
+  return new PrivateCloudError("transcription_off", "Transcription was turned off.");
+}
 
 /** Contract field: the formats PTX takes, from capabilities (the relay's three when absent). */
 export function acceptedContentTypes(capabilities: PrivateCloudCapabilities): string[] {
@@ -443,7 +499,9 @@ export interface VoiceNoteCloudDeps {
   create: (request: { attemptId: string; correlationId: string; body: PrivateCloudCreateBody }) => Promise<PrivateCloudCreated>;
   put: PtxPut;
   origin: string;
-  pending?: VoiceNotePendingStore;
+  pending: VoiceNotePendingStore;
+  /** Whether this device's native HTTP can send the upload (Android below 8.0 cannot). */
+  uploadSupported?: () => Promise<boolean>;
   clock?: CloudClock;
   polling?: Partial<CloudPollingOptions>;
   newId?: () => string;
@@ -452,18 +510,34 @@ export interface VoiceNoteCloudDeps {
   language?: string;
 }
 
+export interface VoiceNoteTranscribeInput {
+  sourceId: string;
+  capabilities: PrivateCloudCapabilities;
+  loadAudio: () => Promise<VoiceNoteAudio>;
+  /** The note's length from its row, checked before any audio is read or decoded. */
+  durationSeconds?: number | null;
+  /** Still allowed to send audio? Asked before the job is created and again right before the upload. */
+  allowed?: () => boolean;
+}
+
 export interface VoiceNoteCloud {
-  /** Null when dark or not in the cohort (404). */
+  /** Null when this device cannot upload, or the relay is dark / the account is not in the cohort (404). */
   capabilities(): Promise<PrivateCloudCapabilities | null>;
   /** Notes with a job in flight (to resume after a relaunch). */
   pendingSourceIds(): string[];
   /** Upload (or re-join) the note's job and wait for its transcript. */
   transcribe(
-    input: { sourceId: string; capabilities: PrivateCloudCapabilities; loadAudio: () => Promise<VoiceNoteAudio> },
+    input: VoiceNoteTranscribeInput,
     report: (status: VoiceNoteTranscriptionStatus) => void,
   ): Promise<{ transcriptionId: string; transcript: PrivateCloudTranscript }>;
-  /** After the transcript is saved: delete the job at PTX, then forget it. */
-  finish(sourceId: string, transcriptionId: string | null): Promise<void>;
+  /**
+   * The note's transcript is saved (or it needs none): forget its job, then
+   * delete it at PTX. Forgotten first, so a failed delete never makes a later
+   * run upload the note again; PTX deletes it on its own 24 h schedule.
+   */
+  finish(sourceId: string, transcriptionId?: string | null): Promise<void>;
+  /** Transcription was turned off: cancel and forget every job still waiting for its upload. */
+  releaseUnsent(): Promise<void>;
 }
 
 function jobFailure(job: PrivateCloudJob, extra: { correlationId?: string | null } = {}): PrivateCloudError {
@@ -476,10 +550,26 @@ function jobFailure(job: PrivateCloudJob, extra: { correlationId?: string | null
 export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   const clock = deps.clock ?? REAL_CLOCK;
   const polling: CloudPollingOptions = { ...DEFAULT_POLLING, ...deps.polling };
-  const pending = deps.pending ?? localStorageVoiceNotePendingStore();
+  const pending = deps.pending;
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const language = deps.language ?? "en";
   const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
+
+  /** Best-effort: a job that cannot be cancelled now expires at its upload deadline. */
+  const cancelQuietly = async (transcriptionId: string) => {
+    try {
+      await deps.api.cancel(transcriptionId);
+    } catch (err) {
+      console.warn("Cancelling an unused private cloud job failed; it expires on its own", err);
+    }
+  };
+
+  /** Stop using the note's job: cancel it (if it exists) and forget it. */
+  const release = async (sourceId: string) => {
+    const transcriptionId = pending.read(sourceId)?.transcriptionId ?? null;
+    pending.clear(sourceId);
+    if (transcriptionId !== null) await cancelQuietly(transcriptionId);
+  };
 
   /** Rides out transient failures for up to 10 minutes, then "connection lost". */
   const transientTolerance = () => {
@@ -560,16 +650,21 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
         const created = await deps.create({ attemptId: current.attemptId, correlationId: newId(), body });
         return { job: current, created };
       } catch (err) {
-        // This key's job is gone, or the key was used for different bytes: start a new job, once.
+        // This key was used for different bytes, or its job is gone: start a new job, once. A job
+        // the old key made that still waits for its upload is cancelled first (it holds the slot).
         const code = err instanceof PrivateCloudError ? err.code : null;
         if (fresh > 0 || (code !== "idempotency_conflict" && code !== "transcription_not_found")) throw err;
+        if (current.transcriptionId !== null) await cancelQuietly(current.transcriptionId);
         current = { attemptId: newId(), transcriptionId: null };
         pending.write(sourceId, current);
       }
     }
   };
 
-  const run: VoiceNoteCloud["transcribe"] = async ({ sourceId, capabilities, loadAudio }, report) => {
+  const run = async (
+    { sourceId, capabilities, loadAudio, durationSeconds, allowed = () => true }: VoiceNoteTranscribeInput,
+    report: (status: VoiceNoteTranscriptionStatus) => void,
+  ) => {
     let job = pending.read(sourceId);
 
     // Re-join a job this note already has: ask before uploading again.
@@ -588,13 +683,26 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       }
     }
 
-    report({ kind: "preparing" });
-    const audio = await prepareTranscriptionAudio(await loadAudio(), {
-      acceptedContentTypes: acceptedContentTypes(capabilities),
-      maxBytes: capabilities.max_bytes,
-      maxSeconds: maxTranscriptionSeconds(capabilities),
-      decode: deps.decode,
-    });
+    // Everything up to the upload happens with no job waiting on it, or releases the one that is.
+    const maxSeconds = maxTranscriptionSeconds(capabilities);
+    let audio: Awaited<ReturnType<typeof prepareTranscriptionAudio>>;
+    try {
+      if (typeof durationSeconds === "number" && durationSeconds > maxSeconds) {
+        throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
+      }
+      if (!allowed()) throw transcriptionOffError();
+      report({ kind: "preparing" });
+      audio = await prepareTranscriptionAudio(await loadAudio(), {
+        acceptedContentTypes: acceptedContentTypes(capabilities),
+        maxBytes: capabilities.max_bytes,
+        maxSeconds,
+        decode: deps.decode,
+      });
+      if (!allowed()) throw transcriptionOffError();
+    } catch (err) {
+      await release(sourceId);
+      throw err;
+    }
     if (job === null) {
       job = { attemptId: newId(), transcriptionId: null };
       pending.write(sourceId, job);
@@ -604,6 +712,9 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
       byte_size: audio.byteSize,
       sha256: audio.sha256,
       language,
+      // Mono, and labelled so no other client on this account adopts the job (privateCloudJobClient).
+      channel_mode: "mixed",
+      channel_labels: [...VOICE_NOTE_CHANNEL_LABELS],
     };
     const createdJob = await createJob(sourceId, job, body);
     job = { ...createdJob.job, transcriptionId: createdJob.created.id };
@@ -611,6 +722,8 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
     const created = createdJob.created;
 
     if (created.upload !== null) {
+      // The last moment to stop: nothing has been sent yet.
+      if (!allowed()) throw transcriptionOffError();
       report({ kind: "uploading" });
       const correlationId = newId();
       try {
@@ -634,37 +747,59 @@ export function createVoiceNoteCloud(deps: VoiceNoteCloudDeps): VoiceNoteCloud {
   };
 
   return {
-    capabilities: () => deps.api.capabilities(),
+    async capabilities() {
+      if (deps.uploadSupported && !(await deps.uploadSupported())) return null;
+      return deps.api.capabilities();
+    },
+
     pendingSourceIds: () => pending.sourceIds(),
 
     async transcribe(input, report) {
       try {
         return await run(input, report);
       } catch (err) {
-        // A job that ended (or vanished) is forgotten, so Retry starts a new one.
-        if (err instanceof PrivateCloudError && JOB_ENDED_CODES.has(err.code)) pending.clear(input.sourceId);
-        // This note's audio cannot be sent: release a job still waiting for it
-        // (it would hold the account's one active slot until it expires).
-        if (err instanceof VoiceNoteAudioError) {
-          const waiting = pending.read(input.sourceId)?.transcriptionId;
-          if (waiting) await deps.api.cancel(waiting).catch(() => {});
-          pending.clear(input.sourceId);
-        }
+        const code = voiceNoteErrorCode(err);
+        if (RELEASE_CODES.has(code)) await release(input.sourceId);
+        else if (JOB_ENDED_CODES.has(code)) pending.clear(input.sourceId);
         throw err;
       }
     },
 
     async finish(sourceId, transcriptionId) {
-      // Forgotten only once PTX deleted it: until then Retry/relaunch re-joins
-      // the job and (idempotently) saves its transcript again.
-      if (transcriptionId !== null) await deps.api.remove(transcriptionId);
+      const id = transcriptionId === undefined ? (pending.read(sourceId)?.transcriptionId ?? null) : transcriptionId;
       pending.clear(sourceId);
+      if (id !== null) await deps.api.remove(id);
+    },
+
+    async releaseUnsent() {
+      for (const sourceId of pending.sourceIds()) {
+        const transcriptionId = pending.read(sourceId)?.transcriptionId ?? null;
+        if (transcriptionId === null) {
+          pending.clear(sourceId);
+          continue;
+        }
+        let job: PrivateCloudJob;
+        try {
+          job = await deps.api.get(transcriptionId);
+        } catch (err) {
+          if (err instanceof PrivateCloudError && err.code === "transcription_not_found") pending.clear(sourceId);
+          // Unknown right now: it is checked again (and released) by the next run or turn-off.
+          continue;
+        }
+        if (job.status === "awaiting_upload") await release(sourceId);
+        else if (job.status === "failed" || job.status === "cancelled") pending.clear(sourceId);
+        // queued / processing / completed: the audio was already sent; its transcript is still saved.
+      }
     },
   };
 }
 
 /** The real engine, or null when this build has no PTX origin (hidden). */
-export function createVoiceNoteCloudForBuild(backendUrl: string, sessionStore: SessionStore): VoiceNoteCloud | null {
+export function createVoiceNoteCloudForBuild(
+  backendUrl: string,
+  sessionStore: SessionStore,
+  accountDid: string,
+): VoiceNoteCloud | null {
   const origin = buildPtxUploadOrigin();
   if (origin === null) return null;
   return createVoiceNoteCloud({
@@ -672,6 +807,8 @@ export function createVoiceNoteCloudForBuild(backendUrl: string, sessionStore: S
     create: (request) => createPrivateCloudJob(backendUrl, { sessionStore }, request),
     put: capacitorPtxPut,
     origin,
+    pending: localStorageVoiceNotePendingStore(accountDid),
+    uploadSupported: () => nativeHttpFileUploadSupported(),
   });
 }
 
@@ -687,10 +824,7 @@ export interface VoiceNoteTranscriptionFailure {
 }
 
 export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscriptionFailure {
-  const code =
-    err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError
-      ? err.code
-      : "transcription_error";
+  const code = voiceNoteErrorCode(err);
   const reference = err instanceof PrivateCloudError ? err.correlationId : null;
   const minutes = Math.round(VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS / 60);
   let message: string;
@@ -723,6 +857,12 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
     case "transcript_save_failed":
       message = "The transcript could not be saved to your space. Retry saves it again.";
       break;
+    case "note_unreadable":
+      message = "Could not read this note from your space just now. Retry tries again.";
+      break;
+    case "transcription_off":
+      message = "Transcription was turned off.";
+      break;
     default:
       message =
         err instanceof PrivateCloudError
@@ -735,8 +875,10 @@ export function voiceNoteTranscriptionFailure(err: unknown): VoiceNoteTranscript
 /**
  * Transcribe one saved note and write the transcript onto it, then delete the
  * PTX job. `audio` is the note's audio when the caller still has it (just
- * recorded); otherwise it is read back from the space. Resolves with what was
- * saved; rejects with the failure to show.
+ * recorded); otherwise it is read back from the space. A note whose row
+ * already records an outcome is not transcribed again (its leftover job, if
+ * any, is forgotten and deleted). `allowed` is asked before anything is sent.
+ * Resolves with what the note now records; rejects with the failure to show.
  */
 export async function transcribeVoiceNote(args: {
   tcw: TinyCloudWeb;
@@ -744,11 +886,32 @@ export async function transcribeVoiceNote(args: {
   capabilities: PrivateCloudCapabilities;
   sourceId: string;
   audio?: VoiceNoteAudio;
+  allowed?: () => boolean;
   report: (status: VoiceNoteTranscriptionStatus) => void;
   now?: () => Date;
 }): Promise<"transcribed" | "no_speech"> {
   const { tcw, cloud, sourceId, report } = args;
   const transcribedAt = () => (args.now?.() ?? new Date()).toISOString();
+  /** The job is done with: forget it, then delete it at PTX (best-effort: PTX deletes it within 24 h). */
+  const finish = async (transcriptionId?: string | null) => {
+    try {
+      await cloud.finish(sourceId, transcriptionId);
+    } catch (err) {
+      console.warn("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", err);
+    }
+  };
+
+  const note = await readVoiceNoteForTranscription(tcw, sourceId);
+  if (!note.ok) throw new PrivateCloudError("note_unreadable", note.error.message);
+  if (note.data === null) {
+    await finish();
+    throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
+  }
+  if (note.data.transcript.status !== "none") {
+    await finish();
+    return note.data.transcript.status;
+  }
+
   const loadAudio = async (): Promise<VoiceNoteAudio> => {
     if (args.audio) return args.audio;
     const res = await loadVoiceNoteAudio(tcw, sourceId);
@@ -763,22 +926,16 @@ export async function transcribeVoiceNote(args: {
       throw new PrivateCloudError("transcript_save_failed", saved.error.message);
     }
   };
-  /** The job is done with: delete it at PTX. A failed delete leaves it to PTX's 24 h schedule. */
-  const finish = async (transcriptionId: string | null) => {
-    try {
-      await cloud.finish(sourceId, transcriptionId);
-    } catch (err) {
-      console.warn("Deleting a finished private cloud job failed; PTX deletes it on its own schedule", err);
-    }
-  };
 
   let transcriptionId: string;
   let transcript: PrivateCloudTranscript;
   try {
-    ({ transcriptionId, transcript } = await cloud.transcribe({ sourceId, capabilities: args.capabilities, loadAudio }, report));
+    ({ transcriptionId, transcript } = await cloud.transcribe(
+      { sourceId, capabilities: args.capabilities, loadAudio, durationSeconds: note.data.durationSeconds, allowed: args.allowed },
+      report,
+    ));
   } catch (err) {
-    const code = err instanceof PrivateCloudError || err instanceof VoiceNoteAudioError ? err.code : null;
-    if (code !== "no_speech") throw err;
+    if (voiceNoteErrorCode(err) !== "no_speech") throw err;
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
     await save(noSpeechTranscript(transcribedAt()));
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
@@ -796,56 +953,236 @@ export async function transcribeVoiceNote(args: {
   return prepared.sentences.length > 0 ? "transcribed" : "no_speech";
 }
 
-// ── One at a time ──────────────────────────────────────────────────────
+// ── The card's transcription state, one per account ────────────────────
 
+/**
+ * One note's transcription as the card shows it. `done` stays until the
+ * refreshed list shows the saved outcome, so a stale row never offers
+ * Transcribe for a note that was just transcribed.
+ */
 export type NoteTranscriptionState =
   | { kind: "active"; status: VoiceNoteTranscriptionStatus }
+  | { kind: "done"; outcome: "transcribed" | "no_speech" }
   | ({ kind: "failed" } & VoiceNoteTranscriptionFailure);
 
-export type TranscriptionQueueEvent = { sourceId: string; outcome: "progress" | "saved" | "failed" };
+export type TranscriptionAvailability = "checking" | "available" | "hidden" | "failed";
 
-export interface TranscriptionQueue {
-  states(): ReadonlyMap<string, NoteTranscriptionState>;
-  /** A note queued or running is not queued twice; a failed one is queued again. */
-  enqueue(sourceId: string, task: (report: (status: VoiceNoteTranscriptionStatus) => void) => Promise<unknown>): void;
-  subscribe(listener: (event: TranscriptionQueueEvent) => void): () => void;
+export interface VoiceNoteTranscriberSnapshot {
+  availability: TranscriptionAvailability;
+  capabilities: PrivateCloudCapabilities | null;
+  consented: boolean;
+  jobs: ReadonlyMap<string, NoteTranscriptionState>;
 }
 
-/** Serial: PTX allows one active job per account, so notes wait their turn. */
-export function createTranscriptionQueue(): TranscriptionQueue {
-  const states = new Map<string, NoteTranscriptionState>();
-  const listeners = new Set<(event: TranscriptionQueueEvent) => void>();
+/** `saved`: a note's outcome was written to the space (refresh the list). */
+export type VoiceNoteTranscriberEvent = { kind: "changed" } | { kind: "saved"; sourceId: string };
+
+export interface VoiceNoteTranscriber {
+  snapshot(): VoiceNoteTranscriberSnapshot;
+  subscribe(listener: (event: VoiceNoteTranscriberEvent) => void): () => void;
+  /** Whether private cloud can be offered (bounded retries when the check itself fails). */
+  check(): Promise<void>;
+  /** The one-time "Use private cloud". Resumes notes a previous run left in flight. */
+  consent(): void;
+  /** Stops sending: waiting notes are dropped, the running one stops before its upload, unsent jobs are cancelled. */
+  turnOff(): Promise<void>;
+  /** Transcribe / Retry for one note. Only while available and consented. */
+  transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
+  /** A recording was just saved: transcribed when on and within the limit. */
+  noteSaved(recording: { id: string; durationMs: number }, audio?: VoiceNoteAudio): void;
+}
+
+export interface VoiceNoteTranscriberDeps {
+  /** Null when this build cannot transcribe (no PTX origin): always hidden. */
+  cloud: VoiceNoteCloud | null;
+  consent: VoiceNoteConsentStore;
+  /** The current session's space client. */
+  tcw: () => TinyCloudWeb;
+  /** Injected in tests. */
+  runNote?: typeof transcribeVoiceNote;
+  sleep?: (ms: number) => Promise<void>;
+  /** Waits between availability checks after one fails (plus the first try), as on the desktop. */
+  checkRetryMs?: readonly number[];
+}
+
+export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): VoiceNoteTranscriber {
+  const runNote = deps.runNote ?? transcribeVoiceNote;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const checkRetryMs = deps.checkRetryMs ?? [2_000, 5_000];
+  const cloud = deps.cloud;
+  const listeners = new Set<(event: VoiceNoteTranscriberEvent) => void>();
+  const jobs = new Map<string, NoteTranscriptionState>();
+  /** Notes queued but not started; turning off empties it, and a dropped note never starts. */
+  const waiting = new Set<string>();
+  let state: Omit<VoiceNoteTranscriberSnapshot, "jobs"> = {
+    availability: cloud === null ? "hidden" : "checking",
+    capabilities: null,
+    consented: deps.consent.get(),
+  };
+  let snapshot: VoiceNoteTranscriberSnapshot = { ...state, jobs: new Map(jobs) };
   let chain: Promise<void> = Promise.resolve();
-  const emit = (event: TranscriptionQueueEvent) => {
+  let resumed = false;
+  let checking: Promise<void> | null = null;
+
+  const emit = (event: VoiceNoteTranscriberEvent = { kind: "changed" }) => {
+    snapshot = { ...state, jobs: new Map(jobs) };
     for (const listener of listeners) listener(event);
   };
+  const on = () => state.availability === "available" && state.consented && state.capabilities !== null;
+
+  const enqueue = (sourceId: string, audio?: VoiceNoteAudio) => {
+    if (!on() || cloud === null) return;
+    // Queued, running, or just saved (the list may not show it yet): never a second job.
+    const current = jobs.get(sourceId);
+    if (current?.kind === "active" || current?.kind === "done") return;
+    jobs.set(sourceId, { kind: "active", status: { kind: "waiting" } });
+    waiting.add(sourceId);
+    emit();
+    chain = chain.then(async () => {
+      // Dropped by turn-off while it waited, or turned off since: never starts.
+      if (!waiting.delete(sourceId)) return;
+      if (!on() || state.capabilities === null) {
+        jobs.delete(sourceId);
+        emit();
+        return;
+      }
+      try {
+        const outcome = await runNote({
+          tcw: deps.tcw(),
+          cloud,
+          capabilities: state.capabilities,
+          sourceId,
+          audio,
+          allowed: () => state.consented,
+          report: (status) => {
+            if (jobs.get(sourceId)?.kind !== "active") return;
+            jobs.set(sourceId, { kind: "active", status });
+            emit();
+          },
+        });
+        jobs.set(sourceId, { kind: "done", outcome });
+        emit({ kind: "saved", sourceId });
+      } catch (err) {
+        // Whatever stopped a note after the user turned transcription off is not a failure to show.
+        if (!state.consented || voiceNoteErrorCode(err) === "transcription_off") jobs.delete(sourceId);
+        else jobs.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
+        emit();
+      }
+    });
+  };
+
+  /** Notes a previous run left in flight, first (one active job per account). Once per transcriber. */
+  const resume = () => {
+    if (resumed || !on() || cloud === null) return;
+    resumed = true;
+    for (const sourceId of cloud.pendingSourceIds()) enqueue(sourceId);
+  };
+
   return {
-    states: () => states,
-    enqueue(sourceId, task) {
-      if (states.get(sourceId)?.kind === "active") return;
-      states.set(sourceId, { kind: "active", status: { kind: "waiting" } });
-      emit({ sourceId, outcome: "progress" });
-      chain = chain.then(async () => {
-        try {
-          await task((status) => {
-            states.set(sourceId, { kind: "active", status });
-            emit({ sourceId, outcome: "progress" });
-          });
-          states.delete(sourceId);
-          emit({ sourceId, outcome: "saved" });
-        } catch (err) {
-          states.set(sourceId, { kind: "failed", ...voiceNoteTranscriptionFailure(err) });
-          emit({ sourceId, outcome: "failed" });
-        }
-      });
-    },
+    snapshot: () => snapshot,
     subscribe(listener) {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
       };
     },
+
+    check() {
+      if (cloud === null) return Promise.resolve();
+      if (checking !== null) return checking;
+      // A re-check (every mount) keeps an answer it already has, so the card does not flicker.
+      if (state.availability !== "available") {
+        state = { ...state, availability: "checking" };
+        emit();
+      }
+      const attempt = async () => {
+        try {
+          const caps = await cloud.capabilities();
+          return caps === null ? ({ availability: "hidden" } as const) : ({ availability: "available", caps } as const);
+        } catch (err) {
+          console.warn("Checking private cloud transcription failed", err);
+          return { availability: "failed" } as const;
+        }
+      };
+      checking = (async () => {
+        let result = await attempt();
+        for (const waitMs of checkRetryMs) {
+          if (result.availability !== "failed") break;
+          await sleep(waitMs);
+          result = await attempt();
+        }
+        state = {
+          ...state,
+          availability: result.availability,
+          capabilities: result.availability === "available" ? result.caps : null,
+        };
+        emit();
+        resume();
+      })().finally(() => {
+        checking = null;
+      });
+      return checking;
+    },
+
+    consent() {
+      deps.consent.set(true);
+      state = { ...state, consented: true };
+      emit();
+      resume();
+    },
+
+    async turnOff() {
+      deps.consent.set(false);
+      state = { ...state, consented: false };
+      for (const sourceId of waiting) jobs.delete(sourceId);
+      waiting.clear();
+      // A failure shown with Retry is no longer actionable once off.
+      for (const [sourceId, job] of jobs) if (job.kind === "failed") jobs.delete(sourceId);
+      resumed = false;
+      emit();
+      try {
+        await cloud?.releaseUnsent();
+      } catch (err) {
+        console.warn("Releasing unsent private cloud jobs failed; they expire on their own", err);
+      }
+    },
+
+    transcribe(sourceId, audio) {
+      enqueue(sourceId, audio);
+    },
+
+    noteSaved(recording, audio) {
+      if (!on()) return;
+      if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
+      enqueue(recording.id, audio);
+    },
   };
+}
+
+/** One transcriber per signed-in account, kept across mounts (StrictMode, tab switches). */
+const transcribers = new Map<string, { transcriber: VoiceNoteTranscriber; tcw: { current: TinyCloudWeb } }>();
+
+/** The account's transcriber; null without an account DID (nothing is offered then). */
+export function voiceNoteTranscriberFor(
+  tcw: TinyCloudWeb,
+  backendUrl: string,
+  sessionStore: SessionStore,
+): VoiceNoteTranscriber | null {
+  const did = (tcw as { did?: unknown }).did;
+  if (typeof did !== "string" || did.length === 0) return null;
+  const existing = transcribers.get(did);
+  if (existing) {
+    existing.tcw.current = tcw;
+    return existing.transcriber;
+  }
+  const ref = { current: tcw };
+  const transcriber = createVoiceNoteTranscriber({
+    cloud: createVoiceNoteCloudForBuild(backendUrl, sessionStore, did),
+    consent: localStorageVoiceNoteConsentStore(did),
+    tcw: () => ref.current,
+  });
+  transcribers.set(did, { transcriber, tcw: ref });
+  return transcriber;
 }
 
 /** Progress copy for the card. */

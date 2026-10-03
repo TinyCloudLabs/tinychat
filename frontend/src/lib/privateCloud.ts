@@ -46,6 +46,9 @@ export type PrivateCloudJobStatus =
 export interface PrivateCloudJob {
   id: string;
   status: PrivateCloudJobStatus;
+  /** The create request's choices, as PTX recorded them (null from a relay that predates them). */
+  channel_mode?: "separate" | "mixed" | null;
+  channel_labels?: string[] | null;
   duration_seconds?: number | null;
   created_at?: string;
   updated_at?: string;
@@ -332,6 +335,32 @@ export function createPrivateCloudApi(
       if (!response.ok) throw await readError(response);
     },
   };
+}
+
+// ── Which client made a job ────────────────────────────────────────────
+//
+// One account can have jobs from Exo desktop and Exo mobile. PTX keeps no
+// client field, but it records and echoes each job's `channel_mode` and
+// `channel_labels`, which every client sets at create, so they tell the
+// clients apart without new state anywhere:
+//   - Exo desktop (native, desktop/src-tauri/src/cloud/client.rs): separate,
+//     ["Speaker 1", "Speaker 2"];
+//   - Exo mobile voice notes (lib/voiceNotes): mixed, ["Exo voice note"].
+// A job that matches neither (or a relay that does not relay them) is
+// "unknown", and no client adopts it.
+
+export const DESKTOP_CHANNEL_LABELS: readonly string[] = ["Speaker 1", "Speaker 2"];
+export const VOICE_NOTE_CHANNEL_LABELS: readonly string[] = ["Exo voice note"];
+
+export type PrivateCloudJobClient = "exo-desktop" | "exo-voice-note" | "unknown";
+
+const sameLabels = (actual: readonly string[] | null | undefined, expected: readonly string[]) =>
+  Array.isArray(actual) && actual.length === expected.length && actual.every((label, i) => label === expected[i]);
+
+export function privateCloudJobClient(job: Pick<PrivateCloudJob, "channel_mode" | "channel_labels">): PrivateCloudJobClient {
+  if (job.channel_mode === "separate" && sameLabels(job.channel_labels, DESKTOP_CHANNEL_LABELS)) return "exo-desktop";
+  if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, VOICE_NOTE_CHANNEL_LABELS)) return "exo-voice-note";
+  return "unknown";
 }
 
 // ── Create (webview callers) ───────────────────────────────────────────

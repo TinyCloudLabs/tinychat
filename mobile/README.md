@@ -46,36 +46,56 @@ Record on the phone, save to the user's TinyCloud space, play back from it.
 Voice notes are transcribed with the same private cloud path as the desktop's
 Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
 
-- **Offered only when** this build has a PTX upload origin
-  (`VITE_EXO_PTX_UPLOAD_ORIGIN`, a bare https origin; unset in every build
-  today) **and** the backend answers `GET /api/transcriber/private-cloud/capabilities`
-  with 200 for the signed-in account (404 = dark or not in the cohort). Until
-  then the card shows nothing about transcription. The user then confirms
-  "Use private cloud" once; new notes are transcribed after they are saved, and
-  older notes get a Transcribe button.
+- **Offered only when** all of these hold:
+  - this build has a PTX upload origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`, a bare
+    https origin; unset in every build today);
+  - the device can upload: iOS, or Android 8.0+ (API 26; the plugin's
+    `status()` reports `androidSdkInt`). Below API 26, Capacitor's native HTTP
+    sends an empty file body;
+  - the backend answers `GET /api/transcriber/private-cloud/capabilities`
+    with 200 for the signed-in account (404 = dark or not in the cohort).
+
+  Until then the card shows nothing about transcription. The user confirms
+  "Use private cloud" once (kept per account DID). New notes are transcribed
+  after they are saved, and older notes get a Transcribe button. "Turn off"
+  drops waiting notes, stops the running one before its upload, and cancels
+  jobs still waiting for an upload. A note already uploaded finishes.
 - **Audio:** PTX and the relay take `audio/mpeg`, `audio/wav` or `audio/ogg`,
   not the phone's AAC. The webview decodes the note with WebAudio (resampled to
   16 kHz mono, which is what PTX decodes every upload to) and writes a 16-bit
   PCM WAV: 1.9 MB per minute, about 4× the AAC. Notes up to 10 minutes
-  (`VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS`) are offered in this version.
+  (`VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS`) are offered in this version. The
+  note's recorded length (and the AAC's size) is checked before decoding.
 - **Upload:** create at the backend (bearer, `Idempotency-Key`), then one PUT
   of the WAV to `<PTX origin>/uploads/trn_…` with the job capability through
   Capacitor's native HTTP (`CapacitorHttp`, `dataType: "file"`): PTX sends no
   CORS headers, and the backend never sees audio. The bytes cross the JS bridge
   as base64. A native file upload (background `URLSession`, streamed
-  `HttpURLConnection`) is the follow-up for long notes; it would need a native
-  transcoder too, unless PTX and the relay accept `audio/mp4`, in which case
-  the recorded file can be sent as it is (the client already does this when
-  the capabilities list the note's type).
-- **Result:** polled through the backend, saved onto the note: sentences
-  (one speaker, "You", merged into turns of at most 60 s) in the note's
-  transcript key, and `transcription_engine` / `transcript_provider` /
-  `inference_provider` / `model` / `language` / `transcript_text` in its row
-  metadata. The PTX job is then deleted. A job in flight is remembered per note
-  (localStorage) so a relaunch or Retry re-joins it instead of uploading again.
+  `HttpURLConnection`) is the follow-up for long notes. It would need a native
+  transcoder too, unless PTX and the relay accept `audio/mp4`; in that case the
+  recorded file can be sent as it is (the client already does this when the
+  capabilities list the note's type).
+- **Which client owns a job:** a voice note's job is created with
+  `channel_mode: "mixed"` and `channel_labels: ["Exo voice note"]`, and the
+  desktop's with `separate` / `["Speaker 1", "Speaker 2"]`. PTX echoes both on
+  every job, so Exo desktop's tenant-list recovery skips phone jobs. The phone
+  never lists the account's jobs: it re-joins only the ones it remembers.
+- **Result:** polled through the backend, then saved onto the note.
+  - Sentences go into the note's transcript key: one speaker, "You", merged
+    into turns of at most 60 s.
+  - The row metadata records `transcription_engine`, `transcript_provider`,
+    `inference_provider`, `model`, `language`, `transcript_text` and
+    `transcription_outcome`.
+  - The job is forgotten, then deleted at PTX (a failed delete is left to
+    PTX's 24 h schedule; it never causes a second upload). A note whose row
+    already records an outcome is never transcribed again.
+  - A job in flight is remembered per note and account (localStorage), so a
+    relaunch or Retry re-joins it. A job that can no longer be used is
+    cancelled, so it doesn't hold the account's one active slot.
 - **Chat:** `exo-voice-note` is in the meeting chat corpus
-  (`SUPPORTED_MEETING_SOURCES`), so transcribed notes are discovered like any
-  other meeting.
+  (`SUPPORTED_MEETING_SOURCES`), but a voice note is a candidate only once its
+  row says `transcription_outcome: "transcribed"` (`TRANSCRIBED_ONLY_SOURCES`):
+  an untranscribed or silent note never wins "my latest meeting".
 
 ## Google connectors (OAuth)
 

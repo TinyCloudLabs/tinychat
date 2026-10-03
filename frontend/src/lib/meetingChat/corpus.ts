@@ -21,7 +21,9 @@ import type { MeetingCandidate, MeetingCorpus, MeetingLaneHealth, MeetingRef } f
 /**
  * The deliberately small MVP source allowlist, shared by SQL and KV discovery.
  * `exo-local` is a desktop recording and `exo-voice-note` a phone voice note:
- * both are browser-local rows whose transcript key is filled once transcribed.
+ * both are browser-local rows. A voice note is saved before it is transcribed
+ * (with an empty transcript body), so it is a meeting only once transcribed:
+ * see TRANSCRIBED_ONLY_SOURCES.
  */
 export const SUPPORTED_MEETING_SOURCES = [
   "fireflies",
@@ -38,6 +40,18 @@ function isSupportedMeetingSource(source: string): boolean {
 /** SQL literal list for the allowlist; the entries are fixed constants, never input. */
 const SUPPORTED_MEETING_SOURCES_SQL = SUPPORTED_MEETING_SOURCES.map((source) => `'${source}'`).join(", ");
 
+/**
+ * Sources whose rows exist before they have anything to read: a voice note is
+ * saved with an empty transcript and transcribed later (or never, where
+ * transcription is not offered). Such a row is admitted only when its own
+ * metadata says it was transcribed, and only through SQL: a KV transcript key
+ * alone (always written, empty, at save) never makes one a candidate. Without
+ * this an untranscribed note would win "my latest meeting" and answer nothing.
+ */
+export const TRANSCRIBED_ONLY_SOURCES: readonly string[] = ["exo-voice-note"];
+
+const TRANSCRIBED_ONLY_SOURCES_SQL = TRANSCRIBED_ONLY_SOURCES.map((source) => `'${source}'`).join(", ");
+
 /** The server list's documented maximum page size. */
 export const SERVER_DISCOVERY_PAGE_SIZE = 200;
 /** The server keeps at most this many meetings for one user. */
@@ -48,7 +62,10 @@ export const SQL_DISCOVERY_MAX_MEETINGS = 500;
 /**
  * The sole SQL discovery read. The summary columns appear only inside an
  * availability expression; their values are never returned to the browser
- * corpus. `metadata` is deliberately absent because it is provider payload.
+ * corpus. `metadata` is never returned either, because it is provider payload:
+ * it appears only in the admission predicate for TRANSCRIBED_ONLY_SOURCES,
+ * guarded by json_valid so a malformed row is skipped rather than failing the
+ * read (CASE evaluates its branches lazily, in order).
  */
 export const SQL_MEETING_METADATA_QUERY = `SELECT
   id,
@@ -63,6 +80,11 @@ export const SQL_MEETING_METADATA_QUERY = `SELECT
   updated_at
 FROM connector_meeting
 WHERE source IN (${SUPPORTED_MEETING_SOURCES_SQL})
+  AND CASE
+    WHEN source NOT IN (${TRANSCRIBED_ONLY_SOURCES_SQL}) THEN 1
+    WHEN json_valid(metadata) THEN coalesce(json_extract(metadata, '$.transcription_outcome') = 'transcribed', 0)
+    ELSE 0
+  END
 ORDER BY started_at DESC, id ASC
 LIMIT ${SQL_DISCOVERY_MAX_MEETINGS + 1}`;
 
@@ -236,6 +258,8 @@ export function mergeMeetingCorpus(discoveries: MeetingCorpusDiscoveries): Meeti
   const candidates: MeetingCandidate[] = [];
   for (const [source, bySourceId] of bySource) {
     for (const [sourceId, fragments] of bySourceId) {
+      // Only an admitted (transcribed) SQL row makes one of these a meeting.
+      if (TRANSCRIBED_ONLY_SOURCES.includes(source) && !fragments.some(({ lane }) => lane === "sql")) continue;
       const canonicalFragments = (["sql", "server", "kv"] as const)
         .map((lane) => canonicalLaneFragment(fragments, lane))
         .filter((fragment): fragment is CandidateFragment => fragment !== null);

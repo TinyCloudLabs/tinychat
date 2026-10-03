@@ -27,6 +27,13 @@ const WAV_HEADER_BYTES = 44;
  */
 export const VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS = 10 * 60;
 
+/**
+ * Compressed bytes per second allowed before decoding: twice the phone's
+ * 64 kbps AAC. A recording larger than `maxSeconds` of this is refused
+ * without being decoded, even when its length is not known.
+ */
+export const MAX_ENCODED_BYTES_PER_SECOND = 16_000;
+
 export interface DecodedAudio {
   /** One array per channel, at `sampleRate`. */
   channels: Float32Array[];
@@ -171,6 +178,10 @@ export async function prepareTranscriptionAudio(
   }
   if (!options.acceptedContentTypes.includes(WAV_CONTENT_TYPE)) {
     throw new VoiceNoteAudioError("unsupported_recording", "Private cloud transcription does not accept this recording's format.");
+  }
+  // Refuse an over-long note before decoding it (the decode holds all of it in memory).
+  if (recorded.byteLength > maxSeconds * MAX_ENCODED_BYTES_PER_SECOND) {
+    throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
   }
   const decoded = await (options.decode ?? webAudioDecoder)(recorded.buffer as ArrayBuffer, TRANSCRIPTION_SAMPLE_RATE);
   if (decoded.sampleRate !== TRANSCRIPTION_SAMPLE_RATE) {

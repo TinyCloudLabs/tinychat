@@ -17,6 +17,7 @@ import {
   bytesToBase64,
   downmixToMono,
   encodeWavPcm16,
+  MAX_ENCODED_BYTES_PER_SECOND,
   prepareTranscriptionAudio,
   sha256Hex,
   TRANSCRIPTION_SAMPLE_RATE,
@@ -122,6 +123,17 @@ describe("prepareTranscriptionAudio", () => {
     expect(err).toBeInstanceOf(VoiceNoteAudioError);
     expect((err as VoiceNoteAudioError).code).toBe("recording_too_long_for_phone");
     expect(VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS).toBe(600);
+  });
+
+  test("a recording too big to be within the limit is refused before it is decoded", async () => {
+    const decode = toneDecoder(1);
+    const big = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array(2 * MAX_ENCODED_BYTES_PER_SECOND + 1)) };
+    const err = await prepareTranscriptionAudio(big, { acceptedContentTypes: RELAY_TYPES, maxBytes: MAX_BYTES, maxSeconds: 2, decode })
+      .catch((e: unknown) => e);
+    expect((err as VoiceNoteAudioError).code).toBe("recording_too_long_for_phone");
+    expect(decode.calls).toEqual([]);
+    // The phone's 64 kbps AAC at the 10-minute cap fits with room to spare.
+    expect(MAX_ENCODED_BYTES_PER_SECOND * VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS).toBeGreaterThan(2 * 8_000 * 600 - 1);
   });
 
   test("PTX's byte cap applies to the WAV", async () => {

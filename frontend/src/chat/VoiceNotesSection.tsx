@@ -8,14 +8,13 @@
 // props; `VoiceNotesSection` owns the plugin, its OS mic-state events, the
 // storage calls and the transcription queue.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { FileTextIcon, Loader2Icon, MicIcon, PlayIcon, RefreshCwIcon, SquareIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
-import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import {
   VoiceNotes,
   nativePlatform,
@@ -32,15 +31,13 @@ import {
   type VoiceNoteListItem,
 } from "@/lib/voiceNotes/voiceNoteStore";
 import {
-  createTranscriptionQueue,
-  createVoiceNoteCloudForBuild,
-  hasVoiceNoteTranscriptionConsent,
   maxTranscriptionSeconds,
-  setVoiceNoteTranscriptionConsent,
-  transcribeVoiceNote,
   transcriptionStatusText,
+  voiceNoteTranscriberFor,
   type NoteTranscriptionState,
-  type VoiceNoteCloud,
+  type TranscriptionAvailability,
+  type VoiceNoteTranscriber,
+  type VoiceNoteTranscriberSnapshot,
 } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { PrivateCloudDisclosure } from "./PrivateCloudDisclosure";
 
@@ -52,7 +49,7 @@ export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "sa
  * offer nothing; `failed` means the check itself failed (offline, 5xx).
  */
 export interface VoiceNoteTranscriptionProps {
-  availability: "checking" | "available" | "hidden" | "failed";
+  availability: TranscriptionAvailability;
   consented: boolean;
   /** The longest note offered, in seconds. */
   maxSeconds: number;
@@ -141,6 +138,14 @@ function NoteTranscription({
   }
   if (!transcription) return null;
   const job = transcription.jobs.get(note.sourceId);
+  // Saved just now; the list has not caught up yet. Never offer Transcribe again meanwhile.
+  if (job?.kind === "done") {
+    return (
+      <p data-testid="voice-note-transcription-done" className="mt-1 text-xs text-muted-foreground">
+        {job.outcome === "no_speech" ? "No speech was found in this note." : "Transcript saved."}
+      </p>
+    );
+  }
   if (job?.kind === "active") {
     return (
       <p role="status" data-testid="voice-note-transcription-status" className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -396,16 +401,36 @@ function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   return pendingRunInFlight;
 }
 
-/** Notes transcribe one at a time and keep going across mounts (PTX allows one active job per account). */
-const transcriptionQueue = createTranscriptionQueue();
-
-/** Waits between availability checks after one fails (plus the first try), as on the desktop. */
-const CLOUD_CHECK_RETRY_MS = [2_000, 5_000];
-
 interface ControllerProps {
   tcw: TinyCloudWeb;
   backendUrl?: string;
   sessionStore?: SessionStore;
+}
+
+const HIDDEN_SNAPSHOT: VoiceNoteTranscriberSnapshot = {
+  availability: "hidden",
+  capabilities: null,
+  consented: false,
+  jobs: new Map(),
+};
+const noSubscription = () => () => {};
+
+/** The card's view of private cloud transcription; `undefined` when this build or account has none. */
+export function transcriptionProps(
+  transcriber: VoiceNoteTranscriber | null,
+  snapshot: VoiceNoteTranscriberSnapshot,
+): VoiceNoteTranscriptionProps | undefined {
+  if (transcriber === null) return undefined;
+  return {
+    availability: snapshot.availability,
+    consented: snapshot.consented,
+    maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
+    jobs: snapshot.jobs,
+    onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
+    onConsent: () => transcriber.consent(),
+    onTurnOff: () => void transcriber.turnOff(),
+    onRecheck: () => void transcriber.check(),
+  };
 }
 
 function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps) {
@@ -422,16 +447,15 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
   const [retrying, setRetrying] = useState(false);
   const mounted = useRef(true);
 
-  // Private cloud transcription: null = this build has no PTX origin, so it is never offered.
-  const cloud = useMemo<VoiceNoteCloud | null>(
-    () => (backendUrl !== undefined && sessionStore !== undefined ? createVoiceNoteCloudForBuild(backendUrl, sessionStore) : null),
-    [backendUrl, sessionStore],
+  // Private cloud transcription for this account (null without one), shared across mounts.
+  const transcriber = useMemo(
+    () => (backendUrl !== undefined && sessionStore !== undefined ? voiceNoteTranscriberFor(tcw, backendUrl, sessionStore) : null),
+    [backendUrl, sessionStore, tcw],
   );
-  const [availability, setAvailability] = useState<VoiceNoteTranscriptionProps["availability"]>(cloud ? "checking" : "hidden");
-  const [capabilities, setCapabilities] = useState<PrivateCloudCapabilities | null>(null);
-  const [checkRound, setCheckRound] = useState(0);
-  const [consented, setConsented] = useState(hasVoiceNoteTranscriptionConsent);
-  const [jobs, setJobs] = useState<ReadonlyMap<string, NoteTranscriptionState>>(() => new Map(transcriptionQueue.states()));
+  const snapshot = useSyncExternalStore(
+    transcriber ? transcriber.subscribe : noSubscription,
+    () => transcriber?.snapshot() ?? HIDDEN_SNAPSHOT,
+  );
 
   const refresh = useCallback(async () => {
     const res = await listVoiceNotes(tcw);
@@ -444,26 +468,6 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
     }
   }, [tcw]);
 
-  /** Queue a note for transcription; `audio` saves reading it back from the space. */
-  const transcribe = useCallback(
-    (sourceId: string, audio?: VoiceNoteAudio) => {
-      if (cloud === null || capabilities === null) return;
-      transcriptionQueue.enqueue(sourceId, (report) =>
-        transcribeVoiceNote({ tcw, cloud, capabilities, sourceId, audio, report }),
-      );
-    },
-    [cloud, capabilities, tcw],
-  );
-  const autoTranscribe = availability === "available" && consented;
-  /** A just-saved recording, transcribed when transcription is on and the note is within the limit. */
-  const autoTranscribeRef = useRef<((recording: VoiceNoteRecording, audio?: VoiceNoteAudio) => void) | null>(null);
-  autoTranscribeRef.current = autoTranscribe
-    ? (recording, audio) => {
-        if (recording.durationMs / 1000 > maxTranscriptionSeconds(capabilities)) return; // the card says why
-        transcribe(recording.id, audio);
-      }
-    : null;
-
   const retryPending = useCallback(async () => {
     setRetrying(true);
     setError(null);
@@ -473,13 +477,13 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
       setPending(run.left);
       if (run.lastError) setError(`Some notes could not be saved yet: ${run.lastError}`);
       if (run.left.length < run.total) await refresh();
-      for (const recording of run.saved) autoTranscribeRef.current?.(recording);
+      for (const recording of run.saved) transcriber?.noteSaved(recording);
     } catch (caught) {
       if (mounted.current) setError(messageOf(caught));
     } finally {
       if (mounted.current) setRetrying(false);
     }
-  }, [refresh, tcw]);
+  }, [refresh, tcw, transcriber]);
 
   useEffect(() => {
     mounted.current = true;
@@ -507,56 +511,16 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
     };
   }, [refresh, retryPending]);
 
-  // Transcription progress (the queue outlives this view); a saved transcript refreshes the list.
-  useEffect(
-    () =>
-      transcriptionQueue.subscribe((event) => {
-        if (!mounted.current) return;
-        setJobs(new Map(transcriptionQueue.states()));
-        if (event.outcome === "saved") void refresh();
-      }),
-    [refresh],
-  );
-
-  // Whether private cloud can be offered: this build's PTX origin and the backend's 200 for this
-  // account. A failed check (not a 404) is retried a bounded number of times, as on the desktop.
+  // A saved transcript refreshes the list (the transcriber outlives this view); availability is
+  // checked on every mount.
   useEffect(() => {
-    if (cloud === null) return;
-    let cancelled = false;
-    setAvailability("checking");
-    void (async () => {
-      const check = async () => {
-        try {
-          const caps = await cloud.capabilities();
-          return caps === null ? ({ state: "hidden" } as const) : ({ state: "available", caps } as const);
-        } catch (err) {
-          console.warn("Checking private cloud transcription failed", err);
-          return { state: "failed" } as const;
-        }
-      };
-      let result = await check();
-      for (const waitMs of CLOUD_CHECK_RETRY_MS) {
-        if (result.state !== "failed" || cancelled) break;
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-        if (cancelled) return;
-        result = await check();
-      }
-      if (cancelled) return;
-      setCapabilities(result.state === "available" ? result.caps : null);
-      setAvailability(result.state);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [cloud, checkRound]);
-
-  // Jobs a previous launch left in flight are finished first (one active job per account).
-  const resumed = useRef(false);
-  useEffect(() => {
-    if (!autoTranscribe || cloud === null || resumed.current) return;
-    resumed.current = true;
-    for (const sourceId of cloud.pendingSourceIds()) transcribe(sourceId);
-  }, [autoTranscribe, cloud, transcribe]);
+    if (transcriber === null) return;
+    const unsubscribe = transcriber.subscribe((event) => {
+      if (event.kind === "saved" && mounted.current) void refresh();
+    });
+    void transcriber.check();
+    return unsubscribe;
+  }, [refresh, transcriber]);
 
   useEffect(() => {
     if (phase !== "recording") return;
@@ -592,7 +556,7 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
         setError(`Recorded, but saving to your space failed: ${outcome.failure ?? "it is already being saved"}`);
       } else {
         await refresh();
-        autoTranscribeRef.current?.(recording, outcome.audio ?? undefined);
+        transcriber?.noteSaved(recording, outcome.audio ?? undefined);
       }
     } catch (caught) {
       setError(messageOf(caught));
@@ -604,7 +568,7 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
         setLevel(0);
       }
     }
-  }, [refresh, tcw]);
+  }, [refresh, tcw, transcriber]);
 
   const onPlay = useCallback(async (sourceId: string) => {
     setPlaying({ sourceId, src: null });
@@ -618,25 +582,7 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
     setPlaying({ sourceId, src: `data:${res.data.mimeType};base64,${res.data.base64}` });
   }, [tcw]);
 
-  const transcription: VoiceNoteTranscriptionProps | undefined =
-    cloud === null
-      ? undefined
-      : {
-          availability,
-          consented,
-          maxSeconds: maxTranscriptionSeconds(capabilities),
-          jobs,
-          onTranscribe: (sourceId) => transcribe(sourceId),
-          onConsent: () => {
-            setVoiceNoteTranscriptionConsent(true);
-            setConsented(true);
-          },
-          onTurnOff: () => {
-            setVoiceNoteTranscriptionConsent(false);
-            setConsented(false);
-          },
-          onRecheck: () => setCheckRound((n) => n + 1),
-        };
+  const transcription = transcriptionProps(transcriber, snapshot);
 
   return (
     <VoiceNotesView

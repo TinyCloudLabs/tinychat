@@ -17,6 +17,7 @@ import {
   VoiceNotesSection,
   VoiceNotesView,
   formatDuration,
+  transcriptionProps,
   type VoiceNoteTranscriptionProps,
   type VoiceNotesViewProps,
 } from "./VoiceNotesSection";
@@ -208,6 +209,34 @@ describe("VoiceNotesView transcription", () => {
     const silent = render({ notes: [note({ transcript: { status: "no_speech", preview: null } })], transcription: transcription() });
     expect(silent).toContain("No speech was found in this note.");
     expect(silent).not.toContain('data-testid="voice-note-transcribe"');
+  });
+
+  test("just saved, before the list catches up: told as saved, never offered Transcribe again", () => {
+    for (const [outcome, text] of [["transcribed", "Transcript saved."], ["no_speech", "No speech was found in this note."]] as const) {
+      const jobs = new Map<string, NoteTranscriptionState>([["rec-1", { kind: "done", outcome }]]);
+      const html = render({ notes: [note()], transcription: transcription({ jobs }) });
+      expect(html).toContain('data-testid="voice-note-transcription-done"');
+      expect(html).toContain(text);
+      expect(html).not.toContain('data-testid="voice-note-transcribe"');
+    }
+  });
+
+  test("transcriptionProps: no transcriber, no transcription UI; otherwise the snapshot drives it", () => {
+    expect(transcriptionProps(null, { availability: "available", capabilities: null, consented: true, jobs: new Map() })).toBeUndefined();
+    const calls: string[] = [];
+    const fake = {
+      transcribe: (id: string) => calls.push(`transcribe:${id}`),
+      consent: () => calls.push("consent"),
+      turnOff: async () => void calls.push("turnOff"),
+      check: async () => void calls.push("check"),
+    } as never;
+    const props = transcriptionProps(fake, { availability: "available", capabilities: { max_bytes: 1, max_duration_seconds: 120 }, consented: true, jobs: new Map() })!;
+    expect(props).toMatchObject({ availability: "available", consented: true, maxSeconds: 120 });
+    props.onTranscribe("rec-9");
+    props.onConsent();
+    props.onTurnOff();
+    props.onRecheck();
+    expect(calls).toEqual(["transcribe:rec-9", "consent", "turnOff", "check"]);
   });
 
   test("a note being transcribed shows its progress instead of Transcribe", () => {

@@ -165,6 +165,40 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
   return { ok: true, data: notes };
 }
 
+/** One note's row as transcription needs it; `null` when the note does not exist. */
+export interface VoiceNoteForTranscription {
+  transcript: VoiceNoteTranscriptState;
+  /** From the row (or its capture metadata); null when neither says. */
+  durationSeconds: number | null;
+}
+
+export async function readVoiceNoteForTranscription(
+  tcw: TinyCloudWeb,
+  sourceId: string,
+): Promise<StoreResult<VoiceNoteForTranscription | null>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+    `SELECT duration_secs, metadata FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
+    [VOICE_NOTE_SOURCE, sourceId],
+  );
+  if (!res.ok) {
+    return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `readVoiceNoteForTranscription: ${res.error.message}` } };
+  }
+  const row = res.data.rows[0];
+  if (!row) return { ok: true, data: null };
+  let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
+  if (durationSeconds === null && typeof row[1] === "string") {
+    try {
+      const ms = (JSON.parse(row[1]) as { capture?: { duration_ms?: unknown } }).capture?.duration_ms;
+      if (typeof ms === "number") durationSeconds = ms / 1000;
+    } catch {
+      // Unknown length: the audio's own size is checked before it is decoded.
+    }
+  }
+  return { ok: true, data: { transcript: voiceNoteTranscriptState(row[1]), durationSeconds } };
+}
+
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
 export interface VoiceNoteTranscriptSave {
   /** Empty when no speech was found: the transcript key stays `[]`. */
