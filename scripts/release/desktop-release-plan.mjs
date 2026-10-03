@@ -8,8 +8,8 @@
  * release notes to --notes and tag, sha, version, channel, prerelease, title, asset-prefix, signing to $GITHUB_OUTPUT.
  *
  * --signing is the EXO_DESKTOP_SIGNING repository variable and must be set explicitly: `required` (Developer ID
- * signed and notarized; publishing refuses anything else) or `unsigned` (no signing at all; the release title and
- * notes say UNSIGNED). Anything else, including unset, fails.
+ * signed and notarized; publishing refuses anything else) or `unsigned` (ad-hoc sealed only, no Developer ID or
+ * notarization; the release title and notes say UNSIGNED). Anything else, including unset, fails.
  */
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';

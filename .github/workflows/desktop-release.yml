@@ -11,7 +11,7 @@ name: Desktop release (Exo)
 # - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true, secrets from the
 #   desktop-release environment, which only main can deploy to); publishing requires the build's signed=true;
 # - unsigned (until the Apple Developer ID exists): desktop-build.yml with sign: false, so no environment and no
-#   signing secret is requested; the release title and notes say UNSIGNED.
+#   signing secret is requested (the app is only ad-hoc sealed); the release title and notes say UNSIGNED.
 # Any other value, including unset, fails the plan before anything is built. The provenance checks (main only, tag
 # on main) apply in both modes. The release is created as a draft only while its assets upload, then published by
 # the same job; a draft left by a failed run is reused, a published release is never touched again (cut a new
@@ -126,14 +126,15 @@ jobs:
             echo "::error::Planned $PLANNED but built $BUILT"
             exit 1
           fi
-          # Only an explicit EXO_DESKTOP_SIGNING=unsigned publishes without signed=true.
-          if [ "$SIGNING" != unsigned ] && [ "$SIGNED" != true ]; then
-            echo "::error::Refusing to publish $TAG: EXO_DESKTOP_SIGNING=$SIGNING but the build is not Developer ID signed and notarized."
-            exit 1
-          fi
-          if [ "$SIGNING" = unsigned ]; then
-            echo "::warning::Publishing $TAG UNSIGNED (EXO_DESKTOP_SIGNING=unsigned)."
-          fi
+          # The build must match the plan's explicit mode exactly; anything else refuses.
+          case "$SIGNING:$SIGNED" in
+            required:true) ;;
+            unsigned:false) echo "::warning::Publishing $TAG UNSIGNED (EXO_DESKTOP_SIGNING=unsigned)." ;;
+            *)
+              echo "::error::Refusing to publish $TAG: EXO_DESKTOP_SIGNING=$SIGNING but the build reports signed=$SIGNED."
+              exit 1
+              ;;
+          esac
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

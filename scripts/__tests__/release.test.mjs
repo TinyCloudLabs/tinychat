@@ -707,6 +707,11 @@ test('desktop-bundle-config.mjs writes the Info.plist overlay for tauri build --
   const config = JSON.parse(read(out, 'tauri.bundle.conf.json'));
   assert.deepEqual(Object.keys(config), ['bundle']);
   assert.equal(config.bundle.macOS.infoPlist, join(out, 'Info.bundle-version.plist'));
+  assert.equal(config.bundle.macOS.signingIdentity, undefined);
+  // Unsigned builds: tauri bundle ad-hoc signs (identity "-"), sealing the app's resources before the DMG is built.
+  const adHoc = run('desktop-bundle-config.mjs', ['--root', root, '--out', out, '--ad-hoc-sign']);
+  assert.equal(adHoc.status, 0, adHoc.stderr);
+  assert.deepEqual(JSON.parse(read(out, 'tauri.bundle.conf.json')).bundle.macOS, { infoPlist: join(out, 'Info.bundle-version.plist'), signingIdentity: '-' });
   const plist = read(out, 'Info.bundle-version.plist');
   assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n\t<string>0\.3\.0<\/string>/);
   assert.match(plist, /<key>CFBundleVersion<\/key>\n\t<string>300004<\/string>/);
@@ -865,9 +870,46 @@ test('desktop releases run main\'s workflow on a validated tag and publish unsig
   assert.doesNotMatch(release, /secrets: inherit|secrets\./);
   const publish = release.slice(release.indexOf('  publish:'));
   assert.match(publish, /SIGNING: \$\{\{ needs\.plan\.outputs\.signing \}\}/);
-  const signedCheck = publish.indexOf('if [ "$SIGNING" != unsigned ] && [ "$SIGNED" != true ]; then');
+  const signedCheck = publish.indexOf('case "$SIGNING:$SIGNED" in');
   assert.ok(signedCheck !== -1 && signedCheck < publish.indexOf('gh release create'), 'the signed check precedes any release write');
   assert.match(publish, /--title "\$TITLE"/);
+});
+
+// The `run: |` script of the named workflow step, dedented.
+function stepScript(text, name) {
+  const lines = text.slice(text.indexOf(`- name: ${name}\n`)).split('\n');
+  const runLine = lines.findIndex(line => /^\s+run: \|$/.test(line));
+  const indent = lines[runLine].indexOf('run:') + 2;
+  const body = [];
+  for (const line of lines.slice(runLine + 1)) {
+    if (line.trim() && line.search(/\S/) < indent) break;
+    body.push(line.slice(indent));
+  }
+  return body.join('\n');
+}
+
+test('the publish gate passes only a build that matches the plan\'s explicit signing mode', () => {
+  const release = read(repo, '.github/workflows/desktop-release.yml');
+  const script = stepScript(release, 'Require the planned build, signed unless the plan says unsigned');
+  // GitHub runs `bash -e {0}` steps with these env vars (TAG from the job).
+  const gate = (signing, signed, built = '0.2.0-beta.3') => spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, TAG: 'exo-desktop@0.2.0-beta.3', PLANNED: '0.2.0-beta.3', BUILT: built, SIGNING: signing, SIGNED: signed },
+  });
+  const unsigned = gate('unsigned', 'false');
+  assert.equal(unsigned.status, 0, unsigned.stdout);
+  assert.match(unsigned.stdout, /::warning::Publishing exo-desktop@0\.2\.0-beta\.3 UNSIGNED/);
+  const signed = gate('required', 'true');
+  assert.equal(signed.status, 0, signed.stdout);
+  assert.doesNotMatch(signed.stdout, /UNSIGNED/);
+  for (const [signing, signedOutput] of [['required', 'false'], ['required', ''], ['', 'false'], ['', 'true'], ['unsigned', 'true'], ['Unsigned', 'false']]) {
+    const refused = gate(signing, signedOutput);
+    assert.equal(refused.status, 1, `${signing}:${signedOutput}`);
+    assert.match(refused.stdout, new RegExp(`::error::Refusing to publish exo-desktop@0\\.2\\.0-beta\\.3: EXO_DESKTOP_SIGNING=${signing} but the build reports signed=${signedOutput}\\.`));
+  }
+  const mismatch = gate('required', 'true', '0.2.0-beta.4');
+  assert.equal(mismatch.status, 1);
+  assert.match(mismatch.stdout, /::error::Planned 0\.2\.0-beta\.3 but built 0\.2\.0-beta\.4/);
 });
 
 // Tags are mutable: every non-local action runs from a full commit SHA, with the version it was resolved from noted.
@@ -927,7 +969,8 @@ test('release builds are signed from main only, compiled without secrets, and ve
   assert.doesNotMatch(build, /continue-on-error/);
 
   const steps = ['Verify signing provenance', 'Check signing secrets', 'Build Exo desktop app', 'Write the App Store Connect API key',
-    'Bundle Exo (signed and notarized for releases)', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Package .app', 'Upload dmg + app'];
+    'Bundle Exo (signed and notarized for releases)', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Verify the ad-hoc seal',
+    'Package .app', 'Upload dmg + app'];
   const order = steps.map(name => build.indexOf(`- name: ${name}\n`));
   assert.ok(order.every(index => index !== -1), `steps: ${order}`);
   assert.deepEqual([...order].sort((a, b) => a - b), order, 'provenance and secrets are checked first; verification passes before packaging and upload');
@@ -947,6 +990,13 @@ test('release builds are signed from main only, compiled without secrets, and ve
   assert.doesNotMatch(step('Build Exo desktop app'), /secrets\./);
   assert.match(step('Bundle Exo (signed and notarized for releases)'), /secrets\.APPLE_CERTIFICATE/);
   assert.match(build, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
+
+  // Unsigned builds (CI and EXO_DESKTOP_SIGNING=unsigned releases) are ad-hoc sealed and must pass codesign --verify.
+  assert.match(step('Bundle versions'), /if \[ "\$SIGN" = true \]; then\n\s+node scripts\/release\/desktop-bundle-config\.mjs --out "\$RUNNER_TEMP\/exo-bundle"\n\s+else\n\s+node scripts\/release\/desktop-bundle-config\.mjs --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign\n/);
+  const seal = step('Verify the ad-hoc seal');
+  assert.match(seal, /^- name: Verify the ad-hoc seal\n\s+if: \$\{\{ !inputs\.sign \}\}\n/);
+  assert.match(seal, /for bundle in desktop\/src-tauri\/target\/release\/bundle\/macos\/Exo\.app "\$mnt\/Exo\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
+  assert.doesNotMatch(seal, /\|\| true|continue-on-error|secrets\./);
 
   const conf = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
   assert.equal(conf.bundle.macOS.hardenedRuntime, true);
