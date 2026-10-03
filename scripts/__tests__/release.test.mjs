@@ -766,7 +766,7 @@ test('desktop-release-plan.mjs: a stable tag becomes the latest release', t => {
   assert.doesNotMatch(readFileSync(notes, 'utf8'), /Beta/);
 });
 
-const UNSIGNED_NOTICE = '> **UNSIGNED — macOS will warn; right-click → Open, or `xattr -dr com.apple.quarantine Exo.app`.**';
+const UNSIGNED_NOTICE = '> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**';
 
 test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, marked UNSIGNED in title and notes', t => {
   const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
@@ -779,7 +779,7 @@ test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, m
   assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta, UNSIGNED\)$/m);
   assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
   const text = readFileSync(notes, 'utf8');
-  assert.ok(text.startsWith(`${UNSIGNED_NOTICE} This build is not Developer ID signed or notarized.\n\n> **Beta.**`), text);
+  assert.ok(text.startsWith(`${UNSIGNED_NOTICE}\n\n> **Beta.**`), text);
   assert.match(text, /^- UNSIGNED: not Developer ID signed or notarized\. Check downloads against SHA256SUMS\.txt\.$/m);
   assert.doesNotMatch(text, /Developer ID signed, notarized and stapled/);
   assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
@@ -794,7 +794,7 @@ test('desktop-release-plan.mjs --signing unsigned: a stable is still the latest 
   assert.match(result.stdout, /^prerelease=false$/m);
   assert.match(result.stdout, /^title=Exo 0\.2\.0 \(UNSIGNED\)$/m);
   const text = readFileSync(notes, 'utf8');
-  assert.ok(text.startsWith(UNSIGNED_NOTICE), text);
+  assert.ok(text.startsWith(`${UNSIGNED_NOTICE}\n\n## `), text);
   assert.doesNotMatch(text, /Beta|Developer ID signed, notarized and stapled/);
 });
 

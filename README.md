@@ -237,7 +237,7 @@ repository variable once, in its plan job, and has no default:
 | Value | Build | Release |
 |---|---|---|
 | `required` | Developer ID signed, notarized, stapled and verified (`desktop-build.yml` with `sign: true`, `desktop-release` environment) | published only if the build reports `signed=true` |
-| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested | title and notes marked **UNSIGNED — macOS will warn; right-click → Open, or `xattr -dr com.apple.quarantine Exo.app`**; betas stay pre-releases, stables are marked latest |
+| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**; betas stay pre-releases, stables are marked latest |
 | unset or anything else | nothing | the plan job fails with an error naming the two values |
 
 The provenance checks (the workflow runs from `main`, the tag points at a

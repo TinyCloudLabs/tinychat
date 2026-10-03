@@ -51,7 +51,7 @@ const desktopChanges = changelogSection(show('desktop/CHANGELOG.md') ?? '', vers
 const webChanges = changelogSection(show('frontend/CHANGELOG.md') ?? '', version);
 
 const notes = [
-  ...(unsigned ? ['> **UNSIGNED — macOS will warn; right-click → Open, or `xattr -dr com.apple.quarantine Exo.app`.** This build is not Developer ID signed or notarized.', ''] : []),
+  ...(unsigned ? ['> **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**', ''] : []),
   ...(prerelease ? [`> **Beta.** A pre-release of Exo ${shortVersion}, built from \`main\`. It uses the production API (api.tinycloud.chat).`, ''] : []),
   ...(desktopChanges ? ['## Desktop', '', desktopChanges, ''] : []),
   ...(webChanges ? [`## Web app (bundled, ${FRONTEND}@${frontendVersion})`, '', webChanges, ''] : []),
