@@ -778,7 +778,7 @@ export function App() {
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]"
+      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
       style={{ height: "var(--tc-app-height, 100dvh)" }}
     >
       <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
