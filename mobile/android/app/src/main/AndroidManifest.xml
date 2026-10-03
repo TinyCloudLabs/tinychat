@@ -22,6 +22,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Google connector OAuth return (TC-521): the backend's /callback 302s the
+                 system browser here, and singleTask delivers it to the running activity
+                 (Capacitor App plugin `appUrlOpen`). A private-use scheme until App Links
+                 have a verified domain; PKCE + state keep an intercepted code useless. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="xyz.tinycloud.exo"
+                    android:host="oauth"
+                    android:path="/google" />
+            </intent-filter>
+
         </activity>
 
         <provider

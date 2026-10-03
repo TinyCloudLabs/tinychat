@@ -313,9 +313,10 @@ async function main() {
         if (!custody.ok) throw new Error(custody.error);
       }
       // The callback page's `postMessage` target, validated at boot rather than at the first
-      // consent. This web origin is also one member of the CORS allowlist; Exo's fixed Tauri origin
-      // is the other. The callback deliberately stays pinned to the web origin because the desktop
-      // Google OAuth handoff has not been designed yet. A bare host or `*` throws here.
+      // consent. This web origin is also one member of the CORS allowlist; Exo's fixed app origins
+      // are the others. The callback page stays pinned to the web origin: the Exo apps never use it,
+      // they return through the router's fixed native deep link (`native.` states, TC-521).
+      // A bare host or `*` throws here.
       normalizeAppOrigin(FRONTEND_URL);
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
@@ -810,7 +811,8 @@ async function main() {
   //    popup could hand anything back; `/start` is the same navigation one hop earlier. CSRF
   //    exempts GET, and the anti-forgery control on these two is the `state` param the SPA mints
   //    and re-checks. Neither reads a session, a store or a credential — `/callback` renders one
-  //    nonce'd page that postMessages `{code, state}` to the pinned app origin and nothing else.
+  //    nonce'd page that postMessages `{code, state}` to the pinned app origin and nothing else
+  //    (or, for the Exo app's `native.` states, 302s them to one constant deep link).
   //  - Everything else — the three POSTs that actually reach Google's token endpoint — goes
   //    through `authMiddleware`, with global CSRF already covering the unsafe methods.
   if (googleMeetOAuthEnabled()) {
@@ -827,8 +829,8 @@ async function main() {
         autojoin: calendarAutojoin,
         // Explicit, and deliberately NOT the router's `googleAppOriginFromEnv()` default: this
         // process already resolved the web app origin once, with the localhost/TLS fallback a bare
-        // env read does not have. CORS also accepts Exo's fixed Tauri origin, but the callback stays
-        // pinned to this web origin until a desktop OAuth handoff is designed.
+        // env read does not have. CORS also accepts Exo's fixed app origins, but the callback page
+        // stays pinned to this web origin; the Exo apps return through the fixed native deep link.
         appOrigin: FRONTEND_URL,
       }),
     );

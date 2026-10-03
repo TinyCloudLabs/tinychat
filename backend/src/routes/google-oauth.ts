@@ -27,6 +27,11 @@ import {
  * Browser-only exchanges never take custody. When autojoin is wired, reconnect first disables
  * unattended access and revocation removes its server credential. Only `{ code, state }`
  * transits `postMessage`, to a pinned origin; tokens stay in authenticated responses.
+ *
+ * The Exo native app (TC-521) has no popup and no opener, and Google refuses consent inside its
+ * WebView. It runs the same flow in the system browser and tags its `state` as `native.<nonce>`;
+ * for that tag only, `/callback` 302s `{ code, state }` to a FIXED app deep link instead of
+ * rendering the postMessage page. See "Native (Exo app) return" below.
  */
 
 /** Log shapes and statuses only — never a code, a verifier or a token. */
@@ -65,6 +70,59 @@ function firstQueryValue(value: unknown): unknown {
   // Express gives an ARRAY for a repeated param (`?state=a&state=b`); take neither, so a
   // duplicated param cannot smuggle a second value past a check that saw the first.
   return Array.isArray(value) ? undefined : value;
+}
+
+// ── Native (Exo app) return ──────────────────────────────────────────
+//
+// WHICH CLIENT a flow returns to is an explicit tag the client puts in its own `state`, because
+// `state` is the one value that survives the Google round trip unchanged and this proxy persists
+// nothing. It is never inferred from a header, a user agent or an Origin. Grammar:
+//
+//   `<nonce>`          — the web SPA (base64url, so it never contains a `.`): the postMessage page,
+//                        byte-for-byte what it has always been.
+//   `native.<nonce>`   — the Exo native app: a 302 to NATIVE_OAUTH_RETURN_URL.
+//   `<anything>.<…>`   — an unknown tag: refused at /start and at /callback. Never defaulted.
+//
+// The deep-link TARGET is a constant: nothing in the request chooses where the browser goes, only
+// the `code`/`state` values carried there, URL-encoded. It is a private-use scheme (RFC 8252 §7.1,
+// the reverse-DNS of the app id) rather than a claimed https link because App Links / Universal
+// Links need assetlinks.json / AASA published for the app's signing identity, which does not exist
+// yet. Another app claiming the scheme can receive a code from a flow Exo started but not redeem
+// it (RFC 8252 §8.1): PKCE keeps the verifier inside Exo, the app re-checks the `state` it minted,
+// and the exchange needs the user's session and our client secret. What a claimed https link would
+// add is protection against a flow that other app STARTS itself and phishes a user through (§8.6);
+// `prompt=consent` on every authorization means Google always asks the user first.
+
+/** The `state` tag of the Exo native app (Android, iOS; desktop can register the same scheme). */
+export const NATIVE_OAUTH_CLIENT = "native";
+
+/** Where a native-tagged flow returns. Must match `CFBundleURLSchemes` and the Android intent-filter. */
+export const NATIVE_OAUTH_RETURN_URL = "xyz.tinycloud.exo://oauth/google";
+
+/** The only `error` value a native return carries. Google's own error text is never forwarded. */
+export const NATIVE_OAUTH_NOT_COMPLETED = "not_completed";
+
+/** The nonce after the tag: base64url, the alphabet the app mints it in. */
+const NATIVE_STATE_NONCE_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
+
+export type OAuthReturnClient = "web" | "native";
+
+/**
+ * The client a (shape-valid) `state` selects, or `null` for a tag no client mints. Callers check
+ * `isValidOAuthState` first; this only reads the tag.
+ */
+export function oauthReturnClient(state: string): OAuthReturnClient | null {
+  const separator = state.indexOf(".");
+  if (separator === -1) return "web";
+  if (state.slice(0, separator) !== NATIVE_OAUTH_CLIENT) return null;
+  return NATIVE_STATE_NONCE_PATTERN.test(state.slice(separator + 1)) ? "native" : null;
+}
+
+/** The fixed deep link with `{ code, state }` or `{ error, state }` as its only query. */
+export function nativeOAuthReturnUrl(
+  params: { code: string; state: string } | { error: typeof NATIVE_OAUTH_NOT_COMPLETED; state: string },
+): string {
+  return `${NATIVE_OAUTH_RETURN_URL}?${new URLSearchParams(params).toString()}`;
 }
 
 // ── The callback page ────────────────────────────────────────────────
@@ -135,9 +193,9 @@ function renderCancelledPage(): string {
  * The app origin the callback page pins its `postMessage` to.
  *
  * The web member of the CORS allowlist comes from this same `FRONTEND_URL`, with a localhost
- * fallback that depends on whether local TLS files are present. Exo's fixed Tauri origin is also
- * allowed to call the API, but Google OAuth still postMessages only to this pinned web origin until
- * a desktop handoff is designed.
+ * fallback that depends on whether local TLS files are present. Exo's fixed Tauri and Capacitor
+ * origins are also allowed to call the API, but the callback page postMessages only to this pinned
+ * web origin. The Exo apps return through the fixed native deep link instead (`native.` states).
  */
 export const APP_ORIGIN_ENV = "FRONTEND_URL";
 
@@ -222,7 +280,12 @@ export function createGoogleOAuthRouter(
   router.get("/start", (req: Request, res: Response) => {
     const state = firstQueryValue(req.query.state);
     const challenge = firstQueryValue(req.query.challenge);
-    if (!isValidOAuthState(state) || !isValidPkceChallenge(challenge)) {
+    if (
+      !isValidOAuthState(state) ||
+      // An unknown client tag would dead-end at /callback AFTER the user consented; refuse it now.
+      oauthReturnClient(state) === null ||
+      !isValidPkceChallenge(challenge)
+    ) {
       logGoogleOAuth("op=start result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
       return;
@@ -235,7 +298,8 @@ export function createGoogleOAuthRouter(
   /**
    * `GET /callback?code=…&state=…` — the popup's landing page. Unauthenticated by necessity
    * (a top-level navigation from Google carries no Bearer) and harmless: it holds no session,
-   * reads no store, and hands the code to exactly one origin.
+   * reads no store, and hands the code to exactly one fixed destination: the pinned app origin,
+   * or, for a `native.` state, the constant app deep link.
    */
   router.get("/callback", (req: Request, res: Response) => {
     const code = firstQueryValue(req.query.code);
@@ -248,9 +312,28 @@ export function createGoogleOAuthRouter(
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
 
+    if (isValidOAuthState(state) && oauthReturnClient(state) === "native") {
+      // The Exo app's return: a system browser has no opener to postMessage to, so hand the
+      // values to the app's FIXED deep link. A denial or a malformed code still returns, with
+      // the constant error and no code, so the app can leave "Waiting for Google" at once.
+      const completed = isBoundedString(code, MAX_CODE_LENGTH);
+      logGoogleOAuth(`op=callback client=native result=${completed ? "redirected" : "no_code"}`);
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.setHeader(
+        "Location",
+        nativeOAuthReturnUrl(
+          completed ? { code, state } : { error: NATIVE_OAUTH_NOT_COMPLETED, state },
+        ),
+      );
+      res.status(302).end();
+      return;
+    }
+
     if (
       !isBoundedString(code, MAX_CODE_LENGTH) ||
-      !isValidOAuthState(state)
+      !isValidOAuthState(state) ||
+      // A tag no client mints is not "the web": it gets the no-code page, never a postMessage.
+      oauthReturnClient(state) !== "web"
     ) {
       // A denial (`?error=access_denied`) or a malformed return. NOTHING is postMessaged: the
       // SPA reads a popup that closed without a message as "cancelled", which is what happened.

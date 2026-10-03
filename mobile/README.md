@@ -39,6 +39,38 @@ Record on the phone, save to the user's TinyCloud space, play back from it.
 - UI: the Voice notes card at the top of Connectors → Sources. It renders only
   inside the native app.
 
+## Google connectors (OAuth)
+
+Google refuses OAuth inside an embedded WebView (`disallowed_useragent`), and
+the web flow's popup + `postMessage` does not exist in a Capacitor WebView. In
+the app, "Continue with Google" runs the same authorization-code + PKCE flow in
+the system browser instead (`@capacitor/browser`: Custom Tabs on Android,
+SFSafariViewController on iOS):
+
+1. The app mints `state = native.<nonce>` and a PKCE verifier (kept in memory),
+   and opens `<backend>/api/connectors/google/oauth/start` (or the autojoin
+   authorization URL) in the system browser.
+2. Google redirects to the backend's registered `/callback`, unchanged. For a
+   `native.` state only, the callback 302s to the fixed deep link
+   `xyz.tinycloud.exo://oauth/google?code=…&state=…` instead of rendering the
+   web postMessage page. An unknown state tag is refused.
+3. `@capacitor/app` delivers the link as `appUrlOpen`. The app accepts only that
+   exact link with its own `state`, dismisses the browser, and runs the usual
+   authenticated exchange (`frontend/src/lib/connectors/googleOAuthNative.ts`).
+
+The scheme is registered by an intent-filter on `MainActivity` (Android,
+`singleTask`) and `CFBundleURLTypes` (iOS). It is a private-use scheme because
+App Links / Universal Links need `assetlinks.json` / AASA published for the
+app's signing identity, which does not exist yet. An app that claims the same
+scheme can receive a code, but it cannot redeem one this app started: the PKCE
+verifier never leaves the app and the exchange needs the user's session and the
+backend's client secret. Moving to a verified https return closes the remaining
+gap (a phishing flow started by the other app itself) and only changes the
+backend's `NATIVE_OAUTH_RETURN_URL` and the two registrations.
+
+OpenKey's own "Continue with Google" inside its sign-in widget is OpenKey's
+flow, not this one; OpenKey sign-in inside the app is tracked in TC-520.
+
 ## Develop (Android, on Linux)
 
 Prereqs: JDK 21 and the Android SDK (platform 36, build-tools 36, emulator,
@@ -104,4 +136,6 @@ Tested on Android: OpenKey's embedded widget works inside the WebView with
 WebView DevTools has no `WebAuthn` domain). Passkeys inside the WebView need
 androidx.webkit WebAuthn support and Digital Asset Links on openkey.so, and
 this is untested. Google sign-in inside a WebView is blocked by Google
-(`disallowed_useragent`); it needs a system-browser handoff.
+(`disallowed_useragent`), so OpenKey's "Continue with Google" needs its own
+system-browser handoff on OpenKey's side (TC-520 territory). The Google
+connectors have one already (see "Google connectors (OAuth)").

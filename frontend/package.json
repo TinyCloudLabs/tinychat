@@ -12,6 +12,8 @@
   "dependencies": {
     "@assistant-ui/react": "^0.14.13",
     "@assistant-ui/react-markdown": "0.14.1",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
     "@capacitor/core": "^8.5.2",
     "@openkey/sdk": "^0.10.0",
     "@peculiar/x509": "^2.0.0",
