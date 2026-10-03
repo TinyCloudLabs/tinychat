@@ -29,6 +29,9 @@ const SETTLED_SIGNED_OUT: Record<AppState, boolean> = {
   // Sign-in or restore errored out; the session store is cleared and the
   // header offers "Try again". Settled, and settled signed out.
   recoverableError: true,
+  // A session is HELD and waiting for the network (TC-514). Not an answer:
+  // the requested address must survive so it resolves once restore finishes.
+  offline: false,
 };
 
 export function isAuthSettledSignedOut(state: AppState): boolean {
