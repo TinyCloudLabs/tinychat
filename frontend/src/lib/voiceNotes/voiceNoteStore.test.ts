@@ -14,6 +14,7 @@ import {
   listVoiceNotes,
   loadVoiceNoteAudio,
   saveVoiceNote,
+  saveVoiceNoteTranscript,
   voiceNoteAudioKvKey,
 } from "./voiceNoteStore";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
@@ -104,10 +105,53 @@ describe("listVoiceNotes", () => {
     const res = await listVoiceNotes(tcw);
     expect(res).toEqual({
       ok: true,
-      data: [{ id: "row-1", sourceId: "rec-1", title: "Voice note", startedAt: "2026-09-29T05:40:00.000Z", durationSecs: 12 }],
+      data: [{
+        id: "row-1",
+        sourceId: "rec-1",
+        title: "Voice note",
+        startedAt: "2026-09-29T05:40:00.000Z",
+        durationSecs: 12,
+        transcript: { status: "none", preview: null },
+      }],
     });
     const list = calls.find((c) => c.kind === "sql.query" && String(c.params?.[0]).includes("SELECT id, source_id"));
     expect(list!.params).toContain(VOICE_NOTE_SOURCE);
+  });
+
+  test("a note's transcript state comes from the metadata its transcription wrote", async () => {
+    const row = (metadata: unknown) => ["row-1", "rec-1", "Voice note", "2026-09-29T05:40:00.000Z", 12, metadata];
+    const state = async (metadata: unknown) => {
+      const res = await listVoiceNotes(fakeTcw({ rows: [row(metadata)] }).tcw);
+      return res.ok ? res.data[0]!.transcript : null;
+    };
+    expect(await state(JSON.stringify({ audio_kv_key: "k" }))).toEqual({ status: "none", preview: null });
+    expect(await state(JSON.stringify({ transcript_text: "Book the venue.\nSend the budget." }))).toEqual({
+      status: "transcribed",
+      preview: "Book the venue.\nSend the budget.",
+    });
+    expect(await state(JSON.stringify({ transcription_outcome: "no_speech", transcript_text: null }))).toEqual({ status: "no_speech", preview: null });
+    expect(await state("not json")).toEqual({ status: "none", preview: null });
+    expect(await state(null)).toEqual({ status: "none", preview: null });
+    const long = await state(JSON.stringify({ transcript_text: "word ".repeat(200) }));
+    expect(long!.status).toBe("transcribed");
+    expect(long!.preview!.length).toBeLessThanOrEqual(281);
+    expect(long!.preview!.endsWith("…")).toBe(true);
+  });
+});
+
+describe("saveVoiceNoteTranscript", () => {
+  const prepared = {
+    sentences: [{ index: 0, speaker_name: "You", text: "Book the venue.", start_time: 0, end_time: 3 }],
+    speakers: ["You"],
+    metadata: { transcription_engine: "private-cloud", transcript_text: "Book the venue." },
+  };
+
+  test("refuses a note that no longer exists instead of creating a row without audio", async () => {
+    const { tcw, calls } = fakeTcw();
+    const res = await saveVoiceNoteTranscript(tcw, "rec-gone", prepared);
+    expect(res).toEqual({ ok: false, error: expect.objectContaining({ code: "VOICE_NOTE_NOT_FOUND" }) });
+    expect(calls.filter((c) => c.kind === "kv.put")).toEqual([]);
+    expect(calls.some((c) => c.kind === "sql.execute" && /INSERT INTO connector_meeting/.test(String(c.params?.[0])))).toBe(false);
   });
 });
 

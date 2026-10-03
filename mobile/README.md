@@ -41,6 +41,42 @@ Record on the phone, save to the user's TinyCloud space, play back from it.
 - UI: the Voice notes card at the top of Connectors → Sources. It renders only
   inside the native app.
 
+### Transcription (private cloud)
+
+Voice notes are transcribed with the same private cloud path as the desktop's
+Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
+
+- **Offered only when** this build has a PTX upload origin
+  (`VITE_EXO_PTX_UPLOAD_ORIGIN`, a bare https origin; unset in every build
+  today) **and** the backend answers `GET /api/transcriber/private-cloud/capabilities`
+  with 200 for the signed-in account (404 = dark or not in the cohort). Until
+  then the card shows nothing about transcription. The user then confirms
+  "Use private cloud" once; new notes are transcribed after they are saved, and
+  older notes get a Transcribe button.
+- **Audio:** PTX and the relay take `audio/mpeg`, `audio/wav` or `audio/ogg`,
+  not the phone's AAC. The webview decodes the note with WebAudio (resampled to
+  16 kHz mono, which is what PTX decodes every upload to) and writes a 16-bit
+  PCM WAV: 1.9 MB per minute, about 4× the AAC. Notes up to 10 minutes
+  (`VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS`) are offered in this version.
+- **Upload:** create at the backend (bearer, `Idempotency-Key`), then one PUT
+  of the WAV to `<PTX origin>/uploads/trn_…` with the job capability through
+  Capacitor's native HTTP (`CapacitorHttp`, `dataType: "file"`): PTX sends no
+  CORS headers, and the backend never sees audio. The bytes cross the JS bridge
+  as base64. A native file upload (background `URLSession`, streamed
+  `HttpURLConnection`) is the follow-up for long notes; it would need a native
+  transcoder too, unless PTX and the relay accept `audio/mp4`, in which case
+  the recorded file can be sent as it is (the client already does this when
+  the capabilities list the note's type).
+- **Result:** polled through the backend, saved onto the note: sentences
+  (one speaker, "You", merged into turns of at most 60 s) in the note's
+  transcript key, and `transcription_engine` / `transcript_provider` /
+  `inference_provider` / `model` / `language` / `transcript_text` in its row
+  metadata. The PTX job is then deleted. A job in flight is remembered per note
+  (localStorage) so a relaunch or Retry re-joins it instead of uploading again.
+- **Chat:** `exo-voice-note` is in the meeting chat corpus
+  (`SUPPORTED_MEETING_SOURCES`), so transcribed notes are discovered like any
+  other meeting.
+
 ## Google connectors (OAuth)
 
 Google refuses OAuth inside an embedded WebView (`disallowed_useragent`), and
