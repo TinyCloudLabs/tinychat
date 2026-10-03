@@ -24,6 +24,7 @@
     "@tinyboilerplate/core": "workspace:*",
     "@tinycloud/sdk-core": "2.11.0",
     "@tinycloud/web-sdk": "2.11.0",
+    "@xyflow/react": "^12.8.5",
     "assistant-stream": "0.3.19",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

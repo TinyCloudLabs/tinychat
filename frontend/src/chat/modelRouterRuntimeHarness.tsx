@@ -1,12 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import "../index.css";
 import { OFFERED_CHAT_MODELS, offeredChatModelContextTokens } from "@tinyboilerplate/core";
 import { useChatRuntime } from "./runtime";
 import { Thread } from "./Thread";
 import type { SelectionView, ModelSelectionController } from "./modelSelection";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
 import { DEFAULT_CONTEXT_TOKENS } from "./compaction";
+import {
+  promotedCanvasForTurn,
+  useLocalCanvasStorage,
+} from "../lib/conversationCanvasStore";
 
 declare global {
   interface Window {
@@ -25,6 +30,7 @@ declare global {
       releaseRestore: () => void;
       events: string[];
       view: () => SelectionView;
+      messageIds: (id: string) => string[];
     };
   }
 }
@@ -35,15 +41,43 @@ const events: string[] = [];
 const savedId = "saved-thread";
 const rows = new Map<string, { title: string; model: string; updatedAt: string }>();
 const messages = new Map<string, string[]>();
+const settings = new Map<string, string>();
+// `canvas=1` stands for an account that turned Canvas on in Settings.
+if (params.get("canvas") === "1") settings.set("conversation-canvas-enabled", "true");
 if (scenario.includes("reopen") || scenario.includes("restore") || scenario.includes("cancel-lookup")) {
   rows.set(savedId, {
     title: "Saved",
     model: scenario.includes("retired") ? "deepseek/deepseek-v4-flash-0731" : OFFERED_CHAT_MODELS[2].id,
     updatedAt: "2026-09-07T14:00:00.000Z",
   });
-  messages.set(savedId, [JSON.stringify({
-    message: { id: "old-user", role: "user", content: [{ type: "text", text: "old" }] },
-  })]);
+  messages.set(savedId, [
+    JSON.stringify({
+      message: {
+        id: "old-user",
+        role: "user",
+        content: [{ type: "text", text: "old question" }],
+        createdAt: "2026-09-07T14:00:00.000Z",
+        attachments: [],
+        metadata: { custom: {} },
+      },
+    }),
+    ...(scenario.includes("canvas") ? [JSON.stringify({
+      message: {
+        id: "old-assistant",
+        role: "assistant",
+        content: [{ type: "text", text: "old answer" }],
+        createdAt: "2026-09-07T14:00:01.000Z",
+        status: { type: "complete", reason: "stop" },
+        metadata: {
+          unstable_state: null,
+          unstable_annotations: [],
+          unstable_data: [],
+          steps: [],
+          custom: {},
+        },
+      },
+    })] : []),
+  ]);
 }
 
 let restoreRelease!: () => void;
@@ -60,6 +94,10 @@ const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
 
 const sql = {
   async query(statement: string, values: unknown[] = []) {
+    if (statement.includes("FROM settings WHERE key >= ?")) {
+      const [from, to] = values.map(String);
+      return { ok: true, data: { rows: [...settings].filter(([key]) => key >= from && key < to) } };
+    }
     if (statement.includes("SELECT id, title, model, updated_at FROM threads")) {
       return { ok: true, data: { rows: [...rows].map(([id, row]) => [id, row.title, row.model, row.updatedAt]) } };
     }
@@ -94,6 +132,7 @@ const sql = {
     return { ok: true, data: { rows: [] } };
   },
   async execute(statement: string, values: unknown[] = []) {
+    if (statement.startsWith("INSERT INTO settings")) settings.set(String(values[0]), String(values[1]));
     if (statement.startsWith("UPDATE threads SET model")) {
       if (scenario.includes("save-delay")) await saveGate;
       if (failSave) { failSave = false; return { ok: false, error: { code: "SAVE", message: "controlled save failure" } }; }
@@ -106,6 +145,18 @@ const sql = {
   },
   async batch(operations: Array<{ sql: string; params?: unknown[] }>) {
     if (operations.some((operation) => operation.sql.includes("CREATE TABLE"))) {
+      return { ok: true, data: { rows: [] } };
+    }
+    if (operations[0]?.sql.includes("SELECT NULL, NULL, NULL, NULL")) {
+      // Branch rewrite: a guard (expected count + last payload), then the new history.
+      const [id, count, , last] = (operations[0].params ?? []).map(String);
+      const stored = messages.get(id) ?? [];
+      if (String(stored.length) !== count || (stored.at(-1) ?? "") !== last) {
+        return { ok: false, error: { code: "SQL", message: "NOT NULL constraint failed: messages.thread_id" } };
+      }
+      const payloads = operations.filter((operation) => operation.sql.startsWith("INSERT INTO messages (thread_id, position, payload, created_at) VALUES")).map((operation) => String(operation.params?.[2]));
+      messages.set(id, payloads);
+      events.push(`replace:${id}:${payloads.map((payload) => JSON.parse(payload).message.id).join(",")}`);
       return { ok: true, data: { rows: [] } };
     }
     const threadInsert = operations.find((operation) => operation.sql.includes("INSERT INTO threads"));
@@ -131,10 +182,10 @@ const sql = {
   },
 };
 
-const tcw = {
+const tcw = useLocalCanvasStorage({
   did: "did:test:runtime-harness",
   sql: { db: () => sql },
-} as never;
+} as never);
 
 const sessionStore = {
   getToken: () => "test-token",
@@ -179,6 +230,7 @@ function Harness() {
     agentEnabledRef,
     privateAccessRef,
     meetingMessageRegistry: registry,
+    getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(tcw, threadId),
     getCheckpoint: async () => null,
     appendCompaction: async () => { throw new Error("unexpected compaction"); },
     summarize: async () => { throw new Error("unexpected summary"); },
@@ -208,12 +260,13 @@ function Harness() {
       },
       events,
       view: () => viewRef.current,
+      messageIds: (id) => (messages.get(id) ?? []).map((payload) => JSON.parse(payload).message.id),
     };
   }, [runtime]);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread tcw={tcw} selection={view} onRetrySelection={() => controllerRef.current?.retry()} onReload={() => {}} />
+      <Thread tcw={tcw} selection={view} onRetrySelection={() => controllerRef.current?.retry()} onReload={() => {}} canvasEnabled={params.get("canvas") === "1"} />
       <div id="phase">{view.phase}</div>
       <div id="model">{view.model ?? "none"}</div>
       <div id="message">{view.message ?? ""}</div>

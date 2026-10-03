@@ -1,0 +1,56 @@
+name: Conversation Canvas tests
+
+# The Canvas storage contract (chat history stays the one history; no stale
+# copy ever overwrites another tab's or device's edits) is covered by fast
+# unit tests, including real-SQLite concurrency tests. Runs them on every PR
+# that touches the code they cover.
+
+on:
+  pull_request:
+    paths:
+      - "frontend/src/chat/canvas/**"
+      - "frontend/src/lib/conversationCanvasStore*"
+      - "frontend/src/lib/threadStore.ts"
+      - "frontend/src/chat/runtime.tsx"
+      - "frontend/src/chat/runtimeCanvasPrivacy.test.ts"
+      - "frontend/src/chat/chatModelAdapter.ts"
+      - "frontend/src/chat/useExperimentalFeatures*"
+      - "manifest.json"
+      - ".github/workflows/canvas-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canvas-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  canvas:
+    name: Canvas tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Canvas tests
+        working-directory: frontend
+        run: >-
+          bun test
+          src/chat/canvas
+          src/lib/conversationCanvasStore.test.ts
+          src/chat/runtimeCanvasPrivacy.test.ts
+          src/chat/useExperimentalFeatures.test.ts
+          src/localValidationWiring.test.ts
