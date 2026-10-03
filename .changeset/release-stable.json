@@ -1,0 +1,22 @@
+{
+  "versions": {
+    "exo-desktop": "0.2.0",
+    "@tinychat/frontend": "0.2.0",
+    "@tinychat/backend": "0.2.0"
+  },
+  "changesets": [
+    ".changeset/pre/beige-years-sink.md",
+    ".changeset/pre/crisp-breads-sell.md",
+    ".changeset/pre/exo-desktop-csp.md",
+    ".changeset/pre/exo-mobile-cors.md",
+    ".changeset/pre/exo-mobile-voice-notes.md",
+    ".changeset/pre/exo-private-cloud-engine.md",
+    ".changeset/pre/exo-readable-local-transcripts.md",
+    ".changeset/pre/giant-carpets-relax.md",
+    ".changeset/pre/great-buses-occur.md",
+    ".changeset/pre/keep-session-offline.md",
+    ".changeset/pre/plenty-parts-lose.md",
+    ".changeset/pre/private-cloud-transcription-backend.md",
+    ".changeset/pre/wide-nights-nail.md"
+  ]
+}
