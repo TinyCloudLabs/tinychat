@@ -1190,6 +1190,7 @@ test('TestFlight runs from main only, checks secrets first, archives without the
   const mobile = read(repo, '.github/workflows/mobile.yml');
   assert.match(mobile, /uses: \.\/\.github\/workflows\/ios-build\.yml/);
   assert.doesNotMatch(mobile, /sign:/, 'CI builds stay unsigned');
+});
 
 // Android: only main's dispatched workflow reaches the upload key, PRs rehearse the same build with a throwaway key and
 // no secret, the Gradle build refuses an unsigned or live-reload release, and the signature is verified before upload.
