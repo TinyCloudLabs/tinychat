@@ -36,6 +36,13 @@ describe("TinyChat manifest and backend policy", () => {
       },
       {
         service: "tinycloud.sql",
+        path: "canvas",
+        actions: ["read", "write", "schema"],
+        description:
+          "Store browser-owned Conversation Canvas branches and document versions separately from shared chat history.",
+      },
+      {
+        service: "tinycloud.sql",
         path: "connectors",
         actions: ["read", "write", "schema"],
         description:

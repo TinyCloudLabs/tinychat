@@ -12,7 +12,6 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS canvas_documents (thread_id TEXT NOT NULL, id TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (thread_id, id))`,
   `CREATE TABLE IF NOT EXISTS canvas_document_versions (thread_id TEXT NOT NULL, id TEXT NOT NULL, document_id TEXT NOT NULL, version INTEGER NOT NULL, markdown TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (thread_id, id))`,
   `CREATE TABLE IF NOT EXISTS canvas_document_placements (thread_id TEXT NOT NULL, id TEXT NOT NULL, document_id TEXT NOT NULL, version_id TEXT NOT NULL, placement_order INTEGER NOT NULL, before_message_id TEXT, slot TEXT, PRIMARY KEY (thread_id, id))`,
-  `CREATE TABLE IF NOT EXISTS canvas_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 ];
 const PLACEMENT_MIGRATIONS = [
   "ALTER TABLE canvas_document_placements ADD COLUMN before_message_id TEXT",
@@ -24,6 +23,34 @@ const localStores = new WeakMap<TinyCloudWeb, LocalCanvas>();
 const remoteCaches = new WeakMap<TinyCloudWeb, LocalCanvas>();
 const writeQueues = new WeakMap<TinyCloudWeb, Map<string, Promise<void>>>();
 const schemaReady = new WeakSet<object>();
+const canvasSettingReads = new WeakMap<TinyCloudWeb, Promise<string | null>>();
+
+/**
+ * Default-off gate. The enabled flag lives in the cross-device settings table
+ * next to the promotion markers, so reading it never creates the Canvas
+ * database. Its row exists only once the account has toggled Canvas in
+ * Settings; until then getCanvas/isCanvasPromoted answer null/false without
+ * touching Canvas storage, so chat behaves exactly as without the feature.
+ * Once engaged (even if later turned off) promoted chats stay graph-backed and
+ * fail closed. Read once per signed-in client; setCanvasEnabled updates it.
+ */
+function readCanvasSetting(tcw: TinyCloudWeb): Promise<string | null> {
+  let read = canvasSettingReads.get(tcw);
+  if (!read) {
+    const pending = getSetting(tcw, CANVAS_SETTING_KEY);
+    read = pending;
+    canvasSettingReads.set(tcw, pending);
+    pending.catch(() => {
+      if (canvasSettingReads.get(tcw) === pending) canvasSettingReads.delete(tcw);
+    });
+  }
+  return read;
+}
+
+async function isCanvasEngaged(tcw: TinyCloudWeb): Promise<boolean> {
+  if (localStores.has(tcw)) return true;
+  return (await readCanvasSetting(tcw)) !== null;
+}
 
 function remoteCache(tcw: TinyCloudWeb): LocalCanvas {
   let cache = remoteCaches.get(tcw);
@@ -124,6 +151,7 @@ export async function getCanvas(tcw: TinyCloudWeb, threadId: string): Promise<Co
   if (local) return structuredClone(local.get(threadId) ?? null);
   const cached = remoteCache(tcw).get(threadId);
   if (cached) return structuredClone(cached);
+  if (!(await isCanvasEngaged(tcw))) return null;
   await ensureSchema(tcw);
   const head = await db(tcw).query("SELECT active_head_id FROM canvas_threads WHERE thread_id = ?", [threadId]);
   if (!head.ok) throw new Error(`Canvas read: ${head.error.message}`);
@@ -201,6 +229,8 @@ export async function deleteCanvas(tcw: TinyCloudWeb, threadId: string): Promise
 
 /** Promote a legacy linear thread once; its existing threads/messages rows remain untouched. */
 export async function promoteLegacyThread(tcw: TinyCloudWeb, threadId: string): Promise<ConversationCanvas | null> {
+  // A promotion the runtime would not honor (gate closed) would split the chat.
+  if (!(await isCanvasEngaged(tcw))) throw new Error("Turn on Conversation Canvas in Settings first.");
   const existing = await getCanvas(tcw, threadId);
   if (existing) {
     await setCanvasPromoted(tcw, threadId);
@@ -215,6 +245,7 @@ export async function promoteLegacyThread(tcw: TinyCloudWeb, threadId: string): 
 }
 
 export async function isCanvasPromoted(tcw: TinyCloudWeb, threadId: string): Promise<boolean> {
+  if (!(await isCanvasEngaged(tcw))) return false;
   return (await getSetting(tcw, `${CANVAS_PROMOTION_PREFIX}${threadId}`)) === "true";
 }
 
@@ -226,17 +257,14 @@ export async function setCanvasPromoted(tcw: TinyCloudWeb, threadId: string): Pr
 export async function getCanvasEnabled(tcw: TinyCloudWeb): Promise<boolean> {
   const local = localStores.get(tcw);
   if (local) return false;
-  await ensureSchema(tcw);
-  const result = await db(tcw).query("SELECT value FROM canvas_settings WHERE key = ?", [CANVAS_SETTING_KEY]);
-  return result.ok && result.data.rows.length > 0 && cell(result.data.rows[0], 0) === "true";
+  return (await readCanvasSetting(tcw)) === "true";
 }
 
 export async function setCanvasEnabled(tcw: TinyCloudWeb, enabled: boolean): Promise<void> {
   const local = localStores.get(tcw);
   if (local) return;
-  await ensureSchema(tcw);
-  const result = await db(tcw).execute("INSERT INTO canvas_settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [CANVAS_SETTING_KEY, String(enabled)]);
-  if (!result.ok) throw new Error(`Canvas setting: ${result.error.message}`);
+  await setSetting(tcw, CANVAS_SETTING_KEY, String(enabled));
+  canvasSettingReads.set(tcw, Promise.resolve(String(enabled)));
 }
 
 export function normalizeLegacyItems(items: readonly StoredMessageItem[], threadId = ""): ConversationCanvas {
