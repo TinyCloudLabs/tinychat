@@ -723,9 +723,11 @@ function releasePlanRepo(t, version) {
   git(root, 'tag', '-a', `exo-desktop@${version}`, '-m', version, sha);
   return { root, sha };
 }
-function releasePlan(t, root, tag) {
+// signing is the EXO_DESKTOP_SIGNING value passed as --signing; null leaves the flag out.
+function releasePlan(t, root, tag, signing = 'required') {
   const notes = join(tempDir(t), 'notes.md');
-  return { result: run('desktop-release-plan.mjs', ['--root', root, '--tag', tag, '--notes', notes, '--main', 'main']), notes };
+  const args = ['--root', root, '--tag', tag, '--notes', notes, '--main', 'main', ...(signing === null ? [] : ['--signing', signing])];
+  return { result: run('desktop-release-plan.mjs', args), notes };
 }
 
 test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built from that commit', t => {
@@ -742,6 +744,7 @@ test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built f
   assert.match(result.stdout, /^prerelease=true$/m);
   assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta\)$/m);
   assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
+  assert.match(result.stdout, /^signing=required$/m);
   const text = readFileSync(notes, 'utf8');
   assert.match(text, /\*\*Beta\.\*\* A pre-release of Exo 0\.2\.0/);
   assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
@@ -749,6 +752,7 @@ test('desktop-release-plan.mjs: a beta tag on main becomes a pre-release built f
   assert.match(text, /CFBundleShortVersionString 0\.2\.0, CFBundleVersion 200003/);
   assert.match(text, new RegExp(`built from \`${sha}\``));
   assert.match(text, /Developer ID signed, notarized and stapled/);
+  assert.doesNotMatch(text, /UNSIGNED/);
   assert.doesNotMatch(text, /- Old|Rewritten later/);
 });
 
@@ -760,6 +764,50 @@ test('desktop-release-plan.mjs: a stable tag becomes the latest release', t => {
   assert.match(result.stdout, /^prerelease=false$/m);
   assert.match(result.stdout, /^title=Exo 0\.2\.0$/m);
   assert.doesNotMatch(readFileSync(notes, 'utf8'), /Beta/);
+});
+
+const UNSIGNED_NOTICE = '> **UNSIGNED — macOS will warn; right-click → Open, or `xattr -dr com.apple.quarantine Exo.app`.**';
+
+test('desktop-release-plan.mjs --signing unsigned: a beta stays a pre-release, marked UNSIGNED in title and notes', t => {
+  const { root, sha } = releasePlanRepo(t, '0.2.0-beta.3');
+  const { result, notes } = releasePlan(t, root, 'exo-desktop@0.2.0-beta.3', 'unsigned');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^sha=${sha}$`, 'm'));
+  assert.match(result.stdout, /^signing=unsigned$/m);
+  assert.match(result.stdout, /^channel=beta$/m);
+  assert.match(result.stdout, /^prerelease=true$/m);
+  assert.match(result.stdout, /^title=Exo 0\.2\.0-beta\.3 \(beta, UNSIGNED\)$/m);
+  assert.match(result.stdout, /^asset-prefix=Exo_0\.2\.0-beta\.3_aarch64$/m);
+  const text = readFileSync(notes, 'utf8');
+  assert.ok(text.startsWith(`${UNSIGNED_NOTICE} This build is not Developer ID signed or notarized.\n\n> **Beta.**`), text);
+  assert.match(text, /^- UNSIGNED: not Developer ID signed or notarized\. Check downloads against SHA256SUMS\.txt\.$/m);
+  assert.doesNotMatch(text, /Developer ID signed, notarized and stapled/);
+  assert.match(text, /## Desktop\n\n### Patch Changes\n\n- abc1234: Desktop fix Y\n/);
+});
+
+test('desktop-release-plan.mjs --signing unsigned: a stable is still the latest release, marked UNSIGNED', t => {
+  const { root } = releasePlanRepo(t, '0.2.0');
+  const { result, notes } = releasePlan(t, root, 'exo-desktop@0.2.0', 'unsigned');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^signing=unsigned$/m);
+  assert.match(result.stdout, /^channel=stable$/m);
+  assert.match(result.stdout, /^prerelease=false$/m);
+  assert.match(result.stdout, /^title=Exo 0\.2\.0 \(UNSIGNED\)$/m);
+  const text = readFileSync(notes, 'utf8');
+  assert.ok(text.startsWith(UNSIGNED_NOTICE), text);
+  assert.doesNotMatch(text, /Beta|Developer ID signed, notarized and stapled/);
+});
+
+test('desktop-release-plan.mjs refuses a missing or unknown EXO_DESKTOP_SIGNING instead of guessing', t => {
+  const { root } = releasePlanRepo(t, '0.2.0-beta.3');
+  for (const signing of [null, '', 'Required', 'signed', 'optional', 'true']) {
+    const { result, notes } = releasePlan(t, root, 'exo-desktop@0.2.0-beta.3', signing);
+    assert.equal(result.status, 1, `--signing ${signing}`);
+    assert.match(result.stderr, /EXO_DESKTOP_SIGNING must be "required" \(Developer ID sign \+ notarize\) or "unsigned" \(publish marked UNSIGNED\), got /);
+    assert.match(result.stderr, /gh variable set EXO_DESKTOP_SIGNING --body <required\|unsigned>/);
+    assert.doesNotMatch(result.stdout, /^(title|signing)=/m);
+    assert.equal(existsSync(notes), false);
+  }
 });
 
 test('desktop-release-plan.mjs refuses bad tags, tags off main and version mismatches', t => {
@@ -800,14 +848,26 @@ test('the Exo build is defined once and shared by CI and releases', () => {
   assert.match(build, /ref: \$\{\{ inputs\.ref \|\| github\.sha \}\}/);
 });
 
-test('desktop releases run main\'s workflow on a validated tag and never publish an unsigned build', () => {
+test('desktop releases run main\'s workflow on a validated tag and publish unsigned only when EXO_DESKTOP_SIGNING says so', () => {
   const release = read(repo, '.github/workflows/desktop-release.yml');
   assert.match(triggers('.github/workflows/desktop-release.yml'), /^ {2}workflow_dispatch:\n {4}inputs:\n {6}tag:/m);
   assert.match(release, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
   assert.match(release, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/desktop-release\.yml@refs\/heads\/main/);
   assert.match(release, /ref: \$\{\{ needs\.plan\.outputs\.sha \}\}/);
+  // The variable is read once, by the plan (which validates it); every later job uses the plan's value.
+  assert.equal((release.match(/vars\.EXO_DESKTOP_SIGNING/g) ?? []).length, 1);
+  const plan = release.slice(release.indexOf('  plan:'), release.indexOf('  build:'));
+  assert.match(plan, /SIGNING: \$\{\{ vars\.EXO_DESKTOP_SIGNING \}\}/);
+  assert.match(plan, /node scripts\/release\/desktop-release-plan\.mjs --tag "\$TAG" --notes "\$RUNNER_TEMP\/release-notes\.md" --signing "\$SIGNING"/);
+  assert.match(plan, /signing: \$\{\{ steps\.plan\.outputs\.signing \}\}/);
+  // Signing (and the desktop-release environment) only for an explicit `required`; no secrets are handed down.
+  assert.match(release, /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
+  assert.doesNotMatch(release, /secrets: inherit|secrets\./);
   const publish = release.slice(release.indexOf('  publish:'));
-  assert.ok(publish.indexOf('if [ "$SIGNED" != true ]; then') < publish.indexOf('gh release create'), 'the signed check precedes any release write');
+  assert.match(publish, /SIGNING: \$\{\{ needs\.plan\.outputs\.signing \}\}/);
+  const signedCheck = publish.indexOf('if [ "$SIGNING" != unsigned ] && [ "$SIGNED" != true ]; then');
+  assert.ok(signedCheck !== -1 && signedCheck < publish.indexOf('gh release create'), 'the signed check precedes any release write');
+  assert.match(publish, /--title "\$TITLE"/);
 });
 
 // Tags are mutable: every non-local action runs from a full commit SHA, with the version it was resolved from noted.
@@ -862,7 +922,7 @@ test('deploy-target.mjs gates an older release commit from main\'s checkout (rol
 test('release builds are signed from main only, compiled without secrets, and verified before upload', () => {
   const build = read(repo, '.github/workflows/desktop-build.yml');
   assert.match(build, /environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}/);
-  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: true\n/);
+  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
   assert.doesNotMatch(read(repo, '.github/workflows/desktop.yml'), /sign:/);
   assert.doesNotMatch(build, /continue-on-error/);
 

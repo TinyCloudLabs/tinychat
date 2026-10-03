@@ -5,7 +5,11 @@
  * (release tags are created only by the Release workflow; see the rulesets in docs/deployment.md), and match
  * desktop/package.json at that commit. Version, changelogs and the bundled web version are read from that commit, not
  * from the checkout. A beta becomes a pre-release, a stable version a published Release marked latest. Writes the
- * release notes to --notes and tag, sha, version, channel, prerelease, title, asset-prefix to $GITHUB_OUTPUT.
+ * release notes to --notes and tag, sha, version, channel, prerelease, title, asset-prefix, signing to $GITHUB_OUTPUT.
+ *
+ * --signing is the EXO_DESKTOP_SIGNING repository variable and must be set explicitly: `required` (Developer ID
+ * signed and notarized; publishing refuses anything else) or `unsigned` (no signing at all; the release title and
+ * notes say UNSIGNED). Anything else, including unset, fails.
  */
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -17,11 +21,17 @@ const { values } = parseArgs({
     root: { type: 'string' },
     tag: { type: 'string' },
     notes: { type: 'string' },
+    signing: { type: 'string' },
     main: { type: 'string', default: 'refs/remotes/origin/main' },
   },
 });
 const root = resolve(values.root ?? repoRoot);
 if (!values.tag || !values.notes) throw new Error('--tag and --notes are required');
+const SIGNING_MODES = ['required', 'unsigned'];
+if (!SIGNING_MODES.includes(values.signing)) {
+  throw new Error(`EXO_DESKTOP_SIGNING must be "required" (Developer ID sign + notarize) or "unsigned" (publish marked UNSIGNED), got ${JSON.stringify(values.signing ?? '')}. Set the repository variable: gh variable set EXO_DESKTOP_SIGNING --body <required|unsigned>`);
+}
+const unsigned = values.signing === 'unsigned';
 
 const prefix = `${DESKTOP.crate}@`;
 const version = values.tag.startsWith(prefix) ? values.tag.slice(prefix.length) : '';
@@ -41,6 +51,7 @@ const desktopChanges = changelogSection(show('desktop/CHANGELOG.md') ?? '', vers
 const webChanges = changelogSection(show('frontend/CHANGELOG.md') ?? '', version);
 
 const notes = [
+  ...(unsigned ? ['> **UNSIGNED — macOS will warn; right-click → Open, or `xattr -dr com.apple.quarantine Exo.app`.** This build is not Developer ID signed or notarized.', ''] : []),
   ...(prerelease ? [`> **Beta.** A pre-release of Exo ${shortVersion}, built from \`main\`. It uses the production API (api.tinycloud.chat).`, ''] : []),
   ...(desktopChanges ? ['## Desktop', '', desktopChanges, ''] : []),
   ...(webChanges ? [`## Web app (bundled, ${FRONTEND}@${frontendVersion})`, '', webChanges, ''] : []),
@@ -50,7 +61,9 @@ const notes = [
   `- Exo ${version} for Apple Silicon Macs, macOS 14.2 or later, built from \`${sha}\`.`,
   `- Bundles the web app ${FRONTEND}@${frontendVersion}.`,
   `- Info.plist: CFBundleShortVersionString ${shortVersion}, CFBundleVersion ${bundleVersion}.`,
-  '- Developer ID signed, notarized and stapled. Check downloads against SHA256SUMS.txt.',
+  unsigned
+    ? '- UNSIGNED: not Developer ID signed or notarized. Check downloads against SHA256SUMS.txt.'
+    : '- Developer ID signed, notarized and stapled. Check downloads against SHA256SUMS.txt.',
   '',
 ].join('\n');
 writeFileSync(values.notes, notes);
@@ -61,5 +74,7 @@ setOutput('sha', sha);
 setOutput('version', version);
 setOutput('channel', prerelease ? 'beta' : 'stable');
 setOutput('prerelease', String(prerelease));
-setOutput('title', prerelease ? `Exo ${version} (beta)` : `Exo ${version}`);
+const labels = [...(prerelease ? ['beta'] : []), ...(unsigned ? ['UNSIGNED'] : [])];
+setOutput('title', labels.length ? `Exo ${version} (${labels.join(', ')})` : `Exo ${version}`);
 setOutput('asset-prefix', `Exo_${version}_aarch64`);
+setOutput('signing', values.signing);
