@@ -74,6 +74,15 @@ async fn collect(app: &tauri::AppHandle) -> SmokeReport {
     }
 }
 
+/// build.rs declares the app's commands in an ACL manifest, so even this
+/// debug-only command needs a grant; it is added at runtime in debug builds.
+pub const SMOKE_CAPABILITY: &str = r#"{
+  "identifier": "debug-smoke",
+  "description": "Debug builds only: the exo_desktop_smoke diagnostic command.",
+  "windows": ["main"],
+  "permissions": ["allow-exo-desktop-smoke"]
+}"#;
+
 #[tauri::command]
 pub async fn exo_desktop_smoke(app: tauri::AppHandle) -> Result<SmokeReport, String> {
     Ok(collect(&app).await)
@@ -140,6 +149,8 @@ pub fn maybe_run(app: &tauri::App) {
     ["capture_state", "plugin:transcription|get_capture_state"],
     ["model_downloaded", "plugin:local-stt|is_model_downloaded", {{ model: "QuantizedTinyEn" }}],
     ["smoke_cmd", "exo_desktop_smoke"],
+    ["cloud_status", "cloud_transcription_status"],
+    ["emit_denied", "plugin:event|emit", {{ event: "plugin:transcription:capture-lifecycle-event", payload: null }}],
   ]) {{
     try {{ out[k] = await i(cmd, args); }}
     catch (e) {{ out[k] = "ERR:" + String(e); }}

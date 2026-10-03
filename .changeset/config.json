@@ -6,7 +6,7 @@
   "access": "restricted",
   "privatePackages": { "version": true, "tag": false },
   "updateInternalDependencies": "patch",
-  "ignore": ["@tinyboilerplate/*", "tinyboilerplate-e2e"],
+  "ignore": ["@tinyboilerplate/*", "tinyboilerplate-e2e", "@exo/mobile"],
   "fixed": [["@tinychat/frontend", "exo-desktop"]],
   "linked": []
 }

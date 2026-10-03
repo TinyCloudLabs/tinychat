@@ -1,6 +1,6 @@
 [package]
 name = "exo-desktop"
-version = "0.1.1-beta.0"
+version = "0.2.0"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
@@ -56,10 +56,47 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
-# Debug-only smoke runner (src/smoke.rs) needs tokio::time.
+# Debug-only smoke runner (src/smoke.rs) needs tokio::time; the private cloud
+# uploader (src/cloud) uses it for its idle watchdog.
 [dependencies.tokio]
 version = "1"
 features = ["time"]
+optional = true
+
+# --- Private cloud engine (src/cloud) ---------------------------------------
+# Uploads a stopped recording to TinyCloud Private Transcription through a
+# descriptor opened with openat/O_NOFOLLOW (rustix), hashed with sha2, and
+# streamed by reqwest with redirects disabled. Part of the `transcription`
+# feature because it only ever uploads a capture the transcription plugin made.
+[dependencies.reqwest]
+version = "0.13"
+features = ["stream"]
+optional = true
+
+[dependencies.rustix]
+version = "1"
+features = ["fs"]
+optional = true
+
+[dependencies.sha2]
+version = "0.10"
+optional = true
+
+[dependencies.hex]
+version = "0.4"
+optional = true
+
+[dependencies.getrandom]
+version = "0.3"
+optional = true
+
+[dependencies.uuid]
+version = "1"
+features = ["v4"]
+optional = true
+
+[dependencies.futures-util]
+version = "0.3"
 optional = true
 
 # anarlog's `storage` crate hardcodes `~/Library/Application Support/anarlog`
@@ -96,6 +133,13 @@ transcription = [
     "dep:audio-actual",
     "dep:tauri-plugin-settings",
     "dep:tokio",
+    "dep:reqwest",
+    "dep:rustix",
+    "dep:sha2",
+    "dep:hex",
+    "dep:getrandom",
+    "dep:uuid",
+    "dep:futures-util",
 ]
 
 # macOS 27 dyld rejects some stripped proc-macro dylibs with a misaligned

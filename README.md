@@ -162,13 +162,170 @@ changeset.
   is stale (main moved on since the plan was recorded) or a changeset no beta
   has released is on main, the release is refused with recovery steps.
 
-Tags do not drive deploys or desktop builds yet; production still deploys
-from pushes to main until that is wired up.
+**Production deploys only on stable releases.** Merging the Release stable PR
+makes the `Release` workflow dispatch `Deploy production` on the stable version
+commit: the backend (Phala) first, then the web app (Cloudflare Pages), each only
+if it got a new stable version. Web goes only after the production API proves it
+serves the new backend (`/api/server-info` `backendRevision` equals the deployed
+commit and `backendVersion` the released version). Betas and ordinary merges to
+`main` deploy nothing to production (`main` gets a Pages preview build).
+`Deploy production` is also the only manual path (the Phala workflow has no
+trigger of its own). It always runs from `main` and deploys the commit it
+resolves:
+
+```bash
+# Redeploy or roll back to a stable release (one side with -f backend=false / -f web=false)
+gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@0.1.1 -f web=false
+# Unreleased hotfix: explicit opt-in plus the full SHA of the commit to deploy
+gh workflow run deploy-production.yml --ref main -f allow_unreleased=true -f confirm_sha=<40-char SHA>
+```
+
+Release tags and the `production` branch are pushed only with the
+`release-push` deploy key (rulesets let only deploy keys write them). The web
+deploy fast-forwards `production`, which Pages builds as production, and the
+run's final "Production state" table says what changed, including when a later
+check failed. See [docs/deployment.md](docs/deployment.md) for the deploy key,
+the rulesets and their residual risk.
 
 `desktop/package.json` is the single source of the desktop version:
 `tauri.conf.json` reads it (`"version": "../package.json"`), and the release
 workflow copies it into `desktop/src-tauri/Cargo.toml` and `Cargo.lock`.
 `bun run release:check` fails if they drift.
+
+**Desktop releases.** For every new `exo-desktop@<version>` tag the `Release`
+workflow runs `Desktop release (Exo)` **from main** with the tag as an input
+(`gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>`,
+which is also how to retry). It refuses any other ref, requires the tag to point
+at a commit of `main`, builds exactly that commit with the same job as desktop
+CI (`.github/workflows/desktop-build.yml`) and publishes a GitHub Release with
+no manual step:
+
+- a beta (`0.2.0-beta.3`) becomes a **pre-release** titled
+  `Exo 0.2.0-beta.3 (beta)`, never marked latest;
+- a stable version becomes a published Release marked **latest**.
+
+**Signing follows the `EXO_DESKTOP_SIGNING` repository variable** (see Signing
+mode below): `required` signs, notarizes and staples both channels and refuses
+to publish unless the build reports `signed=true`; `unsigned` publishes an
+unsigned build whose title (`Exo 0.2.0-beta.3 (beta, UNSIGNED)`) and notes say
+so. An unset or unknown value fails the run before anything is built. Assets
+are `Exo_<version>_aarch64.dmg`, the matching `.app.zip` and
+`SHA256SUMS.txt`; the notes combine the desktop and
+web changelog entries of the tagged commit. A published release is never
+rebuilt (cut a new version).
+
+Apple needs numeric bundle versions, so every build maps the semver:
+
+| Exo version | `CFBundleShortVersionString` | `CFBundleVersion` (`XYYZZSSS`) |
+|---|---|---|
+| `0.2.0-beta.3` | `0.2.0` | `200003` |
+| `0.2.0` | `0.2.0` | `200999` |
+| `0.2.1-beta.0` | `0.2.1` | `201000` |
+
+The build number grows with every beta and stable release (stage = beta
+number, `999` for stable). The semver stays in the app itself, the tag, the
+DMG name and the release title. `scripts/release/desktop-bundle-config.mjs`
+writes the Info.plist overlay passed to `tauri build --config`, and the build
+fails if the built Info.plist doesn't match.
+
+Beta desktop builds embed the beta web app, which talks to the production API
+(betas don't deploy the backend).
+
+**Signing mode.** `Desktop release (Exo)` reads the `EXO_DESKTOP_SIGNING`
+repository variable once, in its plan job, and has no default:
+
+| Value | Build | Release |
+|---|---|---|
+| `required` | Developer ID signed, notarized, stapled and verified (`desktop-build.yml` with `sign: true`, `desktop-release` environment) | published only if the build reports `signed=true` |
+| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**; betas stay pre-releases, stables are marked latest |
+| unset or anything else | nothing | the plan job fails with an error naming the two values |
+
+The provenance checks (the workflow runs from `main`, the tag points at a
+commit of `main`) apply in both modes. Until the Apple Developer ID exists,
+the variable is `unsigned`:
+
+```bash
+gh variable set EXO_DESKTOP_SIGNING --body unsigned -R TinyCloudLabs/tinychat
+```
+
+To switch to signed releases once Apple approves the enrollment: add the 7
+`APPLE_*` secrets to the `desktop-release` environment (one-time setup below),
+then set the variable to `required`. The next release is signed; a release
+already published unsigned stays unsigned (published releases are never
+rebuilt; cut a new version).
+
+```bash
+gh variable set EXO_DESKTOP_SIGNING --body required -R TinyCloudLabs/tinychat
+```
+
+**Signing.** `required` release builds (`desktop-build.yml` with `sign: true`) run in the
+`desktop-release` GitHub environment, the only place the Apple secrets live. It
+allows deployments from **`main` only** and has no required reviewer (fully
+automatic releases), so only `Desktop release (Exo)` dispatched on main reaches
+it; a run on a tag or another branch cannot. The signing job first re-checks
+that (`github.workflow_ref` is main's `desktop-release.yml`, the workflow commit
+and the release commit are on freshly fetched `main`, and an `exo-desktop@*`
+release tag points at the commit being built). The app is then compiled with no
+signing secret in reach (`tauri build --no-bundle` runs the frontend build and
+every dependency build script); only `tauri bundle`, which compiles nothing,
+gets them. Tauri signs the app and the DMG with the Developer ID certificate
+(hardened runtime, `desktop/src-tauri/Entitlements.plist` with
+`com.apple.security.device.audio-input`) and notarizes and staples the app with
+an App Store Connect API key; the workflow notarizes and staples the DMG, then
+`scripts/release/verify-desktop-signing.sh` requires `codesign --verify --deep
+--strict`, the Developer ID authority and team, the hardened runtime, the
+audio-input entitlement (and no `get-task-allow`), `spctl` accepting both as
+`Notarized Developer ID`, and `stapler validate` on both. A missing secret
+fails before the build starts. There is no unsigned fallback. Local builds stay
+unsigned (no identity in `tauri.conf.json`).
+
+Residual risk: `main` is not protected (team workflow), so anyone who can push
+to `main` can change `desktop-release.yml` and reach the signing secrets. The
+environment's `main`-only policy and the release-tag ruleset (see
+[docs/deployment.md](docs/deployment.md)) stop tag- and branch-controlled code,
+not a malicious writer. Treat write access as signing access.
+
+Environment secrets (`desktop-release`):
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the Developer ID Application certificate + private key, exported as `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <Org name> (<TEAMID>)`, exactly as `security find-identity -v -p codesigning` prints it |
+| `APPLE_TEAM_ID` | the 10-character Team ID |
+| `APPLE_API_KEY` | App Store Connect API key ID |
+| `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
+| `APPLE_API_PRIVATE_KEY` | full contents of `AuthKey_<key id>.p8`; the workflow writes it to a temp file after compiling and sets `APPLE_API_KEY_PATH` |
+
+One-time setup (repo admin):
+
+```bash
+repo=TinyCloudLabs/tinychat
+# Environment deployable from main only, no reviewers.
+gh api -X PUT repos/$repo/environments/desktop-release \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/$repo/environments/desktop-release/deployment-branch-policies \
+  -f name=main -f type=branch
+
+# Developer ID Application certificate: Keychain Access > My Certificates > select
+# "Developer ID Application: ..." (with its private key) > Export > .p12 with a strong password.
+base64 -i DeveloperIDApplication.p12 | tr -d '\n' | gh secret set APPLE_CERTIFICATE --env desktop-release --repo $repo
+gh secret set APPLE_CERTIFICATE_PASSWORD --env desktop-release --repo $repo      # prompts
+security find-identity -v -p codesigning                                         # copy the identity string
+gh secret set APPLE_SIGNING_IDENTITY --env desktop-release --repo $repo --body 'Developer ID Application: <Org name> (<TEAMID>)'
+gh secret set APPLE_TEAM_ID --env desktop-release --repo $repo --body '<TEAMID>'
+
+# App Store Connect > Users and Access > Integrations > App Store Connect API > Team Keys:
+# generate a key with the Developer role, note the Key ID and Issuer ID, download AuthKey_<id>.p8 (once).
+gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
+gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'
+gh secret set APPLE_API_PRIVATE_KEY --env desktop-release --repo $repo < AuthKey_<id>.p8
+```
+
+Keep the `.p12`, its password and the `.p8` in the team password manager; the
+`.p8` cannot be downloaded again. Never add these as repository secrets, which
+any branch's workflow can read.
 
 ## Chat Sharing
 

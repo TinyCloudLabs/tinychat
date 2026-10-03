@@ -807,7 +807,14 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
         ? {
             kind,
             localWorkflowActive,
-            localPanel: <LocalTranscriberPanel tcw={tcw} onWorkflowActiveChange={setLocalWorkflowActive} />,
+            localPanel: (
+              <LocalTranscriberPanel
+                tcw={tcw}
+                backendUrl={backendUrl}
+                sessionStore={sessionStore}
+                onWorkflowActiveChange={setLocalWorkflowActive}
+              />
+            ),
             onKindChange,
           }
         : {})}

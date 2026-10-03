@@ -1,24 +1,30 @@
 name: Deploy Backend to Phala Cloud
 
+# Only deploy-production.yml calls this (backend first, then web), for a stable release or a confirmed hotfix; it has
+# no trigger of its own, so the release gate there cannot be bypassed. It builds and deploys `ref` (the full SHA the
+# gate resolved), not the caller's main. Backend-only deploy or rollback:
+#   gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@<version> -f web=false
+# This is the one deploy definition: the env var list below, the allowed_envs sync and the public API probes apply
+# to every deploy. It proves the new build is live (server-info backendRevision == the deployed commit and
+# backendVersion == backend/package.json) and always reports whether the production backend changed.
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "packages/**"
-      - "patches/**"
-      - "backend/Dockerfile"
-      - "docker-compose.phala.yml"
-      - "phala.toml"
-      - "manifest.json"
-      - "package.json"
-      - "bun.lock"
-      - "frontend/package.json"
-      - "tsconfig.base.json"
-      - "turbo.json"
-      - "infra/phala-ingress/**"
-      - ".github/workflows/deploy-backend-phala.yml"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Full commit SHA to build and deploy (resolved and gated by deploy-production.yml)
+        type: string
+        required: true
+    outputs:
+      state:
+        description: unchanged | changed-verified | changed-unverified
+        value: ${{ jobs.deploy.outputs.state }}
+      revision:
+        description: backendRevision served by the production API after the deploy
+        value: ${{ jobs.deploy.outputs.revision }}
+      version:
+        description: backendVersion served by the production API after the deploy
+        value: ${{ jobs.deploy.outputs.version }}
 
 concurrency:
   group: tinychat-backend-phala-production
@@ -49,8 +55,27 @@ jobs:
       contents: read
       packages: write
       statuses: write
+    outputs:
+      state: ${{ steps.state.outputs.state }}
+      revision: ${{ steps.live.outputs.revision }}
+      version: ${{ steps.live.outputs.version }}
+    env:
+      DEPLOY_SHA: ${{ inputs.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Require a full commit SHA
+        run: |
+          if ! [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ref must be a full commit SHA, got '$DEPLOY_SHA'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Check the checkout is the deploy commit
+        run: test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
 
       - name: Publish pending deployment status
         env:
@@ -59,7 +84,7 @@ jobs:
         run: |
           gh api \
             --method POST \
-            "/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            "/repos/${GITHUB_REPOSITORY}/statuses/${DEPLOY_SHA}" \
             -f state="pending" \
             -f context="tinychat-backend - phala" \
             -f description="Phala deployment started" \
@@ -70,13 +95,27 @@ jobs:
           {
             echo "## Phala backend deployment"
             echo
-            echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Image: \`${DOCKER_IMAGE}:${GITHUB_SHA}\`"
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- Image: \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`"
             echo "- CVM ID: \`${PHALA_CVM_ID}\`"
             echo "- Public API: ${PRODUCTION_API_URL}"
             echo "- Ingress domain: \`${PHALA_INGRESS_DOMAIN}\`"
             echo "- Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Deploy tooling (the phala CLI and @phala/cloud for the allowed_envs sync) installs from the committed lockfile in
+      # .github/deploy-tools: `npm ci` verifies every package's integrity hash and --ignore-scripts runs no package code,
+      # and this happens before any step references a secret. Later steps only run the installed binaries.
+      # phala is pinned for reproducibility: 1.1.21 restored compatibility with the current CVM schema when resolving
+      # the env encryption public key; 1.1.22 is the latest stable patch release.
+      - name: Install deploy tools
+        run: |
+          tools="$RUNNER_TEMP/deploy-tools"
+          mkdir -p "$tools"
+          cp .github/deploy-tools/package.json .github/deploy-tools/package-lock.json .github/scripts/phala-sync-allowed-envs.mjs "$tools/"
+          (cd "$tools" && npm ci --ignore-scripts --no-audit --no-fund)
+          echo "$tools/node_modules/.bin" >> "$GITHUB_PATH"
+          "$tools/node_modules/.bin/phala" --version || true
 
       - name: Check deployment configuration
         env:
@@ -139,14 +178,6 @@ jobs:
 
           echo "All required deployment config is present and valid."
 
-      - name: Install Phala CLI
-        run: |
-          # Keep the deploy client pinned for reproducibility. 1.1.21 restored
-          # compatibility with the current CVM schema when resolving the env
-          # encryption public key; 1.1.22 is the latest stable patch release.
-          npm install -g phala@1.1.22
-          phala --version || true
-
       - name: Validate Phala access
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -159,37 +190,37 @@ jobs:
           echo "$RAW" | jq '{success, username, workspace, profile}'
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: backend/Dockerfile
           build-args: |
-            BUILD_REVISION=${{ github.sha }}
+            BUILD_REVISION=${{ inputs.ref }}
           platforms: linux/amd64
           push: true
           no-cache: true
           tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE }}:${{ inputs.ref }}
             ${{ env.DOCKER_IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.description=TinyChat backend
 
       - name: Build and push ingress image
         id: ingress-build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: infra/phala-ingress
           file: infra/phala-ingress/Dockerfile
@@ -197,11 +228,11 @@ jobs:
           push: true
           no-cache: true
           tags: |
-            ${{ env.INGRESS_IMAGE }}:ingress-${{ github.sha }}
+            ${{ env.INGRESS_IMAGE }}:ingress-${{ inputs.ref }}
             ${{ env.INGRESS_IMAGE }}:ingress-latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.description=TinyChat Phala ingress
 
       - name: Record pushed image
@@ -210,16 +241,16 @@ jobs:
             echo
             echo "### Container image"
             echo
-            echo "- Tag: \`${DOCKER_IMAGE}:${GITHUB_SHA}\`"
+            echo "- Tag: \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "- Ingress tag: \`${INGRESS_IMAGE}:ingress-${GITHUB_SHA}\`"
+            echo "- Ingress tag: \`${INGRESS_IMAGE}:ingress-${DEPLOY_SHA}\`"
             echo "- Ingress digest: \`${{ steps.ingress-build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pin deployed image tag
         run: |
-          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${GITHUB_SHA}|g" docker-compose.phala.yml
-          sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${GITHUB_SHA}|g" docker-compose.phala.yml
+          sed -i "s|\${TINYCHAT_BACKEND_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:latest}|${DOCKER_IMAGE}:${DEPLOY_SHA}|g" docker-compose.phala.yml
+          sed -i "s|\${TINYCHAT_INGRESS_IMAGE:-ghcr.io/tinycloudlabs/tinychat-backend:ingress-latest}|${INGRESS_IMAGE}:ingress-${DEPLOY_SHA}|g" docker-compose.phala.yml
 
       - name: Capture CVM status before deploy
         env:
@@ -311,6 +342,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy to Phala Cloud
+        id: deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           BACKEND_PRIVATE_KEY: ${{ secrets.BACKEND_PRIVATE_KEY }}
@@ -421,6 +453,17 @@ jobs:
           TRANSCRIPTION_API_URL: ${{ vars.TRANSCRIPTION_API_URL }}
           TRANSCRIPTION_API_KEY: ${{ secrets.TRANSCRIPTION_API_KEY }}
           TRANSCRIPTION_BOT_NAME: ${{ vars.TRANSCRIPTION_BOT_NAME }}
+          # Exo private cloud transcription (backend/src/routes/private-cloud-transcription.ts).
+          # Ships DARK: ENABLED defaults 'false', so /api/transcriber/private-cloud/* is never
+          # mounted (404). ACCOUNTS: empty = nobody, `*` alone = everyone. The URL is the ptx-batch
+          # origin (repo var); the transcriptions:* key and the tenant HMAC key (>=32 random bytes,
+          # `openssl rand -base64 32`) are secrets. Armed with a missing or weak value, startup
+          # refuses to boot. Declared in all four places for the allowed_envs freeze reason.
+          PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}
+          PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS }}
+          PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
+          PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
+          PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -444,9 +487,9 @@ jobs:
             printf '%s\n' "AGENT_STREAM_DRAIN_GRACE_MS=$AGENT_STREAM_DRAIN_GRACE_MS"
             printf '%s\n' "CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN"
             printf '%s\n' "CERTBOT_EMAIL=$CERTBOT_EMAIL"
-            printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${GITHUB_SHA}"
-            printf '%s\n' "TINYCHAT_INGRESS_IMAGE=${INGRESS_IMAGE}:ingress-$GITHUB_SHA"
-            printf '%s\n' "TINYCHAT_BUILD_SHA=$GITHUB_SHA"
+            printf '%s\n' "TINYCHAT_BACKEND_IMAGE=${DOCKER_IMAGE}:${DEPLOY_SHA}"
+            printf '%s\n' "TINYCHAT_INGRESS_IMAGE=${INGRESS_IMAGE}:ingress-$DEPLOY_SHA"
+            printf '%s\n' "TINYCHAT_BUILD_SHA=$DEPLOY_SHA"
             printf '%s\n' "TINYCHAT_DEPLOY_RUN_URL=$DEPLOY_RUN_URL"
             printf '%s\n' "PORT=3001"
             printf '%s\n' "PHALA_INGRESS_DOMAIN=$PHALA_INGRESS_DOMAIN"
@@ -489,6 +532,11 @@ jobs:
             printf '%s\n' "TRANSCRIPTION_API_URL=$TRANSCRIPTION_API_URL"
             printf '%s\n' "TRANSCRIPTION_API_KEY=$TRANSCRIPTION_API_KEY"
             printf '%s\n' "TRANSCRIPTION_BOT_NAME=$TRANSCRIPTION_BOT_NAME"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS=${PRIVATE_CLOUD_TRANSCRIPTION_ACCOUNTS:-}"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_URL=$PRIVATE_CLOUD_TRANSCRIPTION_API_URL"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
+            printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"
@@ -512,11 +560,7 @@ jobs:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           ENV_FILE: ${{ runner.temp }}/phala-prod.env
         run: |
-          mkdir -p "$RUNNER_TEMP/phala-sync"
-          cp .github/scripts/phala-sync-allowed-envs.mjs "$RUNNER_TEMP/phala-sync/"
-          cd "$RUNNER_TEMP/phala-sync"
-          npm init -y >/dev/null
-          npm install @phala/cloud@0.3.0
+          cd "$RUNNER_TEMP/deploy-tools"
           node phala-sync-allowed-envs.mjs
 
       - name: Wait for CVM to report running
@@ -569,6 +613,7 @@ jobs:
           # what this deploy actually shipped, never a hard-coded assumption.
           CONNECTOR_WEBHOOKS_ENABLED: ${{ secrets.CONNECTOR_WEBHOOKS_ENABLED || vars.CONNECTOR_WEBHOOKS_ENABLED || 'false' }}
           GOOGLE_MEET_OAUTH_ENABLED: ${{ secrets.GOOGLE_MEET_OAUTH_ENABLED }}
+          PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_ENABLED || 'false' }}
         run: |
           probe_url() {
             local label="$1"
@@ -768,6 +813,41 @@ jobs:
             echo "Google Meet OAuth probe passed (404 = flag off, nothing mounted)."
           fi
 
+          # >>> private-cloud canary
+          # Exo private cloud transcription mount canary. An unauthenticated GET of
+          # /api/transcriber/private-cloud/capabilities never reaches PTX:
+          #   flag on  -> 401 (mounted; session auth runs before the cohort check)
+          #   flag off -> 404 (nothing mounted — the dark-ship state)
+          # A 404 with the flag ON is the silently-dropped-env failure; a 401 with the
+          # flag OFF means the proxy shipped hot.
+          PRIVATE_CLOUD_URL="${PRODUCTION_API_URL%/}/api/transcriber/private-cloud/capabilities"
+          if [ "${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}" = "true" ]; then
+            PRIVATE_CLOUD_EXPECT=401
+          else
+            PRIVATE_CLOUD_EXPECT=404
+          fi
+          echo "Probing private cloud transcription route at $PRIVATE_CLOUD_URL (expect $PRIVATE_CLOUD_EXPECT; flag=${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false})"
+          PRIVATE_CLOUD_STATUS=0
+          for i in {1..10}; do
+            PRIVATE_CLOUD_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 5 --max-time 15 "$PRIVATE_CLOUD_URL" || echo 000)"
+            echo "Attempt $i/10: http_status=$PRIVATE_CLOUD_STATUS"
+            if [ "$PRIVATE_CLOUD_STATUS" = "$PRIVATE_CLOUD_EXPECT" ]; then
+              break
+            fi
+            sleep 6
+          done
+          if [ "$PRIVATE_CLOUD_STATUS" != "$PRIVATE_CLOUD_EXPECT" ]; then
+            if [ "$PRIVATE_CLOUD_EXPECT" = "401" ]; then
+              echo "::error title=Private cloud transcription probe failed::GET /api/transcriber/private-cloud/capabilities returned $PRIVATE_CLOUD_STATUS (expected 401). PRIVATE_CLOUD_TRANSCRIPTION_ENABLED is true but the routes are not mounted — the flag did not reach the backend."
+            else
+              echo "::error title=Private cloud transcription probe failed::GET /api/transcriber/private-cloud/capabilities returned $PRIVATE_CLOUD_STATUS (expected 404 while PRIVATE_CLOUD_TRANSCRIPTION_ENABLED is not 'true'). The proxy is mounted on a deploy that was meant to ship dark."
+            fi
+            exit 1
+          fi
+          echo "Private cloud transcription probe passed ($PRIVATE_CLOUD_STATUS)."
+          # <<< private-cloud canary
+
           {
             echo
             echo "### Public API probes"
@@ -785,12 +865,74 @@ jobs:
             else
               echo "- ${GOOGLE_URL}: passed (404 = Google Meet OAuth shipped dark)"
             fi
+            if [ "$PRIVATE_CLOUD_EXPECT" = "401" ]; then
+              echo "- ${PRIVATE_CLOUD_URL}: passed (401 = private cloud transcription mounted)"
+            else
+              echo "- ${PRIVATE_CLOUD_URL}: passed (404 = private cloud transcription shipped dark)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Generic 2xx probes can pass against a stale gateway or the old container; require the new build itself.
+      - name: Verify the deployed revision and version
+        id: live
+        run: |
+          expected_version=$(jq -r .version backend/package.json)
+          url="${PRODUCTION_API_URL%/}/api/server-info"
+          revision='' version=''
+          for i in {1..30}; do
+            if info=$(curl -fsS --connect-timeout 5 --max-time 15 "$url"); then
+              revision=$(jq -r '.backendRevision // ""' <<<"$info")
+              version=$(jq -r '.backendVersion // ""' <<<"$info")
+            fi
+            echo "Attempt $i/30: backendRevision=${revision:-?} backendVersion=${version:-?}"
+            if [ "$revision" = "$DEPLOY_SHA" ] && [ "$version" = "$expected_version" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$revision" != "$DEPLOY_SHA" ] || [ "$version" != "$expected_version" ]; then
+            echo "::error title=Deployed build not live::$url serves backendRevision=${revision:-none} backendVersion=${version:-none}, expected $DEPLOY_SHA / $expected_version"
+            exit 1
+          fi
+          echo "- Live: \`$url\` serves backendRevision \`$revision\`, backendVersion \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # A red run does not mean production is unchanged: once `phala deploy` has run, the CVM may be on the new image.
+      - name: Report production backend state
+        id: state
+        if: always()
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          LIVE_REVISION: ${{ steps.live.outputs.revision }}
+          LIVE_VERSION: ${{ steps.live.outputs.version }}
+        run: |
+          if [ "$DEPLOY_OUTCOME" = skipped ] || [ -z "$DEPLOY_OUTCOME" ]; then
+            state=unchanged
+            detail="The run stopped before \`phala deploy\`; the production backend was not touched."
+          elif [ "$DEPLOY_OUTCOME" = success ] && [ "$LIVE_OUTCOME" = success ]; then
+            state=changed-verified
+            detail="Production runs \`$DEPLOY_SHA\` (backendVersion $LIVE_VERSION), verified via server-info."
+          else
+            state=changed-unverified
+            detail="\`phala deploy\` ran (outcome: $DEPLOY_OUTCOME), so the CVM may now run \`${DOCKER_IMAGE}:${DEPLOY_SHA}\`, but the post-deploy checks did not pass (server-info last reported backendRevision=${LIVE_REVISION:-none}, backendVersion=${LIVE_VERSION:-none}). Production is CHANGED and UNVERIFIED; web was not deployed. Redeploy the last good backend: \`gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@<last good version> -f web=false\`."
+            echo "::error title=Production backend changed but unverified::$detail"
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Production backend state: \`$state\`"
+            echo
+            echo "$detail"
           } >> "$GITHUB_STEP_SUMMARY"
 
   phala-status:
     runs-on: ubuntu-latest
     needs: deploy
     if: always()
+    env:
+      DEPLOY_SHA: ${{ inputs.ref }}
     permissions:
       contents: read
       statuses: write
@@ -799,6 +941,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOY_STATE: ${{ needs.deploy.outputs.state }}
           TARGET_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           case "$DEPLOY_RESULT" in
@@ -808,7 +951,11 @@ jobs:
               ;;
             cancelled)
               STATE=error
-              DESCRIPTION="Phala deployment cancelled"
+              if [ "$DEPLOY_STATE" = unchanged ]; then
+                DESCRIPTION="Phala deployment cancelled before changing the CVM"
+              else
+                DESCRIPTION="Phala deployment cancelled after it started: backend may be CHANGED"
+              fi
               ;;
             skipped)
               STATE=error
@@ -816,13 +963,17 @@ jobs:
               ;;
             *)
               STATE=failure
-              DESCRIPTION="Phala deployment or API probe failed"
+              if [ "$DEPLOY_STATE" = unchanged ]; then
+                DESCRIPTION="Phala deployment failed before changing the CVM"
+              else
+                DESCRIPTION="Backend CHANGED but post-deploy checks failed"
+              fi
               ;;
           esac
 
           gh api \
             --method POST \
-            "/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            "/repos/${GITHUB_REPOSITORY}/statuses/${DEPLOY_SHA}" \
             -f state="$STATE" \
             -f context="tinychat-backend - phala" \
             -f description="$DESCRIPTION" \

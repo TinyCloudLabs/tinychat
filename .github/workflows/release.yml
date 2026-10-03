@@ -6,7 +6,10 @@ name: Release
 #      when the "Release stable" PR (.changeset/pre.json -> "exit") was merged, stable versions instead,
 #      then beta pre mode is re-entered;
 #   2. each unit's version is tagged <name>@<version> on the commit that set it;
-#   3. the "Release stable" PR is rebuilt to show what stable would ship.
+#   3. new exo-desktop tags start a desktop release build (desktop-release.yml: a pre-release for a beta, the
+#      published release for stable); stable tags also start the production deploy (deploy-production.yml: backend,
+#      then web). Betas never deploy web or backend;
+#   4. the "Release stable" PR is rebuilt to show what stable would ship.
 # Web and desktop share one version (fixed group); the backend stays 0.x (minor/patch only).
 
 on:
@@ -31,9 +34,12 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Holds the release-push deploy key: release tags may only be created by deploy keys (ruleset). main only.
+    environment: release-push
     permissions:
-      contents: write # [skip ci] version commits, tags, and the release/stable branch
+      contents: write # the release/stable branch (version commits and tags go over the deploy key)
       pull-requests: write # the Release stable PR
+      actions: write # dispatch desktop-release.yml and deploy-production.yml for new tags
     env:
       GIT_AUTHOR_NAME: github-actions[bot]
       GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
@@ -73,18 +79,31 @@ jobs:
         id: tag
         run: node scripts/release/tag.mjs
 
-      # --atomic: the [skip ci] version commit and its tags land together, and only as a fast-forward of main.
+      # --atomic: the [skip ci] version commit and its tags land together, and only as a fast-forward of main. Both
+      # go over the release-push deploy key: the tag ruleset admits only deploy keys, and one transport keeps the push
+      # atomic. A deploy-key push triggers workflows, so the commit's [skip ci] is what keeps this from re-running.
       - name: Push version commit and tags
         if: steps.version.outputs.channel != 'none' || steps.tag.outputs.tags != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_PUSH_SSH_KEY: ${{ secrets.RELEASE_PUSH_SSH_KEY }}
           TAGS: ${{ steps.tag.outputs.tags }}
         run: |
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           read -ra tags <<< "$TAGS"
           refs=()
           for tag in "${tags[@]}"; do refs+=("refs/tags/$tag"); done
-          git -c "http.https://github.com/.extraheader=$auth" push --atomic origin HEAD:refs/heads/main "${refs[@]}"
+          scripts/release/deploy-key-push.sh --atomic HEAD:refs/heads/main "${refs[@]}"
+
+      # Downstream work is dispatched explicitly, from main, with the new tag as an input (the tag commits carry
+      # [skip ci]). Desktop builds for beta and stable exo-desktop tags; production deploys (backend, then web) only
+      # for a stable run. The 0.1.0 baseline tags of the first run dispatch nothing.
+      - name: Dispatch desktop releases and production deploys
+        if: steps.tag.outputs.tags != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+          TAGS: ${{ steps.tag.outputs.tags }}
+        run: node scripts/release/dispatch.mjs --channel "$CHANNEL" --tags "$TAGS"
 
       - name: Prepare the Release stable PR
         id: stable
@@ -103,9 +122,3 @@ jobs:
           else
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head release/stable --title "chore(release): release stable" --body-file "$RUNNER_TEMP/release-stable.md"
           fi
-
-      # Hooks for follow-up PRs (not wired yet; betas deploy nothing):
-      #   PR C: for each new exo-desktop@* tag in steps.tag.outputs.tags, dispatch the desktop build:
-      #         a GitHub pre-release for channel "beta", the signed + notarized Exo release (PR D) for "stable".
-      #   PR E: when steps.version.outputs.channel == 'stable', dispatch the production deploy for the new
-      #         @tinychat/backend@* then @tinychat/frontend@* tags.

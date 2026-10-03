@@ -1,0 +1,232 @@
+name: Deploy production
+
+# The only production deploy path: backend (Phala CVM, api.tinycloud.chat) first, then web (Cloudflare Pages,
+# tinycloud.chat). Web runs only when the backend was not requested, or when the production API proves it serves
+# this commit (server-info backendRevision == the deployed SHA, backendVersion == backend/package.json).
+#
+# It always runs from main (main's workflow code and scripts) and deploys the commit it resolves and gates:
+# - Stable releases: the Release workflow dispatches it with the new stable tag for the units that got a stable
+#   version:  gh workflow run deploy-production.yml --ref main -f tag=@tinychat/backend@0.1.1 -f backend=true -f web=true
+#   Beta versions and ordinary pushes to main deploy nothing to production.
+# - Redeploy or roll back: the same, with an older stable tag (scripts/release/deploy-target.mjs requires a stable
+#   tag per selected unit on that commit, and the commit on main), e.g. -f tag=@tinychat/backend@0.1.1 -f web=false
+# - Unreleased hotfix: only with -f allow_unreleased=true -f confirm_sha=<full SHA of the commit to deploy>, no tag.
+#
+# Web deploys by fast-forwarding the `production` branch, which the Cloudflare Pages Git integration builds as
+# production. A ruleset lets only deploy keys update `production`, so the push goes over SSH with the release-push
+# deploy key (release-push environment, main only). The job checks the branch tip before and after, waits for that
+# build and checks tinycloud.chat serves it. main only gets Pages preview builds. The final report states what
+# changed in production, including when a later check failed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable release tag to deploy, e.g. @tinychat/frontend@0.2.0 (empty only for an unreleased hotfix)
+        type: string
+        default: ""
+      backend:
+        description: Deploy the backend to Phala (api.tinycloud.chat)
+        type: boolean
+        default: true
+      web:
+        description: Deploy the web app to Cloudflare Pages production (tinycloud.chat), after the backend
+        type: boolean
+        default: true
+      allow_unreleased:
+        description: Hotfix only. Allow a commit without a stable release tag (needs confirm_sha)
+        type: boolean
+        default: false
+      confirm_sha:
+        description: Hotfix only. The full 40-character SHA of the commit to deploy
+        type: string
+        default: ""
+
+concurrency:
+  group: tinychat-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  target:
+    name: Target
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+      label: ${{ steps.target.outputs.label }}
+      backend-version: ${{ steps.target.outputs.backend-version }}
+    steps:
+      - name: Require this workflow from main
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/deploy-production.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::Deploy production runs only from main (got $GITHUB_REF, $WORKFLOW_REF). Use: gh workflow run deploy-production.yml --ref main -f tag=<stable tag>"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a stable release, or a confirmed hotfix
+        id: target
+        env:
+          TAG: ${{ inputs.tag }}
+          BACKEND: ${{ inputs.backend }}
+          WEB: ${{ inputs.web }}
+          ALLOW_UNRELEASED: ${{ inputs.allow_unreleased }}
+          CONFIRM_SHA: ${{ inputs.confirm_sha }}
+        run: |
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main '+refs/tags/@tinychat/*:refs/tags/@tinychat/*'
+          if [ -n "$TAG" ]; then
+            if ! [[ "$TAG" =~ ^@tinychat/(backend|frontend)@[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag must be a stable @tinychat/backend or @tinychat/frontend release tag, got '$TAG'"
+              exit 1
+            fi
+            commit="refs/tags/$TAG"
+          elif [ "$ALLOW_UNRELEASED" = true ] && [[ "$CONFIRM_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            git fetch --no-tags origin "$CONFIRM_SHA"
+            commit="$CONFIRM_SHA"
+          else
+            echo "::error::Set tag=<stable release tag>, or allow_unreleased=true with confirm_sha=<full SHA> for an unreleased hotfix"
+            exit 1
+          fi
+          node scripts/release/deploy-target.mjs --commit "$commit" --backend "$BACKEND" --web "$WEB" --allow-unreleased "$ALLOW_UNRELEASED" --confirm-sha "$CONFIRM_SHA"
+
+  backend:
+    name: Backend
+    needs: target
+    if: inputs.backend
+    uses: ./.github/workflows/deploy-backend-phala.yml
+    with:
+      ref: ${{ needs.target.outputs.sha }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      statuses: write
+
+  web:
+    name: Web (Cloudflare Pages)
+    needs: [target, backend]
+    if: >-
+      ${{ !cancelled() && inputs.web && needs.target.result == 'success' && (needs.backend.result == 'skipped' ||
+      (needs.backend.result == 'success' && needs.backend.outputs.revision == needs.target.outputs.sha &&
+      needs.backend.outputs.version == needs.target.outputs.backend-version)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    # The deploy key that may update `production` (ruleset bypass) lives only here; main only, no reviewer.
+    environment: release-push
+    permissions:
+      contents: read
+      checks: read # read the Cloudflare Pages check run
+    outputs:
+      state: ${{ steps.state.outputs.state }}
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create the production deploy commit
+        id: commit
+        env:
+          TARGET: ${{ needs.target.outputs.sha }}
+          LABEL: ${{ needs.target.outputs.label }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main +refs/heads/production:refs/remotes/origin/production
+          git fetch --no-tags origin "$TARGET"
+          node scripts/release/pages-production-commit.mjs --target "$TARGET" --label "$LABEL" --body "Run $RUN_URL"
+
+      # A plain push with the deploy key: it only fast-forwards production, and fails loudly if production moved.
+      - name: Push the production branch
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUSH_SSH_KEY: ${{ secrets.RELEASE_PUSH_SSH_KEY }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: scripts/release/deploy-key-push.sh "$COMMIT:refs/heads/production"
+
+      - name: Wait for Cloudflare Pages and verify tinycloud.chat
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+          PRODUCTION_URL: ${{ vars.TINYCHAT_FRONTEND_URL || 'https://tinycloud.chat' }}
+        run: node scripts/release/pages-production-verify.mjs --commit "$COMMIT" --url "$PRODUCTION_URL"
+
+      - name: Report production web state
+        id: state
+        if: always()
+        env:
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          PREVIOUS: ${{ steps.commit.outputs.previous }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: |
+          if [ "$PUSH_OUTCOME" != success ]; then
+            state=unchanged
+            detail="The production branch was not moved; tinycloud.chat still serves the previous deployment."
+          elif [ "$VERIFY_OUTCOME" = success ]; then
+            state=changed-verified
+            detail="production moved ${PREVIOUS:0:12} -> ${COMMIT:0:12} and tinycloud.chat serves that build."
+          else
+            state=changed-unverified
+            detail="production moved ${PREVIOUS:0:12} -> ${COMMIT:0:12}, so Cloudflare Pages is building or serving the new web app, but verification did not pass. Production web is CHANGED and UNVERIFIED. Roll back with Pages' own rollback, or: gh workflow run deploy-production.yml --ref main -f tag=@tinychat/frontend@<last good version> -f backend=false."
+            echo "::error title=Production web changed but unverified::$detail"
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Production web state: $state"
+            echo
+            echo "$detail"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: Production state
+    needs: [target, backend, web]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report what changed in production
+        env:
+          LABEL: ${{ needs.target.outputs.label }}
+          BACKEND_REQUESTED: ${{ inputs.backend }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          BACKEND_STATE: ${{ needs.backend.outputs.state }}
+          WEB_REQUESTED: ${{ inputs.web }}
+          WEB_RESULT: ${{ needs.web.result }}
+          WEB_STATE: ${{ needs.web.outputs.state }}
+        run: |
+          # A requested side that never reported a state ran into an error before it could; never call that unchanged.
+          describe() {
+            if [ "$1" != true ]; then echo "not requested"
+            elif [ -n "$3" ]; then echo "$3 (job $2)"
+            elif [ "$2" = skipped ]; then echo "unchanged (job skipped: an earlier gate failed)"
+            else echo "UNKNOWN, check the job log (job $2)"
+            fi
+          }
+          backend=$(describe "$BACKEND_REQUESTED" "$BACKEND_RESULT" "$BACKEND_STATE")
+          web=$(describe "$WEB_REQUESTED" "$WEB_RESULT" "$WEB_STATE")
+          {
+            echo "## Production after this run (${LABEL:-no target})"
+            echo
+            echo "| Side | State |"
+            echo "|---|---|"
+            echo "| Backend (api.tinycloud.chat) | $backend |"
+            echo "| Web (tinycloud.chat) | $web |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

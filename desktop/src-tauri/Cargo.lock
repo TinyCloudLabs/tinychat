@@ -2890,17 +2890,24 @@ dependencies = [
 
 [[package]]
 name = "exo-desktop"
-version = "0.1.1-beta.0"
+version = "0.2.0"
 dependencies = [
  "audio-actual",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "reqwest 0.13.4",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-local-stt",
  "tauri-plugin-settings",
  "tauri-plugin-transcription",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
