@@ -78,25 +78,39 @@ function sha256(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-// ── Mock PTX batch API (plan §4.2) ──────────────────────────────────
+// ── Mock PTX batch API: PTX main's real shapes (SPEC.md "Batch transcription", src/uploads/) ──
 
-function completedResult() {
+const MAIN_CONTENT_TYPES = ["audio/mpeg", "audio/wav", "audio/ogg"];
+const C1_CONTENT_TYPES = [...MAIN_CONTENT_TYPES, "audio/mp4", "audio/webm", "audio/flac"];
+
+/** PTX's stored result (src/uploads/worker.ts `assemble`) as `GET …/result` answers it. */
+function completedResult(id: string, options: { language?: string | null; diarized?: boolean } = {}) {
+  const speakers = options.diarized
+    ? [
+        { id: "speaker_0", name: "Speaker 1", channel: 0 },
+        { id: "speaker_1", name: "Speaker 2", channel: 0 },
+      ]
+    : [
+        { id: "channel_0", name: "Speaker 1", channel: 0 },
+        { id: "channel_1", name: "Speaker 2", channel: 1 },
+      ];
+  const segments = [
+    { id: "seg_0001", speaker_id: speakers[0]!.id, channel: speakers[0]!.channel, start: 0, end: 3, text: TRANSCRIPT_TEXT },
+    { id: "seg_0002", speaker_id: speakers[1]!.id, channel: speakers[1]!.channel, start: 13, end: 15.5, text: "bob: good morning" },
+  ];
   return {
+    id,
     status: "completed",
-    language: "en",
-    duration_seconds: 26,
+    language: options.language === undefined ? "en" : options.language,
+    duration_seconds: 26.04,
     provider: "tinfoil",
     model: "voxtral-small-24b",
-    channels: 2,
-    speakers: [
-      { id: "channel_0", name: "Speaker 1", channel: 0 },
-      { id: "channel_1", name: "Speaker 2", channel: 1 },
-    ],
-    segments: [
-      { id: "seg_1", speaker_id: "channel_0", channel: 0, start: 0, end: 3, text: TRANSCRIPT_TEXT },
-      { id: "seg_2", speaker_id: "channel_1", channel: 1, start: 13, end: 15.5, text: "bob: good morning" },
-    ],
-    text: TRANSCRIPT_TEXT,
+    channels: options.diarized ? 1 : 2,
+    // PTX main has no `diarized`; a diarization-capable PTX (C2) always sends it.
+    ...(options.diarized === undefined ? {} : { diarized: options.diarized }),
+    speakers,
+    segments,
+    text: segments.map((s) => `${speakers.find((p) => p.id === s.speaker_id)!.name}: ${s.text}`).join("\n"),
     stats: { tinfoil_calls: 2, tinfoil_audio_seconds: 5.5 },
   };
 }
@@ -105,9 +119,16 @@ type Job = {
   id: string;
   tenant: string;
   idempotencyKey: string;
+  requestHash: string;
   status: string;
+  content_type: string;
   byte_size: number;
   sha256: string;
+  language: string | null;
+  channel_mode: string;
+  channel_labels: string[];
+  diarize: boolean | null;
+  error: { type: string; code: string; message: string } | null;
   capability: string;
   reads: number;
 };
@@ -121,10 +142,17 @@ type Override = {
   chunked?: { chunk: string; count: number };
 };
 
+/**
+ * `diarization: null` (default) is PTX main: no `diarize` create field (unknown fields are a 400), no
+ * `diarization` capability, three content types. A boolean is a C2 PTX with the stage on or off.
+ */
 async function startMockPtx() {
   const requests: { method: string; url: string; headers: Record<string, unknown>; body: string }[] = [];
   const jobs = new Map<string, Job>();
-  const state: { override: ((path: string) => Override | null) | null } = { override: null };
+  const state: { override: ((path: string) => Override | null) | null; diarization: boolean | null } = {
+    override: null,
+    diarization: null,
+  };
   const app = express();
   app.use(express.raw({ type: () => true, limit: "10mb" }));
   app.use(async (req, res, next) => {
@@ -147,39 +175,49 @@ async function startMockPtx() {
       return;
     }
     if (req.path.startsWith("/v1/") && req.get("authorization") !== `Bearer ${PTX_KEY}`) {
-      res.status(401).json({ error: { type: "authentication_error", code: "invalid_api_key", message: "bad key" } });
+      res.status(401).json({ error: { type: "authentication_error", code: "unauthorized", message: "bad key" } });
       return;
     }
     next();
   });
   const ptxError = (res: express.Response, status: number, code: string, extra: object = {}) =>
-    res.status(status).json({ error: { type: "invalid_request_error", code, message: `upstream says ${code}`, ...extra } });
+    res.status(status).json({ error: { type: "invalid_request_error", code, message: `upstream says ${code}`, correlation_id: "c", ...extra } });
+  const TERMINAL = new Set(["completed", "failed", "cancelled"]);
   // PTX batch's own job shape (tinycloud-private-transcription src/uploads/service.ts serializeJob:
   // lifecycle timestamps, no updated_at, audio `not_received` until the upload), plus fields
   // TinyChat must drop (request_id, tenant_ref, storage_path).
   const view = (job: Job) => {
-    const uploaded = job.status !== "awaiting_upload";
+    const received = job.status !== "awaiting_upload";
     const started = job.status === "processing" || job.status === "completed";
-    const finished = job.status === "completed" || job.status === "failed" || job.status === "cancelled";
     return {
       id: job.id,
       object: "transcription",
       status: job.status,
-      content_type: "audio/mpeg",
+      content_type: job.content_type,
       byte_size: job.byte_size,
-      language: "en",
-      channel_mode: "separate",
-      channel_labels: ["Speaker 1", "Speaker 2"],
-      duration_seconds: job.status === "completed" ? 26 : null,
-      channels: uploaded ? 2 : null,
-      progress: { stage: job.status === "processing" ? "transcribing" : job.status, queue_position: job.status === "queued" ? 1 : null, regions_completed: 0, regions_total: 0 },
-      retention: { audio: uploaded ? "stored" : "not_received", audio_deleted_at: null, transcript_expires_at: null, transcript_deleted_at: null },
-      error: null,
+      language: job.language,
+      channel_mode: job.channel_mode,
+      channel_labels: job.channel_labels,
+      duration_seconds: received ? 26.04 : null,
+      channels: received ? 2 : null,
+      progress: {
+        stage: job.status === "processing" ? "transcribing" : job.status,
+        queue_position: job.status === "queued" ? 1 : null,
+        regions_completed: job.status === "completed" ? 2 : 0,
+        regions_total: started ? 2 : 0,
+      },
+      retention: {
+        audio: !received ? "not_received" : TERMINAL.has(job.status) ? "deletion_pending" : "stored",
+        audio_deleted_at: null,
+        transcript_expires_at: job.status === "completed" ? "2026-09-30T10:01:00.000Z" : null,
+        transcript_deleted_at: job.status === "failed" || job.status === "cancelled" ? "2026-09-29T10:01:00.000Z" : null,
+      },
+      error: job.error,
       created_at: "2026-09-29T10:00:00.000Z",
       upload_deadline_at: "2026-09-29T12:00:00.000Z",
-      uploaded_at: uploaded ? "2026-09-29T10:00:05.000Z" : null,
+      uploaded_at: received ? "2026-09-29T10:00:05.000Z" : null,
       processing_started_at: started ? "2026-09-29T10:00:06.000Z" : null,
-      finished_at: finished ? "2026-09-29T10:00:30.000Z" : null,
+      finished_at: TERMINAL.has(job.status) ? "2026-09-29T10:01:00.000Z" : null,
       request_id: "req_mock",
       tenant_ref: job.tenant,
       storage_path: `/data/uploads/${job.id}.mp3`,
@@ -200,9 +238,11 @@ async function startMockPtx() {
       max_bytes: MAX_RECORDING_BYTES,
       max_duration_seconds: 7200,
       max_channels: 2,
-      content_types: ["audio/mpeg", "audio/wav", "audio/ogg"],
+      content_types: state.diarization === null ? MAIN_CONTENT_TYPES : C1_CONTENT_TYPES,
       transcript_ttl_seconds: 86400,
       admission: "open",
+      ...(state.diarization === null ? {} : { diarization: state.diarization }),
+      ready: true,
     });
   });
   // One synchronous handler: the check-and-insert is atomic, like PTX's partial unique index.
@@ -210,7 +250,17 @@ async function startMockPtx() {
     const tenant = req.get("x-tenant-ref") ?? "";
     const key = req.get("idempotency-key") ?? "";
     if (!/^[0-9a-f]{64}$/.test(tenant) || !key) return ptxError(res, 400, "invalid_request");
-    const body = JSON.parse((req as { raw?: Buffer }).raw!.toString("utf8"));
+    const body = JSON.parse((req as { raw?: Buffer }).raw!.toString("utf8")) as Record<string, any>;
+    // src/uploads/service.ts `parseCreateBody`: unknown fields are refused.
+    const fields = ["content_type", "byte_size", "sha256", "language", "channel_mode", "channel_labels"];
+    if (state.diarization !== null) fields.push("diarize");
+    if (Object.keys(body).some((field) => !fields.includes(field))) return ptxError(res, 400, "invalid_request");
+    const types = state.diarization === null ? MAIN_CONTENT_TYPES : C1_CONTENT_TYPES;
+    if (!types.includes(body.content_type)) return ptxError(res, 400, "invalid_request");
+    if (body.diarize !== undefined && typeof body.diarize !== "boolean") return ptxError(res, 400, "invalid_request");
+    if (body.diarize === true && body.channel_mode === "separate") return ptxError(res, 400, "invalid_request");
+    if (body.diarize === true && !state.diarization) return ptxError(res, 400, "diarization_unavailable");
+    const requestHash = sha256(JSON.stringify([tenant, ...fields.map((field) => body[field] ?? null)]));
     const replay = [...jobs.values()].find((j) => j.tenant === tenant && j.idempotencyKey === key);
     const withUpload = (job: Job) => ({
       ...view(job),
@@ -219,18 +269,26 @@ async function startMockPtx() {
         : {}),
     });
     if (replay) {
-      if (replay.sha256 !== body.sha256) return ptxError(res, 409, "idempotency_conflict");
+      if (replay.requestHash !== requestHash) return ptxError(res, 409, "idempotency_conflict");
       return res.status(200).json(withUpload(replay));
     }
     const active = [...jobs.values()].find((j) => j.tenant === tenant && ACTIVE.has(j.status));
     if (active) return ptxError(res, 409, "active_transcription_exists", { id: active.id });
+    const diarize = state.diarization === null ? null : body.diarize === true;
     const job: Job = {
       id: newId(),
       tenant,
       idempotencyKey: key,
+      requestHash,
       status: "awaiting_upload",
+      content_type: body.content_type,
       byte_size: body.byte_size,
       sha256: body.sha256,
+      language: body.language ?? null,
+      channel_mode: body.channel_mode ?? (diarize ? "mixed" : "separate"),
+      channel_labels: body.channel_labels ?? ["Speaker 1", "Speaker 2"],
+      diarize,
+      error: null,
       capability: `tcu_${randomUUID().replaceAll("-", "")}`,
       reads: 0,
     };
@@ -254,13 +312,18 @@ async function startMockPtx() {
   app.get("/v1/transcriptions/:id/result", (req, res) => {
     const job = owned(req, res);
     if (!job) return;
+    if (job.status === "failed" || job.status === "cancelled") return res.json({ id: job.id, status: job.status, error: job.error });
     if (job.status !== "completed") return res.status(202).json({ id: job.id, status: job.status });
-    res.json(completedResult());
+    const diarized = job.diarize === null ? undefined : job.diarize;
+    res.json(completedResult(job.id, { language: job.language, diarized }));
   });
   app.post("/v1/transcriptions/:id/cancel", (req, res) => {
     const job = owned(req, res);
     if (!job) return;
-    job.status = "cancelled";
+    if (ACTIVE.has(job.status)) {
+      job.status = "cancelled";
+      job.error = { type: "cancelled", code: "cancelled", message: "Cancelled by the caller" };
+    }
     res.json({ id: job.id, status: job.status });
   });
   app.delete("/v1/transcriptions/:id", (req, res) => {
@@ -273,10 +336,13 @@ async function startMockPtx() {
     const job = jobs.get(req.params.id);
     const raw = (req as { raw?: Buffer }).raw!;
     if (!job || req.get("authorization") !== `Bearer ${job.capability}`) return ptxError(res, 401, "upload_capability_invalid");
-    if (job.status !== "awaiting_upload") return ptxError(res, 409, "upload_already_received", { status: job.status });
-    if (raw.length !== job.byte_size || sha256(raw) !== job.sha256) return ptxError(res, 422, "upload_integrity_failed");
+    if (job.status !== "awaiting_upload") return ptxError(res, 401, "upload_capability_invalid");
+    if (req.get("content-type") !== job.content_type) return ptxError(res, 415, "unsupported_media_type");
+    if (raw.length !== job.byte_size || sha256(raw) !== job.sha256) {
+      return ptxError(res, 422, "upload_rejected", { status: "failed", job_error: { type: "upload_error", code: "upload_integrity_failed", message: "x" } });
+    }
     job.status = "queued";
-    res.status(201).json({ status: "queued" });
+    res.status(201).json({ id: job.id, status: "queued" });
   });
   const url = await listen(app);
   return { url, requests, jobs, state };
@@ -550,7 +616,8 @@ describe("create", () => {
     const { ptx, backend } = await setup();
     const valid = createBody();
     const cases: [Record<string, string> | null, unknown, number, string][] = [
-      [null, { ...valid, content_type: "audio/flac" }, 400, "invalid_request"],
+      [null, { ...valid, content_type: "audio/aac" }, 400, "invalid_request"],
+      [null, { ...valid, content_type: "video/mp4" }, 400, "invalid_request"],
       [null, { ...valid, byte_size: 0 }, 400, "invalid_request"],
       [null, { ...valid, byte_size: 1.5 }, 400, "invalid_request"],
       [null, { ...valid, byte_size: MAX_RECORDING_BYTES + 1 }, 413, "recording_too_large"],
@@ -558,6 +625,9 @@ describe("create", () => {
       [null, { ...valid, language: "english" }, 400, "invalid_request"],
       [null, { ...valid, channel_mode: "stereo" }, 400, "invalid_request"],
       [null, { ...valid, channel_labels: ["a", "b", "c"] }, 400, "invalid_request"],
+      [null, { ...valid, diarize: "yes" }, 400, "invalid_request"],
+      // Diarization runs on a mono downmix: it cannot keep the two channels apart.
+      [null, { ...valid, channel_mode: "separate", diarize: true }, 400, "invalid_request"],
       [null, [valid], 400, "invalid_request"],
       [{}, valid, 400, "invalid_idempotency_key"],
       [{ "Idempotency-Key": "attempt-1" }, valid, 400, "invalid_idempotency_key"],
@@ -570,6 +640,27 @@ describe("create", () => {
     const max = await create(backend.url, ADDRESS_A, randomUUID(), { ...valid, byte_size: MAX_RECORDING_BYTES });
     expect(max.status).toBe(201);
     expect(ptx.requests.filter((q) => q.method === "POST")).toHaveLength(1);
+  });
+
+  test("diarize: true is forwarded; false or absent never reaches PTX, so plain creates still work on PTX main", async () => {
+    const { ptx, backend } = await setup();
+    // PTX main refuses unknown fields: a forwarded `diarize: false` would break every plain create.
+    const plain = await create(backend.url, ADDRESS_A, randomUUID(), { ...createBody(), diarize: false });
+    expect(plain.status).toBe(201);
+    expect(JSON.parse(ptx.requests.at(-1)!.body)).toEqual(createBody());
+
+    const diarize = { ...createBody(), channel_mode: "mixed", channel_labels: undefined, diarize: true };
+    // PTX main does not know the option; a C2 PTX with the stage off says so with its own code.
+    const main = await create(backend.url, ADDRESS_B, randomUUID(), diarize);
+    expect([main.status, main.json.error.code]).toEqual([400, "invalid_request"]);
+    ptx.state.diarization = false;
+    const off = await create(backend.url, ADDRESS_B, randomUUID(), diarize);
+    expect([off.status, off.json.error.code]).toEqual([400, "diarization_unavailable"]);
+    expect(off.json.error.message).toBe(PUBLIC_ERRORS.diarization_unavailable.message);
+    ptx.state.diarization = true;
+    const on = await create(backend.url, ADDRESS_B, randomUUID(), diarize);
+    expect(on.status).toBe(201);
+    expect(JSON.parse(ptx.requests.at(-1)!.body)).toEqual(diarize);
   });
 
   test("no route accepts audio: a non-JSON create is 415 and there is no upload route", async () => {
@@ -675,13 +766,19 @@ describe("status, result, list, cancel, delete", () => {
   test("the job lifecycle relays through, and a malformed id never reaches PTX", async () => {
     const { ptx, backend } = await setup();
     const caps = await call(backend.url, "GET", "/capabilities");
-    expect(caps.json).toMatchObject({ max_bytes: MAX_RECORDING_BYTES, admission: "open" });
+    // PTX main reports no diarization stage: the relay says it cannot diarize.
+    expect(caps.json).toMatchObject({ max_bytes: MAX_RECORDING_BYTES, admission: "open", diarization: false });
     expect(ptx.requests[0]!.headers["x-tenant-ref"]).toBeUndefined();
 
     const id = (await create(backend.url)).json.id;
     const pending = await call(backend.url, "GET", `/transcriptions/${id}/result`);
     expect([pending.status, pending.json]).toEqual([202, { id, status: "awaiting_upload" }]);
-    expect((await call(backend.url, "GET", `/transcriptions/${id}`)).json).toMatchObject({ id, status: "awaiting_upload" });
+    expect((await call(backend.url, "GET", `/transcriptions/${id}`)).json).toMatchObject({
+      id,
+      status: "awaiting_upload",
+      retention: { audio: "not_received" },
+      error: null,
+    });
     const list = await call(backend.url, "GET", "/transcriptions?limit=5");
     expect(list.json.transcriptions).toHaveLength(1);
     expect(ptx.requests.at(-1)!.url).toBe("/v1/transcriptions?limit=5");
@@ -690,6 +787,9 @@ describe("status, result, list, cancel, delete", () => {
     }
     const cancelled = await call(backend.url, "POST", `/transcriptions/${id}/cancel`);
     expect(cancelled.json).toEqual({ id, status: "cancelled" });
+    const cancelledError = { code: "cancelled", message: JOB_ERRORS.cancelled };
+    expect((await call(backend.url, "GET", `/transcriptions/${id}`)).json).toMatchObject({ status: "cancelled", error: cancelledError });
+    expect((await call(backend.url, "GET", `/transcriptions/${id}/result`)).json).toEqual({ id, status: "cancelled", error: cancelledError });
     const deleted = await call(backend.url, "DELETE", `/transcriptions/${id}`);
     expect([deleted.status, deleted.text]).toEqual([204, ""]);
     expect((await call(backend.url, "GET", `/transcriptions/${id}`)).json.error.code).toBe("transcription_not_found");
@@ -699,6 +799,28 @@ describe("status, result, list, cancel, delete", () => {
       expect((await call(backend.url, "GET", `/transcriptions/${bad}`)).status).toBe(404);
     }
     expect(ptx.requests.length).toBe(before);
+  });
+
+  test("a diarized job on a C2 PTX relays end to end: C1 content type in, speaker_<n> voices out", async () => {
+    const { ptx, backend } = await setup();
+    ptx.state.diarization = true;
+    const caps = await call(backend.url, "GET", "/capabilities");
+    expect([caps.json.diarization, caps.json.content_types]).toEqual([true, C1_CONTENT_TYPES]);
+    const body = { ...createBody(), content_type: "audio/mp4", language: undefined, channel_mode: "mixed", channel_labels: undefined, diarize: true };
+    const created = await create(backend.url, ADDRESS_A, randomUUID(), body);
+    expect(created.status).toBe(201);
+    const { id, upload } = created.json;
+    const put = await fetch(`${ptx.url}${upload.path}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${upload.capability}`, "Content-Type": "audio/mp4" },
+      body: AUDIO,
+    });
+    expect(put.status).toBe(201);
+    for (let i = 0; i < 2; i++) await call(backend.url, "GET", `/transcriptions/${id}`);
+    const result = await call(backend.url, "GET", `/transcriptions/${id}/result`);
+    expect(result.status).toBe(200);
+    expect(result.json).toEqual(completedResult(id, { language: null, diarized: true }));
+    expect(result.json.segments.map((s: { speaker_id: string }) => s.speaker_id)).toEqual(["speaker_0", "speaker_1"]);
   });
 
   test("a status or result for a different id or an unknown status is upstream_bad_response", async () => {
@@ -730,7 +852,7 @@ describe("error mapping", () => {
   // [name, route, upstream answer, our status, our code, class]. Relayed only as an exact
   // (route, status, code) contract tuple; everything else is classified, never trusted by code.
   const TABLE: [string, Route, Override, number, string, PrivateCloudClass][] = [
-    ["key refused (401)", "get", { status: 401, body: ERR("invalid_api_key") }, 503, "service_misconfigured", "operator_fault"],
+    ["key refused (401)", "get", { status: 401, body: ERR("unauthorized") }, 503, "service_misconfigured", "operator_fault"],
     ["scope refused (403)", "create", { status: 403, body: ERR("insufficient_scope") }, 503, "service_misconfigured", "operator_fault"],
     ["route missing (404, no code)", "get", { status: 404, raw: "Not Found" }, 503, "service_misconfigured", "operator_fault"],
     ["not-found on a route that has no job", "capabilities", { status: 404, body: ERR("transcription_not_found") }, 503, "service_misconfigured", "operator_fault"],
@@ -741,6 +863,12 @@ describe("error mapping", () => {
     ["job not found (result)", "result", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
     ["job not found (cancel)", "cancel", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
     ["job not found (delete)", "delete", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
+    // A create replaying the Idempotency-Key of a job that has since been deleted.
+    ["replayed key of a deleted job", "create", { status: 404, body: ERR("transcription_not_found") }, 404, "transcription_not_found", "client"],
+    ["unknown route (PTX not_found)", "create", { status: 404, body: ERR("not_found") }, 503, "service_misconfigured", "operator_fault"],
+    ["transcript expired", "result", { status: 410, body: ERR("transcript_expired") }, 410, "transcript_expired", "client"],
+    ["diarization unavailable", "create", { status: 400, body: ERR("diarization_unavailable") }, 400, "diarization_unavailable", "client"],
+    ["capability limit on a replay", "create", { status: 429, body: ERR("upload_capability_limit", { retry_after_seconds: 600 }) }, 429, "upload_capability_limit", "transient"],
     ["paused", "create", { status: 503, body: ERR("service_paused"), headers: { "Retry-After": "120" } }, 503, "service_paused", "transient"],
     ["unavailable", "get", { status: 503, body: ERR("service_unavailable") }, 503, "service_unavailable", "transient"],
     ["unavailable (capabilities)", "capabilities", { status: 503, body: ERR("service_unavailable") }, 503, "service_unavailable", "transient"],
@@ -757,6 +885,8 @@ describe("error mapping", () => {
     ["quota on a read", "result", { status: 429, body: ERR("quota_exceeded") }, 502, "upstream_bad_response", "transient"],
     ["too large on a read", "get", { status: 413, body: ERR("recording_too_large") }, 502, "upstream_bad_response", "transient"],
     ["503 carrying a client code", "get", { status: 503, body: ERR("transcription_not_found") }, 502, "upstream_bad_response", "transient"],
+    ["transcript expired on a status read", "get", { status: 410, body: ERR("transcript_expired") }, 502, "upstream_bad_response", "transient"],
+    ["diarization unavailable as a 503", "create", { status: 503, body: ERR("diarization_unavailable") }, 502, "upstream_bad_response", "transient"],
     ["bare 429", "create", { status: 429, raw: "slow down", headers: { "Retry-After": "7" } }, 502, "upstream_bad_response", "transient"],
     ["active job without an id", "create", { status: 409, body: ERR("active_transcription_exists") }, 502, "upstream_bad_response", "transient"],
     ["active job with a bad id", "create", { status: 409, body: ERR("active_transcription_exists", { id: "../x" }) }, 502, "upstream_bad_response", "transient"],
@@ -879,11 +1009,11 @@ describe("correlation ids and logs", () => {
     const id = created.json.id;
     await fetch(`${ptx.url}${created.json.upload.path}`, {
       method: "PUT",
-      headers: { Authorization: `Bearer ${created.json.upload.capability}` },
+      headers: { Authorization: `Bearer ${created.json.upload.capability}`, "Content-Type": "audio/mpeg" },
       body: AUDIO,
     });
     for (let i = 0; i < 3; i++) await call(backend.url, "GET", `/transcriptions/${id}`);
-    expect((await call(backend.url, "GET", `/transcriptions/${id}/result`)).json.text).toBe(TRANSCRIPT_TEXT);
+    expect((await call(backend.url, "GET", `/transcriptions/${id}/result`)).json.text).toContain(TRANSCRIPT_TEXT);
     await call(backend.url, "DELETE", `/transcriptions/${id}`);
     ptx.state.override = () => ({ status: 401, body: { error: { code: "invalid_api_key" } } });
     await create(backend.url);
@@ -997,20 +1127,25 @@ describe("e2e script", () => {
 describe("response DTOs", () => {
   const ID = "trn_0123456789ABCDEFGHJKMNPQRS";
   const JOB_KEYS = ["byte_size", "channel_labels", "channel_mode", "channels", "created_at", "duration_seconds", "error", "id", "progress", "retention", "status", "updated_at"];
+  // PTX main's `serializeJob`, plus a stray field inside progress and retention.
   const job = (patch: Record<string, unknown> = {}) => ({
     id: ID,
+    object: "transcription",
     status: "processing",
+    content_type: "audio/mpeg",
     byte_size: 1000,
+    language: "en",
     channel_mode: "separate",
     channel_labels: ["Speaker 1", "Speaker 2"],
-    duration_seconds: 26,
+    duration_seconds: 26.04,
     channels: 2,
-    progress: { stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7, internal_worker: "w-1" },
-    retention: { audio: "stored", audio_deleted_at: null, transcript_expires_at: null, volume: "/data" },
+    progress: { stage: "transcribing", queue_position: null, regions_completed: 3, regions_total: 7, internal_worker: "w-1" },
+    retention: { audio: "stored", audio_deleted_at: null, transcript_expires_at: null, transcript_deleted_at: null, volume: "/data" },
     error: null,
-    created_at: "2026-09-29T10:00:00Z",
-    uploaded_at: "2026-09-29T10:00:04Z",
-    processing_started_at: "2026-09-29T10:00:05.123Z",
+    created_at: "2026-09-29T10:00:00.000Z",
+    upload_deadline_at: "2026-09-29T12:00:00.000Z",
+    uploaded_at: "2026-09-29T10:00:05.000Z",
+    processing_started_at: "2026-09-29T10:00:06.123Z",
     finished_at: null,
     ...patch,
   });
@@ -1022,11 +1157,11 @@ describe("response DTOs", () => {
     const status = await call(backend.url, "GET", `/transcriptions/${ID}`);
     expect(status.status).toBe(200);
     expect(Object.keys(status.json).sort()).toEqual(JOB_KEYS);
-    expect(status.json.progress).toEqual({ stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7 });
+    expect(status.json.progress).toEqual({ stage: "transcribing", queue_position: null, regions_completed: 3, regions_total: 7 });
     expect(status.json.retention).toEqual({ audio: "stored", audio_deleted_at: null, transcript_expires_at: null });
     // When the job last changed: PTX has no updated_at, so the latest lifecycle timestamp.
-    expect(status.json.updated_at).toBe("2026-09-29T10:00:05.123Z");
-    ptx.state.override = () => ({ status: 200, body: { object: "list", data: [{ ...job(), ...LEAKS }], cursor: "UPSTREAM-DETAIL" } });
+    expect(status.json.updated_at).toBe("2026-09-29T10:00:06.123Z");
+    ptx.state.override = () => ({ status: 200, body: { object: "list", data: [{ ...job(), ...LEAKS }], has_more: "UPSTREAM-DETAIL" } });
     const list = await call(backend.url, "GET", "/transcriptions");
     expect(Object.keys(list.json)).toEqual(["transcriptions"]);
     expect(Object.keys(list.json.transcriptions[0]).sort()).toEqual(JOB_KEYS);
@@ -1111,54 +1246,68 @@ describe("response DTOs", () => {
 
   test("a job error is rebuilt as { code, our message }; the upstream message never passes", async () => {
     const { ptx, backend } = await setup();
-    const upstreamError = { type: "processing_error", code: "no_speech", message: "UPSTREAM-DETAIL at /data/x", detail: { region: 4 } };
+    const upstreamError = { type: "audio_error", code: "no_speech", message: "UPSTREAM-DETAIL at /data/x", detail: { region: 4 } };
     ptx.state.override = () => ({ status: 200, body: job({ status: "failed", error: upstreamError }) });
     const status = await call(backend.url, "GET", `/transcriptions/${ID}`);
     expect(status.json.error).toEqual({ code: "no_speech", message: JOB_ERRORS.no_speech });
-    ptx.state.override = () => ({ status: 200, body: { status: "failed", error: upstreamError, ...LEAKS } });
+    ptx.state.override = () => ({ status: 200, body: { id: ID, status: "failed", error: upstreamError, ...LEAKS } });
     const result = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
     expect(result.json).toEqual({ id: ID, status: "failed", error: { code: "no_speech", message: JOB_ERRORS.no_speech } });
-    ptx.state.override = () => ({ status: 200, body: { status: "cancelled", error: null } });
+    // PTX marks every cancelled job with the `cancelled` code.
+    const cancelled = { type: "cancelled", code: "cancelled", message: "UPSTREAM-DETAIL Cancelled by the caller" };
+    ptx.state.override = () => ({ status: 200, body: { id: ID, status: "cancelled", error: cancelled } });
+    const outcome = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
+    expect(outcome.json).toEqual({ id: ID, status: "cancelled", error: { code: "cancelled", message: JOB_ERRORS.cancelled } });
+    ptx.state.override = () => ({ status: 200, body: { id: ID, status: "cancelled", error: null } });
     expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json).toEqual({ id: ID, status: "cancelled", error: null });
-    expect(status.text + result.text).not.toContain("UPSTREAM-DETAIL");
+    expect(status.text + result.text + outcome.text).not.toContain("UPSTREAM-DETAIL");
   });
 
   test("capabilities and a completed result are rebuilt exactly", async () => {
     const { ptx, backend } = await setup();
-    ptx.state.override = () => ({
-      status: 200,
-      body: { max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "drain", tinfoil_key_id: "UPSTREAM-DETAIL" },
-    });
-    const caps = await call(backend.url, "GET", "/capabilities");
-    expect(caps.json).toEqual({ max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "drain" });
-    const leaky = completedResult() as any;
-    leaky.provider_request_ids = ["UPSTREAM-DETAIL"];
-    leaky.speakers[0].address = ADDRESS_A;
-    leaky.segments[0].audio_path = "/data/regions/1.wav";
-    leaky.stats.tinfoil_key = "UPSTREAM-DETAIL";
+    const main = { max_bytes: 1000, max_duration_seconds: 7200, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 86400, admission: "drain" };
+    ptx.state.override = () => ({ status: 200, body: { ...main, ready: true, tinfoil_key_id: "UPSTREAM-DETAIL" } });
+    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, diarization: false });
+    ptx.state.override = () => ({ status: 200, body: { ...main, content_types: C1_CONTENT_TYPES, diarization: true } });
+    expect((await call(backend.url, "GET", "/capabilities")).json).toEqual({ ...main, content_types: C1_CONTENT_TYPES, diarization: true });
+    const done = completedResult(ID);
+    const leaky = {
+      ...done,
+      provider_request_ids: ["UPSTREAM-DETAIL"],
+      speakers: done.speakers.map((s, i) => (i === 0 ? { ...s, address: ADDRESS_A } : s)),
+      segments: done.segments.map((s, i) => (i === 0 ? { ...s, audio_path: "/data/regions/1.wav" } : s)),
+      stats: { ...done.stats, tinfoil_key: "UPSTREAM-DETAIL" },
+    };
     ptx.state.override = () => ({ status: 200, body: leaky });
     const result = await call(backend.url, "GET", `/transcriptions/${ID}/result`);
-    const expected = completedResult();
-    expect(result.json).toEqual({ id: ID, ...expected });
+    // A result without `diarized` (PTX main, or stored before diarization existed) is channel-labelled.
+    expect(result.json).toEqual({ ...done, diarized: false });
     expect(result.text).not.toContain("UPSTREAM-DETAIL");
     expect(result.text.toLowerCase()).not.toContain(ADDRESS_A.toLowerCase());
     expect(result.text).not.toContain("/data");
+    // A job created without a language has a null language.
+    ptx.state.override = () => ({ status: 200, body: completedResult(ID, { language: null }) });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}/result`)).json.language).toBeNull();
   });
 
   test("an off-contract value anywhere in a success body is upstream_bad_response", async () => {
     const { ptx, backend } = await setup();
-    const done = completedResult();
+    const done = completedResult(ID);
+    const voices = completedResult(ID, { diarized: true });
     const cases: [string, number, unknown][] = [
       // status
       [`/transcriptions/${ID}`, 200, job({ id: newId() })],
       [`/transcriptions/${ID}`, 200, job({ status: "done" })],
       [`/transcriptions/${ID}`, 200, job({ status: "failed" })],
       [`/transcriptions/${ID}`, 200, job({ error: { code: "no_speech" } })],
+      [`/transcriptions/${ID}`, 200, job({ error: { code: "cancelled" } })],
       [`/transcriptions/${ID}`, 200, job({ status: "failed", error: { code: "disk_full" } })],
+      [`/transcriptions/${ID}`, 200, job({ status: "failed", error: { code: "cancelled" } })],
+      [`/transcriptions/${ID}`, 200, job({ status: "cancelled", error: { code: "no_speech" } })],
       [`/transcriptions/${ID}`, 200, job({ byte_size: "1000" })],
       [`/transcriptions/${ID}`, 200, job({ byte_size: MAX_RECORDING_BYTES + 1 })],
       [`/transcriptions/${ID}`, 200, job({ channels: 3 })],
-      [`/transcriptions/${ID}`, 200, job({ progress: { stage: "transcribe", queue_position: 0, regions_completed: 8, regions_total: 7 } })],
+      [`/transcriptions/${ID}`, 200, job({ progress: { stage: "transcribing", queue_position: 0, regions_completed: 8, regions_total: 7 } })],
       [`/transcriptions/${ID}`, 200, job({ progress: { stage: "../x", queue_position: 0, regions_completed: 0, regions_total: 0 } })],
       [`/transcriptions/${ID}`, 200, job({ retention: { audio: "archived", audio_deleted_at: null, transcript_expires_at: null } })],
       [`/transcriptions/${ID}`, 200, job({ retention: undefined })],
@@ -1179,11 +1328,15 @@ describe("response DTOs", () => {
       ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 3, content_types: ["audio/mpeg"], transcript_ttl_seconds: 1, admission: "open" }],
       ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["video/mp4"], transcript_ttl_seconds: 1, admission: "open" }],
       ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["audio/mpeg"], admission: "open" }],
+      ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 1, admission: "open", diarization: "yes" }],
       // result
       [`/transcriptions/${ID}/result`, 202, { id: ID, status: "completed" }],
       [`/transcriptions/${ID}/result`, 202, { id: newId(), status: "queued" }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, id: newId() }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, id: undefined }],
       [`/transcriptions/${ID}/result`, 200, { ...done, provider: "openai" }],
       [`/transcriptions/${ID}/result`, 200, { ...done, status: "processing" }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, language: "english" }],
       [`/transcriptions/${ID}/result`, 200, { ...done, text: undefined }],
       [`/transcriptions/${ID}/result`, 200, { ...done, stats: undefined }],
       [`/transcriptions/${ID}/result`, 200, { ...done, channels: 1 }],
@@ -1191,8 +1344,19 @@ describe("response DTOs", () => {
       [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], speaker_id: "channel_9" }] }],
       [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], channel: 1 }] }],
       [`/transcriptions/${ID}/result`, 200, { ...done, segments: [{ ...done.segments[0], start: 5, end: 4 }] }],
-      [`/transcriptions/${ID}/result`, 200, { status: "failed", error: null }],
-      [`/transcriptions/${ID}/result`, 200, { status: "cancelled", error: { code: "made_up" } }],
+      // diarized: `speaker_<n>` voices on channel 0 exactly when `diarized` is true
+      [`/transcriptions/${ID}/result`, 200, { ...voices, diarized: "yes" }],
+      [`/transcriptions/${ID}/result`, 200, { ...voices, diarized: false }],
+      [`/transcriptions/${ID}/result`, 200, { ...done, diarized: true }],
+      [`/transcriptions/${ID}/result`, 200, { ...voices, speakers: [{ id: "speaker_32", name: "Speaker 33", channel: 0 }] }],
+      [`/transcriptions/${ID}/result`, 200, { ...voices, channels: 2, speakers: [{ ...voices.speakers[0], channel: 1 }, voices.speakers[1]] }],
+      [`/transcriptions/${ID}/result`, 200, { ...voices, speakers: [voices.speakers[0], voices.speakers[0]] }],
+      [`/transcriptions/${ID}/result`, 200, { ...voices, segments: [{ ...voices.segments[0], speaker_id: "speaker_7" }] }],
+      // failed / cancelled
+      [`/transcriptions/${ID}/result`, 200, { id: ID, status: "failed", error: null }],
+      [`/transcriptions/${ID}/result`, 200, { id: newId(), status: "failed", error: { code: "no_speech" } }],
+      [`/transcriptions/${ID}/result`, 200, { id: ID, status: "cancelled", error: { code: "made_up" } }],
+      [`/transcriptions/${ID}/result`, 200, { id: ID, status: "cancelled", error: { code: "no_speech" } }],
     ];
     for (const [path, status, body] of cases) {
       ptx.state.override = () => ({ status, body });
@@ -1228,7 +1392,7 @@ describe("bounded upstream reads", () => {
     ptx.state.override = () => ({ status: 503, chunked: { chunk: "z".repeat(64 * 1024), count: 4 } });
     expect((await call(backend.url, "GET", "/capabilities")).json.error.code).toBe("upstream_bad_response");
     // A ~1 MB two-hour transcript is well inside the result limit.
-    const big = completedResult();
+    const big = completedResult(ID);
     big.segments = Array.from({ length: 4000 }, (_, i) => ({ id: `seg_${i}`, speaker_id: "channel_0", channel: 0, start: i, end: i + 1, text: "w".repeat(120) }));
     big.text = "w".repeat(500_000);
     ptx.state.override = () => ({ status: 200, body: big });
@@ -1279,7 +1443,11 @@ describe("no-store", () => {
     const { ptx, backend } = await setup();
     const created = await create(backend.url);
     const id = created.json.id;
-    await fetch(`${ptx.url}${created.json.upload.path}`, { method: "PUT", headers: { Authorization: `Bearer ${created.json.upload.capability}` }, body: AUDIO });
+    await fetch(`${ptx.url}${created.json.upload.path}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${created.json.upload.capability}`, "Content-Type": "audio/mpeg" },
+      body: AUDIO,
+    });
     const responses = [
       created,
       await call(backend.url, "GET", "/capabilities"),
@@ -1291,7 +1459,7 @@ describe("no-store", () => {
       await call(backend.url, "POST", "/transcriptions", { headers: { "Idempotency-Key": "nope" }, body: createBody() }),
       await call(backend.url, "DELETE", `/transcriptions/${id}`),
     ];
-    expect(responses[5]!.json.text).toBe(TRANSCRIPT_TEXT);
+    expect(responses[5]!.json.text).toContain(TRANSCRIPT_TEXT);
     for (const r of responses) expect(r.headers.get("cache-control")).toBe("no-store");
     const hidden = await call(backend.url, "GET", "/capabilities", { as: ADDRESS_C });
     expect(hidden.headers.get("cache-control")).toBeNull();
