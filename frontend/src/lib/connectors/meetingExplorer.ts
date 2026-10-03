@@ -42,6 +42,7 @@ import {
   LOCAL_MEETING_SOURCE,
   LOCAL_MEETING_SOURCE_LABEL,
 } from "../localTranscriber";
+import { VOICE_NOTE_SOURCE, VOICE_NOTE_SOURCE_LABEL } from "../voiceNotes/voiceNoteStore";
 import { CONNECTORS } from "./registry";
 
 /**
@@ -57,6 +58,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
   GMEET_MEETING_SOURCE,
   TRANSCRIBER_MEETING_SOURCE,
   LOCAL_MEETING_SOURCE,
+  VOICE_NOTE_SOURCE,
 ];
 
 /**
@@ -68,6 +70,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
 export function meetingSourceLabel(source: string): string {
   if (source === TRANSCRIBER_MEETING_SOURCE) return TRANSCRIBER_MEETING_SOURCE_LABEL;
   if (source === LOCAL_MEETING_SOURCE) return LOCAL_MEETING_SOURCE_LABEL;
+  if (source === VOICE_NOTE_SOURCE) return VOICE_NOTE_SOURCE_LABEL;
   return CONNECTORS.find((c) => c.source === source)?.name ?? source;
 }
 

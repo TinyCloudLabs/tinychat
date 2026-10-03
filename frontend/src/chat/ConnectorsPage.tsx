@@ -5,6 +5,7 @@ import { ConnectorsCard } from "./ConnectorsCard";
 import { ConnectorsTabs, type ConnectorsTab } from "./connectorsNav";
 import { LibraryPage } from "./LibraryPage";
 import { TranscriberSection } from "./TranscriberSection";
+import { VoiceNotesSection } from "./VoiceNotesSection";
 
 interface ConnectorsPageProps {
   tcw: TinyCloudWeb;
@@ -61,6 +62,7 @@ export function ConnectorsPage({
           <LibraryPage tcw={tcw} meetingsSlot={meetingsSlot} />
         ) : (
           <div className="flex flex-col gap-4">
+            <VoiceNotesSection tcw={tcw} />
             <ConnectorsCard
               tcw={tcw}
               backendUrl={backendUrl}

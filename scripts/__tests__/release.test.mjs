@@ -18,6 +18,7 @@ const MANIFESTS = [
   'backend/package.json',
   'test/package.json',
   'desktop/package.json',
+  'mobile/package.json',
   'desktop/src-tauri/tauri.conf.json',
   'desktop/src-tauri/Cargo.toml',
   'desktop/src-tauri/Cargo.lock',
