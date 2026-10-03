@@ -14,6 +14,8 @@ import {
   mergeMeetingCorpus,
 } from "./corpus";
 import { CONNECTORS_KV_PREFIX } from "../connectors/connectorStore";
+import { LOCAL_MEETING_SOURCE } from "../localTranscriber";
+import { VOICE_NOTE_SOURCE } from "../voiceNotes/voiceNoteStore";
 import type {
   ConnectorMeetingList,
   ConnectorMeetingMeta,
@@ -213,13 +215,23 @@ describe("SQL meeting metadata discovery", () => {
     unsupported[1] = "granola";
     const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [unsupported] } })));
     expect(SQL_MEETING_METADATA_QUERY).toContain(
-      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local')",
+      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note')",
     );
+    // The browser-local capture sources are named by their writers' own constants.
+    expect(SUPPORTED_MEETING_SOURCES).toEqual(expect.arrayContaining([LOCAL_MEETING_SOURCE, VOICE_NOTE_SOURCE]));
     // The SQL filter and the row/KV allowlist are one definition: none can drift.
     for (const source of SUPPORTED_MEETING_SOURCES) {
       expect(SQL_MEETING_METADATA_QUERY).toContain(`'${source}'`);
     }
     expect(result).toEqual({ candidates: [], lane: { state: "partial", malformedRows: 1 } });
+  });
+
+  test("a voice note row is a candidate like any other browser-local capture", async () => {
+    const voiceNote = [...validRow];
+    voiceNote[1] = VOICE_NOTE_SOURCE;
+    const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [voiceNote] } })));
+    expect(result.lane).toEqual({ state: "healthy" });
+    expect(result.candidates).toEqual([expect.objectContaining({ source: VOICE_NOTE_SOURCE, sourceId: "meeting-1" })]);
   });
 });
 
