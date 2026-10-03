@@ -2191,7 +2191,8 @@ components:
           properties:
             audio:
               type: string
-              enum: [stored, deletion_pending, deleted]
+              description: not_received while the job awaits its upload.
+              enum: [not_received, stored, deletion_pending, deleted]
             audio_deleted_at:
               type: [string, "null"]
               format: date-time
@@ -2207,6 +2208,7 @@ components:
           type: string
           format: date-time
         updated_at:
+          description: When the job last changed (the latest of PTX's lifecycle timestamps).
           type: string
           format: date-time
     PrivateCloudTranscript:
