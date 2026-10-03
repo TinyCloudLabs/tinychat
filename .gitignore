@@ -36,3 +36,7 @@ test/connectors/*.run.log
 smithers.db
 smithers.db-shm
 smithers.db-wal
+
+# Signing keys (the Android upload key lives only in CI secrets and the team password manager)
+*.jks
+*.keystore
