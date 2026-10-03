@@ -96,7 +96,9 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
             self.setState("idle", nil)
 
             let file = Self.fileURL(id)
-            let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
+            // URLResourceValues.fileSize, not FileManager.attributesOfItem: the latter is a file-timestamp
+            // "required reason" API that PrivacyInfo.xcprivacy would have to declare.
+            let size = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
             guard size > 0 else {
                 try? FileManager.default.removeItem(at: file)
                 call.reject("The recording captured no audio", "no_audio_captured")
