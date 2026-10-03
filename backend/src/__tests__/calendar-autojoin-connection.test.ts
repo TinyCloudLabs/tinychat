@@ -273,6 +273,23 @@ describe("authenticated autojoin routes", () => {
     } finally { await new Promise<void>(done => server.close(() => done())); }
   });
 
+  test("/begin refuses Exo app (native.) states unless the native return is on (TC-521)", async () => {
+    const nativeState = "native.Q2hhbmdlTWVQbGVhc2VfMDEyMzQ1Njc4OQ";
+    for (const nativeReturn of [undefined, true]) {
+      const f = fixture();
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+      app.use("/autojoin", createCalendarAutojoinRouter({ connection: f.connection, ...(nativeReturn ? { nativeReturn } : {}) }));
+      const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/autojoin`;
+      try {
+        const begin = await fetch(`${base}/begin`, { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ state: nativeState, challenge: CHALLENGE, consent: true }) });
+        expect(begin.status).toBe(nativeReturn ? 200 : 400);
+      } finally { await new Promise<void>(done => server.close(() => done())); }
+    }
+  });
+
   test("derives tenant from session, rejects unauthenticated access, never accepts posted tenant", async () => {
     const f = fixture();
     const app = express(); app.use(express.json());

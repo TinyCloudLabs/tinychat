@@ -279,9 +279,33 @@ describe("Google Meet OAuth connect variant", () => {
     const attempt = native.slice(native.indexOf("startNativeOAuth({"));
     expect(attempt).not.toContain("verifier");
     expect(attempt).toContain("expectedState: state,");
-    expect(attempt).toContain("codeHandledRef.current = true;\n            void runExchange(outcome.code);");
+    expect(attempt).toContain("codeHandledRef.current = true;");
+    // Through the ref, so a long browser round trip still uses the latest exchange.
+    expect(attempt).toContain("void runExchangeRef.current(outcome.code);");
     expect(native).not.toContain("GOOGLE_OAUTH_EXCHANGE_PATH");
     expect(native).not.toContain("window.open(");
+  });
+
+  test("an abandoned native attempt never opens a browser (generation re-checked after each await)", () => {
+    const native = connectHalf.slice(
+      connectHalf.indexOf("const authorizeInSystemBrowser"),
+      connectHalf.indexOf("const handleAuthorize"),
+    );
+    // Every new click / cancel / reset / unmount bumps the generation…
+    const cancelNative = connectHalf.slice(connectHalf.indexOf("const cancelNativeAttempt"), connectHalf.indexOf("const reset"));
+    expect(cancelNative).toContain("nativeGenerationRef.current += 1;");
+    // …and the attempt bails after the digest and after /autojoin/begin if it is no longer current.
+    expect(native.indexOf("if (!current()) return;")).toBeGreaterThan(native.indexOf("await pkceChallengeS256"));
+    const afterBegin = native.slice(native.indexOf("await beginAutojoinAuthorization"));
+    expect(afterBegin.indexOf("if (!current()) return;")).toBeLessThan(afterBegin.indexOf("startNativeOAuth({"));
+    expect(native).toContain("if (!current() || codeHandledRef.current || stateRef.current !== state) return;");
+  });
+
+  test("the native flow is off unless the build enables it", () => {
+    const authorize = connectHalf.slice(connectHalf.indexOf("const handleAuthorize"));
+    const nativeBranch = authorize.slice(0, authorize.indexOf("authorizeInSystemBrowser(nativePorts);"));
+    expect(nativeBranch).toContain("if (!nativeGoogleOAuthEnabled()) {");
+    expect(nativeBranch).toContain('setError({ kind: "native-unavailable", message: "" });');
   });
 
   test("closing or cancelling the dialog also ends a native attempt", () => {

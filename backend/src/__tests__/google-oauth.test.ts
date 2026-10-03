@@ -477,6 +477,8 @@ beforeEach(async () => {
       oauth: port,
       config: TEST_CONFIG,
       appOrigin: APP_ORIGIN,
+      // On here so the native suites below exercise the return; the default (off) has its own suite.
+      nativeReturn: true,
     }),
   );
   server = app.listen(0);
@@ -702,6 +704,48 @@ describe("GET /start (native)", () => {
   }
 });
 
+describe("native return OFF (the default, TC-521)", () => {
+  // A private-use scheme can be claimed by any app and /exchange accepts any session, so until a
+  // claimed https return exists no `native.` flow may start, and no code may leave for the deep link.
+  let offBase: string;
+  let offServer: ReturnType<express.Express["listen"]>;
+  beforeEach(async () => {
+    const app = express();
+    app.use(
+      "/api/connectors/google/oauth",
+      createGoogleOAuthRouter({ oauth: port, config: TEST_CONFIG, appOrigin: APP_ORIGIN }),
+    );
+    offServer = app.listen(0);
+    await new Promise<void>((resolve) => offServer.once("listening", resolve));
+    offBase = `http://127.0.0.1:${(offServer.address() as AddressInfo).port}/api/connectors/google/oauth`;
+  });
+  afterEach(async () => {
+    await new Promise<void>((resolve) => offServer.close(() => resolve()));
+  });
+
+  test("/start refuses a native state before Google is asked", async () => {
+    const response = await fetch(`${offBase}/start?state=${NATIVE_STATE}&challenge=${CHALLENGE}`, { redirect: "manual" });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(port.authorizeCalls).toEqual([]);
+  });
+
+  test("/callback never sends a native code to the deep link (no redirect, no postMessage)", async () => {
+    const response = await fetch(`${offBase}/callback?code=fake-auth-code&state=${NATIVE_STATE}`, { redirect: "manual" });
+    expect(response.status).not.toBe(302);
+    expect(response.headers.get("location")).toBeNull();
+    const body = await response.text();
+    expect(body).not.toContain("fake-auth-code");
+    expect(body).not.toContain("postMessage(");
+  });
+
+  test("the web flow is unchanged with the native return off", async () => {
+    const response = await fetch(`${offBase}/start?state=${STATE}&challenge=${CHALLENGE}`, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(new URL(response.headers.get("location") ?? "").searchParams.get("state")).toBe(STATE);
+  });
+});
+
 describe("GET /callback (native)", () => {
   const callback = (query: string) =>
     fetch(`${base}/callback?${query}`, { redirect: "manual" });
@@ -804,7 +848,7 @@ describe("GET /callback (native)", () => {
     applySecurityDefaults(app);
     app.use(
       "/api/connectors/google/oauth",
-      createGoogleOAuthRouter({ oauth: port, config: TEST_CONFIG, appOrigin: APP_ORIGIN }),
+      createGoogleOAuthRouter({ oauth: port, config: TEST_CONFIG, appOrigin: APP_ORIGIN, nativeReturn: true }),
     );
     const helmetServer = app.listen(0);
     await new Promise<void>((resolve) => helmetServer.once("listening", resolve));

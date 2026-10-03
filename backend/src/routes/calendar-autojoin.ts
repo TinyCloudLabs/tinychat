@@ -1,11 +1,13 @@
 import { Router, type Request, type Response } from "express";
 import { CalendarAutojoinConnection, CalendarAutojoinError } from "../services/calendar-autojoin-connection.js";
-import { GoogleOAuthError } from "../services/google-oauth.js";
+import { GoogleOAuthError, googleOAuthNativeReturnEnabled } from "../services/google-oauth.js";
 
 /** All routes mount behind session authentication and global CSRF protection. */
-export function createCalendarAutojoinRouter(options: { connection: CalendarAutojoinConnection }): Router {
+export function createCalendarAutojoinRouter(options: { connection: CalendarAutojoinConnection; nativeReturn?: boolean }): Router {
   const router = Router();
   const connection = options.connection;
+  // Exo app (`native.`) states only while the native OAuth return is on (TC-521, see google-oauth.ts).
+  const nativeReturn = options.nativeReturn ?? googleOAuthNativeReturnEnabled();
   const wrap = (run: (tenant: string, req: Request, res: Response) => Promise<void>) => async (req: Request, res: Response) => {
     res.setHeader("Cache-Control", "no-store");
     const tenant = req.user?.address;
@@ -24,7 +26,8 @@ export function createCalendarAutojoinRouter(options: { connection: CalendarAuto
   router.get("/status", wrap(async (tenant, _req, res) => { res.json(await connection.getStatus(tenant)); }));
   router.post("/begin", wrap(async (tenant, req, res) => {
     const { state, challenge, consent } = req.body ?? {};
-    if (typeof state !== "string" || typeof challenge !== "string" || consent !== true) {
+    if (typeof state !== "string" || typeof challenge !== "string" || consent !== true
+      || (!nativeReturn && state.startsWith("native."))) {
       throw new CalendarAutojoinError("invalid_request", 400);
     }
     res.json(await connection.begin(tenant, { state, challenge, consent }));

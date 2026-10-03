@@ -7,6 +7,7 @@ import {
   GoogleOAuthClient,
   GoogleOAuthError,
   googleOAuthConfigFromEnv,
+  googleOAuthNativeReturnEnabled,
   type GoogleOAuthConfig,
   type GoogleOAuthPort,
 } from "../services/google-oauth.js";
@@ -88,10 +89,14 @@ function firstQueryValue(value: unknown): unknown {
 // the reverse-DNS of the app id) rather than a claimed https link because App Links / Universal
 // Links need assetlinks.json / AASA published for the app's signing identity, which does not exist
 // yet. Another app claiming the scheme can receive a code from a flow Exo started but not redeem
-// it (RFC 8252 §8.1): PKCE keeps the verifier inside Exo, the app re-checks the `state` it minted,
-// and the exchange needs the user's session and our client secret. What a claimed https link would
-// add is protection against a flow that other app STARTS itself and phishes a user through (§8.6);
-// `prompt=consent` on every authorization means Google always asks the user first.
+// it (RFC 8252 §8.1): PKCE keeps the verifier inside Exo and the app re-checks the `state` it
+// minted. It does NOT stop a flow the other app STARTS itself (§8.6): that app mints its own state
+// and verifier, the victim consents on Google's real screen, the private-use scheme hands the code
+// to that app, and `/exchange` accepts ANY signed-in session (it is not bound to who consented), so
+// the code is redeemed into the attacker's account. Only a claimed https return (App Links /
+// Universal Links) closes that, which is why the native return is OFF until it is configured
+// (`GOOGLE_OAUTH_NATIVE_RETURN`, see `googleOAuthNativeReturnEnabled`): with it off, `native.`
+// states are refused at `/start` and `/callback` never sends a code to the deep link.
 
 /** The `state` tag of the Exo native app (Android, iOS; desktop can register the same scheme). */
 export const NATIVE_OAUTH_CLIENT = "native";
@@ -244,6 +249,11 @@ export interface GoogleOAuthRouterOptions {
   /** Defaults to `googleAppOriginFromEnv()`. Pinned target of the callback `postMessage`. */
   appOrigin?: string;
   autojoin?: CalendarAutojoinConnection;
+  /**
+   * Return `native.` flows to the Exo app's deep link. Defaults to `googleOAuthNativeReturnEnabled()`
+   * (off). Off: `native.` states are refused at `/start` and get the no-code page at `/callback`.
+   */
+  nativeReturn?: boolean;
 }
 
 export function createGoogleOAuthRouter(
@@ -254,6 +264,7 @@ export function createGoogleOAuthRouter(
   const appOrigin = normalizeAppOrigin(
     options.appOrigin ?? googleAppOriginFromEnv(),
   );
+  const nativeReturn = options.nativeReturn ?? googleOAuthNativeReturnEnabled();
 
   const router = Router();
   router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
@@ -284,6 +295,8 @@ export function createGoogleOAuthRouter(
       !isValidOAuthState(state) ||
       // An unknown client tag would dead-end at /callback AFTER the user consented; refuse it now.
       oauthReturnClient(state) === null ||
+      // The native return is off (see "Native (Exo app) return"): refuse before Google is asked.
+      (oauthReturnClient(state) === "native" && !nativeReturn) ||
       !isValidPkceChallenge(challenge)
     ) {
       logGoogleOAuth("op=start result=invalid_request");
@@ -312,7 +325,7 @@ export function createGoogleOAuthRouter(
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
 
-    if (isValidOAuthState(state) && oauthReturnClient(state) === "native") {
+    if (nativeReturn && isValidOAuthState(state) && oauthReturnClient(state) === "native") {
       // The Exo app's return: a system browser has no opener to postMessage to, so hand the
       // values to the app's FIXED deep link. A denial or a malformed code still returns, with
       // the constant error and no code, so the app can leave "Waiting for Google" at once.

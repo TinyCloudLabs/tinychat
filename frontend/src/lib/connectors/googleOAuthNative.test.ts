@@ -16,6 +16,7 @@ import {
   NATIVE_OAUTH_NOT_COMPLETED,
   NATIVE_OAUTH_RETURN_URL,
   NATIVE_OAUTH_STATE_PREFIX,
+  nativeGoogleOAuthEnabled,
   nativeOAuthState,
   parseNativeOAuthReturn,
   startNativeOAuth,
@@ -96,6 +97,8 @@ function fakePorts(options: {
   registerFails?: "url" | "closed";
   closeRejects?: boolean;
   holdRegistration?: Promise<void>;
+  /** openBrowser resolves only when this does (the browser is still being presented). */
+  holdOpen?: Promise<void>;
 } = {}): FakePorts {
   const urlListeners = new Set<(url: string) => void>();
   const closedListeners = new Set<() => void>();
@@ -111,6 +114,7 @@ function fakePorts(options: {
     closeCalls: 0,
     async openBrowser(url) {
       events.push(`open:${url}`);
+      await options.holdOpen;
       if (options.openFails) throw new Error("no browser");
     },
     async closeBrowser() {
@@ -285,6 +289,21 @@ describe("startNativeOAuth", () => {
     expect(ports.listeners()).toBe(0);
   });
 
+  test("cancel while the browser is still opening: it is closed again once it is up", async () => {
+    let presented!: () => void;
+    const ports = fakePorts({ holdOpen: new Promise<void>((resolve) => { presented = resolve; }) });
+    const { attempt, outcomes } = start(ports);
+    await flush();
+    expect(ports.events.some((event) => event.startsWith("open:"))).toBe(true);
+    attempt.cancel();
+    expect(ports.closeCalls).toBe(1); // too early on Android: nothing presented yet
+    presented();
+    await flush();
+    await flush();
+    expect(ports.closeCalls).toBe(2);
+    expect(outcomes).toEqual([]);
+  });
+
   test("cancel while waiting: listeners removed, browser dismissed, a later return is ignored", async () => {
     const ports = fakePorts();
     const { attempt, outcomes } = start(ports);
@@ -342,5 +361,13 @@ describe("the native return is spelled the same everywhere", () => {
     const config = readRepo("mobile/capacitor.config.ts");
     expect(config).toContain('appId: "xyz.tinycloud.exo"');
     expect(NATIVE_OAUTH_RETURN_URL.startsWith("xyz.tinycloud.exo://")).toBe(true);
+  });
+});
+
+describe("nativeGoogleOAuthEnabled", () => {
+  test("off unless the build sets exactly \"true\" (the private-use return needs a claimed https link first)", () => {
+    expect(nativeGoogleOAuthEnabled({})).toBe(false);
+    expect(nativeGoogleOAuthEnabled({ VITE_EXO_NATIVE_GOOGLE_OAUTH: "1" })).toBe(false);
+    expect(nativeGoogleOAuthEnabled({ VITE_EXO_NATIVE_GOOGLE_OAUTH: "true" })).toBe(true);
   });
 });

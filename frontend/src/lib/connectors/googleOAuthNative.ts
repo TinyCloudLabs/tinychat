@@ -104,6 +104,19 @@ export interface NativeOAuthPorts {
 }
 
 /**
+ * Whether this build may run the native flow at all. Off unless the build sets
+ * `VITE_EXO_NATIVE_GOOGLE_OAUTH=true`, and it must stay off until the return is
+ * a claimed https link: the private-use deep link can be claimed by another app,
+ * and the backend refuses `native.` states unless GOOGLE_OAUTH_NATIVE_RETURN is
+ * on (see "Native (Exo app) return" in backend/src/routes/google-oauth.ts).
+ */
+export function nativeGoogleOAuthEnabled(
+  env: { VITE_EXO_NATIVE_GOOGLE_OAUTH?: string } = import.meta.env,
+): boolean {
+  return env.VITE_EXO_NATIVE_GOOGLE_OAUTH === "true";
+}
+
+/**
  * Whether Google OAuth runs in the system browser: inside the Capacitor app
  * only. The web and the Tauri desktop app keep the popup.
  */
@@ -232,7 +245,11 @@ export function startNativeOAuth(input: {
       await ports.openBrowser(input.url);
     } catch {
       settle({ kind: "browser-unavailable" });
+      return;
     }
+    // Cancelled while the browser was still being presented: finish()'s close ran
+    // before there was anything to close (Android only closes once the tab is up).
+    if (finished) void ports.closeBrowser().catch(() => undefined);
   })();
 
   return {

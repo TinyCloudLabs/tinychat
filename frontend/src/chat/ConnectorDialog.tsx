@@ -90,6 +90,7 @@ import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   capacitorNativeOAuthPorts,
+  nativeGoogleOAuthEnabled,
   nativeOAuthState,
   startNativeOAuth,
   usesSystemBrowserOAuth,
@@ -665,6 +666,8 @@ interface OAuthErrorState {
     | "popup-blocked"
     /** Native app only: the system browser could not be opened. */
     | "browser-unavailable"
+    /** Native app only: this build doesn't run Google OAuth in the app yet. */
+    | "native-unavailable"
     | "crypto-unavailable"
     | "cancelled"
     | "session"
@@ -737,6 +740,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const abortRef = useRef<AbortController | null>(null);
   // Native app only: the system-browser attempt in flight (the popup's twin).
   const nativeAttemptRef = useRef<NativeOAuthAttempt | null>(null);
+  // Native app only: bumped by every new click, cancel, reset and unmount. An
+  // attempt re-checks it after each await, so one that was abandoned while it
+  // was minting or waiting on /autojoin/begin never opens a browser.
+  const nativeGenerationRef = useRef(0);
 
   const closePopup = useCallback(() => {
     const popup = popupRef.current;
@@ -745,6 +752,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   }, []);
 
   const cancelNativeAttempt = useCallback(() => {
+    nativeGenerationRef.current += 1;
     const attempt = nativeAttemptRef.current;
     nativeAttemptRef.current = null;
     attempt?.cancel();
@@ -950,6 +958,11 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     },
     [autojoin, backendUrl, failWith, saveAndSync, sessionStore],
   );
+  // The native return arrives after an app round trip; it reads the latest exchange.
+  const runExchangeRef = useRef(runExchange);
+  useEffect(() => {
+    runExchangeRef.current = runExchange;
+  }, [runExchange]);
 
   /**
    * The native app's authorize (TC-521): no popup, so nothing has to happen
@@ -962,6 +975,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const authorizeInSystemBrowser = useCallback((ports: NativeOAuthPorts) => {
     setError(null);
     cancelNativeAttempt();
+    const generation = nativeGenerationRef.current;
+    const current = () => nativeGenerationRef.current === generation;
     codeHandledRef.current = false;
     setPhase("wait-callback");
 
@@ -974,24 +989,27 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         verifier = randomUrlSafeToken(32);
         challenge = await pkceChallengeS256(verifier);
       } catch {
+        if (!current()) return;
         setPhase("authorize");
         setError({ kind: "crypto-unavailable", message: "" });
         return;
       }
+      if (!current()) return;
       stateRef.current = state;
       verifierRef.current = verifier;
       let url = `${backendUrl}${GOOGLE_OAUTH_START_PATH}` +
         `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}`;
       if (autojoin) {
         const begun = await beginAutojoinAuthorization({ backendUrl, sessionStore, state, challenge });
+        if (!current()) return;
         if (!begun.ok) {
           if (stateRef.current === state) failWith(begun.error);
           return;
         }
         url = begun.authorizationUrl;
       }
-      // Cancelled, closed, or superseded by another click while we were minting.
-      if (codeHandledRef.current || stateRef.current !== state) return;
+      // Cancelled, closed, unmounted, or superseded by another click while we were minting.
+      if (!current() || codeHandledRef.current || stateRef.current !== state) return;
       nativeAttemptRef.current = startNativeOAuth({
         ports,
         url,
@@ -1001,7 +1019,9 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           if (codeHandledRef.current) return;
           if (outcome.kind === "code") {
             codeHandledRef.current = true;
-            void runExchange(outcome.code);
+            // Through the ref: the user may have been in the browser long enough
+            // for tcw/sessionStore (and so runExchange) to change.
+            void runExchangeRef.current(outcome.code);
             return;
           }
           setPhase("authorize");
@@ -1009,7 +1029,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         },
       });
     })();
-  }, [autojoin, backendUrl, cancelNativeAttempt, failWith, runExchange, sessionStore]);
+  }, [autojoin, backendUrl, cancelNativeAttempt, failWith, sessionStore]);
 
   /**
    * The click handler, and the reason it is not async: `window.open` must be
@@ -1018,9 +1038,14 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
    */
   const handleAuthorize = useCallback(() => {
     if (autojoin && !custodyConsent) return;
-    // The Exo native app has no popup and Google refuses its WebView: system browser.
+    // The Exo native app has no popup and Google refuses its WebView: system browser,
+    // once this build allows it (the private-use return needs a claimed https link first).
     const nativePorts = capacitorNativeOAuthPorts();
     if (nativePorts !== null) {
+      if (!nativeGoogleOAuthEnabled()) {
+        setError({ kind: "native-unavailable", message: "" });
+        return;
+      }
       authorizeInSystemBrowser(nativePorts);
       return;
     }
@@ -2142,6 +2167,8 @@ function formatOAuthError(error: OAuthErrorState): string {
   switch (error.kind) {
     case "popup-blocked":
       return "Your browser blocked the Google sign-in window. Allow popups for this site, then press “Continue with Google” again.";
+    case "native-unavailable":
+      return "Connecting Google isn’t available in the Exo app yet. Connect it from Exo on the web; the connection lives in your TinyCloud space, so it works here too.";
     case "browser-unavailable":
       return "Exo couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
     case "crypto-unavailable":

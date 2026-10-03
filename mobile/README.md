@@ -63,12 +63,25 @@ SFSafariViewController on iOS):
 The scheme is registered by an intent-filter on `MainActivity` (Android,
 `singleTask`) and `CFBundleURLTypes` (iOS). It is a private-use scheme because
 App Links / Universal Links need `assetlinks.json` / AASA published for the
-app's signing identity, which does not exist yet. An app that claims the same
-scheme can receive a code, but it cannot redeem one this app started: the PKCE
-verifier never leaves the app and the exchange needs the user's session and the
-backend's client secret. Moving to a verified https return closes the remaining
-gap (a phishing flow started by the other app itself) and only changes the
-backend's `NATIVE_OAUTH_RETURN_URL` and the two registrations.
+app's signing identity, which does not exist yet.
+
+**This flow is OFF until that exists.** Any app can claim a private-use scheme,
+and `/exchange` accepts any signed-in session. So an app that starts its *own*
+flow, gets a victim to consent on Google's real screen and captures the return
+can redeem the code into its own account (RFC 8252 §8.6). PKCE only protects
+flows Exo started. Two switches, both off by default:
+
+- backend `GOOGLE_OAUTH_NATIVE_RETURN=true`: accept `native.` states at `/start`
+  and `/autojoin/begin`, and let `/callback` redirect them to the deep link.
+  While it's off, `/callback` never sends a code to the app.
+- app build `VITE_EXO_NATIVE_GOOGLE_OAUTH=true`: offer the flow in the app. While
+  it's off, "Continue with Google" in the app explains that Google isn't
+  available in the app yet and that a connection made on the web works here too.
+
+Turn both on only once the return is a verified https link. That changes the
+backend's `NATIVE_OAUTH_RETURN_URL`, the Android intent-filter (with
+`autoVerify`) and the iOS associated domain. It needs the release signing
+certificate (TC-519) and the Apple Team ID (TC-518).
 
 OpenKey's own "Continue with Google" inside its sign-in widget is OpenKey's
 flow, not this one; OpenKey sign-in inside the app is tracked in TC-520.
