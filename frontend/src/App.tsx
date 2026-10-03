@@ -118,6 +118,7 @@ import type {
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
+import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 
@@ -136,7 +137,11 @@ export type AppState =
   | "connecting"
   | "signing"
   | "ready"
-  | "recoverableError";
+  | "recoverableError"
+  // A persisted session is HELD but couldn't be restored because the network
+  // (or the backend) is unreachable. Not signed out: "Try again" and the
+  // browser's `online` event re-run the restore, never OpenKey (TC-514).
+  | "offline";
 
 interface ModelOption {
   id: string;
@@ -164,6 +169,7 @@ export function App() {
   const openkeyRef = useRef<OpenKey | null>(null);
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
+  const restoreInFlightRef = useRef(false);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
@@ -300,60 +306,85 @@ export function App() {
   }, []);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
+  //
+  // A callable rather than effect-only: the `offline` state's "Try again" and
+  // the browser's `online` event re-run exactly this (TC-514). What a failure
+  // MEANS lives in lib/sessionRestore: only a verdict about the session itself
+  // (expired / corrupt / missing …) clears it and signs out. Failing to REACH
+  // the manifest or a host keeps both the Bearer session and the persisted
+  // TinyCloud session and lands in `offline` — launching on a phone with no
+  // signal used to sign the user out here.
+  const restoreSession = useCallback(async () => {
+    if (restoreInFlightRef.current) return;
+    restoreInFlightRef.current = true;
+    setError(null);
+    setState("booting");
+    try {
+      const restored = await restorePersistedSession(sessionStoreRef.current, {
+        isOffline: browserIsOffline,
+        loadManifest: async () => {
+          // The manifest must ride along here, not just on the fresh sign-in
+          // path: TinyCloudWeb stores it from constructor config only, and a
+          // manifest-less instance cannot escalate permissions (secrets.put
+          // throws "requestPermissions requires a stored manifest") after a
+          // page reload. Vite can become ready before the backend during local
+          // startup, so retry that bounded race instead of publishing a broken
+          // manifest-less client as ready. Offline, the backoff would only hold
+          // the user on a spinner for ~15s before saying so: one attempt.
+          const manifest = await fetchConfigWithRetry(
+            () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
+            { maxAttempts: browserIsOffline() ? 1 : 4 },
+          );
+          if (!manifest)
+            throw new Error("Could not load the TinyCloud app manifest");
+          return manifest;
+        },
+        restore: (storedAddress, manifest) =>
+          restoreTinyCloudWebSession(storedAddress, {
+            autoCreateSpace: false,
+            tinycloudHosts: TINYCLOUD_HOSTS,
+            manifest,
+          }),
+      });
+      switch (restored.kind) {
+        case "restored":
+          setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw);
+          setAddress(restored.address);
+          setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
+          setSpaceId(restored.tcw.spaceId ?? null);
+          setState("ready");
+          return;
+        case "unavailable":
+          setError(restored.message);
+          setState("offline");
+          return;
+        case "signedOut":
+          setState("unauthenticated");
+          return;
+        case "failed":
+          setError(restored.message);
+          setState("recoverableError");
+          return;
+      }
+    } finally {
+      restoreInFlightRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     if (restoredRef.current) return;
     restoredRef.current = true;
-    const sessionStore = sessionStoreRef.current;
+    void restoreSession();
+  }, [restoreSession]);
 
-    if (!sessionStore.hasSession() || sessionStore.isExpired()) {
-      setState("unauthenticated");
-      return;
-    }
-    const storedAddress = sessionStore.getAddress();
-    const token = sessionStore.getToken();
-    if (!storedAddress || !token) {
-      sessionStore.clear();
-      setState("unauthenticated");
-      return;
-    }
-
-    (async () => {
-      try {
-        // The manifest must ride along here, not just on the fresh sign-in
-        // path: TinyCloudWeb stores it from constructor config only, and a
-        // manifest-less instance cannot escalate permissions (secrets.put
-        // throws "requestPermissions requires a stored manifest") after a
-        // page reload. Vite can become ready before the backend during local
-        // startup, so retry that bounded race instead of publishing a broken
-        // manifest-less client as ready.
-        const manifest = await fetchConfigWithRetry(
-          () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
-          { maxAttempts: 4 },
-        );
-        if (!manifest)
-          throw new Error("Could not load the TinyCloud app manifest");
-        const restored = await restoreTinyCloudWebSession(storedAddress, {
-          autoCreateSpace: false,
-          tinycloudHosts: TINYCLOUD_HOSTS,
-          manifest,
-        });
-        if (restored.status !== "restored" || !restored.tcw) {
-          sessionStore.clear();
-          setState("unauthenticated");
-          return;
-        }
-        setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw);
-        setAddress(storedAddress);
-        setDid(restored.tcw.did ?? `did:pkh:eip155:1:${storedAddress}`);
-        setSpaceId(restored.tcw.spaceId ?? null);
-        setState("ready");
-      } catch (caught) {
-        sessionStore.clear();
-        setError(errorMessage(caught));
-        setState("recoverableError");
-      }
-    })();
-  }, []);
+  // "Exo will reconnect when you're back online" is a promise — keep it. Only
+  // while a held session is waiting; event-driven, nothing polls.
+  useEffect(() => {
+    if (state !== "offline") return;
+    const onOnline = () => void restoreSession();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [state, restoreSession]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -661,6 +692,10 @@ export function App() {
   }, [address, tcw]);
 
   const isReady = state === "ready" && tcw !== null;
+  // The offline state still HOLDS a session, so its "Try again" re-runs the
+  // restore. Only a settled signed-out state (no restorable session) starts the
+  // full OpenKey sign-in.
+  const authAction = state === "offline" ? restoreSession : signIn;
   // Authentication has answered, and the answer is "not signed in" — the
   // only condition under which a private surface may be redirected away.
   const authSettledSignedOut = isAuthSettledSignedOut(state);
@@ -811,9 +846,9 @@ export function App() {
               <SettingsIcon className="size-4" />
             </Button>
           )}
-          {(state === "unauthenticated" || state === "recoverableError") && (
-            <Button size="sm" onClick={signIn} className="h-11 md:h-8">
-              {state === "recoverableError" ? "Try again" : "Sign in"}
+          {(state === "unauthenticated" || state === "recoverableError" || state === "offline") && (
+            <Button size="sm" onClick={authAction} className="h-11 md:h-8">
+              {state === "unauthenticated" ? "Sign in" : "Try again"}
             </Button>
           )}
         </div>
@@ -909,7 +944,7 @@ export function App() {
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <BootSurface state={state} error={error} onSignIn={signIn} />
+          <BootSurface state={state} error={error} onAction={authAction} />
         )}
       </main>
 
@@ -1527,7 +1562,8 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
 function BootSurface(props: {
   state: AppState;
   error: string | null;
-  onSignIn: () => void;
+  /** Sign in, or — in the `offline` state — retry the session restore. */
+  onAction: () => void;
 }) {
   const message =
     props.state === "booting"
@@ -1538,7 +1574,9 @@ function BootSurface(props: {
           ? "Creating your TinyCloud session…"
           : props.state === "recoverableError"
             ? (props.error ?? "Something went wrong.")
-            : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
+            : props.state === "offline"
+              ? (props.error ?? "You're offline.")
+              : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
 
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
@@ -1552,9 +1590,9 @@ function BootSurface(props: {
           <h1 className="text-xl font-semibold tracking-tight">TinyCloud Chat</h1>
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
-        {(props.state === "unauthenticated" || props.state === "recoverableError") && (
-          <Button onClick={props.onSignIn} className="h-11 px-6 md:h-9 md:px-4">
-            {props.state === "recoverableError" ? "Try again" : "Sign in"}
+        {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
+          <Button onClick={props.onAction} className="h-11 px-6 md:h-9 md:px-4">
+            {props.state === "unauthenticated" ? "Sign in" : "Try again"}
           </Button>
         )}
         {busy && (
@@ -1573,6 +1611,7 @@ export function stateLabel(state: AppState): string {
     signing: "Signing in",
     ready: "Connected",
     recoverableError: "Needs attention",
+    offline: "Offline",
   };
   return labels[state];
 }
