@@ -204,10 +204,13 @@ no manual step:
   `Exo 0.2.0-beta.3 (beta)`, never marked latest;
 - a stable version becomes a published Release marked **latest**.
 
-**Both channels are Developer ID signed, notarized and stapled** (see Signing
-below); publishing requires the build to report `signed=true`, so no unsigned
-Exo is ever released. Assets are `Exo_<version>_aarch64.dmg`,
-the matching `.app.zip` and `SHA256SUMS.txt`; the notes combine the desktop and
+**Signing follows the `EXO_DESKTOP_SIGNING` repository variable** (see Signing
+mode below): `required` signs, notarizes and staples both channels and refuses
+to publish unless the build reports `signed=true`; `unsigned` publishes an
+unsigned build whose title (`Exo 0.2.0-beta.3 (beta, UNSIGNED)`) and notes say
+so. An unset or unknown value fails the run before anything is built. Assets
+are `Exo_<version>_aarch64.dmg`, the matching `.app.zip` and
+`SHA256SUMS.txt`; the notes combine the desktop and
 web changelog entries of the tagged commit. A published release is never
 rebuilt (cut a new version).
 
@@ -228,7 +231,34 @@ fails if the built Info.plist doesn't match.
 Beta desktop builds embed the beta web app, which talks to the production API
 (betas don't deploy the backend).
 
-**Signing.** Release builds (`desktop-build.yml` with `sign: true`) run in the
+**Signing mode.** `Desktop release (Exo)` reads the `EXO_DESKTOP_SIGNING`
+repository variable once, in its plan job, and has no default:
+
+| Value | Build | Release |
+|---|---|---|
+| `required` | Developer ID signed, notarized, stapled and verified (`desktop-build.yml` with `sign: true`, `desktop-release` environment) | published only if the build reports `signed=true` |
+| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**; betas stay pre-releases, stables are marked latest |
+| unset or anything else | nothing | the plan job fails with an error naming the two values |
+
+The provenance checks (the workflow runs from `main`, the tag points at a
+commit of `main`) apply in both modes. Until the Apple Developer ID exists,
+the variable is `unsigned`:
+
+```bash
+gh variable set EXO_DESKTOP_SIGNING --body unsigned -R TinyCloudLabs/tinychat
+```
+
+To switch to signed releases once Apple approves the enrollment: add the 7
+`APPLE_*` secrets to the `desktop-release` environment (one-time setup below),
+then set the variable to `required`. The next release is signed; a release
+already published unsigned stays unsigned (published releases are never
+rebuilt; cut a new version).
+
+```bash
+gh variable set EXO_DESKTOP_SIGNING --body required -R TinyCloudLabs/tinychat
+```
+
+**Signing.** `required` release builds (`desktop-build.yml` with `sign: true`) run in the
 `desktop-release` GitHub environment, the only place the Apple secrets live. It
 allows deployments from **`main` only** and has no required reviewer (fully
 automatic releases), so only `Desktop release (Exo)` dispatched on main reaches

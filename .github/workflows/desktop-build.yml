@@ -12,15 +12,20 @@ name: Desktop build (Exo)
 # (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
 # (mlx-swift, speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
 #
-# Signing (sign: true, releases only): the job runs in the `desktop-release` environment, which only main can deploy
-# to, so only main's desktop-release.yml reaches the Apple secrets; "Verify signing provenance" re-checks that
+# Signing (sign: true, releases with EXO_DESKTOP_SIGNING=required only): the job runs in the `desktop-release`
+# environment, which only main can deploy to, so only main's desktop-release.yml reaches the Apple secrets;
+# "Verify signing provenance" re-checks that
 # (workflow_ref, workflow commit on main, and a release-tagged commit of main being built) before anything else. The
 # app is compiled first (`tauri build --no-bundle`: frontend build, cargo and every dependency build script) with no
 # signing secret in the environment or on disk; only `tauri bundle`, which compiles nothing, gets them. Tauri imports
 # APPLE_CERTIFICATE into a temporary keychain, signs the app (hardened runtime + src-tauri/Entitlements.plist) and the
 # DMG with APPLE_SIGNING_IDENTITY, and notarizes and staples the app with the App Store Connect API key; this job then
 # notarizes and staples the DMG and runs scripts/release/verify-desktop-signing.sh. Any failed check fails the build;
-# a signed build never falls back to unsigned. CI builds (sign: false) have no environment and no signing secrets.
+# a signed build never falls back to unsigned. CI builds and EXO_DESKTOP_SIGNING=unsigned release builds (sign: false)
+# have no environment and no signing secrets; tauri bundle ad-hoc signs them (signingIdentity "-" in the overlay, same
+# hardened runtime and entitlements) so the app's resources are sealed, and "Verify the ad-hoc seal" fails the build
+# unless codesign --verify --deep --strict accepts the app and the app inside the DMG. A linker-only signature without
+# sealed resources makes a downloaded Exo "damaged", with no Open Anyway.
 
 on:
   workflow_call:
@@ -187,9 +192,15 @@ jobs:
       - name: Build workspace packages
         run: bun run build:packages
 
+      # Unsigned builds get signingIdentity "-" (ad-hoc); signed builds take APPLE_SIGNING_IDENTITY in the bundle step.
       - name: Bundle versions
         id: bundle
-        run: node scripts/release/desktop-bundle-config.mjs --out "$RUNNER_TEMP/exo-bundle"
+        run: |
+          if [ "$SIGN" = true ]; then
+            node scripts/release/desktop-bundle-config.mjs --out "$RUNNER_TEMP/exo-bundle"
+          else
+            node scripts/release/desktop-bundle-config.mjs --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
+          fi
 
       # tauri build runs the frontend production build itself
       # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json). No signing secret reaches this step.
@@ -284,6 +295,20 @@ jobs:
           dmg=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
           scripts/release/verify-desktop-signing.sh desktop/src-tauri/target/release/bundle/macos/Exo.app "$dmg" "$APPLE_TEAM_ID"
           echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      # Gatekeeper (spctl) still rejects ad-hoc code; that is expected and not checked.
+      - name: Verify the ad-hoc seal
+        if: ${{ !inputs.sign }}
+        run: |
+          dmg=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          mnt="$RUNNER_TEMP/exo-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt"' EXIT
+          for bundle in desktop/src-tauri/target/release/bundle/macos/Exo.app "$mnt/Exo.app"; do
+            codesign --verify --deep --strict --verbose=2 "$bundle"
+            codesign -dv --verbose=2 "$bundle"
+          done
 
       # Zip the .app with ditto to preserve symlinks/permissions;
       # upload-artifact would flatten them. For signed builds this is the stapled app.

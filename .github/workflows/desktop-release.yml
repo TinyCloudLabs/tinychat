@@ -7,11 +7,15 @@ name: Desktop release (Exo)
 # commit of main (fetched fresh) and builds exactly that commit.
 # - beta (X.Y.Z-beta.N): a GitHub pre-release, never "latest";
 # - stable (X.Y.Z): a published GitHub Release marked latest.
-# Both are Developer ID signed, notarized and stapled (desktop-build.yml with sign: true, secrets from the
-# desktop-release environment, which only main can deploy to); publishing requires the build's signed=true, so no
-# unsigned Exo is ever released. The release is created as a draft only while its assets upload, then
-# published by the same job; a draft left by a failed run is reused, a published release is never touched again
-# (cut a new version instead).
+# Signing follows the EXO_DESKTOP_SIGNING repository variable, read once by the plan job; it has no default:
+# - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true, secrets from the
+#   desktop-release environment, which only main can deploy to); publishing requires the build's signed=true;
+# - unsigned (until the Apple Developer ID exists): desktop-build.yml with sign: false, so no environment and no
+#   signing secret is requested (the app is only ad-hoc sealed); the release title and notes say UNSIGNED.
+# Any other value, including unset, fails the plan before anything is built. The provenance checks (main only, tag
+# on main) apply in both modes. The release is created as a draft only while its assets upload, then published by
+# the same job; a draft left by a failed run is reused, a published release is never touched again (cut a new
+# version instead).
 #
 # TODO(updater, PR F, right after the first signed release): add tauri-plugin-updater with
 # bundle.createUpdaterArtifacts, sign Exo.app.tar.gz with TAURI_SIGNING_PRIVATE_KEY from the desktop-release
@@ -45,6 +49,7 @@ jobs:
       prerelease: ${{ steps.plan.outputs.prerelease }}
       title: ${{ steps.plan.outputs.title }}
       asset-prefix: ${{ steps.plan.outputs.asset-prefix }}
+      signing: ${{ steps.plan.outputs.signing }}
     steps:
       - name: Require the release workflow from main
         env:
@@ -65,9 +70,10 @@ jobs:
         id: plan
         env:
           TAG: ${{ inputs.tag }}
+          SIGNING: ${{ vars.EXO_DESKTOP_SIGNING }}
         run: |
           git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/$TAG:refs/tags/$TAG"
-          node scripts/release/desktop-release-plan.mjs --tag "$TAG" --notes "$RUNNER_TEMP/release-notes.md"
+          node scripts/release/desktop-release-plan.mjs --tag "$TAG" --notes "$RUNNER_TEMP/release-notes.md" --signing "$SIGNING"
 
       - name: Refuse to touch a published release
         env:
@@ -93,7 +99,7 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.sha }}
       artifact-name: exo-${{ needs.plan.outputs.version }}-macos-arm64
-      sign: true
+      sign: ${{ needs.plan.outputs.signing == 'required' }}
 
   publish:
     name: Publish
@@ -109,20 +115,26 @@ jobs:
       PRERELEASE: ${{ needs.plan.outputs.prerelease }}
       PREFIX: ${{ needs.plan.outputs.asset-prefix }}
     steps:
-      - name: Require the planned, signed build
+      - name: Require the planned build, signed unless the plan says unsigned
         env:
           PLANNED: ${{ needs.plan.outputs.version }}
           BUILT: ${{ needs.build.outputs.version }}
           SIGNED: ${{ needs.build.outputs.signed }}
+          SIGNING: ${{ needs.plan.outputs.signing }}
         run: |
           if [ "$PLANNED" != "$BUILT" ]; then
             echo "::error::Planned $PLANNED but built $BUILT"
             exit 1
           fi
-          if [ "$SIGNED" != true ]; then
-            echo "::error::Refusing to publish $TAG: the build is not Developer ID signed and notarized. Exo is never released unsigned, beta or stable."
-            exit 1
-          fi
+          # The build must match the plan's explicit mode exactly; anything else refuses.
+          case "$SIGNING:$SIGNED" in
+            required:true) ;;
+            unsigned:false) echo "::warning::Publishing $TAG UNSIGNED (EXO_DESKTOP_SIGNING=unsigned)." ;;
+            *)
+              echo "::error::Refusing to publish $TAG: EXO_DESKTOP_SIGNING=$SIGNING but the build reports signed=$SIGNED."
+              exit 1
+              ;;
+          esac
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
