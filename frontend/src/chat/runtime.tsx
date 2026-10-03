@@ -339,8 +339,22 @@ export function createHistoryAdapter(
   // Id of the most recently appended user message — paired with the assistant
   // message id below to register the split receipt (input vs. output share).
   let lastUserMessageId: string | undefined;
-  let lastOrigin: TurnOrigin | undefined;
+  // Admission (captured origin) of the most recent user message. Assigned
+  // synchronously at that append's entry, so the reply that follows always
+  // correlates with its own turn — including one whose admission failed.
+  let lastTurn: Promise<TurnOrigin> | undefined;
   let lastPrivateAccess: PrivateAgentAccess | undefined;
+  // Writes run in assistant-ui's append() order. run() streams before the user
+  // message is saved, so a turn can end (Stop, a stream error) while its prompt
+  // is still being written; without this chain the reply, or the next prompt,
+  // could reach SQL first and take an earlier position. A slot is claimed
+  // synchronously at append() entry; a failed slot does not block later ones.
+  let persistTail: Promise<void> = Promise.resolve();
+  const inOrder = (work: () => Promise<void>): Promise<void> => {
+    const slot = persistTail.then(work);
+    persistTail = slot.then(() => undefined, () => undefined);
+    return slot;
+  };
   return {
     async load(): Promise<ExportedMessageRepository> {
       // Brand-new threads have nothing persisted, but the runtime still fires
@@ -381,24 +395,66 @@ export function createHistoryAdapter(
           })
         : false;
 
+      if (role === "user") {
+        lastPrivateAccess = privateAccessRef?.current;
+        lastUserMessageId = typeof id === "string" ? id : undefined;
+        if (!lastUserMessageId) {
+          lastTurn = undefined;
+          throw new Error("Cannot persist a user message without an id.");
+        }
+        // Admit at entry, outside the write chain: run() shares this capture,
+        // and a turn active at admission keeps its save even if earlier writes
+        // are still pending when the user navigates away.
+        const admitted = selection.beginTurn(threadId, lastUserMessageId).then((origin) => {
+          selection.assertActive(origin);
+          return origin;
+        });
+        // Observed by the slot below and by the reply's append; this only stops
+        // a rejection from being reported while an earlier slot is running.
+        void admitted.catch(() => undefined);
+        lastTurn = admitted;
+        return inOrder(async () => {
+          const origin = await admitted;
+          const firstInsert = selection.needsFirstInsert(origin);
+          const retryFirstInsert = firstInsert
+            ? () => appendMessage(tcw, threadId, item, origin.model)
+            : undefined;
+          if (firstInsert) selection.markFirstAppend(origin, true, false, retryFirstInsert);
+          try {
+            await appendMessage(tcw, threadId, item, origin.model);
+            if (firstInsert) selection.markFirstAppend(origin, false);
+            selection.confirmAppend(origin, true);
+          } catch (error) {
+            selection.confirmAppend(origin, false);
+            if (firstInsert) selection.markFirstAppend(origin, false, true, retryFirstInsert);
+            throw error;
+          }
+          const text = storedItemText(item);
+          if (text) userTexts.set(origin.turnId, text);
+        });
+      }
+
+      const turn = lastTurn;
+      const turnUserMessageId = lastUserMessageId;
+      const turnPrivateAccess = lastPrivateAccess;
+      if (!turn) {
+        // assistant-ui also appends its error reply after a blocked/cancelled
+        // run. Such a reply must not create the missing first row or extract.
+        if (role === "assistant") return;
+        throw new Error("Cannot persist a message without a captured turn origin.");
+      }
+
       // Receipt hooks run at ENTRY, before persistence. The receipt only needs
       // the message ids — and `await appendMessage` is the wrong thing to gate
       // on: TinyCloud SQL calls are ~2s each and are known to DROP responses
       // under concurrency (same infra bug as the thread-list flashing fix), so
       // code below the await can run many seconds late or never. Verified live:
       // the post-await path never ran while the stream + ids were all ready.
-      if (role === "user") {
-        lastPrivateAccess = privateAccessRef?.current;
-        lastUserMessageId = typeof id === "string" ? id : undefined;
-        if (!lastUserMessageId) throw new Error("Cannot persist a user message without an id.");
-        lastOrigin = await selection.beginTurn(threadId, lastUserMessageId);
-        selection.assertActive(lastOrigin);
-      }
-      const origin = lastOrigin;
-      const turnPrivateAccess = lastPrivateAccess;
-      // assistant-ui also appends its error reply after a blocked/cancelled
-      // run. Such a reply must not create the missing first row or extract.
-      if (role === "assistant" && (!origin || !selection.isAppendSaved(origin))) return;
+      // That now includes the wait for this turn's user-message save (the slot
+      // below), so neither hook waits for it. A pending receipt exists only for
+      // a reply that streamed, i.e. one that was billed whether or not its
+      // prompt is later saved.
+      let receipt: Promise<PersistedReceipt | null> = Promise.resolve(null);
       if (role === "assistant" && typeof id === "string" && computeReceipt) {
         // Compute the receipt (which also applies the live in-session store
         // footers + the single usage-bump emit) BEFORE persisting, so we can
@@ -407,17 +463,12 @@ export function createHistoryAdapter(
         // the receipt (the in-session footers still appear live this session;
         // they just won't survive reload — acceptable). Rates are session-cached
         // after the first call, so this normally resolves in microseconds.
-        const receipt = await Promise.race([
-          computeReceipt(id, origin?.turnId).catch(() => null),
+        receipt = Promise.race([
+          computeReceipt(id, turnUserMessageId).catch(() => null),
           new Promise<null>((resolve) =>
             setTimeout(() => resolve(null), RECEIPT_COMPUTE_TIMEOUT_MS),
           ),
         ]);
-        if (receipt) {
-          // Attach to the TOP-LEVEL item (sibling of `message`) — NOT inside
-          // item.message, which assistant-ui's repository import inspects.
-          (item as { receipt?: PersistedReceipt }).receipt = receipt;
-        }
       }
 
       // Key the streamed completion id to this assistant message so the
@@ -433,36 +484,34 @@ export function createHistoryAdapter(
         }
       }
 
-      // A grounded reply can echo transcript evidence. Keep every applicable
-      // meeting reply transient so neither history nor later compaction can
-      // receive raw meeting text.
-      if (role === "assistant" && meetingTurn) {
-        return;
-      }
-
-      if (!origin) throw new Error("Cannot persist a message without a captured turn origin.");
-      const firstInsert = role === "user" && selection.needsFirstInsert(origin);
-      const retryFirstInsert = firstInsert && origin
-        ? () => appendMessage(tcw, threadId, item, origin!.model)
-        : undefined;
-      if (firstInsert && origin) {
-        selection.markFirstAppend(origin, true, false, retryFirstInsert);
-      }
-      try {
-        await appendMessage(tcw, threadId, item, origin.model);
-        if (firstInsert) selection.markFirstAppend(origin, false);
-        if (role === "user") selection.confirmAppend(origin, true);
-      } catch (error) {
-        if (role === "user") selection.confirmAppend(origin, false);
-        if (firstInsert && origin) {
-          selection.markFirstAppend(origin, false, true, retryFirstInsert);
+      return inOrder(async () => {
+        let origin: TurnOrigin;
+        try {
+          origin = await turn;
+        } catch (error) {
+          if (role === "assistant") return;
+          throw error;
         }
-        throw error;
-      }
+        // The user message's slot has settled (it is earlier in the chain). A
+        // reply is persisted only after its prompt is: never a missing first
+        // row, never an orphaned reply ahead of its prompt.
+        if (role === "assistant" && !selection.isAppendSaved(origin)) return;
 
-      const text = storedItemText(item);
-      if (role === "user" && text) userTexts.set(origin.turnId, text);
-      if (role === "assistant" && !meetingTurn) {
+        // A grounded reply can echo transcript evidence. Keep every applicable
+        // meeting reply transient so neither history nor later compaction can
+        // receive raw meeting text.
+        if (role === "assistant" && meetingTurn) return;
+
+        const persistedReceipt = await receipt;
+        if (persistedReceipt) {
+          // Attach to the TOP-LEVEL item (sibling of `message`) — NOT inside
+          // item.message, which assistant-ui's repository import inspects.
+          (item as { receipt?: PersistedReceipt }).receipt = persistedReceipt;
+        }
+        await appendMessage(tcw, threadId, item, origin.model);
+
+        if (role !== "assistant") return;
+        const text = storedItemText(item);
         if (privateAccessRef && (!turnPrivateAccess?.active || privateAccessRef.current !== turnPrivateAccess || origin.signal.aborted)) return;
         const userText = userTexts.get(origin.turnId);
         const exchange: ChatMessage[] = [
@@ -473,7 +522,7 @@ export function createHistoryAdapter(
           assistantMessageId: typeof id === "string" ? id : undefined,
           userMessageId: origin.turnId,
         }, origin, turnPrivateAccess);
-      }
+      });
     },
   };
 }
