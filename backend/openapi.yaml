@@ -1778,9 +1778,12 @@ paths:
         origin + path with that capability and `Content-Type` equal to
         `content_type`. `upload` is present exactly while the job is
         `awaiting_upload`. A retry with the same Idempotency-Key and body returns
-        the same job (200). `diarize: true` asks for speaker diarization of a mono
-        mixdown (not with `channel_mode: separate`); it is
-        `diarization_unavailable` while capabilities report `diarization: false`.
+        the same job (200); replaying the key of a deleted job is
+        `transcription_not_found` (404). `diarize: true` asks for speaker
+        diarization of a mono mixdown (not with `channel_mode: separate`). While
+        capabilities report `diarization: false` it is rejected with
+        `diarization_unavailable` (a PTX with diarization support) or
+        `invalid_request` (a PTX that predates the option).
         Requires `X-Requested-With: XMLHttpRequest`. The address is never sent
         upstream: the service receives HMAC-SHA256(tenant key, lower(address)).
       security:
@@ -1823,6 +1826,8 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           description: Missing X-Requested-With (CSRF)
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
         "409":
           $ref: "#/components/responses/PrivateCloudFailure"
         "413":
