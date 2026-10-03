@@ -83,6 +83,10 @@ jobs:
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
 
+      # A first boot takes minutes on the runner; let it run while the app builds.
+      - name: Start booting an iOS Simulator
+        run: mobile/scripts/ios-simulator-smoke.sh boot "$RUNNER_TEMP/ios-smoke"
+
       - name: Install JS deps
         run: bun install --frozen-lockfile
 
@@ -115,7 +119,7 @@ jobs:
       # the bundled web app mounted and the VoiceNotes plugin answering over the bridge.
       - name: Smoke test on an iOS Simulator
         timeout-minutes: 15
-        run: mobile/scripts/ios-simulator-smoke.sh mobile/ios/App/build/Build/Products/Debug-iphonesimulator/App.app "$RUNNER_TEMP/ios-smoke"
+        run: mobile/scripts/ios-simulator-smoke.sh run mobile/ios/App/build/Build/Products/Debug-iphonesimulator/App.app "$RUNNER_TEMP/ios-smoke"
 
       - name: Upload smoke screenshot and logs
         if: always()
@@ -124,3 +128,11 @@ jobs:
           name: exo-ios-smoke-${{ github.sha }}
           if-no-files-found: warn
           path: ${{ runner.temp }}/ios-smoke
+
+  # The TestFlight build (ios-build.yml) minus signing: Release archive of the production frontend, versions,
+  # privacy manifest and bundle checks. ios-testflight.yml adds only the export, signature check and upload.
+  ios-release:
+    name: iOS release
+    uses: ./.github/workflows/ios-build.yml
+    with:
+      build-number: ${{ github.run_number }}

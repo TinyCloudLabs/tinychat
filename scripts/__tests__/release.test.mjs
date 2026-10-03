@@ -900,3 +900,102 @@ test('verify-desktop-signing.sh rejects a missing app before running any check',
   assert.equal(result.status, 1);
   assert.match(result.stdout, /::error::no app bundle at/);
 });
+
+// iOS (Exo mobile): TestFlight runs only from main, refuses cleanly without its secrets, archives without secrets and
+// uploads only a build that passed the App Store signing checks. CI runs the same build unsigned.
+test('ios-bundle-versions.mjs: X.Y.Z from the product version, the build number as given', t => {
+  const root = tempDir(t);
+  write(root, 'frontend/package.json', `${JSON.stringify({ name: '@tinychat/frontend', version: '0.2.0-beta.2' })}\n`);
+  const ok = run('ios-bundle-versions.mjs', ['--root', root, '--build-number', '42']);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^version=0\.2\.0-beta\.2$/m);
+  assert.match(ok.stdout, /^short-version=0\.2\.0$/m);
+  assert.match(ok.stdout, /^build-number=42$/m);
+  for (const bad of ['0', '-1', '1.2', 'abc', '']) {
+    assert.match(run('ios-bundle-versions.mjs', ['--root', root, `--build-number=${bad}`]).stderr, /--build-number must be a positive integer/, bad);
+  }
+});
+
+test('ios-signing.sh check names the missing ios-release secrets and fails', () => {
+  const signing = (env, ...args) => spawnSync('bash', [join(repo, 'scripts/release/ios-signing.sh'), ...args], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, ...env },
+  });
+  const none = signing({}, 'check');
+  assert.equal(none.status, 1);
+  assert.match(none.stdout, /::error::TestFlight is not set up yet: the ios-release environment is missing APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY\. Nothing was built or uploaded\./);
+  const good = { APPLE_TEAM_ID: 'ABCDE12345', APPLE_API_KEY: 'XYZ9876543', APPLE_API_ISSUER: '69a6de7e-1234-47e3-e053-5b8c7c11a4d1', APPLE_API_PRIVATE_KEY: 'x' };
+  assert.equal(signing(good, 'check').status, 0);
+  assert.match(signing({ ...good, APPLE_API_ISSUER: '' }, 'check').stdout, /is missing APPLE_API_ISSUER\./);
+  assert.match(signing({ ...good, APPLE_TEAM_ID: 'abc' }, 'check').stdout, /APPLE_TEAM_ID must be the 10-character Team ID/);
+});
+
+test('ios-signing.sh write-key accepts the .p8 as is, on one line or base64, and refuses anything else', t => {
+  if (spawnSync('openssl', ['version']).status !== 0) return t.skip('openssl not installed');
+  const dir = tempDir(t);
+  const pem = join(dir, 'source.p8');
+  assert.equal(spawnSync('openssl', ['genpkey', '-algorithm', 'EC', '-pkeyopt', 'ec_paramgen_curve:P-256', '-out', pem]).status, 0);
+  const text = read(dir, 'source.p8');
+  const der = key => spawnSync('openssl', ['pkey', '-in', key, '-outform', 'DER']).stdout.toString('base64');
+  const forms = { file: text, oneLine: text.replace(/\n/g, ''), spaces: text.replace(/\n/g, ' '), base64: Buffer.from(text).toString('base64') };
+  for (const [form, value] of Object.entries(forms)) {
+    const out = join(dir, form);
+    const result = spawnSync('bash', [join(repo, 'scripts/release/ios-signing.sh'), 'write-key', out], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, APPLE_API_KEY: 'XYZ9876543', APPLE_API_PRIVATE_KEY: value },
+    });
+    assert.equal(result.status, 0, `${form}: ${result.stdout}${result.stderr}`);
+    assert.equal(result.stdout.trim(), join(out, 'AuthKey_XYZ9876543.p8'));
+    assert.equal(der(result.stdout.trim()), der(pem), form);
+  }
+  const bad = spawnSync('bash', [join(repo, 'scripts/release/ios-signing.sh'), 'write-key', join(dir, 'bad')], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, APPLE_API_KEY: 'XYZ9876543', APPLE_API_PRIVATE_KEY: 'not a key' },
+  });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /::error::APPLE_API_PRIVATE_KEY is (not a readable \.p8 private key|neither the AuthKey_<id>\.p8 file nor base64 of it)/);
+  assert.equal(existsSync(join(dir, 'bad', 'AuthKey_XYZ9876543.p8')), false, 'a bad key is not left on disk');
+});
+
+test('TestFlight runs from main only, checks secrets first, archives without them and uploads only a verified build', () => {
+  const testflight = read(repo, '.github/workflows/ios-testflight.yml');
+  assert.match(triggers('.github/workflows/ios-testflight.yml'), /^ {2}workflow_dispatch:\n {4}inputs:\n {6}mode:/m);
+  assert.doesNotMatch(triggers('.github/workflows/ios-testflight.yml'), /^\s+(push|pull_request|schedule|workflow_run):/m);
+  assert.match(testflight, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/ios-testflight\.yml@refs\/heads\/main/);
+  assert.match(testflight, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
+  const plan = testflight.slice(testflight.indexOf('  plan:'), testflight.indexOf('  build:'));
+  assert.match(plan, /environment: ios-release/);
+  assert.match(plan, /runs-on: ubuntu-latest/);
+  assert.ok(plan.indexOf('Require the TestFlight workflow from main') < plan.indexOf('scripts/release/ios-signing.sh check'));
+  assert.match(testflight, /  build:\n(?:.*\n)*?\s+needs: plan\n\s+uses: \.\/\.github\/workflows\/ios-build\.yml\n\s+with:\n(?:.*\n){1}\s+sign: true\n/);
+
+  const build = read(repo, '.github/workflows/ios-build.yml');
+  assert.match(triggers('.github/workflows/ios-build.yml'), /^ {2}workflow_call:/m);
+  assert.match(build, /environment: \$\{\{ inputs\.sign && 'ios-release' \|\| '' \}\}/);
+  assert.doesNotMatch(build, /continue-on-error/);
+  const steps = ['Verify signing provenance', 'Check signing secrets', 'Sync Capacitor', 'Archive Exo for iOS', 'Check the archive',
+    'Write the App Store Connect API key', 'Export and sign for the App Store', 'Verify the App Store signature', 'Upload to TestFlight'];
+  const order = steps.map(name => build.indexOf(`- name: ${name}\n`));
+  assert.ok(order.every(index => index !== -1), `steps: ${order}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'provenance, secrets, archive and its checks, then key, export, verification, upload');
+  assert.ok(build.indexOf('${{ secrets.') > build.indexOf('- name: Verify signing provenance\n'), 'no secret is referenced before the provenance check');
+  for (const name of ['Verify signing provenance', 'Check signing secrets', 'Write the App Store Connect API key', 'Export and sign for the App Store']) {
+    assert.match(build, new RegExp(`- name: ${name}\\n(?:\\s+id: \\w+\\n)?\\s+if: inputs\\.sign\\n`));
+  }
+  const step = name => build.slice(build.indexOf(`- name: ${name}\n`), build.indexOf('\n\n', build.indexOf(`- name: ${name}\n`)));
+  for (const name of ['Install JS deps', 'Build workspace packages and the production frontend', 'Sync Capacitor', 'Archive Exo for iOS']) {
+    assert.doesNotMatch(step(name), /secrets\./, name);
+  }
+  assert.match(step('Archive Exo for iOS'), /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(step('Sync Capacitor'), /env -u EXO_DEV_SERVER_URL/);
+  assert.match(step('Check the archive'), /server\.url/);
+  assert.match(step('Check the archive'), /PrivacyInfo\.xcprivacy/);
+  const upload = step('Upload to TestFlight');
+  assert.match(upload, /if: inputs\.sign && inputs\.mode == 'upload'/);
+  assert.ok(upload.indexOf('if [ "$SIGNED" != true ]; then') < upload.indexOf('xcodebuild -exportArchive'), 'the signed check precedes the upload');
+  assert.match(build, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
+
+  const mobile = read(repo, '.github/workflows/mobile.yml');
+  assert.match(mobile, /uses: \.\/\.github\/workflows\/ios-build\.yml/);
+  assert.doesNotMatch(mobile, /sign:/, 'CI builds stay unsigned');
+});

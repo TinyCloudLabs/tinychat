@@ -8,11 +8,19 @@
 # Always writes screenshot.png, console.log (the app's stdout/stderr: Capacitor's "⚡️" lines and the WebView
 # console), unified.log (os_log of the App process), any crash reports and summary.md to <out-dir>.
 #
-# Usage: mobile/scripts/ios-simulator-smoke.sh <path/to/App.app> <out-dir>   (macOS with Xcode, jq)
+# Usage (macOS with Xcode, jq):
+#   mobile/scripts/ios-simulator-smoke.sh boot <out-dir>           pick the simulator and start booting it, so the
+#                                                                  first boot overlaps the app build (optional)
+#   mobile/scripts/ios-simulator-smoke.sh run <App.app> <out-dir>  the smoke test
 set -uo pipefail
 
-app=${1:?usage: ios-simulator-smoke.sh <App.app> <out-dir>}
-out=${2:?usage: ios-simulator-smoke.sh <App.app> <out-dir>}
+usage="usage: ios-simulator-smoke.sh boot <out-dir> | run <App.app> <out-dir>"
+command=${1:?$usage}
+case "$command" in
+  boot) out=${2:?$usage} ;;
+  run) app=${2:?$usage}; out=${3:?$usage} ;;
+  *) echo "$usage" >&2; exit 2 ;;
+esac
 bundle_id=xyz.tinycloud.exo
 timeout_s=${SMOKE_TIMEOUT:-120}
 settle_s=${SMOKE_SETTLE:-10}
@@ -23,11 +31,11 @@ failures=()
 fail() { failures+=("$1"); echo "::error::iOS smoke: $1"; }
 log() { echo "[smoke $(date -u +%H:%M:%S)] $*"; }
 
-[ -d "$app" ] || { echo "::error::no app bundle at $app"; exit 1; }
-plutil -lint "$app/PrivacyInfo.xcprivacy" || fail "App.app has no valid PrivacyInfo.xcprivacy"
-
-# The newest iOS runtime that has an iPhone simulator.
-read -r runtime udid device < <(xcrun simctl list devices available -j | jq -r '
+# The newest iOS runtime that has an iPhone simulator; `boot` remembers it in device.txt for `run`.
+if [ -f "$out/device.txt" ]; then
+  read -r runtime udid device <"$out/device.txt"
+else
+  read -r runtime udid device < <(xcrun simctl list devices available -j | jq -r '
   .devices | to_entries
   | map(select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+")))
   | map({runtime: .key,
@@ -36,10 +44,21 @@ read -r runtime udid device < <(xcrun simctl list devices available -j | jq -r '
   | map(select(.iphones | length > 0))
   | sort_by(.version) | last // empty
   | "\(.runtime) \(.iphones[0].udid) \(.iphones[0].name)"')
-[ -n "${udid:-}" ] || { echo "::error::no available iPhone simulator"; xcrun simctl list devices available; exit 1; }
+  [ -n "${udid:-}" ] || { echo "::error::no available iPhone simulator"; xcrun simctl list devices available; exit 1; }
+  echo "$runtime $udid $device" >"$out/device.txt"
+fi
 log "device: $device ($udid), runtime ${runtime##*.}"
 
-log "booting"
+if [ "$command" = boot ]; then
+  xcrun simctl boot "$udid" 2>&1 | grep -v 'current state: Booted' || true
+  log "boot requested"
+  exit 0
+fi
+
+[ -d "$app" ] || { echo "::error::no app bundle at $app"; exit 1; }
+plutil -lint "$app/PrivacyInfo.xcprivacy" || fail "App.app has no valid PrivacyInfo.xcprivacy"
+
+log "waiting for the simulator to finish booting"
 xcrun simctl bootstatus "$udid" -b >/dev/null || { echo "::error::simulator $udid did not boot"; exit 1; }
 log "booted; installing $app"
 xcrun simctl install "$udid" "$app" || { echo "::error::install failed"; exit 1; }
@@ -60,7 +79,9 @@ deadline=$((SECONDS + timeout_s))
 while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 2
   if [ -z "$pid" ]; then
-    pid=$(sed -n "s/^$bundle_id: \([0-9][0-9]*\).*/\1/p" "$out/console.log" | head -1)
+    # launchd's job for the app: "<pid> <status> UIKitApplication:xyz.tinycloud.exo[...]". The simulator's
+    # processes are host processes, so kill -0 can watch it.
+    pid=$(xcrun simctl spawn "$udid" launchctl list 2>/dev/null | awk -v job="UIKitApplication:$bundle_id" 'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
     [ -n "$pid" ] && log "running as pid $pid"
   fi
   if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
