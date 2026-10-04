@@ -98,6 +98,8 @@ import {
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
 import { QuickVoiceNote } from "./chat/QuickVoiceNote";
+import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
+import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
@@ -203,7 +205,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [voiceNoteOpen, setVoiceNoteOpen] = useState(false);
+  // The chat screen's voice note bar: opened to record (the header button) or to
+  // show a recording that is already running (one started on the offline screen).
+  const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -731,6 +735,25 @@ export function App() {
     if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
   }, [quickVoiceNoteAvailable]);
 
+  // TC-515: with the session held but out of reach (`offline`), the app can
+  // still record a voice note; it stays on the phone until the session is back.
+  // Not signed out: there is no account to save to then. "Try again" (`booting`)
+  // keeps the recorder on screen, so a running recording stays visible.
+  const [offlineCapture, setOfflineCapture] = useState(false);
+  useEffect(() => {
+    if (state === "offline") setOfflineCapture(true);
+    else if (state !== "booting") setOfflineCapture(false);
+  }, [state]);
+  const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
+  // A recording started offline keeps running through the restore: once the
+  // session is back, the chat screen's bar shows it (picked up, never restarted).
+  const offlineRecordingRef = useRef(false);
+  useEffect(() => {
+    if (state !== "ready" || !offlineRecordingRef.current) return;
+    offlineRecordingRef.current = false;
+    if (quickVoiceNoteAvailable) setVoiceNoteOpen("show");
+  }, [state, quickVoiceNoteAvailable]);
+
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
   // queue next (the headless drainer or a Connectors sync) publishes into the
@@ -856,8 +879,8 @@ export function App() {
               variant="outline"
               size="sm"
               aria-label="Record a voice note"
-              aria-pressed={voiceNoteOpen}
-              onClick={() => setVoiceNoteOpen(true)}
+              aria-pressed={voiceNoteOpen !== false}
+              onClick={() => setVoiceNoteOpen((open) => open || "record")}
               className="h-11 shrink-0 gap-1.5 px-3 md:h-8"
               data-testid="header-voice-note"
             >
@@ -887,6 +910,7 @@ export function App() {
 
       {voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
         <QuickVoiceNote
+          autoStart={voiceNoteOpen === "record"}
           tcw={tcw}
           backendUrl={BACKEND_URL}
           sessionStore={sessionStoreRef.current}
@@ -986,7 +1010,16 @@ export function App() {
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <BootSurface state={state} error={error} onAction={authAction} />
+          <BootSurface
+            state={state}
+            error={error}
+            onAction={authAction}
+            voiceNotes={
+              offlineRecorder ? (
+                <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
+              ) : null
+            }
+          />
         )}
       </main>
 
@@ -1015,6 +1048,17 @@ export function App() {
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* TC-515: voice notes left on the phone (recorded offline, or a save that
+          failed) are saved once the session is ready, without opening
+          Connectors. The Voice notes card's own single-flight retry. */}
+      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && (
+        <PendingVoiceNotesSaver
+          tcw={tcw}
+          backendUrl={BACKEND_URL}
+          sessionStore={sessionStoreRef.current}
         />
       )}
 
@@ -1610,6 +1654,8 @@ function BootSurface(props: {
   error: string | null;
   /** Sign in, or — in the `offline` state — retry the session restore. */
   onAction: () => void;
+  /** The offline voice recorder (TC-515), under the action. */
+  voiceNotes?: React.ReactNode;
 }) {
   const message =
     props.state === "booting"
@@ -1644,6 +1690,7 @@ function BootSurface(props: {
         {busy && (
           <span className="text-xs text-muted-foreground">Working…</span>
         )}
+        {props.voiceNotes}
       </div>
     </div>
   );

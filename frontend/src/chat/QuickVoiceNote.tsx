@@ -131,7 +131,7 @@ export const QuickVoiceNoteView: FC<QuickVoiceNoteViewProps> = (props) => {
       {idle && pendingCount > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="quick-voice-note-pending">
           {pendingCount === 1 ? "1 note is" : `${pendingCount} notes are`} on this phone but not yet in your TinyCloud
-          space. Save them from Voice notes in Connectors.
+          space. Exo saves them the next time it opens, or from Voice notes in Connectors.
         </p>
       )}
     </section>
@@ -139,6 +139,11 @@ export const QuickVoiceNoteView: FC<QuickVoiceNoteViewProps> = (props) => {
 };
 
 export interface QuickVoiceNoteProps {
+  /**
+   * Record as soon as it opens (the header button). False only shows a recording that is
+   * already running (one started on the offline screen, TC-515): never a new one.
+   */
+  autoStart?: boolean;
   tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
@@ -147,7 +152,7 @@ export interface QuickVoiceNoteProps {
 }
 
 /** Renders nothing outside the Exo mobile app (VoiceNotesSection's gate). */
-export function QuickVoiceNote({ tcw, backendUrl, sessionStore, onClose, onOpenLibrary }: QuickVoiceNoteProps) {
+export function QuickVoiceNote({ autoStart = true, tcw, backendUrl, sessionStore, onClose, onOpenLibrary }: QuickVoiceNoteProps) {
   const [saved, setSaved] = useState(false);
   const onSaved = useCallback(() => setSaved(true), []);
   return (
@@ -155,7 +160,7 @@ export function QuickVoiceNote({ tcw, backendUrl, sessionStore, onClose, onOpenL
       tcw={tcw}
       backendUrl={backendUrl}
       sessionStore={sessionStore}
-      autoStart
+      autoStart={autoStart}
       onSaved={onSaved}
       render={(view) => (
         <QuickVoiceNoteView

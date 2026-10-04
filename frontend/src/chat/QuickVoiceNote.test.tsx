@@ -168,7 +168,9 @@ describe("App wiring of the one-tap voice note", () => {
     const button = app.slice(app.indexOf("{quickVoiceNoteAvailable && ("), app.indexOf("</header>"));
     expect(button).toContain('aria-label="Record a voice note"');
     expect(button).toContain("Voice note");
-    expect(button).toContain("onClick={() => setVoiceNoteOpen(true)}");
+    // The header button records; it never turns a "show the running recording" bar into a new one.
+    expect(button).toContain('onClick={() => setVoiceNoteOpen((open) => open || "record")}');
+    expect(app).toContain('autoStart={voiceNoteOpen === "record"}');
     const afterHeader = app.slice(app.indexOf("</header>"), app.indexOf("<main"));
     expect(afterHeader).toContain("<QuickVoiceNote");
     expect(afterHeader).toContain("onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}");
