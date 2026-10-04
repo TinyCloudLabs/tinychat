@@ -506,7 +506,7 @@ export function createHostedAssemblyAiClient(config: {
               continue;
             }
             if (!uploadSubmitting) return;
-            throw new AssemblyAiError("network", "The submitted upload's outcome is unavailable. Retry deleting later.");
+            throw new AssemblyAiError("not-found", "The submitted upload's outcome is unavailable. Retry deleting later.", true);
           }
           throw err;
         }

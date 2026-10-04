@@ -1866,8 +1866,14 @@ paths:
       description: >-
         `receiving` takes parts; `submitting` is being sent to AssemblyAI in the
         background; `submitted` carries the handle and `failed` a fixed error code. A
-        settled outcome stays readable for an hour after it settles (in memory: a
-        restart forgets it). Another account's, unknown or expired upload is 404.
+        failed outcome stays readable for an hour. An unclaimed submitted outcome stays
+        readable for 24 hours; GET or a replayed transcript POST claims its handle and
+        limits remaining readability to one hour. Expiry deletes unclaimed transcripts
+        at AssemblyAI before retaining an owner-only tombstone until the original
+        seven-day handle expiry. Tombstones are capped at 50,000 globally and 100 per
+        account, evicting oldest first. A tombstone returns 410 with
+        `assemblyai_upload_expired`; unknown ids and other accounts return 404.
+        All state is in memory and a restart forgets it.
       security:
         - bearerAuth: []
       responses:
@@ -1881,6 +1887,12 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "410":
+          description: Expired upload; unclaimed transcript cleanup completed or no transcript exists (assemblyai_upload_expired)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiHostedError"
         "503":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
     delete:

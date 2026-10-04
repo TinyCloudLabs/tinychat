@@ -20,6 +20,7 @@ import { load as loadYaml } from "js-yaml";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 
 import { createHostedAssemblyAiClient } from "../../../frontend/src/lib/assemblyai.ts";
+import { createUploadRunner, type PendingUpload, type UploadDeps } from "../../../frontend/src/lib/audioUpload.ts";
 
 import { localValidationFromEnv } from "../local-validation.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
@@ -605,7 +606,7 @@ describe("upstream failures", () => {
     expect(h.logs.at(-1)!.line).toContain("reason=aborted");
   });
 
-  test("the outcome stays readable for an hour after it settles, then the sweep forgets it", async () => {
+  test("the claimed outcome stays readable for an hour, then becomes a tombstone", async () => {
     const h = await setup();
     const id = await h.upload(audio(50));
     expect((await h.submit(id)).status).toBe("submitted");
@@ -613,7 +614,7 @@ describe("upstream failures", () => {
     expect((await h.req("GET", `/hosted/uploads/${id}`)).json.status).toBe("submitted");
     h.clock.now = T0 + SETTLED_TTL_MS;
     await h.store!.sweep(h.clock.now);
-    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(404);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
   });
 
   test("a refused transcript create settles failed (an AssemblyAI 400 is our drift: alert) and the spool is still gone", async () => {
@@ -942,4 +943,135 @@ describe("TC-592 settling visibility", () => {
       expect(h.spoolFiles()).toEqual([]);
     });
   }
+});
+
+describe("TC-592 expiry regressions", () => {
+  const day = 24 * 60 * 60 * 1000;
+  async function unclaimed() {
+    const h = await setup();
+    const id = await h.upload(audio(10));
+    await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+    await h.store!.idle();
+    return { h, id };
+  }
+
+  test("unclaimed expiry deletes once and leaves an owner-only tombstone until handle expiry", async () => {
+    const { h, id } = await unclaimed();
+    h.clock.now = T0 + SETTLED_TTL_MS;
+    await h.store!.sweep(h.clock.now);
+    expect(h.store!.lookup(id, ADDRESS_A, h.clock.now).kind).toBe("settled");
+    h.clock.now = T0 + day;
+    await Promise.all([h.store!.sweep(h.clock.now), h.store!.sweep(h.clock.now)]);
+    expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+    expect(h.logs.some((l) => l.line.includes("route=expire_delete status=204"))).toBe(true);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
+    expect((await h.req("GET", `/hosted/uploads/${id}`, { as: ADDRESS_B })).status).toBe(404);
+    expect((await h.req("GET", "/hosted/uploads/aau_unknown")).status).toBe(404);
+    h.clock.now = T0 + 7 * day - 1;
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).json.error).toBe("assemblyai_upload_expired");
+    h.clock.now++;
+    await h.store!.sweep(h.clock.now);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(404);
+  });
+
+  for (const via of ["GET", "POST"] as const) {
+    test(`claimed via ${via} expiry leaves a tombstone without deleting the client's transcript`, async () => {
+      const { h, id } = await unclaimed();
+      const claimed = via === "GET" ? await h.req("GET", `/hosted/uploads/${id}`)
+        : await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+      expect(claimed.json.status).toBe("submitted");
+      h.clock.now = T0 + SETTLED_TTL_MS;
+      await h.store!.sweep(h.clock.now);
+      expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
+      expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+    });
+  }
+
+  test("reload then Discard after settlement expiry resolves through the hosted client", async () => {
+    const { h, id } = await unclaimed();
+    h.clock.now = T0 + day;
+    const token = await h.tokenFor(ADDRESS_A);
+    const client = createHostedAssemblyAiClient({
+      backendUrl: h.base.replace(ASSEMBLYAI_HOSTED_MOUNT, ""),
+      sessionStore: { getToken: () => token, isExpired: () => false }, sleep: async () => {},
+    });
+    let pending: PendingUpload | null = {
+      engine: "assemblyai", assemblyAiMode: "hosted", meetingId: "m-reload", attemptId: "a-reload",
+      jobId: null, uploadRef: id, uploadSubmitting: true, diarize: true,
+      file: { name: "reload.wav", type: "audio/wav", size: 10, lastModified: T0 }, owner: ADDRESS_A, saved: false,
+    };
+    const deps: UploadDeps = {
+      tcw: { did: ADDRESS_A, kv: {} } as never, privateCloud: null, assemblyAiClient: async () => client,
+      pending: { read: () => pending, write: (value) => { pending = value; }, clear: () => { pending = null; } },
+      lock: async () => () => {}, clock: { now: () => h.clock.now, sleep: async () => {}, random: () => 0.5 },
+      audio: { manifest: async () => null, remove: async () => {}, put: async () => { throw new Error("No original file after reload"); } },
+      save: async () => { throw new Error("An expired upload must not save"); },
+    };
+    const runner = createUploadRunner();
+    const failed = new Promise<void>((resolve) => {
+      const unsubscribe = runner.subscribe(() => { if (runner.snapshot()?.stage === "failed") { unsubscribe(); resolve(); } });
+    });
+    runner.resume(deps);
+    await failed;
+    expect(pending?.uploadRef).toBeUndefined();
+    await runner.dismiss(deps);
+    expect(pending).toBeNull();
+    expect(runner.snapshot()).toBeNull();
+    expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
+  });
+
+  test("shutdown deletes unclaimed transcripts before forgetting process state", async () => {
+    const { h, id } = await unclaimed();
+    await h.store!.shutdown();
+    expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
+  });
+});
+
+describe("TC-592 expiry safety", () => {
+  test("failed expiry deletion retains the outcome for retry and maps already-deleted upstream responses", async () => {
+    for (const gone of [404, 400]) {
+      let fail = true;
+      const h = await setup({ answer: (call) => call.method === "DELETE"
+        ? fail ? json(503, {}) : json(gone, { error: "Transcript id not found" }) : assemblyAi(call) });
+      const id = await h.upload(audio(10));
+      await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+      await h.store!.idle();
+      h.clock.now = T0 + 24 * SETTLED_TTL_MS;
+      await h.store!.sweep(h.clock.now);
+      expect(h.store!.lookup(id, ADDRESS_A, h.clock.now).kind).toBe("settled");
+      expect(h.logs.at(-1)!.line).toContain("route=expire_delete status=502");
+      fail = false;
+      await h.store!.sweep(h.clock.now);
+      expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
+      expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(2);
+    }
+  });
+
+  test("tombstones evict oldest by account and globally and failed outcomes expire without deleting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinychat-tombstones-test-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const store = new HostedUploadStore(dir, DEFAULT_DAILY_BYTES, 4, undefined, { global: 3, account: 2 });
+    await store.init();
+    async function tombstone(owner: string) {
+      const created = await store.create(owner, 1, "audio/wav", T0);
+      if (!created.ok) throw new Error("create failed");
+      store.startSubmit(created.upload, () => T0, async () => ({ status: "failed", code: "assemblyai_unavailable" }));
+      await store.idle();
+      await store.sweep(T0 + SETTLED_TTL_MS);
+      return created.upload.id;
+    }
+    const a1 = await tombstone(ADDRESS_A);
+    const a2 = await tombstone(ADDRESS_A);
+    const a3 = await tombstone(ADDRESS_A);
+    expect(store.lookup(a1, ADDRESS_A, T0 + SETTLED_TTL_MS).kind).toBe("missing");
+    expect(store.lookup(a2, ADDRESS_A, T0 + SETTLED_TTL_MS).kind).toBe("expired");
+    const b1 = await tombstone(ADDRESS_B);
+    const c1 = await tombstone(ADDRESS_C);
+    expect(store.lookup(a2, ADDRESS_A, T0 + SETTLED_TTL_MS).kind).toBe("missing");
+    for (const [id, owner] of [[a3, ADDRESS_A], [b1, ADDRESS_B], [c1, ADDRESS_C]]) {
+      expect(store.lookup(id!, owner!, T0 + SETTLED_TTL_MS).kind).toBe("expired");
+    }
+  });
 });

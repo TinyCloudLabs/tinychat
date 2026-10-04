@@ -8,6 +8,7 @@ import {
   ASSEMBLYAI_TRANSCRIPT_ID_RE,
   HOSTED_CONTENT_TYPES,
   HOSTED_PART_SIZE,
+  HANDLE_TTL_SECONDS,
   MAX_HOSTED_BYTES,
   SPEECH_MODELS,
   isNotFound400,
@@ -47,7 +48,8 @@ import {
  * timeout, so `POST /hosted/transcripts` only checks the upload is complete, starts the submit in
  * the background (its own 15-minute deadline; aborted by the sweep past it and at shutdown) and
  * answers 202. The client polls `GET /hosted/uploads/:id` for the handle; the outcome stays
- * readable for the upload's hour. The spool is deleted and the slot freed when the submit settles.
+ * readable for a day until claimed, then at most one further hour. The spool is deleted and
+ * the slot freed when the submit settles.
  *
  * The server key never leaves this process; the client only ever holds the HMAC handle, which
  * binds the AssemblyAI transcript to the session address (anything else about it → 404). Every
@@ -222,6 +224,29 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     return { response, bytes };
   }
 
+  async function deleteUpstream(id: string): Promise<void> {
+    const { response, bytes } = await call("DELETE", `/v2/transcript/${id}`, SMALL_BODY);
+    const gone = response.status === 404 || (response.status === 400 && isNotFound400(bytes));
+    if (!((response.status >= 200 && response.status < 300) || gone)) throw new UpstreamFailure(upstreamFailure(response, bytes, false));
+  }
+
+  if (hosted && store) store.onExpireDelete(async (handle, owner) => {
+    // This internal, signed handle can outlive its public validity while cleanup is retried.
+    const id = openHandle(hosted.handleKey, handle, owner, 0);
+    const cid = randomUUID();
+    try {
+      if (!id) throw new UpstreamFailure({ code: "assemblyai_unavailable", reason: "handle_rejected", alert: true });
+      await deleteUpstream(id);
+      log(`[assemblyai-hosted] route=expire_delete status=204 cid=${cid}`, false);
+    } catch (error) {
+      const failure = error instanceof UpstreamFailure ? error.failure : { code: "assemblyai_unavailable" as const };
+      log(`[assemblyai-hosted] route=expire_delete status=${ASSEMBLYAI_HOSTED_ERRORS[failure.code].status} code=${failure.code}` +
+        (failure.upstreamStatus !== undefined ? ` upstream_status=${failure.upstreamStatus}` : "") +
+        (failure.alert ? " alert=true" : "") + ` cid=${cid}`, failure.alert === true);
+      throw error;
+    }
+  });
+
   function handle(route: string, fn: (req: Request, res: Response) => Promise<void>): RequestHandler {
     return async (req, res, next) => {
       locals(res).route = route;
@@ -355,7 +380,11 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       ) {
         return failed({ code: "assemblyai_unavailable", upstreamStatus: created.response.status, reason: "off_contract" });
       }
-      return settle(null, { status: "submitted", handle: issueHandle(hosted!.handleKey, parsed.id, upload.owner, now()) });
+      const issuedAt = now();
+      return settle(null, {
+        status: "submitted", handle: issueHandle(hosted!.handleKey, parsed.id, upload.owner, issuedAt),
+        expiresAt: (Math.floor(issuedAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
+      });
     } catch (error) {
       if (error instanceof UpstreamFailure) return failed(error.failure);
       return failed({ code: "assemblyai_unavailable", reason: "internal" });
@@ -392,7 +421,9 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   router.get(
     "/hosted/uploads/:upload_id",
     handle("get_upload", async (req, res) => {
-      const view = uploadView(store!.lookup(String(req.params.upload_id), locals(res).address, now()));
+      const found = await store!.resolve(String(req.params.upload_id), locals(res).address, now(), true);
+      if (found.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
+      const view = uploadView(found);
       if (!view) return fail(res, { code: "assemblyai_upload_not_found" });
       ok(res, 200, view);
     }),
@@ -402,7 +433,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     "/hosted/uploads/:upload_id",
     handle("delete_upload", async (req, res) => {
       const id = String(req.params.upload_id);
-      const found = store!.lookup(id, locals(res).address, now());
+      const found = await store!.resolve(id, locals(res).address, now());
       // Completion may win between the client's GET and DELETE. Preserve its handle for cleanup.
       if (found.kind === "settled") {
         if (found.outcome.status === "submitted") return fail(res, { code: "assemblyai_upload_in_progress" });
@@ -424,7 +455,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         return fail(res, { code: "invalid_request" });
       }
       const id = typeof body.upload_id === "string" ? body.upload_id : "";
-      const found = store!.lookup(id, locals(res).address, now());
+      const found = await store!.resolve(id, locals(res).address, now());
       if (found.kind === "missing") return fail(res, { code: "assemblyai_upload_not_found" });
       if (found.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
       // Idempotent: a repeat answers where the first one got to.
@@ -436,7 +467,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
           return fail(res, { code: "assemblyai_upload_incomplete" });
         }
       }
-      const current = store!.lookup(id, locals(res).address, now());
+      const current = await store!.resolve(id, locals(res).address, now(), true);
       if (current.kind === "missing") return fail(res, { code: "assemblyai_upload_not_found" });
       if (current.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
       ok(res, 202, { upload_id: id, ...uploadView(current) }, found.kind === "active" ? ` bytes=${found.upload.byteSize}` : "");
@@ -482,10 +513,8 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     handle("delete_transcript", async (req, res) => {
       const id = transcriptId(req, res);
       if (id === null) return;
-      const { response, bytes } = await call("DELETE", `/v2/transcript/${id}`, SMALL_BODY);
-      const gone = response.status === 404 || (response.status === 400 && isNotFound400(bytes));
-      if ((response.status >= 200 && response.status < 300) || gone) return ok(res, 204);
-      fail(res, upstreamFailure(response, bytes, false));
+      await deleteUpstream(id);
+      ok(res, 204);
     }),
   );
 

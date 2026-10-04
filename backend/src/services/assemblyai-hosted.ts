@@ -134,12 +134,14 @@ export function openHandle(handleKey: string, handle: string, address: string, n
 
 const UPLOAD_ID_RE = /^aau_[A-Za-z0-9_-]{32}$/;
 const SPOOL_FILE_RE = /^aau_[A-Za-z0-9_-]{32}\.part$/;
-/** An expired upload answers 410 (not 404) to its owner for this long after the sweep. */
-const TOMBSTONE_MS = 60 * 60 * 1000;
+export const MAX_UPLOAD_TOMBSTONES = 50_000;
+export const MAX_ACCOUNT_UPLOAD_TOMBSTONES = 100;
 /** How long a background submit (stream to AssemblyAI, then create the transcript) may take. */
 export const SUBMIT_DEADLINE_MS = 15 * 60 * 1000;
-/** A settled outcome (the handle, or the failure) stays readable this long after it settles. */
+/** Readability window after failure or after a submitted handle is first claimed. */
 export const SETTLED_TTL_MS = 60 * 60 * 1000;
+/** Give an absent owner a day to collect the handle before deleting the unclaimed transcript. */
+export const UNCLAIMED_SUBMITTED_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface HostedUpload {
   id: string;
@@ -161,7 +163,7 @@ export interface HostedUpload {
 
 /** How a background submit ended. Codes are the router's public error codes. */
 export type SubmitOutcome =
-  | { status: "submitted"; handle: string }
+  | { status: "submitted"; handle: string; expiresAt?: number }
   | { status: "failed"; code: "assemblyai_unavailable" | "assemblyai_rate_limited" };
 
 export type CreateUploadResult =
@@ -193,9 +195,12 @@ export class HostedUploadStore {
   /** Uploads holding a slot: receiving parts, or being submitted. */
   private readonly uploads = new Map<string, HostedUpload>();
   /** Submitted or failed uploads: their outcome, readable by the owner until `until`. */
-  private readonly settled = new Map<string, { owner: string; until: number; outcome: SubmitOutcome }>();
-  /** Expired unsent uploads: id → { owner, until }. */
+  private readonly settled = new Map<string, { owner: string; until: number; expiresAt: number; claimed: boolean; outcome: SubmitOutcome }>();
+  private expireDelete: ((handle: string, owner: string) => Promise<void>) | null = null;
+  /** Expired outcomes contain only the id, owner and original handle expiry. */
   private readonly tombstones = new Map<string, { owner: string; until: number }>();
+  /** Bounded index for oldest-first per-owner eviction without scanning every tombstone. */
+  private readonly ownerTombstones = new Map<string, Set<string>>();
   /** `${utcDay}|${address}` → bytes charged today. */
   private readonly charged = new Map<string, number>();
   /** Background submits in flight. */
@@ -224,6 +229,7 @@ export class HostedUploadStore {
     private readonly dailyBytes: number,
     private readonly maxConcurrent: number,
     private readonly removeSpool: typeof rm = rm,
+    private readonly tombstoneLimits = { global: MAX_UPLOAD_TOMBSTONES, account: MAX_ACCOUNT_UPLOAD_TOMBSTONES },
   ) {}
 
   /** Create the spool dir (0700) and remove whatever a previous process left in it. */
@@ -307,7 +313,7 @@ export class HostedUploadStore {
       return upload.state === "receiving" && upload.expiresAt <= nowMs ? { kind: "expired" } : { kind: "active", upload };
     }
     const settled = this.settled.get(id);
-    if (settled && settled.owner === address && settled.until > nowMs) return { kind: "settled", outcome: settled.outcome };
+    if (settled && settled.owner === address) return { kind: "settled", outcome: settled.outcome };
     const tombstone = this.tombstones.get(id);
     if (tombstone && tombstone.owner === address && tombstone.until > nowMs) return { kind: "expired" };
     return { kind: "missing" };
@@ -368,7 +374,14 @@ export class HostedUploadStore {
       }
       // Publish the outcome before release removes the active entry; no lookup can see a gap
       // while the spool deletion is pending (or if deleting the file fails).
-      this.settled.set(upload.id, { owner: upload.owner, until: now() + SETTLED_TTL_MS, outcome });
+      const settledAt = now();
+      this.settled.set(upload.id, {
+        owner: upload.owner,
+        until: settledAt + (outcome.status === "submitted" ? UNCLAIMED_SUBMITTED_TTL_MS : SETTLED_TTL_MS),
+        expiresAt: outcome.status === "submitted" && outcome.expiresAt !== undefined
+          ? outcome.expiresAt : (Math.floor(settledAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
+        claimed: false, outcome,
+      });
       await this.release(upload).catch(() => {});
     })();
     this.inFlight.add(run);
@@ -399,6 +412,57 @@ export class HostedUploadStore {
     return true;
   }
 
+  /** The router supplies the same authenticated upstream delete used by the handle route. */
+  onExpireDelete(remove: (handle: string, owner: string) => Promise<void>): void {
+    this.expireDelete = remove;
+  }
+
+  private removeTombstone(id: string): void {
+    const entry = this.tombstones.get(id);
+    if (!entry) return;
+    this.tombstones.delete(id);
+    const mine = this.ownerTombstones.get(entry.owner)!;
+    mine.delete(id);
+    if (mine.size === 0) this.ownerTombstones.delete(entry.owner);
+  }
+
+  private tombstone(id: string, owner: string, until: number): void {
+    this.tombstones.set(id, { owner, until });
+    const mine = this.ownerTombstones.get(owner) ?? new Set<string>();
+    mine.add(id);
+    this.ownerTombstones.set(owner, mine);
+    while (mine.size > this.tombstoneLimits.account) this.removeTombstone(mine.values().next().value!);
+    while (this.tombstones.size > this.tombstoneLimits.global) this.removeTombstone(this.tombstones.keys().next().value!);
+  }
+
+  private async expireOutcome(id: string): Promise<void> {
+    const settled = this.settled.get(id);
+    if (!settled) return;
+    if (settled.outcome.status === "submitted" && !settled.claimed) {
+      // Never advertise terminal cleanup until upstream deletion succeeds. A failed delete
+      // keeps the handle for the next sweep (and uses the router's fixed, redacted logging).
+      if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
+      await this.expireDelete(settled.outcome.handle, settled.owner);
+    }
+    this.tombstone(id, settled.owner, settled.expiresAt);
+    this.settled.delete(id);
+  }
+
+  /** Expire and optionally hand off the outcome atomically with sweep/shutdown for this owner. */
+  async resolve(id: string, address: string, nowMs: number, claim = false): Promise<LookupResult> {
+    return this.withAccount(address, async () => {
+      const settled = this.settled.get(id);
+      if (settled?.owner === address) {
+        if (settled.until <= nowMs) await this.expireOutcome(id);
+        else if (claim && !settled.claimed && settled.outcome.status === "submitted") {
+          settled.claimed = true;
+          settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
+        }
+      }
+      return this.lookup(id, address, nowMs);
+    });
+  }
+
   /** Forget a settled outcome (the owner has read it). */
   forget(id: string): void {
     this.settled.delete(id);
@@ -417,11 +481,13 @@ export class HostedUploadStore {
       }
       if (upload.expiresAt > nowMs) continue;
       if (!(await this.abandon(upload))) continue;
-      this.tombstones.set(upload.id, { owner: upload.owner, until: nowMs + TOMBSTONE_MS });
+      this.tombstone(upload.id, upload.owner, upload.expiresAt - UPLOAD_TTL_MS + HANDLE_TTL_SECONDS * 1000);
       removed++;
     }
-    for (const [id, tombstone] of this.tombstones) if (tombstone.until <= nowMs) this.tombstones.delete(id);
-    for (const [id, settled] of this.settled) if (settled.until <= nowMs) this.settled.delete(id);
+    for (const [id, tombstone] of this.tombstones) if (tombstone.until <= nowMs) this.removeTombstone(id);
+    for (const [id, settled] of this.settled) {
+      if (settled.until <= nowMs) await this.resolve(id, settled.owner, nowMs).catch(() => {});
+    }
     const today = utcDay(nowMs);
     for (const key of this.charged.keys()) if (!key.startsWith(`${today}|`)) this.charged.delete(key);
     return removed;
@@ -436,6 +502,7 @@ export class HostedUploadStore {
       if (upload.state === "receiving") await this.abandonLocked(upload);
     }
     await this.idle();
+    await Promise.all([...this.settled].map(([id, entry]) => this.withAccount(entry.owner, () => this.expireOutcome(id))));
   }
 }
 

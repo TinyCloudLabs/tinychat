@@ -766,8 +766,8 @@ describe("upload runner: an AssemblyAI job keeps its account", () => {
       storage.set(`exo.transcriber.uploadPending:${DID}`, JSON.stringify(legacy));
       expect(localStoragePendingUploadStore(DID).read()?.assemblyAiMode).toBe("own");
       const pending = localStoragePendingUploadStore(DID);
-      pending.write({ ...pending.read()!, discarding: true, uploadSubmitting: true });
-      expect(localStoragePendingUploadStore(DID).read()).toMatchObject({ discarding: true, uploadSubmitting: true });
+      pending.write({ ...pending.read()!, discarding: true, uploadSubmitting: true, uploadCreatedAt: 1000, cleanup: { firstMissingAt: 2000, lastMissingAt: 3000, attempts: 2 } });
+      expect(localStoragePendingUploadStore(DID).read()).toMatchObject({ discarding: true, uploadSubmitting: true, uploadCreatedAt: 1000, cleanup: { firstMissingAt: 2000, lastMissingAt: 3000, attempts: 2 } });
     } finally {
       globalThis.localStorage = original;
     }
@@ -970,6 +970,63 @@ describe("TC-592 hosted recovery regressions", () => {
       expect(events.at(-1)).toBe("DELETE /hosted/transcripts/handle");
       expect(audio.calls.some((c) => c.startsWith("remove "))).toBe(true);
       expect(pending.value).toBeNull();
+    });
+  }
+});
+
+describe("TC-592 expiry regressions", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const stored: PendingUpload = {
+    engine: "assemblyai", assemblyAiMode: "hosted", meetingId: "m-expired", attemptId: "a-expired",
+    jobId: null, uploadRef: "aau_expired", uploadSubmitting: true, diarize: true,
+    file: { name: "expired.wav", type: "audio/wav", size: 3, lastModified: 0 }, owner: DID, saved: false,
+  };
+  function fixture(status: number) {
+    const pending = memoryPending({ ...stored });
+    const clock = { ...instantClock, now: () => time };
+    let time = 1000;
+    const client = createHostedAssemblyAiClient({
+      backendUrl: "https://backend.test", sessionStore: { getToken: () => "session", isExpired: () => false }, sleep: async () => {},
+      fetchImpl: (async () => new Response(JSON.stringify({ error: status === 410 ? "assemblyai_upload_expired" : "assemblyai_upload_not_found" }), { status })) as typeof fetch,
+    });
+    const { deps: d } = deps({ pending, clock, audio: audioFake().audio, assemblyAiClient: async () => client });
+    return { pending, d, advance: (ms: number) => { time += ms; } };
+  }
+
+  test("reload then Discard clears the expired upload reference and cleanup record", async () => {
+    const { pending, d } = fixture(410);
+    const runner = createUploadRunner();
+    runner.resume(d);
+    await settled(runner);
+    await runner.dismiss(d);
+    expect(pending.value).toBeNull();
+    expect(runner.snapshot()).toBeNull();
+  });
+
+  for (const limit of ["attempts over 24 hours", "seven-day lifetime"] as const) {
+    test(`persistent 404 cleanup gives up after ${limit} across reloads and shows retention note`, async () => {
+      const { pending, d, advance } = fixture(404);
+      const runner = createUploadRunner();
+      runner.resume(d);
+      await settled(runner);
+      await runner.dismiss(d);
+      expect(pending.value?.uploadRef).toBe(stored.uploadRef);
+      // Fast retries must not exhaust the wall-clock bound.
+      if (limit === "attempts over 24 hours") {
+        for (let i = 0; i < 3; i++) {
+          runner.retry(d);
+          await settled(runner);
+        }
+      }
+      expect(pending.value).not.toBeNull();
+      runner.reset();
+      advance(limit === "seven-day lifetime" ? 7 * day : day);
+      const resumed = createUploadRunner();
+      resumed.resume(d);
+      await settled(resumed);
+      expect(pending.value).toBeNull();
+      expect(resumed.snapshot()).toMatchObject({ cleanupPending: false, error: { retry: false } });
+      expect(resumed.snapshot()?.error?.message).toContain("AssemblyAI's retention settings");
     });
   }
 });

@@ -172,6 +172,10 @@ export interface PendingUpload {
   uploadRef?: string;
   /** A hosted submit may have reached the server; a missing upload cannot prove cleanup. */
   uploadSubmitting?: boolean;
+  /** Wall-clock age of the hosted reference, retained across reloads. */
+  uploadCreatedAt?: number;
+  /** Persistent missing-outcome cleanup attempts, separate from short network retries. */
+  cleanup?: { firstMissingAt: number; lastMissingAt: number; attempts: number };
   /** AssemblyAI only: whose account the job runs under. Resume and delete use exactly this account, never the other. */
   assemblyAiMode?: AssemblyAiKeyMode;
   /** What the saved meeting records about its audio, so a resumed saved job reports it truthfully. */
@@ -224,6 +228,9 @@ export function localStoragePendingUploadStore(accountDid: string): PendingUploa
         ...(p.discarding === true ? { discarding: true } : {}),
         ...(p.uploadSubmitting === true ? { uploadSubmitting: true } : {}),
         ...(typeof p.uploadRef === "string" ? { uploadRef: p.uploadRef } : {}),
+        ...(typeof p.uploadCreatedAt === "number" && Number.isFinite(p.uploadCreatedAt) ? { uploadCreatedAt: p.uploadCreatedAt } : {}),
+        ...(p.cleanup && Number.isFinite(p.cleanup.firstMissingAt) && Number.isFinite(p.cleanup.lastMissingAt) && Number.isSafeInteger(p.cleanup.attempts) && p.cleanup.attempts > 0
+          ? { cleanup: p.cleanup } : {}),
         // A record from before key modes existed was made with the user's own key.
         ...(p.engine === "assemblyai" ? { assemblyAiMode: p.assemblyAiMode === "hosted" ? ("hosted" as const) : ("own" as const) } : {}),
         ...(p.audio && typeof p.audio === "object" && typeof p.audio.stored === "boolean"
@@ -747,7 +754,7 @@ export function createUploadRunner(): UploadRunner {
         stillLive(r);
         // Kept before the transcript is requested: a reload while the file is still being sent on
         // re-joins that submission instead of losing the file.
-        job = runPersist(r, deps, { ...job, uploadRef });
+        job = runPersist(r, deps, { ...job, uploadRef, uploadCreatedAt: (deps.clock ?? REAL_CLOCK).now(), cleanup: undefined });
       }
       runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
       let created: AssemblyAiTranscript;
@@ -785,12 +792,12 @@ export function createUploadRunner(): UploadRunner {
     };
   }
 
-  /** Deletes the remote job (at AssemblyAI, with its uploaded audio), retrying briefly. */
-  async function deleteRemote(deps: UploadDeps, job: PendingUpload, client: AssemblyAiClient | null, signal?: AbortSignal): Promise<void> {
+  /** Deletes the remote job, retrying briefly. True means a missing hosted outcome reached the retention fallback. */
+  async function deleteRemote(deps: UploadDeps, job: PendingUpload, client: AssemblyAiClient | null, signal?: AbortSignal): Promise<boolean> {
     let jobId = job.jobId;
     let uploadSubmitting = job.uploadSubmitting;
     const hostedUpload = job.engine === "assemblyai" && job.assemblyAiMode === "hosted" && job.uploadRef !== undefined;
-    if (jobId === null && !hostedUpload) return;
+    if (jobId === null && !hostedUpload) return false;
     const sleep = (deps.clock ?? REAL_CLOCK).sleep;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -820,8 +827,21 @@ export function createUploadRunner(): UploadRunner {
           if (deps.privateCloud === null) throw new PrivateCloudError("feature_unavailable", "Private cloud transcription is not available");
           await deps.privateCloud.api.remove(jobId!);
         }
-        return;
+        return false;
       } catch (err) {
+        if (hostedUpload && jobId === null && err instanceof AssemblyAiError && err.kind === "not-found" && err.uploadEnded && attempt >= 2 &&
+            !signal?.aborted && current?.owner === job.owner && current.attemptId === job.attemptId && deps.tcw.did === job.owner) {
+          const now = (deps.clock ?? REAL_CLOCK).now();
+          const previous = current.cleanup;
+          const cleanup = { firstMissingAt: previous?.firstMissingAt ?? now, lastMissingAt: now, attempts: (previous?.attempts ?? 0) + 1 };
+          const createdAt = current.uploadCreatedAt ?? cleanup.firstMissingAt;
+          persist(deps, { ...current, cleanup });
+          const day = 24 * 60 * 60 * 1000;
+          // A restart loses the server's in-memory outcome. Keep short retries recoverable;
+          // after the handle lifetime, or three attempts spanning a day, defer to retention.
+          if (now - createdAt >= 7 * day ||
+              (cleanup.attempts >= 3 && now - cleanup.firstMissingAt >= day)) return true;
+        }
         // A rejected key or an expired session won't change by asking again.
         if (signal?.aborted || attempt >= 2 || (err instanceof AssemblyAiError && (err.kind === "invalid-key" || err.kind === "rejected"))) throw err;
         await sleep(2_000 * (attempt + 1));
@@ -843,13 +863,19 @@ export function createUploadRunner(): UploadRunner {
         set({ stage: "saving", cleanupPending: true, error: null, detail: "Deleting the remote copy…" });
         await stopAudio();
         stillLive(r);
-        await deleteRemote(deps, job, client, r.signal);
+        const retention = await deleteRemote(deps, job, client, r.signal);
         stillLive(r);
+        persist(deps, { ...current!, jobId: null, uploadRef: undefined, uploadSubmitting: undefined, cleanup: undefined });
         if (!job.saved) await audioOf(deps).remove(deps.tcw.kv, audioBaseKey(UPLOAD_MEETING_SOURCE, job.meetingId));
         stillLive(r);
         forget(deps);
-        state = null;
-        notify();
+        if (retention) set({ stage: "failed", cleanupPending: false, detail: null, error: {
+          message: "The upload outcome is no longer available; AssemblyAI's retention settings handle any leftover copy.", reference: null, retry: false,
+        } });
+        else {
+          state = null;
+          notify();
+        }
         return;
       }
       if (!job.saved) {
