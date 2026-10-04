@@ -113,10 +113,12 @@ export function openHandle(handleKey: string, handle: string, address: string, n
   if (parts.length !== 3 || parts[0] !== HANDLE_PREFIX || !B64URL_RE.test(parts[1]!) || !B64URL_RE.test(parts[2]!)) return null;
   const expected = sign(handleKey, `${parts[0]}.${parts[1]}`);
   const presented = Buffer.from(parts[2]!, "base64url");
+  const payload = Buffer.from(parts[1]!, "base64url");
+  if (payload.toString("base64url") !== parts[1] || presented.toString("base64url") !== parts[2]) return null;
   if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) return null;
   let claims: unknown;
   try {
-    claims = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    claims = JSON.parse(payload.toString("utf8"));
   } catch {
     return null;
   }
@@ -199,6 +201,24 @@ export class HostedUploadStore {
   /** Background submits in flight. */
   private readonly inFlight = new Set<Promise<void>>();
 
+  /** Serialize account mutations, including file IO, so a claim cannot overtake a part or cleanup. */
+  private readonly mutations = new Map<string, Promise<void>>();
+  private stopping = false;
+
+  private withAccount<T>(address: string, action: () => Promise<T>): Promise<T> {
+    const result = (this.mutations.get(address) ?? Promise.resolve()).then(action);
+    const drained = result.then(() => {}, () => {});
+    this.mutations.set(address, drained);
+    void drained.then(() => {
+      if (this.mutations.get(address) === drained) this.mutations.delete(address);
+    });
+    return result;
+  }
+
+  private receiving(upload: HostedUpload): boolean {
+    return !this.stopping && this.uploads.get(upload.id) === upload && upload.state === "receiving";
+  }
+
   constructor(
     private readonly spoolDir: string,
     private readonly dailyBytes: number,
@@ -228,9 +248,15 @@ export class HostedUploadStore {
    * being sent to AssemblyAI right now still makes this `assemblyai_busy`.
    */
   async create(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
+    return this.withAccount(address, () => this.createLocked(address, byteSize, contentType, nowMs));
+  }
+
+  private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
+    if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     const mine = [...this.uploads.values()].find((u) => u.owner === address);
     if (mine?.state === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
-    if (mine) await this.abandon(mine);
+    if (mine) await this.abandonLocked(mine);
+    if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     if (this.uploads.size >= this.maxConcurrent) {
       const soonest = Math.min(...[...this.uploads.values()].map((u) => u.expiresAt));
       return { ok: false, code: "assemblyai_busy", retryAfterSeconds: Math.min(60, Math.max(1, Math.ceil((soonest - nowMs) / 1000))) };
@@ -286,7 +312,15 @@ export class HostedUploadStore {
     return { kind: "missing" };
   }
 
-  async writePart(upload: HostedUpload, index: number, bytes: Uint8Array): Promise<void> {
+  async writePart(upload: HostedUpload, index: number, bytes: Uint8Array): Promise<boolean> {
+    return this.withAccount(upload.owner, async () => {
+      if (!this.receiving(upload)) return false;
+      await this.writePartLocked(upload, index, bytes);
+      return true;
+    });
+  }
+
+  private async writePartLocked(upload: HostedUpload, index: number, bytes: Uint8Array): Promise<void> {
     const handle = await open(upload.path, "r+");
     try {
       await handle.write(bytes, 0, bytes.byteLength, index * HOSTED_PART_SIZE);
@@ -302,12 +336,23 @@ export class HostedUploadStore {
     return (await stat(upload.path)).size === upload.byteSize;
   }
 
+  /** Validate and claim under the same lock as parts, replacement and abandonment. */
+  async submitIfComplete(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): Promise<boolean> {
+    return this.withAccount(upload.owner, async () => {
+      if (!this.receiving(upload) || upload.expiresAt <= now()) return true;
+      if (!(await this.complete(upload))) return false;
+      this.startSubmit(upload, now, submit);
+      return true;
+    });
+  }
+
   /**
    * Move a complete upload to `submitting` and run `submit` in the background with an abort
    * signal (its own deadline, the sweep, or shutdown). Whatever happens, the spool is deleted,
    * the slot freed, and the outcome kept for the owner to read.
    */
   startSubmit(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): void {
+    if (!this.receiving(upload)) return;
     const controller = new AbortController();
     upload.state = "submitting";
     upload.abort = controller;
@@ -339,11 +384,16 @@ export class HostedUploadStore {
   }
 
   /** Drop an upload that was never sent: spool deleted, slot freed, its bytes refunded. */
-  async abandon(upload: HostedUpload): Promise<void> {
-    if (!this.uploads.has(upload.id) || upload.state !== "receiving") return;
+  async abandon(upload: HostedUpload): Promise<boolean> {
+    return this.withAccount(upload.owner, () => this.abandonLocked(upload));
+  }
+
+  private async abandonLocked(upload: HostedUpload): Promise<boolean> {
+    if (this.uploads.get(upload.id) !== upload || upload.state !== "receiving") return false;
     const used = this.charged.get(upload.dayKey);
     if (used !== undefined) this.charged.set(upload.dayKey, Math.max(0, used - upload.byteSize));
     await this.release(upload);
+    return true;
   }
 
   /** Forget a settled outcome (the owner has read it). */
@@ -363,7 +413,7 @@ export class HostedUploadStore {
         continue;
       }
       if (upload.expiresAt > nowMs) continue;
-      await this.release(upload);
+      if (!(await this.abandon(upload))) continue;
       this.tombstones.set(upload.id, { owner: upload.owner, until: nowMs + TOMBSTONE_MS });
       removed++;
     }
@@ -374,9 +424,14 @@ export class HostedUploadStore {
     return removed;
   }
 
-  /** Shutdown: abort every submit in flight and wait for them to delete their spools. */
+  /** Close mutations, drain file IO, refund unsent uploads and abort/drain submits. */
   async shutdown(): Promise<void> {
+    this.stopping = true;
     for (const upload of this.uploads.values()) upload.abort?.abort();
+    await Promise.all([...this.mutations.values()]);
+    for (const upload of [...this.uploads.values()]) {
+      if (upload.state === "receiving") await this.abandonLocked(upload);
+    }
     await this.idle();
   }
 }

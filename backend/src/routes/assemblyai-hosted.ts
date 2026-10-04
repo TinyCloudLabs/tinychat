@@ -384,7 +384,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (!Buffer.isBuffer(bytes) || bytes.byteLength !== partLength(upload.byteSize, index)) return fail(res, { code: "invalid_request" });
       // The upload may have expired or been submitted while its body was arriving.
       if (!receivingUpload(res, upload.id)) return;
-      await store!.writePart(upload, index, bytes);
+      if (!(await store!.writePart(upload, index, bytes))) return fail(res, { code: "assemblyai_upload_in_progress" });
       ok(res, 204);
     }),
   );
@@ -403,14 +403,15 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     handle("delete_upload", async (req, res) => {
       const id = String(req.params.upload_id);
       const found = store!.lookup(id, locals(res).address, now());
-      // A settled outcome is the client's to drop; the transcript itself is deleted by handle.
+      // Completion may win between the client's GET and DELETE. Preserve its handle for cleanup.
       if (found.kind === "settled") {
+        if (found.outcome.status === "submitted") return fail(res, { code: "assemblyai_upload_in_progress" });
         store!.forget(id);
         return ok(res, 204);
       }
       const upload = receivingUpload(res, id);
       if (!upload) return;
-      await store!.abandon(upload);
+      if (!(await store!.abandon(upload))) return fail(res, { code: "assemblyai_upload_in_progress" });
       ok(res, 204);
     }),
   );
@@ -429,15 +430,16 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       // Idempotent: a repeat answers where the first one got to.
       if (found.kind === "active" && found.upload.state === "receiving") {
         const upload = found.upload;
-        if (!(await store!.complete(upload))) return fail(res, { code: "assemblyai_upload_incomplete" });
-        // complete() awaited: a concurrent repeat may have started it meanwhile.
-        if (upload.state === "receiving") {
-          const speakerLabels = body.speaker_labels;
-          const cid = locals(res).cid;
-          store!.startSubmit(upload, now, (signal) => submit(upload, speakerLabels, cid, signal));
+        const speakerLabels = body.speaker_labels;
+        const cid = locals(res).cid;
+        if (!(await store!.submitIfComplete(upload, now, (signal) => submit(upload, speakerLabels, cid, signal)))) {
+          return fail(res, { code: "assemblyai_upload_incomplete" });
         }
       }
-      ok(res, 202, { upload_id: id, ...uploadView(store!.lookup(id, locals(res).address, now())) }, found.kind === "active" ? ` bytes=${found.upload.byteSize}` : "");
+      const current = store!.lookup(id, locals(res).address, now());
+      if (current.kind === "missing") return fail(res, { code: "assemblyai_upload_not_found" });
+      if (current.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
+      ok(res, 202, { upload_id: id, ...uploadView(current) }, found.kind === "active" ? ` bytes=${found.upload.byteSize}` : "");
     }),
   );
 

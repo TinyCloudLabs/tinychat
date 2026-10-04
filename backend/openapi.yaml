@@ -1887,7 +1887,9 @@ paths:
       operationId: deleteAssemblyAiHostedUpload
       summary: Abandon an upload that was not sent (spool deleted, bytes refunded)
       description: >-
-        Also drops a settled outcome. An upload being submitted is 409.
+        Also drops a failed outcome. An upload being submitted or already submitted is
+        409: poll GET until its handle arrives, then delete the transcript by handle.
+        A submitted outcome is retained so a concurrent completion cannot lose its handle.
       security:
         - bearerAuth: []
       responses:

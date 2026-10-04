@@ -9,8 +9,9 @@
 //   7. logs never carry the key, a handle, a transcript id or the address;
 //   8. deploy wiring and the rate-limit bucket that one full-size upload fits in.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -92,7 +93,7 @@ function hostedConfig(spoolDir: string, extra: Partial<{ dailyBytes: number }> =
 }
 
 /** The app in index.ts's order: JSON parser (parts excluded) → CSRF → limiters → auth → router. */
-async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig | null; maxConcurrent?: number; dailyBytes?: number } = {}) {
+async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig | null; maxConcurrent?: number; dailyBytes?: number; onSubmit?: () => void } = {}) {
   const spoolDir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-test-"));
   closers.push(() => rmSync(spoolDir, { recursive: true, force: true }));
   const config = options.config === null ? ({ hosted: false, reason: "both_unset" } as const) : (options.config ?? hostedConfig(spoolDir, { dailyBytes: options.dailyBytes }));
@@ -116,6 +117,10 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
   app.use(
     ASSEMBLYAI_HOSTED_MOUNT,
     createAuthMiddleware(SESSION_KEY),
+    (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      if (req.method === "POST" && req.path === "/hosted/transcripts") options.onSubmit?.();
+      next();
+    },
     createAssemblyAiHostedRouter({ config, store, fetchImpl, now: () => clock.now, log: (line, alert) => logs.push({ line, alert }) }),
   );
   const server = await new Promise<Server>((r) => {
@@ -738,4 +743,162 @@ describe("openapi", () => {
       expect(spec.paths[`${ASSEMBLYAI_HOSTED_MOUNT}${path}`]?.[method]?.security).toEqual([{ bearerAuth: [] }]);
     }
   });
+});
+
+
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+describe("TC-592 review regressions", () => {
+  test("submission and abandonment cannot both win while completeness awaits stat", async () => {
+    for (const replacement of [false, true]) {
+      const h = await setup();
+      const id = await h.upload(audio(3));
+      const entered = gate(), resume = gate();
+      const complete = h.store!.complete.bind(h.store);
+      const claims: boolean[] = [];
+      const start = h.store!.startSubmit.bind(h.store);
+      h.store!.startSubmit = (...args) => {
+        claims.push(h.store!.lookup(args[0].id, ADDRESS_A, T0).kind === "active");
+        return start(...args);
+      };
+      h.store!.complete = async (upload) => {
+        const result = await complete(upload);
+        entered.resolve();
+        await resume.promise;
+        return result;
+      };
+      const submit = h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+      await entered.promise;
+      // The old code refunds synchronously before its first await; fixed code queues this mutation.
+      const found = h.store!.lookup(id, ADDRESS_A, T0);
+      if (found.kind !== "active") throw new Error("missing upload");
+      const abandon = replacement ? h.store!.create(ADDRESS_A, 3, "audio/wav", T0) : h.store!.abandon(found.upload);
+      resume.resolve();
+      await Promise.all([submit, abandon]);
+      await h.store!.idle();
+      expect(claims).not.toContain(false);
+      const view = h.store!.lookup(id, ADDRESS_A, T0);
+      const sent = view.kind === "settled" && view.outcome.status === "submitted";
+      // A claimed submit must retain its charge; an abandoned upload must never call upstream.
+      expect(h.store!.dailyBytesRemaining(ADDRESS_A, T0)).toBe(sent ? DEFAULT_DAILY_BYTES - 3 : DEFAULT_DAILY_BYTES - (replacement ? 3 : 0));
+      if (!sent) expect(h.calls).toHaveLength(0);
+    }
+  });
+
+  test("concurrent replacements keep one account in one of the four slots", async () => {
+    const h = await setup();
+    await h.createUpload(3);
+    const entered = gate(), resume = gate();
+    const release = h.store!.release.bind(h.store);
+    let first = true;
+    h.store!.release = async (upload) => {
+      await release(upload);
+      if (first) { first = false; entered.resolve(); await resume.promise; }
+    };
+    const a = h.store!.create(ADDRESS_A, 3, "audio/wav", T0);
+    await entered.promise;
+    const b = h.store!.create(ADDRESS_A, 3, "audio/wav", T0);
+    resume.resolve();
+    await Promise.all([a, b]);
+    expect(h.store!.activeCount).toBe(1);
+    expect(h.store!.dailyBytesRemaining(ADDRESS_A, T0)).toBe(DEFAULT_DAILY_BYTES - 3);
+    for (const address of [ADDRESS_B, ADDRESS_C, "0xdddddddddddddddddddddddddddddddddddddddd"]) {
+      expect((await h.createUpload(3, address)).status).toBe(201);
+    }
+    expect(h.store!.activeCount).toBe(4);
+  });
+
+  test("submission drains part writes and refuses writes after the claim", async () => {
+    const requested = gate();
+    const h = await setup({ onSubmit: requested.resolve });
+    const id = await h.upload(audio(3));
+    const found = h.store!.lookup(id, ADDRESS_A, T0);
+    if (found.kind !== "active") throw new Error("missing upload");
+    const entered = gate(), resume = gate();
+    let written = false;
+    const originalOpen = fsPromises.open;
+    const spy = spyOn(fsPromises, "open").mockImplementation(async (...args: Parameters<typeof originalOpen>) => {
+      const handle = await originalOpen(...args);
+      if (args[1] === "r+") {
+        const close = handle.close.bind(handle);
+        handle.close = async () => { await close(); written = true; };
+        entered.resolve();
+        await resume.promise;
+      }
+      return handle;
+    });
+    let checkedDuringWrite = false;
+    const complete = h.store!.complete.bind(h.store);
+    h.store!.complete = async (upload) => {
+      checkedDuringWrite = !written;
+      return complete(upload);
+    };
+    const writing = h.store!.writePart(found.upload, 0, audio(3));
+    await entered.promise;
+    const submitting = h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+    // The request has entered the route while file IO is held at a deterministic barrier.
+    await requested.promise;
+    resume.resolve();
+    await writing;
+    spy.mockRestore();
+    await submitting;
+    await h.store!.idle();
+    expect(checkedDuringWrite).toBe(false);
+    expect(await h.store!.writePart(found.upload, 0, audio(3)).catch(() => "threw")).toBe(false);
+  });
+
+  test("shutdown drains active writes, removes receiving spools, refunds and closes mutations", async () => {
+    const h = await setup();
+    const id = await h.upload(audio(3));
+    const found = h.store!.lookup(id, ADDRESS_A, T0);
+    if (found.kind !== "active") throw new Error("missing upload");
+    const entered = gate(), resume = gate();
+    const originalOpen = fsPromises.open;
+    const spy = spyOn(fsPromises, "open").mockImplementation(async (...args: Parameters<typeof originalOpen>) => {
+      const handle = await originalOpen(...args);
+      if (args[1] === "r+") { entered.resolve(); await resume.promise; }
+      return handle;
+    });
+    const writing = h.store!.writePart(found.upload, 0, audio(3));
+    await entered.promise;
+    let stopped = false;
+    const shutdown = h.store!.shutdown().then(() => { stopped = true; });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const stoppedEarly = stopped;
+    resume.resolve();
+    await writing;
+    spy.mockRestore();
+    await shutdown;
+    expect(stoppedEarly).toBe(false);
+    expect(h.spoolFiles()).toEqual([]);
+    expect(h.store!.activeCount).toBe(0);
+    expect(h.store!.dailyBytesRemaining(ADDRESS_A, T0)).toBe(DEFAULT_DAILY_BYTES);
+    expect((await h.store!.create(ADDRESS_A, 3, "audio/wav", T0)).ok).toBe(false);
+  });
+
+  test("non-canonical signature trailing bits are rejected with 404", async () => {
+    const h = await setup();
+    const handle = issueHandle(HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, T0);
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const alternate = handle.slice(0, -1) + alphabet[alphabet.indexOf(handle.at(-1)!) ^ 1];
+    expect(Buffer.from(alternate.split(".")[2]!, "base64url")).toEqual(Buffer.from(handle.split(".")[2]!, "base64url"));
+    expect((await h.req("GET", `/hosted/transcripts/${alternate}`)).status).toBe(404);
+    expect(h.calls).toHaveLength(0);
+  });
+});
+
+
+test("DELETE preserves a submitted handle when completion wins the discard race", async () => {
+  const h = await setup();
+  const id = await h.upload(audio(3));
+  expect((await h.req("GET", `/hosted/uploads/${id}`)).json.status).toBe("receiving");
+  const outcome = await h.submit(id);
+  expect(outcome.status).toBe("submitted");
+  expect((await h.req("DELETE", `/hosted/uploads/${id}`)).status).toBe(409);
+  expect((await h.req("GET", `/hosted/uploads/${id}`)).json).toEqual(outcome);
+  expect((await h.req("DELETE", `/hosted/transcripts/${outcome.id}`)).status).toBe(204);
 });
