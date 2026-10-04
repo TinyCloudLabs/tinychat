@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Release gate for a signed Exo Android build: exits 1 unless the APK and the AAB are signed with the expected upload
-# key (never the debug key), the APK is xyz.tinycloud.exo at the expected versionName/versionCode with a launcher icon
-# and not debuggable, and both bundle the production web app (assets/public) with no dev-server URL in
-# capacitor.config.json. Never let an unsigned, debug or live-reload build through.
+# key (never the debug key), the APK is xyz.tinycloud.exo at the expected versionName/versionCode with a launcher icon,
+# not debuggable and requesting no location permission, and both bundle the production web app (assets/public) with
+# no dev-server URL in capacitor.config.json. Never let an unsigned, debug or live-reload build through.
 # Usage: verify-android-release.sh <app-release.apk> <app-release.aab> <versionName> <versionCode> <cert SHA-256>
 # The cert digest is the upload certificate's SHA-256 (hex, colons and case ignored), e.g. from
 #   keytool -list -v -keystore upload.jks -alias <alias>
@@ -69,6 +69,12 @@ require "APK is xyz.tinycloud.exo $version_name ($version_code)" "$badging" \
   "package: name='xyz.tinycloud.exo' versionCode='$version_code' versionName='$version_name'" "application-label:'Exo'" "application-icon-"
 if grep -q '^application-debuggable' <<<"$badging"; then fail "APK is debuggable"; fi
 pass "APK is not debuggable"
+# The TC-524 location spike declares its permissions in the debug manifest only. A release asking for location
+# would need Play's location declarations (mobile/docs/location-spike.md) before it may ship.
+if grep -qE "uses-permission: name='android\.permission\.(ACCESS_(FINE|COARSE|BACKGROUND)_LOCATION|FOREGROUND_SERVICE_LOCATION)'" <<<"$badging"; then
+  fail "APK requests location permissions; the location spike is debug-only"
+fi
+pass "APK requests no location permission"
 
 # $1 = label, $2 = archive, $3 = path prefix of the Capacitor assets inside it
 check_web_app() {

@@ -28,6 +28,11 @@ interface ImportMetaEnv {
    * (when the app's native Health plugin exists, i.e. Android and iOS debug builds). Unset in every normal build.
    */
   readonly VITE_EXO_HEALTH_SPIKE?: string;
+  /**
+   * "true" shows the TC-524 location spike's dev card (Connectors → Sources) in the Exo app. Leave unset: it is a
+   * prototype, and only debug builds of the app have the location permissions it needs.
+   */
+  readonly VITE_EXO_LOCATION_SPIKE?: string;
 }
 
 interface ImportMeta {
