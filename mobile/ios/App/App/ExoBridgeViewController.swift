@@ -14,6 +14,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(HealthPlugin())
         #endif
         #if DEBUG
+        // TC-524 location spike: Debug builds only (LocationRecorder.swift). Release has no location code at all.
+        bridge?.registerPluginInstance(LocationPlugin())
         startSmokeProbe()
         #endif
     }
@@ -24,8 +26,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
     /// Once the bundled web app has mounted (or after `smokeProbeAttempts` seconds), log one `EXO_SMOKE {json}`
     /// line with what the WebView sees: its URL, the Capacitor platform, whether React rendered into #root,
     /// whether JS sees the VoiceNotes plugin, the plugin's own answer to `status()` over the bridge, and its
-    /// `readAudioChunk` refusing a recording that does not exist. The CI simulator smoke test
-    /// (mobile/scripts/ios-simulator-smoke.sh) gates on that line.
+    /// `readAudioChunk` refusing a recording that does not exist; and the Location spike plugin's `status()` (TC-524).
+    /// The CI simulator smoke test (mobile/scripts/ios-simulator-smoke.sh) gates on that line.
     private static let smokeProbeAttempts = 60
     private static let smokeProbeScript = """
         const cap = window.Capacitor;
@@ -39,6 +41,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
           voiceNotesHeader: headers.some((h) => h.name === "VoiceNotes"),
           voiceNotesAvailable: !!(cap && cap.isPluginAvailable && cap.isPluginAvailable("VoiceNotes")),
           healthHeader: headers.some((h) => h.name === "Health"),
+          locationAvailable: !!(cap && cap.isPluginAvailable && cap.isPluginAvailable("Location")),
           title: document.title,
         };
         if (probe.mounted && probe.voiceNotesHeader && cap.nativePromise) {
@@ -66,6 +69,16 @@ class ExoBridgeViewController: CAPBridgeViewController {
             }
           };
           probe.health = { availability: await ask("availability"), authorization: await ask("authorizationStatus") };
+        }
+        // Location spike (TC-524). Only the fields the smoke checks: unified logging truncates a line past about 1 KB.
+        if (probe.mounted && probe.locationAvailable && cap.nativePromise) {
+          const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000));
+          try {
+            const s = await Promise.race([cap.nativePromise("Location", "status", {}), timeout]);
+            probe.locationStatus = { platform: s.platform, permission: s.permission, declared: s.declared };
+          } catch (error) {
+            probe.locationStatus = { error: String((error && error.message) || error) };
+          }
         }
         return JSON.stringify(probe);
         """
@@ -100,6 +113,54 @@ class ExoBridgeViewController: CAPBridgeViewController {
             #if EXO_HEALTH
             self.startHealthProbe()
             #endif
+            if ProcessInfo.processInfo.environment["EXO_LOCATION_SMOKE"] == "1" { self.runLocationProbe() }
+        }
+    }
+
+    /// TC-524: with `EXO_LOCATION_SMOKE=1` in the launch environment (the smoke script passes it, with location
+    /// granted and a simulated position set), start a continuous capture, wait, read the native queue and stop.
+    /// Logs one `EXO_LOCATION_SMOKE {json}` line: evidence that the iOS capture path records samples, from CI.
+    private static let locationProbeScript = """
+        const cap = window.Capacitor;
+        const call = (method, args) => Promise.race([
+          cap.nativePromise("Location", method, args || {}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(method + " timed out")), 8000)),
+        ]);
+        // Compact (unified logging truncates a line past about 1 KB): the fields the smoke summary reports.
+        const out = {};
+        try {
+          const before = await call("status");
+          out.before = { permission: before.permission, accuracy: before.accuracy, backgroundRequest: before.backgroundRequest };
+          const started = await call("start", { mode: "continuous", background: true });
+          out.started = { active: started.tracking.active, sources: started.tracking.sources };
+          await new Promise((resolve) => setTimeout(resolve, 15000));
+          const page = await call("pending", { limit: 50 });
+          const sample = page.entries.find((e) => e.kind === "sample");
+          out.pending = {
+            pending: page.pending,
+            samples: page.entries.filter((e) => e.kind === "sample").length,
+            states: page.entries.filter((e) => e.kind === "state").map((e) => e.change + ":" + e.reason),
+            sample: sample && { lat: sample.lat, lon: sample.lon, accuracyM: sample.accuracyM, provider: sample.provider, mock: sample.mock },
+          };
+          const stopped = await call("stop");
+          out.stopped = { active: stopped.tracking.active, lastStopReason: stopped.tracking.lastStopReason, sessionSamples: stopped.tracking.sessionSamples };
+        } catch (error) {
+          out.error = String((error && error.message) || error);
+        }
+        return JSON.stringify(out);
+        """
+
+    private func runLocationProbe() {
+        webView?.callAsyncJavaScript(Self.locationProbeScript, arguments: [:], in: nil, in: .page) { result in
+            let line: String
+            switch result {
+            case .success(let value):
+                line = (value as? String) ?? Self.smokeProbeError("non-string result")
+            case .failure(let error):
+                line = Self.smokeProbeError(error.localizedDescription)
+            }
+            print("EXO_LOCATION_SMOKE \(line)")
+            Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_LOCATION_SMOKE \(line, privacy: .public)")
         }
     }
 

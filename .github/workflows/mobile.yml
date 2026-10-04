@@ -9,6 +9,8 @@ on:
       - "frontend/src/chat/VoiceNotesSection.tsx"
       - "frontend/src/lib/health/**"
       - "frontend/src/chat/HealthSpikeSection.tsx"
+      - "frontend/src/lib/location/**"
+      - "frontend/src/chat/LocationSpikeSection.tsx"
       - ".github/workflows/mobile.yml"
       - ".github/workflows/ios-build.yml"
       - ".github/workflows/ios-testflight.yml"

@@ -2,7 +2,6 @@ import { lazy, Suspense } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-
 import { ConnectorsCard } from "./ConnectorsCard";
 import { ConnectorsTabs, type ConnectorsTab } from "./connectorsNav";
 import { LibraryPage } from "./LibraryPage";
@@ -14,6 +13,10 @@ import { VoiceNotesSection } from "./VoiceNotesSection";
 const HealthSpikeSection = import.meta.env.VITE_EXO_HEALTH_SPIKE === "true"
   ? lazy(() => import("./HealthSpikeSection").then((m) => ({ default: m.HealthSpikeSection })))
   : null;
+// TC-524 location spike: a developer card, in the bundle only when the build sets VITE_EXO_LOCATION_SPIKE=true.
+// Vite inlines the flag, so in every other build this is `null` and the chunk is never emitted.
+const LocationSpikeSection =
+  import.meta.env.VITE_EXO_LOCATION_SPIKE === "true" ? lazy(() => import("./LocationSpikeSection")) : null;
 
 interface ConnectorsPageProps {
   tcw: TinyCloudWeb;
@@ -74,6 +77,11 @@ export function ConnectorsPage({
             {HealthSpikeSection && (
               <Suspense fallback={null}>
                 <HealthSpikeSection tcw={tcw} />
+              </Suspense>
+            )}
+            {LocationSpikeSection && (
+              <Suspense fallback={null}>
+                <LocationSpikeSection tcw={tcw} />
               </Suspense>
             )}
             <ConnectorsCard
