@@ -77,8 +77,7 @@ function deps(patch: Partial<UploadDeps> & { events?: string[]; did?: string }):
     deps: {
       tcw: { did: patch.did ?? DID, kv: {} } as never,
       privateCloud: null,
-      assemblyAiKey: async () => "aai-key",
-      assemblyAiClient: () => {
+      assemblyAiClient: async () => {
         throw new Error("no AssemblyAI in this test");
       },
       save: async (prepared) => {
@@ -171,7 +170,7 @@ describe("privateCloudUploadTranscript", () => {
 });
 
 describe("prepareUploadMeeting", () => {
-  const pending = { engine: "assemblyai" as const, meetingId: "m-1", file: { name: "Board call.final.m4a", type: "audio/x-m4a", size: 2048, lastModified: Date.UTC(2026, 9, 1) } };
+  const pending = { engine: "assemblyai" as const, assemblyAiMode: "hosted" as const, meetingId: "m-1", file: { name: "Board call.final.m4a", type: "audio/x-m4a", size: 2048, lastModified: Date.UTC(2026, 9, 1) } };
   const transcript = {
     sentences: [{ index: 0, speaker_name: "Speaker A", text: "Hi", start_time: 0, end_time: 1 }],
     diarized: true,
@@ -200,6 +199,7 @@ describe("prepareUploadMeeting", () => {
       transcription_engine: "assemblyai",
       transcript_provider: "assemblyai",
       inference_provider: "assemblyai",
+      assemblyai_account: "tinycloud",
       model: "universal-3-5-pro",
       language: "en_us",
       diarized: true,
@@ -252,7 +252,7 @@ describe("upload runner: AssemblyAI", () => {
     const { client, requests } = assemblyAi(events);
     const a = audioFake({ put: async () => Promise.reject(new AudioStoreQuotaError("full")) });
     const pending = memoryPending();
-    const { deps: d, saved } = deps({ events, pending, audio: a.audio, assemblyAiClient: () => client });
+    const { deps: d, saved } = deps({ events, pending, audio: a.audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.start(d, { file: file("standup.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     const done = await settled(runner);
@@ -269,7 +269,7 @@ describe("upload runner: AssemblyAI", () => {
     const events: string[] = [];
     const { client } = assemblyAi(events);
     let failSave = true;
-    const { deps: d, saved } = deps({ events, audio: audioFake().audio, assemblyAiClient: () => client });
+    const { deps: d, saved } = deps({ events, audio: audioFake().audio, assemblyAiClient: async () => client });
     const save = d.save;
     d.save = async (p) => (failSave ? { ok: false, error: { code: "TRANSPORT", message: "node unreachable" } } : save(p));
     const runner = createUploadRunner();
@@ -425,7 +425,7 @@ describe("upload runner: silence", () => {
       getSentences: async () => [],
       deleteTranscript: async (id: string) => void events.push(`aai delete ${id}`),
     } as unknown as AssemblyAiClient;
-    const { deps: d, saved } = deps({ events, pending, audio: a.audio, assemblyAiClient: () => client });
+    const { deps: d, saved } = deps({ events, pending, audio: a.audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.start(d, { file: file("quiet.wav", "audio/wav"), engine: "assemblyai", diarize: false });
     const failed = await settled(runner);
@@ -484,7 +484,7 @@ describe("upload runner: one owner at a time", () => {
       return remove(kv, base);
     }) as never;
     const client = { upload: async () => Promise.reject(new AssemblyAiError("invalid-key", "rejected")) } as unknown as AssemblyAiClient;
-    const { deps: d } = deps({ audio: a.audio, assemblyAiClient: () => client });
+    const { deps: d } = deps({ audio: a.audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.start(d, { file: file("big.wav", "audio/wav"), engine: "assemblyai", diarize: false });
     const failed = await settled(runner);
@@ -502,12 +502,12 @@ describe("upload runner: one owner at a time", () => {
     } as unknown as AssemblyAiClient;
     const pending = memoryPending();
     const a = audioFake();
-    const first = deps({ events, pending, audio: a.audio, assemblyAiClient: () => client });
+    const first = deps({ events, pending, audio: a.audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.start(first.deps, { file: file("private.mp3", "audio/mpeg"), engine: "assemblyai", diarize: false });
     expect((await settled(runner)).error).toMatchObject({ retry: true });
 
-    const other = deps({ events, pending, audio: a.audio, assemblyAiClient: () => client, did: "did:pkh:eip155:1:0xother" });
+    const other = deps({ events, pending, audio: a.audio, assemblyAiClient: async () => client, did: "did:pkh:eip155:1:0xother" });
     runner.retry(other.deps);
     expect(runner.snapshot()?.stage).toBe("failed");
     await runner.dismiss(other.deps);
@@ -520,7 +520,7 @@ describe("upload runner: one owner at a time", () => {
   test("a resumed saved upload reports the audio outcome it was saved with", async () => {
     const pending = memoryPending({ ...stored, saved: true, audio: { stored: true } });
     const client = { deleteTranscript: async () => {} } as unknown as AssemblyAiClient;
-    const { deps: d } = deps({ pending, audio: audioFake().audio, assemblyAiClient: () => client });
+    const { deps: d } = deps({ pending, audio: audioFake().audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.resume(d);
     expect(await settled(runner)).toMatchObject({ stage: "saved", audio: { stage: "stored" } });
@@ -549,7 +549,7 @@ describe("upload runner: sign-out and remote cleanup", () => {
       deleteTranscript: async (id: string) => void events.push(`delete ${id}`),
     } as unknown as AssemblyAiClient;
     const pending = memoryPending();
-    const a = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: () => clientA });
+    const a = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: async () => clientA });
     const runner = createUploadRunner();
     runner.start(a.deps, { file: file("a-private.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     for (let i = 0; i < 20 && releaseA === null; i++) await new Promise((r) => setTimeout(r, 0));
@@ -565,7 +565,7 @@ describe("upload runner: sign-out and remote cleanup", () => {
       deleteTranscript: async (id: string) => void events.push(`delete ${id}`),
     } as unknown as AssemblyAiClient;
     const other = "did:pkh:eip155:1:0x00000000000000000000000000000000000000b2";
-    const b = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: () => clientB, did: other });
+    const b = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: async () => clientB, did: other });
     runner.start(b.deps, { file: file("b-notes.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     releaseA!(); // A's upload answers late
     const done = await settled(runner);
@@ -603,7 +603,7 @@ describe("upload runner: sign-out and remote cleanup", () => {
         throw new AssemblyAiError("invalid-key", "AssemblyAI rejected the key.");
       },
     } as unknown as AssemblyAiClient;
-    const { deps: d, saved } = deps({ audio: audioFake().audio, assemblyAiClient: () => client });
+    const { deps: d, saved } = deps({ audio: audioFake().audio, assemblyAiClient: async () => client });
     const runner = createUploadRunner();
     runner.start(d, { file: file("a.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     const done = await settled(runner);
@@ -627,7 +627,7 @@ describe("upload runner: the stored upload belongs to one tab and one account", 
     const pending = memoryPending();
     const events: string[] = [];
     const tabA = createUploadRunner();
-    const a = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: () => assemblyAiThatFinishes(events, "tA") });
+    const a = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: async () => assemblyAiThatFinishes(events, "tA") });
     tabA.start(a.deps, { file: file("first.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     expect((await settled(tabA)).stage).toBe("saved");
 
@@ -637,7 +637,7 @@ describe("upload runner: the stored upload belongs to one tab and one account", 
       ...assemblyAiThatFinishes(events, "tB"),
       getTranscript: () => new Promise(() => {}),
     } as unknown as AssemblyAiClient;
-    const b = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: () => queued });
+    const b = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: async () => queued });
     tabB.start(b.deps, { file: file("second.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
     for (let i = 0; i < 20 && pending.value?.jobId !== "tB"; i++) await new Promise((r) => setTimeout(r, 0));
     expect(pending.value?.jobId).toBe("tB");
@@ -667,6 +667,7 @@ describe("upload runner: the stored upload belongs to one tab and one account", 
         owner: DID,
         saved: true,
         audio: { stored: true },
+        assemblyAiMode: "own",
       };
       localStoragePendingUploadStore(DID).write(stored);
 
@@ -674,12 +675,96 @@ describe("upload runner: the stored upload belongs to one tab and one account", 
       expect(localStoragePendingUploadStore(other).read()).toBeNull();
       const events: string[] = [];
       const runner = createUploadRunner();
-      const b = deps({ events, pending: undefined, did: other, audio: audioFake().audio, assemblyAiClient: () => assemblyAiThatFinishes(events, "tB") });
+      const b = deps({ events, pending: undefined, did: other, audio: audioFake().audio, assemblyAiClient: async () => assemblyAiThatFinishes(events, "tB") });
       runner.start(b.deps, { file: file("b.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
       expect((await settled(runner)).stage).toBe("saved");
 
       expect(localStoragePendingUploadStore(DID).read()).toEqual(stored);
       expect(events).toEqual(["save", "delete tB"]);
+    } finally {
+      globalThis.localStorage = original;
+    }
+  });
+});
+
+describe("upload runner: an AssemblyAI job keeps its account", () => {
+  const finishing = (events: string[], label: string) =>
+    ({
+      upload: async () => "u",
+      createTranscript: async () => ({ id: `t-${label}`, status: "queued" }),
+      getTranscript: async () => ({ id: `t-${label}`, status: "completed", utterances: [{ speaker: "A", text: "Hello.", start: 0, end: 900 }] }),
+      getSentences: async () => [],
+      deleteTranscript: async (id: string) => void events.push(`${label} delete ${id}`),
+    }) as unknown as AssemblyAiClient;
+
+  test("a hosted upload is created, polled, saved and deleted only through TinyCloud's account", async () => {
+    const events: string[] = [];
+    const asked: string[] = [];
+    const pending = memoryPending();
+    const { deps: d, saved } = deps({
+      events,
+      pending,
+      audio: audioFake().audio,
+      assemblyAiClient: async (mode) => {
+        asked.push(mode);
+        return finishing(events, mode);
+      },
+    });
+    const runner = createUploadRunner();
+    runner.start(d, { file: file("a.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true, assemblyAiMode: "hosted" });
+    expect((await settled(runner)).stage).toBe("saved");
+    expect(asked).toEqual(["hosted"]);
+    expect(events).toEqual(["save", "hosted delete t-hosted"]);
+    expect(saved[0]!.meeting.metadata).toMatchObject({ assemblyai_account: "tinycloud" });
+  });
+
+  test("a resumed job and Discard use the account it was started with, whatever Settings now says", async () => {
+    for (const mode of ["hosted", "own"] as const) {
+      const events: string[] = [];
+      const asked: string[] = [];
+      const stored: PendingUpload = {
+        engine: "assemblyai",
+        assemblyAiMode: mode,
+        meetingId: "m-1",
+        attemptId: "a-1",
+        jobId: "t-1",
+        diarize: true,
+        file: { name: "a.mp3", type: "audio/mpeg", size: 3, lastModified: 0 },
+        owner: DID,
+        saved: true,
+        audio: { stored: true },
+      };
+      const clientFor = async (m: "hosted" | "own") => {
+        asked.push(m);
+        return {
+          deleteTranscript: async () => {
+            events.push(`${m} delete`);
+            throw new AssemblyAiError("network", "down");
+          },
+        } as unknown as AssemblyAiClient;
+      };
+      const { deps: d } = deps({ events, pending: memoryPending(stored), audio: audioFake().audio, assemblyAiClient: clientFor });
+      const runner = createUploadRunner();
+      runner.resume(d);
+      expect(await settled(runner)).toMatchObject({ stage: "saved", cleanupPending: true });
+      await runner.dismiss(d);
+      expect(asked.every((m) => m === mode)).toBe(true);
+      expect(events.every((e) => e === `${mode} delete`)).toBe(true);
+    }
+  });
+
+  test("a stored job from before key modes existed stays on the user's own key", () => {
+    const storage = new Map<string, string>();
+    const original = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (k: string) => storage.get(k) ?? null,
+      setItem: (k: string, v: string) => void storage.set(k, v),
+      removeItem: (k: string) => void storage.delete(k),
+    } as unknown as Storage;
+    try {
+      const legacy = { engine: "assemblyai", meetingId: "m", attemptId: "a", jobId: "t", diarize: true, file: { name: "a.mp3", type: "", size: 1, lastModified: 0 }, owner: DID, saved: false };
+      storage.set(`exo.transcriber.uploadPending:${DID}`, JSON.stringify(legacy));
+      expect(localStoragePendingUploadStore(DID).read()?.assemblyAiMode).toBe("own");
     } finally {
       globalThis.localStorage = original;
     }

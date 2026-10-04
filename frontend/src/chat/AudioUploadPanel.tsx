@@ -16,9 +16,13 @@ import {
   ASSEMBLYAI_TERMS_URL,
   AssemblyAiError,
   createAssemblyAiClient,
+  createHostedAssemblyAiClient,
   readAssemblyAiKey,
   readAssemblyAiKeyHint,
+  readAssemblyAiKeyMode,
+  type AssemblyAiKeyMode,
   type AssemblyAiKeyStatus,
+  type HostedAssemblyAiCapabilities,
 } from "@/lib/assemblyai";
 import {
   PRIVATE_CLOUD_ACCEPT,
@@ -43,7 +47,7 @@ export type EngineStatus =
   | { state: "checking" }
   | { state: "unavailable"; reason: string; action?: "settings" | "recheck" };
 
-/** Private cloud's size limit (C1); capabilities may lower it. */
+/** Private cloud's and TinyCloud's AssemblyAI account's size limit (C1); capabilities may lower it. */
 const PRIVATE_CLOUD_MAX_BYTES = 120_960_000;
 
 export function formatBytes(bytes: number): string {
@@ -52,17 +56,26 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/** Whether files for this engine (and AssemblyAI account) go through TinyCloud's servers, which take only the C1 types. */
+function c1Only(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMode): boolean {
+  return engine === "private-cloud" || assemblyAiMode === "hosted";
+}
+
 /** Why the picked file can't go to `engine`, or null. */
 export function fileProblem(
   file: { name: string; type: string; size: number } | null,
   engine: UploadEngine,
   maxBytes: number = PRIVATE_CLOUD_MAX_BYTES,
+  assemblyAiMode: AssemblyAiKeyMode = "hosted",
 ): string | null {
-  if (file === null || engine !== "private-cloud") return null;
+  if (file === null || !c1Only(engine, assemblyAiMode)) return null;
+  const who = engine === "private-cloud" ? "Private transcription" : "TinyCloud's AssemblyAI account";
   if (privateCloudContentType(file) === null) {
-    return "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose AssemblyAI, or convert the file.";
+    return engine === "private-cloud"
+      ? "Private transcription takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Choose AssemblyAI, or convert the file."
+      : "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio. Use your own AssemblyAI key, or convert the file.";
   }
-  if (file.size > maxBytes) return `Private transcription takes files up to ${formatBytes(maxBytes)} (and 2 hours).`;
+  if (file.size > maxBytes) return `${who} takes files up to ${formatBytes(maxBytes)} (and 2 hours).`;
   return null;
 }
 
@@ -79,7 +92,21 @@ const PrivateUploadDisclosure: FC = () => (
   />
 );
 
-const AssemblyAiDisclosure: FC = () => (
+/** C10: the honest route for each AssemblyAI account; nothing "verified" or "end-to-end". */
+const AssemblyAiDisclosure: FC<{ mode: AssemblyAiKeyMode }> = ({ mode }) =>
+  mode === "hosted" ? (
+    <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+      <p>
+        Your file goes to Exo&apos;s server (a confidential VM on Phala Cloud), which sends it to{" "}
+        <strong>AssemblyAI</strong> under TinyCloud&apos;s account and{" "}
+        <a href={ASSEMBLYAI_TERMS_URL} target="_blank" rel="noopener noreferrer" className="underline">
+          AssemblyAI&apos;s terms
+        </a>
+        . AssemblyAI is not part of TinyCloud&apos;s private transcription.
+      </p>
+      <p>Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.</p>
+    </div>
+  ) : (
   <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
     <p>
       This file goes from this device to <strong>AssemblyAI</strong> under your own API key and{" "}
@@ -94,7 +121,7 @@ const AssemblyAiDisclosure: FC = () => (
       uploaded file. To do that, Exo&apos;s server forwards your key to AssemblyAI once; it never stores or logs it.
     </p>
   </div>
-);
+  );
 
 function stageText(job: UploadState): string {
   const engine = UPLOAD_ENGINE_LABELS[job.engine];
@@ -141,6 +168,8 @@ export interface AudioUploadViewProps {
   file: { name: string; type: string; size: number } | null;
   engine: UploadEngine;
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
+  /** Whose AssemblyAI account uploads to AssemblyAI use (Settings → Transcription). */
+  assemblyAiMode?: AssemblyAiKeyMode;
   /** The checkbox as the user left it. */
   diarize: boolean;
   /** Why speaker identification can't be used with this engine, or null. */
@@ -154,7 +183,7 @@ export interface AudioUploadViewProps {
   onRetry: () => void;
   onDismiss: () => void;
   onOpenSettings: () => void;
-  onRecheckPrivate: () => void;
+  onRecheck: () => void;
 }
 
 export const AudioUploadView: FC<AudioUploadViewProps> = ({
@@ -162,6 +191,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   file,
   engine,
   engines,
+  assemblyAiMode = "hosted",
   diarize,
   diarizeUnavailable,
   fileProblem: problem,
@@ -172,7 +202,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onRetry,
   onDismiss,
   onOpenSettings,
-  onRecheckPrivate,
+  onRecheck,
 }) => {
   if (job !== null && job.stage === "elsewhere") {
     return (
@@ -264,9 +294,9 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
       </p>
 
       <FilePicker
-        accept={engine === "private-cloud" ? PRIVATE_CLOUD_ACCEPT : UPLOAD_ACCEPT}
+        accept={c1Only(engine, assemblyAiMode) ? PRIVATE_CLOUD_ACCEPT : UPLOAD_ACCEPT}
         label={file === null ? "Click or drop an audio file" : "Click or drop another file"}
-        hint={engine === "private-cloud" ? "MP3, WAV, OGG, M4A/MP4, WebM or FLAC · up to 2 hours" : "Most audio and video files"}
+        hint={c1Only(engine, assemblyAiMode) ? "MP3, WAV, OGG, M4A/MP4, WebM or FLAC · up to 2 hours" : "Most audio and video files"}
         onFile={onFile}
       />
       {file !== null && (
@@ -293,7 +323,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         {status.state === "checking" && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2Icon className="size-3.5 animate-spin" />
-            Checking private transcription…
+            {engine === "private-cloud" ? "Checking private transcription…" : "Checking TinyCloud's AssemblyAI account…"}
           </p>
         )}
         {status.state === "unavailable" && (
@@ -310,14 +340,14 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
             {status.action === "recheck" && (
               <>
                 {" "}
-                <button type="button" onClick={onRecheckPrivate} className="underline">
+                <button type="button" onClick={onRecheck} className="underline">
                   Check again
                 </button>
               </>
             )}
           </p>
         )}
-        {status.state === "available" && (engine === "private-cloud" ? <PrivateUploadDisclosure /> : <AssemblyAiDisclosure />)}
+        {status.state === "available" && (engine === "private-cloud" ? <PrivateUploadDisclosure /> : <AssemblyAiDisclosure mode={assemblyAiMode} />)}
       </div>
 
       <div className="flex flex-col gap-1">
@@ -349,6 +379,28 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   );
 };
 
+/** Whether AssemblyAI can take a new upload under the chosen account, and if not, why. */
+export function assemblyAiStatus(
+  mode: AssemblyAiKeyMode,
+  hostedCaps: { state: "checking" } | { state: "ok"; caps: Pick<HostedAssemblyAiCapabilities, "hosted"> } | { state: "failed" },
+  keyStatus: AssemblyAiKeyStatus,
+): EngineStatus {
+  if (mode === "own") {
+    return keyStatus === "saved"
+      ? { state: "available" }
+      : { state: "unavailable", reason: "AssemblyAI with your own account needs your API key, saved in Settings → Transcription.", action: "settings" };
+  }
+  if (hostedCaps.state === "checking") return { state: "checking" };
+  if (hostedCaps.state === "failed") return { state: "unavailable", reason: "Couldn't reach TinyCloud's AssemblyAI account.", action: "recheck" };
+  return hostedCaps.caps.hosted
+    ? { state: "available" }
+    : {
+        state: "unavailable",
+        reason: "TinyCloud's AssemblyAI account isn't available on this server. You can use your own AssemblyAI key instead.",
+        action: "settings",
+      };
+}
+
 export interface AudioUploadPanelProps {
   tcw: TinyCloudWeb;
   backendUrl: string;
@@ -361,6 +413,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot);
   const origin = useMemo(() => buildPtxUploadOrigin(), []);
   const api = useMemo(() => createPrivateCloudApi(backendUrl, { sessionStore }), [backendUrl, sessionStore]);
+  const hosted = useMemo(() => createHostedAssemblyAiClient({ backendUrl, sessionStore }), [backendUrl, sessionStore]);
   const save = useMemo(() => createLocalTranscriptSaver(tcw), [tcw]);
 
   const deps = useMemo<UploadDeps>(
@@ -371,16 +424,17 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         origin !== null
           ? { api, origin, create: (request) => createPrivateCloudJob(backendUrl, { sessionStore }, request) }
           : null,
-      assemblyAiKey: async () => {
+      // Exactly the account the job was started with: a job never moves between TinyCloud's and the user's.
+      assemblyAiClient: async (mode) => {
+        if (mode === "hosted") return hosted;
         const read = await readAssemblyAiKey(tcw);
         if (!read.ok) throw new Error(read.message);
         if (read.data === null) throw new AssemblyAiError("invalid-key", "No AssemblyAI API key is saved. Add one in Settings → Transcription.");
-        return read.data;
+        return createAssemblyAiClient(read.data, { backend: { url: backendUrl, sessionStore } });
       },
-      assemblyAiClient: (key) => createAssemblyAiClient(key, { backend: { url: backendUrl, sessionStore } }),
       save,
     }),
-    [tcw, origin, api, save, backendUrl, sessionStore],
+    [tcw, origin, api, hosted, save, backendUrl, sessionStore],
   );
 
   // A job a reload interrupted picks up where it was.
@@ -410,7 +464,25 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
     };
   }, [api, origin, capsRound]);
 
-  // AssemblyAI: a saved key, read without prompting only when the vault is already open.
+  // AssemblyAI: TinyCloud's account when the backend has it (capabilities), or the user's own saved key.
+  const [assemblyAiMode] = useState<AssemblyAiKeyMode>(readAssemblyAiKeyMode);
+  const [hostedCaps, setHostedCaps] = useState<{ state: "checking" } | { state: "ok"; caps: HostedAssemblyAiCapabilities } | { state: "failed" }>({
+    state: "checking",
+  });
+  useEffect(() => {
+    if (assemblyAiMode !== "hosted") return;
+    let cancelled = false;
+    setHostedCaps({ state: "checking" });
+    hosted.capabilities().then(
+      (c) => !cancelled && setHostedCaps({ state: "ok", caps: c }),
+      () => !cancelled && setHostedCaps({ state: "failed" }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [hosted, assemblyAiMode, capsRound]);
+
+  // The own key: read without prompting only when the vault is already open.
   const [keyStatus, setKeyStatus] = useState<AssemblyAiKeyStatus>(readAssemblyAiKeyHint);
   useEffect(() => {
     if (!isSecretsUnlocked(tcw)) return;
@@ -433,21 +505,25 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
           : caps.state === "failed"
             ? { state: "unavailable", reason: "Couldn't reach private transcription.", action: "recheck" }
             : { state: "available" };
-  const assemblyStatus: EngineStatus =
-    keyStatus === "saved"
-      ? { state: "available" }
-      : { state: "unavailable", reason: "AssemblyAI needs your own API key, saved in Settings → Transcription.", action: "settings" };
+  const assemblyStatus = assemblyAiStatus(assemblyAiMode, hostedCaps, keyStatus);
 
   const privateDiarization = caps.state === "ok" && caps.caps.diarization === true;
   const diarizeUnavailable =
     engine === "private-cloud" && !privateDiarization ? "Speaker identification isn't available for private transcription yet." : null;
-  const maxBytes = caps.state === "ok" && caps.caps.max_bytes > 0 ? caps.caps.max_bytes : PRIVATE_CLOUD_MAX_BYTES;
+  const maxBytes =
+    engine === "private-cloud"
+      ? caps.state === "ok" && caps.caps.max_bytes > 0
+        ? caps.caps.max_bytes
+        : PRIVATE_CLOUD_MAX_BYTES
+      : hostedCaps.state === "ok" && hostedCaps.caps.max_bytes > 0
+        ? hostedCaps.caps.max_bytes
+        : PRIVATE_CLOUD_MAX_BYTES;
 
   const onTranscribe = useCallback(() => {
     if (file === null) return;
-    uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null });
+    uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
     setFile(null);
-  }, [deps, file, engine, diarize, diarizeUnavailable]);
+  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode]);
 
   return (
     <AudioUploadView
@@ -455,9 +531,10 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       file={file}
       engine={engine}
       engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
+      assemblyAiMode={assemblyAiMode}
       diarize={diarize}
       diarizeUnavailable={diarizeUnavailable}
-      fileProblem={fileProblem(file, engine, maxBytes)}
+      fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
       onEngineChange={setEngine}
       onDiarizeChange={setDiarize}
       onFile={setFile}
@@ -465,7 +542,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       onRetry={() => uploadRunner.retry(deps)}
       onDismiss={() => void uploadRunner.dismiss(deps)}
       onOpenSettings={() => navigate("/chat/settings")}
-      onRecheckPrivate={() => setCapsRound((n) => n + 1)}
+      onRecheck={() => setCapsRound((n) => n + 1)}
     />
   );
 };

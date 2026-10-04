@@ -79,7 +79,10 @@ export interface AssemblyAiClient {
   /** Resolves when AssemblyAI accepts the key; `invalid-key` when it doesn't. */
   validateKey(): Promise<void>;
   /** Uploads the raw bytes; returns the private `upload_url` a transcript reads. */
-  upload(file: Blob, options?: { onProgress?: (sent: number, total: number) => void; signal?: AbortSignal }): Promise<string>;
+  upload(
+    file: Blob,
+    options?: { onProgress?: (sent: number, total: number) => void; signal?: AbortSignal; /** Canonical C1 type, when known. */ contentType?: string },
+  ): Promise<string>;
   createTranscript(audioUrl: string, options: { speakerLabels: boolean }): Promise<AssemblyAiTranscript>;
   getTranscript(id: string): Promise<AssemblyAiTranscript>;
   getSentences(id: string): Promise<AssemblyAiSentence[]>;
@@ -248,6 +251,208 @@ export function createAssemblyAiClient(
       if (response.status === 401) throw new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry deleting.");
       if (response.status >= 500) throw new AssemblyAiError("network", "AssemblyAI couldn't be reached to delete the transcript.");
       throw new AssemblyAiError("rejected", `Deleting the transcript at AssemblyAI failed (HTTP ${response.status}).`);
+    },
+  };
+}
+
+// ── TinyCloud's AssemblyAI account (C10) ───────────────────────────────
+
+/** Whose AssemblyAI account transcribes: TinyCloud's (through Exo's server, the default) or the user's own key. */
+export type AssemblyAiKeyMode = "hosted" | "own";
+
+export const ASSEMBLYAI_KEY_MODE_STORAGE_KEY = "exo.transcriber.assemblyaiKeyMode";
+
+export function readAssemblyAiKeyMode(): AssemblyAiKeyMode {
+  try {
+    return globalThis.localStorage?.getItem(ASSEMBLYAI_KEY_MODE_STORAGE_KEY) === "own" ? "own" : "hosted";
+  } catch {
+    return "hosted";
+  }
+}
+
+export function writeAssemblyAiKeyMode(mode: AssemblyAiKeyMode): void {
+  try {
+    globalThis.localStorage?.setItem(ASSEMBLYAI_KEY_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Best-effort preference.
+  }
+}
+
+export const HOSTED_ASSEMBLYAI_BASE_PATH = "/api/transcriber/assemblyai";
+
+export interface HostedAssemblyAiCapabilities {
+  hosted: boolean;
+  max_bytes: number;
+  part_size: number;
+  content_types: string[];
+  daily_bytes_remaining: number | null;
+}
+
+/** The backend's error envelope: `{ error: "code", message }` or `{ error: { code, message } }`. */
+async function hostedErrorCode(response: Response): Promise<string | null> {
+  try {
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("error" in body)) return null;
+    const error = body.error;
+    if (typeof error === "string") return error;
+    return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A non-2xx answer from the hosted routes as the kinds the runner already handles. */
+async function hostedError(response: Response): Promise<AssemblyAiError> {
+  const code = await hostedErrorCode(response);
+  if (response.status === 401) return new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
+  if (response.status === 404) return new AssemblyAiError("not-found", "AssemblyAI no longer has this transcript.");
+  if (code === "assemblyai_quota_exceeded") {
+    return new AssemblyAiError("rate-limited", "You've reached today's limit for TinyCloud's AssemblyAI account. Try again tomorrow, or use your own API key.");
+  }
+  if (code === "assemblyai_busy" || response.status === 429) {
+    return new AssemblyAiError("rate-limited", "TinyCloud's AssemblyAI account is busy, or another upload of yours is still running. Try again in a few minutes.");
+  }
+  if (response.status === 413 || code === "recording_too_large") {
+    return new AssemblyAiError("rejected", "This file is larger than TinyCloud's AssemblyAI account takes (about 120 MB).");
+  }
+  if (response.status === 415 || code === "unsupported_audio") {
+    return new AssemblyAiError("rejected", "TinyCloud's AssemblyAI account takes MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio.");
+  }
+  if (response.status === 410) return new AssemblyAiError("failed", "The upload expired before it finished. Retry uploads the file again.");
+  if (code === "assemblyai_hosted_unavailable") {
+    return new AssemblyAiError("failed", "TinyCloud's AssemblyAI account isn't available right now. Try again later, or use your own API key.");
+  }
+  if (response.status >= 500) return new AssemblyAiError("network", "AssemblyAI couldn't be reached through Exo's server.");
+  return new AssemblyAiError("rejected", `Exo's server refused the request (HTTP ${response.status}).`);
+}
+
+/** Retries of one part after a network failure or a 5xx; a re-PUT of the same part is idempotent. */
+const PART_RETRY_DELAYS_MS = [1_000, 3_000];
+
+/**
+ * TinyCloud's AssemblyAI account, through the TinyChat backend (C10): the
+ * same AssemblyAiClient as the user's own key, so the runner treats both
+ * alike. The audio reaches the backend in parts of at most 1 MiB (its ingress
+ * limit); the transcript is addressed by an opaque, account-bound handle.
+ */
+export function createHostedAssemblyAiClient(config: {
+  backendUrl: string;
+  sessionStore: Pick<SessionStore, "getToken" | "isExpired">;
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}): AssemblyAiClient & { capabilities(): Promise<HostedAssemblyAiCapabilities> } {
+  const fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
+  const sleep = config.sleep ?? REAL_CLOCK.sleep;
+  const base = `${config.backendUrl}${HOSTED_ASSEMBLYAI_BASE_PATH}`;
+
+  async function request(
+    path: string,
+    init: { method?: string; json?: unknown; body?: Blob; timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<Response> {
+    const token = config.sessionStore.getToken();
+    if (!token || config.sessionStore.isExpired()) throw new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
+    const timeout = AbortSignal.timeout(init.timeoutMs ?? 30_000);
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    let response: Response;
+    try {
+      response = await fetchImpl(`${base}${path}`, {
+        method: init.method ?? "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Requested-With": "XMLHttpRequest",
+          ...(init.json !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...(init.body !== undefined ? { "Content-Type": "application/octet-stream" } : {}),
+        },
+        ...(init.json !== undefined ? { body: JSON.stringify(init.json) } : {}),
+        ...(init.body !== undefined ? { body: init.body } : {}),
+        signal,
+      });
+    } catch {
+      if (init.signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
+      throw new AssemblyAiError("network", "Could not reach Exo's server.");
+    }
+    if (!response.ok) throw await hostedError(response);
+    return response;
+  }
+
+  async function transcript(response: Response): Promise<AssemblyAiTranscript> {
+    const body = (await response.json().catch(() => null)) as AssemblyAiTranscript | null;
+    if (!body || typeof body.id !== "string" || typeof body.status !== "string") {
+      throw new AssemblyAiError("failed", "Exo's server returned an unexpected transcript.");
+    }
+    return body;
+  }
+
+  return {
+    async capabilities() {
+      return (await request("/capabilities").then((r) => r.json())) as HostedAssemblyAiCapabilities;
+    },
+
+    async validateKey() {
+      // Nothing to validate: the key is TinyCloud's and never reaches this device.
+    },
+
+    async upload(file, options = {}) {
+      const created = (await request("/hosted/uploads", {
+        method: "POST",
+        json: { byte_size: file.size, content_type: options.contentType ?? file.type },
+        signal: options.signal,
+      }).then((r) => r.json())) as { upload_id?: unknown; part_size?: unknown };
+      if (typeof created.upload_id !== "string" || typeof created.part_size !== "number" || created.part_size <= 0) {
+        throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload.");
+      }
+      const uploadId = created.upload_id;
+      const partSize = Math.min(created.part_size, 1024 * 1024);
+      const parts = Math.max(1, Math.ceil(file.size / partSize));
+      options.onProgress?.(0, file.size);
+      for (let index = 0; index < parts; index++) {
+        const part = file.slice(index * partSize, Math.min(file.size, (index + 1) * partSize));
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await request(`/hosted/uploads/${encodeURIComponent(uploadId)}/parts/${index}`, {
+              method: "PUT",
+              body: part,
+              timeoutMs: 60_000,
+              signal: options.signal,
+            });
+            break;
+          } catch (err) {
+            const transient = err instanceof AssemblyAiError && err.kind === "network";
+            if (!transient || attempt >= PART_RETRY_DELAYS_MS.length || options.signal?.aborted) throw err;
+            await sleep(PART_RETRY_DELAYS_MS[attempt]!);
+          }
+        }
+        options.onProgress?.(Math.min(file.size, (index + 1) * partSize), file.size);
+      }
+      return uploadId;
+    },
+
+    async createTranscript(uploadId, { speakerLabels }) {
+      // The backend streams the whole file on to AssemblyAI before it answers.
+      return transcript(
+        await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels }, timeoutMs: 15 * 60_000 }),
+      );
+    },
+
+    async getTranscript(id) {
+      return transcript(await request(`/hosted/transcripts/${encodeURIComponent(id)}`));
+    },
+
+    async getSentences(id) {
+      const body = (await request(`/hosted/transcripts/${encodeURIComponent(id)}/sentences`).then((r) => r.json().catch(() => null))) as {
+        sentences?: unknown;
+      } | null;
+      if (!body || !Array.isArray(body.sentences)) throw new AssemblyAiError("failed", "Exo's server returned unexpected sentences.");
+      return body.sentences as AssemblyAiSentence[];
+    },
+
+    async deleteTranscript(id) {
+      try {
+        await request(`/hosted/transcripts/${encodeURIComponent(id)}`, { method: "DELETE" });
+      } catch (err) {
+        if (err instanceof AssemblyAiError && err.kind === "not-found") return;
+        throw err;
+      }
     },
   };
 }

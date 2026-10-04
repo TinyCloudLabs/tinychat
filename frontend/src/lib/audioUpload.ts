@@ -3,8 +3,10 @@
 // with the original audio stored in the user's TinyCloud space (C6).
 //
 // Two engines. Private (default): TinyCloud Private Transcription, through
-// the TinyChat backend relay (privateCloud.ts). AssemblyAI (opt-in): straight
-// from this device with the user's own key (assemblyai.ts).
+// the TinyChat backend relay (privateCloud.ts). AssemblyAI (opt-in,
+// assemblyai.ts): under TinyCloud's account through Exo's server (the
+// default), or straight from this device with the user's own key. A job
+// keeps the account it started with.
 //
 // One upload runs at a time. Its job (engine, remote job id, meeting id, file
 // metadata) is kept in localStorage, so a reload resumes polling and saving.
@@ -27,6 +29,7 @@ import {
   assemblyAiSentences,
   pollAssemblyAiTranscript,
   type AssemblyAiClient,
+  type AssemblyAiKeyMode,
 } from "./assemblyai";
 import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
@@ -162,6 +165,8 @@ export interface PendingUpload {
   owner: string;
   /** Set once the meeting is saved: only deleting the remote job is left. */
   saved: boolean;
+  /** AssemblyAI only: whose account the job runs under. Resume and delete use exactly this account, never the other. */
+  assemblyAiMode?: AssemblyAiKeyMode;
   /** What the saved meeting records about its audio, so a resumed saved job reports it truthfully. */
   audio?: AudioOutcome;
 }
@@ -209,6 +214,8 @@ export function localStoragePendingUploadStore(accountDid: string): PendingUploa
         },
         owner: p.owner,
         saved: p.saved === true,
+        // A record from before key modes existed was made with the user's own key.
+        ...(p.engine === "assemblyai" ? { assemblyAiMode: p.assemblyAiMode === "hosted" ? ("hosted" as const) : ("own" as const) } : {}),
         ...(p.audio && typeof p.audio === "object" && typeof p.audio.stored === "boolean"
           ? { audio: p.audio.stored ? { stored: true as const } : { stored: false as const, reason: p.audio.reason === "quota" ? ("quota" as const) : ("failed" as const) } }
           : {}),
@@ -305,7 +312,7 @@ export function privateCloudUploadTranscript(t: PrivateCloudTranscript): UploadT
 
 /** The finished meeting row and transcript body for an upload. Throws when there is no speech. */
 export function prepareUploadMeeting(
-  pending: Pick<PendingUpload, "engine" | "meetingId" | "file">,
+  pending: Pick<PendingUpload, "engine" | "meetingId" | "file" | "assemblyAiMode">,
   transcript: UploadTranscript,
   audio: AudioOutcome,
 ): PreparedLocalTranscript {
@@ -335,6 +342,7 @@ export function prepareUploadMeeting(
       transcription_engine: pending.engine,
       transcript_provider: privateCloud ? "tinycloud-private-transcription" : "assemblyai",
       inference_provider: privateCloud ? "tinfoil" : "assemblyai",
+      ...(privateCloud ? {} : { assemblyai_account: pending.assemblyAiMode === "hosted" ? "tinycloud" : "own" }),
       model: transcript.model,
       language: transcript.language,
       diarized: transcript.diarized,
@@ -380,13 +388,14 @@ export interface UploadDeps {
     origin: string;
     create: (request: { attemptId: string; correlationId: string; body: PrivateCloudCreateBody }) => Promise<PrivateCloudCreated>;
   } | null;
-  /** The user's AssemblyAI key; unlocks the vault when needed. Rejects when there is none. */
-  assemblyAiKey: () => Promise<string>;
   save: LocalTranscriptSaver;
   pending?: PendingUploadStore;
   clock?: CloudClock;
-  /** An AssemblyAI client for the user's key, deleting through TinyChat's server (C9). */
-  assemblyAiClient: (key: string) => AssemblyAiClient;
+  /**
+   * The AssemblyAI client for one account: TinyCloud's through Exo's server (`hosted`, C10), or the
+   * user's own key from the vault (`own`, C8/C9; unlocks it when needed, rejects when no key is saved).
+   */
+  assemblyAiClient: (mode: AssemblyAiKeyMode) => Promise<AssemblyAiClient>;
   audio?: { put: typeof putAudio; manifest: typeof getAudioManifest; remove: typeof deleteAudio };
   putFile?: typeof putFileToPtx;
   hash?: typeof sha256Hex;
@@ -398,6 +407,8 @@ export interface UploadInput {
   file: File;
   engine: UploadEngine;
   diarize: boolean;
+  /** AssemblyAI: whose account (Settings → Transcription). */
+  assemblyAiMode?: AssemblyAiKeyMode;
 }
 
 /** PTX codes after which the job may still be usable: Retry re-joins it (same Idempotency-Key). */
@@ -718,6 +729,7 @@ export function createUploadRunner(): UploadRunner {
       runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
       const audioUrl = await client.upload(file, {
         signal: r.signal,
+        contentType: storedContentType(file),
         onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
       });
       stillLive(r);
@@ -752,7 +764,7 @@ export function createUploadRunner(): UploadRunner {
     for (let attempt = 0; ; attempt++) {
       try {
         if (job.engine === "assemblyai") {
-          await (client ?? deps.assemblyAiClient(await deps.assemblyAiKey())).deleteTranscript(jobId);
+          await (client ?? (await deps.assemblyAiClient(job.assemblyAiMode ?? "own"))).deleteTranscript(jobId);
         } else {
           if (deps.privateCloud === null) throw new PrivateCloudError("feature_unavailable", "Private cloud transcription is not available");
           await deps.privateCloud.api.remove(jobId);
@@ -774,7 +786,7 @@ export function createUploadRunner(): UploadRunner {
     let client: AssemblyAiClient | null = null;
     try {
       // The key first: unlocking the vault never overlaps the audio's storage calls.
-      if (job.engine === "assemblyai") client = deps.assemblyAiClient(await deps.assemblyAiKey());
+      if (job.engine === "assemblyai") client = await deps.assemblyAiClient(job.assemblyAiMode ?? "own");
       stillLive(r);
       if (!job.saved) {
         if (client !== null && live(r)) audioTask ??= storeAudio(deps, job, r);
@@ -957,6 +969,7 @@ export function createUploadRunner(): UploadRunner {
           attemptId: crypto.randomUUID(),
           jobId: null,
           diarize: input.diarize,
+          ...(input.engine === "assemblyai" ? { assemblyAiMode: input.assemblyAiMode ?? "hosted" } : {}),
           file: { name: input.file.name, type: input.file.type, size: input.file.size, lastModified: plausibleFileTime(input.file.lastModified, Date.now()) },
           owner: deps.tcw.did,
           saved: false,

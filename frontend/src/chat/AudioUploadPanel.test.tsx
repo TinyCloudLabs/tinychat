@@ -10,7 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { AudioUploadView, fileProblem, type AudioUploadViewProps } from "./AudioUploadPanel";
+import { assemblyAiStatus, AudioUploadView, fileProblem, type AudioUploadViewProps } from "./AudioUploadPanel";
 import { TranscriberView } from "./TranscriberSection";
 import { TranscriptionSettingsView, type TranscriptionSettingsViewProps } from "./TranscriptionSettings";
 import type { UploadState } from "@/lib/audioUpload";
@@ -33,7 +33,7 @@ function renderUpload(patch: Partial<AudioUploadViewProps> = {}): string {
     onRetry: noop,
     onDismiss: noop,
     onOpenSettings: noop,
-    onRecheckPrivate: noop,
+    onRecheck: noop,
     ...patch,
   };
   return renderToStaticMarkup(<AudioUploadView {...props} />);
@@ -120,8 +120,14 @@ describe("AudioUploadView", () => {
 
   test("disclosures stay within what each party does; AssemblyAI's says Exo deletes its copy after saving", () => {
     const priv = renderUpload();
-    const aai = renderUpload({ engine: "assemblyai" });
-    for (const html of [priv, aai]) expect(html).not.toMatch(/verified|attested|end-to-end/i);
+    const aai = renderUpload({ engine: "assemblyai", assemblyAiMode: "own" });
+    const hosted = renderUpload({ engine: "assemblyai", assemblyAiMode: "hosted" });
+    for (const html of [priv, aai, hosted]) expect(html).not.toMatch(/verified|attested|end-to-end/i);
+    // TinyCloud's account: the file passes through Exo's server, and the copy says so.
+    expect(hosted).toContain("Your file goes to Exo&#x27;s server (a confidential VM on Phala Cloud)");
+    expect(hosted).toContain("under TinyCloud&#x27;s account");
+    expect(hosted).toContain("Exo deletes it at AssemblyAI after saving");
+    expect(hosted).not.toContain("your own API key");
     expect(priv).toContain("TinyCloud Private Transcription");
     expect(priv).toContain("never receives your audio");
     expect(aai).toContain("under your own API key");
@@ -132,7 +138,9 @@ describe("AudioUploadView", () => {
 
   test("a file private cloud can't take is named before anything is sent", () => {
     expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "private-cloud")).toContain("Choose AssemblyAI");
-    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai")).toBeNull();
+    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "own")).toBeNull();
+    // TinyCloud's AssemblyAI account goes through Exo's server, which takes the same audio types.
+    expect(fileProblem({ name: "clip.mov", type: "video/quicktime", size: 10 }, "assemblyai", undefined, "hosted")).toContain("your own AssemblyAI key");
     expect(fileProblem({ name: "long.wav", type: "audio/wav", size: 200_000_000 }, "private-cloud")).toContain("up to");
     const html = renderUpload({ fileProblem: "Private transcription takes MP3…" });
     expect(html).toContain('role="alert"');
@@ -166,6 +174,8 @@ describe("TranscriptionSettingsView", () => {
       <TranscriptionSettingsView
         engine="private-cloud"
         keyStatus="none"
+        keyMode="hosted"
+        onKeyModeChange={noop}
         phase="idle"
         keyInput=""
         error={null}
@@ -179,12 +189,29 @@ describe("TranscriptionSettingsView", () => {
     );
 
   test("the key is entered in a password field and can be removed once saved; Private is the default engine", () => {
-    const none = render();
+    const none = render({ keyMode: "own" });
     expect(none).toMatch(/<input id="assemblyai-api-key" type="password"/);
     expect(none).toMatch(/role="radio" aria-checked="true"[^>]*>Private</);
     expect(none).not.toContain("Remove key");
-    const saved = render({ keyStatus: "saved" });
+    const saved = render({ keyStatus: "saved", keyMode: "own" });
     expect(saved).toContain("Remove key");
     expect(saved).not.toContain('id="assemblyai-api-key"');
+    // TinyCloud's account is the default and needs no key field.
+    const hostedMode = render();
+    expect(hostedMode).toMatch(/role="radio" aria-checked="true"[^>]*>TinyCloud&#x27;s AssemblyAI account</);
+    expect(hostedMode).not.toContain('id="assemblyai-api-key"');
+  });
+});
+
+describe("assemblyAiStatus", () => {
+  test("TinyCloud's account is offered only when the server says it has it; the own key only when one is saved", () => {
+    expect(assemblyAiStatus("hosted", { state: "ok", caps: { hosted: true } }, "none")).toEqual({ state: "available" });
+    const dark = assemblyAiStatus("hosted", { state: "ok", caps: { hosted: false } }, "saved");
+    expect(dark).toMatchObject({ state: "unavailable", action: "settings" });
+    expect(dark.state === "unavailable" && dark.reason).toContain("your own AssemblyAI key");
+    expect(assemblyAiStatus("hosted", { state: "failed" }, "saved")).toMatchObject({ state: "unavailable", action: "recheck" });
+    expect(assemblyAiStatus("hosted", { state: "checking" }, "saved")).toEqual({ state: "checking" });
+    expect(assemblyAiStatus("own", { state: "ok", caps: { hosted: true } }, "none")).toMatchObject({ state: "unavailable", action: "settings" });
+    expect(assemblyAiStatus("own", { state: "failed" }, "saved")).toEqual({ state: "available" });
   });
 });

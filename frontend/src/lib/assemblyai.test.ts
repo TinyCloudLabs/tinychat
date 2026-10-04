@@ -9,6 +9,7 @@ import {
   AssemblyAiError,
   assemblyAiSentences,
   createAssemblyAiClient,
+  createHostedAssemblyAiClient,
   pollAssemblyAiTranscript,
   type AssemblyAiTranscript,
 } from "./assemblyai";
@@ -131,5 +132,62 @@ describe("pollAssemblyAiTranscript", () => {
     ).catch((e) => e)) as AssemblyAiError;
     expect(err.kind).toBe("failed");
     expect(err.message).toContain("does not appear to contain audio");
+  });
+});
+
+describe("TinyCloud's AssemblyAI account (hosted client)", () => {
+  const MiB = 1024 * 1024;
+  function hosted(respond: (url: string, init: RequestInit) => Response | Promise<Response>) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const c = createHostedAssemblyAiClient({
+      backendUrl: "https://api.example",
+      sessionStore: { getToken: () => "tok", isExpired: () => false },
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return respond(url, init);
+      }) as never,
+      sleep: async () => {},
+    });
+    return { c, calls };
+  }
+
+  test("the audio reaches the server in parts of at most 1 MiB, in order, with progress after each", async () => {
+    const file = new Blob([new Uint8Array(2 * MiB + 10)], { type: "audio/x-m4a" });
+    const { c, calls } = hosted((url) =>
+      url.endsWith("/hosted/uploads") ? json(201, { upload_id: "up1", part_size: MiB, expires_at: "x" }) : new Response(null, { status: 204 }),
+    );
+    const progress: number[] = [];
+    expect(await c.upload(file, { contentType: "audio/mp4", onProgress: (sent) => progress.push(sent) })).toBe("up1");
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ byte_size: 2 * MiB + 10, content_type: "audio/mp4" });
+    const parts = calls.slice(1);
+    expect(parts.map((p) => `${p.init.method} ${p.url}`)).toEqual([0, 1, 2].map((i) => `PUT https://api.example/api/transcriber/assemblyai/hosted/uploads/up1/parts/${i}`));
+    expect(parts.map((p) => (p.init.body as Blob).size)).toEqual([MiB, MiB, 10]);
+    expect((parts[0]!.init.headers as Record<string, string>)["Content-Type"]).toBe("application/octet-stream");
+    expect(progress).toEqual([0, MiB, 2 * MiB, 2 * MiB + 10]);
+  });
+
+  test("an abort stops the upload: no part is sent after it", async () => {
+    const file = new Blob([new Uint8Array(3 * MiB)]);
+    const controller = new AbortController();
+    let puts = 0;
+    const { c } = hosted((url, init) => {
+      if (url.endsWith("/hosted/uploads")) return json(201, { upload_id: "up1", part_size: MiB });
+      puts++;
+      if (puts === 1) controller.abort();
+      if (init.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      return new Response(null, { status: 204 });
+    });
+    const err = (await c.upload(file, { signal: controller.signal }).catch((e) => e)) as AssemblyAiError;
+    expect(err).toBeInstanceOf(AssemblyAiError);
+    expect(puts).toBe(1);
+  });
+
+  test("the account's limits and outages read as retryable or not, never as a key problem", async () => {
+    const quota = (await hosted(() => json(429, { error: "assemblyai_quota_exceeded" })).c.upload(new Blob([new Uint8Array(1)])).catch((e) => e)) as AssemblyAiError;
+    expect(quota.kind).toBe("rate-limited");
+    expect(quota.message).toContain("today's limit");
+    const gone = (await hosted(() => json(404, { error: "not_found" })).c.getTranscript("h").catch((e) => e)) as AssemblyAiError;
+    expect(gone.kind).toBe("not-found");
+    await hosted(() => json(404, { error: "not_found" })).c.deleteTranscript("h");
   });
 });

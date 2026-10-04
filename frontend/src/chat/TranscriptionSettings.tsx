@@ -1,6 +1,7 @@
-// Settings → Transcription: the default engine for Upload audio, and the
-// user's own AssemblyAI API key (validated with AssemblyAI before it is saved
-// to the encrypted TinyCloud secrets, like the Fireflies key in ConnectorDialog).
+// Settings → Transcription: the default engine for Upload audio, and whose
+// AssemblyAI account transcribes: TinyCloud's (the default, C10) or the user's
+// own API key (validated with AssemblyAI before it is saved to the encrypted
+// TinyCloud secrets, like the Fireflies key in ConnectorDialog).
 
 import { useEffect, useState, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -14,8 +15,11 @@ import {
   createAssemblyAiClient,
   readAssemblyAiKey,
   readAssemblyAiKeyHint,
+  readAssemblyAiKeyMode,
   removeAssemblyAiKey,
   saveAssemblyAiKey,
+  writeAssemblyAiKeyMode,
+  type AssemblyAiKeyMode,
   type AssemblyAiKeyStatus,
 } from "@/lib/assemblyai";
 import { readDefaultUploadEngine, UPLOAD_ENGINE_LABELS, writeDefaultUploadEngine, type UploadEngine } from "@/lib/audioUpload";
@@ -23,13 +27,20 @@ import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 
 export type KeyPhase = "idle" | "checking" | "validating" | "saving" | "removing";
 
+const KEY_MODE_LABELS: Readonly<Record<AssemblyAiKeyMode, string>> = {
+  hosted: "TinyCloud's AssemblyAI account",
+  own: "My own API key",
+};
+
 export interface TranscriptionSettingsViewProps {
   engine: UploadEngine;
+  keyMode: AssemblyAiKeyMode;
   keyStatus: AssemblyAiKeyStatus;
   phase: KeyPhase;
   keyInput: string;
   error: string | null;
   onEngineChange: (engine: UploadEngine) => void;
+  onKeyModeChange: (mode: AssemblyAiKeyMode) => void;
   onKeyInputChange: (value: string) => void;
   onSaveKey: () => void;
   onRemoveKey: () => void;
@@ -38,11 +49,13 @@ export interface TranscriptionSettingsViewProps {
 
 export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
   engine,
+  keyMode,
   keyStatus,
   phase,
   keyInput,
   error,
   onEngineChange,
+  onKeyModeChange,
   onKeyInputChange,
   onSaveKey,
   onRemoveKey,
@@ -71,13 +84,34 @@ export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
       </div>
 
       <div className="mt-4 flex flex-col gap-2">
-        <span className="text-xs font-medium">AssemblyAI API key</span>
-        <p className="text-xs text-muted-foreground">
-          Optional. With your own key, uploads can be transcribed by AssemblyAI. The key is kept in your encrypted
-          TinyCloud secrets and sent from this device to AssemblyAI. To delete a finished transcript at AssemblyAI,
-          Exo&apos;s server forwards the key there once; it never stores or logs it.
-        </p>
-        {keyStatus === "saved" ? (
+        <span className="text-xs font-medium">AssemblyAI</span>
+        <div role="radiogroup" aria-label="AssemblyAI account" className="inline-flex w-fit flex-wrap rounded-md border p-0.5">
+          {(["hosted", "own"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={keyMode === m}
+              onClick={() => onKeyModeChange(m)}
+              className={`rounded px-3 py-1 text-xs ${keyMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+            >
+              {KEY_MODE_LABELS[m]}
+            </button>
+          ))}
+        </div>
+        {keyMode === "hosted" ? (
+          <p className="text-xs text-muted-foreground">
+            Uploads you send to AssemblyAI go to Exo&apos;s server (a confidential VM on Phala Cloud), which sends them to
+            AssemblyAI under TinyCloud&apos;s account. Exo deletes them at AssemblyAI after saving. No key needed.
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Uploads go from this device to AssemblyAI under your own key, kept in your encrypted TinyCloud secrets. To
+            delete a finished transcript at AssemblyAI, Exo&apos;s server forwards the key there once; it never stores or
+            logs it.
+          </p>
+        )}
+        {keyMode === "hosted" ? null : keyStatus === "saved" ? (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs">A key is saved.</span>
             <Button type="button" size="sm" variant="outline" onClick={onRemoveKey} disabled={busy} className="h-8 gap-1.5">
@@ -143,6 +177,7 @@ export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
 
 export const TranscriptionSettings: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
+  const [keyMode, setKeyMode] = useState<AssemblyAiKeyMode>(readAssemblyAiKeyMode);
   const [keyStatus, setKeyStatus] = useState<AssemblyAiKeyStatus>(readAssemblyAiKeyHint);
   const [phase, setPhase] = useState<KeyPhase>("idle");
   const [keyInput, setKeyInput] = useState("");
@@ -212,6 +247,12 @@ export const TranscriptionSettings: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   return (
     <TranscriptionSettingsView
       engine={engine}
+      keyMode={keyMode}
+      onKeyModeChange={(m) => {
+        setKeyMode(m);
+        writeAssemblyAiKeyMode(m);
+        setError(null);
+      }}
       keyStatus={keyStatus}
       phase={phase}
       keyInput={keyInput}
