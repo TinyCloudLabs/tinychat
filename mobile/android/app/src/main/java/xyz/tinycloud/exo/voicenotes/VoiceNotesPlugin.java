@@ -1,6 +1,8 @@
 package xyz.tinycloud.exo.voicenotes;
 
 import android.Manifest;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.util.Base64;
 import com.getcapacitor.JSArray;
@@ -34,9 +36,15 @@ import org.json.JSONException;
  */
 @CapacitorPlugin(
     name = "VoiceNotes",
-    permissions = { @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO }) }
+    permissions = {
+        @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "notifications", strings = { Manifest.permission.POST_NOTIFICATIONS })
+    }
 )
 public class VoiceNotesPlugin extends Plugin {
+
+    private static final String PREFS = "xyz.tinycloud.exo.voicenotes";
+    private static final String PREF_NOTIFICATIONS_ASKED = "notificationPermissionAsked";
 
     private VoiceRecorder recorder;
 
@@ -68,16 +76,49 @@ public class VoiceNotesPlugin extends Plugin {
             requestPermissionForAlias("microphone", call, "afterMicPermission");
             return;
         }
-        startRecording(call);
+        startWithMic(call);
     }
 
     @PermissionCallback
     private void afterMicPermission(PluginCall call) {
         if (getPermissionState("microphone") == PermissionState.GRANTED) {
-            startRecording(call);
+            startWithMic(call);
         } else {
             call.reject("Microphone permission denied", "permission_denied");
         }
+    }
+
+    /**
+     * Android 13+ hides the recording notification until the app holds
+     * POST_NOTIFICATIONS. Ask once, at the first Record after the mic is
+     * granted. The answer never blocks recording: denied, the foreground
+     * service still runs (listed in the Task Manager) and the OS mic indicator
+     * still shows; only the notification is hidden.
+     */
+    private void startWithMic(PluginCall call) {
+        if (shouldAskForNotifications()) {
+            preferences().edit().putBoolean(PREF_NOTIFICATIONS_ASKED, true).apply();
+            requestPermissionForAlias("notifications", call, "afterNotificationPermission");
+            return;
+        }
+        startRecording(call);
+    }
+
+    @PermissionCallback
+    private void afterNotificationPermission(PluginCall call) {
+        startRecording(call);
+    }
+
+    private boolean shouldAskForNotifications() {
+        return (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            getPermissionState("notifications") != PermissionState.GRANTED &&
+            !preferences().getBoolean(PREF_NOTIFICATIONS_ASKED, false)
+        );
+    }
+
+    private SharedPreferences preferences() {
+        return getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     private void startRecording(PluginCall call) {
