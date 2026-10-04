@@ -48,13 +48,12 @@ xcrun simctl bootstatus "$udid" -b >/dev/null || { echo "::error::simulator $udi
   codesign -d --entitlements - "$app" 2>&1
   echo
   echo "## __TEXT,__entitlements section"
-  # otool -X prints the section's bytes as hex without addresses (arm64 slice: one byte per field).
-  otool -arch arm64 -X -s __TEXT __entitlements "$app/App" 2>/dev/null | tr -d ' \t\n' | xxd -r -p >"$out/entitlements-section.plist" 2>/dev/null
-  if plutil -p "$out/entitlements-section.plist" >/dev/null 2>&1; then
-    plutil -p "$out/entitlements-section.plist"
-  else
-    otool -l "$app/App" | grep -A4 -E 'sectname __entitlements' || echo "(no __entitlements section)"
-  fi
+  otool -l "$app/App" | grep -A4 -E 'sectname __entitlements' || echo "(no __entitlements section)"
+  echo
+  # What the linker put in that section: Xcode's App.app-Simulated.xcent, next to the build products.
+  xcent=$(find "$app/../../../Intermediates.noindex" -name 'App.app-Simulated.xcent' 2>/dev/null | head -1)
+  echo "## ${xcent:-App.app-Simulated.xcent (not found)}"
+  [ -n "$xcent" ] && plutil -p "$xcent"
 } >"$out/entitlements.txt" 2>&1
 cat "$out/entitlements.txt"
 
@@ -91,15 +90,22 @@ launcher=$!
 # object returned for simulator ... fullscreen dialog"), so it is answered by position. On iOS 26 the sheet puts
 # "Turn On All" at about 51% of the screen height (left side) and "Allow" at about 85.5% (centered), measured
 # from the iPhone 17 Pro screenshots. AXe taps in points; screenshots are in pixels (@3x on Pro phones).
+# AXe maps the point through the app's accessibility frame first, and that lookup fails now and then while the sheet
+# is up ("No translation object returned for simulator"), so each tap is retried.
 tap_at() { # tap_at <x fraction> <y fraction> <screenshot>
-  local w h scale
+  local w h scale x y attempt
   w=$(sips -g pixelWidth "$3" 2>/dev/null | awk '/pixelWidth/ { print $2 }')
   h=$(sips -g pixelHeight "$3" 2>/dev/null | awk '/pixelHeight/ { print $2 }')
   [ -n "$w" ] && [ -n "$h" ] || return 1
   scale=3
   [ "$w" -lt 1000 ] && scale=2
-  axe tap -x "$(awk -v w="$w" -v f="$1" -v s="$scale" 'BEGIN { printf "%d", w * f / s }')" \
-    -y "$(awk -v h="$h" -v f="$2" -v s="$scale" 'BEGIN { printf "%d", h * f / s }')" --udid "$udid" >>"$out/axe.log" 2>&1
+  x=$(awk -v w="$w" -v f="$1" -v s="$scale" 'BEGIN { printf "%d", w * f / s }')
+  y=$(awk -v h="$h" -v f="$2" -v s="$scale" 'BEGIN { printf "%d", h * f / s }')
+  for attempt in 1 2 3 4 5 6 7 8; do
+    if axe tap -x "$x" -y "$y" --udid "$udid" >>"$out/axe.log" 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
 }
 
 sheets=()
@@ -120,8 +126,10 @@ answer_sheet() { # answer_sheet <name>: the probe's requesting-<name> stage, ans
     sheets+=("$name: sheet open, not answered (AXe not installed)")
     return 1
   fi
-  axe describe-ui --udid "$udid" >"$out/ui-$name.json" 2>&1 || true
-  tap_at 0.20 0.5095 "$shot" || true
+  if ! tap_at 0.20 0.5095 "$shot"; then
+    sheets+=("$name: sheet open, AXe could not tap Turn On All")
+    return 1
+  fi
   sleep 2
   xcrun simctl io "$udid" screenshot "$out/sheet-$name-on.png" >/dev/null 2>&1 || true
   tap_at 0.50 0.855 "$shot" || true
@@ -156,7 +164,7 @@ stage() { jq -c --arg s "$1" 'select(.stage == $s) | .response' "$out/probe.json
   echo "Entitlements in the binary:"
   echo
   echo '```'
-  sed -n '/__entitlements section/,$p' "$out/entitlements.txt" | head -20
+  sed -n '/Simulated.xcent/,$p' "$out/entitlements.txt" | head -20
   echo '```'
   echo
   echo "| Step | Response |"
