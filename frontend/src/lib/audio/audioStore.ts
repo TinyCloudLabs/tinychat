@@ -1,4 +1,6 @@
-// Original-audio storage in the user's own TinyCloud space (TC-593).
+// Audio storage in the user's own TinyCloud space: the one implementation of
+// the chunked layout, used by uploaded meeting audio (TC-593) and voice notes
+// (TC-517).
 //
 // A file is stored as raw-byte parts plus a JSON manifest under one base key:
 //
@@ -44,22 +46,68 @@ export interface StoredAudioManifest {
   createdAt: string;
 }
 
-/** Storage quota reached (node 402/413). No manifest was written. */
-export class AudioStoreQuotaError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+/**
+ * The audio to store, read one part at a time just before that part is sent,
+ * so the whole file never has to sit in memory. `readPart` must resolve exactly
+ * `length` bytes. {@link blobPartSource} adapts a Blob or File; on the phone the
+ * native recorder's readAudioChunk bridge is another source.
+ */
+export interface AudioPartSource {
+  size: number;
+  readPart(offset: number, length: number): Promise<Blob | Uint8Array>;
+}
+
+export function blobPartSource(blob: Blob): AudioPartSource {
+  return { size: blob.size, readPart: async (offset, length) => blob.slice(offset, offset + length) };
+}
+
+/** `code` of an {@link AudioStoreError} that is not a KV error code. */
+export const AUDIO_STORAGE_FULL = "STORAGE_QUOTA_EXCEEDED";
+export const AUDIO_SOURCE_READ_FAILED = "AUDIO_SOURCE_READ_FAILED";
+export const AUDIO_TOO_LARGE = "AUDIO_TOO_LARGE";
+export const AUDIO_CORRUPT = "STORE_CORRUPT_AUDIO";
+
+/**
+ * A storage failure. `code` is one of the AUDIO_* codes above or the SDK's KV
+ * error code (e.g. KV_NOT_FOUND, AUTH_UNAUTHORIZED, NETWORK_ERROR).
+ */
+export class AudioStoreError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string, options?: ErrorOptions) {
     super(message, options);
+    this.name = "AudioStoreError";
+    this.code = code;
+  }
+}
+
+/** Storage quota reached (node 402/413). No manifest was written. */
+export class AudioStoreQuotaError extends AudioStoreError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(AUDIO_STORAGE_FULL, message, options);
     this.name = "AudioStoreQuotaError";
   }
 }
 
-export interface PutAudioOptions {
+interface RetryOptions {
+  signal?: AbortSignal;
+  /** Waits before each retry of a transient failure; its length bounds the retries. Tests pass zeros. */
+  retryDelaysMs?: readonly number[];
+}
+
+export interface PutAudioOptions extends RetryOptions {
   fileName: string;
   mimeType: string;
   sha256?: string | null;
   /** Bytes per stored part, at most (and by default) {@link MAX_AUDIO_PART_SIZE}. */
   partSize?: number;
-  signal?: AbortSignal;
   onProgress?: (storedBytes: number, totalBytes: number) => void;
+}
+
+export interface GetAudioOptions extends RetryOptions {
+  /** Refuse (AUDIO_TOO_LARGE) a file larger than this, from its manifest, before reading any part. */
+  maxBytes?: number;
+  onProgress?: (loadedBytes: number, totalBytes: number) => void;
 }
 
 /**
@@ -69,8 +117,7 @@ export interface PutAudioOptions {
  */
 export const MAX_AUDIO_PART_SIZE = 1024 * 1024;
 
-/** Waits before each retry of a transient failure; its length bounds the retries. */
-const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+const RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 
 /**
  * `${APP_ID}/connectors/${source}/audio/${id}` — chunks at `${base}/p/${000000}`,
@@ -83,11 +130,11 @@ export function audioBaseKey(source: string, id: string): string {
   return `${CONNECTORS_KV_PREFIX}/${source}/audio/${id}`;
 }
 
-function partKey(base: string, index: number): string {
+export function audioPartKey(base: string, index: number): string {
   return `${base}/p/${String(index).padStart(6, "0")}`;
 }
 
-function manifestKey(base: string): string {
+export function audioManifestKey(base: string): string {
   return `${base}/manifest`;
 }
 
@@ -106,17 +153,20 @@ function isTransient(error: ServiceError): boolean {
   return code !== undefined && (code >= 500 || code === 408 || code === 429);
 }
 
-function isQuota(error: ServiceError): boolean {
-  return error.code === "STORAGE_QUOTA_EXCEEDED"
+/** The error for a failed KV call: quota is its own class, anything else keeps the SDK's code. */
+function kvError(op: string, error: ServiceError): AudioStoreError {
+  if (
+    error.code === "STORAGE_QUOTA_EXCEEDED"
     || error.code === "STORAGE_LIMIT_REACHED"
     || status(error) === 402
-    || status(error) === 413;
+    || status(error) === 413
+  ) {
+    return new AudioStoreQuotaError(`audioStore ${op}: storage quota reached`, { cause: error });
+  }
+  return new AudioStoreError(error.code ?? "STORE_ERROR", `audioStore ${op} failed: ${error.code}: ${error.message}`, { cause: error });
 }
 
-function storeError(op: string, error: ServiceError): Error {
-  return new Error(`audioStore ${op} failed: ${error.code}: ${error.message}`);
-}
-
+/** Promise.withResolvers is ES2024; the frontend compiles against the ES2022 lib. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError());
@@ -137,93 +187,106 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * with bounded backoff. An aborted call throws AbortError; any other failure is
  * returned for the caller to classify.
  */
-async function withRetry<T>(
-  call: () => Promise<Result<T>>,
-  signal?: AbortSignal,
-): Promise<Result<T>> {
+async function withRetry<T>(call: () => Promise<Result<T>>, opts: RetryOptions): Promise<Result<T>> {
+  const { signal } = opts;
+  const delays = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
   for (let attempt = 0; ; attempt++) {
     if (signal?.aborted) throw abortError();
     const res = await call();
     if (!res.ok && (res.error.code === "ABORTED" || signal?.aborted)) throw abortError();
-    if (res.ok || attempt >= RETRY_DELAYS_MS.length || !isTransient(res.error)) return res;
-    await sleep(RETRY_DELAYS_MS[attempt], signal);
+    if (res.ok || attempt >= delays.length || !isTransient(res.error)) return res;
+    await sleep(delays[attempt]!, signal);
   }
 }
 
 /** Every key under `prefix`, following list continuation cursors. */
-async function listKeys(kv: TinyCloudKv, prefix: string, signal?: AbortSignal): Promise<string[]> {
+async function listKeys(kv: TinyCloudKv, prefix: string, opts: RetryOptions): Promise<string[]> {
   const keys: string[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   for (;;) {
     const page = await withRetry(
-      () => kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }), signal }),
-      signal,
+      () => kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }), signal: opts.signal }),
+      opts,
     );
-    if (!page.ok) throw storeError(`list ${prefix}`, page.error);
+    if (!page.ok) throw kvError(`list ${prefix}`, page.error);
     for (const key of page.data.keys) {
       if (typeof key === "string" && key.startsWith(prefix)) keys.push(key);
     }
     const next = page.data.nextCursor;
     if (!page.data.truncated || !next) return keys;
-    if (seen.has(next)) throw new Error(`audioStore list ${prefix} failed: repeated cursor`);
+    if (seen.has(next)) throw new AudioStoreError(AUDIO_CORRUPT, `audioStore list ${prefix} failed: repeated cursor`);
     seen.add(next);
     cursor = next;
   }
 }
 
 /**
- * Store `blob` under `base` as sequential raw-byte parts, then the manifest.
+ * Store `source` under `base` as sequential raw-byte parts, then the manifest.
+ * Each part is read from `source` just before it is sent.
  *
- * Resume: call again with the SAME blob, base and partSize after an interrupted
- * attempt (abort, network loss, closed tab). Parts whose keys already exist are
- * skipped — one `list` of `${base}/p/` decides, and a KV put is all-or-nothing,
- * so an existing key is a complete part. A different blob or partSize under a
- * base that already holds parts is not detected here (getAudio then refuses the
- * mismatched file), so give every file its own base.
+ * Resume: call again with the SAME audio, base and partSize after an interrupted
+ * attempt (abort, network loss, closed tab, failed save). Parts whose keys
+ * already exist are neither read nor sent — one `list` of `${base}/p/` decides,
+ * and a KV put is all-or-nothing, so an existing key is a complete part. Other
+ * audio or another partSize under a base that already holds parts is not
+ * detected here (getAudio then refuses the mismatched file), so give every file
+ * its own base.
  *
- * Rejects with AudioStoreQuotaError when the space is out of storage, with an
- * AbortError DOMException when `signal` aborts, and with an Error for any other
- * failure that outlasted the retries. In every rejection no manifest is written.
+ * Rejects with AudioStoreQuotaError when the space is out of storage, an
+ * AudioStoreError (AUDIO_SOURCE_READ_FAILED when `source` fails or reads short;
+ * otherwise the KV code) for any other failure that outlasted the retries, a
+ * RangeError for an invalid size or partSize, and an AbortError DOMException when
+ * `signal` aborts. In every rejection no manifest is written.
  */
 export async function putAudio(
   kv: TinyCloudKv,
   base: string,
-  blob: Blob,
+  source: AudioPartSource,
   opts: PutAudioOptions,
 ): Promise<StoredAudioManifest> {
   const partSize = opts.partSize ?? MAX_AUDIO_PART_SIZE;
   if (!Number.isSafeInteger(partSize) || partSize <= 0 || partSize > MAX_AUDIO_PART_SIZE) {
     throw new RangeError(`putAudio: partSize must be an integer from 1 to ${MAX_AUDIO_PART_SIZE}`);
   }
-  const { signal, onProgress } = opts;
-  const total = blob.size;
-  const partCount = Math.ceil(total / partSize);
+  const total = source.size;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new RangeError("putAudio: the audio's size is unknown");
+  }
 
-  const existing = new Set(await listKeys(kv, `${base}/p/`, signal));
+  const existing = new Set(await listKeys(kv, `${base}/p/`, opts));
 
   const parts: StoredAudioPart[] = [];
   let stored = 0;
-  for (let index = 0; index < partCount; index++) {
-    const key = partKey(base, index);
-    const chunk = blob.slice(index * partSize, Math.min(total, (index + 1) * partSize));
+  for (let index = 0, offset = 0; offset < total; index++, offset += partSize) {
+    const key = audioPartKey(base, index);
+    const length = Math.min(partSize, total - offset);
     let etag: string | null = null;
     if (!existing.has(key)) {
-      const res = await withRetry(
-        () => kv.put(key, chunk, { contentType: "application/octet-stream", signal }),
-        signal,
-      );
-      if (!res.ok) {
-        if (isQuota(res.error)) {
-          throw new AudioStoreQuotaError(`Storage quota reached while storing ${key}`, { cause: res.error });
-        }
-        throw storeError(`put ${key}`, res.error);
+      let part: Blob | Uint8Array;
+      try {
+        part = await source.readPart(offset, length);
+      } catch (err) {
+        throw new AudioStoreError(
+          AUDIO_SOURCE_READ_FAILED,
+          `audioStore read part ${index}: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
       }
-      etag = res.data.headers.etag ?? null;
+      const got = part instanceof Blob ? part.size : part.byteLength;
+      if (got !== length) {
+        throw new AudioStoreError(AUDIO_SOURCE_READ_FAILED, `audioStore read part ${index}: got ${got} of ${length} bytes`);
+      }
+      const res = await withRetry(
+        () => kv.put(key, part, { contentType: "application/octet-stream", signal: opts.signal }),
+        opts,
+      );
+      if (!res.ok) throw kvError(`put part ${index}`, res.error);
+      etag = res.data?.headers?.etag ?? null;
     }
-    parts.push({ size: chunk.size, etag });
-    stored += chunk.size;
-    onProgress?.(stored, total);
+    parts.push({ size: length, etag });
+    stored += length;
+    opts.onProgress?.(stored, total);
   }
 
   const manifest: StoredAudioManifest = {
@@ -237,15 +300,10 @@ export async function putAudio(
     createdAt: new Date().toISOString(),
   };
   const written = await withRetry(
-    () => kv.put(manifestKey(base), JSON.stringify(manifest), { contentType: "application/json", signal }),
-    signal,
+    () => kv.put(audioManifestKey(base), JSON.stringify(manifest), { contentType: "application/json", signal: opts.signal }),
+    opts,
   );
-  if (!written.ok) {
-    if (isQuota(written.error)) {
-      throw new AudioStoreQuotaError(`Storage quota reached while storing ${manifestKey(base)}`, { cause: written.error });
-    }
-    throw storeError(`put ${manifestKey(base)}`, written.error);
-  }
+  if (!written.ok) throw kvError("put manifest", written.error);
   return manifest;
 }
 
@@ -253,7 +311,8 @@ function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function parseManifest(raw: unknown): StoredAudioManifest | null {
+/** A stored manifest, or null when it is not one (wrong version, sizes that do not add up). */
+export function parseAudioManifest(raw: unknown): StoredAudioManifest | null {
   let value = raw;
   if (typeof value === "string") {
     try {
@@ -300,56 +359,61 @@ function parseManifest(raw: unknown): StoredAudioManifest | null {
 
 /**
  * The manifest of a completely stored file, or null when none is stored under
- * `base`. A failed read or a malformed manifest rejects.
+ * `base`. A failed read rejects with its KV code; a malformed manifest with AUDIO_CORRUPT.
  */
 export async function getAudioManifest(
   kv: TinyCloudKv,
   base: string,
+  opts: RetryOptions = {},
 ): Promise<StoredAudioManifest | null> {
-  const res = await withRetry(() => kv.get(manifestKey(base)));
+  const res = await withRetry(() => kv.get(audioManifestKey(base), { signal: opts.signal }), opts);
   if (!res.ok) {
     if (res.error.code === "KV_NOT_FOUND") return null;
-    throw storeError(`get ${manifestKey(base)}`, res.error);
+    throw kvError("get manifest", res.error);
   }
-  const manifest = parseManifest(res.data.data);
-  if (!manifest) throw new Error(`audioStore manifest at ${base} is malformed`);
+  const manifest = parseAudioManifest(res.data.data);
+  if (!manifest) throw new AudioStoreError(AUDIO_CORRUPT, `audioStore manifest at ${base} is malformed`);
   return manifest;
 }
 
 /**
  * Reassemble the stored file as a Blob typed with the manifest's mimeType, or
- * null when no complete file is stored under `base`. Rejects when a part is
- * missing or its length disagrees with the manifest, so a mismatched resume can
- * never play back as the wrong audio.
+ * null when no complete file is stored under `base`. Rejects with AUDIO_CORRUPT
+ * when a part's length disagrees with the manifest, so a mismatched resume can
+ * never play back as the wrong audio, and with AUDIO_TOO_LARGE (before reading
+ * any part) for a file over `maxBytes`.
  */
 export async function getAudio(
   kv: TinyCloudKv,
   base: string,
-  opts: { signal?: AbortSignal; onProgress?: (loadedBytes: number, totalBytes: number) => void } = {},
+  opts: GetAudioOptions = {},
 ): Promise<Blob | null> {
-  const { signal, onProgress } = opts;
+  const { signal, onProgress, maxBytes } = opts;
   if (signal?.aborted) throw abortError();
-  const manifest = await getAudioManifest(kv, base);
+  const manifest = await getAudioManifest(kv, base, opts);
   if (!manifest) return null;
+  if (maxBytes !== undefined && manifest.size > maxBytes) {
+    throw new AudioStoreError(AUDIO_TOO_LARGE, `audioStore: the audio is ${manifest.size} bytes, over ${maxBytes}`);
+  }
   const chunks: Blob[] = [];
   let loaded = 0;
   for (let index = 0; index < manifest.parts.length; index++) {
-    const expected = manifest.parts[index].size;
-    const key = partKey(base, index);
+    const expected = manifest.parts[index]!.size;
+    const key = audioPartKey(base, index);
     const res = await withRetry(
       // The SDK's binary read is `new Uint8Array(await response.arrayBuffer())`.
       () => kv.get<Uint8Array<ArrayBuffer>>(key, {
         binary: true,
-        signal,
+        ...(signal ? { signal } : {}),
         // Refuse an oversized part at the node instead of downloading it.
         ...(expected > 0 ? { maxResponseBytes: expected } : {}),
       }),
-      signal,
+      opts,
     );
-    if (!res.ok) throw storeError(`get ${key}`, res.error);
+    if (!res.ok) throw kvError(`get part ${index}`, res.error);
     const bytes = res.data.data;
     if (!(bytes instanceof Uint8Array) || bytes.byteLength !== expected) {
-      throw new Error(`audioStore part ${key} does not match its manifest`);
+      throw new AudioStoreError(AUDIO_CORRUPT, `audioStore part ${index} does not match its manifest`);
     }
     // One Blob per part lets the browser hold the bytes outside the JS heap.
     chunks.push(new Blob([bytes]));
@@ -365,12 +429,10 @@ export async function getAudio(
  * finishes the job.
  */
 export async function deleteAudio(kv: TinyCloudKv, base: string): Promise<void> {
-  const manifest = await withRetry(() => kv.delete(manifestKey(base)));
-  if (!manifest.ok && manifest.error.code !== "KV_NOT_FOUND") {
-    throw storeError(`delete ${manifestKey(base)}`, manifest.error);
-  }
-  for (const key of await listKeys(kv, `${base}/`)) {
-    const res = await withRetry(() => kv.delete(key));
-    if (!res.ok && res.error.code !== "KV_NOT_FOUND") throw storeError(`delete ${key}`, res.error);
+  const manifest = await withRetry(() => kv.delete(audioManifestKey(base)), {});
+  if (!manifest.ok && manifest.error.code !== "KV_NOT_FOUND") throw kvError("delete manifest", manifest.error);
+  for (const key of await listKeys(kv, `${base}/`, {})) {
+    const res = await withRetry(() => kv.delete(key), {});
+    if (!res.ok && res.error.code !== "KV_NOT_FOUND") throw kvError(`delete ${key}`, res.error);
   }
 }

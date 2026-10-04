@@ -15,15 +15,14 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { _resetConnectorSchemaMemoForTests } from "../connectors/connectorStore";
 import { APP_ID } from "../threadStore";
 import { bytesToBase64 } from "./voiceNoteAudio";
+import { MAX_AUDIO_PART_SIZE, parseAudioManifest } from "../audio/audioStore";
 import {
-  VOICE_NOTE_AUDIO_PART_BYTES,
   VOICE_NOTE_AUDIO_TOO_LARGE,
   VOICE_NOTE_SOURCE,
   VOICE_NOTE_STORAGE_FULL,
   listVoiceNotes,
   loadVoiceNoteAudio,
   loadVoiceNoteAudioBlob,
-  parseVoiceNoteAudioManifest,
   putVoiceNoteAudio,
   saveVoiceNote,
   saveVoiceNoteTranscript,
@@ -124,7 +123,7 @@ function trackedSource(bytes: Uint8Array) {
   const source: VoiceNoteAudioSource = {
     mimeType: "audio/mp4",
     size: bytes.byteLength,
-    async read(offset, length) {
+    async readPart(offset, length) {
       reads.push([offset, length]);
       return bytes.slice(offset, offset + length);
     },
@@ -132,7 +131,7 @@ function trackedSource(bytes: Uint8Array) {
   return { source, reads };
 }
 
-const noWait = { retryDelaysMs: [0, 0], sleep: async () => {} };
+const noWait = { retryDelaysMs: [0, 0] };
 const puts = (calls: Call[]) => calls.filter((c): c is Extract<Call, { kind: "kv.put" }> => c.kind === "kv.put");
 const AUDIO_BASE = `${APP_ID}/connectors/exo-voice-note/audio/rec-1`;
 
@@ -196,21 +195,21 @@ describe("putVoiceNoteAudio (parts + manifest)", () => {
     expect(res.ok).toBe(true);
     const parts = puts(calls).filter((c) => c.target.includes("/p/"));
     expect(parts).toHaveLength(30);
-    for (const part of parts) expect((part.value as Uint8Array).byteLength).toBeLessThanOrEqual(VOICE_NOTE_AUDIO_PART_BYTES);
-    expect(VOICE_NOTE_AUDIO_PART_BYTES).toBe(1_048_576);
-    expect(reads[0]).toEqual([0, VOICE_NOTE_AUDIO_PART_BYTES]);
-    expect(reads.at(-1)).toEqual([29 * VOICE_NOTE_AUDIO_PART_BYTES, 12_345]);
+    for (const part of parts) expect((part.value as Uint8Array).byteLength).toBeLessThanOrEqual(MAX_AUDIO_PART_SIZE);
+    expect(MAX_AUDIO_PART_SIZE).toBe(1_048_576);
+    expect(reads[0]).toEqual([0, MAX_AUDIO_PART_SIZE]);
+    expect(reads.at(-1)).toEqual([29 * MAX_AUDIO_PART_SIZE, 12_345]);
     // Interleaved: read, put, read, put... (never the whole file first).
     expect(calls.filter((c) => c.kind === "kv.put").map((c) => c.target).at(-1)).toBe(`${AUDIO_BASE}/manifest`);
-    const manifest = parseVoiceNoteAudioManifest(kv.get(`${AUDIO_BASE}/manifest`));
-    expect(manifest).toEqual(expect.objectContaining({ v: 1, mimeType: "audio/mp4", size, partSize: VOICE_NOTE_AUDIO_PART_BYTES, sha256: null }));
+    const manifest = parseAudioManifest(kv.get(`${AUDIO_BASE}/manifest`));
+    expect(manifest).toEqual(expect.objectContaining({ v: 1, mimeType: "audio/mp4", size, partSize: MAX_AUDIO_PART_SIZE, sha256: null }));
     expect(manifest!.parts).toHaveLength(30);
-    expect(manifest!.parts[0]).toEqual({ size: VOICE_NOTE_AUDIO_PART_BYTES, etag: '"etag-000000"' });
+    expect(manifest!.parts[0]).toEqual({ size: MAX_AUDIO_PART_SIZE, etag: '"etag-000000"' });
   });
 
   test("a part read that comes back short fails before anything is sent for it", async () => {
     const { tcw, calls } = fakeSpace();
-    const source: VoiceNoteAudioSource = { mimeType: "audio/mp4", size: 2_000, read: async (_o, length) => new Uint8Array(length - 1) };
+    const source: VoiceNoteAudioSource = { mimeType: "audio/mp4", size: 2_000, readPart: async (_o, length) => new Uint8Array(length - 1) };
     const res = await putVoiceNoteAudio(tcw, "rec-1", source, { partSize: 1_000 });
     expect(res).toEqual({ ok: false, error: expect.objectContaining({ code: "VOICE_NOTE_SOURCE_READ_FAILED" }) });
     expect(puts(calls)).toEqual([]);
@@ -261,7 +260,7 @@ describe("a save that fails part-way stays pending and retries without duplicate
       "manifest",
       expect.stringContaining("/transcript/rec-1"),
     ]);
-    const manifest = parseVoiceNoteAudioManifest(space.kv.get(`${AUDIO_BASE}/manifest`))!;
+    const manifest = parseAudioManifest(space.kv.get(`${AUDIO_BASE}/manifest`))!;
     expect(manifest.parts.map((p) => p.size)).toEqual([1_000, 1_000, 1_000, 1_000, 500]);
     expect(manifest.parts.map((p) => p.etag)).toEqual([null, null, '"etag-000002"', '"etag-000003"', '"etag-000004"']);
     expect(space.inserted).toEqual(["rec-1"]);

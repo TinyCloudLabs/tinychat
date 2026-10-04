@@ -147,11 +147,11 @@ export function nativePlatform(): string {
 export function nativeRecordingSource(
   recording: Pick<VoiceNoteRecording, "id" | "mimeType" | "sizeBytes">,
   plugin: Pick<VoiceNotesPlugin, "readAudioChunk"> = VoiceNotes,
-): { mimeType: string; size: number; read(offset: number, length: number): Promise<Uint8Array> } {
+): { mimeType: string; size: number; readPart(offset: number, length: number): Promise<Uint8Array> } {
   return {
     mimeType: recording.mimeType,
     size: recording.sizeBytes,
-    async read(offset, length) {
+    async readPart(offset, length) {
       const chunk = await plugin.readAudioChunk({ id: recording.id, offset, length });
       const bytes = base64ToBytes(chunk.base64);
       if (bytes.byteLength !== length || chunk.size !== recording.sizeBytes) {

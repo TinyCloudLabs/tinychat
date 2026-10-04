@@ -5,6 +5,7 @@ import {
   MAX_AUDIO_PART_SIZE,
   type TinyCloudKv,
   audioBaseKey,
+  blobPartSource,
   deleteAudio,
   getAudio,
   getAudioManifest,
@@ -95,7 +96,7 @@ describe("audioStore", () => {
         meta: { status, usedBytes: 104857600, limitBytes: 104857600 },
       });
 
-      const result = putAudio(fake.kv, BASE, audioBlob(), OPTS);
+      const result = putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
 
       await expect(result).rejects.toBeInstanceOf(AudioStoreQuotaError);
       expect(fake.entries.has(`${BASE}/manifest`)).toBe(false);
@@ -106,7 +107,7 @@ describe("audioStore", () => {
   test("an interrupted upload resumes without re-sending stored parts and reads back byte-identical", async () => {
     const fake = new FakeKv();
     const controller = new AbortController();
-    const first = putAudio(fake.kv, BASE, audioBlob(), {
+    const first = putAudio(fake.kv, BASE, blobPartSource(audioBlob()), {
       ...OPTS,
       signal: controller.signal,
       onProgress: (stored) => {
@@ -118,7 +119,7 @@ describe("audioStore", () => {
 
     fake.puts = [];
     const progress: number[] = [];
-    const manifest = await putAudio(fake.kv, BASE, audioBlob(), {
+    const manifest = await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), {
       ...OPTS,
       onProgress: (stored, total) => progress.push(stored / total),
     });
@@ -139,7 +140,7 @@ describe("audioStore", () => {
   test("a part larger than the node's request-body cap is refused before any write", async () => {
     const fake = new FakeKv();
 
-    const result = putAudio(fake.kv, BASE, audioBlob(), { ...OPTS, partSize: MAX_AUDIO_PART_SIZE + 1 });
+    const result = putAudio(fake.kv, BASE, blobPartSource(audioBlob()), { ...OPTS, partSize: MAX_AUDIO_PART_SIZE + 1 });
 
     await expect(result).rejects.toBeInstanceOf(RangeError);
     expect(fake.puts).toEqual([]);
@@ -147,7 +148,7 @@ describe("audioStore", () => {
 
   test("getAudio refuses a part whose size disagrees with the manifest", async () => {
     const fake = new FakeKv();
-    await putAudio(fake.kv, BASE, audioBlob(), OPTS);
+    await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
     // A part left by an attempt with a different partSize.
     fake.entries.set(`${BASE}/p/000002`, { bytes: new Uint8Array(1), contentType: "application/octet-stream" });
 
@@ -157,8 +158,8 @@ describe("audioStore", () => {
   test("deleteAudio removes the manifest first, then every key under the base", async () => {
     const fake = new FakeKv();
     const other = audioBaseKey("exo-upload", "meeting-10");
-    await putAudio(fake.kv, BASE, audioBlob(), OPTS);
-    await putAudio(fake.kv, other, audioBlob(), OPTS);
+    await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    await putAudio(fake.kv, other, blobPartSource(audioBlob()), OPTS);
 
     await deleteAudio(fake.kv, BASE);
 
