@@ -27,6 +27,10 @@
 //         registry row's OWN `secretName`/`secretScope`, so the flip commit
 //         changes what is written without touching this file. The access token
 //         stays in memory for the session.
+//     Inside the Exo native app (TC-521) there is no popup: the same flow runs
+//     in the system browser and returns through a fixed deep link, with the
+//     state tagged `native.` (`googleOAuthNative.ts`). It shares the verifier
+//     refs and `runExchange` below; the web branch is untouched.
 //
 // Both connect flows write to the same store and reuse the same wallet-unlock
 // choke point; nothing here logs a token, a transcript or a meeting title.
@@ -84,6 +88,15 @@ import {
 } from "@/lib/connectors/firefliesClient";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
+import {
+  capacitorNativeOAuthPorts,
+  nativeGoogleOAuthEnabled,
+  nativeOAuthState,
+  startNativeOAuth,
+  usesSystemBrowserOAuth,
+  type NativeOAuthAttempt,
+  type NativeOAuthPorts,
+} from "@/lib/connectors/googleOAuthNative";
 import {
   syncGoogleMeet,
   type GmeetSyncError,
@@ -651,6 +664,10 @@ type OAuthConnectPhase =
 interface OAuthErrorState {
   kind:
     | "popup-blocked"
+    /** Native app only: the system browser could not be opened. */
+    | "browser-unavailable"
+    /** Native app only: this build doesn't run Google OAuth in the app yet. */
+    | "native-unavailable"
     | "crypto-unavailable"
     | "cancelled"
     | "session"
@@ -721,6 +738,12 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const accessTokenRef = useRef<string | null>(null);
   const refreshTokenRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Native app only: the system-browser attempt in flight (the popup's twin).
+  const nativeAttemptRef = useRef<NativeOAuthAttempt | null>(null);
+  // Native app only: bumped by every new click, cancel, reset and unmount. An
+  // attempt re-checks it after each await, so one that was abandoned while it
+  // was minting or waiting on /autojoin/begin never opens a browser.
+  const nativeGenerationRef = useRef(0);
 
   const closePopup = useCallback(() => {
     const popup = popupRef.current;
@@ -728,8 +751,16 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     if (popup !== null && !popup.closed) popup.close();
   }, []);
 
+  const cancelNativeAttempt = useCallback(() => {
+    nativeGenerationRef.current += 1;
+    const attempt = nativeAttemptRef.current;
+    nativeAttemptRef.current = null;
+    attempt?.cancel();
+  }, []);
+
   const reset = useCallback(() => {
     closePopup();
+    cancelNativeAttempt();
     // A closed dialog leaves nothing in flight either: the "done" phase is
     // closable while the auto-transcription PATCH is still running, and a
     // request nobody is waiting on should not outlive the surface that made it.
@@ -747,13 +778,16 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     refreshTokenRef.current = null;
     codeHandledRef.current = false;
     abortRef.current = null;
-  }, [closePopup]);
+  }, [cancelNativeAttempt, closePopup]);
 
   // Same contract as the API-key machine: a closed dialog holds no state, and
   // here that also means no stranded popup and no token left in memory.
   useEffect(() => {
     if (!open) reset();
   }, [open, reset]);
+
+  // An unmount mid-attempt must not leave native listeners behind.
+  useEffect(() => cancelNativeAttempt, [cancelNativeAttempt]);
 
   const busy =
     phase === "exchange" || phase === "save-token" || phase === "initial-sync";
@@ -924,6 +958,78 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     },
     [autojoin, backendUrl, failWith, saveAndSync, sessionStore],
   );
+  // The native return arrives after an app round trip; it reads the latest exchange.
+  const runExchangeRef = useRef(runExchange);
+  useEffect(() => {
+    runExchangeRef.current = runExchange;
+  }, [runExchange]);
+
+  /**
+   * The native app's authorize (TC-521): no popup, so nothing has to happen
+   * synchronously. Same state/verifier/challenge minting and the same refs as
+   * the web branch; the only differences are the `native.` state tag that tells
+   * the backend to return through the app's deep link, and that the return
+   * arrives as an app URL instead of a postMessage. The attempt re-checks the
+   * state; this side re-checks `codeHandledRef`, so a code is exchanged once.
+   */
+  const authorizeInSystemBrowser = useCallback((ports: NativeOAuthPorts) => {
+    setError(null);
+    cancelNativeAttempt();
+    const generation = nativeGenerationRef.current;
+    const current = () => nativeGenerationRef.current === generation;
+    codeHandledRef.current = false;
+    setPhase("wait-callback");
+
+    void (async () => {
+      let state: string;
+      let verifier: string;
+      let challenge: string;
+      try {
+        state = nativeOAuthState(randomUrlSafeToken(24));
+        verifier = randomUrlSafeToken(32);
+        challenge = await pkceChallengeS256(verifier);
+      } catch {
+        if (!current()) return;
+        setPhase("authorize");
+        setError({ kind: "crypto-unavailable", message: "" });
+        return;
+      }
+      if (!current()) return;
+      stateRef.current = state;
+      verifierRef.current = verifier;
+      let url = `${backendUrl}${GOOGLE_OAUTH_START_PATH}` +
+        `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}`;
+      if (autojoin) {
+        const begun = await beginAutojoinAuthorization({ backendUrl, sessionStore, state, challenge });
+        if (!current()) return;
+        if (!begun.ok) {
+          if (stateRef.current === state) failWith(begun.error);
+          return;
+        }
+        url = begun.authorizationUrl;
+      }
+      // Cancelled, closed, unmounted, or superseded by another click while we were minting.
+      if (!current() || codeHandledRef.current || stateRef.current !== state) return;
+      nativeAttemptRef.current = startNativeOAuth({
+        ports,
+        url,
+        expectedState: state,
+        onOutcome: (outcome) => {
+          nativeAttemptRef.current = null;
+          if (codeHandledRef.current) return;
+          if (outcome.kind === "code") {
+            codeHandledRef.current = true;
+            // Through the ref: the user may have been in the browser long enough
+            // for tcw/sessionStore (and so runExchange) to change.
+            void runExchangeRef.current(outcome.code);
+            return;
+          }
+          setPhase("authorize");
+          setError({ kind: outcome.kind, message: "" });
+        },
+      });
+    })();
+  }, [autojoin, backendUrl, cancelNativeAttempt, failWith, sessionStore]);
 
   /**
    * The click handler, and the reason it is not async: `window.open` must be
@@ -932,6 +1038,17 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
    */
   const handleAuthorize = useCallback(() => {
     if (autojoin && !custodyConsent) return;
+    // The Exo native app has no popup and Google refuses its WebView: system browser,
+    // once this build allows it (the private-use return needs a claimed https link first).
+    const nativePorts = capacitorNativeOAuthPorts();
+    if (nativePorts !== null) {
+      if (!nativeGoogleOAuthEnabled()) {
+        setError({ kind: "native-unavailable", message: "" });
+        return;
+      }
+      authorizeInSystemBrowser(nativePorts);
+      return;
+    }
     setError(null);
     codeHandledRef.current = false;
     const popup = window.open(
@@ -987,7 +1104,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         setError({ kind: "cancelled", message: "" });
       }
     })();
-  }, [autojoin, custodyConsent, backendUrl, closePopup, failWith, sessionStore]);
+  }, [autojoin, custodyConsent, authorizeInSystemBrowser, backendUrl, closePopup, failWith, sessionStore]);
 
   /**
    * The callback listener, live only while we are waiting for one.
@@ -1037,11 +1154,12 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   const handleCancelAuthorize = useCallback(() => {
     codeHandledRef.current = true;
     closePopup();
+    cancelNativeAttempt();
     stateRef.current = null;
     verifierRef.current = null;
     setPhase("authorize");
     setError(null);
-  }, [closePopup]);
+  }, [cancelNativeAttempt, closePopup]);
 
   const handleStopSync = useCallback(() => {
     abortRef.current?.abort();
@@ -1109,7 +1227,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             </label>}
           </>
         )}
-        {phase === "wait-callback" && <WaitCallbackPanel />}
+        {phase === "wait-callback" && <WaitCallbackPanel systemBrowser={usesSystemBrowserOAuth()} />}
         {phase === "exchange" && (
           <OAuthStepPanel label="Finishing the Google sign-in…" />
         )}
@@ -1179,15 +1297,16 @@ const AuthorizePanel: FC<{
   </div>
 );
 
-const WaitCallbackPanel: FC = () => (
+const WaitCallbackPanel: FC<{ systemBrowser: boolean }> = ({ systemBrowser }) => (
   <div className="flex flex-col gap-2 py-2">
     <p className="flex items-center gap-2 text-sm text-muted-foreground">
       <Loader2Icon className="size-4 animate-spin" aria-hidden />
       Waiting for Google…
     </p>
     <p className="text-xs text-muted-foreground">
-      Finish signing in and approve the requested permissions in the Google window. If
-      you don’t see it, check for a blocked or hidden popup.
+      {systemBrowser
+        ? "Finish signing in and approve the requested permissions in the browser. Exo comes back here when you’re done."
+        : "Finish signing in and approve the requested permissions in the Google window. If you don’t see it, check for a blocked or hidden popup."}
     </p>
   </div>
 );
@@ -1926,6 +2045,41 @@ async function pkceChallengeS256(verifier: string): Promise<string> {
   return base64UrlEncode(new Uint8Array(digest));
 }
 
+/**
+ * The autojoin consent's authorization URL, for the native branch. The same
+ * request, and the same failure mapping, as the web branch's inline `begin`
+ * call: an expired session is `session`, a transport or body failure `network`,
+ * and a refusal is the proxy's structured error.
+ */
+async function beginAutojoinAuthorization(input: {
+  backendUrl: string;
+  sessionStore: SessionStore;
+  state: string;
+  challenge: string;
+}): Promise<{ ok: true; authorizationUrl: string } | { ok: false; error: OAuthErrorState }> {
+  const { backendUrl, sessionStore, state, challenge } = input;
+  const bearer = sessionStore.getToken();
+  if (!bearer || sessionStore.isExpired()) {
+    return { ok: false, error: { kind: "session", message: "" } };
+  }
+  try {
+    const begun = await fetch(`${backendUrl}/api/connectors/google/autojoin/begin`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bearer}`,
+        [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
+      },
+      body: JSON.stringify({ state, challenge, consent: true }),
+    });
+    if (!begun.ok) return { ok: false, error: await readGoogleProxyError(begun) };
+    const payload = (await begun.json()) as { authorizationUrl: string };
+    return { ok: true, authorizationUrl: payload.authorizationUrl };
+  } catch {
+    return { ok: false, error: { kind: "network", message: "" } };
+  }
+}
+
 /** The origin a postMessage must come from, or null if the backend URL is not
  *  parseable — in which case NO message is accepted, rather than all of them. */
 function originOf(url: string): string | null {
@@ -2013,6 +2167,10 @@ function formatOAuthError(error: OAuthErrorState): string {
   switch (error.kind) {
     case "popup-blocked":
       return "Your browser blocked the Google sign-in window. Allow popups for this site, then press “Continue with Google” again.";
+    case "native-unavailable":
+      return "Connecting Google isn’t available in the Exo app yet. Connect it from Exo on the web; the connection lives in your TinyCloud space, so it works here too.";
+    case "browser-unavailable":
+      return "Exo couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
     case "crypto-unavailable":
       return "This browser couldn’t prepare a secure sign-in. Google Meet needs a secure (https) page with Web Crypto available.";
     case "cancelled":

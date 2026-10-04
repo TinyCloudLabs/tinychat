@@ -253,6 +253,69 @@ describe("Google Meet OAuth connect variant", () => {
     expect(dialog).toContain("Allow popups for this site");
   });
 
+  test("the native app takes the system browser before any popup is opened (TC-521)", () => {
+    const handler = connectHalf.slice(
+      connectHalf.indexOf("const handleAuthorize"),
+      connectHalf.indexOf("const handleCancelAuthorize"),
+    );
+    // The gate is the first thing after the consent check, and returns: the web
+    // branch below it (sync window.open, popup navigation) runs only off-native.
+    const gate = handler.indexOf("capacitorNativeOAuthPorts()");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(handler.indexOf("window.open("));
+    expect(handler).toContain("authorizeInSystemBrowser(nativePorts);\n      return;");
+  });
+
+  test("the native branch tags its state, keeps the verifier, and finishes in runExchange", () => {
+    const native = connectHalf.slice(
+      connectHalf.indexOf("const authorizeInSystemBrowser"),
+      connectHalf.indexOf("const handleAuthorize"),
+    );
+    // A fresh CSPRNG nonce per attempt, behind the tag the backend reads.
+    expect(native).toContain("state = nativeOAuthState(randomUrlSafeToken(24));");
+    expect(native).toContain("verifierRef.current = verifier;");
+    // The verifier never goes to the attempt (or anywhere near a URL): only the
+    // state does, and the code comes back to the one shared exchange path.
+    const attempt = native.slice(native.indexOf("startNativeOAuth({"));
+    expect(attempt).not.toContain("verifier");
+    expect(attempt).toContain("expectedState: state,");
+    expect(attempt).toContain("codeHandledRef.current = true;");
+    // Through the ref, so a long browser round trip still uses the latest exchange.
+    expect(attempt).toContain("void runExchangeRef.current(outcome.code);");
+    expect(native).not.toContain("GOOGLE_OAUTH_EXCHANGE_PATH");
+    expect(native).not.toContain("window.open(");
+  });
+
+  test("an abandoned native attempt never opens a browser (generation re-checked after each await)", () => {
+    const native = connectHalf.slice(
+      connectHalf.indexOf("const authorizeInSystemBrowser"),
+      connectHalf.indexOf("const handleAuthorize"),
+    );
+    // Every new click / cancel / reset / unmount bumps the generation…
+    const cancelNative = connectHalf.slice(connectHalf.indexOf("const cancelNativeAttempt"), connectHalf.indexOf("const reset"));
+    expect(cancelNative).toContain("nativeGenerationRef.current += 1;");
+    // …and the attempt bails after the digest and after /autojoin/begin if it is no longer current.
+    expect(native.indexOf("if (!current()) return;")).toBeGreaterThan(native.indexOf("await pkceChallengeS256"));
+    const afterBegin = native.slice(native.indexOf("await beginAutojoinAuthorization"));
+    expect(afterBegin.indexOf("if (!current()) return;")).toBeLessThan(afterBegin.indexOf("startNativeOAuth({"));
+    expect(native).toContain("if (!current() || codeHandledRef.current || stateRef.current !== state) return;");
+  });
+
+  test("the native flow is off unless the build enables it", () => {
+    const authorize = connectHalf.slice(connectHalf.indexOf("const handleAuthorize"));
+    const nativeBranch = authorize.slice(0, authorize.indexOf("authorizeInSystemBrowser(nativePorts);"));
+    expect(nativeBranch).toContain("if (!nativeGoogleOAuthEnabled()) {");
+    expect(nativeBranch).toContain('setError({ kind: "native-unavailable", message: "" });');
+  });
+
+  test("closing or cancelling the dialog also ends a native attempt", () => {
+    const reset = connectHalf.slice(connectHalf.indexOf("const reset"), connectHalf.indexOf("const busy"));
+    expect(reset).toContain("cancelNativeAttempt();");
+    expect(reset).toContain("useEffect(() => cancelNativeAttempt, [cancelNativeAttempt]);");
+    const cancel = connectHalf.slice(connectHalf.indexOf("const handleCancelAuthorize"));
+    expect(cancel.slice(0, cancel.indexOf("}, ["))).toContain("cancelNativeAttempt();");
+  });
+
   test("the callback listener checks BOTH the origin and the minted state", () => {
     expect(connectHalf).toContain("event.origin !== expectedOrigin");
     expect(connectHalf).toContain("state !== stateRef.current");
