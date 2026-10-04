@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  AUDIO_CORRUPT,
   AudioStoreQuotaError,
   MAX_AUDIO_PART_SIZE,
   type TinyCloudKv,
@@ -153,6 +154,17 @@ describe("audioStore", () => {
     fake.entries.set(`${BASE}/p/000002`, { bytes: new Uint8Array(1), contentType: "application/octet-stream" });
 
     await expect(getAudio(fake.kv, BASE)).rejects.toThrow("does not match its manifest");
+  });
+
+  test("a stored part larger than its manifest (the node's 413 KV_RESPONSE_TOO_LARGE) is corrupt audio, not a full space", async () => {
+    const fake = new FakeKv();
+    await putAudio(fake.kv, BASE, blobPartSource(audioBlob()), OPTS);
+    fake.entries.set(`${BASE}/p/000001`, { bytes: new Uint8Array(5), contentType: "application/octet-stream" });
+
+    const result = getAudio(fake.kv, BASE);
+
+    await expect(result).rejects.toMatchObject({ code: AUDIO_CORRUPT });
+    await expect(result).rejects.not.toBeInstanceOf(AudioStoreQuotaError);
   });
 
   test("deleteAudio removes the manifest first, then every key under the base", async () => {

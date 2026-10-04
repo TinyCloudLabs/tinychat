@@ -49,6 +49,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
   const calls: Call[] = [];
   const kv = opts.kv ?? new Map<string, KvValue>();
   let putFailure: ((key: string) => KvFailure | null) | null = null;
+  let listFailure: KvFailure | null = null;
   const inserted: string[] = [];
   const tcw = {
     did: "did:pkh:eip155:1:0xabc",
@@ -87,6 +88,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
       },
       async list(options: { path: string }) {
         calls.push({ kind: "kv.list", target: options.path });
+        if (listFailure) return { ok: false, error: listFailure };
         return { ok: true, data: { keys: [...kv.keys()].filter((k) => k.startsWith(options.path)) } };
       },
     },
@@ -98,6 +100,9 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
     inserted,
     failPut(fn: ((key: string) => KvFailure | null) | null) {
       putFailure = fn;
+    },
+    failList(failure: KvFailure | null) {
+      listFailure = failure;
     },
   };
 }
@@ -283,6 +288,22 @@ describe("a save that fails part-way stays pending and retries without duplicate
     // And once more after the row exists (the device delete failed): still one row.
     expect((await saveVoiceNote(space.tcw, recording, trackedSource(bytes).source, "android", { partSize: 1_000 })).ok).toBe(true);
     expect(space.inserted).toEqual(["rec-1"]);
+  });
+
+  test("a resume whose list of stored parts fails writes nothing and stays pending", async () => {
+    const space = fakeSpace();
+    space.failList({ code: "NETWORK_ERROR", message: "Failed to fetch" });
+    const source = trackedSource(audioBytes(2_500));
+
+    const res = await saveVoiceNote(space.tcw, recording, source.source, "android", { partSize: 1_000, ...noWait });
+
+    expect(res.ok).toBe(false);
+    // Retried in place (two retries), then reported.
+    expect(space.calls.filter((c) => c.kind === "kv.list")).toHaveLength(3);
+    expect(source.reads).toEqual([]);
+    expect(puts(space.calls)).toEqual([]);
+    expect(space.calls.filter((c) => c.kind.startsWith("sql"))).toEqual([]);
+    expect([...space.kv.keys()]).toEqual([]);
   });
 });
 

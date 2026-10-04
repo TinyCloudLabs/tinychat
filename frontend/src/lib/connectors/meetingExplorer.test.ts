@@ -7,8 +7,10 @@ import {
   EXPLORER_MEETING_SOURCES,
   listMeetings,
   meetingSourceLabel,
+  readMeetingAudio,
   readTranscript,
   transcriptCopyText,
+  type MeetingAudioRead,
 } from "./meetingExplorer.js";
 
 type SqlResult =
@@ -395,5 +397,30 @@ describe("transcriptCopyText", () => {
 
   it("returns an empty string for an empty transcript", () => {
     expect(transcriptCopyText([])).toBe("");
+  });
+});
+
+describe("readMeetingAudio", () => {
+  const BASE = "xyz.tinycloud.tinychat/connectors/exo-upload/audio/m-1";
+  const row = (metadata: string | null): SqlResult => ({ ok: true, data: { rows: [[metadata]] } });
+  const cases: [string, SqlResult, MeetingAudioRead][] = [
+    ["stored audio with a base", row(JSON.stringify({ audio: { stored: true, base: BASE } })), { status: "stored", base: BASE }],
+    ["audio that was not stored", row(JSON.stringify({ audio: { stored: false, base: BASE, reason: "quota" } })), { status: "absent" }],
+    ["a pre-TC-517 voice note's audio_kv_key", row(JSON.stringify({ audio_kv_key: BASE })), { status: "absent" }],
+    ["metadata that is not JSON", row("{not json"), { status: "absent" }],
+    ["no row", { ok: true, data: { rows: [] } }, { status: "absent" }],
+    ["a rejected query", { ok: false, error: { code: "SQL_ERROR", message: "boom" } }, { status: "failed" }],
+  ];
+
+  for (const [name, sql, expected] of cases) {
+    it(`reads ${name} as ${expected.status}`, async () => {
+      const { tcw, sqlCalls } = fakeTcw({ sql });
+      expect(await readMeetingAudio(tcw, "row-1")).toEqual(expected);
+      expect(sqlCalls.map((c) => [c.db, c.params])).toEqual([[CONNECTORS_SQL_DB_NAME, ["row-1"]]]);
+    });
+  }
+
+  it("reads a transport that throws as failed", async () => {
+    expect(await readMeetingAudio(throwingTcw(), "row-1")).toEqual({ status: "failed" });
   });
 });

@@ -153,8 +153,15 @@ function isTransient(error: ServiceError): boolean {
   return code !== undefined && (code >= 500 || code === 408 || code === 429);
 }
 
-/** The error for a failed KV call: quota is its own class, anything else keeps the SDK's code. */
+/**
+ * The error for a failed KV call: quota is its own class, anything else keeps the SDK's code.
+ * A read refused by `maxResponseBytes` (413 KV_RESPONSE_TOO_LARGE) is a part bigger than its
+ * manifest says, not a full space.
+ */
 function kvError(op: string, error: ServiceError): AudioStoreError {
+  if (error.code === "KV_RESPONSE_TOO_LARGE") {
+    return new AudioStoreError(AUDIO_CORRUPT, `audioStore ${op}: stored part is larger than its manifest`, { cause: error });
+  }
   if (
     error.code === "STORAGE_QUOTA_EXCEEDED"
     || error.code === "STORAGE_LIMIT_REACHED"
