@@ -13,6 +13,7 @@ import { AssemblyAiError, type AssemblyAiClient } from "./assemblyai";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
   createUploadRunner,
+  localStoragePendingUploadStore,
   plausibleFileTime,
   prepareUploadMeeting,
   privateCloudContentType,
@@ -609,5 +610,78 @@ describe("upload runner: sign-out and remote cleanup", () => {
     expect(saved).toHaveLength(1);
     expect(deletes).toBe(1);
     expect(done).toMatchObject({ stage: "saved", cleanupPending: true, error: { message: "AssemblyAI rejected the key." } });
+  });
+});
+
+describe("upload runner: the stored upload belongs to one tab and one account", () => {
+  const assemblyAiThatFinishes = (events: string[], id: string) =>
+    ({
+      upload: async () => "u",
+      createTranscript: async () => ({ id, status: "queued" }),
+      getTranscript: async () => ({ id, status: "completed", utterances: [{ speaker: "A", text: "Hello.", start: 0, end: 900 }] }),
+      getSentences: async () => [],
+      deleteTranscript: async (x: string) => void events.push(`delete ${x}`),
+    }) as unknown as AssemblyAiClient;
+
+  test("a tab that finished its upload doesn't clear the upload another tab now runs", async () => {
+    const pending = memoryPending();
+    const events: string[] = [];
+    const tabA = createUploadRunner();
+    const a = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: () => assemblyAiThatFinishes(events, "tA") });
+    tabA.start(a.deps, { file: file("first.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
+    expect((await settled(tabA)).stage).toBe("saved");
+
+    // Tab B's upload stays in the queue at AssemblyAI.
+    const tabB = createUploadRunner();
+    const queued = {
+      ...assemblyAiThatFinishes(events, "tB"),
+      getTranscript: () => new Promise(() => {}),
+    } as unknown as AssemblyAiClient;
+    const b = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: () => queued });
+    tabB.start(b.deps, { file: file("second.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
+    for (let i = 0; i < 20 && pending.value?.jobId !== "tB"; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(pending.value?.jobId).toBe("tB");
+
+    await tabA.dismiss(a.deps); // "Upload another file" in tab A
+    expect(tabA.snapshot()).toBeNull();
+    expect(pending.value?.jobId).toBe("tB");
+    expect(events).not.toContain("delete tB");
+  });
+
+  test("another account's upload in this browser neither overwrites nor sees this account's stored job", async () => {
+    const storage = new Map<string, string>();
+    const original = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (k: string) => storage.get(k) ?? null,
+      setItem: (k: string, v: string) => void storage.set(k, v),
+      removeItem: (k: string) => void storage.delete(k),
+    } as unknown as Storage;
+    try {
+      const stored: PendingUpload = {
+        engine: "assemblyai",
+        meetingId: "m-a",
+        attemptId: "a-a",
+        jobId: "tA",
+        diarize: true,
+        file: { name: "a.mp3", type: "audio/mpeg", size: 3, lastModified: 0 },
+        owner: DID,
+        saved: true,
+        audio: { stored: true },
+      };
+      localStoragePendingUploadStore(DID).write(stored);
+
+      const other = "did:pkh:eip155:1:0x00000000000000000000000000000000000000b2";
+      expect(localStoragePendingUploadStore(other).read()).toBeNull();
+      const events: string[] = [];
+      const runner = createUploadRunner();
+      const b = deps({ events, pending: undefined, did: other, audio: audioFake().audio, assemblyAiClient: () => assemblyAiThatFinishes(events, "tB") });
+      runner.start(b.deps, { file: file("b.mp3", "audio/mpeg"), engine: "assemblyai", diarize: true });
+      expect((await settled(runner)).stage).toBe("saved");
+
+      expect(localStoragePendingUploadStore(DID).read()).toEqual(stored);
+      expect(events).toEqual(["save", "delete tB"]);
+    } finally {
+      globalThis.localStorage = original;
+    }
   });
 });

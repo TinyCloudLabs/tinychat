@@ -31,6 +31,7 @@ import {
 import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
 import { NO_SPEECH_MESSAGE, type LocalTranscriptSaver, type PreparedLocalTranscript } from "./localTranscriber";
+import { accountStorageKey } from "./voiceNotes/voiceNoteTranscription";
 import {
   createCloudJobPoller,
   privateCloudMessage,
@@ -171,10 +172,13 @@ export interface PendingUploadStore {
   clear(): void;
 }
 
-export const localStoragePendingUploadStore: PendingUploadStore = {
+/** This browser's stored upload for one account (keyed by DID, like voice notes' jobs), so another account never overwrites or resumes it. */
+export function localStoragePendingUploadStore(accountDid: string): PendingUploadStore {
+  const key = accountStorageKey(UPLOAD_PENDING_STORAGE_KEY, accountDid);
+  return {
   read() {
     try {
-      const raw = globalThis.localStorage?.getItem(UPLOAD_PENDING_STORAGE_KEY);
+      const raw = globalThis.localStorage?.getItem(key);
       if (!raw) return null;
       const v: unknown = JSON.parse(raw);
       if (!v || typeof v !== "object") return null;
@@ -215,27 +219,28 @@ export const localStoragePendingUploadStore: PendingUploadStore = {
   },
   write(job) {
     try {
-      globalThis.localStorage?.setItem(UPLOAD_PENDING_STORAGE_KEY, JSON.stringify(job));
+      globalThis.localStorage?.setItem(key, JSON.stringify(job));
     } catch {
       // Best-effort: without it a reload cannot resume this upload.
     }
   },
   clear() {
     try {
-      globalThis.localStorage?.removeItem(UPLOAD_PENDING_STORAGE_KEY);
+      globalThis.localStorage?.removeItem(key);
     } catch {
       // Nothing to clear.
     }
   },
-};
+  };
+}
 
 // ── One tab at a time ──────────────────────────────────────────────────
 
-/** Holds this tab's claim on the pending upload until released; null when another tab holds it. */
-export type UploadTabLock = () => Promise<(() => void) | null>;
+/** Holds this tab's claim on the account's stored upload until released; null when another tab holds it. */
+export type UploadTabLock = (accountDid: string) => Promise<(() => void) | null>;
 
-/** Web Locks: one tab runs the stored upload; the lock goes with the tab when it closes. */
-export const webUploadLock: UploadTabLock = async () => {
+/** Web Locks, one per account: one tab runs its stored upload; the lock goes with the tab when it closes. */
+export const webUploadLock: UploadTabLock = async (accountDid) => {
   const locks = globalThis.navigator?.locks;
   if (locks === undefined) return () => {};
   let release = () => {};
@@ -243,7 +248,7 @@ export const webUploadLock: UploadTabLock = async () => {
     release = resolve;
   });
   const acquired = await new Promise<boolean>((resolve) => {
-    void locks.request("exo-upload", { ifAvailable: true }, (lock) => {
+    void locks.request(`exo-upload:${accountDid}`, { ifAvailable: true }, (lock) => {
       resolve(lock !== null);
       return lock === null ? undefined : held;
     });
@@ -510,7 +515,7 @@ export function createUploadRunner(): UploadRunner {
     notify();
   };
   const audioOf = (deps: UploadDeps) => deps.audio ?? { put: putAudio, manifest: getAudioManifest, remove: deleteAudio };
-  const pendingOf = (deps: UploadDeps) => deps.pending ?? localStoragePendingUploadStore;
+  const pendingOf = (deps: UploadDeps) => deps.pending ?? localStoragePendingUploadStore(deps.tcw.did);
   const persist = (deps: UploadDeps, job: PendingUpload): PendingUpload => {
     current = job;
     pendingOf(deps).write(job);
@@ -522,7 +527,7 @@ export function createUploadRunner(): UploadRunner {
   };
   const claim = async (deps: UploadDeps): Promise<boolean> => {
     if (releaseLock !== null) return true;
-    const release = await (deps.lock ?? webUploadLock)();
+    const release = await (deps.lock ?? webUploadLock)(deps.tcw.did);
     if (release === null) return false;
     releaseLock = release;
     return true;
@@ -978,7 +983,14 @@ export function createUploadRunner(): UploadRunner {
     async dismiss(deps) {
       if (running || state?.stage === "elsewhere") return;
       const job = current;
-      if (job !== null && job.owner !== deps.tcw.did) {
+      if (job === null) {
+        // This tab owns no job (it finished, or another tab runs the stored one): only the view clears.
+        unlock();
+        state = null;
+        notify();
+        return;
+      }
+      if (job.owner !== deps.tcw.did) {
         // Another account's upload: never touch its job or space with this account's credentials.
         reset();
         return;
@@ -987,7 +999,6 @@ export function createUploadRunner(): UploadRunner {
       forget(deps);
       state = null;
       notify();
-      if (job === null) return;
       await deleteRemote(deps, job, null).catch((err: unknown) => console.error("Deleting the remote job failed", err));
       if (!job.saved) {
         await audioOf(deps)

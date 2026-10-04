@@ -699,7 +699,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const uploadAvailable = tcw !== undefined;
   const [kind, setKind] = useState<TranscriberKind>(() => {
     // An upload still running (or this account's, interrupted by a reload) opens its own tab.
-    if (tcw !== undefined && (uploadRunner.snapshot() !== null || localStoragePendingUploadStore.read()?.owner === tcw.did)) return "upload";
+    if (tcw !== undefined && (uploadRunner.snapshot() !== null || localStoragePendingUploadStore(tcw.did).read() !== null)) return "upload";
     let stored: string | null = null;
     try {
       stored = localStorage.getItem(LOCAL_KIND_STORAGE_KEY);

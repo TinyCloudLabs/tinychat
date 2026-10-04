@@ -266,20 +266,15 @@ export function createPrivateCloudApi(
     return token;
   };
 
-  async function request(
-    path: string,
-    method: "GET" | "POST" | "DELETE",
-    init: { body?: string; headers?: Record<string, string>; timeoutMs?: number } = {},
-  ): Promise<Response> {
+  async function request(path: string, method: "GET" | "POST" | "DELETE"): Promise<Response> {
     const token = bearer();
     if (token === null) throw new PrivateCloudError("unauthenticated", "Not signed in");
-    const signal = AbortSignal.timeout(init.timeoutMs ?? 20_000);
+    const signal = AbortSignal.timeout(20_000);
     let response: Response;
     try {
       response = await fetchImpl(`${backendUrl}${PRIVATE_CLOUD_BASE_PATH}${path}`, {
         method,
-        headers: { ...init.headers, Authorization: `Bearer ${token}`, [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
-        ...(init.body === undefined ? {} : { body: init.body }),
+        headers: { Authorization: `Bearer ${token}`, [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE },
         signal,
       });
     } catch {
@@ -307,7 +302,6 @@ export function createPrivateCloudApi(
       if (!response.ok) throw await readError(response);
       return json<PrivateCloudCapabilities>(response);
     },
-
 
     async list() {
       const response = await request("/transcriptions?limit=20", "GET");

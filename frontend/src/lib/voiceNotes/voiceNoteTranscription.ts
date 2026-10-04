@@ -37,7 +37,6 @@ import {
   isTransientCloudError,
   PrivateCloudError,
   privateCloudMessage,
-  UPLOAD_PATH_RE,
   VOICE_NOTE_CHANNEL_LABELS,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
