@@ -1,0 +1,24 @@
+{
+  "versions": {
+    "exo-desktop": "0.3.0",
+    "@tinychat/frontend": "0.3.0",
+    "@tinychat/backend": "0.3.0"
+  },
+  "changesets": [
+    ".changeset/pre/conversation-canvas.md",
+    ".changeset/pre/crisp-cooks-tap.md",
+    ".changeset/pre/exo-android-smoke-harness.md",
+    ".changeset/pre/exo-mobile-google-oauth-app.md",
+    ".changeset/pre/exo-mobile-google-oauth-callback.md",
+    ".changeset/pre/exo-mobile-narrow-screens.md",
+    ".changeset/pre/exo-offline-voice-notes.md",
+    ".changeset/pre/exo-one-tap-voice-note.md",
+    ".changeset/pre/exo-voice-note-limits.md",
+    ".changeset/pre/exo-voice-note-transcription.md",
+    ".changeset/pre/mobile-smoke-cold-start.md",
+    ".changeset/pre/private-cloud-relay-ptx-shapes.md",
+    ".changeset/pre/swift-candies-clean.md",
+    ".changeset/pre/trusted-release-tooling.md",
+    ".changeset/pre/vast-impalas-pull.md"
+  ]
+}
