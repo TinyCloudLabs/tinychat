@@ -13,6 +13,7 @@ import { AssemblyAiError, type AssemblyAiClient } from "./assemblyai";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
   createUploadRunner,
+  plausibleFileTime,
   prepareUploadMeeting,
   privateCloudContentType,
   privateCloudUploadTranscript,
@@ -119,6 +120,16 @@ describe("privateCloudContentType", () => {
     expect(privateCloudContentType({ name: "a.wav", type: "audio/x-wav" })).toBe("audio/wav");
     expect(privateCloudContentType({ name: "voice.aac", type: "audio/aac" })).toBeNull();
     expect(privateCloudContentType({ name: "clip.mov", type: "video/quicktime" })).toBeNull();
+  });
+});
+
+describe("plausibleFileTime", () => {
+  test("a file without a real time (Android's picker: 1601, or 0) is dated when it was uploaded", () => {
+    const now = Date.UTC(2026, 9, 4, 6, 0);
+    expect(plausibleFileTime(-11644473600000, now)).toBe(now);
+    expect(plausibleFileTime(0, now)).toBe(now);
+    expect(plausibleFileTime(now + 10 * 86_400_000, now)).toBe(now);
+    expect(plausibleFileTime(Date.UTC(2026, 8, 30), now)).toBe(Date.UTC(2026, 8, 30));
   });
 });
 

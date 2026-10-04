@@ -131,6 +131,15 @@ function storedContentType(file: { name: string; type: string }): string {
 
 // ── Pending job (reload) ───────────────────────────────────────────────
 
+/**
+ * The file's own time, or `now` when it has none worth showing: Android's
+ * document picker hands the WebView files whose lastModified reads as
+ * 1601-01-01 (or 0), and a meeting dated then would sort to the bottom.
+ */
+export function plausibleFileTime(lastModified: number, now: number): number {
+  return Number.isFinite(lastModified) && lastModified >= Date.UTC(1990, 0, 1) && lastModified <= now + 86_400_000 ? lastModified : now;
+}
+
 export interface UploadFileMeta {
   name: string;
   type: string;
@@ -943,7 +952,7 @@ export function createUploadRunner(): UploadRunner {
           attemptId: crypto.randomUUID(),
           jobId: null,
           diarize: input.diarize,
-          file: { name: input.file.name, type: input.file.type, size: input.file.size, lastModified: input.file.lastModified },
+          file: { name: input.file.name, type: input.file.type, size: input.file.size, lastModified: plausibleFileTime(input.file.lastModified, Date.now()) },
           owner: deps.tcw.did,
           saved: false,
         });
