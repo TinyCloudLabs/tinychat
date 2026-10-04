@@ -17,6 +17,7 @@ services. Written for agents and CI-like use; everything is a shell script.
 ```sh
 H=mobile/scripts/android-dev
 $H/start-emulator.sh                       # background, idempotent; log in $EXO_STATE/emulator.log
+bun install && bun run build:packages && bun run build:frontend   # fresh checkout: cap sync needs frontend/dist
 # Frontend dev server against production services, on any free port (5186 may be taken):
 (cd frontend && bunx vite --mode production --host 127.0.0.1 --port 5391 --strictPort) &
 # Debug shell that loads http://localhost:5186 (an allowed backend CORS origin):
@@ -62,5 +63,8 @@ All settings live in `env.sh` and can be overridden from the environment: `EXO_A
   production API hosts were moved to `gateway.dstack-pha-prod5.phala.network`. If a host regresses,
   the app fails with `net::ERR_NAME_NOT_RESOLVED`; check with
   `adb shell ping -c1 <host>`.
+- **Install the APK built from the same commit as the dev server.** An APK from another branch
+  can lack native methods the web layer calls (`… is not implemented on android`). A failed save
+  stays pending on the phone and is retried once the right build is installed.
 - **Don't kill processes with `pkill -f <pattern>`** when the pattern appears in your own command
   line: it kills your shell.
