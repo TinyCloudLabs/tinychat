@@ -225,7 +225,7 @@ describe("upload runner: AssemblyAI", () => {
         return "https://cdn.assemblyai.com/upload/u1";
       },
       createTranscript: async (url, o) => {
-        requests.push({ url, ...o });
+        requests.push({ url, speakerLabels: o.speakerLabels });
         return { id: "t1", status: "queued" };
       },
       getTranscript: async () => ({
@@ -768,5 +768,67 @@ describe("upload runner: an AssemblyAI job keeps its account", () => {
     } finally {
       globalThis.localStorage = original;
     }
+  });
+});
+
+describe("upload runner: a reload while the file is sent on to AssemblyAI", () => {
+  test("the stored upload is re-joined, not re-uploaded, and its transcript is saved and deleted", async () => {
+    const events: string[] = [];
+    const stored: PendingUpload = {
+      engine: "assemblyai",
+      assemblyAiMode: "hosted",
+      meetingId: "m-r",
+      attemptId: "a-r",
+      jobId: null,
+      uploadRef: "aau_1",
+      diarize: true,
+      file: { name: "long.wav", type: "audio/wav", size: 3, lastModified: 0 },
+      owner: DID,
+      saved: false,
+    };
+    const client = {
+      upload: async () => {
+        events.push("upload");
+        return "aau_2";
+      },
+      createTranscript: async (ref: string) => {
+        events.push(`create ${ref}`);
+        return { id: "h1", status: "queued" };
+      },
+      getTranscript: async () => ({ id: "h1", status: "completed", utterances: [{ speaker: "A", text: "Back again.", start: 0, end: 900 }] }),
+      getSentences: async () => [],
+      deleteTranscript: async (id: string) => void events.push(`delete ${id}`),
+    } as unknown as AssemblyAiClient;
+    const pending = memoryPending(stored);
+    const { deps: d, saved } = deps({ events, pending, audio: audioFake().audio, assemblyAiClient: async () => client });
+    const runner = createUploadRunner();
+    runner.resume(d);
+    expect((await settled(runner)).stage).toBe("saved");
+    expect(events).toEqual(["create aau_1", "save", "delete h1"]);
+    expect(saved[0]!.sentences[0]!.text).toBe("Back again.");
+    expect(pending.value).toBeNull();
+  });
+
+  test("a submission that failed is forgotten, so Retry sends the file again rather than re-joining it", async () => {
+    const pending = memoryPending();
+    let creates = 0;
+    const client = {
+      upload: async () => "aau_1",
+      createTranscript: async () => {
+        creates++;
+        if (creates === 1) throw new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.");
+        return { id: "h2", status: "queued" };
+      },
+      getTranscript: async () => ({ id: "h2", status: "completed", utterances: [{ speaker: "A", text: "Hi.", start: 0, end: 900 }] }),
+      getSentences: async () => [],
+      deleteTranscript: async () => {},
+    } as unknown as AssemblyAiClient;
+    const { deps: d } = deps({ pending, audio: audioFake().audio, assemblyAiClient: async () => client });
+    const runner = createUploadRunner();
+    runner.start(d, { file: file("a.wav", "audio/wav"), engine: "assemblyai", diarize: true, assemblyAiMode: "hosted" });
+    expect((await settled(runner)).error).toMatchObject({ retry: true });
+    expect(pending.value?.uploadRef).toBeUndefined();
+    runner.retry(d);
+    expect((await settled(runner)).stage).toBe("saved");
   });
 });

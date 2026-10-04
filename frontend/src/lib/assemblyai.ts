@@ -83,7 +83,11 @@ export interface AssemblyAiClient {
     file: Blob,
     options?: { onProgress?: (sent: number, total: number) => void; signal?: AbortSignal; /** Canonical C1 type, when known. */ contentType?: string },
   ): Promise<string>;
-  createTranscript(audioUrl: string, options: { speakerLabels: boolean }): Promise<AssemblyAiTranscript>;
+  /**
+   * Starts the transcript of an uploaded file (`upload`'s answer). Safe to call again with the same
+   * reference after a reload: TinyCloud's account re-joins its submission instead of starting another.
+   */
+  createTranscript(uploadRef: string, options: { speakerLabels: boolean; signal?: AbortSignal }): Promise<AssemblyAiTranscript>;
   getTranscript(id: string): Promise<AssemblyAiTranscript>;
   getSentences(id: string): Promise<AssemblyAiSentence[]>;
   /** Deletes the transcript and its uploaded audio. A transcript already gone counts as deleted. */
@@ -326,6 +330,22 @@ async function hostedError(response: Response): Promise<AssemblyAiError> {
   return new AssemblyAiError("rejected", `Exo's server refused the request (HTTP ${response.status}).`);
 }
 
+interface HostedSubmission {
+  status: "receiving" | "submitting" | "submitted" | "failed";
+  id?: string;
+  error?: { code?: string } | null;
+}
+
+async function submission(response: Response): Promise<HostedSubmission> {
+  const body = (await response.json().catch(() => null)) as HostedSubmission | null;
+  if (!body || typeof body.status !== "string") throw new AssemblyAiError("failed", "Exo's server returned an unexpected upload state.");
+  return body;
+}
+
+/** How often the submission is checked, and for how long (the backend gives up after 15 minutes). */
+const SUBMIT_POLL_MS = 2_000;
+const SUBMIT_DEADLINE_MS = 16 * 60_000;
+
 /** Retries of one part after a network failure or a 5xx; a re-PUT of the same part is idempotent. */
 const PART_RETRY_DELAYS_MS = [1_000, 3_000];
 
@@ -433,11 +453,25 @@ export function createHostedAssemblyAiClient(config: {
       return uploadId;
     },
 
-    async createTranscript(uploadId, { speakerLabels }) {
-      // The backend streams the whole file on to AssemblyAI before it answers.
-      return transcript(
-        await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels }, timeoutMs: 15 * 60_000 }),
+    async createTranscript(uploadId, { speakerLabels, signal }) {
+      // The backend sends the file on to AssemblyAI in the background: 202 with the submission's state,
+      // then its state by upload id until it has the transcript's handle. A replay re-joins it.
+      const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
+      let state = await submission(
+        await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels }, signal }),
       );
+      const deadline = Date.now() + SUBMIT_DEADLINE_MS;
+      while (state.status === "submitting" || state.status === "receiving") {
+        if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file to AssemblyAI. Retry keeps waiting.");
+        await sleep(SUBMIT_POLL_MS);
+        if (signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
+        state = await submission(await request(path, { signal }));
+      }
+      if (state.status === "submitted" && typeof state.id === "string") return { id: state.id, status: "queued" };
+      const code = state.error?.code;
+      throw code === "assemblyai_rate_limited"
+        ? new AssemblyAiError("rate-limited", "AssemblyAI is busy for TinyCloud's account. Retry uploads the file again in a few minutes.")
+        : new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.");
     },
 
     async getTranscript(id) {

@@ -30,6 +30,7 @@ import {
   pollAssemblyAiTranscript,
   type AssemblyAiClient,
   type AssemblyAiKeyMode,
+  type AssemblyAiTranscript,
 } from "./assemblyai";
 import type { NormalizedMeeting } from "./connectors/connectorStore";
 import type { FirefliesSentence } from "./connectors/firefliesClient";
@@ -165,6 +166,8 @@ export interface PendingUpload {
   owner: string;
   /** Set once the meeting is saved: only deleting the remote job is left. */
   saved: boolean;
+  /** AssemblyAI: the sent file's reference (upload URL, or TinyCloud's upload id) until its transcript exists. */
+  uploadRef?: string;
   /** AssemblyAI only: whose account the job runs under. Resume and delete use exactly this account, never the other. */
   assemblyAiMode?: AssemblyAiKeyMode;
   /** What the saved meeting records about its audio, so a resumed saved job reports it truthfully. */
@@ -214,6 +217,7 @@ export function localStoragePendingUploadStore(accountDid: string): PendingUploa
         },
         owner: p.owner,
         saved: p.saved === true,
+        ...(typeof p.uploadRef === "string" ? { uploadRef: p.uploadRef } : {}),
         // A record from before key modes existed was made with the user's own key.
         ...(p.engine === "assemblyai" ? { assemblyAiMode: p.assemblyAiMode === "hosted" ? ("hosted" as const) : ("own" as const) } : {}),
         ...(p.audio && typeof p.audio === "object" && typeof p.audio.stored === "boolean"
@@ -724,18 +728,32 @@ export function createUploadRunner(): UploadRunner {
 
   async function transcribeAssemblyAi(deps: UploadDeps, job: PendingUpload, client: AssemblyAiClient, r: Run): Promise<UploadTranscript> {
     if (job.jobId === null) {
-      const file = r.file;
-      if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
-      runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
-      const audioUrl = await client.upload(file, {
-        signal: r.signal,
-        contentType: storedContentType(file),
-        onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
-      });
+      let uploadRef = job.uploadRef ?? null;
+      if (uploadRef === null) {
+        const file = r.file;
+        if (file === null) throw new NeedsFileError("The upload didn't reach AssemblyAI before the page closed. Choose the file again.");
+        runSet(r, { stage: "uploading", uploadPct: 0, detail: null });
+        uploadRef = await client.upload(file, {
+          signal: r.signal,
+          contentType: storedContentType(file),
+          onProgress: (done, total) => runSet(r, { uploadPct: total > 0 ? Math.round((done / total) * 100) : null }),
+        });
+        stillLive(r);
+        // Kept before the transcript is requested: a reload while the file is still being sent on
+        // re-joins that submission instead of losing the file.
+        job = runPersist(r, deps, { ...job, uploadRef });
+      }
+      runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
+      let created: AssemblyAiTranscript;
+      try {
+        created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
+      } catch (err) {
+        // Only a lost answer may still lead somewhere; any other outcome needs the file sent again.
+        if (!(err instanceof AssemblyAiError && err.kind === "network")) runPersist(r, deps, { ...job, uploadRef: undefined });
+        throw err;
+      }
       stillLive(r);
-      const created = await client.createTranscript(audioUrl, { speakerLabels: job.diarize });
-      stillLive(r);
-      job = runPersist(r, deps, { ...job, jobId: created.id });
+      job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined });
     }
     runSet(r, { stage: "queued", uploadPct: null, detail: "Queued at AssemblyAI…" });
     const done = await pollAssemblyAiTranscript(client, job.jobId!, {
@@ -845,11 +863,11 @@ export function createUploadRunner(): UploadRunner {
         if (file === null) retry = false;
         else if (failed.jobId !== null) {
           void deleteRemote(deps, failed, client).catch((e: unknown) => console.error("Deleting the failed job failed", e));
-          persist(deps, { ...failed, attemptId: crypto.randomUUID(), jobId: null });
+          persist(deps, { ...failed, attemptId: crypto.randomUUID(), jobId: null, uploadRef: undefined });
           sent = false;
         }
       }
-      if (retry && current !== null && current.jobId === null && file === null) retry = false;
+      if (retry && current !== null && current.jobId === null && current.uploadRef === undefined && file === null) retry = false;
       set({ stage: "failed", uploadPct: null, detail: null, error: { message: failure.message, reference: failure.reference, retry } });
     } finally {
       if (r.gen === epoch) {

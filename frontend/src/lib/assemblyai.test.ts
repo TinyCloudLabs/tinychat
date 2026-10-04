@@ -194,3 +194,37 @@ describe("TinyCloud's AssemblyAI account (hosted client)", () => {
     await hosted(() => json(404, { error: "not_found" })).c.deleteTranscript("h");
   });
 });
+
+describe("TinyCloud's AssemblyAI account: sending the file on", () => {
+  function hosted(respond: (url: string, init: RequestInit) => Response) {
+    const calls: string[] = [];
+    const c = createHostedAssemblyAiClient({
+      backendUrl: "https://api.example",
+      sessionStore: { getToken: () => "tok", isExpired: () => false },
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push(`${init.method} ${url.replace("https://api.example/api/transcriber/assemblyai", "")}`);
+        return respond(url, init);
+      }) as never,
+      sleep: async () => {},
+    });
+    return { c, calls };
+  }
+
+  test("the transcript's handle arrives once the server has sent the file on; until then its state is polled", async () => {
+    const states = [{ status: "submitting" }, { status: "submitted", id: "aah1.x.y" }];
+    const { c, calls } = hosted((url) => (url.endsWith("/hosted/transcripts") ? json(202, { upload_id: "aau_1", status: "submitting" }) : json(200, states.shift())));
+    expect(await c.createTranscript("aau_1", { speakerLabels: true })).toEqual({ id: "aah1.x.y", status: "queued" });
+    expect(calls).toEqual(["POST /hosted/transcripts", "GET /hosted/uploads/aau_1", "GET /hosted/uploads/aau_1"]);
+  });
+
+  test("a failed submission is an error Retry answers by sending the file again; AssemblyAI's limit reads as busy", async () => {
+    const failed = (await hosted(() => json(202, { upload_id: "aau_1", status: "failed", error: { code: "assemblyai_unavailable" } }))
+      .c.createTranscript("aau_1", { speakerLabels: true })
+      .catch((e) => e)) as AssemblyAiError;
+    expect(failed.kind).toBe("failed");
+    const limited = (await hosted(() => json(202, { upload_id: "aau_1", status: "failed", error: { code: "assemblyai_rate_limited" } }))
+      .c.createTranscript("aau_1", { speakerLabels: true })
+      .catch((e) => e)) as AssemblyAiError;
+    expect(limited.kind).toBe("rate-limited");
+  });
+});
