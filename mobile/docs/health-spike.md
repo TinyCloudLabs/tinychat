@@ -6,14 +6,17 @@ Connect). October 2026. Spike branch `spike/tc-525-health`, not for merge as is.
 
 ## Summary
 
-- **It works on Android today**, in debug builds: Health Connect availability, the permission
-  screen, a 7-day read of steps, sleep and heart rate, and a save of daily summaries to the user's
-  space. Health Connect tells the app exactly which permissions it holds.
-- **iOS compiles, and HealthKit authorizes in the simulator without an Apple team.** An ad-hoc
-  signed ("Sign to Run Locally") Debug build embeds the HealthKit entitlements, and CI's simulator
-  shows the real Health Access sheet; the unsigned build gets "Missing
-  com.apple.developer.healthkit entitlement". No device can run it until the Apple Developer
-  enrollment exists. Details in [iOS Simulator in CI](#ios-simulator-in-ci). HealthKit never tells an app
+- **Android builds; it has not run on a device yet.** The debug build has Health Connect
+  availability, the permission screen, a 7-day read of steps, sleep and heart rate, sample data, and a
+  save of daily summaries to the user's space. `assembleDebug`, `assembleRelease` and lint pass, but
+  this spike had no emulator: the [device checks](#device-checks-android-emulator) are what proves it.
+  Health Connect tells the app exactly which permissions it holds.
+- **iOS works end to end in the simulator, without an Apple team.** An ad-hoc signed ("Sign to Run
+  Locally") Debug build embeds the HealthKit entitlements. In CI's iOS 26.5 simulator it shows the real
+  Health Access sheet, gets authorized, writes sample data, reads 7 days of steps, sleep and heart rate,
+  and registers background delivery. The unsigned build gets "Missing com.apple.developer.healthkit
+  entitlement". No device can run it until the Apple Developer enrollment exists. Details in
+  [iOS Simulator in CI](#ios-simulator-in-ci). HealthKit never tells an app
   whether it may read a type: a refusal looks exactly like no data. The UI and the stored records
   have to say "no data, or not allowed" on iOS.
 - **The prototype is off by default.** The card shows only in builds with
@@ -223,7 +226,13 @@ Background and history permissions each need their own justification in the Play
    (and `NSHealthUpdateUsageDescription` for writes), and "Allow" / "Don't Allow" (exact capture in
    [iOS Simulator in CI](#ios-simulator-in-ci)). Completion `success == true` only means the request
    was handled.
-4. Later changes happen outside the app: Settings → Health → Data Access & Devices → Exo, or the
+4. **One sheet at a time.** HealthKit presents its sheet on whatever is on screen. A second
+   `requestAuthorization` made while the previous sheet is still animating away is never shown
+   (UIKit logs "Attempt to present <HKHealthPrivacyHostAuthorizationViewController> on
+   <HKHealthPrivacyHostAuthorizationViewController>") and its completion never runs, so the JS promise
+   hangs forever. The CI probe hit exactly this when it asked for write access right after read
+   access. The plugin now waits until nothing is presented before asking, and again before reporting.
+5. Later changes happen outside the app: Settings → Health → Data Access & Devices → Exo, or the
    Health app → profile → Apps → Exo. `openSettings()` can only open the Health app.
 
 ### What iOS lets the app see
@@ -287,13 +296,42 @@ The sheet the ad-hoc build gets for the read-only request (the product's request
 The write request (`sampleWrite`) gets the same sheet with "Allow “Exo” to write" first and
 `NSHealthUpdateUsageDescription` as its explanation.
 
-The CI probe (`mobile/scripts/ios-health-probe.sh`) launches the ad-hoc build with
-`EXO_HEALTH_PROBE=1`, so `ExoBridgeViewController` drives the plugin over the bridge (availability,
-status, read request, write request, sample data, 7-day read, background delivery) and logs each step.
-The Health sheet is a remote view that AXe's accessibility queries cannot see ("No translation object
-returned for simulator"), so the script answers it by screen position (Turn On All, then Allow), with
-retries. Results of the last run are in the job summary and the `exo-ios-health-<sha>` artifact
-(screenshots, `probe.jsonl`, `entitlements.txt`).
+**End to end in the simulator.** The CI probe (`mobile/scripts/ios-health-probe.sh`) launches the
+ad-hoc build with `EXO_HEALTH_PROBE=1`, so `ExoBridgeViewController` drives the plugin over the bridge
+the way the web app does and logs each step. The Health sheet is a remote view that AXe's
+accessibility queries cannot see ("No translation object returned for simulator"), so the script
+answers it by screen position (Turn On All, then Allow), with retries. The run on `2cb8a23`
+([job](https://github.com/TinyCloudLabs/tinychat/actions/runs/37169460944), artifact
+`exo-ios-health-<sha>`: screenshots, `probe.jsonl`, `entitlements.txt`):
+
+| Step | Result |
+|---|---|
+| `availability()` | `available` |
+| `authorizationStatus()` before | steps, sleep, heart rate `not_determined` |
+| `requestAuthorization()` (read only), sheet answered | all three `unknown`: asked, answer hidden. Never "granted", even though every toggle was on |
+| `requestAuthorization({ sampleWrite: true })`, second sheet answered | `sampleWrite: "granted"` (write status *is* visible) |
+| `insertSampleData()` | 60 samples saved as Exo |
+| `readDailySummaries({ days: 7 })` | 7 days; for example 2026-10-03: 5,974 steps, 460 min asleep (1 block), heart rate 65 / 77 / 90; `sources: ["xyz.tinycloud.exo"]`; today null (the samples are later in the day) |
+| `enableBackgroundDelivery({ types: ["steps"] })` | `enabled: ["steps"]`, frequency `hourly`: the background-delivery entitlement is accepted too |
+| `readDailySummaries({ days: 3, types: ["steps"] })` | only `steps` and `sources` per day |
+
+What this proves and what it does not:
+
+- Proven: the entitlements, usage strings, plugin registration, authorization request and status
+  reporting, HealthKit writes, `HKStatisticsCollectionQuery` daily steps and heart rate, the sleep
+  union, and background-delivery registration, all through the Capacitor bridge, on iOS 26.5.
+- Not proven: anything on a device. The simulator is lenient about provisioning: a device build needs a
+  profile from a team whose App ID has HealthKit, which needs the Apple enrollment. Also unproven:
+  background wakes (the simulator never delivers them), real Watch/iPhone data and source merging,
+  locked-device behavior, and "Don't Allow" (the probe always allows; by HealthKit's design the result
+  would be the same `unknown` and null reads).
+- The automation is a spike tool. The tap positions are measured for the iOS 26 sheet on an iPhone 17
+  Pro and will break when Apple moves the buttons. The CI steps are `continue-on-error`: they never fail
+  the job. Keep or drop them; the smoke test does not depend on them.
+
+The probe also found a real bug: a second `requestAuthorization` made while the first sheet was
+still dismissing was never shown and its promise never settled (see "One sheet at a time" above). The
+plugin now waits for the screen to be clear.
 
 ## What the app can and cannot observe
 
