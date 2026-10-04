@@ -122,16 +122,37 @@ public class HealthPlugin: CAPPlugin, CAPBridgedPlugin {
             if sampleWrite { share.insert(sampleType) }
         }
         // Shows the Health sheet only for types never asked for; the completion's `success` says the request was
-        // handled, never whether reading was allowed.
-        store.requestAuthorization(toShare: share, read: read) { _, error in
-            if let error = error {
-                self.reject(call, error, fallback: "request_failed")
-                return
+        // handled, never whether reading was allowed. HealthKit presents its sheet on whatever is on screen: a
+        // second request made while the previous sheet is still animating away is never shown ("Attempt to
+        // present … on HKHealthPrivacyHostAuthorizationViewController") and its completion never runs, so wait
+        // for the screen to be clear before asking, and before reporting.
+        afterPresentationsSettle {
+            self.store.requestAuthorization(toShare: share, read: read) { _, error in
+                if let error = error {
+                    self.reject(call, error, fallback: "request_failed")
+                    return
+                }
+                self.afterPresentationsSettle {
+                    self.authorization(for: types) { result in
+                        switch result {
+                        case .success(let data): call.resolve(data)
+                        case .failure(let error): self.reject(call, error, fallback: "permission_check_failed")
+                        }
+                    }
+                }
             }
-            self.authorization(for: types) { result in
-                switch result {
-                case .success(let data): call.resolve(data)
-                case .failure(let error): self.reject(call, error, fallback: "permission_check_failed")
+        }
+    }
+
+    /// Runs `body` on the main queue once the bridge's view controller presents nothing (or after ~5 s).
+    private func afterPresentationsSettle(attempts: Int = 50, _ body: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            let presented = self.bridge?.viewController?.presentedViewController
+            if presented == nil || attempts <= 0 {
+                body()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.afterPresentationsSettle(attempts: attempts - 1, body)
                 }
             }
         }

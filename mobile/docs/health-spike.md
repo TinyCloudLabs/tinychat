@@ -9,9 +9,11 @@ Connect). October 2026. Spike branch `spike/tc-525-health`, not for merge as is.
 - **It works on Android today**, in debug builds: Health Connect availability, the permission
   screen, a 7-day read of steps, sleep and heart rate, and a save of daily summaries to the user's
   space. Health Connect tells the app exactly which permissions it holds.
-- **iOS compiles and its HealthKit plugin runs in CI's simulator**, but no device can run it until
-  the Apple Developer enrollment exists (no team, so no provisioning profile with HealthKit). The
-  simulator result is in [iOS Simulator in CI](#ios-simulator-in-ci). HealthKit never tells an app
+- **iOS compiles, and HealthKit authorizes in the simulator without an Apple team.** An ad-hoc
+  signed ("Sign to Run Locally") Debug build embeds the HealthKit entitlements, and CI's simulator
+  shows the real Health Access sheet; the unsigned build gets "Missing
+  com.apple.developer.healthkit entitlement". No device can run it until the Apple Developer
+  enrollment exists. Details in [iOS Simulator in CI](#ios-simulator-in-ci). HealthKit never tells an app
   whether it may read a type: a refusal looks exactly like no data. The UI and the stored records
   have to say "no data, or not allowed" on iOS.
 - **The prototype is off by default.** The card shows only in builds with
@@ -216,9 +218,11 @@ Background and history permissions each need their own justification in the Play
    `shouldRequest` is `not_determined`, `unnecessary` is `unknown`. Without the entitlement this call
    fails ("Missing com.apple.developer.healthkit entitlement"), so it doubles as an entitlement check.
 3. `requestAuthorization()`: `requestAuthorization(toShare:read:)` shows the Health Access sheet,
-   once per type. The sheet lists each type with a toggle, "Turn On All", and "Allow" / "Don't
-   Allow". Its header quotes `NSHealthShareUsageDescription` (and `NSHealthUpdateUsageDescription`
-   when writing). Completion `success == true` only means the request was handled.
+   once per type: "“Exo” would like to access and update your Health data.", "Turn On All", a toggle
+   per type under "Allow “Exo” to read", "App Explanation: " plus `NSHealthShareUsageDescription`
+   (and `NSHealthUpdateUsageDescription` for writes), and "Allow" / "Don't Allow" (exact capture in
+   [iOS Simulator in CI](#ios-simulator-in-ci)). Completion `success == true` only means the request
+   was handled.
 4. Later changes happen outside the app: Settings → Health → Data Access & Devices → Exo, or the
    Health app → profile → Apps → Exo. `openSettings()` can only open the Health app.
 
@@ -254,7 +258,42 @@ session (or a delegated key) first. That is the largest piece of background work
 
 ### iOS Simulator in CI
 
-See below; filled in from the PR's CI run.
+Apple enrollment is still processing: no team, so no provisioning profile can carry HealthKit, and no
+device build is possible. The question was whether the simulator needs one. It does not. The Mobile
+workflow's iOS job ([PR #122](https://github.com/TinyCloudLabs/tinychat/pull/122)) runs the same Debug
+app two ways on an iPhone 17 Pro simulator, iOS 26.5, Xcode 26.6:
+
+| Build | Entitlements in the app | `authorizationStatus()` | Health sheet |
+|---|---|---|---|
+| Unsigned (`CODE_SIGNING_ALLOWED=NO`, the existing smoke test) | none: Xcode skips entitlement processing | rejected, `not_authorized`: "Missing com.apple.developer.healthkit entitlement. [com.apple.healthkit 4]" | never shown |
+| Ad-hoc signed (`CODE_SIGN_IDENTITY=-`, "Sign to Run Locally", no team, no profile) | in `__TEXT,__entitlements`: Xcode writes `App.app-Simulated.xcent` from `App.entitlements` and links it in (`-sectcreate __TEXT __entitlements`); the signature itself carries none | all three types `not_determined` | **shown** |
+
+So HealthKit in the simulator only needs the entitlements embedded, which any local "Sign to Run
+Locally" build does. `CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=` is
+enough on the command line. The unsigned smoke test keeps passing; its summary now reports the Health
+plugin's answer without gating on it.
+
+The sheet the ad-hoc build gets for the read-only request (the product's request), as captured:
+
+- title "Health Access", then "Health" and "“Exo” would like to access and update your Health
+  data." (the same sentence for a read-only request);
+- a "Turn On All" button;
+- "Allow “Exo” to read" with a toggle each for "Heart Rate", "Sleep" and "Steps" (alphabetical, with
+  the Health app's icons);
+- "App Explanation: " followed by `NSHealthShareUsageDescription`, then a note on background reads
+  ("… General > Background App Refresh");
+- "Allow" (disabled until a toggle is on) and "Don't Allow".
+
+The write request (`sampleWrite`) gets the same sheet with "Allow “Exo” to write" first and
+`NSHealthUpdateUsageDescription` as its explanation.
+
+The CI probe (`mobile/scripts/ios-health-probe.sh`) launches the ad-hoc build with
+`EXO_HEALTH_PROBE=1`, so `ExoBridgeViewController` drives the plugin over the bridge (availability,
+status, read request, write request, sample data, 7-day read, background delivery) and logs each step.
+The Health sheet is a remote view that AXe's accessibility queries cannot see ("No translation object
+returned for simulator"), so the script answers it by screen position (Turn On All, then Allow), with
+retries. Results of the last run are in the job summary and the `exo-ios-health-<sha>` artifact
+(screenshots, `probe.jsonl`, `entitlements.txt`).
 
 ## What the app can and cannot observe
 

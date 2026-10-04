@@ -169,7 +169,7 @@ stage() { jq -c --arg s "$1" 'select(.stage == $s) | .response' "$out/probe.json
   echo
   echo "| Step | Response |"
   echo "|---|---|"
-  for s in availability status authorized-read authorized-write inserted read background status-after; do
+  for s in availability status authorized-read authorized-write inserted read background status-after read-steps-only; do
     r=$(stage "$s" | cut -c1-600)
     echo "| $s | \`${r:-(not reached)}\` |"
   done

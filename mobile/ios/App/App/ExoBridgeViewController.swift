@@ -120,7 +120,8 @@ class ExoBridgeViewController: CAPBridgeViewController {
         ("inserted", "insertSampleData", [:]),
         ("read", "readDailySummaries", ["days": 7]),
         ("background", "enableBackgroundDelivery", ["types": ["steps"]]),
-        ("status-after", "authorizationStatus", [:])
+        ("status-after", "authorizationStatus", [:]),
+        ("read-steps-only", "readDailySummaries", ["days": 3, "types": ["steps"]])
     ]
     private static let healthProbeScript = """
         try {
