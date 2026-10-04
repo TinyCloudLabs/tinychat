@@ -269,7 +269,28 @@ describe("hosted upload terminal outcomes and cleanup", () => {
     expect(calls).toEqual(["GET /hosted/uploads/upload", "DELETE /hosted/uploads/upload"]);
   });
 
-  for (const status of [404, 410, "failed"] as const) {
+  test("Discard confirms an unsent missing upload with two bounded rechecks", async () => {
+    let reads = 0;
+    const c = client(() => { reads++; return json(404, { error: "assemblyai_upload_not_found" }); });
+    await c.deleteUpload!("upload");
+    expect(reads).toBe(3);
+  });
+
+  for (const status of ["receiving", "submitting"] as const) {
+    test(`Discard remembers a ${status} upload claimed before a later 404`, async () => {
+      let reads = 0;
+      let submitting = false;
+      const c = client((_path, method) => {
+        if (method === "DELETE") return json(409, { error: "assemblyai_upload_in_progress" });
+        return ++reads === 1 ? json(200, { status }) : json(404, { error: "assemblyai_upload_not_found" });
+      });
+      await expect(c.deleteUpload!("upload", { onSubmitting: () => { submitting = true; } })).rejects.toThrow("Retry deleting later");
+      expect(submitting).toBe(true);
+      expect(reads).toBe(4);
+    });
+  }
+
+  for (const status of [410, "failed"] as const) {
     test(`Discard accepts terminal upload ${status} without another mutation`, async () => {
       const calls: string[] = [];
       const c = client((path, method) => {
@@ -280,4 +301,22 @@ describe("hosted upload terminal outcomes and cleanup", () => {
       expect(calls).toEqual(["GET /hosted/uploads/upload"]);
     });
   }
+});
+
+test("Discard rechecks a transient upload 404 and deletes the submitted transcript", async () => {
+  let reads = 0;
+  const deletes: string[] = [];
+  const client = createHostedAssemblyAiClient({
+    backendUrl: "https://backend.test", sessionStore: { getToken: () => "session", isExpired: () => false }, sleep: async () => {},
+    fetchImpl: (async (url, init) => {
+      if (init?.method === "DELETE") {
+        deletes.push(String(url));
+        return new Response(null, { status: 204 });
+      }
+      return ++reads === 1 ? json(404, { error: "assemblyai_upload_not_found" }) : json(200, { status: "submitted", id: "handle" });
+    }) as typeof fetch,
+  });
+  await client.deleteUpload!("upload");
+  expect(reads).toBe(2);
+  expect(deletes).toEqual(["https://backend.test/api/transcriber/assemblyai/hosted/transcripts/handle"]);
 });

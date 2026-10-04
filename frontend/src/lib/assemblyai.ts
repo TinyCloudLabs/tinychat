@@ -93,7 +93,7 @@ export interface AssemblyAiClient {
   /** Deletes the transcript and its uploaded audio. A transcript already gone counts as deleted. */
   deleteTranscript(id: string): Promise<void>;
   /** Hosted only: abandon an upload, or wait for its handle and delete the transcript. */
-  deleteUpload?(uploadRef: string, options?: { signal?: AbortSignal; onSubmitted?: (id: string) => void }): Promise<void>;
+  deleteUpload?(uploadRef: string, options?: { signal?: AbortSignal; uploadSubmitting?: boolean; onSubmitting?: () => void; onSubmitted?: (id: string) => void }): Promise<void>;
 }
 
 async function errorFrom(response: Response): Promise<AssemblyAiError> {
@@ -489,15 +489,25 @@ export function createHostedAssemblyAiClient(config: {
         : new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
     },
 
-    async deleteUpload(uploadId, { signal, onSubmitted } = {}) {
+    async deleteUpload(uploadId, { signal, uploadSubmitting = false, onSubmitting, onSubmitted } = {}) {
       const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
       const deadline = Date.now() + SUBMIT_DEADLINE_MS;
+      let missingChecks = 0;
       for (;;) {
         let state: HostedSubmission;
         try {
           state = await submission(await request(path, { signal, uploadState: true }));
         } catch (err) {
-          if (err instanceof AssemblyAiError && err.uploadEnded) return;
+          if (err instanceof AssemblyAiError && err.uploadEnded) {
+            if (err.kind !== "not-found") return;
+            // A missing upload can be a transient settlement gap on an older backend.
+            if (missingChecks++ < 2) {
+              await sleep(SUBMIT_POLL_MS);
+              continue;
+            }
+            if (!uploadSubmitting) return;
+            throw new AssemblyAiError("network", "The submitted upload's outcome is unavailable. Retry deleting later.");
+          }
           throw err;
         }
         if (state.status === "failed") return;
@@ -509,9 +519,12 @@ export function createHostedAssemblyAiClient(config: {
         if (state.status !== "receiving" && state.status !== "submitting") {
           throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry deleting keeps waiting.");
         }
+        if (state.status === "submitting") onSubmitting?.();
         // A claim may win between GET and DELETE. A 409 keeps the reference until its handle arrives.
         const deleted = await request(path, { method: "DELETE", signal, allowConflict: true });
         if (deleted.status !== 409) return;
+        uploadSubmitting = true;
+        onSubmitting?.();
         if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file. Retry deleting keeps waiting.");
         await sleep(SUBMIT_POLL_MS);
       }

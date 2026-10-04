@@ -19,6 +19,8 @@ import express from "express";
 import { load as loadYaml } from "js-yaml";
 import { createCsrfMiddleware, issueSessionToken } from "@tinyboilerplate/server";
 
+import { createHostedAssemblyAiClient } from "../../../frontend/src/lib/assemblyai.ts";
+
 import { localValidationFromEnv } from "../local-validation.js";
 import { createAuthMiddleware } from "../middleware/auth.js";
 import { ASSEMBLYAI_HOSTED_UPLOAD_LIMIT, TRANSCRIBER_LIMIT, applyRateLimiters } from "../rate-limits.js";
@@ -93,11 +95,11 @@ function hostedConfig(spoolDir: string, extra: Partial<{ dailyBytes: number }> =
 }
 
 /** The app in index.ts's order: JSON parser (parts excluded) → CSRF → limiters → auth → router. */
-async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig | null; maxConcurrent?: number; dailyBytes?: number; onSubmit?: () => void } = {}) {
+async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig | null; maxConcurrent?: number; dailyBytes?: number; onSubmit?: () => void; removeSpool?: typeof fsPromises.rm } = {}) {
   const spoolDir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-test-"));
   closers.push(() => rmSync(spoolDir, { recursive: true, force: true }));
   const config = options.config === null ? ({ hosted: false, reason: "both_unset" } as const) : (options.config ?? hostedConfig(spoolDir, { dailyBytes: options.dailyBytes }));
-  const store = config.hosted ? new HostedUploadStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4) : null;
+  const store = config.hosted ? new HostedUploadStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4, options.removeSpool) : null;
   await store?.init();
   const clock = { now: T0 };
   const calls: Upstream[] = [];
@@ -176,7 +178,7 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
     return (await req("GET", `/hosted/uploads/${id}`, { as })).json;
   }
 
-  return { req, createUpload, upload, submit, calls, logs, clock, store, spoolDir, spoolFiles: () => readdirSync(spoolDir) };
+  return { base, tokenFor, req, createUpload, upload, submit, calls, logs, clock, store, spoolDir, spoolFiles: () => readdirSync(spoolDir) };
 }
 
 function audio(bytes: number): Uint8Array {
@@ -901,4 +903,43 @@ test("DELETE preserves a submitted handle when completion wins the discard race"
   expect((await h.req("DELETE", `/hosted/uploads/${id}`)).status).toBe(409);
   expect((await h.req("GET", `/hosted/uploads/${id}`)).json).toEqual(outcome);
   expect((await h.req("DELETE", `/hosted/transcripts/${outcome.id}`)).status).toBe(204);
+});
+
+describe("TC-592 settling visibility", () => {
+  for (const action of ["polling", "Discard"] as const) {
+    test(`${action} retains the submitted handle while spool deletion is paused`, async () => {
+      const deleting = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const h = await setup({ removeSpool: async (path, options) => {
+        deleting.resolve();
+        await gate.promise;
+        await fsPromises.rm(path, options);
+      } });
+      const id = await h.upload(audio(10));
+      await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+      await deleting.promise;
+      const token = await h.tokenFor(ADDRESS_A);
+      const client = createHostedAssemblyAiClient({
+        backendUrl: h.base.replace(ASSEMBLYAI_HOSTED_MOUNT, ""),
+        sessionStore: { getToken: () => token, isExpired: () => false },
+        sleep: async () => {},
+      });
+      try {
+        expect(h.spoolFiles()).toHaveLength(1);
+        if (action === "polling") {
+          const result = await client.createTranscript(id, { speakerLabels: true });
+          expect(result.id).toStartWith("aah1.");
+          expect((await client.getTranscript(result.id)).status).toBe("completed");
+        } else {
+          await client.deleteUpload!(id);
+          expect(h.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+        }
+        expect((await h.req("GET", `/hosted/uploads/${id}`)).json.status).toBe("submitted");
+      } finally {
+        gate.resolve();
+        await h.store!.idle();
+      }
+      expect(h.spoolFiles()).toEqual([]);
+    });
+  }
 });

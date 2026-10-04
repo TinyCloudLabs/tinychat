@@ -766,8 +766,8 @@ describe("upload runner: an AssemblyAI job keeps its account", () => {
       storage.set(`exo.transcriber.uploadPending:${DID}`, JSON.stringify(legacy));
       expect(localStoragePendingUploadStore(DID).read()?.assemblyAiMode).toBe("own");
       const pending = localStoragePendingUploadStore(DID);
-      pending.write({ ...pending.read()!, discarding: true });
-      expect(localStoragePendingUploadStore(DID).read()?.discarding).toBe(true);
+      pending.write({ ...pending.read()!, discarding: true, uploadSubmitting: true });
+      expect(localStoragePendingUploadStore(DID).read()).toMatchObject({ discarding: true, uploadSubmitting: true });
     } finally {
       globalThis.localStorage = original;
     }
@@ -845,8 +845,8 @@ describe("TC-592 hosted recovery regressions", () => {
   };
   const response = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-  for (const status of [429, 502, 503, 401]) {
-    test(`poll HTTP ${status} preserves the upload reference across reload and resumes it`, async () => {
+  for (const status of [429, 502, 503, 401, 404]) {
+    test(`poll HTTP ${status} after reload keeps Retry and recovers without another reload`, async () => {
       const pending = memoryPending({ ...stored });
       let fail = true;
       const creates: string[] = [];
@@ -870,15 +870,57 @@ describe("TC-592 hosted recovery regressions", () => {
       runner.resume(d);
       expect((await settled(runner)).stage).toBe("failed");
       expect(pending.value?.uploadRef).toBe("aau_review");
-      runner.reset();
+      expect(runner.snapshot()?.error?.retry).toBe(true);
       fail = false;
-      const resumed = createUploadRunner();
-      resumed.resume(d);
-      expect((await settled(resumed)).stage).toBe("saved");
+      runner.retry(d);
+      expect((await settled(runner)).stage).toBe("saved");
       expect(creates).toEqual(["aau_review", "aau_review"]);
       expect(saved).toHaveLength(1);
     });
   }
+
+  test("Discard keeps a missing submitting upload across reload until its transcript can be deleted", async () => {
+    const pending = memoryPending({ ...stored });
+    let phase: "transcribe" | "missing" | "settled" = "transcribe";
+    let reads = 0;
+    const deletes: string[] = [];
+    const client = createHostedAssemblyAiClient({
+      backendUrl: "https://backend.test", sessionStore: { getToken: () => "session", isExpired: () => false }, sleep: async () => {},
+      fetchImpl: (async (url, init) => {
+        if (init?.method === "POST") return response(202, { status: "submitting" });
+        if (init?.method === "DELETE") {
+          deletes.push(String(url));
+          return new Response(null, { status: 204 });
+        }
+        reads++;
+        if (phase === "transcribe") return response(502, { error: "assemblyai_unavailable" });
+        return phase === "missing" ? response(404, { error: "assemblyai_upload_not_found" }) : response(200, { status: "submitted", id: "handle" });
+      }) as typeof fetch,
+    });
+    const { deps: d, saved } = deps({ pending, audio: audioFake().audio, assemblyAiClient: async () => client });
+    const runner = createUploadRunner();
+    runner.resume(d);
+    await settled(runner);
+    phase = "missing";
+    await runner.dismiss(d);
+    expect(pending.value).toMatchObject({ discarding: true, uploadRef: "aau_review", uploadSubmitting: true });
+    expect(runner.snapshot()).toMatchObject({ cleanupPending: true, error: { retry: true } });
+    expect(reads).toBeLessThanOrEqual(10);
+    expect(deletes).toEqual([]);
+    runner.reset();
+    const resumed = createUploadRunner();
+    resumed.resume(d);
+    expect((await settled(resumed)).cleanupPending).toBe(true);
+    expect(pending.value?.uploadRef).toBe("aau_review");
+    phase = "settled";
+    const cleared = new Promise<void>((resolve) => {
+      const unsubscribe = resumed.subscribe(() => { if (pending.value === null) { unsubscribe(); resolve(); } });
+    });
+    resumed.retry(d);
+    await cleared;
+    expect(deletes).toEqual(["https://backend.test/api/transcriber/assemblyai/hosted/transcripts/handle"]);
+    expect(saved).toHaveLength(0);
+  });
 
   for (const initial of ["receiving", "submitting", "submitted"] as const) {
     test(`Discard resolves ${initial} uploads and retains cleanup until deletion succeeds`, async () => {

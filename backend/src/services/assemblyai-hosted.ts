@@ -223,6 +223,7 @@ export class HostedUploadStore {
     private readonly spoolDir: string,
     private readonly dailyBytes: number,
     private readonly maxConcurrent: number,
+    private readonly removeSpool: typeof rm = rm,
   ) {}
 
   /** Create the spool dir (0700) and remove whatever a previous process left in it. */
@@ -365,8 +366,10 @@ export class HostedUploadStore {
       } catch {
         outcome = { status: "failed", code: "assemblyai_unavailable" };
       }
-      await this.release(upload).catch(() => {});
+      // Publish the outcome before release removes the active entry; no lookup can see a gap
+      // while the spool deletion is pending (or if deleting the file fails).
       this.settled.set(upload.id, { owner: upload.owner, until: now() + SETTLED_TTL_MS, outcome });
+      await this.release(upload).catch(() => {});
     })();
     this.inFlight.add(run);
     void run.finally(() => this.inFlight.delete(run));
@@ -380,7 +383,7 @@ export class HostedUploadStore {
   /** Delete the spool and free the slot. Safe to call more than once. */
   async release(upload: HostedUpload): Promise<void> {
     this.uploads.delete(upload.id);
-    await rm(upload.path, { force: true });
+    await this.removeSpool(upload.path, { force: true });
   }
 
   /** Drop an upload that was never sent: spool deleted, slot freed, its bytes refunded. */

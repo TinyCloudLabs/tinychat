@@ -170,6 +170,8 @@ export interface PendingUpload {
   discarding?: boolean;
   /** AssemblyAI: the sent file's reference (upload URL, or TinyCloud's upload id) until its transcript exists. */
   uploadRef?: string;
+  /** A hosted submit may have reached the server; a missing upload cannot prove cleanup. */
+  uploadSubmitting?: boolean;
   /** AssemblyAI only: whose account the job runs under. Resume and delete use exactly this account, never the other. */
   assemblyAiMode?: AssemblyAiKeyMode;
   /** What the saved meeting records about its audio, so a resumed saved job reports it truthfully. */
@@ -220,6 +222,7 @@ export function localStoragePendingUploadStore(accountDid: string): PendingUploa
         owner: p.owner,
         saved: p.saved === true,
         ...(p.discarding === true ? { discarding: true } : {}),
+        ...(p.uploadSubmitting === true ? { uploadSubmitting: true } : {}),
         ...(typeof p.uploadRef === "string" ? { uploadRef: p.uploadRef } : {}),
         // A record from before key modes existed was made with the user's own key.
         ...(p.engine === "assemblyai" ? { assemblyAiMode: p.assemblyAiMode === "hosted" ? ("hosted" as const) : ("own" as const) } : {}),
@@ -748,18 +751,20 @@ export function createUploadRunner(): UploadRunner {
       }
       runSet(r, { stage: "queued", uploadPct: null, detail: "Sending the file to AssemblyAI…" });
       let created: AssemblyAiTranscript;
+      // Persist before sending: a lost response or reload cannot prove the POST wasn't accepted.
+      if (job.assemblyAiMode === "hosted") job = runPersist(r, deps, { ...job, uploadSubmitting: true });
       try {
         created = await client.createTranscript(uploadRef, { speakerLabels: job.diarize, signal: r.signal });
       } catch (err) {
         // Hosted references survive all ambiguous failures, including rate limits and session expiry.
-        const ended = err instanceof AssemblyAiError && err.uploadEnded;
+        const ended = err instanceof AssemblyAiError && err.uploadEnded && !(err.kind === "not-found" && job.uploadSubmitting);
         if (job.assemblyAiMode === "hosted" ? ended : !(err instanceof AssemblyAiError && err.kind === "network")) {
-          runPersist(r, deps, { ...job, uploadRef: undefined });
+          runPersist(r, deps, { ...job, uploadRef: undefined, uploadSubmitting: undefined });
         }
         throw err;
       }
       stillLive(r);
-      job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined });
+      job = runPersist(r, deps, { ...job, jobId: created.id, uploadRef: undefined, uploadSubmitting: undefined });
     }
     runSet(r, { stage: "queued", uploadPct: null, detail: "Queued at AssemblyAI…" });
     const done = await pollAssemblyAiTranscript(client, job.jobId!, {
@@ -783,6 +788,7 @@ export function createUploadRunner(): UploadRunner {
   /** Deletes the remote job (at AssemblyAI, with its uploaded audio), retrying briefly. */
   async function deleteRemote(deps: UploadDeps, job: PendingUpload, client: AssemblyAiClient | null, signal?: AbortSignal): Promise<void> {
     let jobId = job.jobId;
+    let uploadSubmitting = job.uploadSubmitting;
     const hostedUpload = job.engine === "assemblyai" && job.assemblyAiMode === "hosted" && job.uploadRef !== undefined;
     if (jobId === null && !hostedUpload) return;
     const sleep = (deps.clock ?? REAL_CLOCK).sleep;
@@ -795,10 +801,17 @@ export function createUploadRunner(): UploadRunner {
             if (!remote.deleteUpload) throw new Error("Hosted upload cleanup is unavailable. Retry deleting after reloading.");
             await remote.deleteUpload(job.uploadRef!, {
               signal,
+              uploadSubmitting,
+              onSubmitting: () => {
+                uploadSubmitting = true;
+                if (!signal?.aborted && current?.owner === job.owner && current.attemptId === job.attemptId) {
+                  persist(deps, { ...current, uploadSubmitting: true });
+                }
+              },
               onSubmitted: (id) => {
                 jobId = id;
                 if (!signal?.aborted && current?.owner === job.owner && current.attemptId === job.attemptId) {
-                  persist(deps, { ...current, jobId: id, uploadRef: undefined });
+                  persist(deps, { ...current, jobId: id, uploadRef: undefined, uploadSubmitting: undefined });
                 }
               },
             });
@@ -896,12 +909,12 @@ export function createUploadRunner(): UploadRunner {
       const failed = current;
       const resumableHosted = failed?.assemblyAiMode === "hosted" && failed.uploadRef !== undefined;
       let retry = failed !== null && (!failure.final || resumableHosted);
-      if (retry && failed !== null && !failure.keepJob && !failed.saved) {
+      if (retry && failed !== null && !failure.keepJob && !failed.saved && !resumableHosted) {
         // This job is over: Retry starts a new one, which needs the file.
         if (file === null) retry = false;
         else if (failed.jobId !== null) {
           void deleteRemote(deps, failed, client).catch((e: unknown) => console.error("Deleting the failed job failed", e));
-          persist(deps, { ...failed, attemptId: crypto.randomUUID(), jobId: null, uploadRef: undefined });
+          persist(deps, { ...failed, attemptId: crypto.randomUUID(), jobId: null, uploadRef: undefined, uploadSubmitting: undefined });
           sent = false;
         }
       }
