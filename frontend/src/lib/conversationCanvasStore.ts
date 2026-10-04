@@ -1,3 +1,4 @@
+import { reportStorageError, storageSaveMessage, trackStorageWrites } from "./storageStatus";
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSettingsByPrefix, getThread, rewriteThreadMessages, setSetting, type StoredMessageItem } from "./threadStore";
 import {
@@ -40,6 +41,10 @@ export const CANVAS_ACCESS_MESSAGE =
 export const CANVAS_DISABLED_MESSAGE = "Turn on Conversation Canvas in Settings first.";
 export const CANVAS_MISSING_MESSAGE = "This chat uses Conversation Canvas, but its Canvas data could not be found.";
 
+function canvasStorageError(error: { code?: string; message?: string }, context: string): Error {
+  reportStorageError(error);
+  return new Error(storageSaveMessage(error) ?? `Conversation Canvas ${context}: ${error.message ?? "unknown"}`);
+}
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS canvas_threads (thread_id TEXT PRIMARY KEY, active_head_id TEXT, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS canvas_revisions (thread_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)`,
@@ -215,13 +220,28 @@ export function useLocalCanvasStorage(tcw: TinyCloudWeb): TinyCloudWeb {
 
 export function isLocalCanvasStorage(tcw: TinyCloudWeb): boolean { return localStores.has(tcw); }
 
-function db(tcw: TinyCloudWeb) { return tcw.sql.db(CANVAS_SQL_DB_NAME); }
+function db(tcw: TinyCloudWeb) { return trackStorageWrites(tcw.sql.db(CANVAS_SQL_DB_NAME)); }
 
 async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
   if (schemaReady.has(tcw as unknown as object)) return;
   await ensureCanvasAccess(tcw);
-  const result = await db(tcw).batch(SCHEMA.map((sql) => ({ sql })));
-  if (!result.ok) throw new Error(`Conversation Canvas storage is unavailable: ${result.error.message}`);
+  const database = db(tcw);
+  const tables = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
+    (table): table is string => table !== undefined,
+  );
+  const existingResult = await database.query(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+    tables,
+  );
+  if (!existingResult.ok) throw canvasStorageError(existingResult.error, "storage is unavailable");
+  const existingRows = existingResult.data.rows as unknown as unknown[][];
+  const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
+  for (const sql of SCHEMA) {
+    const table = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1];
+    if (!table || existing.has(table)) continue;
+    const result = await database.execute(sql);
+    if (!result.ok) throw canvasStorageError(result.error, "storage is unavailable");
+  }
   schemaReady.add(tcw as unknown as object);
 }
 
@@ -252,11 +272,10 @@ interface StoredCanvas {
   canvas: ConversationCanvas | null;
   revision: number;
 }
-
 async function readStoredCanvas(tcw: TinyCloudWeb, threadId: string): Promise<StoredCanvas> {
   await ensureSchema(tcw);
   const result = await db(tcw).query(READ_SQL, Array(7).fill(threadId));
-  if (!result.ok) throw new Error(`Conversation Canvas could not be read: ${result.error.message}`);
+  if (!result.ok) throw canvasStorageError(result.error, "could not be read");
   let revision = 0;
   let hasHead = false;
   let head: string | null = null;
@@ -432,7 +451,7 @@ export async function deleteCanvas(tcw: TinyCloudWeb, threadId: string): Promise
         { sql: "DELETE FROM canvas_document_versions WHERE thread_id = ?", params: [threadId] },
         { sql: "DELETE FROM canvas_document_placements WHERE thread_id = ?", params: [threadId] },
       ]);
-      if (!result.ok) throw new Error(`Conversation Canvas could not be deleted: ${result.error.message}`);
+      if (!result.ok) throw canvasStorageError(result.error, "could not be deleted");
     });
   }
   await setSetting(tcw, `${CANVAS_PROMOTION_PREFIX}${threadId}`, "false");
@@ -528,7 +547,7 @@ export async function recordPromotedChatMessage(
       ...nodeStatements(threadId, node),
       headStatement(threadId, message.id),
     ]);
-    if (!result.ok) throw new Error(`Conversation Canvas could not be saved: ${result.error.message}`);
+    if (!result.ok) throw canvasStorageError(result.error, "could not be saved");
   });
   return true;
 }

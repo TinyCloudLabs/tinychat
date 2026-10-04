@@ -1,3 +1,4 @@
+import { isStorageFullError, reportStorageError, storageSaveMessage, trackStorageWrites } from "./storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
@@ -40,7 +41,7 @@ export const DEFAULT_MODEL = DEFAULT_CHAT_MODEL;
 export const THREADS_SQL_DB_NAME = `${APP_ID}/threads`;
 const SQL_DB_NAME = THREADS_SQL_DB_NAME;
 
-/** Schema creates, run before the first write per session (via ensureSchema). */
+/** Schema statements, created only for tables missing from a read-only probe. */
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS threads (
     id TEXT PRIMARY KEY,
@@ -179,10 +180,12 @@ export class SqlOpError extends Error {
    */
   readonly retryable: boolean;
   constructor(error: SqlError, context: string) {
-    super(`${context}: [${error.code}] ${error.message}`);
+    const message = storageSaveMessage(error) ?? `${context}: [${error.code}] ${error.message}`;
+    super(message, { cause: error });
     this.name = "SqlOpError";
     this.code = error.code;
     this.retryable = error.code === SQL_TIMEOUT_CODE;
+    reportStorageError(error);
   }
 }
 
@@ -250,7 +253,7 @@ function bounded(db: SqlDb, timeoutMs?: number) {
 /** A SQL database handle bound to the granted per-space resource. */
 function store(tcw: TinyCloudWeb, timeoutMs?: number) {
   if (localStores.has(tcw)) throw new Error("Local validation cannot access the production chat store");
-  return bounded(tcw.sql.db(SQL_DB_NAME), timeoutMs);
+  return trackStorageWrites(bounded(tcw.sql.db(SQL_DB_NAME), timeoutMs));
 }
 
 function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
@@ -263,23 +266,12 @@ const schemaReadySpaces = new Set<string>();
 const schemaInFlight = new Map<string, Promise<void>>();
 
 /**
- * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized
- * per account so it's a no-op after the first call per session.
+ * Probe the schema read-only before creating any missing tables. Existing
+ * schemas therefore remain readable when storage is full. Memoized per
+ * account; concurrent callers share one probe/create sequence.
  *
- * Memo key prefers `tcw.did` over `tcw.spaceId` for the same reason as
- * `cacheKey` below: spaceId is undefined on a RESTORED session, and an empty
- * key disabled the memo entirely — every SQL helper paid a schema batch
- * (~2s round-trip) before its real query, doubling all boot traffic.
- *
- * Concurrent first-callers share one in-flight batch instead of each issuing
- * their own (boot fires listThreads / getThread / getMemory / getThreadModel
- * roughly simultaneously, and the node degrades badly under parallel invokes).
- *
- * The CREATEs run as ordinary write statements in one `batch` transaction.
- * NOTE: do NOT use `execute(..., { schema })` — the schema option is authorized
- * differently and returns "400 Schema error: not authorized" under our
- * read+write grant, whereas plain DDL statements (CREATE TABLE …) are allowed.
- * On failure we do NOT memoize and we propagate so the caller can surface it.
+ * The memo key prefers `tcw.did` over `tcw.spaceId` because restored sessions
+ * may not expose `spaceId`. Failed probes or creates are not memoized.
  */
 async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
   const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
@@ -291,9 +283,24 @@ async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
   if (inFlight) return inFlight;
 
   const run = (async () => {
-    const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
-    if (!result.ok) {
-      throw new SqlOpError(result.error, "ensureSchema");
+    const db = store(tcw);
+    const tables = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
+      (table): table is string => table !== undefined,
+    );
+    const existingResult = await db.query(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+      tables,
+    );
+    if (!existingResult.ok) throw new SqlOpError(existingResult.error, "ensureSchema probe");
+    const existingRows = existingResult.data.rows as unknown as unknown[][];
+    const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
+    const missing = SCHEMA.filter((sql) => {
+      const table = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1];
+      return table !== undefined && !existing.has(table);
+    });
+    if (missing.length > 0) {
+      const result = await db.batch(missing.map((sql) => ({ sql })));
+      if (!result.ok) throw new SqlOpError(result.error, "ensureSchema");
     }
     if (memoKey) schemaReadySpaces.add(memoKey);
   })();

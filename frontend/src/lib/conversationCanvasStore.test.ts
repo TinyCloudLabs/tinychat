@@ -52,6 +52,9 @@ function recordingClient(did: string, options: {
     async query(sql: string, params: string[] = []) {
       databases.push(name);
       statements.push(sql);
+      if (/FROM sqlite_master/i.test(sql)) {
+        return { ok: true, data: { rows: params.map((table) => [table]) } };
+      }
       if (sql.includes("FROM settings")) {
         if (failSettingsReads > 0) {
           failSettingsReads--;
@@ -83,7 +86,7 @@ function recordingClient(did: string, options: {
   return { tcw, settings, databases, statements, permissionRequests };
 }
 
-const settingsReads = (statements: string[]) => statements.filter((sql) => sql.includes("FROM settings")).length;
+const settingsReads = (statements: string[]) => statements.filter((sql) => /^SELECT key, value FROM settings/i.test(sql.trim())).length;
 
 const item = (id: string, role: "user" | "assistant", text: string, extra: Record<string, unknown> = {}): StoredMessageItem => ({
   parentId: null,

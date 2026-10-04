@@ -8,6 +8,15 @@ import {
   setMemory,
 } from "./threadStore";
 import { MEMORY_TEMPLATE } from "./memory";
+import { onPaywallError } from "./chatApi";
+import {
+  reportStorageWriteSucceeded,
+  STORAGE_FULL_SAVE_MESSAGE,
+  subscribeStorageReadOnly,
+  isStorageReadOnly,
+  isStorageFullError,
+  storageSaveMessage,
+} from "./storageStatus";
 
 /** Capture console.warn output for the duration of `fn` (restores after). */
 async function captureWarn(fn: () => Promise<void>): Promise<string> {
@@ -41,8 +50,14 @@ type SqlResult = { ok: true; data: { rows: unknown[][] } } | { ok: false; error:
 class FakeSqlDb {
   rows = new Map<string, string>();
   queryError: SqlError | null = null;
+  writes = 0;
+  rejectWrites = false;
+  existingTables = new Set(["threads", "messages", "settings", "memory", "compactions"]);
 
   query(sql: string, params: unknown[] = []): SqlResult {
+    if (/FROM sqlite_master/i.test(sql)) {
+      return { ok: true, data: { rows: params.filter((table) => this.existingTables.has(String(table))).map((table) => [table]) } };
+    }
     if (this.queryError && /select\s+content\s+from\s+memory/i.test(sql)) {
       return { ok: false, error: this.queryError };
     }
@@ -65,11 +80,15 @@ class FakeSqlDb {
   }
 
   execute(sql: string, params: unknown[] = []): SqlResult {
+    this.writes++;
+    if (this.rejectWrites) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
     this.apply(sql, params);
     return { ok: true, data: { rows: [] } };
   }
 
   batch(stmts: { sql: string; params?: unknown[] }[]): SqlResult {
+    this.writes++;
+    if (this.rejectWrites) return { ok: false, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
     for (const s of stmts) this.apply(s.sql, s.params ?? []);
     return { ok: true, data: { rows: [] } };
   }
@@ -229,6 +248,37 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
         delete (globalThis as { localStorage?: Storage }).localStorage;
       }
       delete (globalThis as { window?: unknown }).window;
+    }
+  });
+});
+
+describe("full TinyCloud storage", () => {
+  it("keeps memory reads on SELECTs and presents a typed failed save", async () => {
+    reportStorageWriteSucceeded();
+    const db = new FakeSqlDb();
+    db.rejectWrites = true;
+    const tcw = makeTcw(db);
+    const payloads: Array<{ error: string; message: string }> = [];
+    const unsubscribe = onPaywallError((payload) => {
+      if ("error" in payload) payloads.push({ error: payload.error, message: payload.message });
+    });
+    const unwatch = subscribeStorageReadOnly(() => undefined);
+    try {
+      expect(await getMemory(tcw)).toBeNull();
+      expect(db.writes).toBe(0);
+      await expect(setMemory(tcw, "cannot save")).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
+      expect(db.writes).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+      expect(isStorageFullError({ code: "NETWORK_ERROR", message: "SQL batch failed: 402 - Storage quota exceeded" })).toBe(true);
+      expect(storageSaveMessage({ code: "STORAGE_LIMIT_REACHED", message: "limited" })).toContain("This change is larger");
+      db.rejectWrites = false;
+      await setMemory(tcw, "saved after space was freed");
+      expect(isStorageReadOnly()).toBe(false);
+      expect(payloads).toEqual([{ error: "STORAGE_QUOTA_EXCEEDED", message: STORAGE_FULL_SAVE_MESSAGE }]);
+    } finally {
+      unsubscribe();
+      unwatch();
+      reportStorageWriteSucceeded();
     }
   });
 });

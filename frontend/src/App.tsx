@@ -35,6 +35,13 @@ import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
 import { UsageIndicator } from "./chat/UsageIndicator";
 import { AgentAccessProvider } from "./chat/useAgentEnablement";
 import { PricingDialog } from "./chat/PricingDialog";
+import { StorageFullDialog } from "./chat/StorageFullDialog";
+import {
+  isStorageReadOnly,
+  MANAGE_STORAGE_URL,
+  STORAGE_READ_ONLY_NOTICE,
+  subscribeStorageReadOnly,
+} from "./lib/storageStatus";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
   readMemoryCache,
@@ -189,6 +196,8 @@ export function App() {
   // two triggers) — bounded + only-when-null already, this makes it storm-proof.
   const configFetchInFlightRef = useRef(false);
   const [pricingOpen, setPricingOpen] = useState(false);
+  const [storageDialogOpen, setStorageDialogOpen] = useState(false);
+  const storageReadOnly = useSyncExternalStore(subscribeStorageReadOnly, isStorageReadOnly, () => false);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
@@ -443,6 +452,10 @@ export function App() {
   // backend is enforcing the paywall.
   useEffect(() => {
     return onPaywallError((payload) => {
+      if (payload.error === "STORAGE_QUOTA_EXCEEDED" || payload.error === "STORAGE_LIMIT_REACHED") {
+        setStorageDialogOpen(true);
+        return;
+      }
       // A1 trigger (b): a 402 means the backend is enforcing the paywall — if a
       // transient failure left us config-null, recover it now so the pricing
       // dialog can actually mount (no-op when a config is already held).
@@ -916,6 +929,15 @@ export function App() {
           </main>
         )}
       </div>
+      {storageReadOnly && (
+        <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
+          <strong>Storage full: read-only.</strong>{" "}
+          {STORAGE_READ_ONLY_NOTICE}{" "}
+          <a className="font-medium underline underline-offset-2" href={MANAGE_STORAGE_URL} target="_blank" rel="noreferrer">
+            Manage storage
+          </a>
+        </div>
+      )}
 
       {paywallEnabled && billingConfig && (
         <PricingDialog
@@ -926,6 +948,7 @@ export function App() {
           onOpenRates={openRates}
         />
       )}
+      <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} />
 
       <RatesDialog
         open={ratesOpen}
