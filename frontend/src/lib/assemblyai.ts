@@ -40,7 +40,7 @@ export type AssemblyAiErrorKind = "invalid-key" | "network" | "rate-limited" | "
 
 export class AssemblyAiError extends Error {
   readonly kind: AssemblyAiErrorKind;
-  constructor(kind: AssemblyAiErrorKind, message: string) {
+  constructor(kind: AssemblyAiErrorKind, message: string, readonly uploadEnded = false) {
     super(message);
     this.name = "AssemblyAiError";
     this.kind = kind;
@@ -92,6 +92,8 @@ export interface AssemblyAiClient {
   getSentences(id: string): Promise<AssemblyAiSentence[]>;
   /** Deletes the transcript and its uploaded audio. A transcript already gone counts as deleted. */
   deleteTranscript(id: string): Promise<void>;
+  /** Hosted only: abandon an upload, or wait for its handle and delete the transcript. */
+  deleteUpload?(uploadRef: string, options?: { signal?: AbortSignal; onSubmitted?: (id: string) => void }): Promise<void>;
 }
 
 async function errorFrom(response: Response): Promise<AssemblyAiError> {
@@ -367,7 +369,7 @@ export function createHostedAssemblyAiClient(config: {
 
   async function request(
     path: string,
-    init: { method?: string; json?: unknown; body?: Blob; timeoutMs?: number; signal?: AbortSignal } = {},
+    init: { method?: string; json?: unknown; body?: Blob; timeoutMs?: number; signal?: AbortSignal; uploadState?: boolean; allowConflict?: boolean } = {},
   ): Promise<Response> {
     const token = config.sessionStore.getToken();
     if (!token || config.sessionStore.isExpired()) throw new AssemblyAiError("rejected", "Your session expired. Sign in again, then retry.");
@@ -391,7 +393,13 @@ export function createHostedAssemblyAiClient(config: {
       if (init.signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
       throw new AssemblyAiError("network", "Could not reach Exo's server.");
     }
-    if (!response.ok) throw await hostedError(response);
+    if (!response.ok && !(init.allowConflict && response.status === 409)) {
+      const error = await hostedError(response);
+      if (init.uploadState && (response.status === 404 || response.status === 410)) {
+        throw new AssemblyAiError(error.kind, error.message, true);
+      }
+      throw error;
+    }
     return response;
   }
 
@@ -457,21 +465,56 @@ export function createHostedAssemblyAiClient(config: {
       // The backend sends the file on to AssemblyAI in the background: 202 with the submission's state,
       // then its state by upload id until it has the transcript's handle. A replay re-joins it.
       const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
-      let state = await submission(
-        await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels }, signal }),
-      );
+      let state: HostedSubmission;
+      try {
+        state = await submission(
+          await request("/hosted/transcripts", { method: "POST", json: { upload_id: uploadId, speaker_labels: speakerLabels }, signal }),
+        );
+      } catch (err) {
+        if (!(err instanceof AssemblyAiError) || (err.kind !== "not-found" && err.kind !== "failed")) throw err;
+        state = await submission(await request(path, { signal, uploadState: true }));
+      }
       const deadline = Date.now() + SUBMIT_DEADLINE_MS;
       while (state.status === "submitting" || state.status === "receiving") {
         if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file to AssemblyAI. Retry keeps waiting.");
         await sleep(SUBMIT_POLL_MS);
         if (signal?.aborted) throw new AssemblyAiError("failed", "The upload was cancelled.");
-        state = await submission(await request(path, { signal }));
+        state = await submission(await request(path, { signal, uploadState: true }));
       }
       if (state.status === "submitted" && typeof state.id === "string") return { id: state.id, status: "queued" };
+      if (state.status !== "failed") throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry keeps waiting.");
       const code = state.error?.code;
       throw code === "assemblyai_rate_limited"
-        ? new AssemblyAiError("rate-limited", "AssemblyAI is busy for TinyCloud's account. Retry uploads the file again in a few minutes.")
-        : new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.");
+        ? new AssemblyAiError("rate-limited", "AssemblyAI is busy for TinyCloud's account. Retry uploads the file again in a few minutes.", true)
+        : new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
+    },
+
+    async deleteUpload(uploadId, { signal, onSubmitted } = {}) {
+      const path = `/hosted/uploads/${encodeURIComponent(uploadId)}`;
+      const deadline = Date.now() + SUBMIT_DEADLINE_MS;
+      for (;;) {
+        let state: HostedSubmission;
+        try {
+          state = await submission(await request(path, { signal, uploadState: true }));
+        } catch (err) {
+          if (err instanceof AssemblyAiError && err.uploadEnded) return;
+          throw err;
+        }
+        if (state.status === "failed") return;
+        if (state.status === "submitted" && typeof state.id === "string") {
+          onSubmitted?.(state.id);
+          await this.deleteTranscript(state.id);
+          return;
+        }
+        if (state.status !== "receiving" && state.status !== "submitting") {
+          throw new AssemblyAiError("network", "Exo's server returned an unexpected upload state. Retry deleting keeps waiting.");
+        }
+        // A claim may win between GET and DELETE. A 409 keeps the reference until its handle arrives.
+        const deleted = await request(path, { method: "DELETE", signal, allowConflict: true });
+        if (deleted.status !== 409) return;
+        if (Date.now() > deadline) throw new AssemblyAiError("network", "Exo's server is still sending the file. Retry deleting keeps waiting.");
+        await sleep(SUBMIT_POLL_MS);
+      }
     },
 
     async getTranscript(id) {

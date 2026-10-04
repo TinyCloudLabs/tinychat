@@ -134,7 +134,7 @@ function stageText(job: UploadState): string {
     case "transcribing":
       return job.detail ?? "Transcribing…";
     case "saving":
-      return "Saving to your TinyCloud space…";
+      return job.detail ?? "Saving to your TinyCloud space…";
     default:
       return "";
   }
@@ -264,12 +264,12 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           </>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          {job.stage === "failed" && job.error?.retry === true && (
+          {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
             <Button type="button" size="sm" onClick={onRetry} className="h-9">
               Retry
             </Button>
           )}
-          {job.stage === "saved" && job.cleanupPending && (
+          {job.cleanupPending && !busy && (
             <Button type="button" size="sm" onClick={onRetry} className="h-9">
               Retry deleting
             </Button>

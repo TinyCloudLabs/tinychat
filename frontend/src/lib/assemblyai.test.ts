@@ -228,3 +228,56 @@ describe("TinyCloud's AssemblyAI account: sending the file on", () => {
     expect(limited.kind).toBe("rate-limited");
   });
 });
+
+
+describe("hosted upload terminal outcomes and cleanup", () => {
+  function client(answer: (path: string, method: string) => Response) {
+    return createHostedAssemblyAiClient({
+      backendUrl: "https://backend.test", sessionStore: { getToken: () => "session", isExpired: () => false }, sleep: async () => {},
+      fetchImpl: (async (url, init) => answer(String(url).split("/api/transcriber/assemblyai")[1]!, init?.method ?? "GET")) as typeof fetch,
+    });
+  }
+
+  for (const terminal of [404, 410, "failed", "limited"] as const) {
+    test(`only confirmed upload outcome ${terminal} allows forgetting the reference`, async () => {
+      const c = client((_path, method) => method === "POST" ? json(202, { status: "submitting" }) : typeof terminal === "number"
+        ? json(terminal, { error: "gone" }) : json(200, { status: "failed", error: { code: terminal === "limited" ? "assemblyai_rate_limited" : "assemblyai_unavailable" } }));
+      const error = await c.createTranscript("upload", { speakerLabels: true }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AssemblyAiError);
+      expect((error as AssemblyAiError).uploadEnded).toBe(true);
+    });
+  }
+
+  test("a POST 404 is confirmed by GET before the reference is forgotten", async () => {
+    const calls: string[] = [];
+    const c = client((path, method) => {
+      calls.push(`${method} ${path}`);
+      return json(method === "POST" ? 404 : 429, { error: "unavailable" });
+    });
+    const error = await c.createTranscript("upload", { speakerLabels: true }).catch((e: unknown) => e);
+    expect((error as AssemblyAiError).uploadEnded).toBe(false);
+    expect(calls).toEqual(["POST /hosted/transcripts", "GET /hosted/uploads/upload"]);
+  });
+
+  test("Discard abandons a receiving upload without creating a transcript", async () => {
+    const calls: string[] = [];
+    const c = client((path, method) => {
+      calls.push(`${method} ${path}`);
+      return method === "GET" ? json(200, { status: "receiving" }) : new Response(null, { status: 204 });
+    });
+    await c.deleteUpload!("upload");
+    expect(calls).toEqual(["GET /hosted/uploads/upload", "DELETE /hosted/uploads/upload"]);
+  });
+
+  for (const status of [404, 410, "failed"] as const) {
+    test(`Discard accepts terminal upload ${status} without another mutation`, async () => {
+      const calls: string[] = [];
+      const c = client((path, method) => {
+        calls.push(`${method} ${path}`);
+        return typeof status === "number" ? json(status, { error: "gone" }) : json(200, { status });
+      });
+      await c.deleteUpload!("upload");
+      expect(calls).toEqual(["GET /hosted/uploads/upload"]);
+    });
+  }
+});

@@ -215,3 +215,11 @@ describe("assemblyAiStatus", () => {
     expect(assemblyAiStatus("own", { state: "failed" }, "saved")).toEqual({ state: "available" });
   });
 });
+
+
+test("discard cleanup offers Retry deleting without claiming the meeting was saved", () => {
+  const html = renderUpload({ job: job({ stage: "failed", cleanupPending: true, error: { message: "Retry deleting to finish discarding.", retry: true, reference: null } }) });
+  expect(html).toContain("Retry deleting</button>");
+  expect(html).not.toContain(">Retry</button>");
+  expect(html).not.toContain("Saved to Library as");
+});

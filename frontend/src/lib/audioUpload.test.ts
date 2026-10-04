@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { AssemblyAiError, type AssemblyAiClient } from "./assemblyai";
+import { AssemblyAiError, createHostedAssemblyAiClient, type AssemblyAiClient } from "./assemblyai";
 import { AudioStoreQuotaError, type StoredAudioManifest } from "./audio/audioStore";
 import {
   createUploadRunner,
@@ -765,6 +765,9 @@ describe("upload runner: an AssemblyAI job keeps its account", () => {
       const legacy = { engine: "assemblyai", meetingId: "m", attemptId: "a", jobId: "t", diarize: true, file: { name: "a.mp3", type: "", size: 1, lastModified: 0 }, owner: DID, saved: false };
       storage.set(`exo.transcriber.uploadPending:${DID}`, JSON.stringify(legacy));
       expect(localStoragePendingUploadStore(DID).read()?.assemblyAiMode).toBe("own");
+      const pending = localStoragePendingUploadStore(DID);
+      pending.write({ ...pending.read()!, discarding: true });
+      expect(localStoragePendingUploadStore(DID).read()?.discarding).toBe(true);
     } finally {
       globalThis.localStorage = original;
     }
@@ -816,7 +819,7 @@ describe("upload runner: a reload while the file is sent on to AssemblyAI", () =
       upload: async () => "aau_1",
       createTranscript: async () => {
         creates++;
-        if (creates === 1) throw new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.");
+        if (creates === 1) throw new AssemblyAiError("failed", "Exo's server couldn't send the file to AssemblyAI. Retry uploads it again.", true);
         return { id: "h2", status: "queued" };
       },
       getTranscript: async () => ({ id: "h2", status: "completed", utterances: [{ speaker: "A", text: "Hi.", start: 0, end: 900 }] }),
@@ -831,4 +834,100 @@ describe("upload runner: a reload while the file is sent on to AssemblyAI", () =
     runner.retry(d);
     expect((await settled(runner)).stage).toBe("saved");
   });
+});
+
+
+describe("TC-592 hosted recovery regressions", () => {
+  const stored: PendingUpload = {
+    engine: "assemblyai", assemblyAiMode: "hosted", meetingId: "m-review", attemptId: "a-review",
+    jobId: null, uploadRef: "aau_review", diarize: true,
+    file: { name: "review.wav", type: "audio/wav", size: 3, lastModified: 0 }, owner: DID, saved: false,
+  };
+  const response = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  for (const status of [429, 502, 503, 401]) {
+    test(`poll HTTP ${status} preserves the upload reference across reload and resumes it`, async () => {
+      const pending = memoryPending({ ...stored });
+      let fail = true;
+      const creates: string[] = [];
+      const client = createHostedAssemblyAiClient({
+        backendUrl: "https://backend.test", sessionStore: { getToken: () => "session", isExpired: () => false }, sleep: async () => {},
+        fetchImpl: (async (url, init) => {
+          const path = String(url);
+          if (init?.method === "DELETE") return new Response(null, { status: 204 });
+          if (init?.method === "POST") {
+            creates.push(JSON.parse(String(init.body)).upload_id);
+            return response(202, { status: "submitting" });
+          }
+          if (path.endsWith("/hosted/uploads/aau_review")) return fail
+            ? response(status, { error: status === 503 ? "assemblyai_hosted_unavailable" : "unavailable" })
+            : response(200, { status: "submitted", id: "handle" });
+          return response(200, { id: "handle", status: "completed", utterances: [{ speaker: "A", text: "Recovered.", start: 0, end: 900 }] });
+        }) as typeof fetch,
+      });
+      const { deps: d, saved } = deps({ pending, audio: audioFake().audio, assemblyAiClient: async () => client });
+      const runner = createUploadRunner();
+      runner.resume(d);
+      expect((await settled(runner)).stage).toBe("failed");
+      expect(pending.value?.uploadRef).toBe("aau_review");
+      runner.reset();
+      fail = false;
+      const resumed = createUploadRunner();
+      resumed.resume(d);
+      expect((await settled(resumed)).stage).toBe("saved");
+      expect(creates).toEqual(["aau_review", "aau_review"]);
+      expect(saved).toHaveLength(1);
+    });
+  }
+
+  for (const initial of ["receiving", "submitting", "submitted"] as const) {
+    test(`Discard resolves ${initial} uploads and retains cleanup until deletion succeeds`, async () => {
+      const pending = memoryPending({ ...stored });
+      let phase: "transcribe" | "discard" | "retry" = "transcribe";
+      let reads = 0;
+      const events: string[] = [];
+      const client = createHostedAssemblyAiClient({
+        backendUrl: "https://backend.test", sessionStore: { getToken: () => "session", isExpired: () => false }, sleep: async () => {},
+        fetchImpl: (async (url, init) => {
+          const path = String(url).split("/api/transcriber/assemblyai")[1]!;
+          if (phase === "transcribe") {
+            if (init?.method === "POST") return response(202, { status: "submitting" });
+            throw new TypeError("offline");
+          }
+          events.push(`${init?.method ?? "GET"} ${path}`);
+          if (init?.method === "DELETE") {
+            if (path.includes("/uploads/")) return response(409, { error: "assemblyai_upload_in_progress" });
+            if (phase === "discard") throw new TypeError("offline deleting");
+            return new Response(null, { status: 204 });
+          }
+          return response(200, ++reads === 1 ? { status: initial, ...(initial === "submitted" ? { id: "handle" } : {}) } : { status: "submitted", id: "handle" });
+        }) as typeof fetch,
+      });
+      const audio = audioFake();
+      const { deps: d, saved } = deps({ pending, audio: audio.audio, assemblyAiClient: async () => client });
+      const runner = createUploadRunner();
+      runner.resume(d);
+      await settled(runner);
+      phase = "discard";
+      await runner.dismiss(d);
+      expect(pending.value).not.toBeNull();
+      expect(runner.snapshot()?.cleanupPending).toBe(true);
+      expect(pending.value).toMatchObject({ discarding: true, jobId: "handle" });
+      expect(pending.value?.uploadRef).toBeUndefined();
+      expect(events).toContain("DELETE /hosted/transcripts/handle");
+      if (initial !== "submitted") expect(events).toContain("DELETE /hosted/uploads/aau_review");
+      runner.reset();
+      phase = "retry";
+      const resumed = createUploadRunner();
+      const cleared = new Promise<void>((resolve) => {
+        const unsubscribe = resumed.subscribe(() => { if (pending.value === null) { unsubscribe(); resolve(); } });
+      });
+      resumed.resume(d);
+      await cleared;
+      expect(saved).toHaveLength(0);
+      expect(events.at(-1)).toBe("DELETE /hosted/transcripts/handle");
+      expect(audio.calls.some((c) => c.startsWith("remove "))).toBe(true);
+      expect(pending.value).toBeNull();
+    });
+  }
 });
