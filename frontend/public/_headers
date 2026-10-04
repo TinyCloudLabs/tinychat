@@ -19,3 +19,15 @@
   Content-Type: text/markdown; charset=utf-8
 /agents/tinychat-retrieval/:version/references/*
   Content-Type: text/markdown; charset=utf-8
+# PWA (vite-plugin-pwa, see vite.config.ts). The worker script and the manifest
+# must always revalidate so a deploy reaches installed apps on their next check;
+# the browser fetches sw.js itself (updateViaCache "none"), but a CDN or proxy
+# would otherwise be allowed to keep an old copy. Hashed /assets/* stay cacheable;
+# the precached index.html is revalidated by revision, not by these headers.
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
+  Content-Type: application/manifest+json
+/icons/*
+  Cache-Control: public, max-age=86400

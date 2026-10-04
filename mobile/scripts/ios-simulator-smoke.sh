@@ -4,7 +4,7 @@
 #   - the debug-only probe in ExoBridgeViewController logs `EXO_SMOKE {json}` with the bundled web app at
 #     capacitor://localhost, platform "ios", React mounted into #root, the VoiceNotes plugin visible to JS and
 #     its status() answering over the bridge with state "idle" and the 60-minute recording limit, and its
-#     readAudioChunk() refusing a missing recording with "not_found";
+#     readAudioChunk() refusing a missing recording with "not_found", and the web app's PWA service worker skipped;
 #   - the Debug-only Location plugin (TC-524 spike) is visible to JS and its status() reports the Debug Info.plist
 #     keys (usage strings and the location background mode);
 #   - the app is still running SMOKE_SETTLE seconds later, and left no crash report.
@@ -157,6 +157,7 @@ check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes p
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
 check '.voiceNotesStatus.maxDurationMs == 3600000' "VoiceNotes reports the 60-minute recording limit"
 check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
+check '.serviceWorkerDecision == "skip:capacitor" and .serviceWorkerRegistrations == 0' "the web app's PWA service worker is not registered in the shell"
 check '.locationAvailable == true and .locationStatus.platform == "ios"' "Location plugin (Debug-only TC-524 spike) registered and answering status()"
 check '.locationStatus.declared.foreground == true and .locationStatus.declared.background == true and .locationStatus.declared.backgroundExecution == true' \
   "Debug Info.plist has the location usage strings and the location background mode"

@@ -43,6 +43,9 @@ class ExoBridgeViewController: CAPBridgeViewController {
           healthHeader: headers.some((h) => h.name === "Health"),
           locationAvailable: !!(cap && cap.isPluginAvailable && cap.isPluginAvailable("Location")),
           title: document.title,
+          // The web app's PWA service worker must never register in the shell (frontend/src/lib/pwa.ts).
+          serviceWorkerDecision: document.documentElement.dataset.exoSw || null,
+          serviceWorkerRegistrations: navigator.serviceWorker ? (await navigator.serviceWorker.getRegistrations()).length : 0,
         };
         if (probe.mounted && probe.voiceNotesHeader && cap.nativePromise) {
           const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000));
