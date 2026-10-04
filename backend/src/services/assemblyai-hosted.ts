@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -134,6 +134,9 @@ export function openHandle(handleKey: string, handle: string, address: string, n
 
 const UPLOAD_ID_RE = /^aau_[A-Za-z0-9_-]{32}$/;
 const SPOOL_FILE_RE = /^aau_[A-Za-z0-9_-]{32}\.part$/;
+export const MAX_SETTLED_OUTCOMES = 10_000;
+export const MAX_ACCOUNT_SETTLED_OUTCOMES = 20;
+export const SHUTDOWN_DEADLINE_MS = 20_000;
 export const MAX_UPLOAD_TOMBSTONES = 50_000;
 export const MAX_ACCOUNT_UPLOAD_TOMBSTONES = 100;
 /** How long a background submit (stream to AssemblyAI, then create the transcript) may take. */
@@ -196,7 +199,7 @@ export class HostedUploadStore {
   private readonly uploads = new Map<string, HostedUpload>();
   /** Submitted or failed uploads: their outcome, readable by the owner until `until`. */
   private readonly settled = new Map<string, { owner: string; until: number; expiresAt: number; claimed: boolean; outcome: SubmitOutcome }>();
-  private expireDelete: ((handle: string, owner: string) => Promise<void>) | null = null;
+  private expireDelete: ((handle: string, owner: string, signal?: AbortSignal) => Promise<void>) | null = null;
   /** Expired outcomes contain only the id, owner and original handle expiry. */
   private readonly tombstones = new Map<string, { owner: string; until: number }>();
   /** Bounded index for oldest-first per-owner eviction without scanning every tombstone. */
@@ -230,6 +233,7 @@ export class HostedUploadStore {
     private readonly maxConcurrent: number,
     private readonly removeSpool: typeof rm = rm,
     private readonly tombstoneLimits = { global: MAX_UPLOAD_TOMBSTONES, account: MAX_ACCOUNT_UPLOAD_TOMBSTONES },
+    private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
   ) {}
 
   /** Create the spool dir (0700) and remove whatever a previous process left in it. */
@@ -267,6 +271,13 @@ export class HostedUploadStore {
     if (this.uploads.size >= this.maxConcurrent) {
       const soonest = Math.min(...[...this.uploads.values()].map((u) => u.expiresAt));
       return { ok: false, code: "assemblyai_busy", retryAfterSeconds: Math.min(60, Math.max(1, Math.ceil((soonest - nowMs) / 1000))) };
+    }
+    // Every active upload reserves room for its eventual outcome. Retained failures must
+    // never be evicted to admit more work, even when upstream cleanup keeps failing.
+    const retainedForAccount = [...this.settled.values()].filter((entry) => entry.owner === address).length;
+    const reserved = [...this.uploads.keys()].filter((id) => !this.settled.has(id)).length;
+    if (retainedForAccount >= this.outcomeLimits.account || this.settled.size + reserved >= this.outcomeLimits.global) {
+      return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     }
     const dayKey = `${utcDay(nowMs)}|${address}`;
     const used = this.charged.get(dayKey) ?? 0;
@@ -413,7 +424,7 @@ export class HostedUploadStore {
   }
 
   /** The router supplies the same authenticated upstream delete used by the handle route. */
-  onExpireDelete(remove: (handle: string, owner: string) => Promise<void>): void {
+  onExpireDelete(remove: (handle: string, owner: string, signal?: AbortSignal) => Promise<void>): void {
     this.expireDelete = remove;
   }
 
@@ -435,31 +446,39 @@ export class HostedUploadStore {
     while (this.tombstones.size > this.tombstoneLimits.global) this.removeTombstone(this.tombstones.keys().next().value!);
   }
 
-  private async expireOutcome(id: string): Promise<void> {
+  private async expireOutcome(id: string, signal?: AbortSignal): Promise<void> {
     const settled = this.settled.get(id);
     if (!settled) return;
     if (settled.outcome.status === "submitted" && !settled.claimed) {
       // Never advertise terminal cleanup until upstream deletion succeeds. A failed delete
       // keeps the handle for the next sweep (and uses the router's fixed, redacted logging).
       if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
-      await this.expireDelete(settled.outcome.handle, settled.owner);
+      await this.expireDelete(settled.outcome.handle, settled.owner, signal);
     }
     this.tombstone(id, settled.owner, settled.expiresAt);
     this.settled.delete(id);
   }
 
-  /** Expire and optionally hand off the outcome atomically with sweep/shutdown for this owner. */
-  async resolve(id: string, address: string, nowMs: number, claim = false): Promise<LookupResult> {
+  /** Expire an outcome atomically with sweep/shutdown for this owner. Reading is not a claim. */
+  async resolve(id: string, address: string, nowMs: number): Promise<LookupResult> {
     return this.withAccount(address, async () => {
       const settled = this.settled.get(id);
-      if (settled?.owner === address) {
+      if (settled?.owner === address && settled.until <= nowMs) await this.expireOutcome(id);
+      return this.lookup(id, address, nowMs);
+    });
+  }
+
+  /** Only an authenticated request using the handle proves the owner received it. */
+  async claimHandle(handle: string, address: string, nowMs: number): Promise<void> {
+    await this.withAccount(address, async () => {
+      for (const [id, settled] of this.settled) {
+        if (settled.owner !== address || settled.outcome.status !== "submitted" || settled.outcome.handle !== handle) continue;
         if (settled.until <= nowMs) await this.expireOutcome(id);
-        else if (claim && !settled.claimed && settled.outcome.status === "submitted") {
+        else if (!settled.claimed) {
           settled.claimed = true;
           settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
         }
       }
-      return this.lookup(id, address, nowMs);
     });
   }
 
@@ -493,16 +512,32 @@ export class HostedUploadStore {
     return removed;
   }
 
-  /** Close mutations, drain file IO, refund unsent uploads and abort/drain submits. */
-  async shutdown(): Promise<void> {
+  /** Close mutations and attempt every cleanup, bounded by one total shutdown deadline. */
+  async shutdown(timeoutMs = SHUTDOWN_DEADLINE_MS): Promise<void> {
     this.stopping = true;
+    const controller = new AbortController();
+    const deadline = new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     for (const upload of this.uploads.values()) upload.abort?.abort();
-    await Promise.all([...this.mutations.values()]);
-    for (const upload of [...this.uploads.values()]) {
-      if (upload.state === "receiving") await this.abandonLocked(upload);
+    const cleanup = (async () => {
+      await Promise.allSettled([...this.mutations.values()]);
+      await Promise.allSettled([...this.uploads.values()]
+        .filter((upload) => upload.state === "receiving").map((upload) => this.abandonLocked(upload)));
+      await this.idle();
+      await Promise.allSettled([...this.settled].map(([id, entry]) => this.withAccount(entry.owner, async () => {
+        if (!controller.signal.aborted) await this.expireOutcome(id, controller.signal);
+      })));
+    })();
+    // Even a stuck local IO or a transport ignoring abort cannot hold shutdown forever.
+    await Promise.race([Promise.allSettled([cleanup]), deadline]);
+    clearTimeout(timer);
+    for (const entry of this.settled.values()) {
+      if (entry.outcome.status === "submitted" && !entry.claimed) {
+        console.error(`[assemblyai-hosted] route=shutdown status=502 code=assemblyai_cleanup_incomplete cid=${randomUUID()}`);
+      }
     }
-    await this.idle();
-    await Promise.all([...this.settled].map(([id, entry]) => this.withAccount(entry.owner, () => this.expireOutcome(id))));
   }
 }
 

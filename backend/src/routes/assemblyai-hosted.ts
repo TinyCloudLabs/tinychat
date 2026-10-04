@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { openAsBlob } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import express, { Router } from "express";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 
@@ -48,8 +49,8 @@ import {
  * timeout, so `POST /hosted/transcripts` only checks the upload is complete, starts the submit in
  * the background (its own 15-minute deadline; aborted by the sweep past it and at shutdown) and
  * answers 202. The client polls `GET /hosted/uploads/:id` for the handle; the outcome stays
- * readable for a day until claimed, then at most one further hour. The spool is deleted and
- * the slot freed when the submit settles.
+ * readable for a day until the owner uses the handle, then at most one further hour. The spool
+ * is deleted and the slot freed when the submit settles.
  *
  * The server key never leaves this process; the client only ever holds the HMAC handle, which
  * binds the AssemblyAI transcript to the session address (anything else about it → 404). Every
@@ -224,26 +225,34 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     return { response, bytes };
   }
 
-  async function deleteUpstream(id: string): Promise<void> {
-    const { response, bytes } = await call("DELETE", `/v2/transcript/${id}`, SMALL_BODY);
+  async function deleteUpstream(id: string, shutdownSignal?: AbortSignal): Promise<void> {
+    shutdownSignal?.throwIfAborted();
+    const signal = shutdownSignal ? AbortSignal.any([shutdownSignal, AbortSignal.timeout(Math.min(timeoutMs, 5_000))]) : undefined;
+    const { response, bytes } = await call("DELETE", `/v2/transcript/${id}`, SMALL_BODY, { signal });
     const gone = response.status === 404 || (response.status === 400 && isNotFound400(bytes));
     if (!((response.status >= 200 && response.status < 300) || gone)) throw new UpstreamFailure(upstreamFailure(response, bytes, false));
   }
 
-  if (hosted && store) store.onExpireDelete(async (handle, owner) => {
+  if (hosted && store) store.onExpireDelete(async (handle, owner, shutdownSignal) => {
     // This internal, signed handle can outlive its public validity while cleanup is retried.
     const id = openHandle(hosted.handleKey, handle, owner, 0);
     const cid = randomUUID();
-    try {
-      if (!id) throw new UpstreamFailure({ code: "assemblyai_unavailable", reason: "handle_rejected", alert: true });
-      await deleteUpstream(id);
-      log(`[assemblyai-hosted] route=expire_delete status=204 cid=${cid}`, false);
-    } catch (error) {
-      const failure = error instanceof UpstreamFailure ? error.failure : { code: "assemblyai_unavailable" as const };
-      log(`[assemblyai-hosted] route=expire_delete status=${ASSEMBLYAI_HOSTED_ERRORS[failure.code].status} code=${failure.code}` +
-        (failure.upstreamStatus !== undefined ? ` upstream_status=${failure.upstreamStatus}` : "") +
-        (failure.alert ? " alert=true" : "") + ` cid=${cid}`, failure.alert === true);
-      throw error;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (!id) throw new UpstreamFailure({ code: "assemblyai_unavailable", reason: "handle_rejected", alert: true });
+        await deleteUpstream(id, shutdownSignal);
+        log(`[assemblyai-hosted] route=expire_delete status=204 cid=${cid}`, false);
+        return;
+      } catch (error) {
+        const failure = error instanceof UpstreamFailure ? error.failure : { code: "assemblyai_unavailable" as const };
+        log(`[assemblyai-hosted] route=expire_delete status=${ASSEMBLYAI_HOSTED_ERRORS[failure.code].status} code=${failure.code}` +
+          (failure.upstreamStatus !== undefined ? ` upstream_status=${failure.upstreamStatus}` : "") +
+          (failure.alert ? " alert=true" : "") + ` cid=${cid}`, failure.alert === true);
+        const transient = failure.upstreamStatus === 429 || (failure.upstreamStatus ?? 0) >= 500 ||
+          failure.reason === "timeout" || failure.reason === "transport";
+        if (!shutdownSignal || shutdownSignal.aborted || !transient || attempt >= 2) throw error;
+        await delay(attempt === 0 ? 100 : 300, undefined, { signal: shutdownSignal });
+      }
     }
   });
 
@@ -421,7 +430,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   router.get(
     "/hosted/uploads/:upload_id",
     handle("get_upload", async (req, res) => {
-      const found = await store!.resolve(String(req.params.upload_id), locals(res).address, now(), true);
+      const found = await store!.resolve(String(req.params.upload_id), locals(res).address, now());
       if (found.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
       const view = uploadView(found);
       if (!view) return fail(res, { code: "assemblyai_upload_not_found" });
@@ -467,7 +476,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
           return fail(res, { code: "assemblyai_upload_incomplete" });
         }
       }
-      const current = await store!.resolve(id, locals(res).address, now(), true);
+      const current = await store!.resolve(id, locals(res).address, now());
       if (current.kind === "missing") return fail(res, { code: "assemblyai_upload_not_found" });
       if (current.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
       ok(res, 202, { upload_id: id, ...uploadView(current) }, found.kind === "active" ? ` bytes=${found.upload.byteSize}` : "");
@@ -475,17 +484,18 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   );
 
   /** The transcript id behind `:handle`, or answered 404 without calling AssemblyAI. */
-  function transcriptId(req: Request, res: Response): string | null {
+  async function transcriptId(req: Request, res: Response): Promise<string | null> {
     const raw = req.params.handle;
     const id = hosted && typeof raw === "string" ? openHandle(hosted.handleKey, raw, locals(res).address, now()) : null;
     if (id === null) fail(res, { code: "assemblyai_transcript_not_found", reason: "handle_rejected" });
+    else await store!.claimHandle(raw as string, locals(res).address, now());
     return id;
   }
 
   router.get(
     "/hosted/transcripts/:handle",
     handle("get_transcript", async (req, res) => {
-      const id = transcriptId(req, res);
+      const id = await transcriptId(req, res);
       if (id === null) return;
       const { response, bytes } = await call("GET", `/v2/transcript/${id}`, TRANSCRIPT_BODY);
       if (response.status !== 200) return fail(res, upstreamFailure(response, bytes, true));
@@ -498,7 +508,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   router.get(
     "/hosted/transcripts/:handle/sentences",
     handle("get_sentences", async (req, res) => {
-      const id = transcriptId(req, res);
+      const id = await transcriptId(req, res);
       if (id === null) return;
       const { response, bytes } = await call("GET", `/v2/transcript/${id}/sentences`, TRANSCRIPT_BODY);
       if (response.status !== 200) return fail(res, upstreamFailure(response, bytes, true));
@@ -511,7 +521,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   router.delete(
     "/hosted/transcripts/:handle",
     handle("delete_transcript", async (req, res) => {
-      const id = transcriptId(req, res);
+      const id = await transcriptId(req, res);
       if (id === null) return;
       await deleteUpstream(id);
       ok(res, 204);

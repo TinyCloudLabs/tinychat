@@ -520,3 +520,30 @@ test("a set but weak or reused hosted AssemblyAI handle key refuses boot before 
     expect(result.calls).toEqual(["exit"]);
   }
 });
+
+test("shutdown waits for other cleanups after a worker rejects", async () => {
+  const start = INDEX.indexOf("  let shuttingDown = false;");
+  const end = INDEX.indexOf('\n  process.on("SIGTERM"', start);
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(INDEX.slice(start, end) + '\nshutdown("SIGTERM");');
+  const pending = Promise.withResolvers<void>();
+  const exits: number[] = [];
+  const attempts: string[] = [];
+  runInNewContext(source, {
+    Promise,
+    console: { log: () => {} },
+    process: { exit: (code: number) => exits.push(code) },
+    setTimeout: () => ({ unref() {} }),
+    ledgerFlusher: null, connectorWebhooks: null, connectorQueueMaintenance: null,
+    server: { close: (done: () => void) => done(), closeIdleConnections() {} },
+    calendarAutojoinWorker: { stop: () => { attempts.push("calendar"); return Promise.reject(new Error("synthetic")); } },
+    ingestSupervisor: { stop: () => { attempts.push("ingest"); return pending.promise; } },
+    hostedUploads: { shutdown: () => { attempts.push("hosted"); return Promise.resolve(); } },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const exitedEarly = [...exits];
+  pending.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(attempts).toEqual(["calendar", "ingest", "hosted"]);
+  expect(exitedEarly).toEqual([]);
+  expect(exits).toEqual([1]);
+});

@@ -1804,8 +1804,12 @@ paths:
       description: >-
         Charges `byte_size` to this account's daily allowance. One upload per account: a
         new create replaces the account's previous upload if it was never sent (its bytes
-        are refunded). A global cap bounds concurrent uploads. The upload expires after
-        one hour. Requires `X-Requested-With: XMLHttpRequest`.
+        are refunded). A global cap bounds concurrent uploads. Retained outcomes are
+        capped at 20 per account and 10,000 globally, including reservations for active
+        uploads. At capacity, create returns 429 `assemblyai_busy` with Retry-After and
+        `retry_after_seconds`; live outcomes and failed cleanup state are never evicted
+        to admit another upload. The upload expires after one hour.
+        Requires `X-Requested-With: XMLHttpRequest`.
       security:
         - bearerAuth: []
       requestBody:
@@ -1867,8 +1871,10 @@ paths:
         `receiving` takes parts; `submitting` is being sent to AssemblyAI in the
         background; `submitted` carries the handle and `failed` a fixed error code. A
         failed outcome stays readable for an hour. An unclaimed submitted outcome stays
-        readable for 24 hours; GET or a replayed transcript POST claims its handle and
-        limits remaining readability to one hour. Expiry deletes unclaimed transcripts
+        readable for 24 hours. Returning the handle here or from a replayed transcript
+        POST does not claim it. Only an owner request using the handle (transcript GET,
+        sentences GET, or transcript DELETE) claims it and limits remaining readability
+        to one hour. Expiry deletes unclaimed transcripts
         at AssemblyAI before retaining an owner-only tombstone until the original
         seven-day handle expiry. Tombstones are capped at 50,000 globally and 100 per
         account, evicting oldest first. A tombstone returns 410 with

@@ -96,11 +96,11 @@ function hostedConfig(spoolDir: string, extra: Partial<{ dailyBytes: number }> =
 }
 
 /** The app in index.ts's order: JSON parser (parts excluded) → CSRF → limiters → auth → router. */
-async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig | null; maxConcurrent?: number; dailyBytes?: number; onSubmit?: () => void; removeSpool?: typeof fsPromises.rm } = {}) {
+async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig | null; maxConcurrent?: number; dailyBytes?: number; onSubmit?: () => void; removeSpool?: typeof fsPromises.rm; outcomeLimits?: { global: number; account: number } } = {}) {
   const spoolDir = mkdtempSync(join(tmpdir(), "tinychat-assemblyai-test-"));
   closers.push(() => rmSync(spoolDir, { recursive: true, force: true }));
   const config = options.config === null ? ({ hosted: false, reason: "both_unset" } as const) : (options.config ?? hostedConfig(spoolDir, { dailyBytes: options.dailyBytes }));
-  const store = config.hosted ? new HostedUploadStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4, options.removeSpool) : null;
+  const store = config.hosted ? new HostedUploadStore(config.spoolDir, config.dailyBytes, options.maxConcurrent ?? 4, options.removeSpool, undefined, options.outcomeLimits) : null;
   await store?.init();
   const clock = { now: T0 };
   const calls: Upstream[] = [];
@@ -609,7 +609,9 @@ describe("upstream failures", () => {
   test("the claimed outcome stays readable for an hour, then becomes a tombstone", async () => {
     const h = await setup();
     const id = await h.upload(audio(50));
-    expect((await h.submit(id)).status).toBe("submitted");
+    const submitted = await h.submit(id);
+    expect(submitted.status).toBe("submitted");
+    expect((await h.req("GET", `/hosted/transcripts/${submitted.id}`)).status).toBe(200);
     h.clock.now = T0 + SETTLED_TTL_MS - 1;
     expect((await h.req("GET", `/hosted/uploads/${id}`)).json.status).toBe("submitted");
     h.clock.now = T0 + SETTLED_TTL_MS;
@@ -975,15 +977,33 @@ describe("TC-592 expiry regressions", () => {
   });
 
   for (const via of ["GET", "POST"] as const) {
-    test(`claimed via ${via} expiry leaves a tombstone without deleting the client's transcript`, async () => {
+    test(`returning a handle via ${via} without use deletes once after 24 hours`, async () => {
       const { h, id } = await unclaimed();
-      const claimed = via === "GET" ? await h.req("GET", `/hosted/uploads/${id}`)
+      const returned = via === "GET" ? await h.req("GET", `/hosted/uploads/${id}`)
         : await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
-      expect(claimed.json.status).toBe("submitted");
+      expect(returned.json.status).toBe("submitted");
+      h.clock.now = T0 + day;
+      await h.store!.sweep(h.clock.now);
+      await h.store!.sweep(h.clock.now);
+      expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+      expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
+    });
+  }
+
+  for (const via of ["GET", "sentences", "DELETE"] as const) {
+    test(`using a handle via ${via} claims it without a server delete at expiry`, async () => {
+      const { h, id } = await unclaimed();
+      const found = h.store!.lookup(id, ADDRESS_A, T0);
+      if (found.kind !== "settled" || found.outcome.status !== "submitted") throw new Error("missing handle");
+      const path = `/hosted/transcripts/${found.outcome.handle}${via === "sentences" ? "/sentences" : ""}`;
+      expect((await h.req(via === "DELETE" ? "DELETE" : "GET", path, { as: ADDRESS_B })).status).toBe(404);
+      expect((await h.req(via === "DELETE" ? "DELETE" : "GET", path)).status).toBe(via === "DELETE" ? 204 : 200);
       h.clock.now = T0 + SETTLED_TTL_MS;
       await h.store!.sweep(h.clock.now);
       expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(410);
-      expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+      h.clock.now = T0 + day;
+      await h.store!.sweep(h.clock.now);
+      expect(h.calls.filter((c) => c.method === "DELETE")).toHaveLength(via === "DELETE" ? 1 : 0);
     });
   }
 
@@ -1073,5 +1093,101 @@ describe("TC-592 expiry safety", () => {
     for (const [id, owner] of [[a3, ADDRESS_A], [b1, ADDRESS_B], [c1, ADDRESS_C]]) {
       expect(store.lookup(id!, owner!, T0 + SETTLED_TTL_MS).kind).toBe("expired");
     }
+  });
+});
+
+
+describe("TC-592 review 4 cleanup bounds", () => {
+  test("shutdown waits for both deletes and retries a transient failure", async () => {
+    const pending = Promise.withResolvers<Response>();
+    const entered = Promise.withResolvers<void>();
+    let deletes = 0;
+    const h = await setup({ answer: (call) => {
+      if (call.method !== "DELETE") return assemblyAi(call);
+      deletes++;
+      if (deletes === 1) return json(503, {});
+      if (deletes === 2) { entered.resolve(); return pending.promise; }
+      return json(200, {});
+    } });
+    for (const owner of [ADDRESS_A, ADDRESS_B]) {
+      const id = await h.upload(audio(1), owner);
+      await h.req("POST", "/hosted/transcripts", { as: owner, body: { upload_id: id, speaker_labels: true } });
+      await h.store!.idle();
+    }
+    let settled = false;
+    const stopping = h.store!.shutdown().then(() => { settled = true; return "resolved"; }, () => { settled = true; return "rejected"; });
+    await entered.promise;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const settledEarly = settled;
+    pending.resolve(json(200, {}));
+    expect(await stopping).toBe("resolved");
+    expect(settledEarly).toBe(false);
+    expect(deletes).toBe(3);
+  });
+
+  test("shutdown deadline resolves and logs each undeleted outcome without secrets", async () => {
+    const pending = Promise.withResolvers<Response>();
+    const entered = Promise.withResolvers<void>();
+    const h = await setup({ answer: (call) => {
+      if (call.method !== "DELETE") return assemblyAi(call);
+      entered.resolve();
+      return pending.promise; // Simulate a transport that even ignores abort.
+    } });
+    for (const owner of [ADDRESS_A, ADDRESS_B]) {
+      const id = await h.upload(audio(1), owner);
+      await h.req("POST", "/hosted/transcripts", { as: owner, body: { upload_id: id, speaker_labels: true } });
+      await h.store!.idle();
+    }
+    const logs: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((line) => { logs.push(String(line)); });
+    try {
+      const stopping = h.store!.shutdown(40).then(() => true, () => false);
+      await entered.promise;
+      const bounded = await Promise.race([stopping, new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200))]);
+      pending.resolve(json(200, {}));
+      await stopping;
+      expect(bounded).toBe(true);
+      expect(logs.filter((line) => line.includes("code=assemblyai_cleanup_incomplete"))).toHaveLength(2);
+      for (const secret of [API_KEY, HANDLE_KEY, TRANSCRIPT_ID, ADDRESS_A, ADDRESS_B, "aah1."]) {
+        expect(logs.join(" ")).not.toContain(secret);
+      }
+    } finally { pending.resolve(json(200, {})); spy.mockRestore(); }
+  });
+
+  test("failed expiry deletes fill the account cap and successful cleanup restores admission", async () => {
+    let failing = true;
+    const h = await setup({ answer: (call) => call.method === "DELETE" && failing ? json(503, {}) : assemblyAi(call) });
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const id = await h.upload(audio(1));
+      await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+      await h.store!.idle();
+      ids.push(id);
+      h.clock.now += 24 * SETTLED_TTL_MS;
+      await h.store!.sweep(h.clock.now);
+    }
+    const busy = await h.createUpload(1);
+    expect(busy.status).toBe(429);
+    expect(busy.json.error).toBe("assemblyai_busy");
+    expect(busy.json.retry_after_seconds).toBeGreaterThan(0);
+    expect(busy.headers.get("retry-after")).toBe(String(busy.json.retry_after_seconds));
+    for (const id of ids) expect(h.store!.lookup(id, ADDRESS_A, h.clock.now).kind).toBe("settled");
+    expect((await h.createUpload(1, ADDRESS_B)).status).toBe(201);
+    failing = false;
+    await h.store!.sweep(h.clock.now);
+    expect((await h.createUpload(1)).status).toBe(201);
+  });
+
+  test("global outcome cap reserves active uploads and releases capacity after cleanup", async () => {
+    const h = await setup({ outcomeLimits: { global: 2, account: 20 } });
+    const id = await h.upload(audio(1));
+    await h.submit(id);
+    const creates = await Promise.all([h.createUpload(1, ADDRESS_B), h.createUpload(1, ADDRESS_C)]);
+    expect(creates.map((result) => result.status).sort()).toEqual([201, 429]);
+    const blocked = creates[0]!.status === 429 ? ADDRESS_B : ADDRESS_C;
+    expect(creates.find((result) => result.status === 429)!.json.error).toBe("assemblyai_busy");
+    h.clock.now += 24 * SETTLED_TTL_MS;
+    await h.store!.sweep(h.clock.now);
+    expect((await h.createUpload(1, blocked)).status).toBe(201);
   });
 });

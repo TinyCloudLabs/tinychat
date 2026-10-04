@@ -1067,8 +1067,8 @@ async function main() {
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
     // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
-    void Promise.all([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
-      .then(() => process.exit(0), () => process.exit(1));
+    void Promise.allSettled([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+      .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
