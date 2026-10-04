@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Exo's app icons and splash screens for Android and iOS from one brand mark.
+"""Generate Exo's app icons and splash screens for Android, iOS and the web app (PWA) from one brand mark.
 
 Source: mobile/assets/tinycloud-mark.png, the TinyCloud cloud mark (TinyCloudLabs/docs logo/tinycloud-icon.png,
 cropped to its content). Exo has no designed mark of its own yet; replace that file (keep a transparent background,
@@ -14,6 +14,10 @@ Writes (every path is already wired, so nothing else changes):
   iOS      Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png   1024 px, opaque (App Store rejects alpha)
            Assets.xcassets/Splash.imageset/splash-2732x2732*.png
   Store    mobile/assets/play-store-icon.png         512 px Play Console listing icon, 32-bit RGBA PNG (not bundled)
+  Web      frontend/public/icons/pwa-{192,512}.png   manifest icons, purpose "any" (rounded square, transparent corners)
+           frontend/public/icons/maskable-{192,512}.png   purpose "maskable": full-bleed brand blue, mark inside the
+                                                      central 80% safe zone (frontend/vite.config.ts manifest)
+           frontend/public/icons/apple-touch-icon-180.png   iOS home screen icon, opaque (iOS rounds it itself)
 
 Needs Pillow (`python3 -m pip install pillow`). Run from anywhere: python3 mobile/scripts/brand-assets.py
 """
@@ -22,6 +26,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 MOBILE = Path(__file__).resolve().parent.parent
+WEB_ICONS = MOBILE.parent / "frontend/public/icons"
 RES = MOBILE / "android/app/src/main/res"
 XCASSETS = MOBILE / "ios/App/App/Assets.xcassets"
 
@@ -66,7 +71,7 @@ def masked(icon: Image.Image, shape: str) -> Image.Image:
 def save(image: Image.Image, path: Path, opaque: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     (image.convert("RGB") if opaque else image).save(path, optimize=True)
-    print(f"{path.relative_to(MOBILE)} {image.width}x{image.height}")
+    print(f"{path.relative_to(MOBILE.parent)} {image.width}x{image.height}")
 
 
 # Master square icon: the mark at 64% of the width on brand blue. Every launcher icon is downscaled from it.
@@ -102,3 +107,12 @@ for name in ("splash-2732x2732.png", "splash-2732x2732-1.png", "splash-2732x2732
 
 # Play Console wants a 32-bit PNG (RGBA) for the listing icon; MASTER is RGBA and fully opaque, so keep its alpha channel.
 save(MASTER.resize((512, 512), Image.LANCZOS), MOBILE / "assets/play-store-icon.png")
+
+# Web app manifest icons (frontend/vite.config.ts). "any" icons are shown as drawn, so give them the same rounded square
+# as the legacy launcher icons. Maskable icons are cropped by the platform to any shape inside a circle of 80% of the
+# side: at 56% of the width the mark's bounding box (about 3:2) stays inside it.
+WEB_MASKABLE = place_mark(solid((1024, 1024)), 0.56)
+for size in (192, 512):
+    save(masked(MASTER.resize((size, size), Image.LANCZOS), "rounded"), WEB_ICONS / f"pwa-{size}.png")
+    save(WEB_MASKABLE.resize((size, size), Image.LANCZOS), WEB_ICONS / f"maskable-{size}.png", opaque=True)
+save(MASTER.resize((180, 180), Image.LANCZOS), WEB_ICONS / "apple-touch-icon-180.png", opaque=True)

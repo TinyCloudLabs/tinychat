@@ -455,6 +455,8 @@ TinyCloud brand blue `#4473B9`:
 - iOS `AppIcon.appiconset/AppIcon-512@2x.png` (1024 px, opaque) and the
   `Splash.imageset` images used by `LaunchScreen.storyboard`.
 - The 512 px Play listing icon.
+- The web app's (PWA) manifest icons, `any` and `maskable` at 192 and 512 px,
+  and its 180 px `apple-touch-icon`, in `frontend/public/icons/`.
 
 **Exo has no designed mark yet.** The source is the TinyCloud cloud mark
 (`logo/tinycloud-icon.png` in TinyCloudLabs/docs; the desktop icons are

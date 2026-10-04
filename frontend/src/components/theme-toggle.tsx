@@ -16,9 +16,16 @@ function getInitialTheme(): Theme {
     : "light";
 }
 
+/** The page background per theme (index.css --background), for the browser/PWA chrome. */
+const THEME_COLOR: Record<Theme, string> = { light: "#ffffff", dark: "#09090b" };
+
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
   root.classList.toggle("dark", theme === "dark");
+  // index.html ships one theme-color per system scheme; a chosen theme wins over both.
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.setAttribute("content", THEME_COLOR[theme]);
+  }
 }
 
 export function ThemeToggle() {
