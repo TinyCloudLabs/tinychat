@@ -80,7 +80,7 @@ export const ASSEMBLYAI_HOSTED_ERRORS = {
   recording_too_large: { status: 413, message: "The recording is larger than the AssemblyAI upload limit." },
   unsupported_audio: { status: 415, message: "This audio format is not supported." },
   assemblyai_quota_exceeded: { status: 429, message: "Today's AssemblyAI allowance for this account is used up." },
-  assemblyai_busy: { status: 429, message: "Another upload is in progress. Try again shortly." },
+  assemblyai_busy: { status: 429, message: "AssemblyAI uploads are at capacity right now. Try again shortly." },
   assemblyai_rate_limited: { status: 429, message: "AssemblyAI is rate limiting requests. Try again later." },
   assemblyai_unavailable: { status: 502, message: "AssemblyAI could not be reached." },
   assemblyai_hosted_unavailable: { status: 503, message: "TinyCloud's AssemblyAI account is not available." },
