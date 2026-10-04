@@ -1,6 +1,10 @@
 # Releasing TinyChat's retrieval skill
 
-TinyChat owns `agent-skills/tinychat-retrieval`. The CLI core skill is released independently by `@tinycloud/cli`. The current setup pins CLI 0.10.0, retrieval 0.1.1-onboarding.16 and skills installer 1.7.0. Automatic first-install activation is scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Public URLs are not considered available until anonymously verified after deployment.
+TinyChat owns `agent-skills/tinychat-retrieval`. The CLI core skill is released independently by `@tinycloud/cli`. This branch-preview candidate pins CLI 0.10.0, retrieval 0.1.1-generic.1 and skills installer 1.7.0. Automatic first-install activation remains scoped to stock OpenCode 1.18.31, a local macOS direct TUI, Node >=22.20, one active conversation and no background agents. Plain loader installation before starting the direct TUI is a separate path. Public URLs are not considered available until anonymously verified after deployment.
+
+The candidate extends the existing setup/capture boundary with an explicitly selected CLI profile and per-operation manifest. It supports account-space first login and additional OpenKey grants without replacing the primary session. Pending approval binds the durable home, profile, host, owner, key, space and frozen manifest. The official CLI remains the verifier. Linux grant transport uses the existing private stdin route through a non-recording system PTY; the macOS branch is not exercised by Linux verification.
+
+Local verification exercised official CLI 0.10.0 selected-profile setup and private approval-artifact acquisition, and loaded `tinychat_setup` in the actual OpenCode 1.18.31 direct Linux TUI. The client returned `SETUP_CONFIG_REQUIRED` without authorizing or creating a profile. These checks do not establish human approval, original saved-configuration recovery, remote record reads or grant reuse on a real account.
 
 ## Build and check
 

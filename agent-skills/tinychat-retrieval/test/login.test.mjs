@@ -199,3 +199,39 @@ console.log(output.parts[0].text);
   assert.ok(observed.args.includes('--paste'));
   assert.ok(observed.args.includes('--manifest'));
 });
+
+test('additional grant uses the CLI interactive stdin transport without an unsupported paste flag', async t => {
+  const { runLogin } = await import('../lib/login.mjs');
+  const directory = await mkdtemp(join(tmpdir(), 'tinycloud-grant-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, 'tc');
+  const receipt = join(directory, 'received.json');
+  const url = 'https://openkey.example.test/delegate?space=account';
+  await writeFile(executable, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args.includes('--paste') || !args.includes('--no-popup') || !process.stdout.isTTY) process.exit(2);
+if (args.includes('local-owner')) {
+  process.stderr.write('Approve local-key delegation? [y/N] ');
+  process.stdin.on('data', () => { fs.writeFileSync(${JSON.stringify(join(directory, 'local-input'))}, 'unexpected input'); process.exit(2); });
+  setTimeout(() => process.exit(2), 1000);
+} else {
+console.error('Open this URL in a browser to authenticate: ${url}');
+console.error("If the browser can't connect back, paste the delegation code here:");
+require('node:readline').createInterface({ input: process.stdin }).on('line', input => {
+  fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ input, args }));
+  console.log(JSON.stringify({ changed: true }));
+  process.exit(0);
+});
+}
+`, { mode: 0o700 });
+  const args = ['--profile', 'work', 'auth', 'request', '--grant', '--manifest', 'base64:e30='];
+  assert.equal(await runLogin(args, { executable }), url);
+  const input = JSON.stringify({ signature: 'private-signed-response-'.repeat(600) }) + '\n';
+  await runLogin(args, { executable, input });
+  const received = JSON.parse(await readFile(receipt, 'utf8'));
+  assert.equal(received.input + '\n', input);
+  assert.ok(!JSON.stringify(received.args).includes('private-signed-response'));
+  await assert.rejects(runLogin(args.map(arg => arg === 'work' ? 'local-owner' : arg), { executable, input }), { code: 'AUTH_TRANSPORT_UNAVAILABLE' });
+  await assert.rejects(readFile(join(directory, 'local-input')), { code: 'ENOENT' });
+});

@@ -20,7 +20,8 @@ async function fixture(t) {
   const pack = join(directory, 'installed pack $ literal');
   await mkdir(join(pack, 'scripts'), { recursive: true });
   await mkdir(join(pack, 'lib'));
-  for (const name of ['pack.json', 'lib/retrieval.mjs', 'lib/consumer.mjs', 'lib/evidence.mjs', 'lib/setup.mjs', 'lib/login.mjs', 'lib/approval.mjs', 'scripts/retrieve.mjs', 'scripts/consume.mjs']) {
+  await mkdir(join(pack, 'assets'));
+  for (const name of ['pack.json', 'assets/permissions.json', 'lib/retrieval.mjs', 'lib/consumer.mjs', 'lib/evidence.mjs', 'lib/setup.mjs', 'lib/login.mjs', 'lib/approval.mjs', 'scripts/retrieve.mjs', 'scripts/consume.mjs']) {
     await copyFile(join(source, name), join(pack, name));
   }
   const body = join(directory, 'fixture-body.json');

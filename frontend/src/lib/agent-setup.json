@@ -4,5 +4,5 @@
   "dataHost": "https://tee.node.tinycloud.xyz",
   "cliVersion": "0.10.0",
   "installerVersion": "1.7.0",
-  "packVersion": "0.1.1-onboarding.16"
+  "packVersion": "0.1.1-generic.1"
 }
