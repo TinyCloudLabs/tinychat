@@ -226,6 +226,7 @@ describe("privateCloudJobClient", () => {
   test("each client is told by the channel choices it sends at create; anything else is unknown", () => {
     expect(privateCloudJobClient({ channel_mode: "separate", channel_labels: ["Speaker 1", "Speaker 2"] })).toBe("exo-desktop");
     expect(privateCloudJobClient({ channel_mode: "mixed", channel_labels: ["Exo voice note"] })).toBe("exo-voice-note");
+    expect(privateCloudJobClient({ channel_mode: "mixed", channel_labels: ["Exo upload"] })).toBe("exo-upload");
     for (const job of [
       {},
       { channel_mode: null, channel_labels: null },

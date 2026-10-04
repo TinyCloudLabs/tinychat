@@ -27,6 +27,7 @@ import {
   offeredChatModelContextTokens,
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
+import { uploadRunner } from "./lib/audioUpload";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
@@ -683,6 +684,9 @@ export function App() {
       // leaving, and the next user must never inherit them. ONLY the record —
       // this page load's attempt/dark latches are about the page, not the user.
       clearBackgroundDrainRecord();
+      // Stop this tab's audio upload work: it runs with the leaving account's
+      // session and space. Its stored job stays for that account's next visit.
+      uploadRunner.reset();
       selectionControllerRef.current = null;
       memoryRef.current = null;
       setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));

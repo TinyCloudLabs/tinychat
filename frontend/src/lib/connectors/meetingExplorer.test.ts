@@ -160,8 +160,8 @@ describe("listMeetings", () => {
   it("defaults to fireflies, google-meet, the transcriber, exo local AND exo voice notes", async () => {
     const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [] } } });
     await listMeetings(tcw);
-    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note"]);
-    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note"]);
+    expect(sqlCalls[0].params).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
+    expect(EXPLORER_MEETING_SOURCES).toEqual(["fireflies", "google-meet", "tinycloud-transcriber", "exo-local", "exo-voice-note", "exo-upload"]);
   });
 
   it("runs no query at all for an empty source list", async () => {

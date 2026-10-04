@@ -1,5 +1,6 @@
 // The TRANSCRIBER card in Connectors: paste a meeting link, a notetaker bot joins through the
 // TinyCloud Private Transcription API, and the speaker-attributed transcript comes back here.
+// Beside it: Upload audio (every platform) and Local recording (desktop only).
 //
 // `TranscriberView` is the whole rendered surface and a pure function of its props (testable with
 // react-dom/server, like MeetingsSection); `TranscriberSection` owns the client, the polling and
@@ -29,7 +30,9 @@ import {
   LOCAL_KIND_STORAGE_KEY,
   type TranscriberKind,
 } from "@/lib/localTranscriber";
+import { localStoragePendingUploadStore, uploadRunner } from "@/lib/audioUpload";
 import { LocalTranscriberPanel } from "./LocalTranscriber";
+import { AudioUploadPanel } from "./AudioUploadPanel";
 
 export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
@@ -63,13 +66,15 @@ export interface TranscriberViewProps {
   busyId: string | null;
   open: OpenTranscriptState | null;
   /**
-   * Desktop only: which transcription surface is selected. Omit both props and
-   * the card renders exactly the bot form as before (web).
+   * Which transcription surface is selected. Omit it and the card renders exactly the bot form
+   * (no tcw: nothing can be saved). A surface is offered when its panel is given.
    */
   kind?: TranscriberKind;
   localWorkflowActive?: boolean;
-  /** Rendered in place of the bot form when `kind === "local"`. */
+  /** Desktop only: rendered in place of the bot form when `kind === "local"`. */
   localPanel?: ReactNode;
+  /** Rendered in place of the bot form when `kind === "upload"`. */
+  uploadPanel?: ReactNode;
   onKindChange?: (kind: TranscriberKind) => void;
   onUrlChange: (value: string) => void;
   onBotNameChange: (value: string) => void;
@@ -152,6 +157,12 @@ function formatClock(seconds: number): string {
 const inputClass =
   "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60";
 
+const KIND_LABELS: Readonly<Record<TranscriberKind, string>> = {
+  "meeting-bot": "Meeting bot",
+  local: "Local recording",
+  upload: "Upload audio",
+};
+
 export const TranscriberView: FC<TranscriberViewProps> = ({
   calendarOutcomes = [],
   listStatus,
@@ -163,6 +174,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   kind,
   localWorkflowActive,
   localPanel,
+  uploadPanel,
   onKindChange,
   onUrlChange,
   onBotNameChange,
@@ -174,18 +186,23 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
 }) => {
   const dark = listStatus === "dark";
   const canSubmit = !dark && !form.submitting && form.url.trim().length > 0;
-  // Local mode needs no backend: the bot form/list hide behind the switch.
-  const showLocal = kind === "local";
+  // Local and upload modes need no bot backend: the bot form/list hide behind the switch.
+  const panel = kind === "local" ? localPanel : kind === "upload" ? uploadPanel : undefined;
+  const kinds: TranscriberKind[] = [
+    "meeting-bot",
+    ...(localPanel !== undefined ? (["local"] as const) : []),
+    ...(uploadPanel !== undefined ? (["upload"] as const) : []),
+  ];
 
   return (
     <SectionCard icon={AudioLinesIcon} title="Transcriber">
-      {kind !== undefined && onKindChange !== undefined && (
+      {kind !== undefined && onKindChange !== undefined && kinds.length > 1 && (
         <div
           role="tablist"
           aria-label="Transcription source"
-          className="mb-3 inline-flex rounded-md border border-border bg-muted/40 p-0.5 text-xs"
+          className="mb-3 inline-flex max-w-full flex-wrap rounded-md border border-border bg-muted/40 p-0.5 text-xs"
         >
-          {(["meeting-bot", "local"] as const).map((k) => (
+          {kinds.map((k) => (
             <button
               key={k}
               type="button"
@@ -199,14 +216,14 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {k === "meeting-bot" ? "Meeting bot" : "Local recording"}
+              {KIND_LABELS[k]}
             </button>
           ))}
         </div>
       )}
 
-      {showLocal ? (
-        (localPanel ?? null)
+      {panel !== undefined ? (
+        panel
       ) : (
       <>
       <p className="text-xs text-muted-foreground">
@@ -675,18 +692,23 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
   const saved = useTranscriberSavedState();
 
-  // Desktop only: a second, on-device transcription surface. On the web the
-  // flag is false and the card renders exactly the bot path.
   // Connectors only persists meetings with a signed-in space. Do not expose a
-  // recording path that would discard its transcript when no tcw is present.
+  // recording or upload path that would discard its transcript when no tcw is present.
+  // Local recording is desktop only; Upload audio is offered on every platform.
   const localAvailable = isDesktopLocalTranscriptionAvailable() && tcw !== undefined;
+  const uploadAvailable = tcw !== undefined;
   const [kind, setKind] = useState<TranscriberKind>(() => {
-    if (!localAvailable) return "meeting-bot";
+    // An upload still running (or this account's, interrupted by a reload) opens its own tab.
+    if (tcw !== undefined && (uploadRunner.snapshot() !== null || localStoragePendingUploadStore.read()?.owner === tcw.did)) return "upload";
+    let stored: string | null = null;
     try {
-      return localStorage.getItem(LOCAL_KIND_STORAGE_KEY) === "local" ? "local" : "meeting-bot";
+      stored = localStorage.getItem(LOCAL_KIND_STORAGE_KEY);
     } catch {
-      return "meeting-bot";
+      // best-effort preference
     }
+    if (stored === "local" && localAvailable) return "local";
+    if (stored === "upload" && uploadAvailable) return "upload";
+    return "meeting-bot";
   });
   const [localWorkflowActive, setLocalWorkflowActive] = useState(false);
   const onKindChange = useCallback((next: TranscriberKind) => {
@@ -803,18 +825,23 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
       form={{ url, botName, submitting, error: formError }}
       busyId={busyId}
       open={open}
-      {...(localAvailable && tcw
+      {...(tcw
         ? {
             kind,
             localWorkflowActive,
-            localPanel: (
-              <LocalTranscriberPanel
-                tcw={tcw}
-                backendUrl={backendUrl}
-                sessionStore={sessionStore}
-                onWorkflowActiveChange={setLocalWorkflowActive}
-              />
-            ),
+            ...(localAvailable
+              ? {
+                  localPanel: (
+                    <LocalTranscriberPanel
+                      tcw={tcw}
+                      backendUrl={backendUrl}
+                      sessionStore={sessionStore}
+                      onWorkflowActiveChange={setLocalWorkflowActive}
+                    />
+                  ),
+                }
+              : {}),
+            uploadPanel: <AudioUploadPanel tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />,
             onKindChange,
           }
         : {})}

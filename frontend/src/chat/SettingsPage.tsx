@@ -24,6 +24,7 @@ import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
 import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
+import { TranscriptionSettings } from "./TranscriptionSettings";
 
 interface SettingsPageProps {
   address: string | null;
@@ -143,6 +144,7 @@ export function SettingsPage({
               onMemoryUpdated={onMemoryUpdated}
             />
           </SectionCard>
+          <TranscriptionSettings tcw={tcw} />
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}

@@ -37,14 +37,17 @@ import type {
 } from "./anarlog/transcription.gen";
 import type { DownloadProgressPayload } from "./anarlog/localStt.gen";
 import {
-  isTransientCloudError,
+  createCloudJobPoller,
   loadPrivateCloudNative,
   localStoragePendingCloudStore,
   privateCloudJobClient,
   privateCloudMessage,
   PrivateCloudError,
+  REAL_CLOCK,
   toPrivateCloudError,
   type CaptureReadyEvent,
+  type CloudClock,
+  type CloudPolling,
   type PendingCloudStore,
   type PrivateCloudApi,
   type PrivateCloudAvailability,
@@ -56,7 +59,8 @@ import {
 
 export type { TranscriptionEngine } from "./privateCloud";
 
-export type TranscriberKind = "meeting-bot" | "local";
+/** The Transcriber card's surfaces: the meeting bot, Local recording (desktop only) and Upload audio. */
+export type TranscriberKind = "meeting-bot" | "local" | "upload";
 
 /** `connector_meeting.source` for local recordings. Distinct from the bot's
  *  `tinycloud-transcriber` so Meetings and meeting chat can tell them apart;
@@ -368,35 +372,6 @@ const DEFAULT_TIMEOUTS: LocalTranscriberTimeouts = {
   transcribeMs: 30 * 60_000,
   modelDownloadMs: 30 * 60_000,
   captureReadyMs: 10_000,
-};
-
-/** Private cloud polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of
- *  transient failures, and "connection lost" (not failed) after 10 minutes. */
-export interface CloudPolling {
-  intervalMs: number;
-  slowIntervalMs: number;
-  slowAfterMs: number;
-  giveUpAfterMs: number;
-}
-
-const DEFAULT_CLOUD_POLLING: CloudPolling = {
-  intervalMs: 5_000,
-  slowIntervalMs: 30_000,
-  slowAfterMs: 60_000,
-  giveUpAfterMs: 10 * 60_000,
-};
-
-export interface CloudClock {
-  now(): number;
-  sleep(ms: number): Promise<void>;
-  /** [0, 1): polling jitter. */
-  random(): number;
-}
-
-const REAL_CLOCK: CloudClock = {
-  now: () => Date.now(),
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  random: () => Math.random(),
 };
 
 /** What the private cloud engine needs; absent means the engine is never offered. */
@@ -960,7 +935,17 @@ export function createLocalTranscriber(
   // Private cloud engine (absent → never offered).
   const cloud = options.cloud ?? null;
   const cloudClock = cloud?.clock ?? REAL_CLOCK;
-  const cloudPolling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...cloud?.polling };
+  const cloudPoller =
+    cloud === null
+      ? null
+      : createCloudJobPoller(cloud.api, {
+          clock: cloudClock,
+          polling: cloud.polling,
+          connectionLost: () =>
+            new CloudConnectionLostError(
+              "Lost contact with private cloud transcription for 10 minutes. The job may still be running; the recording is kept on this Mac.",
+            ),
+        });
   const pendingStore = cloud?.pending ?? localStoragePendingCloudStore;
   const newAttemptId = cloud?.newAttemptId ?? (() => crypto.randomUUID());
   const readyStore = captureReadyStore(nativeKey);
@@ -1147,93 +1132,18 @@ export function createLocalTranscriber(
     });
   };
 
-  const cloudSleep = (baseMs: number) => cloudClock.sleep(Math.round(baseMs * (0.8 + 0.4 * cloudClock.random())));
-
-  /** Rides out transient failures (plan §4.7): waits and returns while they
-   *  last under 10 minutes, backing off after one; then "connection lost". */
-  const transientTolerance = () => {
-    let failingSince: number | null = null;
-    return {
-      reset: () => {
-        failingSince = null;
-      },
-      rideOut: async (err: unknown) => {
-        if (!isTransientCloudError(err)) throw err;
-        const now = cloudClock.now();
-        failingSince ??= now;
-        const failingFor = now - failingSince;
-        if (failingFor >= cloudPolling.giveUpAfterMs) {
-          throw new CloudConnectionLostError(
-            "Lost contact with private cloud transcription for 10 minutes. The job may still be running; the recording is kept on this Mac.",
-          );
-        }
-        await cloudSleep(failingFor >= cloudPolling.slowAfterMs ? cloudPolling.slowIntervalMs : cloudPolling.intervalMs);
-      },
-    };
+  const requirePoller = () => {
+    requireCloud();
+    return cloudPoller!;
   };
 
   /** The job's status, riding out transient failures. */
-  const readCloudJob = async (id: string): Promise<PrivateCloudJob> => {
-    const api = requireCloud().api;
-    const tolerance = transientTolerance();
-    for (;;) {
-      try {
-        return await api.get(id);
-      } catch (err) {
-        await tolerance.rideOut(err);
-      }
-    }
-  };
+  const readCloudJob = (id: string): Promise<PrivateCloudJob> => requirePoller().readJob(id);
 
   /** Poll a PTX job to its transcript (plan §4.7): transient failures are
    *  ridden out for 10 minutes, then the job is "connection lost", not failed. */
-  const pollCloudJob = async (
-    id: string,
-    report: (s: LocalTranscriberStatus) => void,
-  ): Promise<PrivateCloudTranscript> => {
-    const api = requireCloud().api;
-    const tolerance = transientTolerance();
-    const rideOut = tolerance.rideOut;
-    for (;;) {
-      let job: PrivateCloudJob;
-      try {
-        job = await api.get(id);
-      } catch (err) {
-        await rideOut(err);
-        continue;
-      }
-      if (job.status === "completed") {
-        let result: Awaited<ReturnType<PrivateCloudApi["result"]>>;
-        try {
-          result = await api.result(id);
-        } catch (err) {
-          await rideOut(err);
-          continue;
-        }
-        tolerance.reset();
-        if (result.status === "completed") return result.transcript;
-        if (result.status !== "pending") throw result.error;
-      } else {
-        tolerance.reset();
-        if (job.status === "failed" || job.status === "cancelled") {
-          throw new PrivateCloudError(job.error?.code ?? job.status, job.error?.message ?? `The transcription ${job.status}`, {
-            transcriptionId: id,
-          });
-        }
-        if (job.status === "awaiting_upload") {
-          throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
-        }
-        report({
-          kind: "cloud-processing",
-          stage: job.status === "queued" ? "queued" : "processing",
-          queuePosition: job.progress?.queue_position ?? null,
-          regionsCompleted: job.progress?.regions_completed ?? null,
-          regionsTotal: job.progress?.regions_total ?? null,
-        });
-      }
-      await cloudSleep(cloudPolling.intervalMs);
-    }
-  };
+  const pollCloudJob = (id: string, report: (s: LocalTranscriberStatus) => void): Promise<PrivateCloudTranscript> =>
+    requirePoller().pollTranscript(id, (p) => report({ kind: "cloud-processing", ...p }));
 
   /** When a recovered job's recording started: its upload time minus its length. */
   const recoveredStartedAt = (job: PrivateCloudJob): string => {

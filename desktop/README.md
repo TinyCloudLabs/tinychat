@@ -176,7 +176,13 @@ the Vite dev server directly and applies no CSP.
   (`openkey.so`, `api.openkey.so`), model verification (`api.redpill.ai`,
   `rpc.ata.network`, `search.sigstore.dev`, Tinfoil's two GitHub proxies), and
   the browser-side connectors (Fireflies GraphQL; Google Drive, Docs and Meet
-  APIs). Local recording talks to its plugins over IPC only.
+  APIs), and AssemblyAI (`api.assemblyai.com`), which Upload audio calls
+  directly with the user's own key when they choose that engine (deleting the
+  finished transcript goes through the backend, as AssemblyAI's CORS allows no
+  DELETE). Local
+  recording talks to its plugins over IPC only. The Private engine's PTX
+  upload origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`) is added once it is deployed
+  (TC-596); until then Upload audio offers AssemblyAI only in a built app.
 - `frame-src https://openkey.so`: the OpenKey sign-in/approval iframe.
 - `img-src` allows `https:`, `data:` and `blob:` (chat markdown and avatars);
   `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`.

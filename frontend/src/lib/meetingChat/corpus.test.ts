@@ -222,7 +222,7 @@ describe("SQL meeting metadata discovery", () => {
     unsupported[1] = "granola";
     const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [unsupported] } })));
     expect(SQL_MEETING_METADATA_QUERY).toContain(
-      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note')",
+      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note', 'exo-upload')",
     );
     // The browser-local capture sources are named by their writers' own constants.
     expect(SUPPORTED_MEETING_SOURCES).toEqual(expect.arrayContaining([LOCAL_MEETING_SOURCE, VOICE_NOTE_SOURCE]));
