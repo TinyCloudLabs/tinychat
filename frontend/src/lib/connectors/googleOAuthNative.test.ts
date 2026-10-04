@@ -16,6 +16,7 @@ import {
   NATIVE_OAUTH_NOT_COMPLETED,
   NATIVE_OAUTH_RETURN_URL,
   NATIVE_OAUTH_STATE_PREFIX,
+  googleAuthorizeSurface,
   nativeGoogleOAuthEnabled,
   nativeOAuthState,
   parseNativeOAuthReturn,
@@ -361,6 +362,22 @@ describe("the native return is spelled the same everywhere", () => {
     const config = readRepo("mobile/capacitor.config.ts");
     expect(config).toContain('appId: "xyz.tinycloud.exo"');
     expect(NATIVE_OAUTH_RETURN_URL.startsWith("xyz.tinycloud.exo://")).toBe(true);
+  });
+});
+
+describe("googleAuthorizeSurface (TC-522)", () => {
+  test("the web and the desktop app keep the popup, whatever the build flag says", () => {
+    expect(googleAuthorizeSurface(false, false)).toBe("popup");
+    expect(googleAuthorizeSurface(false, true)).toBe("popup");
+  });
+
+  test("inside the app: the system browser once the build allows it, otherwise not offered at all", () => {
+    expect(googleAuthorizeSurface(true, true)).toBe("system-browser");
+    expect(googleAuthorizeSurface(true, false)).toBe("unavailable-in-app");
+  });
+
+  test("a bun process is not the app: the popup", () => {
+    expect(googleAuthorizeSurface()).toBe("popup");
   });
 });
 

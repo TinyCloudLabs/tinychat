@@ -125,6 +125,22 @@ export function usesSystemBrowserOAuth(): boolean {
 }
 
 /**
+ * How the Google connect dialog can sign in here (TC-522): the web and desktop
+ * popup, the app's system browser, or not at all. Inside the app while this
+ * build keeps native OAuth off, the dialog says so instead of offering
+ * "Continue with Google".
+ */
+export type GoogleAuthorizeSurface = "popup" | "system-browser" | "unavailable-in-app";
+
+export function googleAuthorizeSurface(
+  inApp: boolean = usesSystemBrowserOAuth(),
+  enabled: boolean = nativeGoogleOAuthEnabled(),
+): GoogleAuthorizeSurface {
+  if (!inApp) return "popup";
+  return enabled ? "system-browser" : "unavailable-in-app";
+}
+
+/**
  * The Capacitor ports, or `null` outside the native app: the one gate that
  * picks the system-browser flow over the popup. A native shell missing a plugin
  * still gets the ports, so the attempt fails visibly as "browser-unavailable"
