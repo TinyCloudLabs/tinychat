@@ -27,6 +27,8 @@ import {
   HOSTED_PART_SIZE,
   HostedUploadStore,
   MAX_HOSTED_BYTES,
+  SETTLED_TTL_MS,
+  SUBMIT_DEADLINE_MS,
   UPLOAD_TTL_MS,
   assemblyAiHostedConfigFromEnv,
   issueHandle,
@@ -49,7 +51,7 @@ afterEach(async () => {
   while (closers.length) await closers.pop()!();
 });
 
-type Upstream = { method: string; url: string; headers: Record<string, string>; body: Uint8Array | null };
+type Upstream = { method: string; url: string; headers: Record<string, string>; body: Uint8Array | null; signal: AbortSignal | null };
 type Answer = (call: Upstream) => Response | Promise<Response>;
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -102,7 +104,7 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
   const answer = options.answer ?? assemblyAi;
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     const body = init?.body instanceof Blob ? new Uint8Array(await init.body.arrayBuffer()) : typeof init?.body === "string" ? new TextEncoder().encode(init.body) : null;
-    const call = { method: String(init?.method), url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, body };
+    const call = { method: String(init?.method), url: String(url), headers: (init?.headers ?? {}) as Record<string, string>, body, signal: init?.signal ?? null };
     calls.push(call);
     return answer(call);
   }) as typeof fetch;
@@ -161,7 +163,15 @@ async function setup(options: { answer?: Answer; config?: AssemblyAiHostedConfig
     return id;
   }
 
-  return { req, createUpload, upload, calls, logs, clock, store, spoolDir, spoolFiles: () => readdirSync(spoolDir) };
+  /** POST the submit (202 at once), let the background settle, return the polled upload view. */
+  async function submit(id: string, as = ADDRESS_A, speakerLabels = true) {
+    const started = await req("POST", "/hosted/transcripts", { as, body: { upload_id: id, speaker_labels: speakerLabels } });
+    expect([started.status, started.json.upload_id]).toEqual([202, id]);
+    await store!.idle();
+    return (await req("GET", `/hosted/uploads/${id}`, { as })).json;
+  }
+
+  return { req, createUpload, upload, submit, calls, logs, clock, store, spoolDir, spoolFiles: () => readdirSync(spoolDir) };
 }
 
 function audio(bytes: number): Uint8Array {
@@ -274,13 +284,22 @@ describe("hosted flow", () => {
       const r = await h.req("PUT", `/hosted/uploads/${id}/parts/${i}`, { raw: bytes.subarray(i * HOSTED_PART_SIZE, (i + 1) * HOSTED_PART_SIZE) });
       expect(r.status).toBe(204);
     }
-    const transcript = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
-    expect(transcript.status).toBe(201);
-    expect(Object.keys(transcript.json).sort()).toEqual(["id", "status"]);
-    expect(transcript.json.status).toBe("queued");
-    const handle = transcript.json.id as string;
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).json).toEqual({ status: "receiving" });
+    const started = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+    expect([started.status, started.json]).toEqual([202, { upload_id: id, status: "submitting" }]);
+    await h.store!.idle();
+    const polled = await h.req("GET", `/hosted/uploads/${id}`);
+    expect(Object.keys(polled.json).sort()).toEqual(["id", "status"]);
+    expect(polled.json.status).toBe("submitted");
+    const handle = polled.json.id as string;
     expect(handle).toMatch(/^aah1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     expect(handle).not.toContain(TRANSCRIPT_ID);
+    // A replay (a reloaded client) answers where it got to, and starts nothing new.
+    const replay = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
+    expect([replay.status, replay.json]).toEqual([202, { upload_id: id, status: "submitted", id: handle }]);
+    // Another account cannot see it.
+    expect((await h.req("GET", `/hosted/uploads/${id}`, { as: ADDRESS_B })).status).toBe(404);
+    expect(h.calls.filter((c) => c.url.endsWith("/v2/upload"))).toHaveLength(1);
 
     const [sent, create] = h.calls;
     expect([sent!.method, sent!.url]).toEqual(["POST", "https://api.assemblyai.com/v2/upload"]);
@@ -417,8 +436,11 @@ describe("uploads and parts", () => {
     const early = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: false } });
     expect([early.status, early.json.error]).toEqual([409, "assemblyai_upload_incomplete"]);
     expect((await put("1", bytes.subarray(HOSTED_PART_SIZE))).status).toBe(204);
-    expect((await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: false } })).status).toBe(201);
+    expect((await h.submit(id)).status).toBe("submitted");
     expect(Buffer.from(h.calls[0]!.body!).equals(Buffer.from(bytes))).toBe(true);
+    // Sent: no more parts, and nothing to abandon.
+    const late = await put("0", bytes.subarray(0, HOSTED_PART_SIZE));
+    expect([late.status, late.json.error]).toEqual([409, "assemblyai_upload_in_progress"]);
   });
 
   test("another account's or an unknown upload is 404; an expired one is 410, then the sweep frees it", async () => {
@@ -473,7 +495,7 @@ describe("allowance and concurrency", () => {
   test("the daily allowance is charged at create and resets at UTC midnight", async () => {
     const h = await setup({ dailyBytes: 1000 });
     const id = await h.upload(audio(700));
-    expect((await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } })).status).toBe(201);
+    expect((await h.submit(id)).status).toBe("submitted");
     const over = await h.createUpload(301);
     expect([over.status, over.json.error]).toEqual([429, "assemblyai_quota_exceeded"]);
     // 12:00 UTC → 12 h to midnight.
@@ -506,17 +528,23 @@ describe("allowance and concurrency", () => {
     expect((await h.createUpload(10, ADDRESS_B)).status).toBe(201);
     expect(h.store!.activeCount).toBe(2);
 
-    // While A's upload is being sent, A can neither start another nor submit it twice.
+    // While A's upload is being sent, A cannot start another; a repeated submit just reports it.
     const a = (await h.createUpload(10, ADDRESS_A)).json.upload_id;
     expect((await h.req("PUT", `/hosted/uploads/${a}/parts/0`, { raw: audio(10) })).status).toBe(204);
-    const sending = h.req("POST", "/hosted/transcripts", { body: { upload_id: a, speaker_labels: true } });
+    const started = await h.req("POST", "/hosted/transcripts", { body: { upload_id: a, speaker_labels: true } });
+    expect([started.status, started.json]).toEqual([202, { upload_id: a, status: "submitting" }]);
     await sendStarted.promise;
+    expect((await h.req("GET", `/hosted/uploads/${a}`)).json).toEqual({ status: "submitting" });
     const blocked = await h.createUpload(10, ADDRESS_A);
     expect([blocked.status, blocked.json.error, blocked.headers.get("retry-after")]).toEqual([429, "assemblyai_busy", "30"]);
     const twice = await h.req("POST", "/hosted/transcripts", { body: { upload_id: a, speaker_labels: true } });
-    expect([twice.status, twice.json.error]).toEqual([409, "assemblyai_upload_in_progress"]);
+    expect([twice.status, twice.json]).toEqual([202, { upload_id: a, status: "submitting" }]);
+    const abandon = await h.req("DELETE", `/hosted/uploads/${a}`);
+    expect([abandon.status, abandon.json.error]).toEqual([409, "assemblyai_upload_in_progress"]);
     gate.resolve();
-    expect((await sending).status).toBe(201);
+    await h.store!.idle();
+    expect((await h.req("GET", `/hosted/uploads/${a}`)).json.status).toBe("submitted");
+    expect(h.calls.filter((c) => c.url.endsWith("/v2/upload"))).toHaveLength(1);
     expect((await h.createUpload(10, ADDRESS_A)).status).toBe(201);
   });
 });
@@ -524,40 +552,75 @@ describe("allowance and concurrency", () => {
 // ── Upstream mapping and the spool on every outcome ─────────────────
 
 describe("upstream failures", () => {
-  // [name, answer for the upload call, our status, our code, alert]
-  const UPLOAD_FAILURES: [string, Answer, number, string, boolean][] = [
-    ["server key refused (401)", () => json(401, { error: UPSTREAM_DETAIL }), 502, "assemblyai_unavailable", true],
-    ["server key refused (403)", () => json(403, { error: UPSTREAM_DETAIL }), 502, "assemblyai_unavailable", true],
-    ["rate limited", () => json(429, { error: UPSTREAM_DETAIL }, { "Retry-After": "17" }), 429, "assemblyai_rate_limited", false],
-    ["server error", () => json(500, { error: UPSTREAM_DETAIL }), 502, "assemblyai_unavailable", false],
-    ["off-contract success", () => json(200, { upload_url: "http://plain.example/x" }), 502, "assemblyai_unavailable", false],
-    ["network error", () => Promise.reject(new TypeError(`fetch failed ${UPSTREAM_DETAIL}`)), 502, "assemblyai_unavailable", false],
+  // [name, answer for the upload call, the failed outcome's code, alert]
+  const UPLOAD_FAILURES: [string, Answer, string, boolean][] = [
+    ["server key refused (401)", () => json(401, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
+    ["server key refused (403)", () => json(403, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
+    ["rate limited", () => json(429, { error: UPSTREAM_DETAIL }, { "Retry-After": "17" }), "assemblyai_rate_limited", false],
+    ["server error", () => json(500, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", false],
+    ["off-contract success", () => json(200, { upload_url: "http://plain.example/x" }), "assemblyai_unavailable", false],
+    ["network error", () => Promise.reject(new TypeError(`fetch failed ${UPSTREAM_DETAIL}`)), "assemblyai_unavailable", false],
   ];
 
-  test.each(UPLOAD_FAILURES)("upload: %s → mapped, spool deleted, slot freed", async (_name, failing, status, code, alert) => {
+  test.each(UPLOAD_FAILURES)("background upload: %s → failed outcome, spool deleted, slot freed", async (_name, failing, code, alert) => {
     const h = await setup({ answer: (call) => (call.url.endsWith("/v2/upload") ? failing(call) : assemblyAi(call)) });
     const id = await h.upload(audio(50));
-    const r = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
-    expect([r.status, r.json.error]).toEqual([status, code]);
-    expect(r.text).not.toContain("UPSTREAM-DETAIL");
-    if (code === "assemblyai_rate_limited") expect(r.headers.get("retry-after")).toBe("17");
+    const outcome = await h.submit(id);
+    expect(outcome).toEqual({ status: "failed", error: { code, message: ASSEMBLYAI_HOSTED_ERRORS[code as keyof typeof ASSEMBLYAI_HOSTED_ERRORS].message } });
+    expect(JSON.stringify(outcome)).not.toContain("UPSTREAM-DETAIL");
     expect(h.spoolFiles()).toEqual([]);
     expect(h.store!.activeCount).toBe(0);
-    expect(h.logs.at(-1)!.alert).toBe(alert);
-    expect(h.logs.at(-1)!.line.includes("alert=true")).toBe(alert);
+    const last = h.logs.at(-1)!;
+    expect(last.line).toStartWith("[assemblyai-hosted] route=submit ");
+    expect([last.alert, last.line.includes("alert=true")]).toEqual([alert, alert]);
+    // A failed upload is settled: a replay reports the failure; a new upload is the retry.
+    expect((await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } })).json.status).toBe("failed");
+    expect((await h.createUpload(50)).status).toBe(201);
   });
 
-  test("a refused transcript create is mapped (an AssemblyAI 400 is our drift: alert) and the spool is still gone", async () => {
-    for (const [answer, status, code, alert] of [
-      [json(400, { error: UPSTREAM_DETAIL }), 502, "assemblyai_unavailable", true],
-      [json(401, { error: UPSTREAM_DETAIL }), 502, "assemblyai_unavailable", true],
-      [json(429, { error: UPSTREAM_DETAIL }), 429, "assemblyai_rate_limited", false],
-      [json(200, { id: "../x", status: "queued" }), 502, "assemblyai_unavailable", false],
+  test("a submit past its deadline is aborted by the sweep and settles failed, spool deleted", async () => {
+    const h = await setup({
+      answer: (call) =>
+        call.url.endsWith("/v2/upload")
+          ? new Promise<Response>((_resolve, reject) => call.signal!.addEventListener("abort", () => reject(call.signal!.reason)))
+          : assemblyAi(call),
+    });
+    const id = await h.upload(audio(50));
+    expect((await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } })).status).toBe(202);
+    h.clock.now = T0 + SUBMIT_DEADLINE_MS - 1;
+    await h.store!.sweep(h.clock.now);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).json).toEqual({ status: "submitting" });
+    h.clock.now = T0 + SUBMIT_DEADLINE_MS;
+    await h.store!.sweep(h.clock.now);
+    await h.store!.idle();
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).json).toMatchObject({ status: "failed", error: { code: "assemblyai_unavailable" } });
+    expect(h.spoolFiles()).toEqual([]);
+    expect(h.logs.at(-1)!.line).toContain("reason=aborted");
+  });
+
+  test("the outcome stays readable for an hour after it settles, then the sweep forgets it", async () => {
+    const h = await setup();
+    const id = await h.upload(audio(50));
+    expect((await h.submit(id)).status).toBe("submitted");
+    h.clock.now = T0 + SETTLED_TTL_MS - 1;
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).json.status).toBe("submitted");
+    h.clock.now = T0 + SETTLED_TTL_MS;
+    await h.store!.sweep(h.clock.now);
+    expect((await h.req("GET", `/hosted/uploads/${id}`)).status).toBe(404);
+  });
+
+  test("a refused transcript create settles failed (an AssemblyAI 400 is our drift: alert) and the spool is still gone", async () => {
+    for (const [answer, code, alert] of [
+      [json(400, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
+      [json(401, { error: UPSTREAM_DETAIL }), "assemblyai_unavailable", true],
+      [json(429, { error: UPSTREAM_DETAIL }), "assemblyai_rate_limited", false],
+      [json(200, { id: "../x", status: "queued" }), "assemblyai_unavailable", false],
     ] as const) {
       const h = await setup({ answer: (call) => (call.url.endsWith("/v2/transcript") ? answer.clone() : assemblyAi(call)) });
       const id = await h.upload(audio(50));
-      const r = await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } });
-      expect([r.status, r.json.error, h.logs.at(-1)!.alert]).toEqual([status, code, alert]);
+      const outcome = await h.submit(id);
+      const submitLog = h.logs.find((l) => l.line.includes("route=submit"))!;
+      expect([outcome.status, outcome.error?.code, submitLog.alert]).toEqual(["failed", code, alert]);
       expect(h.spoolFiles()).toEqual([]);
       expect(h.store!.activeCount).toBe(0);
     }
@@ -596,14 +659,15 @@ describe("logs", () => {
   test("carry route, status, code and correlation id: never the key, a handle, a transcript id or the address", async () => {
     const h = await setup();
     const id = await h.upload(audio(HOSTED_PART_SIZE + 10));
-    const handle = (await h.req("POST", "/hosted/transcripts", { body: { upload_id: id, speaker_labels: true } })).json.id as string;
+    const handle = (await h.submit(id)).id as string;
     await h.req("GET", `/hosted/transcripts/${handle}`);
     await h.req("DELETE", `/hosted/transcripts/${handle}`);
     await h.req("GET", `/hosted/transcripts/${handle}`, { as: ADDRESS_B });
     await h.req("PUT", `/hosted/uploads/${id}/parts/9`, { raw: audio(1) });
     const all = h.logs.map((l) => l.line).join("\n");
     expect(all).toContain("route=create_upload status=201");
-    expect(all).toContain("route=create_transcript status=201");
+    expect(all).toContain("route=create_transcript status=202");
+    expect(all).toContain("route=submit status=201 bytes=");
     expect(all).toContain("route=delete_transcript status=204");
     expect(all).toContain("code=assemblyai_transcript_not_found");
     for (const secret of [API_KEY, HANDLE_KEY, handle, handle.split(".")[1]!, TRANSCRIPT_ID, ADDRESS_A, ADDRESS_B.slice(2), id, UPLOAD_URL]) {
@@ -662,6 +726,7 @@ describe("openapi", () => {
     const operations: [string, string][] = [
       ["/capabilities", "get"],
       ["/hosted/uploads", "post"],
+      ["/hosted/uploads/{upload_id}", "get"],
       ["/hosted/uploads/{upload_id}", "delete"],
       ["/hosted/uploads/{upload_id}/parts/{index}", "put"],
       ["/hosted/transcripts", "post"],

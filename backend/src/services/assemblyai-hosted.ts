@@ -134,6 +134,10 @@ const UPLOAD_ID_RE = /^aau_[A-Za-z0-9_-]{32}$/;
 const SPOOL_FILE_RE = /^aau_[A-Za-z0-9_-]{32}\.part$/;
 /** An expired upload answers 410 (not 404) to its owner for this long after the sweep. */
 const TOMBSTONE_MS = 60 * 60 * 1000;
+/** How long a background submit (stream to AssemblyAI, then create the transcript) may take. */
+export const SUBMIT_DEADLINE_MS = 15 * 60 * 1000;
+/** A settled outcome (the handle, or the failure) stays readable this long after it settles. */
+export const SETTLED_TTL_MS = 60 * 60 * 1000;
 
 export interface HostedUpload {
   id: string;
@@ -146,17 +150,27 @@ export interface HostedUpload {
   expiresAt: number;
   /** The allowance key this upload was charged to (refunded if it is abandoned unsent). */
   dayKey: string;
-  /** Set while the spool is being sent to AssemblyAI: no more parts, no second submit. */
-  submitting: boolean;
+  /** `receiving` takes parts; `submitting` is being sent to AssemblyAI (no parts, no abandon). */
+  state: "receiving" | "submitting";
+  /** Aborts the background submit (deadline, sweep, shutdown). Set while submitting. */
+  abort: AbortController | null;
+  submitDeadline: number;
 }
+
+/** How a background submit ended. Codes are the router's public error codes. */
+export type SubmitOutcome =
+  | { status: "submitted"; handle: string }
+  | { status: "failed"; code: "assemblyai_unavailable" | "assemblyai_rate_limited" };
 
 export type CreateUploadResult =
   | { ok: true; upload: HostedUpload }
   | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number };
 
 export type LookupResult =
-  | { ok: true; upload: HostedUpload }
-  | { ok: false; code: "assemblyai_upload_not_found" | "assemblyai_upload_expired" };
+  | { kind: "active"; upload: HostedUpload }
+  | { kind: "settled"; outcome: SubmitOutcome }
+  | { kind: "expired" }
+  | { kind: "missing" };
 
 function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
@@ -174,11 +188,16 @@ export function partLength(byteSize: number, index: number): number {
 }
 
 export class HostedUploadStore {
+  /** Uploads holding a slot: receiving parts, or being submitted. */
   private readonly uploads = new Map<string, HostedUpload>();
-  /** Expired uploads: id → { owner, until }. */
+  /** Submitted or failed uploads: their outcome, readable by the owner until `until`. */
+  private readonly settled = new Map<string, { owner: string; until: number; outcome: SubmitOutcome }>();
+  /** Expired unsent uploads: id → { owner, until }. */
   private readonly tombstones = new Map<string, { owner: string; until: number }>();
   /** `${utcDay}|${address}` → bytes charged today. */
   private readonly charged = new Map<string, number>();
+  /** Background submits in flight. */
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     private readonly spoolDir: string,
@@ -210,7 +229,7 @@ export class HostedUploadStore {
    */
   async create(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
     const mine = [...this.uploads.values()].find((u) => u.owner === address);
-    if (mine?.submitting) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    if (mine?.state === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
     if (mine) await this.abandon(mine);
     if (this.uploads.size >= this.maxConcurrent) {
       const soonest = Math.min(...[...this.uploads.values()].map((u) => u.expiresAt));
@@ -233,7 +252,9 @@ export class HostedUploadStore {
       path,
       expiresAt: nowMs + UPLOAD_TTL_MS,
       dayKey,
-      submitting: false,
+      state: "receiving",
+      abort: null,
+      submitDeadline: 0,
     };
     // Reserve the slot and charge the allowance before the first await, so concurrent creates
     // cannot both pass the checks above.
@@ -250,15 +271,19 @@ export class HostedUploadStore {
     return { ok: true, upload };
   }
 
+  /** The caller's upload in whatever state it is in; another account's is `missing`. */
   lookup(id: string, address: string, nowMs: number): LookupResult {
-    if (!UPLOAD_ID_RE.test(id)) return { ok: false, code: "assemblyai_upload_not_found" };
+    if (!UPLOAD_ID_RE.test(id)) return { kind: "missing" };
     const upload = this.uploads.get(id);
     if (upload && upload.owner === address) {
-      return upload.expiresAt <= nowMs ? { ok: false, code: "assemblyai_upload_expired" } : { ok: true, upload };
+      // A submit in flight outlives the upload's hour; it is bounded by its own deadline.
+      return upload.state === "receiving" && upload.expiresAt <= nowMs ? { kind: "expired" } : { kind: "active", upload };
     }
+    const settled = this.settled.get(id);
+    if (settled && settled.owner === address && settled.until > nowMs) return { kind: "settled", outcome: settled.outcome };
     const tombstone = this.tombstones.get(id);
-    if (tombstone && tombstone.owner === address && tombstone.until > nowMs) return { ok: false, code: "assemblyai_upload_expired" };
-    return { ok: false, code: "assemblyai_upload_not_found" };
+    if (tombstone && tombstone.owner === address && tombstone.until > nowMs) return { kind: "expired" };
+    return { kind: "missing" };
   }
 
   async writePart(upload: HostedUpload, index: number, bytes: Uint8Array): Promise<void> {
@@ -277,6 +302,36 @@ export class HostedUploadStore {
     return (await stat(upload.path)).size === upload.byteSize;
   }
 
+  /**
+   * Move a complete upload to `submitting` and run `submit` in the background with an abort
+   * signal (its own deadline, the sweep, or shutdown). Whatever happens, the spool is deleted,
+   * the slot freed, and the outcome kept for the owner to read.
+   */
+  startSubmit(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): void {
+    const controller = new AbortController();
+    upload.state = "submitting";
+    upload.abort = controller;
+    upload.submitDeadline = now() + SUBMIT_DEADLINE_MS;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(SUBMIT_DEADLINE_MS)]);
+    const run = (async () => {
+      let outcome: SubmitOutcome;
+      try {
+        outcome = await submit(signal);
+      } catch {
+        outcome = { status: "failed", code: "assemblyai_unavailable" };
+      }
+      await this.release(upload).catch(() => {});
+      this.settled.set(upload.id, { owner: upload.owner, until: now() + SETTLED_TTL_MS, outcome });
+    })();
+    this.inFlight.add(run);
+    void run.finally(() => this.inFlight.delete(run));
+  }
+
+  /** Resolves when every background submit started so far has settled. */
+  async idle(): Promise<void> {
+    while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+  }
+
   /** Delete the spool and free the slot. Safe to call more than once. */
   async release(upload: HostedUpload): Promise<void> {
     this.uploads.delete(upload.id);
@@ -285,25 +340,44 @@ export class HostedUploadStore {
 
   /** Drop an upload that was never sent: spool deleted, slot freed, its bytes refunded. */
   async abandon(upload: HostedUpload): Promise<void> {
-    if (!this.uploads.has(upload.id)) return;
+    if (!this.uploads.has(upload.id) || upload.state !== "receiving") return;
     const used = this.charged.get(upload.dayKey);
     if (used !== undefined) this.charged.set(upload.dayKey, Math.max(0, used - upload.byteSize));
     await this.release(upload);
   }
 
-  /** Delete expired spools (not ones being submitted), free their slots, forget old days. */
+  /** Forget a settled outcome (the owner has read it). */
+  forget(id: string): void {
+    this.settled.delete(id);
+  }
+
+  /**
+   * Delete expired unsent spools and free their slots; abort submits past their deadline (they
+   * then settle as failed and delete their own spool); forget old outcomes and old days.
+   */
   async sweep(nowMs: number): Promise<number> {
     let removed = 0;
     for (const upload of [...this.uploads.values()]) {
-      if (upload.expiresAt > nowMs || upload.submitting) continue;
+      if (upload.state === "submitting") {
+        if (nowMs >= upload.submitDeadline) upload.abort?.abort();
+        continue;
+      }
+      if (upload.expiresAt > nowMs) continue;
       await this.release(upload);
       this.tombstones.set(upload.id, { owner: upload.owner, until: nowMs + TOMBSTONE_MS });
       removed++;
     }
     for (const [id, tombstone] of this.tombstones) if (tombstone.until <= nowMs) this.tombstones.delete(id);
+    for (const [id, settled] of this.settled) if (settled.until <= nowMs) this.settled.delete(id);
     const today = utcDay(nowMs);
     for (const key of this.charged.keys()) if (!key.startsWith(`${today}|`)) this.charged.delete(key);
     return removed;
+  }
+
+  /** Shutdown: abort every submit in flight and wait for them to delete their spools. */
+  async shutdown(): Promise<void> {
+    for (const upload of this.uploads.values()) upload.abort?.abort();
+    await this.idle();
   }
 }
 

@@ -1066,7 +1066,8 @@ async function main() {
     // Deployment must wait for this process to exit; the KV lease is not a distributed lock.
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
-    void Promise.all([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop()])
+    // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
+    void Promise.all([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
       .then(() => process.exit(0), () => process.exit(1));
     setTimeout(() => process.exit(1), 120_000).unref();
   };

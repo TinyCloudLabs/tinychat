@@ -22,6 +22,8 @@ import {
   type AssemblyAiHostedConfig,
   type HostedUpload,
   type HostedUploadStore,
+  type LookupResult,
+  type SubmitOutcome,
 } from "../services/assemblyai-hosted.js";
 
 /**
@@ -32,11 +34,20 @@ import {
  *   GET    /capabilities                                { hosted, max_bytes, part_size, content_types, daily_bytes_remaining }
  *   POST   /hosted/uploads                              { byte_size, content_type } → 201 { upload_id, part_size, expires_at }
  *   PUT    /hosted/uploads/:upload_id/parts/:index      raw ≤1 MiB part → 204
+ *   GET    /hosted/uploads/:upload_id                   { status: receiving | submitting } |
+ *                                                       { status: "submitted", id: <handle> } |
+ *                                                       { status: "failed", error: { code, message } }
  *   DELETE /hosted/uploads/:upload_id                   abandon an unsent upload (refunded) → 204
- *   POST   /hosted/transcripts                          { upload_id, speaker_labels } → 201 { id: <handle>, status }
+ *   POST   /hosted/transcripts                          { upload_id, speaker_labels } → 202 { upload_id, status, … }
  *   GET    /hosted/transcripts/:handle                  rebuilt subset of the transcript
  *   GET    /hosted/transcripts/:handle/sentences        { sentences: [{ start, end, text, speaker }] }
  *   DELETE /hosted/transcripts/:handle                  → 204 (also when AssemblyAI no longer has it)
+ *
+ * Submitting is asynchronous: streaming a 121 MB spool to AssemblyAI can outlast any ingress read
+ * timeout, so `POST /hosted/transcripts` only checks the upload is complete, starts the submit in
+ * the background (its own 15-minute deadline; aborted by the sweep past it and at shutdown) and
+ * answers 202. The client polls `GET /hosted/uploads/:id` for the handle; the outcome stays
+ * readable for the upload's hour. The spool is deleted and the slot freed when the submit settles.
  *
  * The server key never leaves this process; the client only ever holds the HMAC handle, which
  * binds the AssemblyAI transcript to the session address (anything else about it → 404). Every
@@ -61,7 +72,7 @@ export const ASSEMBLYAI_HOSTED_ERRORS = {
   assemblyai_upload_not_found: { status: 404, message: "No such upload." },
   assemblyai_transcript_not_found: { status: 404, message: "No such transcript." },
   assemblyai_upload_incomplete: { status: 409, message: "Not every part of the recording has arrived." },
-  assemblyai_upload_in_progress: { status: 409, message: "This recording is already being sent to AssemblyAI." },
+  assemblyai_upload_in_progress: { status: 409, message: "This recording has already been sent to AssemblyAI." },
   assemblyai_upload_expired: { status: 410, message: "The upload expired. Upload the recording again." },
   recording_too_large: { status: 413, message: "The recording is larger than the AssemblyAI upload limit." },
   unsupported_audio: { status: 415, message: "This audio format is not supported." },
@@ -80,10 +91,8 @@ export interface AssemblyAiHostedRouterOptions {
   store: HostedUploadStore | null;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
-  /** JSON calls to AssemblyAI. */
+  /** JSON calls to AssemblyAI made inside a client request. */
   timeoutMs?: number;
-  /** Streaming the spool to AssemblyAI. */
-  uploadTimeoutMs?: number;
   now?: () => number;
   /** `alert` = operator fault. */
   log?: (line: string, alert: boolean) => void;
@@ -93,7 +102,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const INDEX_RE = /^\d{1,6}$/;
 const RETRY_AFTER_RE = /^\d{1,6}$/;
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const SMALL_BODY = 64 * 1024;
 /** A two-hour transcript with word timings runs to several MB; sentences carry words too. */
 const TRANSCRIPT_BODY = 64 * 1024 * 1024;
@@ -125,7 +133,6 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
   const hosted = config.hosted ? config : null;
   const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const uploadTimeoutMs = options.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS;
   const now = options.now ?? Date.now;
   const log = options.log ?? ((line: string, alert: boolean) => (alert ? console.error(line) : console.log(line)));
   if (config.hosted && !store) throw new Error("assemblyai hosted router: store is required when hosted");
@@ -191,7 +198,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     method: "GET" | "POST" | "DELETE",
     path: string,
     maxBytes: number,
-    init: { body?: BodyInit; contentType?: string; timeoutMs?: number } = {},
+    init: { body?: BodyInit; contentType?: string; signal?: AbortSignal } = {},
   ): Promise<{ response: globalThis.Response; bytes: Uint8Array | null }> {
     let response: globalThis.Response;
     let bytes: Uint8Array | null;
@@ -202,11 +209,12 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
         ...(init.body === undefined ? {} : { body: init.body }),
         // A redirect is never expected; never follow one with the key attached.
         redirect: "manual",
-        signal: AbortSignal.timeout(init.timeoutMs ?? timeoutMs),
+        signal: init.signal ?? AbortSignal.timeout(timeoutMs),
       });
       bytes = await readCapped(response, maxBytes);
     } catch (error) {
-      throw new UpstreamFailure({ code: "assemblyai_unavailable", reason: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport" });
+      const name = error instanceof Error ? error.name : "";
+      throw new UpstreamFailure({ code: "assemblyai_unavailable", reason: name === "TimeoutError" ? "timeout" : name === "AbortError" ? "aborted" : "transport" });
     }
     if (bytes === null && response.status >= 200 && response.status < 300) {
       throw new UpstreamFailure({ code: "assemblyai_unavailable", upstreamStatus: response.status, reason: "body_too_large" });
@@ -279,18 +287,79 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     }),
   );
 
-  /** The caller's own live upload for `:upload_id`, else answered (404 / 410). */
-  function ownUpload(req: Request, res: Response, id: unknown): HostedUpload | null {
+  /** The caller's upload for `:upload_id` while it still takes parts, else answered (404 / 409 / 410). */
+  function receivingUpload(res: Response, id: unknown): HostedUpload | null {
     const found = store!.lookup(typeof id === "string" ? id : "", locals(res).address, now());
-    if (!found.ok) {
-      fail(res, { code: found.code });
-      return null;
+    if (found.kind === "active" && found.upload.state === "receiving") return found.upload;
+    fail(res, {
+      code: found.kind === "missing" ? "assemblyai_upload_not_found" : found.kind === "expired" ? "assemblyai_upload_expired" : "assemblyai_upload_in_progress",
+    });
+    return null;
+  }
+
+  /** What the client polls: where its upload is, and the handle once it is submitted. */
+  function uploadView(found: LookupResult) {
+    if (found.kind === "active") return { status: found.upload.state };
+    if (found.kind === "settled" && found.outcome.status === "submitted") return { status: "submitted", id: found.outcome.handle };
+    if (found.kind === "settled" && found.outcome.status === "failed") {
+      return { status: "failed", error: { code: found.outcome.code, message: ASSEMBLYAI_HOSTED_ERRORS[found.outcome.code].message } };
     }
-    if (found.upload.submitting) {
-      fail(res, { code: "assemblyai_upload_in_progress" });
-      return null;
+    return null;
+  }
+
+  /** The background submit: stream the spool, create the transcript, mint the handle. */
+  async function submit(upload: HostedUpload, speakerLabels: boolean, cid: string, signal: AbortSignal): Promise<SubmitOutcome> {
+    const settle = (failure: Failure | null, outcome: SubmitOutcome): SubmitOutcome => {
+      const status = failure ? ASSEMBLYAI_HOSTED_ERRORS[failure.code].status : 201;
+      log(
+        `[assemblyai-hosted] route=submit status=${status}` +
+          (failure ? ` code=${failure.code}` : "") +
+          (failure?.upstreamStatus !== undefined ? ` upstream_status=${failure.upstreamStatus}` : "") +
+          (failure?.reason !== undefined ? ` reason=${failure.reason}` : "") +
+          ` bytes=${upload.byteSize} cid=${cid}` +
+          (failure?.alert ? " alert=true" : ""),
+        failure?.alert === true,
+      );
+      return outcome;
+    };
+    const failed = (failure: Failure) =>
+      settle(failure, { status: "failed", code: failure.code === "assemblyai_rate_limited" ? "assemblyai_rate_limited" : "assemblyai_unavailable" });
+    try {
+      // Streamed from disk: the file body is never held in memory.
+      const sent = await call("POST", "/v2/upload", SMALL_BODY, {
+        body: await openAsBlob(upload.path),
+        contentType: "application/octet-stream",
+        signal,
+      });
+      if (sent.response.status !== 200) return failed(upstreamFailure(sent.response, sent.bytes, false));
+      const uploaded = parseJson(sent.bytes) as { upload_url?: unknown } | undefined;
+      if (typeof uploaded?.upload_url !== "string" || !uploaded.upload_url.startsWith("https://")) {
+        return failed({ code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" });
+      }
+      const created = await call("POST", "/v2/transcript", SMALL_BODY, {
+        body: JSON.stringify({ audio_url: uploaded.upload_url, speaker_labels: speakerLabels, language_detection: true, speech_models: SPEECH_MODELS }),
+        contentType: "application/json",
+        signal,
+      });
+      if (created.response.status !== 200 && created.response.status !== 201) {
+        const failure = upstreamFailure(created.response, created.bytes, false);
+        // A refused create body is a contract drift on our side: alert, like a refused key.
+        return failed(created.response.status === 400 ? { ...failure, alert: true, reason: "create_rejected" } : failure);
+      }
+      const parsed = parseJson(created.bytes) as { id?: unknown; status?: unknown } | undefined;
+      if (
+        typeof parsed?.id !== "string" ||
+        !ASSEMBLYAI_TRANSCRIPT_ID_RE.test(parsed.id) ||
+        typeof parsed.status !== "string" ||
+        !TRANSCRIPT_STATUSES.includes(parsed.status)
+      ) {
+        return failed({ code: "assemblyai_unavailable", upstreamStatus: created.response.status, reason: "off_contract" });
+      }
+      return settle(null, { status: "submitted", handle: issueHandle(hosted!.handleKey, parsed.id, upload.owner, now()) });
+    } catch (error) {
+      if (error instanceof UpstreamFailure) return failed(error.failure);
+      return failed({ code: "assemblyai_unavailable", reason: "internal" });
     }
-    return found.upload;
   }
 
   const rawPart = express.raw({ type: "application/octet-stream", limit: HOSTED_PART_SIZE });
@@ -300,7 +369,7 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
     // Owner, upload and index are settled before a single body byte is read.
     (req, res, next) => {
       locals(res).route = "put_part";
-      const upload = ownUpload(req, res, req.params.upload_id);
+      const upload = receivingUpload(res, req.params.upload_id);
       if (!upload) return;
       const raw = req.params.index;
       const index = typeof raw === "string" && INDEX_RE.test(raw) ? Number(raw) : -1;
@@ -314,16 +383,32 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       const bytes = req.body;
       if (!Buffer.isBuffer(bytes) || bytes.byteLength !== partLength(upload.byteSize, index)) return fail(res, { code: "invalid_request" });
       // The upload may have expired or been submitted while its body was arriving.
-      if (!ownUpload(req, res, upload.id)) return;
+      if (!receivingUpload(res, upload.id)) return;
       await store!.writePart(upload, index, bytes);
       ok(res, 204);
+    }),
+  );
+
+  router.get(
+    "/hosted/uploads/:upload_id",
+    handle("get_upload", async (req, res) => {
+      const view = uploadView(store!.lookup(String(req.params.upload_id), locals(res).address, now()));
+      if (!view) return fail(res, { code: "assemblyai_upload_not_found" });
+      ok(res, 200, view);
     }),
   );
 
   router.delete(
     "/hosted/uploads/:upload_id",
     handle("delete_upload", async (req, res) => {
-      const upload = ownUpload(req, res, req.params.upload_id);
+      const id = String(req.params.upload_id);
+      const found = store!.lookup(id, locals(res).address, now());
+      // A settled outcome is the client's to drop; the transcript itself is deleted by handle.
+      if (found.kind === "settled") {
+        store!.forget(id);
+        return ok(res, 204);
+      }
+      const upload = receivingUpload(res, id);
       if (!upload) return;
       await store!.abandon(upload);
       ok(res, 204);
@@ -337,48 +422,22 @@ export function createAssemblyAiHostedRouter(options: AssemblyAiHostedRouterOpti
       if (!req.is("application/json") || typeof body !== "object" || body === null || Array.isArray(body) || typeof body.speaker_labels !== "boolean") {
         return fail(res, { code: "invalid_request" });
       }
-      const upload = ownUpload(req, res, body.upload_id);
-      if (!upload) return;
-      if (!(await store!.complete(upload))) return fail(res, { code: "assemblyai_upload_incomplete" });
-      upload.submitting = true;
-      let uploadUrl: string;
-      try {
-        // Streamed from disk: the file body is never held in memory.
-        const sent = await call("POST", "/v2/upload", SMALL_BODY, {
-          body: await openAsBlob(upload.path),
-          contentType: "application/octet-stream",
-          timeoutMs: uploadTimeoutMs,
-        });
-        if (sent.response.status !== 200) return fail(res, upstreamFailure(sent.response, sent.bytes, false));
-        const uploaded = parseJson(sent.bytes) as { upload_url?: unknown } | undefined;
-        if (typeof uploaded?.upload_url !== "string" || !uploaded.upload_url.startsWith("https://")) {
-          return fail(res, { code: "assemblyai_unavailable", upstreamStatus: 200, reason: "off_contract" });
+      const id = typeof body.upload_id === "string" ? body.upload_id : "";
+      const found = store!.lookup(id, locals(res).address, now());
+      if (found.kind === "missing") return fail(res, { code: "assemblyai_upload_not_found" });
+      if (found.kind === "expired") return fail(res, { code: "assemblyai_upload_expired" });
+      // Idempotent: a repeat answers where the first one got to.
+      if (found.kind === "active" && found.upload.state === "receiving") {
+        const upload = found.upload;
+        if (!(await store!.complete(upload))) return fail(res, { code: "assemblyai_upload_incomplete" });
+        // complete() awaited: a concurrent repeat may have started it meanwhile.
+        if (upload.state === "receiving") {
+          const speakerLabels = body.speaker_labels;
+          const cid = locals(res).cid;
+          store!.startSubmit(upload, now, (signal) => submit(upload, speakerLabels, cid, signal));
         }
-        uploadUrl = uploaded.upload_url;
-      } finally {
-        // The spool goes in every outcome; the AssemblyAI copy is deleted with the transcript.
-        await store!.release(upload);
       }
-      const created = await call("POST", "/v2/transcript", SMALL_BODY, {
-        body: JSON.stringify({ audio_url: uploadUrl, speaker_labels: body.speaker_labels, language_detection: true, speech_models: SPEECH_MODELS }),
-        contentType: "application/json",
-      });
-      if (created.response.status !== 200 && created.response.status !== 201) {
-        const failure = upstreamFailure(created.response, created.bytes, false);
-        // A refused create body is a contract drift on our side: alert, like a refused key.
-        return fail(res, created.response.status === 400 ? { ...failure, alert: true, reason: "create_rejected" } : failure);
-      }
-      const parsed = parseJson(created.bytes) as { id?: unknown; status?: unknown } | undefined;
-      if (
-        typeof parsed?.id !== "string" ||
-        !ASSEMBLYAI_TRANSCRIPT_ID_RE.test(parsed.id) ||
-        typeof parsed.status !== "string" ||
-        !TRANSCRIPT_STATUSES.includes(parsed.status)
-      ) {
-        return fail(res, { code: "assemblyai_unavailable", upstreamStatus: created.response.status, reason: "off_contract" });
-      }
-      const handleId = issueHandle(hosted!.handleKey, parsed.id, locals(res).address, now());
-      ok(res, 201, { id: handleId, status: parsed.status }, ` bytes=${upload.byteSize}`);
+      ok(res, 202, { upload_id: id, ...uploadView(store!.lookup(id, locals(res).address, now())) }, found.kind === "active" ? ` bytes=${found.upload.byteSize}` : "");
     }),
   );
 

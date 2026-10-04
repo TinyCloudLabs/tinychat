@@ -1860,9 +1860,34 @@ paths:
         required: true
         schema:
           type: string
+    get:
+      operationId: getAssemblyAiHostedUpload
+      summary: Where an upload is; the transcript handle once it is submitted
+      description: >-
+        `receiving` takes parts; `submitting` is being sent to AssemblyAI in the
+        background; `submitted` carries the handle and `failed` a fixed error code. A
+        settled outcome stays readable for an hour after it settles (in memory: a
+        restart forgets it). Another account's, unknown or expired upload is 404.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The upload's state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiHostedUploadState"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
     delete:
       operationId: deleteAssemblyAiHostedUpload
       summary: Abandon an upload that was not sent (spool deleted, bytes refunded)
+      description: >-
+        Also drops a settled outcome. An upload being submitted is 409.
       security:
         - bearerAuth: []
       responses:
@@ -1928,13 +1953,14 @@ paths:
   /api/transcriber/assemblyai/hosted/transcripts:
     post:
       operationId: createAssemblyAiHostedTranscript
-      summary: Send a complete upload to AssemblyAI and start its transcript
+      summary: Send a complete upload to AssemblyAI in the background
       description: >-
-        Requires every part. Streams the spooled audio to AssemblyAI with TinyCloud's key,
-        deletes the spool in every outcome, then creates the transcript with
-        `language_detection` on. Answers a signed handle, never AssemblyAI's transcript
-        id; the handle is bound to this account and expires after 7 days. A refused
-        server key is answered 502 (our fault), never 401/422.
+        Requires every part, then answers 202 at once. In the background (15-minute
+        deadline) the spooled audio is streamed to AssemblyAI with TinyCloud's key and the
+        transcript created with `language_detection` on; the spool is deleted and the slot
+        freed in every outcome. Poll `GET /hosted/uploads/{upload_id}` for the handle
+        (never AssemblyAI's transcript id; bound to this account, valid 7 days).
+        Idempotent: a repeat answers the upload's current state and starts nothing new.
       security:
         - bearerAuth: []
       requestBody:
@@ -1950,20 +1976,18 @@ paths:
                 speaker_labels:
                   type: boolean
       responses:
-        "201":
-          description: Started
+        "202":
+          description: Submitting (or, on a repeat, already settled)
           content:
             application/json:
               schema:
-                type: object
-                required: [id, status]
-                properties:
-                  id:
-                    type: string
-                    description: The handle (`aah1.<payload>.<signature>`).
-                  status:
-                    type: string
-                    enum: [queued, processing, completed, error]
+                allOf:
+                  - type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                  - $ref: "#/components/schemas/AssemblyAiHostedUploadState"
         "400":
           $ref: "#/components/responses/AssemblyAiHostedFailure"
         "401":
@@ -2538,6 +2562,26 @@ components:
             enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
         daily_bytes_remaining:
           type: [integer, "null"]
+    AssemblyAiHostedUploadState:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [receiving, submitting, submitted, failed]
+        id:
+          type: string
+          description: With `submitted`, the transcript handle (`aah1.<payload>.<signature>`).
+        error:
+          type: object
+          description: With `failed`.
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [assemblyai_unavailable, assemblyai_rate_limited]
+            message:
+              type: string
     AssemblyAiHostedTranscript:
       type: object
       required: [id, status, error, language_code, audio_duration, text, utterances]
