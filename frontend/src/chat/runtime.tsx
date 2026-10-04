@@ -41,6 +41,14 @@ import {
   DEFAULT_TITLE,
   type ThreadDoc,
 } from "../lib/threadStore";
+import {
+  deleteCanvas,
+  isCanvasPromoted,
+  loadCanvasState,
+  notifyCanvasChanged,
+  recordPromotedChatMessage,
+} from "../lib/conversationCanvasStore";
+import { activePathItems, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
 import type { PrivateAgentAccess } from "./useAgentEnablement";
@@ -125,6 +133,8 @@ export interface ChatRuntimeDeps {
   summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
   /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
   contextTokensFor: (modelId: string) => number;
+  /** The Canvas of a chat switched to Conversation Canvas; null for every other chat. */
+  getPromotedCanvas?: (threadId: string) => Promise<ConversationCanvas | null>;
 }
 
 // ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──
@@ -270,7 +280,7 @@ const RECEIPT_COMPUTE_TIMEOUT_MS = 1500;
  * order so MessageRepository.import never throws "parent not found" on
  * partial/legacy data. Drop any item lacking a message id.
  */
-function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
+function repositoryFromDoc(doc: Pick<ThreadDoc, "messages">): ExportedMessageRepository {
   const valid = doc.messages.filter(
     (it) => typeof (it.message as { id?: unknown })?.id === "string",
   );
@@ -295,6 +305,11 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
   }));
   const headId = (valid[valid.length - 1].message as { id: string }).id;
   return { headId, messages };
+}
+
+/** The Canvas active branch as the chat shows it (the same items the chat history holds). */
+export function repositoryFromCanvas(canvas: ConversationCanvas): ExportedMessageRepository {
+  return repositoryFromDoc({ messages: activePathItems(canvas) });
 }
 
 /**
@@ -395,6 +410,16 @@ export function createHistoryAdapter(
           })
         : false;
 
+      // The chat history stays the one history every reader uses. A chat
+      // switched to Canvas also records the message in its Canvas first
+      // (additive, so a Canvas failure saves nothing and overwrites nothing);
+      // other chats never touch Canvas.
+      const persist = async (model: TurnOrigin["model"]) => {
+        const recorded = await recordPromotedChatMessage(tcw, threadId, item);
+        await appendMessage(tcw, threadId, item, model);
+        if (recorded) notifyCanvasChanged(threadId);
+      };
+
       if (role === "user") {
         lastPrivateAccess = privateAccessRef?.current;
         lastUserMessageId = typeof id === "string" ? id : undefined;
@@ -417,11 +442,11 @@ export function createHistoryAdapter(
           const origin = await admitted;
           const firstInsert = selection.needsFirstInsert(origin);
           const retryFirstInsert = firstInsert
-            ? () => appendMessage(tcw, threadId, item, origin.model)
+            ? () => persist(origin.model)
             : undefined;
           if (firstInsert) selection.markFirstAppend(origin, true, false, retryFirstInsert);
           try {
-            await appendMessage(tcw, threadId, item, origin.model);
+            await persist(origin.model);
             if (firstInsert) selection.markFirstAppend(origin, false);
             selection.confirmAppend(origin, true);
           } catch (error) {
@@ -508,7 +533,7 @@ export function createHistoryAdapter(
           // item.message, which assistant-ui's repository import inspects.
           (item as { receipt?: PersistedReceipt }).receipt = persistedReceipt;
         }
-        await appendMessage(tcw, threadId, item, origin.model);
+        await persist(origin.model);
 
         if (role !== "assistant") return;
         const text = storedItemText(item);
@@ -693,7 +718,9 @@ function useThreadListAdapter(
   return useMemo<RemoteThreadListAdapter>(
     () => ({
       async list() {
-        const summaries = await listThreads(tcw);
+        // The account's Canvas state is read once with the thread list, so a
+        // failure surfaces here rather than in a send.
+        const [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
         selection.setKnownThreadIds(summaries.map((thread) => thread.id));
         return {
           threads: summaries.map((t) => ({
@@ -721,6 +748,7 @@ function useThreadListAdapter(
         // no-op
       },
       async delete(remoteId: string) {
+        if (await isCanvasPromoted(tcw, remoteId)) await deleteCanvas(tcw, remoteId);
         await deleteThread(tcw, remoteId);
       },
       async generateTitle(remoteId: string) {

@@ -1,0 +1,23 @@
+{
+  "name": "@exo/mobile",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync": "cap sync",
+    "android": "cap run android",
+    "open:android": "cap open android",
+    "build:web": "bun run --cwd ../frontend build",
+    "build:android": "bun run build:web && cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/ios": "^8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "typescript": "5.9.3"
+  }
+}

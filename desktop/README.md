@@ -187,6 +187,78 @@ A feature that fetches a new origin from the webview must add it to
 up as `securitypolicyviolation` events and console errors in Web Inspector
 (debug builds).
 
+## Releases and signing
+
+Releases come from `Desktop release (Exo)` (`.github/workflows/desktop-release.yml`),
+dispatched from `main` for every `exo-desktop@<version>` tag; versions, channels,
+the `EXO_DESKTOP_SIGNING` switch and the secrets are in the root
+[README](../README.md) ("Desktop releases", "Signing mode", "Signing"). The build
+and the signing are `.github/workflows/desktop-build.yml`, in three jobs, so the
+Developer ID certificate and the App Store Connect key are never on a runner that
+runs project or third-party build code:
+
+```
+preflight  [desktop-release; sign: true only; ubuntu]   checkout scripts/release @ workflow_sha only
+             desktop-signing.sh provenance (main's desktop-release.yml, workflow + release commit on main, exo-desktop tag)
+             desktop-signing.sh check (all 7 secrets present) -> fails in seconds, before any macOS minute
+  └─ build  [no environment, no secret, every mode]     bun install, Vite, cargo + every build script, tauri build --no-bundle,
+             tauri bundle (ad-hoc sealed, hardened runtime, Entitlements.plist) -> Info.plist + seal checked
+             -> artifact: DMG + ditto-zipped Exo.app
+       └─ sign  [desktop-release when sign: true; dry run otherwise]
+             checkout scripts/release + desktop/src-tauri/Entitlements.plist @ workflow_sha only; no bun, cargo, tauri, node
+             provenance + secrets again -> unpack (archive digest, bundle id, versions, exec bit, no symlink out of the app)
+             -> temporary keychain -> codesign inside-out (no --deep) -> notarytool + stapler (app)
+             -> hdiutil DMG -> codesign -> notarytool + stapler (DMG) -> verify-desktop-signing.sh
+             -> keychain and key deleted -> upload the verified DMG + app
+```
+
+| Job | Environment | Secrets | Runs project code? |
+|---|---|---|---|
+| `preflight` | `desktop-release` (signed releases only) | all 7, presence and shape only | no (`scripts/release` at the workflow commit) |
+| `build` | none | none | yes |
+| `sign` | `desktop-release` when signing | step-scoped: certificate + password and identity (keychain, codesign), API key (notarytool), team (verify) | no (`scripts/release` and `Entitlements.plist` at the workflow commit; Apple's tools) |
+
+Every secret reference is `${{ inputs.sign && secrets.<NAME> || '' }}`, so CI
+and unsigned releases never resolve one. The entitlements the app is signed with
+come from the workflow commit, not from the built tree.
+
+**Dry run.** CI (`desktop.yml`, on every desktop change and every change to
+`scripts/release/desktop-*` or `verify-desktop-signing.sh`) and
+`EXO_DESKTOP_SIGNING=unsigned` releases run the sign job with no environment and
+no secret: it unpacks the build's app, re-seals it ad-hoc through the same
+inside-out `codesign` path, and builds and mounts the DMG with `hdiutil`. It
+uploads nothing; unsigned releases publish the build job's artifact.
+
+### Before adding any signing secret: restrict `desktop-release` to main
+
+The `desktop-release` environment must be deployable from `main` only **before**
+any secret is added. Otherwise a workflow pushed on any branch could name
+`environment: desktop-release` and read the Developer ID certificate. On
+2026-10-04 it had no deployment-branch policy (`deployment_branch_policy: null`)
+and no secrets. Restrict it (repo admin), the same way as `android-release` in
+[mobile/README.md](../mobile/README.md):
+
+```sh
+repo=TinyCloudLabs/tinychat
+gh api -X PUT repos/$repo/environments/desktop-release \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/$repo/environments/desktop-release/deployment-branch-policies \
+  -f name=main -f type=branch
+```
+
+Check it before adding the secrets:
+
+```sh
+gh api repos/$repo/environments/desktop-release --jq .deployment_branch_policy
+# {"custom_branch_policies":true,"protected_branches":false}
+gh api repos/$repo/environments/desktop-release/deployment-branch-policies --jq '[.branch_policies[].name]'
+# ["main"]
+```
+
+Then add the 7 secrets (root README, "Signing", one-time setup) and set
+`EXO_DESKTOP_SIGNING` to `required`.
+
 ## Known constraints
 
 - **Sign-in:** OpenKey **email** sign-in (one-time code) works inside Exo's

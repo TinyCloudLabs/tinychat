@@ -97,6 +97,10 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
+import { QuickVoiceNote } from "./chat/QuickVoiceNote";
+import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
+import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
+import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
@@ -104,6 +108,7 @@ import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
 import {
   ChevronDownIcon,
+  MicIcon,
   PanelLeftIcon,
   PlugIcon,
   SettingsIcon,
@@ -118,8 +123,11 @@ import type {
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
+import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
+import { useConversationCanvasFeature } from "./chat/useExperimentalFeatures";
+import { promotedCanvasForTurn, useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
@@ -136,7 +144,11 @@ export type AppState =
   | "connecting"
   | "signing"
   | "ready"
-  | "recoverableError";
+  | "recoverableError"
+  // A persisted session is HELD but couldn't be restored because the network
+  // (or the backend) is unreachable. Not signed out: "Try again" and the
+  // browser's `online` event re-run the restore, never OpenKey (TC-514).
+  | "offline";
 
 interface ModelOption {
   id: string;
@@ -164,6 +176,7 @@ export function App() {
   const openkeyRef = useRef<OpenKey | null>(null);
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
+  const restoreInFlightRef = useRef(false);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
@@ -192,6 +205,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // The chat screen's voice note bar: opened to record (the header button) or to
+  // show a recording that is already running (one started on the offline screen).
+  const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -300,60 +316,85 @@ export function App() {
   }, []);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
+  //
+  // A callable rather than effect-only: the `offline` state's "Try again" and
+  // the browser's `online` event re-run exactly this (TC-514). What a failure
+  // MEANS lives in lib/sessionRestore: only a verdict about the session itself
+  // (expired / corrupt / missing …) clears it and signs out. Failing to REACH
+  // the manifest or a host keeps both the Bearer session and the persisted
+  // TinyCloud session and lands in `offline` — launching on a phone with no
+  // signal used to sign the user out here.
+  const restoreSession = useCallback(async () => {
+    if (restoreInFlightRef.current) return;
+    restoreInFlightRef.current = true;
+    setError(null);
+    setState("booting");
+    try {
+      const restored = await restorePersistedSession(sessionStoreRef.current, {
+        isOffline: browserIsOffline,
+        loadManifest: async () => {
+          // The manifest must ride along here, not just on the fresh sign-in
+          // path: TinyCloudWeb stores it from constructor config only, and a
+          // manifest-less instance cannot escalate permissions (secrets.put
+          // throws "requestPermissions requires a stored manifest") after a
+          // page reload. Vite can become ready before the backend during local
+          // startup, so retry that bounded race instead of publishing a broken
+          // manifest-less client as ready. Offline, the backoff would only hold
+          // the user on a spinner for ~15s before saying so: one attempt.
+          const manifest = await fetchConfigWithRetry(
+            () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
+            { maxAttempts: browserIsOffline() ? 1 : 4 },
+          );
+          if (!manifest)
+            throw new Error("Could not load the TinyCloud app manifest");
+          return manifest;
+        },
+        restore: (storedAddress, manifest) =>
+          restoreTinyCloudWebSession(storedAddress, {
+            autoCreateSpace: false,
+            tinycloudHosts: TINYCLOUD_HOSTS,
+            manifest,
+          }),
+      });
+      switch (restored.kind) {
+        case "restored":
+          setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw);
+          setAddress(restored.address);
+          setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
+          setSpaceId(restored.tcw.spaceId ?? null);
+          setState("ready");
+          return;
+        case "unavailable":
+          setError(restored.message);
+          setState("offline");
+          return;
+        case "signedOut":
+          setState("unauthenticated");
+          return;
+        case "failed":
+          setError(restored.message);
+          setState("recoverableError");
+          return;
+      }
+    } finally {
+      restoreInFlightRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     if (restoredRef.current) return;
     restoredRef.current = true;
-    const sessionStore = sessionStoreRef.current;
+    void restoreSession();
+  }, [restoreSession]);
 
-    if (!sessionStore.hasSession() || sessionStore.isExpired()) {
-      setState("unauthenticated");
-      return;
-    }
-    const storedAddress = sessionStore.getAddress();
-    const token = sessionStore.getToken();
-    if (!storedAddress || !token) {
-      sessionStore.clear();
-      setState("unauthenticated");
-      return;
-    }
-
-    (async () => {
-      try {
-        // The manifest must ride along here, not just on the fresh sign-in
-        // path: TinyCloudWeb stores it from constructor config only, and a
-        // manifest-less instance cannot escalate permissions (secrets.put
-        // throws "requestPermissions requires a stored manifest") after a
-        // page reload. Vite can become ready before the backend during local
-        // startup, so retry that bounded race instead of publishing a broken
-        // manifest-less client as ready.
-        const manifest = await fetchConfigWithRetry(
-          () => loadAppManifest(`${BACKEND_URL}/api/manifest`),
-          { maxAttempts: 4 },
-        );
-        if (!manifest)
-          throw new Error("Could not load the TinyCloud app manifest");
-        const restored = await restoreTinyCloudWebSession(storedAddress, {
-          autoCreateSpace: false,
-          tinycloudHosts: TINYCLOUD_HOSTS,
-          manifest,
-        });
-        if (restored.status !== "restored" || !restored.tcw) {
-          sessionStore.clear();
-          setState("unauthenticated");
-          return;
-        }
-        setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw);
-        setAddress(storedAddress);
-        setDid(restored.tcw.did ?? `did:pkh:eip155:1:${storedAddress}`);
-        setSpaceId(restored.tcw.spaceId ?? null);
-        setState("ready");
-      } catch (caught) {
-        sessionStore.clear();
-        setError(errorMessage(caught));
-        setState("recoverableError");
-      }
-    })();
-  }, []);
+  // "Exo will reconnect when you're back online" is a promise — keep it. Only
+  // while a held session is waiting; event-driven, nothing polls.
+  useEffect(() => {
+    if (state !== "offline") return;
+    const onOnline = () => void restoreSession();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [state, restoreSession]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -586,7 +627,7 @@ export function App() {
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
 
-      setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(signedTcw) : signedTcw);
+      setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw);
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
@@ -661,6 +702,10 @@ export function App() {
   }, [address, tcw]);
 
   const isReady = state === "ready" && tcw !== null;
+  // The offline state still HOLDS a session, so its "Try again" re-runs the
+  // restore. Only a settled signed-out state (no restorable session) starts the
+  // full OpenKey sign-in.
+  const authAction = state === "offline" ? restoreSession : signIn;
   // Authentication has answered, and the answer is "not signed in" — the
   // only condition under which a private surface may be redirected away.
   const authSettledSignedOut = isAuthSettledSignedOut(state);
@@ -678,6 +723,36 @@ export function App() {
   // Library. Old links (bookmarks, shared URLs, the pre-Library header button)
   // still resolve — they are replaced with the canonical address below.
   const legacyMeetings = location.pathname.endsWith("/chat/meetings");
+
+  // TC-522: the one-tap voice note, inside the Exo mobile app only. Offered
+  // wherever the Voice notes card is NOT on screen (Connectors has its own
+  // Record and picks a running recording up), so only one view of the
+  // recorder is ever mounted. Leaving for Connectors, or signing out, closes it.
+  const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
+  const quickVoiceNoteAvailable =
+    voiceNotesInApp && isReady && !LOCAL_VALIDATION && !showConnectors && !shareToken;
+  useEffect(() => {
+    if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
+  }, [quickVoiceNoteAvailable]);
+
+  // TC-515: with the session held but out of reach (`offline`), the app can
+  // still record a voice note; it stays on the phone until the session is back.
+  // Not signed out: there is no account to save to then. "Try again" (`booting`)
+  // keeps the recorder on screen, so a running recording stays visible.
+  const [offlineCapture, setOfflineCapture] = useState(false);
+  useEffect(() => {
+    if (state === "offline") setOfflineCapture(true);
+    else if (state !== "booting") setOfflineCapture(false);
+  }, [state]);
+  const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
+  // A recording started offline keeps running through the restore: once the
+  // session is back, the chat screen's bar shows it (picked up, never restarted).
+  const offlineRecordingRef = useRef(false);
+  useEffect(() => {
+    if (state !== "ready" || !offlineRecordingRef.current) return;
+    offlineRecordingRef.current = false;
+    if (quickVoiceNoteAvailable) setVoiceNoteOpen("show");
+  }, [state, quickVoiceNoteAvailable]);
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -741,7 +816,7 @@ export function App() {
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]"
+      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
       style={{ height: "var(--tc-app-height, 100dvh)" }}
     >
       <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
@@ -799,6 +874,20 @@ export function App() {
           <span className="hidden sm:inline-flex">
             <ThemeToggle />
           </span>
+          {quickVoiceNoteAvailable && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Record a voice note"
+              aria-pressed={voiceNoteOpen !== false}
+              onClick={() => setVoiceNoteOpen((open) => open || "record")}
+              className="h-11 shrink-0 gap-1.5 px-3 md:h-8"
+              data-testid="header-voice-note"
+            >
+              <MicIcon className="size-4" />
+              Voice note
+            </Button>
+          )}
           {isReady && (
             <Button
               variant="outline"
@@ -811,13 +900,24 @@ export function App() {
               <SettingsIcon className="size-4" />
             </Button>
           )}
-          {(state === "unauthenticated" || state === "recoverableError") && (
-            <Button size="sm" onClick={signIn} className="h-11 md:h-8">
-              {state === "recoverableError" ? "Try again" : "Sign in"}
+          {(state === "unauthenticated" || state === "recoverableError" || state === "offline") && (
+            <Button size="sm" onClick={authAction} className="h-11 md:h-8">
+              {state === "unauthenticated" ? "Sign in" : "Try again"}
             </Button>
           )}
         </div>
       </header>
+
+      {voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
+        <QuickVoiceNote
+          autoStart={voiceNoteOpen === "record"}
+          tcw={tcw}
+          backendUrl={BACKEND_URL}
+          sessionStore={sessionStoreRef.current}
+          onClose={() => setVoiceNoteOpen(false)}
+          onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}
+        />
+      )}
 
       {LOCAL_VALIDATION && (
         <div role="status" className="border-b px-4 py-2 text-sm">
@@ -881,6 +981,7 @@ export function App() {
                     />
                   }
                 />}
+                billingStatus={billingStatus}
               />
             </div>
             {showSettings && (
@@ -909,7 +1010,16 @@ export function App() {
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <BootSurface state={state} error={error} onSignIn={signIn} />
+          <BootSurface
+            state={state}
+            error={error}
+            onAction={authAction}
+            voiceNotes={
+              offlineRecorder ? (
+                <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
+              ) : null
+            }
+          />
         )}
       </main>
 
@@ -938,6 +1048,17 @@ export function App() {
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* TC-515: voice notes left on the phone (recorded offline, or a save that
+          failed) are saved once the session is ready, without opening
+          Connectors. The Voice notes card's own single-flight retry. */}
+      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && (
+        <PendingVoiceNotesSaver
+          tcw={tcw}
+          backendUrl={BACKEND_URL}
+          sessionStore={sessionStoreRef.current}
         />
       )}
 
@@ -1251,11 +1372,13 @@ function ChatWorkspace(props: {
   onToggleConnectors: () => void;
   onOpenChat: () => void;
   connectorsSurface: React.ReactNode;
+  billingStatus: BillingStatus | null;
 }) {
   const {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
+  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
@@ -1288,6 +1411,7 @@ function ChatWorkspace(props: {
       meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
       contextTokensFor: props.contextTokensFor,
+      getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(props.tcw, threadId),
       getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
       appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
         appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),
@@ -1403,6 +1527,7 @@ function ChatWorkspace(props: {
               selection={props.selectionView}
               onRetrySelection={() => props.selectionControllerRef.current?.retry()}
               onReload={() => props.selectionControllerRef.current?.reload()}
+              canvasEnabled={conversationCanvas.enabled}
             />
           </div>
           {showConnectors && props.connectorsSurface}
@@ -1527,7 +1652,10 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
 function BootSurface(props: {
   state: AppState;
   error: string | null;
-  onSignIn: () => void;
+  /** Sign in, or — in the `offline` state — retry the session restore. */
+  onAction: () => void;
+  /** The offline voice recorder (TC-515), under the action. */
+  voiceNotes?: React.ReactNode;
 }) {
   const message =
     props.state === "booting"
@@ -1538,7 +1666,9 @@ function BootSurface(props: {
           ? "Creating your TinyCloud session…"
           : props.state === "recoverableError"
             ? (props.error ?? "Something went wrong.")
-            : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
+            : props.state === "offline"
+              ? (props.error ?? "You're offline.")
+              : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
 
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
@@ -1552,14 +1682,15 @@ function BootSurface(props: {
           <h1 className="text-xl font-semibold tracking-tight">TinyCloud Chat</h1>
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
-        {(props.state === "unauthenticated" || props.state === "recoverableError") && (
-          <Button onClick={props.onSignIn} className="h-11 px-6 md:h-9 md:px-4">
-            {props.state === "recoverableError" ? "Try again" : "Sign in"}
+        {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
+          <Button onClick={props.onAction} className="h-11 px-6 md:h-9 md:px-4">
+            {props.state === "unauthenticated" ? "Sign in" : "Try again"}
           </Button>
         )}
         {busy && (
           <span className="text-xs text-muted-foreground">Working…</span>
         )}
+        {props.voiceNotes}
       </div>
     </div>
   );
@@ -1573,6 +1704,7 @@ export function stateLabel(state: AppState): string {
     signing: "Signing in",
     ready: "Connected",
     recoverableError: "Needs attention",
+    offline: "Offline",
   };
   return labels[state];
 }

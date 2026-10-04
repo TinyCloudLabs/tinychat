@@ -2158,7 +2158,7 @@ components:
           enum: [open, drain, closed]
     PrivateCloudJob:
       type: object
-      required: [id, status, byte_size, duration_seconds, channels, progress, retention, error, created_at, updated_at]
+      required: [id, status, byte_size, channel_mode, channel_labels, duration_seconds, channels, progress, retention, error, created_at, updated_at]
       properties:
         id:
           type: string
@@ -2167,6 +2167,22 @@ components:
           $ref: "#/components/schemas/PrivateCloudJobStatus"
         byte_size:
           type: integer
+        channel_mode:
+          description: The create request's channel_mode, as PTX recorded it.
+          type: [string, "null"]
+          enum: [separate, mixed, null]
+        channel_labels:
+          description: >-
+            The create request's channel_labels, as PTX recorded it. Clients use it to tell their
+            own jobs apart on one account (Exo desktop "Speaker 1"/"Speaker 2", Exo mobile voice
+            notes "Exo voice note").
+          type: [array, "null"]
+          minItems: 1
+          maxItems: 2
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
         duration_seconds:
           type: [number, "null"]
         channels:
@@ -2191,7 +2207,8 @@ components:
           properties:
             audio:
               type: string
-              enum: [stored, deletion_pending, deleted]
+              description: not_received while the job awaits its upload.
+              enum: [not_received, stored, deletion_pending, deleted]
             audio_deleted_at:
               type: [string, "null"]
               format: date-time
@@ -2207,6 +2224,7 @@ components:
           type: string
           format: date-time
         updated_at:
+          description: When the job last changed (the latest of PTX's lifecycle timestamps).
           type: string
           format: date-time
     PrivateCloudTranscript:

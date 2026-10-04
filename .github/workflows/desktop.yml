@@ -1,8 +1,9 @@
 name: Desktop (Exo)
 
 # CI build of the Exo desktop app (unsigned workflow artifact only; releases are desktop-release.yml). The build
-# itself lives in desktop-build.yml. Pushes to main and the weekly run also refresh the shared build cache, which
-# GitHub evicts after 7 days unused.
+# itself lives in desktop-build.yml: its build job (no secrets) and a dry run of its sign job (ad-hoc, no environment),
+# so the release signing path runs on every desktop change. Pushes to main and the weekly run also refresh the shared
+# build cache, which GitHub evicts after 7 days unused.
 
 on:
   workflow_dispatch:
@@ -15,6 +16,8 @@ on:
       - "packages/**"
       - ".github/workflows/desktop.yml"
       - ".github/workflows/desktop-build.yml"
+      - "scripts/release/desktop-*"
+      - "scripts/release/verify-desktop-signing.sh"
   push:
     branches: [main]
     paths:
@@ -23,6 +26,8 @@ on:
       - "packages/**"
       - ".github/workflows/desktop.yml"
       - ".github/workflows/desktop-build.yml"
+      - "scripts/release/desktop-*"
+      - "scripts/release/verify-desktop-signing.sh"
 
 concurrency:
   group: desktop-ci-${{ github.ref }}

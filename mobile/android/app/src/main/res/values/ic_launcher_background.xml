@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive icon background: TinyCloud brand blue (mobile/scripts/brand-assets.py BRAND). -->
+    <color name="ic_launcher_background">#4473B9</color>
+</resources>

@@ -5,7 +5,10 @@ import { describe, expect, test } from "bun:test";
 
 import {
   createPrivateCloudApi,
+  createPrivateCloudJob,
   isTransientCloudError,
+  parseCreatedJob,
+  privateCloudJobClient,
   PrivateCloudError,
   privateCloudMessage,
   resolveEngine,
@@ -129,6 +132,109 @@ describe("createPrivateCloudApi", () => {
       `DELETE https://api.example/api/transcriber/private-cloud/transcriptions/${ID}`,
       `POST https://api.example/api/transcriber/private-cloud/transcriptions/${ID}/cancel`,
     ]);
+  });
+});
+
+describe("createPrivateCloudJob (webview create, Exo mobile)", () => {
+  const ATTEMPT = "6f9619ff-8b86-4011-b42d-00c04fc964ff";
+  const BODY = { content_type: "audio/wav", byte_size: 32_044, sha256: "a".repeat(64), language: "en" };
+  const CAP = "tcu_abcdefghijklmnop0123456789";
+  const create = (respond: (url: string, init: RequestInit) => Response | Promise<Response>, token: string | null = "tok") => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const promise = createPrivateCloudJob(
+      "https://api.example",
+      {
+        sessionStore: sessionStore(token),
+        fetchImpl: (async (url: string, init: RequestInit) => {
+          calls.push({ url, init });
+          return respond(url, init);
+        }) as never,
+      },
+      { attemptId: ATTEMPT, correlationId: "cid-create", body: BODY },
+    );
+    return { promise, calls };
+  };
+
+  test("POSTs metadata with the bearer, CSRF header and Idempotency-Key; returns the upload grant", async () => {
+    const { promise, calls } = create(() =>
+      json(201, { id: ID, status: "awaiting_upload", byte_size: 32_044, upload: { path: `/uploads/${ID}`, capability: CAP, expires_at: "2026-10-03T11:00:00Z" } }),
+    );
+    expect(await promise).toEqual({ id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } });
+    expect(calls[0]!.url).toBe("https://api.example/api/transcriber/private-cloud/transcriptions");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.redirect).toBe("manual");
+    expect(calls[0]!.init.headers).toEqual({
+      Authorization: "Bearer tok",
+      "X-Requested-With": "XMLHttpRequest",
+      "Content-Type": "application/json",
+      "Idempotency-Key": ATTEMPT,
+      "X-Correlation-Id": "cid-create",
+    });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual(BODY);
+  });
+
+  test("a replay after the upload landed carries no grant", async () => {
+    const { promise } = create(() => json(200, { id: ID, status: "queued", byte_size: 32_044 }));
+    expect(await promise).toEqual({ id: ID, status: "queued", upload: null });
+  });
+
+  test("404 (dark or not in the cohort) is feature_unavailable; errors keep code, id and a reference", async () => {
+    expect(((await create(() => new Response("Not Found", { status: 404 })).promise.catch((e) => e)) as PrivateCloudError).code).toBe(
+      "feature_unavailable",
+    );
+    const busy = (await create(() =>
+      json(409, { error: { code: "active_transcription_exists", message: "A transcription is already in progress.", correlation_id: "cid-b", id: ID } }),
+    ).promise.catch((e) => e)) as PrivateCloudError;
+    expect(busy.code).toBe("active_transcription_exists");
+    expect(busy.transcriptionId).toBe(ID);
+    expect(busy.correlationId).toBe("cid-b");
+    // Without a correlation id in the answer, the request's own is the reference.
+    const bare = (await create(() => new Response("bad gateway", { status: 502 })).promise.catch((e) => e)) as PrivateCloudError;
+    expect(bare.code).toBe("http_5xx");
+    expect(bare.correlationId).toBe("cid-create");
+    const offline = (await create(() => {
+      throw new TypeError("Load failed");
+    }).promise.catch((e) => e)) as PrivateCloudError;
+    expect(offline.code).toBe("offline");
+  });
+
+  test("no session means unauthenticated without a request", async () => {
+    const { promise, calls } = create(() => json(201, {}), null);
+    expect(((await promise.catch((e) => e)) as PrivateCloudError).code).toBe("unauthenticated");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("parseCreatedJob refuses anything off the contract", () => {
+    const ok = { id: ID, status: "awaiting_upload", upload: { path: `/uploads/${ID}`, capability: CAP } };
+    expect(parseCreatedJob(ok).upload).toEqual({ path: `/uploads/${ID}`, capability: CAP });
+    for (const bad of [
+      null,
+      { ...ok, id: "trn_nope" },
+      { ...ok, status: "weird" },
+      { ...ok, upload: { path: "/uploads/trn_01J8Z3K4M5N6P7Q8R9S0T1V2W4", capability: CAP } },
+      { ...ok, upload: { path: `https://evil.example/uploads/${ID}`, capability: CAP } },
+      { ...ok, upload: { path: `/uploads/${ID}`, capability: "secret" } },
+      { ...ok, upload: undefined },
+      { id: ID, status: "queued", upload: ok.upload },
+    ]) {
+      expect(() => parseCreatedJob(bad)).toThrow(PrivateCloudError);
+    }
+  });
+});
+
+describe("privateCloudJobClient", () => {
+  test("each client is told by the channel choices it sends at create; anything else is unknown", () => {
+    expect(privateCloudJobClient({ channel_mode: "separate", channel_labels: ["Speaker 1", "Speaker 2"] })).toBe("exo-desktop");
+    expect(privateCloudJobClient({ channel_mode: "mixed", channel_labels: ["Exo voice note"] })).toBe("exo-voice-note");
+    for (const job of [
+      {},
+      { channel_mode: null, channel_labels: null },
+      { channel_mode: "mixed", channel_labels: ["Speaker 1", "Speaker 2"] },
+      { channel_mode: "separate", channel_labels: ["Speaker 1"] },
+      { channel_mode: "separate", channel_labels: ["Exo voice note"] },
+    ] as const) {
+      expect(privateCloudJobClient(job as never)).toBe("unknown");
+    }
   });
 });
 

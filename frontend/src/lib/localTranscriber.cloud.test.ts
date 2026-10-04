@@ -170,6 +170,8 @@ function makeNative(opts: { configured?: boolean } = {}) {
 }
 
 type Step = () => PrivateCloudJob | Promise<PrivateCloudJob>;
+const DESKTOP_JOB = { channel_mode: "separate", channel_labels: ["Speaker 1", "Speaker 2"] } as const;
+const PHONE_JOB = { channel_mode: "mixed", channel_labels: ["Exo voice note"] } as const;
 const job = (status: PrivateCloudJob["status"], extra: Partial<PrivateCloudJob> = {}): Step => () => ({ id: ID, status, ...extra });
 const failing = (code: string): Step => () => {
   throw new PrivateCloudError(code, code);
@@ -187,16 +189,17 @@ function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"] } = {}) 
     backendUrl: "https://api.example",
     bearer: () => "tok",
     capabilities: opts.capabilities ?? (async () => ({ max_bytes: 120960000 })),
+    // Jobs are this desktop's (its create's channel choices) unless a test says otherwise.
     list: async () => {
       calls.push("list");
-      return listed;
+      return listed.map((j) => ({ ...DESKTOP_JOB, ...j }));
     },
     get: async (id) => {
       calls.push(`get:${id}`);
       const next = (getsById.get(id) ?? gets).shift();
       if (!next) throw new Error(`unexpected get ${id}`);
       const answer = await next();
-      return { ...answer, id };
+      return { ...DESKTOP_JOB, ...answer, id };
     },
     result: async (id) => {
       calls.push(`result:${id}`);
@@ -590,6 +593,34 @@ describe("private cloud engine", () => {
     ]);
     // Never touched: the job awaiting its recording's upload, and the failed one.
     expect(s.a.calls.filter((c) => c.includes("V2W5") || c.includes("V2W6"))).toEqual([]);
+  });
+
+  test("recovery never adopts another client's job: a phone's voice note, or one it cannot identify", async () => {
+    const s = setup();
+    const PHONE = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W7";
+    const UNLABELLED = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W8";
+    s.a.listed.push(
+      { id: PHONE, status: "completed", ...PHONE_JOB },
+      { id: UNLABELLED, status: "completed", channel_mode: null, channel_labels: null },
+    );
+    expect(await s.t.recoverCloudTranscripts()).toBe(0);
+    // Not read, not saved, not deleted: the phone finishes and deletes its own job.
+    expect(s.a.calls).toEqual(["list"]);
+    expect(s.recovered).toHaveLength(0);
+  });
+
+  test("active_transcription_exists naming a phone's job: not adopted; this recording waits (Retry)", async () => {
+    const s = setup();
+    s.n.setSubmit(async () => {
+      throw { code: "active_transcription_exists", message: "x", transcriptionId: OTHER_ID };
+    });
+    s.a.getsById.set(OTHER_ID, [() => ({ id: OTHER_ID, status: "processing", ...PHONE_JOB })]);
+    const { stopped } = await recordAndStop(s);
+    const err = (await stopped.catch((e) => e)) as TranscriptionFailedError;
+    expect(err.code).toBe("active_transcription_exists");
+    expect(err.retryable).toBe(true);
+    expect(s.recovered).toHaveLength(0);
+    expect(s.a.calls.filter((c) => c.startsWith("result:") || c.startsWith("remove:"))).toEqual([]);
   });
 
   test("recovery skips the job a pending record or the current recording owns", async () => {

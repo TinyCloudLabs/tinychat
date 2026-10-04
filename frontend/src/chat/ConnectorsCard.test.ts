@@ -12,6 +12,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
+import {
+  consentCopyText,
+  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
+  GOOGLE_MEET_CONSENT_COPY,
+  googleConsentCopyForSystemBrowser,
+} from "@/lib/connectors/consentCopy";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection } from "@/lib/connectors/types";
 
@@ -251,6 +257,101 @@ describe("Google Meet OAuth connect variant", () => {
     // A blocked popup gets its own actionable state, not a silent no-op.
     expect(handler).toContain('kind: "popup-blocked"');
     expect(dialog).toContain("Allow popups for this site");
+  });
+
+  test("the native app takes the system browser before any popup is opened (TC-521)", () => {
+    const handler = connectHalf.slice(
+      connectHalf.indexOf("const handleAuthorize"),
+      connectHalf.indexOf("const handleCancelAuthorize"),
+    );
+    // The gate is the first thing after the consent check, and returns: the web
+    // branch below it (sync window.open, popup navigation) runs only off-native.
+    const gate = handler.indexOf("capacitorNativeOAuthPorts()");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(handler.indexOf("window.open("));
+    expect(handler).toContain("authorizeInSystemBrowser(nativePorts);\n      return;");
+  });
+
+  test("the native branch tags its state, keeps the verifier, and finishes in runExchange", () => {
+    const native = connectHalf.slice(
+      connectHalf.indexOf("const authorizeInSystemBrowser"),
+      connectHalf.indexOf("const handleAuthorize"),
+    );
+    // A fresh CSPRNG nonce per attempt, behind the tag the backend reads.
+    expect(native).toContain("state = nativeOAuthState(randomUrlSafeToken(24));");
+    expect(native).toContain("verifierRef.current = verifier;");
+    // The verifier never goes to the attempt (or anywhere near a URL): only the
+    // state does, and the code comes back to the one shared exchange path.
+    const attempt = native.slice(native.indexOf("startNativeOAuth({"));
+    expect(attempt).not.toContain("verifier");
+    expect(attempt).toContain("expectedState: state,");
+    expect(attempt).toContain("codeHandledRef.current = true;");
+    // Through the ref, so a long browser round trip still uses the latest exchange.
+    expect(attempt).toContain("void runExchangeRef.current(outcome.code);");
+    expect(native).not.toContain("GOOGLE_OAUTH_EXCHANGE_PATH");
+    expect(native).not.toContain("window.open(");
+  });
+
+  test("an abandoned native attempt never opens a browser (generation re-checked after each await)", () => {
+    const native = connectHalf.slice(
+      connectHalf.indexOf("const authorizeInSystemBrowser"),
+      connectHalf.indexOf("const handleAuthorize"),
+    );
+    // Every new click / cancel / reset / unmount bumps the generation…
+    const cancelNative = connectHalf.slice(connectHalf.indexOf("const cancelNativeAttempt"), connectHalf.indexOf("const reset"));
+    expect(cancelNative).toContain("nativeGenerationRef.current += 1;");
+    // …and the attempt bails after the digest and after /autojoin/begin if it is no longer current.
+    expect(native.indexOf("if (!current()) return;")).toBeGreaterThan(native.indexOf("await pkceChallengeS256"));
+    const afterBegin = native.slice(native.indexOf("await beginAutojoinAuthorization"));
+    expect(afterBegin.indexOf("if (!current()) return;")).toBeLessThan(afterBegin.indexOf("startNativeOAuth({"));
+    expect(native).toContain("if (!current() || codeHandledRef.current || stateRef.current !== state) return;");
+  });
+
+  test("the native flow is off unless the build enables it", () => {
+    const authorize = connectHalf.slice(connectHalf.indexOf("const handleAuthorize"));
+    const nativeBranch = authorize.slice(0, authorize.indexOf("authorizeInSystemBrowser(nativePorts);"));
+    expect(nativeBranch).toContain("if (!nativeGoogleOAuthEnabled()) {");
+    expect(nativeBranch).toContain('setError({ kind: "native-unavailable", message: "" });');
+  });
+
+  test("inside the app with native OAuth off, the dialog explains instead of offering Continue with Google (TC-522)", () => {
+    const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
+    expect(connectHalf).toContain("const authorizeSurface = googleAuthorizeSurface();");
+    // No consent copy, no custody checkbox: the explanation alone…
+    expect(render).toContain('{phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}');
+    expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (');
+    const panel = connectHalf.slice(connectHalf.indexOf("const NativeUnavailablePanel"), connectHalf.indexOf("const WaitCallbackPanel"));
+    expect(panel).toContain('formatOAuthError({ kind: "native-unavailable", message: "" })');
+    expect(dialog).toContain("Connecting Google isn’t available in the Exo app yet.");
+    // …and a footer with Close only.
+    expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app"}');
+    const footer = connectHalf.slice(connectHalf.indexOf("const OAuthConnectFooter"), connectHalf.indexOf("const Emphasized"));
+    const closeOnly = footer.slice(footer.indexOf('{phase === "authorize" && !canAuthorize && ('), footer.indexOf('{phase === "authorize" && canAuthorize && ('));
+    expect(closeOnly).toContain("Close");
+    expect(closeOnly).not.toContain("Continue with Google");
+  });
+
+  test("the app's consent copy never says popup window; every claim stays word for word (TC-522)", () => {
+    const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
+    expect(render).toContain('authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy');
+    const inApp = googleConsentCopyForSystemBrowser(GOOGLE_MEET_CONSENT_COPY);
+    expect(GOOGLE_MEET_CONSENT_COPY.intro).toContain("in a popup window");
+    expect(inApp.intro).not.toMatch(/popup/i);
+    expect(inApp.intro).toContain("You'll sign in with Google in your browser and approve");
+    expect(consentCopyText(inApp)).not.toMatch(/popup/i);
+    expect(inApp.bullets).toEqual(GOOGLE_MEET_CONSENT_COPY.bullets);
+    expect(inApp.disconnectNote).toBe(GOOGLE_MEET_CONSENT_COPY.disconnectNote);
+    expect(inApp.variant).toBe(GOOGLE_MEET_CONSENT_COPY.variant);
+    // The autojoin text never mentioned a popup, and stays identical.
+    expect(googleConsentCopyForSystemBrowser(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY)).toEqual(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY);
+  });
+
+  test("closing or cancelling the dialog also ends a native attempt", () => {
+    const reset = connectHalf.slice(connectHalf.indexOf("const reset"), connectHalf.indexOf("const busy"));
+    expect(reset).toContain("cancelNativeAttempt();");
+    expect(reset).toContain("useEffect(() => cancelNativeAttempt, [cancelNativeAttempt]);");
+    const cancel = connectHalf.slice(connectHalf.indexOf("const handleCancelAuthorize"));
+    expect(cancel.slice(0, cancel.indexOf("}, ["))).toContain("cancelNativeAttempt();");
   });
 
   test("the callback listener checks BOTH the origin and the minted state", () => {

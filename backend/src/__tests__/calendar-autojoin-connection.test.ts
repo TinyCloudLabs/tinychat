@@ -79,6 +79,19 @@ describe("Calendar OAuth custody lifecycle", () => {
     await expect(f.connection.exchange(TENANT, { state: STATE, code: "code", verifier: VERIFIER })).rejects.toMatchObject({ code: "invalid_oauth_transaction" });
   });
 
+  test("the Exo app's native-tagged state binds the same one-use transaction (TC-521)", async () => {
+    // The app reaches /begin with `native.<nonce>`; Google echoes it to /callback, which returns it
+    // to the app's deep link, and the app exchanges with exactly that string.
+    const f = fixture();
+    const nativeState = "native.Q2hhbmdlTWVQbGVhc2VfMDEyMzQ1Njc4OQ";
+    const begun = await f.connection.begin(TENANT, { state: nativeState, challenge: CHALLENGE, consent: true });
+    expect(new URL(begun.authorizationUrl).searchParams.get("state")).toBe(nativeState);
+    await expect(f.connection.exchange(OTHER, { state: nativeState, code: "code", verifier: VERIFIER })).rejects.toMatchObject({ code: "invalid_oauth_transaction" });
+    await f.connection.exchange(TENANT, { state: nativeState, code: "code", verifier: VERIFIER });
+    await expect(f.connection.exchange(TENANT, { state: nativeState, code: "code", verifier: VERIFIER })).rejects.toMatchObject({ code: "invalid_oauth_transaction" });
+    expect(f.exchangeCount).toBe(1);
+  });
+
   test("requires actual granted Calendar/openid scopes and a usable refresh token", async () => {
     for (const tokens of [{ scope: "openid" }, { scope: undefined }, { refresh_token: undefined }, { subject: undefined }]) {
       const f = fixture(); f.setTokens(tokens);
@@ -258,6 +271,23 @@ describe("authenticated autojoin routes", () => {
       expect((await f.connection.getStatus(TENANT)).enabled).toBe(false);
       expect(await f.credentials.status(source, TENANT)).toBeNull();
     } finally { await new Promise<void>(done => server.close(() => done())); }
+  });
+
+  test("/begin refuses Exo app (native.) states unless the native return is on (TC-521)", async () => {
+    const nativeState = "native.Q2hhbmdlTWVQbGVhc2VfMDEyMzQ1Njc4OQ";
+    for (const nativeReturn of [undefined, true]) {
+      const f = fixture();
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.user = { address: TENANT } as typeof req.user; next(); });
+      app.use("/autojoin", createCalendarAutojoinRouter({ connection: f.connection, ...(nativeReturn ? { nativeReturn } : {}) }));
+      const server = app.listen(0); await new Promise<void>(done => server.once("listening", done));
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/autojoin`;
+      try {
+        const begin = await fetch(`${base}/begin`, { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ state: nativeState, challenge: CHALLENGE, consent: true }) });
+        expect(begin.status).toBe(nativeReturn ? 200 : 400);
+      } finally { await new Promise<void>(done => server.close(() => done())); }
+    }
   });
 
   test("derives tenant from session, rejects unauthenticated access, never accepts posted tenant", async () => {

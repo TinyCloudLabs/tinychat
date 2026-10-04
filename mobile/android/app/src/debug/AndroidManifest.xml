@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Health spike (TC-525), DEBUG BUILDS ONLY. Merged over src/main/AndroidManifest.xml for debug variants, so a release
+  build (the Play AAB) declares no health permission: Play would require the Health apps declaration and a privacy
+  policy for any upload that does. Moving these to src/main is part of shipping, not of this spike
+  (mobile/docs/health-spike.md).
+
+  Location spike (TC-524), DEBUG BUILDS ONLY, for the same reason: a release declares no location permission and no
+  location foreground service, so it needs no Play location or foreground-service declaration.
+  scripts/release/verify-android-release.sh refuses a release APK that requests location. What shipping it would
+  change: mobile/docs/location-spike.md, "What production would change".
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Read: what the preview summarizes. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <!-- Reading while the app is not in the foreground (Health Connect feature
+         FEATURE_READ_HEALTH_DATA_IN_BACKGROUND). Declared so the spike can ask for it and report its state; nothing
+         reads in the background yet. -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+    <!-- Write: only for HealthPlugin.insertSampleData, which writes a week of sample data for testing. -->
+    <uses-permission android:name="android.permission.health.WRITE_STEPS" />
+    <uses-permission android:name="android.permission.health.WRITE_SLEEP" />
+    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
+
+    <!-- Location (TC-524). Foreground ("while using the app"): asking for both lets Android 12+ offer precise or
+         approximate. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- "Allow all the time": asked separately, after the foreground grant (Android 11+: in Settings). -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Android 14+: required for a foreground service of type location. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Android 11-13: package visibility for the Health Connect app, or getSdkStatus() reports it missing. -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
+
+    <application>
+        <!-- Health Connect refuses a permission request (no screen, nothing granted) from an app that does not
+             handle its privacy-policy intents. Android 13 and lower: -->
+        <activity
+            android:name="xyz.tinycloud.exo.health.HealthPermissionsRationaleActivity"
+            android:exported="true"
+            android:label="Exo and Health Connect"
+            android:theme="@style/AppTheme">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+
+        <!-- Android 14+: -->
+        <activity-alias
+            android:name="xyz.tinycloud.exo.health.ViewPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity="xyz.tinycloud.exo.health.HealthPermissionsRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Location (TC-524): background capture in a "location" foreground service, started only while the app
+             is visible. -->
+        <service
+            android:name="xyz.tinycloud.exo.location.LocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+    </application>
+</manifest>

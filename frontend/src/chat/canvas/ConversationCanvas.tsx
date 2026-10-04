@@ -1,0 +1,206 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAuiState } from "@assistant-ui/react";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { applyNodeChanges, Background, Controls, ReactFlow, type Edge, type Node, type NodeChange } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import { Button } from "@/components/ui/button";
+import {
+  CANVAS_MISSING_MESSAGE,
+  mutateCanvas,
+  openCanvas,
+  promoteLegacyThread,
+  selectCanvasBranch,
+  subscribeCanvasChanges,
+} from "../../lib/conversationCanvasStore";
+import {
+  activeAncestry,
+  createDocument,
+  moveDocumentPlacementTo,
+  placeDocument,
+  removeDocumentPlacement,
+  saveDocumentVersion,
+  type ConversationCanvas as CanvasModel,
+} from "./model";
+import { NextRequestRail } from "./NextRequestRail";
+import { resetRequestAttempt } from "./requestContext";
+
+interface ConversationCanvasProps {
+  tcw: TinyCloudWeb;
+  threadId: string;
+  editingDisabled?: boolean;
+  onSwitchToChat: () => void;
+  onCanvasChange?: (canvas: CanvasModel) => void;
+}
+
+/**
+ * Shown before a chat is switched to Canvas. Switching is explicit because
+ * picking a branch later changes the chat everywhere it is read.
+ */
+export const CANVAS_SWITCH_WARNING =
+  "Canvas keeps this chat's other branches and pinned documents in your TinyCloud space. "
+  + "When you continue from an earlier message, the chat itself changes to that branch everywhere: here, on your other devices, in other Exo app versions and in share links. "
+  + "The other branches stay in Canvas. Pinned documents are sent with your next messages but never become part of the chat or its share links.";
+
+export function ConversationCanvas({ tcw, threadId, editingDisabled = false, onSwitchToChat, onCanvasChange }: ConversationCanvasProps) {
+  const composerDraft = useAuiState((state) => state.composer.text);
+  const [canvas, setCanvas] = useState<CanvasModel | null>(null);
+  const [promoted, setPromoted] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [documentTitle, setDocumentTitle] = useState("Canvas note");
+  const [flowNodes, setFlowNodes] = useState<Node[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCanvas(null);
+    setError(null);
+    void openCanvas(tcw, threadId).then((value) => {
+      if (cancelled) return;
+      setCanvas(value.canvas);
+      setPromoted(value.promoted);
+    }).catch((reason) => {
+      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => { cancelled = true; };
+  }, [tcw, threadId]);
+
+  const switchToCanvas = useCallback(() => {
+    setSwitching(true);
+    setError(null);
+    void promoteLegacyThread(tcw, threadId).then((value) => {
+      setCanvas(value);
+      setPromoted(true);
+    }).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => setSwitching(false));
+  }, [tcw, threadId]);
+
+  const fail = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)), []);
+
+  // Messages sent while this view is open (its composer stays visible) re-read it.
+  useEffect(() => {
+    if (!promoted) return;
+    let cancelled = false;
+    const unsubscribe = subscribeCanvasChanges(threadId, () => {
+      void openCanvas(tcw, threadId).then((value) => { if (!cancelled) setCanvas(value.canvas); }).catch(fail);
+    });
+    return () => { cancelled = true; unsubscribe(); };
+  }, [fail, promoted, tcw, threadId]);
+
+  /**
+   * Every edit is a change applied to a fresh read in the store, never a save
+   * of this view's copy, so edits made elsewhere meanwhile are kept.
+   */
+  const change = useCallback((mutation: (current: CanvasModel) => CanvasModel, semantic = true) => {
+    if (!promoted) return;
+    if (semantic) resetRequestAttempt(threadId);
+    setError(null);
+    void mutateCanvas(tcw, threadId, (fresh) => {
+      if (!fresh) throw new Error(CANVAS_MISSING_MESSAGE);
+      return mutation(fresh);
+    }).then(setCanvas).catch(fail);
+  }, [fail, promoted, tcw, threadId]);
+
+  const selectBranch = useCallback((headId: string) => {
+    if (!promoted) return;
+    resetRequestAttempt(threadId);
+    setError(null);
+    // The chat history is rewritten to the picked branch before the chat view
+    // shows it, so every reader agrees.
+    void selectCanvasBranch(tcw, threadId, headId).then((selected) => {
+      setCanvas(selected);
+      onCanvasChange?.(selected);
+    }).catch(fail);
+  }, [fail, onCanvasChange, promoted, tcw, threadId]);
+
+  const ancestry = useMemo(() => canvas ? activeAncestry(canvas) : new Set<string>(), [canvas]);
+  const nodes = useMemo<Node[]>(() => (canvas?.nodes ?? []).map((node, index) => ({
+    id: node.id,
+    position: node.position ?? { x: 40 + (index % 3) * 300, y: 40 + Math.floor(index / 3) * 170 },
+    data: { label: <div className="max-w-56 text-xs"><div className="mb-1 font-medium capitalize">{node.role}</div><div className="line-clamp-5 whitespace-pre-wrap">{node.content}</div></div> },
+    className: ancestry.has(node.id) ? "border-primary ring-2 ring-primary/30" : "border-border",
+    style: { width: 260, padding: 12, borderRadius: 10, background: "hsl(var(--card))", color: "hsl(var(--card-foreground))" },
+  })), [ancestry, canvas]);
+  useEffect(() => setFlowNodes(nodes), [nodes]);
+  const edges = useMemo<Edge[]>(() => (canvas?.nodes ?? []).flatMap((node) => node.parentId
+    ? [{ id: `${node.parentId}-${node.id}`, source: node.parentId, target: node.id, animated: ancestry.has(node.id) && ancestry.has(node.parentId) }]
+    : []), [ancestry, canvas]);
+
+  if (!canvas) return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{error ?? "Loading canvas…"}</div>;
+  const onNodesChange = (changes: NodeChange[]) => setFlowNodes((current) => applyNodeChanges(changes, current));
+  const activeNode = canvas.nodes.find((node) => node.id === canvas.activeHeadId);
+  const documents = canvas.documents;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div>
+          <h2 className="text-sm font-semibold">Conversation Canvas</h2>
+          <p className="text-xs text-muted-foreground">{promoted ? `Active branch: ${activeNode?.role ?? "new"}` : "Preview — this chat is not using Canvas"}</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onSwitchToChat}>Return to Chat</Button>
+      </div>
+      {error && <p role="alert" className="border-b border-border px-3 py-2 text-xs text-destructive">{error}</p>}
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_18rem]">
+        <div className="min-h-[18rem]">
+          <ReactFlow nodes={flowNodes.length > 0 ? flowNodes : nodes} edges={edges} onNodesChange={onNodesChange} nodesDraggable={promoted && !editingDisabled} onNodeDragStop={(_event, node) => { const position = { x: Math.round(node.position.x), y: Math.round(node.position.y) }; change((current) => ({ ...current, nodes: current.nodes.map((item) => item.id === node.id ? { ...item, position } : item) }), false); }} fitView nodesConnectable={false} deleteKeyCode={null} aria-label="Conversation branches">
+            <Background />
+            <Controls />
+          </ReactFlow>
+        </div>
+        <aside className="overflow-y-auto border-t border-border p-3 text-xs lg:border-l lg:border-t-0">
+          {!promoted ? (
+            <div className="space-y-3">
+              <h3 className="font-medium">Use Canvas for this chat?</h3>
+              <p className="leading-relaxed text-muted-foreground">{CANVAS_SWITCH_WARNING}</p>
+              <Button type="button" size="sm" className="w-full" disabled={editingDisabled || switching || canvas.nodes.length === 0} onClick={switchToCanvas}>
+                {switching ? "Switching…" : "Use Canvas for this chat"}
+              </Button>
+              {canvas.nodes.length === 0 && <p className="text-muted-foreground">Send a message first.</p>}
+            </div>
+          ) : <>
+          <NextRequestRail
+            canvas={canvas}
+            newUserMessage={composerDraft}
+            disabled={editingDisabled}
+            onReorder={(placementId, target, order) => change((current) => moveDocumentPlacementTo(current, placementId, target, order))}
+          />
+          <div className="mb-4">
+            <h3 className="mb-2 font-medium">Branch from message</h3>
+            <div className="flex flex-col gap-1">
+              {canvas.nodes.map((node) => <Button key={node.id} type="button" disabled={editingDisabled} variant={node.id === canvas.activeHeadId ? "default" : "outline"} size="sm" className="justify-start truncate" onClick={() => selectBranch(node.id)}>Continue after {node.role}</Button>)}
+            </div>
+          </div>
+          <div>
+            <h3 className="mb-2 font-medium">Documents</h3>
+            <input disabled={editingDisabled} value={documentTitle} onChange={(event) => setDocumentTitle(event.currentTarget.value)} placeholder="Document title" className="mb-2 h-9 w-full rounded-md border border-input bg-background px-2" aria-label="Document title" />
+            <textarea disabled={editingDisabled} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} placeholder="Markdown document…" className="mb-2 min-h-20 w-full rounded-md border border-input bg-background p-2" aria-label="Markdown document" />
+            <Button disabled={editingDisabled || !draft.trim()} type="button" size="sm" className="mb-3 w-full" onClick={() => { if (!draft.trim()) return; const id = `doc-${crypto.randomUUID()}`; const title = documentTitle.trim() || "Canvas note"; const markdown = draft; change((current) => placeDocument(createDocument(current, { id, title, markdown }), id, `${id}:v1`)); setDraft(""); setDocumentTitle("Canvas note"); }}>Create document v1</Button>
+            {documents.map((doc) => {
+              const latest = doc.versions.at(-1)!;
+              const pinned = canvas.placements.find((placement) => placement.documentId === doc.id);
+              return (
+                <div key={doc.id} className="mb-3 rounded-md border border-border p-2">
+                  <div className="font-medium">{doc.title}</div>
+                  <div className="text-muted-foreground">
+                    v{latest.version}{pinned ? ` · pinned v${doc.versions.find((version) => version.id === pinned.versionId)?.version ?? "?"}` : ""}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <Button disabled={editingDisabled || !draft.trim()} type="button" variant="outline" size="sm" onClick={() => { const markdown = draft; change((current) => saveDocumentVersion(current, doc.id, markdown)); }}>Save v{latest.version + 1}</Button>
+                    {pinned ? (
+                      <Button disabled={editingDisabled} type="button" variant="outline" size="sm" onClick={() => change((current) => removeDocumentPlacement(current, pinned.id))}>Remove from request</Button>
+                    ) : (
+                      <Button disabled={editingDisabled} type="button" variant="outline" size="sm" onClick={() => change((current) => placeDocument(current, doc.id, latest.id, { slot: "next-user" }))}>Include in request</Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          </>}
+        </aside>
+      </div>
+    </div>
+  );
+}

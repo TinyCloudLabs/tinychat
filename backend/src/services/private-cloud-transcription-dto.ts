@@ -45,7 +45,9 @@ export const JOB_ERRORS = {
 export type JobErrorCode = keyof typeof JOB_ERRORS;
 
 export const ADMISSION_MODES = ["open", "drain", "closed"] as const;
-export const AUDIO_RETENTION_STATES = ["stored", "deletion_pending", "deleted"] as const;
+export const CHANNEL_MODES = ["separate", "mixed"] as const;
+/** PTX reports `not_received` while a job still awaits its upload (SPEC.md, batch `<job>`). */
+export const AUDIO_RETENTION_STATES = ["not_received", "stored", "deletion_pending", "deleted"] as const;
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 const STAGE_RE = /^[a-z][a-z0-9_]{0,31}$/;
@@ -150,6 +152,39 @@ function retention(value: unknown) {
   };
 }
 
+/**
+ * The caller's own create choices, echoed by PTX on every job. Relayed because they are how a
+ * client tells its jobs from another client's on the same account (Exo desktop's tenant-list
+ * recovery must not adopt an Exo mobile voice note's job): the desktop labels its two channels
+ * "Speaker 1"/"Speaker 2", voice notes send one "Exo voice note" label. Same rules as create.
+ */
+function channelLabels(value: unknown): string[] {
+  check(Array.isArray(value) && value.length >= 1 && value.length <= 2);
+  return (value as unknown[]).map((label) => {
+    const name = text(label, MAX_LABEL_LENGTH);
+    check(name.trim().length > 0);
+    return name;
+  });
+}
+
+/** PTX's lifecycle timestamps, in the order a job reaches them. */
+const LIFECYCLE_TIMESTAMPS = ["uploaded_at", "processing_started_at", "finished_at"] as const;
+
+/**
+ * When the job last changed. PTX has no `updated_at`: it reports lifecycle timestamps
+ * (`created_at`, then `uploaded_at`, `processing_started_at`, `finished_at` as they happen), so the
+ * latest of those present is the job's last change. An `updated_at`, if PTX ever adds one, counts too.
+ * Every value present must be a timestamp.
+ */
+function lastChanged(o: JsonObject): string {
+  let latest = iso(o.created_at);
+  for (const key of [...LIFECYCLE_TIMESTAMPS, "updated_at"] as const) {
+    const at = nullable(o[key], iso);
+    if (at !== null && Date.parse(at) > Date.parse(latest)) latest = at;
+  }
+  return latest;
+}
+
 function job(value: unknown, expectedId?: string) {
   const o = obj(value);
   const id = str(o.id, TRANSCRIPTION_ID_RE);
@@ -159,13 +194,15 @@ function job(value: unknown, expectedId?: string) {
     id,
     status,
     byte_size: int(o.byte_size, 1, MAX_RECORDING_BYTES),
+    channel_mode: nullable(o.channel_mode, (v) => oneOf(v, CHANNEL_MODES)),
+    channel_labels: nullable(o.channel_labels, channelLabels),
     duration_seconds: nullable(o.duration_seconds, (v) => num(v)),
     channels: nullable(o.channels, (v) => int(v, 1, 2)),
     progress: nullable(o.progress, progress),
     retention: retention(o.retention),
     error: statusError(status, o.error),
     created_at: iso(o.created_at),
-    updated_at: iso(o.updated_at),
+    updated_at: lastChanged(o),
   };
 }
 
@@ -215,9 +252,10 @@ export function parseJob(body: unknown, expectedId: string): PublicJob | null {
   return parseOrNull(() => job(body, expectedId));
 }
 
+/** PTX answers a list as `{ object: "list", data: [<job>…] }` (SPEC.md); the relay answers `{ transcriptions }`. */
 export function parseJobList(body: unknown, limit: number) {
   return parseOrNull(() => {
-    const list = obj(body).transcriptions;
+    const list = obj(body).data;
     check(Array.isArray(list) && list.length <= limit);
     return { transcriptions: (list as unknown[]).map((item) => job(item)) };
   });

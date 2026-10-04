@@ -5,8 +5,12 @@ import { readFileSync } from "node:fs";
 // must apply before React mounts any logged-in storage consumer.
 test("local login isolates both fresh and restored sessions before mounting consumers", () => {
   const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-  expect(source).toContain("setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw)");
-  expect(source).toContain("setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(signedTcw) : signedTcw)");
+  expect(source).toContain(
+    "setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw)",
+  );
+  expect(source).toContain(
+    "setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw)",
+  );
   expect(source).toContain("autoCreateSpace: !LOCAL_VALIDATION");
   expect(source).toContain("await prepareLocalSignIn(localTcw)");
   expect(source.indexOf("await prepareLocalSignIn(localTcw)") < source.indexOf("await localTcw.signIn")).toBe(true);

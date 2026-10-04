@@ -204,12 +204,22 @@ no manual step:
   `Exo 0.2.0-beta.3 (beta)`, never marked latest;
 - a stable version becomes a published Release marked **latest**.
 
-**Both channels are Developer ID signed, notarized and stapled** (see Signing
-below); publishing requires the build to report `signed=true`, so no unsigned
-Exo is ever released. Assets are `Exo_<version>_aarch64.dmg`,
-the matching `.app.zip` and `SHA256SUMS.txt`; the notes combine the desktop and
+**Signing follows the `EXO_DESKTOP_SIGNING` repository variable** (see Signing
+mode below): `required` signs, notarizes and staples both channels and refuses
+to publish unless the build reports `signed=true`; `unsigned` publishes an
+unsigned build whose title (`Exo 0.2.0-beta.3 (beta, UNSIGNED)`) and notes say
+so. An unset or unknown value fails the run before anything is built. Assets
+are `Exo_<version>_aarch64.dmg`, the matching `.app.zip` and
+`SHA256SUMS.txt`; the notes combine the desktop and
 web changelog entries of the tagged commit. A published release is never
 rebuilt (cut a new version).
+
+Only the app source comes from the tagged commit: the release tooling the
+workflows run (`scripts/release`: plan, bundle config, signing verification)
+is always checked out at the workflow commit (`github.workflow_sha`, main), so
+releasing an older tag never runs that tag's older scripts. A beta older than
+the latest stable `exo-desktop` tag on main (`0.2.0-beta.3` once `0.2.0` is
+out) is refused by the plan: superseded betas are not published.
 
 Apple needs numeric bundle versions, so every build maps the semver:
 
@@ -228,26 +238,62 @@ fails if the built Info.plist doesn't match.
 Beta desktop builds embed the beta web app, which talks to the production API
 (betas don't deploy the backend).
 
-**Signing.** Release builds (`desktop-build.yml` with `sign: true`) run in the
-`desktop-release` GitHub environment, the only place the Apple secrets live. It
-allows deployments from **`main` only** and has no required reviewer (fully
-automatic releases), so only `Desktop release (Exo)` dispatched on main reaches
-it; a run on a tag or another branch cannot. The signing job first re-checks
-that (`github.workflow_ref` is main's `desktop-release.yml`, the workflow commit
-and the release commit are on freshly fetched `main`, and an `exo-desktop@*`
-release tag points at the commit being built). The app is then compiled with no
-signing secret in reach (`tauri build --no-bundle` runs the frontend build and
-every dependency build script); only `tauri bundle`, which compiles nothing,
-gets them. Tauri signs the app and the DMG with the Developer ID certificate
-(hardened runtime, `desktop/src-tauri/Entitlements.plist` with
-`com.apple.security.device.audio-input`) and notarizes and staples the app with
-an App Store Connect API key; the workflow notarizes and staples the DMG, then
-`scripts/release/verify-desktop-signing.sh` requires `codesign --verify --deep
---strict`, the Developer ID authority and team, the hardened runtime, the
-audio-input entitlement (and no `get-task-allow`), `spctl` accepting both as
-`Notarized Developer ID`, and `stapler validate` on both. A missing secret
-fails before the build starts. There is no unsigned fallback. Local builds stay
-unsigned (no identity in `tauri.conf.json`).
+**Signing mode.** `Desktop release (Exo)` reads the `EXO_DESKTOP_SIGNING`
+repository variable once, in its plan job, and has no default:
+
+| Value | Build | Release |
+|---|---|---|
+| `required` | Developer ID signed, notarized, stapled and verified (`desktop-build.yml` with `sign: true`, `desktop-release` environment) | published only if the build reports `signed=true` |
+| `unsigned` | `sign: false`: no `desktop-release` environment, no signing secret requested; ad-hoc sealed (`signingIdentity "-"`, same hardened runtime and entitlements) and the build fails unless `codesign --verify --deep --strict` accepts the app and the app in the DMG (Gatekeeper still rejects ad-hoc code) | title marked UNSIGNED; notes open with **UNSIGNED build — macOS will block it on first open. Open it once, then go to System Settings → Privacy & Security and click Open Anyway (macOS 15+). Or run: `xattr -dr com.apple.quarantine /Applications/Exo.app`.**; betas stay pre-releases, stables are marked latest |
+| unset or anything else | nothing | the plan job fails with an error naming the two values |
+
+The provenance checks (the workflow runs from `main`, the tag points at a
+commit of `main`) apply in both modes. Until the Apple Developer ID exists,
+the variable is `unsigned`:
+
+```bash
+gh variable set EXO_DESKTOP_SIGNING --body unsigned -R TinyCloudLabs/tinychat
+```
+
+To switch to signed releases once Apple approves the enrollment: add the 7
+`APPLE_*` secrets to the `desktop-release` environment (one-time setup below),
+then set the variable to `required`. The next release is signed; a release
+already published unsigned stays unsigned (published releases are never
+rebuilt; cut a new version).
+
+```bash
+gh variable set EXO_DESKTOP_SIGNING --body required -R TinyCloudLabs/tinychat
+```
+
+**Signing.** `required` release builds (`desktop-build.yml` with `sign: true`)
+keep the Apple secrets away from every runner that runs project or third-party
+build code; the job graph is in
+[desktop/README.md](desktop/README.md#releases-and-signing). The secrets live only
+in the `desktop-release` GitHub environment, which must allow deployments from
+**`main` only** (set that up and check it before adding any secret:
+[desktop/README.md](desktop/README.md#before-adding-any-signing-secret-restrict-desktop-release-to-main))
+and has no required reviewer (fully automatic releases), so only `Desktop
+release (Exo)` dispatched on main reaches it. Only two jobs use it, and both
+check out nothing but `scripts/release` at the workflow commit: a preflight
+re-checks provenance (`github.workflow_ref` is main's `desktop-release.yml`, the
+workflow commit and the release commit are on freshly fetched `main`, and an
+`exo-desktop@*` release tag points at the commit being built) and that every
+secret is present, so a missing one fails before the build starts; the sign job
+repeats both. The build job, with no environment and no secret, compiles and
+bundles the app (`tauri build --no-bundle`, `tauri bundle`, ad-hoc sealed) and
+hands it over as an artifact. The sign job runs no project code and no
+`node_modules` binary: it imports the Developer ID certificate into a temporary
+keychain, signs the app inside-out with `codesign` (no `--deep`; hardened
+runtime; `desktop/src-tauri/Entitlements.plist` from the workflow commit, with
+`com.apple.security.device.audio-input`), notarizes and staples it with
+`notarytool`, builds the DMG with `hdiutil` and signs, notarizes and staples
+that. `scripts/release/verify-desktop-signing.sh` then requires `codesign
+--verify --deep --strict`, the Developer ID authority and team, the hardened
+runtime, the audio-input entitlement (and no `get-task-allow`), `spctl`
+accepting both as `Notarized Developer ID`, and `stapler validate` on both. The
+keychain and the key are deleted before only the verified files are uploaded.
+There is no unsigned fallback. Local builds stay unsigned (no identity in
+`tauri.conf.json`).
 
 Residual risk: `main` is not protected (team workflow), so anyone who can push
 to `main` can change `desktop-release.yml` and reach the signing secrets. The
@@ -265,20 +311,22 @@ Environment secrets (`desktop-release`):
 | `APPLE_TEAM_ID` | the 10-character Team ID |
 | `APPLE_API_KEY` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
-| `APPLE_API_PRIVATE_KEY` | full contents of `AuthKey_<key id>.p8`; the workflow writes it to a temp file after compiling and sets `APPLE_API_KEY_PATH` |
+| `APPLE_API_PRIVATE_KEY` | full contents of `AuthKey_<key id>.p8` (as is, collapsed onto one line, or base64); the sign job writes it to a temp file after signing the app and deletes it before uploading |
 
-One-time setup (repo admin):
+One-time setup (repo admin). Restrict the environment to `main` **first** and
+check it before adding any secret (it had no branch policy on 2026-10-04):
 
 ```bash
 repo=TinyCloudLabs/tinychat
-# Environment deployable from main only, no reviewers.
+# 1. Environment deployable from main only, no reviewers. Check: the last command must print ["main"].
 gh api -X PUT repos/$repo/environments/desktop-release \
   -F 'deployment_branch_policy[protected_branches]=false' \
   -F 'deployment_branch_policy[custom_branch_policies]=true'
 gh api -X POST repos/$repo/environments/desktop-release/deployment-branch-policies \
   -f name=main -f type=branch
+gh api repos/$repo/environments/desktop-release/deployment-branch-policies --jq '[.branch_policies[].name]'
 
-# Developer ID Application certificate: Keychain Access > My Certificates > select
+# 2. Developer ID Application certificate: Keychain Access > My Certificates > select
 # "Developer ID Application: ..." (with its private key) > Export > .p12 with a strong password.
 base64 -i DeveloperIDApplication.p12 | tr -d '\n' | gh secret set APPLE_CERTIFICATE --env desktop-release --repo $repo
 gh secret set APPLE_CERTIFICATE_PASSWORD --env desktop-release --repo $repo      # prompts
@@ -286,7 +334,7 @@ security find-identity -v -p codesigning                                        
 gh secret set APPLE_SIGNING_IDENTITY --env desktop-release --repo $repo --body 'Developer ID Application: <Org name> (<TEAMID>)'
 gh secret set APPLE_TEAM_ID --env desktop-release --repo $repo --body '<TEAMID>'
 
-# App Store Connect > Users and Access > Integrations > App Store Connect API > Team Keys:
+# 3. App Store Connect > Users and Access > Integrations > App Store Connect API > Team Keys:
 # generate a key with the Developer role, note the Key ID and Issuer ID, download AuthKey_<id>.p8 (once).
 gh secret set APPLE_API_KEY --env desktop-release --repo $repo --body '<Key ID>'
 gh secret set APPLE_API_ISSUER --env desktop-release --repo $repo --body '<Issuer ID>'

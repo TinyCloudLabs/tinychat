@@ -10,6 +10,16 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Cpath d='M10 8h12v16H10z' fill='%23f8fafc'/%3E%3Cpath d='M13 13h6M13 17h6M13 21h4' stroke='%230f172a' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E"
     />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+    <!-- Installed-app (PWA) chrome. The manifest link is injected at build time by vite-plugin-pwa. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Exo" />
+    <meta name="application-name" content="Exo" />
+    <meta name="description" content="Exo: private chat and meeting memory on TinyCloud." />
     <title>TinyCloud Chat</title>
     <script>
       (function () {
@@ -21,6 +31,13 @@
             (s !== "light" &&
               window.matchMedia("(prefers-color-scheme: dark)").matches);
           if (dark) document.documentElement.classList.add("dark");
+          // An explicit theme choice overrides the system one the theme-color
+          // metas key on (the toggle keeps them in sync after this).
+          if (s === "light" || s === "dark") {
+            var metas = document.querySelectorAll('meta[name="theme-color"]');
+            for (var i = 0; i < metas.length; i++)
+              metas[i].setAttribute("content", dark ? "#09090b" : "#ffffff");
+          }
         } catch (e) {}
       })();
     </script>

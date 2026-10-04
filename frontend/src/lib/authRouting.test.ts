@@ -32,6 +32,12 @@ describe("isAuthSettledSignedOut", () => {
     expect(isAuthSettledSignedOut("ready")).toBe(false);
   });
 
+  test("a held session waiting for the network is not signed out (TC-514)", () => {
+    // An offline cold launch of /chat/connectors must still land there once
+    // the restore succeeds, not on /chat.
+    expect(isAuthSettledSignedOut("offline")).toBe(false);
+  });
+
   test("settled without an authorized session is signed out", () => {
     // No/expired persisted session, a failed restore that cleared it, or a
     // sign-out flip. Both states render the sign-in button, so both are

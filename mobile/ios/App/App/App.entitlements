@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Health spike (TC-525). Wired to the App target's DEBUG configuration only (CODE_SIGN_ENTITLEMENTS), together with
+  the EXO_HEALTH Swift condition that compiles HealthPlugin.swift. Release builds (the TestFlight archive) have no
+  entitlements file: the App ID xyz.tinycloud.exo would need the HealthKit capability first, and App Review then
+  expects the HealthKit integration to be visible in the app and its description (mobile/docs/health-spike.md).
+
+  - healthkit: read (and, for the spike's sample data, write) HealthKit.
+  - healthkit.access: empty = no clinical health records (Health Records / FHIR).
+  - healthkit.background-delivery: HKObserverQuery wakes via enableBackgroundDelivery (iOS 15+ requires it).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.healthkit</key>
+	<true/>
+	<key>com.apple.developer.healthkit.access</key>
+	<array/>
+	<key>com.apple.developer.healthkit.background-delivery</key>
+	<true/>
+</dict>
+</plist>

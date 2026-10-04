@@ -416,6 +416,25 @@ export async function setSetting(tcw: TinyCloudWeb, key: string, value: string):
   if (!res.ok) throw new SqlOpError(res.error, "setSetting");
 }
 
+/** Read every cross-device setting whose key starts with `prefix`, in one query. */
+export async function getSettingsByPrefix(tcw: TinyCloudWeb, prefix: string): Promise<Map<string, string>> {
+  const local = localStores.get(tcw);
+  if (local) return new Map([...local.settings].filter(([key]) => key.startsWith(prefix)));
+  await ensureSchema(tcw);
+  // A key range instead of LIKE: `_` and `%` in keys must never act as wildcards.
+  const res = await store(tcw).query(
+    "SELECT key, value FROM settings WHERE key >= ? AND key < ?",
+    [prefix, `${prefix}\uffff`],
+  );
+  if (!res.ok) throw new SqlOpError(res.error, "getSettingsByPrefix");
+  const settings = new Map<string, string>();
+  for (const row of res.data.rows) {
+    const key: unknown = row[0];
+    if (typeof key === "string" && key.startsWith(prefix)) settings.set(key, cellStr(row, 1, ""));
+  }
+  return settings;
+}
+
 // ── Memory (per-space user_context doc, single row) ───────────────────
 
 /** localStorage cache key for the per-space memory doc. */
@@ -1156,6 +1175,97 @@ export async function appendMessage(
   // sidebar (the runtime gates this behind "no stream running").
     historyPrefetch.invalidate(id);
     notifyThreadIndex(readCache(tcw) ?? []);
+  });
+}
+
+const REWRITE_ATTEMPTS = 3;
+
+function parsePayloads(rows: unknown[][]): { payloads: string[]; items: StoredMessageItem[] } {
+  const payloads: string[] = [];
+  const items: StoredMessageItem[] = [];
+  for (const row of rows) {
+    const payload: unknown = row[0];
+    if (typeof payload !== "string") continue;
+    payloads.push(payload);
+    try {
+      items.push(JSON.parse(payload) as StoredMessageItem);
+    } catch {
+      // Skip an unparseable payload, exactly as getThread does.
+    }
+  }
+  return { payloads, items };
+}
+
+/**
+ * Rewrite a thread's stored messages to what `plan` returns for the current
+ * ones (Conversation Canvas branch selection). This table stays the chat's one
+ * linear history, so share links and every other client read the same branch
+ * the chat shows.
+ *
+ * Compare-and-swap: SQL batches run statement by statement, not as a
+ * transaction, so the batch opens with a guard that fails (and stops the
+ * batch before anything is deleted) unless the stored messages still match
+ * what `plan` saw — same count and same last message. On a mismatch, e.g. a
+ * message sent from another device meanwhile, it re-reads and re-plans.
+ */
+export async function rewriteThreadMessages(
+  tcw: TinyCloudWeb,
+  id: string,
+  plan: (current: StoredMessageItem[]) => Promise<readonly StoredMessageItem[]>,
+): Promise<void> {
+  const local = localStores.get(tcw);
+  if (local) {
+    const doc = local.threads.get(id);
+    if (!doc) throw new Error("Cannot rewrite the messages of an unknown chat");
+    const next = await plan(structuredClone(doc.messages));
+    local.threads.set(id, { ...doc, messages: structuredClone([...next]), updatedAt: new Date().toISOString() });
+    notifyLocalThreads(tcw, id);
+    return;
+  }
+  return enqueueThreadWrite(tcw, id, async () => {
+    mutationGen++;
+    await ensureSchema(tcw);
+    const read = async () => {
+      const res = await store(tcw).query("SELECT payload FROM messages WHERE thread_id = ? ORDER BY position", [id]);
+      if (!res.ok) throw new SqlOpError(res.error, "rewriteThreadMessages(read)");
+      return parsePayloads(res.data.rows);
+    };
+    let lastError: SqlError | null = null;
+    for (let attempt = 0; attempt < REWRITE_ATTEMPTS; attempt++) {
+      const current = await read();
+      const next = await plan(current.items);
+      const now = new Date().toISOString();
+      const res = await store(tcw).batch([
+        {
+          // Inserting NULL into NOT NULL columns fails the batch on a mismatch.
+          sql: `INSERT INTO messages (thread_id, position, payload, created_at)
+                SELECT NULL, NULL, NULL, NULL
+                WHERE (SELECT COUNT(*) FROM messages WHERE thread_id = ?) != ?
+                   OR COALESCE((SELECT payload FROM messages WHERE thread_id = ? ORDER BY position DESC LIMIT 1), '') != ?`,
+          params: [id, current.payloads.length, id, current.payloads.at(-1) ?? ""],
+        },
+        { sql: "DELETE FROM messages WHERE thread_id = ?", params: [id] },
+        ...next.map((item, position) => ({
+          sql: "INSERT INTO messages (thread_id, position, payload, created_at) VALUES (?, ?, ?, ?)",
+          params: [id, position, JSON.stringify(item), now],
+        })),
+        { sql: "UPDATE threads SET updated_at = ? WHERE id = ?", params: [now, id] },
+      ]);
+      if (res.ok) {
+        const cached = readCache(tcw)?.find((summary) => summary.id === id);
+        if (cached) patchCacheEntry(tcw, { ...cached, updatedAt: now });
+        historyPrefetch.invalidate(id);
+        notifyThreadIndex(readCache(tcw) ?? []);
+        return;
+      }
+      lastError = res.error;
+      const after = await read();
+      const unchanged = after.payloads.length === current.payloads.length
+        && after.payloads.every((payload, index) => payload === current.payloads[index]);
+      // Nothing changed, so this was not a lost race: report the real error.
+      if (unchanged) throw new SqlOpError(res.error, "rewriteThreadMessages");
+    }
+    throw new Error(`The chat kept changing while switching branches; try again. (${lastError?.message ?? "conflict"})`);
   });
 }
 

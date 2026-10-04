@@ -19,6 +19,12 @@
     },
     {
       "service": "tinycloud.sql",
+      "path": "canvas",
+      "actions": ["read", "write", "schema"],
+      "description": "Store browser-owned Conversation Canvas branches and document versions separately from shared chat history."
+    },
+    {
+      "service": "tinycloud.sql",
       "path": "connectors",
       "actions": ["read", "write", "schema"],
       "description": "Store meeting metadata synced from connected sources (e.g. Fireflies) in your space's SQL database."
