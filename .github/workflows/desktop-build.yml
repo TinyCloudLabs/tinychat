@@ -8,30 +8,40 @@ name: Desktop build (Exo)
 # number XYYZZSSS (stage = beta number, 999 for stable). The app's own version stays the semver.
 #
 # Release tooling vs app source: the app is built from `ref` (a release tag's commit for releases), but the scripts
-# this workflow runs (scripts/release: bundle-config, version mapping, signing verification) are checked out
-# separately into .release-tooling at github.workflow_sha, the commit of the calling workflow (main for releases). So
-# the workflow and the tooling it invokes always come from the same trusted commit, and re-releasing an older tag never
-# runs that tag's older scripts (exo-desktop@0.2.0-beta.3 failed on an unknown --ad-hoc-sign that way).
+# this workflow runs (scripts/release: bundle-config, signing, signing verification) are checked out separately at
+# github.workflow_sha, the commit of the calling workflow (main for releases). So the workflow and the tooling it
+# invokes always come from the same trusted commit, and re-releasing an older tag never runs that tag's older scripts
+# (exo-desktop@0.2.0-beta.3 failed on an unknown --ad-hoc-sign that way).
 #
 # Cache: the Rust target dir and cargo registry/git (whisper.cpp, MLX, anarlog and ~1,100 crates; SwiftPM build
 # products live in the Rust target dir) share one key across CI and release jobs. Only main's own CI builds write it
 # (pushes and the weekly warm-up in desktop.yml); PRs and release builds only restore it. SwiftPM's repository cache
 # (mlx-swift, speech-swift, WhisperKit clones) is cached separately, keyed on Cargo.lock.
 #
-# Signing (sign: true, releases with EXO_DESKTOP_SIGNING=required only): the job runs in the `desktop-release`
-# environment, which only main can deploy to, so only main's desktop-release.yml reaches the Apple secrets;
-# "Verify signing provenance" re-checks that
-# (workflow_ref, workflow commit on main, and a release-tagged commit of main being built) before anything else. The
-# app is compiled first (`tauri build --no-bundle`: frontend build, cargo and every dependency build script) with no
-# signing secret in the environment or on disk; only `tauri bundle`, which compiles nothing, gets them. Tauri imports
-# APPLE_CERTIFICATE into a temporary keychain, signs the app (hardened runtime + src-tauri/Entitlements.plist) and the
-# DMG with APPLE_SIGNING_IDENTITY, and notarizes and staples the app with the App Store Connect API key; this job then
-# notarizes and staples the DMG and runs scripts/release/verify-desktop-signing.sh. Any failed check fails the build;
-# a signed build never falls back to unsigned. CI builds and EXO_DESKTOP_SIGNING=unsigned release builds (sign: false)
-# have no environment and no signing secrets; tauri bundle ad-hoc signs them (signingIdentity "-" in the overlay, same
-# hardened runtime and entitlements) so the app's resources are sealed, and "Verify the ad-hoc seal" fails the build
-# unless codesign --verify --deep --strict accepts the app and the app inside the DMG. A linker-only signature without
-# sealed resources makes a downloaded Exo "damaged", with no Open Anyway.
+# Jobs. The Developer ID certificate and the App Store Connect key are never on a runner that runs project or
+# third-party build code (bun install and its postinstall scripts, the Vite build, cargo and every crate's build
+# script, whisper.cpp/MLX/SwiftPM builds, the tauri CLI from node_modules):
+# - preflight (sign: true only; `desktop-release` environment, ubuntu): checks out only scripts/release at the
+#   workflow commit; scripts/release/desktop-signing.sh re-checks provenance (main's desktop-release.yml dispatched on
+#   main, the workflow commit and the release commit on freshly fetched main, an exo-desktop tag at the release commit)
+#   and that every signing secret is present, so a missing one fails in seconds, before any macOS build minute.
+# - build (no environment, no secret, in every mode): compiles (`tauri build --no-bundle`) and bundles
+#   (`tauri bundle`) Exo.app and a DMG, ad-hoc sealed (signingIdentity "-" from the overlay, hardened runtime and
+#   src-tauri/Entitlements.plist), checks Info.plist and the seal (codesign --verify --deep --strict on the app and the
+#   app in the DMG; a linker-only signature without sealed resources makes a downloaded Exo "damaged", with no Open
+#   Anyway), and uploads the DMG and the ditto-zipped app (symlinks and permissions preserved). Unsigned builds (CI,
+#   EXO_DESKTOP_SIGNING=unsigned releases) publish exactly this artifact.
+# - sign (sign: true: the `desktop-release` environment; otherwise a dry run with no environment and no secret):
+#   checks out only scripts/release and desktop/src-tauri/Entitlements.plist at the workflow commit and runs no project
+#   code and no node_modules binary, only Apple's tools. It unpacks the build's app and checks it, then signs it
+#   inside-out with codesign (no --deep; hardened runtime; the entitlements from the workflow commit, not the built
+#   tree) and builds the DMG with hdiutil. Signed: provenance and secrets first, the certificate in a temporary
+#   keychain, notarytool notarizes and staples the app and then the DMG, verify-desktop-signing.sh must pass, the
+#   keychain and key are deleted, and only then are the verified DMG and app uploaded. Dry run: the same unpack, an
+#   ad-hoc re-seal with the same codesign path, and the DMG built and mounted, so every desktop PR exercises the
+#   hand-off and the signing commands. Any failed check fails the build; a signed build never falls back to unsigned.
+#
+# Every secret reference is gated on inputs.sign, so CI and unsigned releases never resolve one.
 
 on:
   workflow_call:
@@ -57,63 +67,86 @@ on:
         value: ${{ jobs.build.outputs.bundle-version }}
       signed:
         description: true only when every signing and notarization check passed
-        value: ${{ jobs.build.outputs.signed }}
+        value: ${{ jobs.sign.outputs.signed }}
 
 permissions:
   contents: read
 
+env:
+  # The build job's artifact: the published one for unsigned builds; for signed builds the sign job's input, while
+  # the signed files take the artifact name.
+  BUILD_ARTIFACT: ${{ inputs.sign && format('{0}-unsigned', inputs.artifact-name) || inputs.artifact-name }}
+
 jobs:
+  preflight:
+    name: Signing preflight (desktop-release)
+    if: inputs.sign
+    runs-on: ubuntu-latest
+    # Signing secrets live only in this environment (deployment branches: main; no required reviewer).
+    environment: desktop-release
+    timeout-minutes: 5
+    steps:
+      # The only checkout: the release tooling from the workflow's own commit, with history for the provenance check.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /scripts/release/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Before any secret is referenced: only main's release workflow, building a release-tagged commit of main.
+      - name: Verify signing provenance
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          BUILD_REF: ${{ inputs.ref }}
+        run: scripts/release/desktop-signing.sh provenance "$BUILD_REF"
+
+      # Before any build minutes are spent; a missing value fails with its name.
+      - name: Check signing secrets
+        env:
+          APPLE_CERTIFICATE: ${{ inputs.sign && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.sign && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_TEAM_ID: ${{ inputs.sign && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ inputs.sign && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ inputs.sign && secrets.APPLE_API_PRIVATE_KEY || '' }}
+        run: scripts/release/desktop-signing.sh check
+
   build:
     name: macOS (Apple Silicon)
+    needs: preflight
+    # Signed builds need a passing preflight; unsigned builds have none (skipped).
+    if: ${{ !cancelled() && (needs.preflight.result == 'success' || (!inputs.sign && needs.preflight.result == 'skipped')) }}
     # Pinned: macos-26 runner + Xcode 26.6 (Swift <= 6.3). The vendored swift-rs
     # forces SwiftPM's deprecated `native` build system
     # (desktop/vendor/swift-rs/PROVENANCE.md); verify a newer Xcode before
     # moving either pin.
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; no required reviewer).
-    environment: ${{ inputs.sign && 'desktop-release' || '' }}
+    # No environment, in every mode: this job runs bun install, the Vite build, cargo with every crate's build script
+    # and the tauri CLI, and no secret is in reach of any of them.
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' && !inputs.sign }}
-      SIGN: ${{ inputs.sign }}
-    # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs; signed builds also wait for two notarizations.
-    timeout-minutes: ${{ inputs.sign && 180 || 150 }}
+    # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs.
+    timeout-minutes: 150
     outputs:
       version: ${{ steps.bundle.outputs.version }}
+      short-version: ${{ steps.bundle.outputs.short-version }}
       bundle-version: ${{ steps.bundle.outputs.bundle-version }}
-      signed: ${{ steps.verify.outputs.signed || 'false' }}
+      app-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: ${{ inputs.sign && '0' || '1' }}
           persist-credentials: false
 
-      # Before any secret is referenced: only main's release workflow, building a release-tagged commit of main.
-      - name: Verify signing provenance
-        if: inputs.sign
-        env:
-          EXPECTED: ${{ github.repository }}/.github/workflows/desktop-release.yml@refs/heads/main
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-          BUILD_REF: ${{ inputs.ref }}
-        run: |
-          fail() { echo "::error::Refusing to sign: $1"; exit 1; }
-          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
-            fail "signing runs only in $EXPECTED dispatched on main (got $GITHUB_EVENT_NAME, $GITHUB_REF, $WORKFLOW_REF)"
-          fi
-          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main '+refs/tags/exo-desktop@*:refs/tags/exo-desktop@*'
-          git merge-base --is-ancestor "$WORKFLOW_SHA" origin/main || fail "workflow commit $WORKFLOW_SHA is not on main"
-          [ -n "$BUILD_REF" ] || fail "no release commit given"
-          sha=$(git rev-parse --verify "$BUILD_REF^{commit}") || fail "unknown commit $BUILD_REF"
-          [ "$(git rev-parse HEAD)" = "$sha" ] || fail "the checkout is not $sha"
-          git merge-base --is-ancestor "$sha" origin/main || fail "$sha is not on main"
-          tags=$(git tag --points-at "$sha" | grep -E '^exo-desktop@[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$' || true)
-          [ -n "$tags" ] || fail "no exo-desktop release tag points at $sha"
-          echo "Signing $sha ($tags) with $WORKFLOW_REF at $WORKFLOW_SHA"
-
-      # The release tooling, from the workflow's own commit (verified on main above for signed builds), never from
-      # the commit being built. Only scripts/release; no credentials are kept and no secret is in reach.
+      # The release tooling, from the workflow's own commit, never from the commit being built. Only scripts/release;
+      # no credentials are kept.
       - name: Check out the release tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -121,42 +154,6 @@ jobs:
           path: .release-tooling
           sparse-checkout: scripts/release
           persist-credentials: false
-
-      # Before any build minutes are spent. Tauri alone would sign but skip notarization with only a warning when
-      # the API key is missing; this check and verify-desktop-signing.sh make that a failure.
-      - name: Check signing secrets
-        if: inputs.sign
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-        run: |
-          missing=()
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
-            if [ -z "${!name}" ]; then missing+=("$name"); fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing desktop-release environment secrets: ${missing[*]} (see README, Releases > Signing)"
-            exit 1
-          fi
-          case "$APPLE_SIGNING_IDENTITY" in
-            "Developer ID Application: "*"($APPLE_TEAM_ID)") ;;
-            *)
-              echo "::error::APPLE_SIGNING_IDENTITY must be the 'Developer ID Application: <name> (<APPLE_TEAM_ID>)' identity"
-              exit 1
-              ;;
-          esac
-          case "$APPLE_API_PRIVATE_KEY" in
-            *"-----BEGIN PRIVATE KEY-----"*) ;;
-            *)
-              echo "::error::APPLE_API_PRIVATE_KEY must be the full contents of the AuthKey_<id>.p8 file"
-              exit 1
-              ;;
-          esac
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -208,56 +205,24 @@ jobs:
       - name: Build workspace packages
         run: bun run build:packages
 
-      # Unsigned builds get signingIdentity "-" (ad-hoc); signed builds take APPLE_SIGNING_IDENTITY in the bundle step.
-      # The workflow commit's script reads the version from the built tree (--root).
+      # Every build is ad-hoc sealed here (signingIdentity "-"); the sign job applies the Developer ID. The workflow
+      # commit's script reads the version from the built tree (--root).
       - name: Bundle versions
         id: bundle
-        run: |
-          if [ "$SIGN" = true ]; then
-            node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle"
-          else
-            node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
-          fi
+        run: node .release-tooling/scripts/release/desktop-bundle-config.mjs --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/exo-bundle" --ad-hoc-sign
 
       # tauri build runs the frontend production build itself
-      # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json). No signing secret reaches this step.
+      # (beforeBuildCommand in desktop/src-tauri/tauri.conf.json).
       - name: Build Exo desktop app
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
         run: bun run --cwd desktop tauri build --no-bundle --config "$TAURI_BUNDLE_CONFIG"
 
-      # Written only now, after every build script has run.
-      - name: Write the App Store Connect API key
-        if: inputs.sign
-        env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-        run: |
-          dir="$RUNNER_TEMP/apple"
-          mkdir -p "$dir"
-          chmod 700 "$dir"
-          key="$dir/AuthKey_$APPLE_API_KEY.p8"
-          (umask 077 && printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$key")
-          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
-
-      # Bundles the compiled app into Exo.app and the DMG without compiling anything. The Apple variables are
-      # exported only for signed builds: tauri treats a set-but-empty APPLE_CERTIFICATE as a certificate to import.
-      - name: Bundle Exo (signed and notarized for releases)
+      # Bundles the compiled app into Exo.app and the DMG without compiling anything, ad-hoc sealing the app.
+      - name: Bundle Exo
         env:
           TAURI_BUNDLE_CONFIG: ${{ steps.bundle.outputs.config }}
-          SIGN_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          SIGN_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          SIGN_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          SIGN_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          if [ "$SIGN" = true ]; then
-            export APPLE_CERTIFICATE="$SIGN_CERTIFICATE" APPLE_CERTIFICATE_PASSWORD="$SIGN_CERTIFICATE_PASSWORD"
-            export APPLE_SIGNING_IDENTITY="$SIGN_IDENTITY" APPLE_API_KEY="$SIGN_API_KEY" APPLE_API_ISSUER="$SIGN_API_ISSUER"
-            test -f "$APPLE_API_KEY_PATH"
-          fi
-          unset SIGN_CERTIFICATE SIGN_CERTIFICATE_PASSWORD SIGN_IDENTITY SIGN_API_KEY SIGN_API_ISSUER
-          bun run --cwd desktop tauri bundle --config "$TAURI_BUNDLE_CONFIG"
+        run: bun run --cwd desktop tauri bundle --config "$TAURI_BUNDLE_CONFIG"
 
       - name: Check Info.plist
         env:
@@ -281,41 +246,8 @@ jobs:
           plutil -extract NSMicrophoneUsageDescription raw "$plist" >/dev/null
           plutil -extract NSAudioCaptureUsageDescription raw "$plist" >/dev/null
 
-      # Tauri signs the DMG but notarizes only the app; notarize and staple the DMG too, so Gatekeeper accepts the
-      # download itself even offline.
-      - name: Notarize and staple the DMG
-        if: inputs.sign
-        env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          dmg=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
-          test -n "$dmg"
-          result=$(xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --timeout 45m --output-format json)
-          echo "$result"
-          if [ "$(jq -r .status <<<"$result")" != Accepted ]; then
-            id=$(jq -r '.id // empty' <<<"$result")
-            if [ -n "$id" ]; then
-              xcrun notarytool log "$id" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" || true
-            fi
-            echo "::error::Notarization of $dmg was not accepted"
-            exit 1
-          fi
-          xcrun stapler staple "$dmg"
-
-      - name: Verify signing and notarization
-        id: verify
-        if: inputs.sign
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          dmg=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
-          .release-tooling/scripts/release/verify-desktop-signing.sh desktop/src-tauri/target/release/bundle/macos/Exo.app "$dmg" "$APPLE_TEAM_ID"
-          echo "signed=true" >> "$GITHUB_OUTPUT"
-
       # Gatekeeper (spctl) still rejects ad-hoc code; that is expected and not checked.
       - name: Verify the ad-hoc seal
-        if: ${{ !inputs.sign }}
         run: |
           dmg=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
           test -n "$dmg"
@@ -328,16 +260,19 @@ jobs:
           done
 
       # Zip the .app with ditto to preserve symlinks/permissions;
-      # upload-artifact would flatten them. For signed builds this is the stapled app.
+      # upload-artifact would flatten them.
       - name: Package .app
+        id: package
         run: |
           cd desktop/src-tauri/target/release/bundle/macos
           ditto -c -k --sequesterRsrc --keepParent Exo.app Exo-macos-arm64.app.zip
+          echo "sha256=$(shasum -a 256 Exo-macos-arm64.app.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
+      # Ad-hoc sealed, built by this public repository's code, so nothing in it is secret.
       - name: Upload dmg + app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ inputs.artifact-name }}
+          name: ${{ env.BUILD_ARTIFACT }}
           if-no-files-found: error
           path: |
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
@@ -350,6 +285,169 @@ jobs:
           path: ~/Library/Caches/org.swift.swiftpm
           key: ${{ steps.swiftpm.outputs.cache-primary-key }}
 
-      - name: Remove the App Store Connect API key
-        if: always() && inputs.sign
-        run: rm -f "$RUNNER_TEMP/apple/"*.p8
+  sign:
+    name: ${{ inputs.sign && 'Sign and notarize (desktop-release)' || 'Sign (dry run, ad-hoc, no secrets)' }}
+    needs: build
+    # Explicit: a skipped preflight would otherwise skip this job too.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: macos-26
+    # Signing secrets live only in this environment (deployment branches: main; no required reviewer). This job checks
+    # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
+    # cargo, no tauri, no node_modules binary.
+    environment: ${{ inputs.sign && 'desktop-release' || '' }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      SIGN: ${{ inputs.sign }}
+    # Signed builds wait for two notarizations (45 minutes each at most).
+    timeout-minutes: ${{ inputs.sign && 120 || 20 }}
+    outputs:
+      signed: ${{ steps.verify.outputs.signed || 'false' }}
+    steps:
+      # The only checkout: the release tooling and the entitlements from the workflow's own commit (with history for
+      # the provenance check when signing).
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: ${{ inputs.sign && '0' || '1' }}
+          sparse-checkout: |
+            /scripts/release/
+            /desktop/src-tauri/Entitlements.plist
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Before any secret is referenced: only main's release workflow, signing a build of a release-tagged commit of
+      # main.
+      - name: Verify signing provenance
+        if: inputs.sign
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          BUILD_REF: ${{ inputs.ref }}
+        run: scripts/release/desktop-signing.sh provenance "$BUILD_REF"
+
+      - name: Check signing secrets
+        if: inputs.sign
+        env:
+          APPLE_CERTIFICATE: ${{ inputs.sign && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.sign && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_TEAM_ID: ${{ inputs.sign && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ inputs.sign && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ inputs.sign && secrets.APPLE_API_PRIVATE_KEY || '' }}
+        run: scripts/release/desktop-signing.sh check
+
+      - name: Require pinned Xcode
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcrun notarytool --version
+          echo "EXO_SECRETS=$RUNNER_TEMP/exo-signing" >> "$GITHUB_ENV"
+          echo "EXO_SIGNED=$RUNNER_TEMP/exo-signed" >> "$GITHUB_ENV"
+
+      - name: Download the build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.BUILD_ARTIFACT }}
+          path: ${{ runner.temp }}/exo-build
+
+      # The build job already checked the app; this proves the hand-off kept it intact. Only the app is used: the
+      # signed DMG is built here.
+      - name: Unpack the app
+        env:
+          SHA256: ${{ needs.build.outputs.app-sha256 }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SHORT_VERSION: ${{ needs.build.outputs.short-version }}
+          BUNDLE_VERSION: ${{ needs.build.outputs.bundle-version }}
+        run: |
+          zip="$RUNNER_TEMP/exo-build/macos/Exo-macos-arm64.app.zip"
+          if [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" != "$SHA256" ]; then
+            echo "::error::Exo-macos-arm64.app.zip is not the archive the build job packaged"
+            exit 1
+          fi
+          app=$(scripts/release/desktop-signing.sh unpack "$zip" "$RUNNER_TEMP/exo-app" "$VERSION" "$SHORT_VERSION" "$BUNDLE_VERSION")
+          echo "EXO_APP=$app" >> "$GITHUB_ENV"
+          echo "EXO_DMG=$EXO_SIGNED/Exo_${VERSION}_aarch64.dmg" >> "$GITHUB_ENV"
+
+      # A throwaway keychain for the Developer ID identity, deleted below whatever happens.
+      - name: Import the Developer ID certificate
+        if: inputs.sign
+        env:
+          APPLE_CERTIFICATE: ${{ inputs.sign && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.sign && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
+        run: |
+          keychain=$(scripts/release/desktop-signing.sh keychain "$EXO_SECRETS")
+          echo "EXO_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      # Signed: the Developer ID. Dry run: ad-hoc ("-") through the same codesign path. Never ad-hoc when signing.
+      - name: Sign Exo.app (inside-out)
+        env:
+          IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
+        run: |
+          if [ "$SIGN" != true ]; then IDENTITY=-; elif [ -z "$IDENTITY" ]; then echo "::error::APPLE_SIGNING_IDENTITY is empty"; exit 1; fi
+          scripts/release/desktop-signing.sh sign "$EXO_APP" desktop/src-tauri/Entitlements.plist "$IDENTITY" "${EXO_KEYCHAIN:-}"
+
+      # Written only now, on a runner that never ran a build script.
+      - name: Write the App Store Connect API key
+        if: inputs.sign
+        env:
+          APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ inputs.sign && secrets.APPLE_API_PRIVATE_KEY || '' }}
+        run: |
+          key=$(scripts/release/desktop-signing.sh write-key "$EXO_SECRETS/private_keys")
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple the app
+        if: inputs.sign
+        env:
+          APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ inputs.sign && secrets.APPLE_API_ISSUER || '' }}
+        run: scripts/release/desktop-signing.sh notarize "$EXO_APP" "$APPLE_API_KEY_PATH"
+
+      # From the stapled app, so a copy from the DMG opens offline.
+      - name: Build the DMG
+        env:
+          IDENTITY: ${{ inputs.sign && secrets.APPLE_SIGNING_IDENTITY || '' }}
+        run: |
+          if [ "$SIGN" != true ]; then IDENTITY=-; elif [ -z "$IDENTITY" ]; then echo "::error::APPLE_SIGNING_IDENTITY is empty"; exit 1; fi
+          scripts/release/desktop-signing.sh dmg "$EXO_APP" "$EXO_DMG" "$IDENTITY" "${EXO_KEYCHAIN:-}"
+
+      - name: Notarize and staple the DMG
+        if: inputs.sign
+        env:
+          APPLE_API_KEY: ${{ inputs.sign && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ inputs.sign && secrets.APPLE_API_ISSUER || '' }}
+        run: scripts/release/desktop-signing.sh notarize "$EXO_DMG" "$APPLE_API_KEY_PATH"
+
+      - name: Verify signing and notarization
+        id: verify
+        if: inputs.sign
+        env:
+          APPLE_TEAM_ID: ${{ inputs.sign && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          scripts/release/verify-desktop-signing.sh "$EXO_APP" "$EXO_DMG" "$APPLE_TEAM_ID"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      # Before anything else runs on this runner (the upload action included), whatever happened above.
+      - name: Remove the keychain and the API key
+        if: always()
+        run: |
+          if [ -n "${EXO_KEYCHAIN:-}" ]; then security delete-keychain "$EXO_KEYCHAIN" || true; fi
+          rm -rf "$RUNNER_TEMP/exo-signing"
+
+      # ditto keeps the stapled bundle's symlinks and permissions (upload-artifact would flatten them).
+      - name: Package the signed app
+        if: inputs.sign
+        run: ditto -c -k --sequesterRsrc --keepParent "$EXO_APP" "$EXO_SIGNED/Exo-macos-arm64.app.zip"
+
+      # Only files that passed verify-desktop-signing.sh.
+      - name: Upload the signed dmg + app
+        if: inputs.sign && steps.verify.outputs.signed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/exo-signed/*.dmg
+            ${{ runner.temp }}/exo-signed/Exo-macos-arm64.app.zip

@@ -11,8 +11,10 @@ name: Desktop release (Exo)
 # - beta (X.Y.Z-beta.N): a GitHub pre-release, never "latest";
 # - stable (X.Y.Z): a published GitHub Release marked latest.
 # Signing follows the EXO_DESKTOP_SIGNING repository variable, read once by the plan job; it has no default:
-# - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true, secrets from the
-#   desktop-release environment, which only main can deploy to); publishing requires the build's signed=true;
+# - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true: the app is built with no
+#   environment and no secret, then signed by a job in the desktop-release environment, which only main can deploy to,
+#   that runs only scripts/release from the workflow commit and Apple's tools); publishing requires the build's
+#   signed=true;
 # - unsigned (until the Apple Developer ID exists): desktop-build.yml with sign: false, so no environment and no
 #   signing secret is requested (the app is only ad-hoc sealed); the release title and notes say UNSIGNED.
 # Any other value, including unset, fails the plan before anything is built. The provenance checks (main only, tag
