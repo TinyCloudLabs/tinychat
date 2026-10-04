@@ -186,14 +186,28 @@ upload key. It never loads a dev server.
   `server.url`, so the WebView origin is `https://localhost`. The backend
   allows that origin.
 - **Gate.** `app/build.gradle` runs `verifyExoRelease` before every release
-  task (`assembleRelease`, `bundleRelease`). It fails the build if any signing
-  input is missing, if the web app is not bundled, or if
-  `capacitor.config.json` has a `server.url`. AGP would otherwise produce an
-  unsigned "release" without complaint. Debug builds need none of this.
-- **Signing inputs.** Set each one as a Gradle property or an environment variable
-  of the same name: `ANDROID_KEYSTORE_FILE` (path to the upload `.jks`),
-  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
-  The release `signingConfig` is applied only when all four are set.
+  task (`assembleRelease`, `bundleRelease`). It fails the build if the web app
+  is not bundled or `capacitor.config.json` has a `server.url`, and it fails an
+  unsigned build unless `EXO_UNSIGNED_RELEASE=true` is set. AGP would otherwise
+  produce an unsigned "release" without complaint. Debug builds need none of
+  this.
+- **Signing outside Gradle.** CI builds the release unsigned with
+  `EXO_UNSIGNED_RELEASE=true` and signs it in a separate job with
+  `scripts/release/android-signing.sh`: `apksigner` (after `zipalign`) for the
+  APK, `jarsigner` for the AAB. The key never reaches Gradle, its plugins or
+  bun. `EXO_UNSIGNED_RELEASE` is refused together with any signing input, and
+  an unsigned release is useless on its own: Android won't install it and
+  Play rejects it.
+- **Signing in Gradle** (local builds only, optional). Set all four as Gradle
+  properties or environment variables of the same name:
+  `ANDROID_KEYSTORE_FILE` (path to the upload `.jks`),
+  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. The
+  release `signingConfig` is applied only when all four are set.
+- **Gradle wrapper.** `gradle-wrapper.properties` pins the distribution's
+  SHA-256 (`distributionSha256Sum`; update it with `distributionUrl` from
+  [gradle.org/release-checksums](https://gradle.org/release-checksums/)). CI
+  validates `gradle-wrapper.jar` (`gradle/actions/wrapper-validation`) before
+  running it, and runs Gradle with `--no-daemon`.
 - **Versions.** `versionName` comes from `frontend/package.json`. Web, desktop
   and mobile share one product version, e.g. `0.2.0-beta.2`. `versionCode` is
   `EXO_VERSION_CODE`, which defaults to 1 locally. CI sets it to the release
@@ -207,18 +221,22 @@ upload key. It never loads a dev server.
   plugins, but no minified build of the app-local VoiceNotes plugin and the
   WebView bridge has been run on a device yet. Turn it on only after one has.
 
-Build one locally. Use a throwaway key from `/tmp` to try the pipeline:
+Build one locally the way CI does. Use a throwaway key from `/tmp` to try the
+pipeline:
 
 ```sh
 bun install && bun run build:packages && bun run build:frontend
 cd mobile && bunx cap sync android && cd android
-export ANDROID_KEYSTORE_FILE=/abs/path/upload.jks ANDROID_KEY_ALIAS=exo-upload EXO_VERSION_CODE=1
+EXO_UNSIGNED_RELEASE=true EXO_VERSION_CODE=1 ./gradlew --no-daemon bundleRelease assembleRelease
+export ANDROID_KEYSTORE_FILE=/abs/path/upload.jks ANDROID_KEY_ALIAS=exo-upload
 read -rs ANDROID_KEYSTORE_PASSWORD && export ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
-./gradlew bundleRelease assembleRelease
+cert="$(keytool -list -v -keystore "$ANDROID_KEYSTORE_FILE" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p')"
+out=app/build/outputs
+../../scripts/release/android-signing.sh sign $out/apk/release/app-release-unsigned.apk \
+  $out/bundle/release/app-release.aab /tmp/exo-signed "$cert"
 # APK signer, version, icon, not debuggable, bundled web app without server.url, AAB signer:
-../../scripts/release/verify-android-release.sh app/build/outputs/apk/release/app-release.apk \
-  app/build/outputs/bundle/release/app-release.aab "$(node -p 'require("../../frontend/package.json").version')" 1 \
-  "$(keytool -list -v -keystore "$ANDROID_KEYSTORE_FILE" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p')"
+../../scripts/release/verify-android-release.sh /tmp/exo-signed/app-release.apk /tmp/exo-signed/app-release.aab \
+  "$(node -p 'require("../../frontend/package.json").version')" 1 "$cert"
 ```
 
 ### CI: `Mobile release (Android)`
@@ -230,33 +248,68 @@ and APK (for sideloading):
 gh workflow run mobile-release-android.yml --ref main
 ```
 
+The upload key is never on a runner that runs project or third-party build
+code:
+
+| Job | Environment | Runs | Holds |
+|---|---|---|---|
+| `plan` (releases only) | `android-release` | `android-signing.sh check` from the workflow commit; no build | the secrets, only to check they are set |
+| `build` | none | bun install, Vite, `cap sync`, Gradle (`EXO_UNSIGNED_RELEASE=true`) | nothing secret |
+| `sign` | `android-release` (releases) | only `scripts/release` checked out at the workflow commit: `android-signing.sh sign`, `verify-android-release.sh` | the upload key, for one step |
+
 - It runs only from `main`, in the `android-release` environment, which is the
-  only place the upload key lives. It refuses any other ref, and it fails before
-  building if a secret is missing. There is no unsigned fallback.
-- `scripts/release/verify-android-release.sh` checks the result before any
-  upload. Both files must be signed with the keystore's certificate (never the
-  debug key). The APK must be `xyz.tinycloud.exo` at the expected
-  versionName/versionCode, not debuggable, with an icon. Both must bundle the web
-  app without `server.url`.
+  only place the upload key lives. It refuses any other ref, and the `plan` job
+  fails before anything is built if a secret or the certificate variable is
+  missing. Every secret and variable reference is gated on
+  `workflow_dispatch`. There is no unsigned fallback.
+- `android-signing.sh` refuses a keystore whose certificate is not
+  `ANDROID_UPLOAD_CERT_SHA256` before signing anything. The variable is pinned
+  on its own, so a swapped keystore secret cannot sign. Passwords reach
+  `apksigner` and `jarsigner` through the environment
+  (`--ks-pass env:`, `-storepass:env`), never the command line.
+- `scripts/release/verify-android-release.sh` checks the result against the
+  same variable before any upload. Both files must be signed with that
+  certificate (never the debug key). The APK must be `xyz.tinycloud.exo` at the
+  expected versionName/versionCode, not debuggable, with an icon. Both must
+  bundle the web app without `server.url`.
 - The artifact is `exo-android-<versionName>-<versionCode>`, containing
   `Exo-<versionName>-<versionCode>.aab`, the matching `.apk` and
   `SHA256SUMS.txt`. A re-run keeps its run number, and with it the versionCode.
   Dispatch a new run when you need a new upload.
-- PRs that touch the Android project or this workflow run a **rehearsal**. It is
-  the same build, signed with a throwaway key generated on the runner and
-  verified the same way. It uses no secret and uploads nothing.
+- PRs that touch the Android project or this workflow run a **rehearsal**: the
+  same `build` and `sign` jobs (no `plan`), signed in the `sign` job with a
+  throwaway key generated there and verified against its certificate. No
+  environment and no secret; only the unsigned build passes between the jobs,
+  and nothing signed is uploaded.
 - Play upload is not wired yet. Until the Play app exists, upload the `.aab` by
   hand. The workflow header has a TODO for an internal-track upload step with a
   pinned `r0adkll/upload-google-play` and a `PLAY_SERVICE_ACCOUNT_JSON` secret.
 
-Environment secrets (`android-release`):
+Environment `android-release`:
 
-| Secret | Value |
-|---|---|
-| `ANDROID_KEYSTORE_B64` | `base64 < exo-upload.jks \| tr -d '\n'` |
-| `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
-| `ANDROID_KEY_ALIAS` | the key alias, e.g. `exo-upload` |
-| `ANDROID_KEY_PASSWORD` | the key password; for a PKCS12 keystore (keytool's default) it equals the keystore password |
+| Name | Kind | Value |
+|---|---|---|
+| `ANDROID_KEYSTORE_B64` | secret | `base64 < exo-upload.jks \| tr -d '\n'` |
+| `ANDROID_KEYSTORE_PASSWORD` | secret | the keystore password |
+| `ANDROID_KEY_ALIAS` | secret | the key alias, e.g. `exo-upload` |
+| `ANDROID_KEY_PASSWORD` | secret | the key password; for a PKCS12 keystore (keytool's default) it equals the keystore password |
+| `ANDROID_UPLOAD_CERT_SHA256` | variable | the upload certificate's SHA-256 (64 hex digits; colons are fine). Public: Play Console shows it under App integrity |
+
+### Sideloaded APK vs Play installs
+
+The artifact's `.apk` is signed with the **upload key**. Play re-signs what it
+delivers with the **app signing key** (Play App Signing), a different
+certificate. Android installs an update only over an app signed with the same
+certificate, so the two can't update each other: a phone with the sideloaded
+APK can't take the Play version (or the reverse) without uninstalling first,
+which deletes Exo's local data (sign-in, pending voice notes).
+
+- Until the Play app exists, the artifact's APK is for internal testers only.
+  Tell them to uninstall it before installing from Play.
+- Once Play has the release, sideload Play's own build instead: Play Console →
+  Exo → App bundle explorer → the release → Downloads → **Signed, universal
+  APK**. It is signed with the app signing key, so it and Play installs update
+  each other.
 
 ### One-time setup (Sam / repo admin)
 
@@ -286,7 +339,18 @@ Environment secrets (`android-release`):
    authenticates uploads. If it leaks or is lost, Play Console can reset it, so
    it can be replaced. The app signing key never can.
 
-3. **Secrets.** Store them as environment secrets, never repository secrets
+3. **Pin the certificate.** The variable is public (it is in every signed
+   file), so it is not a secret. keytool prompts for the password:
+
+   ```sh
+   gh variable set ANDROID_UPLOAD_CERT_SHA256 --env android-release --repo $repo --body \
+     "$(keytool -list -v -keystore exo-upload.jks -alias exo-upload | sed -n 's/^[[:space:]]*SHA256: //p')"
+   ```
+
+   After a Play upload-key reset, set it again for the new key, or every run
+   refuses to sign.
+
+4. **Secrets.** Store them as environment secrets, never repository secrets
    (any branch's workflow can read those), and never paste them into a chat.
    From your own machine, `gh` prompts with hidden input:
 
@@ -304,7 +368,7 @@ Environment secrets (`android-release`):
    `secret-bridge pipe ANDROID_KEYSTORE_PASSWORD -- gh secret set ANDROID_KEYSTORE_PASSWORD --env android-release --repo TinyCloudLabs/tinychat`.
    Repeat for each secret. Bridge the keystore as its base64 text.
 
-4. Run `gh workflow run mobile-release-android.yml --ref main` and download the
+5. Run `gh workflow run mobile-release-android.yml --ref main` and download the
    artifact.
 
 ### Play Console checklist (internal testing)
@@ -346,7 +410,7 @@ Environment secrets (`android-release`):
   it before recording, or say so in the review notes.
 - [ ] Content rating questionnaire, target audience (not children), ads (none),
   app access instructions for review: email + code sign-in with a test inbox.
-- [ ] Store listing: `mobile/assets/play-store-icon.png` (512 px), a 1024x500
+- [ ] Store listing: `mobile/assets/play-store-icon.png` (512 px, 32-bit PNG), a 1024x500
   feature graphic and phone screenshots (neither exists yet).
 - [ ] **TC-513 first.** Real phones cannot resolve `api.openkey.so`,
   `api.tinycloud.chat` and `tee.node.tinycloud.xyz` (see the known issue
@@ -402,13 +466,17 @@ Xcode 26.6.
   `summary.md`. To run it on a Mac:
   `mobile/scripts/ios-simulator-smoke.sh run <path/to/App.app> /tmp/exo-smoke`.
 - **Release dry run** (`Mobile (Exo)` → *iOS release*): the TestFlight build
-  (`.github/workflows/ios-build.yml`) without signing. It produces a Release
-  archive of the production frontend and checks:
+  (`.github/workflows/ios-build.yml`) without signing. Its archive job produces
+  a Release archive of the production frontend and checks:
   - versions and the bundle id;
   - `PrivacyInfo.xcprivacy`, the microphone string and the `audio` background
     mode;
   - that `capacitor.config.json` has no dev-server `server.url`;
   - that the Release binary does not contain the smoke probe.
+
+  Its sign job then runs as a dry run (no environment, no secrets): it checks
+  out only `scripts/release`, downloads and unpacks the archive, and re-checks
+  it, so the hand-off between the two jobs is proven on every iOS change.
 
 ### Privacy manifest
 
@@ -443,21 +511,38 @@ gh workflow run ios-testflight.yml --ref main                   # sign and uploa
 If an `ios-release` secret is missing, the plan job fails within seconds and
 names it. No macOS runner starts and nothing is built.
 
-Otherwise the run is `ios-build.yml` with `sign: true`, the same job CI runs
-unsigned:
+Otherwise the run is `ios-build.yml` with `sign: true`, the same two jobs CI
+runs unsigned. The App Store Connect key is never on a runner that runs project
+or third-party build code:
 
-1. It archives without signing, with no secret in reach.
-2. It writes the API key.
+| Job | Environment | Runs | Holds |
+|---|---|---|---|
+| `plan` (ios-testflight.yml) | `ios-release` | `ios-signing.sh check` from the workflow commit; no build | the secrets, only to check they are set |
+| `archive` | none | bun install, Vite, `cap sync`, `xcodebuild archive` (unsigned, no team) | nothing secret |
+| `sign` | `ios-release` | only `scripts/release` checked out at the workflow commit; `xcodebuild -exportArchive`, `ios-signing.sh verify-ipa`, `altool` | the API key and Team ID |
+
+1. The archive job archives without signing and with no secret anywhere,
+   checks the archive and hands it to the sign job (ditto-zipped, a 3-day
+   artifact; it is unsigned and built from public code).
+2. The sign job re-checks provenance (main's `ios-testflight.yml`, both the
+   workflow commit and the archived commit on `main`), checks the secrets,
+   unpacks the archive and writes the API key.
 3. `xcodebuild -exportArchive -allowProvisioningUpdates` signs the app and its
    frameworks with Xcode's cloud-managed Apple Distribution certificate and an
-   App Store profile, creating both on first use.
+   App Store profile, creating both on first use. The team comes from
+   `ExportOptions.plist` (`teamID`); the archive has none.
 4. `scripts/release/ios-signing.sh verify-ipa` requires:
    - an Apple Distribution signature from `APPLE_TEAM_ID`;
-   - an App Store profile for `xyz.tinycloud.exo` (no devices, no
-     `get-task-allow`).
-5. Only then does `upload` mode export again with destination `upload` (the
-   uploader Xcode's Organizer uses). `validate` mode instead runs
-   `altool --validate-app`.
+   - an App Store profile for `xyz.tinycloud.exo`: no devices, not an in-house
+     `ProvisionsAllDevices` profile, no `get-task-allow`.
+5. Only then does `upload` mode send **that** `.ipa` with
+   `altool --upload-app`, after checking its SHA-256 is the one verified.
+   `validate` mode instead runs `altool --validate-app` on it.
+
+Neither the `.ipa` nor any signing log is uploaded as an artifact: the
+repository is public. Signing output goes to the job log only, where GitHub
+masks the secrets. The archive job's `archive.log` is an artifact (that job has
+no secrets).
 
 The archive is never signed. Automatic signing at archive time would need an
 Apple Development certificate whose private key a fresh runner never has, so
@@ -468,15 +553,19 @@ Versions: `CFBundleShortVersionString` is `frontend/package.json`'s product
 version without the beta suffix (`0.2.0-beta.2` → `0.2.0`).
 `CFBundleVersion` is the workflow run number, so every upload is a new build.
 
-Environment `ios-release` (deployment branches: `main` only, no required
-reviewer), secrets:
+Environment `ios-release` (deployment branches: `main` only; **required
+reviewer: Sam**, because the API key has the Admin role), secrets:
 
 | Secret | Value |
 |---|---|
 | `APPLE_TEAM_ID` | the 10-character Team ID |
 | `APPLE_API_KEY` | App Store Connect API key ID |
 | `APPLE_API_ISSUER` | App Store Connect issuer ID (UUID) |
-| `APPLE_API_PRIVATE_KEY` | the `AuthKey_<key id>.p8` file. It may arrive as is, collapsed onto one line (a masked single-line prompt), or base64; the workflow rebuilds the PEM and checks it with `openssl` |
+| `APPLE_API_PRIVATE_KEY` | the `AuthKey_<key id>.p8` file. It may arrive as is, collapsed onto one line (a masked single-line prompt), or base64; the workflow rewrites it as a PEM file and checks it with `openssl` |
+
+With the reviewer, a run waits for approval twice: the `plan` job right after
+dispatch, and the `sign` job once the archive is built and checked. Approve the
+second only for a run you dispatched.
 
 #### After enrollment completes (Sam)
 
@@ -502,13 +591,17 @@ reviewer), secrets:
    cloud-managed distribution certificates). Download `AuthKey_<KEYID>.p8`; it
    can only be downloaded once. Note the Key ID and the Issuer ID shown above
    the list.
-5. **Environment and secrets**: an agent creates the environment, then
-   delivers each value via the Secret Bridge flow, so no value is printed or
-   kept in a chat. Sam pastes each value into the masked prompt.
+5. **Environment and secrets**: an agent creates the environment, with Sam as
+   its required reviewer, then delivers each value via the Secret Bridge flow,
+   so no value is printed or kept in a chat. Sam pastes each value into the
+   masked prompt.
 
    ```sh
-   gh api -X PUT repos/TinyCloudLabs/tinychat/environments/ios-release \
-     -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   # main only, and Sam must approve every job that uses it (self-review allowed: Sam dispatches the runs)
+   gh api -X PUT repos/TinyCloudLabs/tinychat/environments/ios-release --input - <<EOF
+   {"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true},
+    "reviewers": [{"type": "User", "id": $(gh api users/samgbafa --jq .id)}], "prevent_self_review": false}
+   EOF
    gh api -X POST repos/TinyCloudLabs/tinychat/environments/ios-release/deployment-branch-policies -f name=main -f type=branch
    for name in APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY; do
      secret-bridge request "$name" --reason "Exo TestFlight: ios-release environment secret"

@@ -2,27 +2,32 @@ name: iOS build (Exo)
 
 # The one Exo iOS release build, called by mobile.yml (CI: an unsigned dry run on every iOS change) and
 # ios-testflight.yml (signed, checked and uploaded to TestFlight), so CI exercises the release path even before any
-# Apple account exists. Only the steps marked `if: inputs.sign` are new in a TestFlight run.
+# Apple account exists. Two jobs, so the App Store Connect key is never on a runner that runs project or third-party
+# build code:
 #
-# What ships: the production frontend (`bun run build:frontend`, .env.production) bundled by `cap sync ios` with
-# EXO_DEV_SERVER_URL unset; the archive check refuses a capacitor.config.json with a server URL, a missing
-# public/index.html or privacy manifest, the wrong bundle id or versions, and the Debug-only smoke probe.
+# - archive (no environment, no secret, ever): the production frontend (`bun run build:frontend`, .env.production)
+#   bundled by `cap sync ios` with EXO_DEV_SERVER_URL unset, archived unsigned (CODE_SIGNING_ALLOWED=NO, no team). The
+#   archive check refuses a capacitor.config.json with a server URL, a missing public/index.html or privacy manifest,
+#   the wrong bundle id or versions, and the Debug-only smoke probe. The checked .xcarchive (ditto-zipped, so the
+#   executable bits survive) is handed to the sign job as a short-lived artifact; archive.log is uploaded for debugging.
+# - sign (sign: true: the `ios-release` environment; otherwise a dry run with no environment): checks out only
+#   scripts/release at the workflow commit and runs no project code. In a dry run it only downloads, unpacks and
+#   re-checks the archive, so CI proves the hand-off. Signed: "Verify signing provenance" first, then the API key is
+#   written and `xcodebuild -exportArchive` signs the app and its frameworks for App Store distribution with Xcode's
+#   cloud-managed certificate (-allowProvisioningUpdates creates the distribution certificate and App Store profile on
+#   first use; the team comes from ExportOptions.plist's teamID). scripts/release/ios-signing.sh verify-ipa then
+#   requires an App Store signature from APPLE_TEAM_ID before anything leaves the runner: mode `validate` asks App
+#   Store Connect to validate that .ipa; mode `upload` sends exactly that .ipa (`altool --upload-app`, its SHA-256
+#   re-checked first). Neither the .ipa nor any signing log is uploaded as an artifact (the repository is public);
+#   signing output goes to the job log only, where secrets are masked. Any failed check fails the build; there is no
+#   unsigned fallback.
+#
+# Signing at archive time instead would need a development certificate whose private key an ephemeral runner never
+# has, so every run would mint a new one until Apple's limit, plus a registered device for the development profile.
 #
 # Versions: scripts/release/ios-bundle-versions.mjs. CFBundleShortVersionString is the product version in
 # frontend/package.json without the beta suffix (0.2.0-beta.2 -> 0.2.0); CFBundleVersion is the caller's build
 # number (TestFlight: the run number). Both reach Info.plist as MARKETING_VERSION / CURRENT_PROJECT_VERSION.
-#
-# Signing (sign: true, ios-testflight.yml on main only): the job runs in the `ios-release` environment, which only main
-# can deploy to; "Verify signing provenance" re-checks that before anything else. The archive is always built
-# unsigned with no secret in the environment or on disk; the App Store Connect API key is written only after it, and
-# `xcodebuild -exportArchive` signs the app and its frameworks for App Store distribution with Xcode's cloud-managed
-# certificate (-allowProvisioningUpdates creates the distribution certificate and App Store profile on first use).
-# Signing at archive time instead would need a development certificate whose private key an ephemeral runner never
-# has, so every run would mint a new one until Apple's limit, plus a registered device for the development profile.
-# scripts/release/ios-signing.sh verify-ipa then requires an App Store signature from APPLE_TEAM_ID before anything
-# leaves the runner: mode `validate` only asks App Store Connect to validate that .ipa; mode `upload` exports the
-# same archive again with destination "upload" (xcodebuild's own uploader, as Xcode's Organizer does). Any failed
-# check fails the build; there is no unsigned fallback.
 
 on:
   workflow_call:
@@ -42,76 +47,41 @@ on:
     outputs:
       version:
         description: frontend/package.json version that was built
-        value: ${{ jobs.build.outputs.version }}
+        value: ${{ jobs.archive.outputs.version }}
       short-version:
         description: CFBundleShortVersionString of the build
-        value: ${{ jobs.build.outputs.short-version }}
+        value: ${{ jobs.archive.outputs.short-version }}
       build-number:
         description: CFBundleVersion of the build
-        value: ${{ jobs.build.outputs.build-number }}
+        value: ${{ jobs.archive.outputs.build-number }}
       signed:
         description: true only when the exported .ipa passed every App Store signing check
-        value: ${{ jobs.build.outputs.signed }}
+        value: ${{ jobs.sign.outputs.signed }}
       uploaded:
-        description: true only when the signed build was uploaded to App Store Connect
-        value: ${{ jobs.build.outputs.uploaded }}
+        description: true only when the verified .ipa was uploaded to App Store Connect
+        value: ${{ jobs.sign.outputs.uploaded }}
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: iOS release archive (${{ inputs.sign && format('signed, {0}', inputs.mode) || 'unsigned dry run' }})
+  archive:
+    name: iOS release archive (unsigned, no secrets)
     # Pinned like the desktop build: macos-26 runner, Xcode 26.6 (App Store uploads need a current SDK).
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; no required reviewer).
-    environment: ${{ inputs.sign && 'ios-release' || '' }}
+    # No environment: this job runs bun install, the Vite build, cap sync and xcodebuild with every build phase and
+    # Swift package, and no secret is in reach of any of them.
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      MODE: ${{ inputs.mode }}
     timeout-minutes: 60
     outputs:
       version: ${{ steps.versions.outputs.version }}
       short-version: ${{ steps.versions.outputs.short-version }}
       build-number: ${{ steps.versions.outputs.build-number }}
-      signed: ${{ steps.verify.outputs.signed || 'false' }}
-      uploaded: ${{ steps.upload.outputs.uploaded || 'false' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: ${{ inputs.sign && '0' || '1' }}
           persist-credentials: false
-
-      # Before any secret is referenced: only main's ios-testflight.yml, building a commit of main.
-      - name: Verify signing provenance
-        if: inputs.sign
-        env:
-          EXPECTED: ${{ github.repository }}/.github/workflows/ios-testflight.yml@refs/heads/main
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: |
-          fail() { echo "::error::Refusing to sign: $1"; exit 1; }
-          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
-            fail "signing runs only in $EXPECTED dispatched on main (got $GITHUB_EVENT_NAME, $GITHUB_REF, $WORKFLOW_REF)"
-          fi
-          case "$MODE" in upload | validate) ;; *) fail "mode must be upload or validate, got '$MODE'" ;; esac
-          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$WORKFLOW_SHA" origin/main || fail "workflow commit $WORKFLOW_SHA is not on main"
-          git merge-base --is-ancestor HEAD origin/main || fail "$(git rev-parse HEAD) is not on main"
-          echo "Signing $(git rev-parse HEAD) with $WORKFLOW_REF at $WORKFLOW_SHA ($MODE)"
-
-      # Before any build minutes are spent. The Team ID is public (every signed app carries it), so it is passed on
-      # to the archive as DEVELOPMENT_TEAM; the key itself is not written until the archive exists.
-      - name: Check signing secrets
-        if: inputs.sign
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-        run: |
-          scripts/release/ios-signing.sh check
-          echo "DEVELOPMENT_TEAM=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -141,7 +111,7 @@ jobs:
           BUILD_NUMBER: ${{ inputs.build-number }}
         run: node scripts/release/ios-bundle-versions.mjs --build-number "$BUILD_NUMBER"
 
-      # Unsigned, with no signing secret anywhere: the export step signs it.
+      # Unsigned and without a team: the sign job's export signs it (team from ExportOptions.plist).
       - name: Archive Exo for iOS
         working-directory: mobile/ios/App
         env:
@@ -151,7 +121,6 @@ jobs:
           if ! xcodebuild archive -project App.xcodeproj -scheme App -configuration Release \
             -destination "generic/platform=iOS" -archivePath "$ARCHIVE" \
             MARKETING_VERSION="$SHORT_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"} \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" >"$LOGS/archive.log" 2>&1; then
             grep -E 'error:' "$LOGS/archive.log" | head -40
             tail -60 "$LOGS/archive.log"
@@ -188,7 +157,114 @@ jobs:
             echo "Release archive of \`$(git rev-parse --short HEAD)\` with the bundled production frontend, privacy manifest and no dev server URL."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Written only now, after every build script and the compile have run.
+      # ditto keeps the bundle's symlinks, permissions and extended attributes (upload-artifact would drop them).
+      - name: Package the archive
+        run: ditto -c -k --sequesterRsrc --keepParent "$ARCHIVE" "$RUNNER_TEMP/Exo.xcarchive.zip"
+
+      # Unsigned, built by this public repository's code, so nothing in it is secret. Overwritten by a full re-run;
+      # "re-run failed jobs" signs this one again.
+      - name: Hand the archive to the sign job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-ios-xcarchive
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 3
+          path: ${{ runner.temp }}/Exo.xcarchive.zip
+
+      # No secret exists in this job, so its log can be public.
+      - name: Upload the archive log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-ios-archive-${{ inputs.build-number }}-logs
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+          path: ${{ runner.temp }}/ios-logs
+
+  sign:
+    name: ${{ inputs.sign && format('Sign and {0} (ios-release)', inputs.mode) || 'Sign (dry run, no secrets)' }}
+    needs: archive
+    runs-on: macos-26
+    # Signing secrets live only in this environment (deployment branches: main; add a required reviewer, it holds an
+    # App Store Connect Admin key: mobile/README.md, "iOS release"). This job checks out nothing but scripts/release
+    # at the workflow commit and runs no project code: no bun, no Capacitor, no xcodebuild build.
+    environment: ${{ inputs.sign && 'ios-release' || '' }}
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MODE: ${{ inputs.mode }}
+    timeout-minutes: 30
+    outputs:
+      signed: ${{ steps.verify.outputs.signed || 'false' }}
+      uploaded: ${{ steps.upload.outputs.uploaded || 'false' }}
+    steps:
+      # The only checkout: the release tooling from the workflow's own commit, with history for the provenance check.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/release
+          fetch-depth: ${{ inputs.sign && '0' || '1' }}
+          persist-credentials: false
+
+      # Before any secret is referenced: only main's ios-testflight.yml, signing an archive of a commit of main.
+      - name: Verify signing provenance
+        if: inputs.sign
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/ios-testflight.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          fail() { echo "::error::Refusing to sign: $1"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            fail "signing runs only in $EXPECTED dispatched on main (got $GITHUB_EVENT_NAME, $GITHUB_REF, $WORKFLOW_REF)"
+          fi
+          case "$MODE" in upload | validate) ;; *) fail "mode must be upload or validate, got '$MODE'" ;; esac
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$WORKFLOW_SHA" origin/main || fail "workflow commit $WORKFLOW_SHA is not on main"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || fail "the archived commit $GITHUB_SHA is not on main"
+          echo "Signing the archive of $GITHUB_SHA with $WORKFLOW_REF at $WORKFLOW_SHA ($MODE)"
+
+      - name: Check signing secrets
+        if: inputs.sign
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: scripts/release/ios-signing.sh check
+
+      - name: Require pinned Xcode
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          echo "ARCHIVE=$RUNNER_TEMP/Exo.xcarchive" >> "$GITHUB_ENV"
+
+      - name: Download the archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: exo-ios-xcarchive
+          path: ${{ runner.temp }}/xcarchive-download
+
+      # The archive job already checked its contents; this proves the hand-off kept the bundle intact.
+      - name: Unpack the archive
+        env:
+          SHORT_VERSION: ${{ needs.archive.outputs.short-version }}
+          BUILD_NUMBER: ${{ needs.archive.outputs.build-number }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          ditto -x -k "$RUNNER_TEMP/xcarchive-download/Exo.xcarchive.zip" "$RUNNER_TEMP"
+          app="$ARCHIVE/Products/Applications/App.app"
+          plist="$app/Info.plist"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = xyz.tinycloud.exo ] || fail "the archive is not xyz.tinycloud.exo"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$SHORT_VERSION" ] || fail "the archive is not version $SHORT_VERSION"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$BUILD_NUMBER" ] || fail "the archive is not build $BUILD_NUMBER"
+          test -x "$app/App" || fail "App.app/App lost its executable bit in the hand-off"
+          test -f "$ARCHIVE/Info.plist" || fail "the .xcarchive has no Info.plist"
+          echo "Exo $SHORT_VERSION ($BUILD_NUMBER) archive unpacked: $(du -sh "$ARCHIVE" | cut -f1)"
+
+      # Written only now, on a runner that never ran a build script.
       - name: Write the App Store Connect API key
         if: inputs.sign
         env:
@@ -197,7 +273,6 @@ jobs:
         run: |
           key=$(scripts/release/ios-signing.sh write-key "$RUNNER_TEMP/private_keys")
           echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
-          echo "API_PRIVATE_KEYS_DIR=$RUNNER_TEMP/private_keys" >> "$GITHUB_ENV"
 
       # A throwaway default keychain for the export's signing identity, removed at the end.
       - name: Create a temporary keychain
@@ -212,6 +287,7 @@ jobs:
           security default-keychain -s "$keychain"
           echo "EXO_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
 
+      # The team is ExportOptions.plist's teamID (the archive has none). Output goes to the masked job log only.
       - name: Export and sign for the App Store
         if: inputs.sign
         env:
@@ -219,15 +295,13 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          set -o pipefail
-          for destination in export upload; do
-            cat > "$RUNNER_TEMP/ExportOptions-$destination.plist" <<EOF
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>$destination</string>
+            <key>destination</key><string>export</string>
             <key>signingStyle</key><string>automatic</string>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
             <key>uploadSymbols</key><true/>
@@ -235,11 +309,9 @@ jobs:
           </dict>
           </plist>
           EOF
-          done
           xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$RUNNER_TEMP/export" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-export.plist" -allowProvisioningUpdates \
-            -authenticationKeyPath "$APPLE_API_KEY_PATH" -authenticationKeyID "$APPLE_API_KEY" -authenticationKeyIssuerID "$APPLE_API_ISSUER" \
-            2>&1 | tee "$LOGS/export.log"
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -allowProvisioningUpdates \
+            -authenticationKeyPath "$APPLE_API_KEY_PATH" -authenticationKeyID "$APPLE_API_KEY" -authenticationKeyIssuerID "$APPLE_API_ISSUER"
 
       - name: Verify the App Store signature
         id: verify
@@ -251,52 +323,49 @@ jobs:
           [ -n "$ipa" ] || { echo "::error::the export produced no .ipa"; exit 1; }
           ls -lh "$ipa"
           scripts/release/ios-signing.sh verify-ipa "$ipa"
-          echo "IPA=$ipa" >> "$GITHUB_ENV"
-          echo "signed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "ipa=$ipa"
+            echo "sha256=$(shasum -a 256 "$ipa" | cut -d' ' -f1)"
+            echo "signed=true"
+          } >> "$GITHUB_OUTPUT"
 
-      # App Store Connect's server-side checks without uploading (run from RUNNER_TEMP so altool finds the key).
+      # App Store Connect's server-side checks without uploading (run from RUNNER_TEMP so altool finds
+      # private_keys/AuthKey_<id>.p8).
       - name: Validate with App Store Connect
         if: inputs.sign && inputs.mode == 'validate'
         env:
+          IPA: ${{ steps.verify.outputs.ipa }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          set -o pipefail
           cd "$RUNNER_TEMP"
-          xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER" 2>&1 | tee "$LOGS/validate.log"
+          xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
 
+      # Exactly the .ipa verify-ipa passed: same path, same SHA-256. Never a second export.
       - name: Upload to TestFlight
         id: upload
         if: inputs.sign && inputs.mode == 'upload'
         env:
           SIGNED: ${{ steps.verify.outputs.signed }}
+          IPA: ${{ steps.verify.outputs.ipa }}
+          IPA_SHA256: ${{ steps.verify.outputs.sha256 }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          set -o pipefail
           if [ "$SIGNED" != true ]; then
             echo "::error::Refusing to upload: the build did not pass the App Store signing checks. Exo is never uploaded unsigned."
             exit 1
           fi
-          xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$RUNNER_TEMP/upload" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-upload.plist" -allowProvisioningUpdates \
-            -authenticationKeyPath "$APPLE_API_KEY_PATH" -authenticationKeyID "$APPLE_API_KEY" -authenticationKeyIssuerID "$APPLE_API_ISSUER" \
-            2>&1 | tee "$LOGS/upload.log"
+          if [ -z "$IPA_SHA256" ] || [ "$(shasum -a 256 "$IPA" | cut -d' ' -f1)" != "$IPA_SHA256" ]; then
+            echo "::error::Refusing to upload: $IPA is not the .ipa that passed verify-ipa"
+            exit 1
+          fi
+          cd "$RUNNER_TEMP"
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
           echo "uploaded=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload logs and the signed .ipa
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: exo-ios-${{ inputs.sign && 'signed' || 'unsigned' }}-${{ inputs.build-number }}-logs
-          if-no-files-found: ignore
-          retention-days: 14
-          path: |
-            ${{ runner.temp }}/ios-logs
-            ${{ runner.temp }}/export/*.ipa
-
-      - name: Remove the API key and keychain
+      - name: Remove the API key, keychain and export
         if: always() && inputs.sign
         run: |
-          rm -rf "$RUNNER_TEMP/private_keys"
+          rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/export"
           if [ -n "${EXO_KEYCHAIN:-}" ]; then security delete-keychain "$EXO_KEYCHAIN" || true; fi

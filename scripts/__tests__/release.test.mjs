@@ -1093,8 +1093,7 @@ test('verify-desktop-signing.sh rejects a missing app before running any check',
   assert.match(result.stdout, /::error::no app bundle at/);
 });
 
-// iOS (Exo mobile): TestFlight runs only from main, refuses cleanly without its secrets, archives without secrets and
-// uploads only a build that passed the App Store signing checks. CI runs the same build unsigned.
+// iOS (Exo mobile) release scripts.
 test('ios-bundle-versions.mjs: X.Y.Z from the product version, the build number as given', t => {
   const root = tempDir(t);
   write(root, 'frontend/package.json', `${JSON.stringify({ name: '@tinychat/frontend', version: '0.2.0-beta.2' })}\n`);
@@ -1149,85 +1148,275 @@ test('ios-signing.sh write-key accepts the .p8 as is, on one line or base64, and
   assert.equal(existsSync(join(dir, 'bad', 'AuthKey_XYZ9876543.p8')), false, 'a bad key is not left on disk');
 });
 
-test('TestFlight runs from main only, checks secrets first, archives without them and uploads only a verified build', () => {
+// Workflow structure helpers for the mobile release tests.
+// One job of a workflow: from `  <id>:` under `jobs:` up to the next job.
+function jobText(text, id) {
+  const jobs = text.slice(text.indexOf('\njobs:\n'));
+  const start = jobs.indexOf(`\n  ${id}:\n`);
+  assert.notEqual(start, -1, `no job ${id}`);
+  const rest = jobs.slice(start + 1);
+  const next = rest.slice(1).search(/\n {2}[\w-]+:\n/);
+  return next === -1 ? rest : rest.slice(0, next + 1);
+}
+const jobIds = text => [...text.slice(text.indexOf('\njobs:\n')).matchAll(/\n {2}([\w-]+):\n/g)].map(match => match[1]);
+// The steps of a job, one string each (steps sit at six spaces under `steps:`).
+const jobSteps = job => job.slice(job.indexOf('\n    steps:\n')).split(/\n(?= {6}- )/).slice(1);
+const stepNamed = (job, name) => {
+  const found = jobSteps(job).find(step => step.includes(`- name: ${name}\n`));
+  assert.ok(found, `no step ${name}`);
+  return found;
+};
+const withoutComments = text => text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
+// Anything that would run project or third-party build code on the runner.
+const PROJECT_CODE = /\bbunx?\b|setup-bun|setup-node|\bnpm\b|\bnpx\b|gradlew|\bcap (sync|copy|run)\b|xcodebuild (archive|build)|\bpod install\b|swift build|ios-bundle-versions/;
+
+// iOS (Exo mobile): TestFlight runs only from main and refuses cleanly without its secrets. The archive job runs all
+// build code with no environment and no secret; only the sign job, which checks out nothing but scripts/release at the
+// workflow commit, is in ios-release, and it uploads exactly the .ipa it verified. CI runs both jobs unsigned.
+test('TestFlight: secrets only in tooling-only jobs, the archive built with none, and exactly the verified .ipa uploaded', () => {
   const testflight = read(repo, '.github/workflows/ios-testflight.yml');
   assert.match(triggers('.github/workflows/ios-testflight.yml'), /^ {2}workflow_dispatch:\n {4}inputs:\n {6}mode:/m);
   assert.doesNotMatch(triggers('.github/workflows/ios-testflight.yml'), /^\s+(push|pull_request|schedule|workflow_run):/m);
-  assert.match(testflight, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/ios-testflight\.yml@refs\/heads\/main/);
-  assert.match(testflight, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
-  const plan = testflight.slice(testflight.indexOf('  plan:'), testflight.indexOf('  build:'));
+  assert.deepEqual(jobIds(testflight), ['plan', 'build', 'report']);
+  const plan = jobText(testflight, 'plan');
   assert.match(plan, /environment: ios-release/);
   assert.match(plan, /runs-on: ubuntu-latest/);
+  assert.match(plan, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/ios-testflight\.yml@refs\/heads\/main/);
+  assert.match(plan, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
   assert.ok(plan.indexOf('Require the TestFlight workflow from main') < plan.indexOf('scripts/release/ios-signing.sh check'));
-  assert.match(testflight, /  build:\n(?:.*\n)*?\s+needs: plan\n\s+uses: \.\/\.github\/workflows\/ios-build\.yml\n\s+with:\n(?:.*\n){1}\s+sign: true\n/);
+  assert.match(stepNamed(plan, 'Check out the release tooling'), /ref: \$\{\{ github\.workflow_sha \}\}\n\s+sparse-checkout: scripts\/release\n\s+persist-credentials: false/);
+  assert.doesNotMatch(withoutComments(plan), PROJECT_CODE);
+  assert.match(testflight, / {2}build:\n(?:.*\n)*?\s+needs: plan\n\s+uses: \.\/\.github\/workflows\/ios-build\.yml\n\s+with:\n(?:.*\n){1}\s+sign: true\n/);
+  assert.doesNotMatch(testflight, /secrets: inherit/);
 
   const build = read(repo, '.github/workflows/ios-build.yml');
   assert.match(triggers('.github/workflows/ios-build.yml'), /^ {2}workflow_call:/m);
-  assert.match(build, /environment: \$\{\{ inputs\.sign && 'ios-release' \|\| '' \}\}/);
-  assert.doesNotMatch(build, /continue-on-error/);
-  const steps = ['Verify signing provenance', 'Check signing secrets', 'Sync Capacitor', 'Archive Exo for iOS', 'Check the archive',
-    'Write the App Store Connect API key', 'Export and sign for the App Store', 'Verify the App Store signature', 'Upload to TestFlight'];
-  const order = steps.map(name => build.indexOf(`- name: ${name}\n`));
-  assert.ok(order.every(index => index !== -1), `steps: ${order}`);
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'provenance, secrets, archive and its checks, then key, export, verification, upload');
+  assert.deepEqual(jobIds(build), ['archive', 'sign']);
+  assert.doesNotMatch(build, /continue-on-error|DEVELOPMENT_TEAM|secrets: inherit/);
+
+  // The archive job: every build script, never an environment or a secret.
+  const archive = jobText(build, 'archive');
+  assert.doesNotMatch(withoutComments(archive), /environment:|secrets\.|vars\./);
+  const archiveOrder = ['Install JS deps', 'Build workspace packages and the production frontend', 'Sync Capacitor', 'Bundle versions',
+    'Archive Exo for iOS', 'Check the archive', 'Package the archive', 'Hand the archive to the sign job'].map(name => archive.indexOf(`- name: ${name}\n`));
+  assert.ok(archiveOrder.every(index => index !== -1), `archive steps: ${archiveOrder}`);
+  assert.deepEqual([...archiveOrder].sort((a, b) => a - b), archiveOrder, 'the archive is checked before it is handed over');
+  assert.match(stepNamed(archive, 'Archive Exo for iOS'), /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(stepNamed(archive, 'Sync Capacitor'), /env -u EXO_DEV_SERVER_URL/);
+  assert.match(stepNamed(archive, 'Check the archive'), /server\.url/);
+  assert.match(stepNamed(archive, 'Check the archive'), /PrivacyInfo\.xcprivacy/);
+  assert.match(stepNamed(archive, 'Package the archive'), /ditto -c -k --sequesterRsrc --keepParent "\$ARCHIVE"/);
+  assert.match(stepNamed(archive, 'Hand the archive to the sign job'), /name: exo-ios-xcarchive\n/);
+
+  // The sign job: ios-release only when signing, its one checkout is the release tooling, no project code, no artifact.
+  const sign = jobText(build, 'sign');
+  assert.match(sign, /\n {4}needs: archive\n/);
+  assert.match(sign, /environment: \$\{\{ inputs\.sign && 'ios-release' \|\| '' \}\}/);
+  assert.equal((sign.match(/uses: actions\/checkout@/g) ?? []).length, 1);
+  assert.match(stepNamed(sign, 'Check out the release tooling'), /ref: \$\{\{ github\.workflow_sha \}\}\n\s+sparse-checkout: scripts\/release\n(?:.*\n)?\s+persist-credentials: false/);
+  assert.doesNotMatch(withoutComments(sign), PROJECT_CODE);
+  assert.deepEqual([...new Set(withoutComments(sign).match(/[\w./-]*scripts\/release\/[\w.-]+/g))], ['scripts/release/ios-signing.sh']);
+  assert.doesNotMatch(sign, /upload-artifact|\btee\b/, 'neither the .ipa nor a signing log becomes a public artifact');
+  const signOrder = ['Check out the release tooling', 'Verify signing provenance', 'Check signing secrets', 'Download the archive', 'Unpack the archive',
+    'Write the App Store Connect API key', 'Create a temporary keychain', 'Export and sign for the App Store', 'Verify the App Store signature',
+    'Validate with App Store Connect', 'Upload to TestFlight'].map(name => sign.indexOf(`- name: ${name}\n`));
+  assert.ok(signOrder.every(index => index !== -1), `sign steps: ${signOrder}`);
+  assert.deepEqual([...signOrder].sort((a, b) => a - b), signOrder, 'provenance, secrets, archive, then key, export, verification, upload');
   assert.ok(build.indexOf('${{ secrets.') > build.indexOf('- name: Verify signing provenance\n'), 'no secret is referenced before the provenance check');
-  for (const name of ['Verify signing provenance', 'Check signing secrets', 'Write the App Store Connect API key', 'Export and sign for the App Store']) {
-    assert.match(build, new RegExp(`- name: ${name}\\n(?:\\s+id: \\w+\\n)?\\s+if: inputs\\.sign\\n`));
+  for (const step of jobSteps(sign).filter(text => text.includes('secrets.'))) {
+    assert.match(step, /\n\s+if: inputs\.sign(?: && inputs\.mode == '(?:upload|validate)')?\n/, step.split('\n')[0]);
   }
-  const step = name => build.slice(build.indexOf(`- name: ${name}\n`), build.indexOf('\n\n', build.indexOf(`- name: ${name}\n`)));
-  for (const name of ['Install JS deps', 'Build workspace packages and the production frontend', 'Sync Capacitor', 'Archive Exo for iOS']) {
-    assert.doesNotMatch(step(name), /secrets\./, name);
-  }
-  assert.match(step('Archive Exo for iOS'), /CODE_SIGNING_ALLOWED=NO/);
-  assert.match(step('Sync Capacitor'), /env -u EXO_DEV_SERVER_URL/);
-  assert.match(step('Check the archive'), /server\.url/);
-  assert.match(step('Check the archive'), /PrivacyInfo\.xcprivacy/);
-  const upload = step('Upload to TestFlight');
+  const provenance = stepNamed(sign, 'Verify signing provenance');
+  assert.match(provenance, /git merge-base --is-ancestor "\$WORKFLOW_SHA" origin\/main/);
+  assert.match(provenance, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/);
+  assert.match(provenance, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/ios-testflight\.yml@refs\/heads\/main/);
+
+  // One export (destination export, team from ExportOptions), and the upload sends that verified .ipa itself.
+  assert.equal((withoutComments(build).match(/xcodebuild -exportArchive/g) ?? []).length, 1);
+  assert.match(stepNamed(sign, 'Export and sign for the App Store'), /<key>destination<\/key><string>export<\/string>/);
+  assert.match(stepNamed(sign, 'Export and sign for the App Store'), /<key>teamID<\/key><string>\$APPLE_TEAM_ID<\/string>/);
+  assert.match(stepNamed(sign, 'Verify the App Store signature'), /scripts\/release\/ios-signing\.sh verify-ipa "\$ipa"/);
+  const upload = stepNamed(sign, 'Upload to TestFlight');
   assert.match(upload, /if: inputs\.sign && inputs\.mode == 'upload'/);
-  assert.ok(upload.indexOf('if [ "$SIGNED" != true ]; then') < upload.indexOf('xcodebuild -exportArchive'), 'the signed check precedes the upload');
-  assert.match(build, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
+  assert.match(upload, /IPA: \$\{\{ steps\.verify\.outputs\.ipa \}\}/);
+  assert.match(upload, /IPA_SHA256: \$\{\{ steps\.verify\.outputs\.sha256 \}\}/);
+  const altool = upload.indexOf('xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"');
+  assert.ok(altool !== -1, 'altool uploads $IPA');
+  assert.ok(upload.indexOf('if [ "$SIGNED" != true ]; then') < altool, 'the signed check precedes the upload');
+  assert.ok(upload.indexOf('!= "$IPA_SHA256"') < altool, 'the digest check precedes the upload');
+  assert.match(stepNamed(sign, 'Validate with App Store Connect'), /xcrun altool --validate-app -f "\$IPA"/);
+  assert.match(sign, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
+  assert.match(build, /value: \$\{\{ jobs\.sign\.outputs\.signed \}\}/);
 
   const mobile = read(repo, '.github/workflows/mobile.yml');
   assert.match(mobile, /uses: \.\/\.github\/workflows\/ios-build\.yml/);
   assert.doesNotMatch(mobile, /sign:/, 'CI builds stay unsigned');
 });
 
-// Android: only main's dispatched workflow reaches the upload key, PRs rehearse the same build with a throwaway key and
-// no secret, the Gradle build refuses an unsigned or live-reload release, and the signature is verified before upload.
-test('Android releases are signed from main only, verified before upload, and rehearsed on PRs without secrets', () => {
+test('ios-signing.sh verify-ipa refuses development, ad hoc and in-house (ProvisionsAllDevices) profiles', () => {
+  const script = read(repo, 'scripts/release/ios-signing.sh');
+  const verify = script.slice(script.indexOf('verify_ipa() {'));
+  assert.match(verify, /PlistBuddy -c 'Print :ProvisionedDevices' "\$profile" >\/dev\/null 2>&1; then\n\s+fail /);
+  assert.match(verify, /PlistBuddy -c 'Print :ProvisionsAllDevices' "\$profile" >\/dev\/null 2>&1; then\n\s+fail /);
+  assert.match(verify, /Entitlements:get-task-allow/);
+});
+
+// Android: the build job runs all build code with no environment and no secret and makes an unsigned release (the one
+// exception the Gradle gate allows). Only the sign job, which checks out nothing but scripts/release at the workflow
+// commit, is in android-release; it signs outside Gradle, against a certificate pinned in vars, and verifies before
+// upload. PRs rehearse all of it with a throwaway key and no secret.
+test('Android: the upload key only in tooling-only jobs, an unsigned build without secrets, signed and verified against the pinned certificate', () => {
   const rel = '.github/workflows/mobile-release-android.yml';
   const workflow = read(repo, rel);
   const on = triggers(rel);
   assert.match(on, /^ {2}workflow_dispatch:\n/m);
   assert.match(on, /^ {2}pull_request:\n/m);
   assert.doesNotMatch(on, /^ {2}(push|pull_request_target|workflow_run):/m);
-  assert.match(workflow, /environment: \$\{\{ github\.event_name == 'workflow_dispatch' && 'android-release' \|\| '' \}\}/);
-  assert.match(workflow, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/mobile-release-android\.yml@refs\/heads\/main/);
-  assert.match(workflow, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
-  assert.doesNotMatch(workflow, /continue-on-error/);
+  assert.doesNotMatch(workflow, /continue-on-error|secrets: inherit/);
+  assert.deepEqual(jobIds(workflow), ['plan', 'build', 'sign']);
+  // Every secret and variable reference is gated on workflow_dispatch, so a PR run never reads one.
+  const refs = workflow.match(/\$\{\{[^}]*\b(?:secrets|vars)\.[^}]*\}\}/g) ?? [];
+  assert.ok(refs.length >= 10, refs.join('\n'));
+  for (const ref of refs) assert.match(ref, /^\$\{\{ github\.event_name == 'workflow_dispatch' && (?:secrets|vars)\.[A-Z0-9_]+ \|\| [^}]+ \}\}$/, ref);
 
-  const steps = ['Require the release workflow from main', 'Check signing secrets', 'Build workspace packages and the production frontend',
-    'Sync Capacitor (bundled web app, no dev server)', 'Prepare the signing key', 'Build the signed AAB and APK', 'Verify the signed AAB and APK',
-    'Remove the signing key', 'Name the release files', 'Upload AAB + APK'];
-  const order = steps.map(name => workflow.indexOf(`- name: ${name}\n`));
+  const plan = jobText(workflow, 'plan');
+  assert.match(plan, /\n {4}if: github\.event_name == 'workflow_dispatch'\n/);
+  assert.match(plan, /\n {4}environment: android-release\n/);
+  assert.match(plan, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/mobile-release-android\.yml@refs\/heads\/main/);
+  assert.match(plan, /if \[ "\$GITHUB_REF" != refs\/heads\/main \] \|\| \[ "\$WORKFLOW_REF" != "\$EXPECTED" \]; then/);
+  assert.ok(plan.indexOf('Require the release workflow from main') < plan.indexOf('${{ github.event_name == \'workflow_dispatch\' && secrets.'));
+  assert.match(stepNamed(plan, 'Check signing secrets'), /run: scripts\/release\/android-signing\.sh check\n/);
+  assert.match(stepNamed(plan, 'Check signing secrets'), /vars\.ANDROID_UPLOAD_CERT_SHA256/);
+  assert.doesNotMatch(withoutComments(plan), PROJECT_CODE);
+
+  // The build job: bun, Capacitor and Gradle with no environment and nothing secret, unsigned by explicit override.
+  const build = jobText(workflow, 'build');
+  assert.match(build, /\n {4}needs: plan\n/);
+  assert.match(build, /needs\.plan\.result == 'success' \|\| \(github\.event_name == 'pull_request' && needs\.plan\.result == 'skipped'\)/);
+  assert.doesNotMatch(withoutComments(build), /environment:|secrets\.|vars\.|keytool|jarsigner|apksigner|ANDROID_KEY/);
+  const gradle = stepNamed(build, 'Build the unsigned AAB and APK');
+  assert.match(gradle, /EXO_UNSIGNED_RELEASE: "true"/);
+  assert.match(gradle, /run: \.\/gradlew --no-daemon bundleRelease assembleRelease --console=plain/);
+  assert.match(stepNamed(build, 'Sync Capacitor (bundled web app, no dev server)'), /EXO_DEV_SERVER_URL: ""/);
+  assert.match(stepNamed(build, 'Hand the unsigned build to the sign job'), /name: exo-android-unsigned\n/);
+
+  // The sign job: android-release only for releases, its one checkout is the release tooling, no project code.
+  const sign = jobText(workflow, 'sign');
+  assert.match(sign, /\n {4}needs: build\n/);
+  assert.match(sign, /\n {4}if: \$\{\{ !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
+  assert.match(sign, /environment: \$\{\{ github\.event_name == 'workflow_dispatch' && 'android-release' \|\| '' \}\}/);
+  assert.equal((sign.match(/uses: actions\/checkout@/g) ?? []).length, 1);
+  assert.match(stepNamed(sign, 'Check out the release tooling'), /ref: \$\{\{ github\.workflow_sha \}\}\n\s+sparse-checkout: scripts\/release\n\s+persist-credentials: false/);
+  assert.doesNotMatch(withoutComments(sign), PROJECT_CODE);
+  assert.deepEqual([...new Set(withoutComments(sign).match(/[\w./-]*scripts\/release\/[\w.-]+/g))], ['scripts/release/android-signing.sh', 'scripts/release/verify-android-release.sh']);
+  const order = ['Require the release workflow from main', 'Check out the release tooling', 'Download the unsigned build', 'Version',
+    'Sign the AAB and APK', 'Verify the signed AAB and APK', 'Name the release files', 'Upload AAB + APK'].map(name => sign.indexOf(`- name: ${name}\n`));
   assert.ok(order.every(index => index !== -1), `steps: ${order}`);
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'main and the secrets are checked first; verification passes before anything is uploaded');
-  assert.ok(workflow.indexOf('${{ secrets.') > workflow.indexOf('- name: Require the release workflow from main\n'), 'no secret is referenced before the main check');
-  for (const name of ['Require the release workflow from main', 'Check signing secrets', 'Name the release files', 'Upload AAB + APK']) {
-    assert.match(workflow, new RegExp(`- name: ${name.replace(/[+()]/g, '\\$&')}\\n\\s+if: env\\.RELEASE == 'true'\\n`));
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'main is checked first; verification passes before anything is uploaded');
+  assert.ok(sign.indexOf('secrets.') > sign.indexOf('- name: Require the release workflow from main\n'), 'no secret is referenced before the main check');
+  for (const name of ['Require the release workflow from main', 'Name the release files', 'Upload AAB + APK']) {
+    assert.match(stepNamed(sign, name), /\n\s+if: env\.RELEASE == 'true'\n/, name);
   }
-  const step = name => workflow.slice(workflow.indexOf(`- name: ${name}\n`), workflow.indexOf('\n\n', workflow.indexOf(`- name: ${name}\n`)));
-  for (const name of ['Install JS deps', 'Build workspace packages and the production frontend', 'Sync Capacitor (bundled web app, no dev server)']) {
-    assert.doesNotMatch(step(name), /secrets\./, `${name} must not see the upload key`);
-  }
-  assert.match(step('Sync Capacitor (bundled web app, no dev server)'), /EXO_DEV_SERVER_URL: ""/);
-  assert.match(step('Verify the signed AAB and APK'), /scripts\/release\/verify-android-release\.sh/);
+  // Releases verify against the pinned variable, never a digest taken from the keystore secret.
+  assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /CERT_SHA256: \$\{\{ github\.event_name == 'workflow_dispatch' && vars\.ANDROID_UPLOAD_CERT_SHA256 \|\| steps\.sign\.outputs\.rehearsal-cert-sha256 \}\}/);
+  assert.match(stepNamed(sign, 'Verify the signed AAB and APK'), /scripts\/release\/verify-android-release\.sh /);
 
-  const gradle = read(repo, 'mobile/android/app/build.gradle');
-  assert.match(gradle, /if \(missingReleaseSigning\.isEmpty\(\)\) \{\n\s+signingConfig signingConfigs\.release/);
-  assert.match(gradle, /task\.name == 'preReleaseBuild'\) \{\n\s+task\.dependsOn verifyExoRelease/);
-  assert.match(gradle, /versionName exoVersionName/);
-  assert.match(gradle, /parse\(rootProject\.file\('\.\.\/\.\.\/frontend\/package\.json'\)\)\.version/);
+  // Signing outside Gradle, passwords from the environment only.
+  const signing = read(repo, 'scripts/release/android-signing.sh');
+  assert.match(signing, /apksigner" sign --ks "\$ANDROID_KEYSTORE_FILE" --ks-key-alias "\$ANDROID_KEY_ALIAS" \\\n\s+--ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD/);
+  assert.match(signing, /jarsigner -keystore "\$ANDROID_KEYSTORE_FILE" -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEY_PASSWORD/);
+  assert.doesNotMatch(signing, /pass:\$|-storepass "|--ks-pass pass:/);
+
+  // The Gradle gate: signed by Gradle with all four inputs, or unsigned only with EXO_UNSIGNED_RELEASE=true and none.
+  const gate = read(repo, 'mobile/android/app/build.gradle');
+  assert.match(gate, /def signGradleRelease = !unsignedRelease && missingReleaseSigning\.isEmpty\(\)/);
+  assert.match(gate, /if \(signGradleRelease\) \{\n\s+signingConfig signingConfigs\.release/);
+  assert.match(gate, /if \(unsignedReleaseInput != null && unsignedReleaseInput != 'true'\) \{\n\s+throw new GradleException/);
+  assert.match(gate, /if \(unsigned\) \{\n\s+if \(!present\.isEmpty\(\)\) \{\n\s+throw new GradleException/);
+  assert.match(gate, /\} else \{\n\s+if \(!missing\.isEmpty\(\)\) \{\n\s+throw new GradleException\("Refusing to build an unsigned Exo release/);
+  assert.match(gate, /if \(server\?\.url\) \{/, 'the dev-server check applies to unsigned releases too');
+  assert.match(gate, /task\.name == 'preReleaseBuild'\) \{\n\s+task\.dependsOn verifyExoRelease/);
+  assert.match(gate, /versionName exoVersionName/);
+  assert.match(gate, /parse\(rootProject\.file\('\.\.\/\.\.\/frontend\/package\.json'\)\)\.version/);
+});
+
+// Run the release branch of the real "Sign the AAB and APK" step: without the pinned certificate it refuses before a
+// keystore is written or anything is signed.
+test('the Android sign step refuses a release without vars.ANDROID_UPLOAD_CERT_SHA256', t => {
+  const workflow = read(repo, '.github/workflows/mobile-release-android.yml');
+  const script = stepScript(jobText(workflow, 'sign'), 'Sign the AAB and APK');
+  const temp = tempDir(t);
+  const secrets = { ANDROID_KEYSTORE_B64: 'AAAA', ANDROID_KEYSTORE_PASSWORD: 'p', ANDROID_KEY_ALIAS: 'exo-upload', ANDROID_KEY_PASSWORD: 'p' };
+  const step = env => spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, RELEASE: 'true', RUNNER_TEMP: temp, GITHUB_OUTPUT: join(temp, 'out'), GITHUB_STEP_SUMMARY: join(temp, 'summary'), ...env },
+  });
+  const missing = step({ ...secrets, ANDROID_UPLOAD_CERT_SHA256: '' });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /::error::Android release signing is not set up: the android-release environment is missing ANDROID_UPLOAD_CERT_SHA256 /);
+  assert.equal(existsSync(join(temp, 'android-signing')), false, 'the key directory is removed');
+  const malformed = step({ ...secrets, ANDROID_UPLOAD_CERT_SHA256: 'AB:CD' });
+  assert.equal(malformed.status, 1);
+  assert.match(malformed.stdout, /::error::ANDROID_UPLOAD_CERT_SHA256 must be the upload certificate's SHA-256/);
+});
+
+test('android-signing.sh check names what is missing; sign refuses a key that is not the pinned certificate', t => {
+  const signing = (env, ...args) => spawnSync('bash', [join(repo, 'scripts/release/android-signing.sh'), ...args], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, ...env },
+  });
+  const none = signing({}, 'check');
+  assert.equal(none.status, 1);
+  assert.match(none.stdout, /is missing ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_UPLOAD_CERT_SHA256 /);
+  const good = { ANDROID_KEYSTORE_B64: 'x', ANDROID_KEYSTORE_PASSWORD: 'x', ANDROID_KEY_ALIAS: 'x', ANDROID_KEY_PASSWORD: 'x', ANDROID_UPLOAD_CERT_SHA256: 'AB:'.repeat(31) + 'AB' };
+  assert.equal(signing(good, 'check').status, 0);
+  assert.equal(signing(good, 'nope').status, 2);
+
+  const dir = tempDir(t);
+  for (const name of ['app-release-unsigned.apk', 'app-release-unsigned.aab']) writeFileSync(join(dir, name), 'not signed');
+  const args = ['sign', join(dir, 'app-release-unsigned.apk'), join(dir, 'app-release-unsigned.aab'), join(dir, 'signed'), 'ab'.repeat(32)];
+  assert.match(signing({}, 'sign', join(dir, 'missing.apk'), ...args.slice(2)).stdout, /::error::no unsigned APK at/);
+  assert.match(signing({}, ...args).stdout, /::error::ANDROID_KEYSTORE_FILE is required/);
+  if (spawnSync('keytool', ['-help']).error) return t.skip('keytool not installed');
+  const keystore = join(dir, 'upload.jks');
+  const key = { ANDROID_KEYSTORE_FILE: keystore, ANDROID_KEYSTORE_PASSWORD: 'throwaway-pass', ANDROID_KEY_ALIAS: 'exo-upload', ANDROID_KEY_PASSWORD: 'throwaway-pass' };
+  const made = spawnSync('keytool', ['-genkeypair', '-keystore', keystore, '-storetype', 'PKCS12', '-alias', 'exo-upload', '-keyalg', 'RSA', '-keysize', '2048',
+    '-validity', '1', '-dname', 'CN=release test', '-storepass:env', 'ANDROID_KEYSTORE_PASSWORD', '-keypass:env', 'ANDROID_KEYSTORE_PASSWORD'], { env: { ...process.env, ...key } });
+  assert.equal(made.status, 0, String(made.stderr));
+  const wrong = signing(key, ...args);
+  assert.equal(wrong.status, 1);
+  assert.match(wrong.stdout, /::error::the keystore's certificate is [0-9a-f]{64}, not the pinned upload certificate (?:ab){32} \(ANDROID_UPLOAD_CERT_SHA256\)\. Refusing to sign\./);
+  assert.equal(existsSync(join(dir, 'signed')), false, 'nothing is signed');
+  assert.match(signing({ ...key, ANDROID_KEYSTORE_PASSWORD: 'wrong' }, ...args).stdout, /::error::cannot open key ANDROID_KEY_ALIAS in the keystore/);
+});
+
+test('every workflow that runs the Gradle wrapper validates it first, runs it without a daemon, and the distribution is pinned', () => {
+  const runs = [];
+  for (const name of readdirSync(join(repo, '.github/workflows')).filter(file => /\.ya?ml$/.test(file))) {
+    const text = read(repo, `.github/workflows/${name}`);
+    for (const id of jobIds(text)) {
+      const job = jobText(text, id);
+      const calls = withoutComments(job).match(/\.\/gradlew\b.*/g) ?? [];
+      if (calls.length === 0) continue;
+      runs.push(`${name}:${id}`);
+      for (const call of calls) assert.match(call, /^\.\/gradlew --no-daemon /, `${name}:${id}: ${call}`);
+      const validation = job.indexOf('uses: gradle/actions/wrapper-validation@');
+      assert.ok(validation !== -1 && validation < job.indexOf('./gradlew'), `${name}:${id} validates the wrapper before running it`);
+    }
+  }
+  assert.deepEqual(runs.sort(), ['mobile-release-android.yml:build', 'mobile.yml:android']);
+  const properties = read(repo, 'mobile/android/gradle/wrapper/gradle-wrapper.properties');
+  assert.match(properties, /^distributionUrl=https\\:\/\/services\.gradle\.org\/distributions\/gradle-[\d.]+-(all|bin)\.zip$/m);
+  assert.match(properties, /^distributionSha256Sum=[0-9a-f]{64}$/m);
+});
+
+test('the Play listing icon is a 512 px 32-bit PNG', () => {
+  const png = readFileSync(join(repo, 'mobile/assets/play-store-icon.png'));
+  assert.equal(png.subarray(1, 4).toString('latin1'), 'PNG');
+  assert.equal(png.readUInt32BE(16), 512);
+  assert.equal(png.readUInt32BE(20), 512);
+  assert.deepEqual([png[24], png[25]], [8, 6], 'bit depth 8, color type 6 (RGBA)');
 });
 
 test('verify-android-release.sh rejects a missing APK before running any check', t => {
