@@ -109,12 +109,14 @@ class ExoBridgeViewController: CAPBridgeViewController {
     /// The CI HealthKit spike (mobile/scripts/ios-health-probe.sh) launches an ad-hoc signed build with
     /// SIMCTL_CHILD_EXO_HEALTH_PROBE=1. Once the smoke probe has seen React mount, this drives the Health plugin over
     /// the bridge the way the web app would, logging one `EXO_HEALTH_PROBE {"stage":…,"response":…}` line per step:
-    /// availability and status, the authorization request (the script answers the Health sheet, if it can), sample
-    /// data, a 7-day read and background delivery.
+    /// availability and status, a read-only authorization request (the product's), then the write request the
+    /// sample data needs (the script answers each Health sheet, if it can), sample data, a 7-day read and
+    /// background delivery. Before each request it logs `requesting-<stage>` so the script knows a sheet is up.
     private static let healthProbeSteps: [(stage: String, method: String, args: [String: Any])] = [
         ("availability", "availability", [:]),
         ("status", "authorizationStatus", [:]),
-        ("authorized", "requestAuthorization", ["sampleWrite": true]),
+        ("authorized-read", "requestAuthorization", [:]),
+        ("authorized-write", "requestAuthorization", ["sampleWrite": true]),
         ("inserted", "insertSampleData", [:]),
         ("read", "readDailySummaries", ["days": 7]),
         ("background", "enableBackgroundDelivery", ["types": ["steps"]]),
@@ -139,7 +141,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
             return
         }
         let step = Self.healthProbeSteps[index]
-        if step.method == "requestAuthorization" { logHealthProbe(stage: "requesting", response: "{}") }
+        if step.method == "requestAuthorization" { logHealthProbe(stage: "requesting-\(step.stage)", response: "{}") }
         let arguments: [String: Any] = ["method": step.method, "args": step.args]
         webView.callAsyncJavaScript(Self.healthProbeScript, arguments: arguments, in: nil, in: .page) { [weak self] result in
             guard let self = self else { return }

@@ -6,10 +6,11 @@
 # EXO_HEALTH_PROBE=1 and records what ExoBridgeViewController's HealthKit probe logs, one `EXO_HEALTH_PROBE {json}`
 # line per step: availability, authorization status, the authorization request, sample data, a 7-day read,
 # background delivery and the status afterwards. When AXe (https://github.com/cameroncooke/AXe) is installed it answers
-# the Health sheet ("Turn On All", then "Allow"); without it the request stays open and the later steps never run.
+# each Health sheet ("Turn On All", then "Allow", tapped by position); without it the first request stays open and the
+# later steps never run.
 #
 # Informational only (CI runs it with continue-on-error). Exits 0 when the 7-day read succeeded. Writes
-# entitlements.txt, console.log, probe.jsonl, sheet.png, after.png, ui-*.json and summary.md to <out-dir>.
+# entitlements.txt, console.log, probe.jsonl, sheet-*.png, after.png, axe.log and summary.md to <out-dir>.
 #
 # Usage (macOS with Xcode, jq):
 #   mobile/scripts/ios-health-probe.sh <App.app> <out-dir> [<device.txt written by ios-simulator-smoke.sh>]
@@ -47,8 +48,10 @@ xcrun simctl bootstatus "$udid" -b >/dev/null || { echo "::error::simulator $udi
   codesign -d --entitlements - "$app" 2>&1
   echo
   echo "## __TEXT,__entitlements section"
-  if segedit "$app/App" -extract __TEXT __entitlements "$out/entitlements-section.plist" >/dev/null 2>&1; then
-    plutil -p "$out/entitlements-section.plist" 2>&1 || cat "$out/entitlements-section.plist"
+  # otool -X prints the section's bytes as hex without addresses (arm64 slice: one byte per field).
+  otool -arch arm64 -X -s __TEXT __entitlements "$app/App" 2>/dev/null | tr -d ' \t\n' | xxd -r -p >"$out/entitlements-section.plist" 2>/dev/null
+  if plutil -p "$out/entitlements-section.plist" >/dev/null 2>&1; then
+    plutil -p "$out/entitlements-section.plist"
   else
     otool -l "$app/App" | grep -A4 -E 'sectname __entitlements' || echo "(no __entitlements section)"
   fi
@@ -84,44 +87,55 @@ log "launching $bundle_id with EXO_HEALTH_PROBE=1"
 SIMCTL_CHILD_EXO_HEALTH_PROBE=1 xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$out/console.log" 2>&1 &
 launcher=$!
 
-sheet="not reached"
-answered="no"
-if wait_for_stage requesting "$timeout_s"; then
-  sleep 5
-  xcrun simctl io "$udid" screenshot "$out/sheet.png" >/dev/null 2>&1 || true
-  if has_stage authorized; then
-    sheet="not shown (the request finished without a sheet)"
-  else
-    sheet="open"
-    if command -v axe >/dev/null 2>&1; then
-      axe describe-ui --udid "$udid" >"$out/ui-sheet.json" 2>&1 || true
-      # By accessibility label; if this AXe has no --label, by the element's frame from describe-ui.
-      tap() {
-        local label=$1 frame x y
-        axe tap --label "$label" --udid "$udid" >>"$out/axe.log" 2>&1 && return 0
-        frame=$(axe describe-ui --udid "$udid" 2>/dev/null | jq -c --arg l "$label" \
-          '[.. | objects | select((.AXLabel? // .label? // "") == $l) | (.frame // .AXFrame)] | map(select(. != null)) | first // empty' 2>/dev/null)
-        [ -n "$frame" ] || return 1
-        x=$(jq -r '(.x + .width / 2) | floor' <<<"$frame")
-        y=$(jq -r '(.y + .height / 2) | floor' <<<"$frame")
-        axe tap -x "$x" -y "$y" --udid "$udid" >>"$out/axe.log" 2>&1
-      }
-      if tap "Turn On All"; then
-        sleep 2
-        axe describe-ui --udid "$udid" >"$out/ui-turned-on.json" 2>&1 || true
-        if tap "Allow"; then answered="Turn On All + Allow (AXe)"; else answered="Turn On All only (Allow not found)"; fi
-      else
-        answered="no (AXe found no \"Turn On All\")"
-      fi
-    else
-      answered="no (AXe not installed)"
-    fi
+# The Health Access sheet is a remote view: AXe's accessibility queries cannot see into it ("No translation
+# object returned for simulator ... fullscreen dialog"), so it is answered by position. On iOS 26 the sheet puts
+# "Turn On All" at about 51% of the screen height (left side) and "Allow" at about 85.5% (centered), measured
+# from the iPhone 17 Pro screenshots. AXe taps in points; screenshots are in pixels (@3x on Pro phones).
+tap_at() { # tap_at <x fraction> <y fraction> <screenshot>
+  local w h scale
+  w=$(sips -g pixelWidth "$3" 2>/dev/null | awk '/pixelWidth/ { print $2 }')
+  h=$(sips -g pixelHeight "$3" 2>/dev/null | awk '/pixelHeight/ { print $2 }')
+  [ -n "$w" ] && [ -n "$h" ] || return 1
+  scale=3
+  [ "$w" -lt 1000 ] && scale=2
+  axe tap -x "$(awk -v w="$w" -v f="$1" -v s="$scale" 'BEGIN { printf "%d", w * f / s }')" \
+    -y "$(awk -v h="$h" -v f="$2" -v s="$scale" 'BEGIN { printf "%d", h * f / s }')" --udid "$udid" >>"$out/axe.log" 2>&1
+}
+
+sheets=()
+answer_sheet() { # answer_sheet <name>: the probe's requesting-<name> stage, answered by <name>
+  local name=$1 shot
+  if ! wait_for_stage "requesting-$name" "$timeout_s"; then
+    sheets+=("$name: request never reached")
+    return 1
   fi
-  log "sheet: $sheet; answered: $answered"
-  wait_for_stage done 90 || log "the probe did not finish"
-else
-  log "no 'requesting' stage within ${timeout_s}s"
-fi
+  sleep 5
+  shot="$out/sheet-$name.png"
+  xcrun simctl io "$udid" screenshot "$shot" >/dev/null 2>&1 || true
+  if has_stage "$name"; then
+    sheets+=("$name: no sheet (the request finished on its own)")
+    return 0
+  fi
+  if ! command -v axe >/dev/null 2>&1; then
+    sheets+=("$name: sheet open, not answered (AXe not installed)")
+    return 1
+  fi
+  axe describe-ui --udid "$udid" >"$out/ui-$name.json" 2>&1 || true
+  tap_at 0.20 0.5095 "$shot" || true
+  sleep 2
+  xcrun simctl io "$udid" screenshot "$out/sheet-$name-on.png" >/dev/null 2>&1 || true
+  tap_at 0.50 0.855 "$shot" || true
+  if wait_for_stage "$name" 30; then
+    sheets+=("$name: sheet answered (Turn On All, Allow)")
+  else
+    sheets+=("$name: sheet open, taps did not answer it")
+    return 1
+  fi
+}
+
+answer_sheet authorized-read && answer_sheet authorized-write
+wait_for_stage done 90 || log "the probe did not finish"
+log "sheets: ${sheets[*]}"
 
 xcrun simctl io "$udid" screenshot "$out/after.png" >/dev/null 2>&1 || true
 probe_lines >"$out/probe.jsonl"
@@ -135,7 +149,9 @@ stage() { jq -c --arg s "$1" 'select(.stage == $s) | .response' "$out/probe.json
 {
   echo "### HealthKit in the Simulator, ad-hoc signed (health spike, TC-525)"
   echo
-  echo "Device: $device, runtime \`${runtime##*.}\`. Health sheet: $sheet. Answered: $answered."
+  echo "Device: $device, runtime \`${runtime##*.}\`."
+  echo
+  printf -- '- Health sheet %s\n' "${sheets[@]}"
   echo
   echo "Entitlements in the binary:"
   echo
@@ -145,7 +161,7 @@ stage() { jq -c --arg s "$1" 'select(.stage == $s) | .response' "$out/probe.json
   echo
   echo "| Step | Response |"
   echo "|---|---|"
-  for s in availability status authorized inserted read background status-after; do
+  for s in availability status authorized-read authorized-write inserted read background status-after; do
     r=$(stage "$s" | cut -c1-600)
     echo "| $s | \`${r:-(not reached)}\` |"
   done
