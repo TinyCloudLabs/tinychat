@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Health spike (TC-525): connect-client's manifest says minSdk 26, the app's is 24. HealthPlugin calls it only
+         when Health Connect reports itself available, which needs Android 9+. Raising minSdk to 26 would make this
+         override unnecessary (voice-note upload needs 26 already); that is a product call, not this spike's. The
+         health permissions and Health Connect's intents are declared for debug builds only:
+         src/debug/AndroidManifest.xml. -->
+    <uses-sdk tools:overrideLibrary="androidx.health.connect.client" />
 
     <application
         android:allowBackup="true"

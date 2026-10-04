@@ -149,6 +149,8 @@ jobs:
           test -f "$app/public/index.html" || fail "the bundled web app (public/index.html) is missing"
           jq -e '(.server.url // null) == null' "$app/capacitor.config.json" >/dev/null || fail "capacitor.config.json has a server.url: a dev server build, not the bundled app"
           if grep -a -q EXO_SMOKE "$app/App"; then fail "the Release binary contains the Debug-only smoke probe"; fi
+          # Health spike (TC-525): HealthKit code and entitlements are Debug-only until the App ID has the capability.
+          if otool -L "$app/App" | grep -q HealthKit; then fail "the Release binary links HealthKit (mobile/docs/health-spike.md)"; fi
           echo "Exo $(value CFBundleShortVersionString) ($(value CFBundleVersion)), $(value CFBundleIdentifier), $(du -sh "$app" | cut -f1)"
           ls "$app/Frameworks"
           {

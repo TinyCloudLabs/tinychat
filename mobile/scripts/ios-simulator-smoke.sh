@@ -152,6 +152,11 @@ loads=$(grep -a -c 'Loading app at capacitor://localhost' "$out/console.log" || 
   echo
   echo "Probe: \`${probe:-none}\`"
   echo
+  # Health spike (TC-525), informational: what HealthKit says to this unsigned build.
+  if [ -n "$probe" ] && jq -e '.healthHeader == true' >/dev/null 2>&1 <<<"$probe"; then
+    echo "Health plugin (not gated): \`$(jq -c '.health // null' <<<"$probe")\`"
+    echo
+  fi
   echo "Capacitor log (\`console.log\`):"
   echo
   echo '```'
