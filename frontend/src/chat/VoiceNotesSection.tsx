@@ -459,7 +459,7 @@ async function saveRecording(
   }
 }
 
-interface PendingRun {
+export interface PendingRun {
   total: number;
   left: VoiceNoteRecording[];
   saved: VoiceNoteRecording[];
@@ -468,8 +468,11 @@ interface PendingRun {
 
 let pendingRunInFlight: Promise<PendingRun> | null = null;
 
-/** Retry every recording still on the device, oldest first, one at a time. Single-flight. */
-function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
+/**
+ * Retry every recording still on the device, oldest first, one at a time. Single-flight: the
+ * card, the chat screen's bar and the app's save after sign-in (PendingVoiceNotesSaver) share it.
+ */
+export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   if (pendingRunInFlight) return pendingRunInFlight;
   pendingRunInFlight = (async () => {
     const { recordings } = await VoiceNotes.listPending();
