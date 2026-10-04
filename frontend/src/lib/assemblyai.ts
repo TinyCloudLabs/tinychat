@@ -405,24 +405,30 @@ export function createHostedAssemblyAiClient(config: {
       const partSize = Math.min(created.part_size, 1024 * 1024);
       const parts = Math.max(1, Math.ceil(file.size / partSize));
       options.onProgress?.(0, file.size);
-      for (let index = 0; index < parts; index++) {
-        const part = file.slice(index * partSize, Math.min(file.size, (index + 1) * partSize));
-        for (let attempt = 0; ; attempt++) {
-          try {
-            await request(`/hosted/uploads/${encodeURIComponent(uploadId)}/parts/${index}`, {
-              method: "PUT",
-              body: part,
-              timeoutMs: 60_000,
-              signal: options.signal,
-            });
-            break;
-          } catch (err) {
-            const transient = err instanceof AssemblyAiError && err.kind === "network";
-            if (!transient || attempt >= PART_RETRY_DELAYS_MS.length || options.signal?.aborted) throw err;
-            await sleep(PART_RETRY_DELAYS_MS[attempt]!);
+      try {
+        for (let index = 0; index < parts; index++) {
+          const part = file.slice(index * partSize, Math.min(file.size, (index + 1) * partSize));
+          for (let attempt = 0; ; attempt++) {
+            try {
+              await request(`/hosted/uploads/${encodeURIComponent(uploadId)}/parts/${index}`, {
+                method: "PUT",
+                body: part,
+                timeoutMs: 60_000,
+                signal: options.signal,
+              });
+              break;
+            } catch (err) {
+              const transient = err instanceof AssemblyAiError && err.kind === "network";
+              if (!transient || attempt >= PART_RETRY_DELAYS_MS.length || options.signal?.aborted) throw err;
+              await sleep(PART_RETRY_DELAYS_MS[attempt]!);
+            }
           }
+          options.onProgress?.(Math.min(file.size, (index + 1) * partSize), file.size);
         }
-        options.onProgress?.(Math.min(file.size, (index + 1) * partSize), file.size);
+      } catch (err) {
+        // Free the account's one upload slot (and its share of the daily allowance) at once, not in an hour.
+        void request(`/hosted/uploads/${encodeURIComponent(uploadId)}`, { method: "DELETE" }).catch(() => {});
+        throw err;
       }
       return uploadId;
     },

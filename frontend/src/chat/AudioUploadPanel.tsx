@@ -107,20 +107,20 @@ const AssemblyAiDisclosure: FC<{ mode: AssemblyAiKeyMode }> = ({ mode }) =>
       <p>Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.</p>
     </div>
   ) : (
-  <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
-    <p>
-      This file goes from this device to <strong>AssemblyAI</strong> under your own API key and{" "}
-      <a href={ASSEMBLYAI_TERMS_URL} target="_blank" rel="noopener noreferrer" className="underline">
-        AssemblyAI&apos;s terms
-      </a>
-      . The file does not pass through TinyChat&apos;s server, and AssemblyAI is not part of TinyCloud&apos;s
-      private transcription.
-    </p>
-    <p>
-      After the transcript is saved to your TinyCloud space, Exo deletes the copy at AssemblyAI, including the
-      uploaded file. To do that, Exo&apos;s server forwards your key to AssemblyAI once; it never stores or logs it.
-    </p>
-  </div>
+    <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+      <p>
+        This file goes from this device to <strong>AssemblyAI</strong> under your own API key and{" "}
+        <a href={ASSEMBLYAI_TERMS_URL} target="_blank" rel="noopener noreferrer" className="underline">
+          AssemblyAI&apos;s terms
+        </a>
+        . The file does not pass through TinyChat&apos;s server, and AssemblyAI is not part of TinyCloud&apos;s
+        private transcription.
+      </p>
+      <p>
+        After the transcript is saved to your TinyCloud space, Exo deletes the copy at AssemblyAI, including the
+        uploaded file. To do that, Exo&apos;s server forwards your key to AssemblyAI once; it never stores or logs it.
+      </p>
+    </div>
   );
 
 function stageText(job: UploadState): string {

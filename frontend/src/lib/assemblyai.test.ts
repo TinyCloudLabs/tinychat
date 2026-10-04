@@ -166,12 +166,13 @@ describe("TinyCloud's AssemblyAI account (hosted client)", () => {
     expect(progress).toEqual([0, MiB, 2 * MiB, 2 * MiB + 10]);
   });
 
-  test("an abort stops the upload: no part is sent after it", async () => {
+  test("an abort stops the upload: no part is sent after it, and the upload is released at once", async () => {
     const file = new Blob([new Uint8Array(3 * MiB)]);
     const controller = new AbortController();
     let puts = 0;
-    const { c } = hosted((url, init) => {
+    const { c, calls } = hosted((url, init) => {
       if (url.endsWith("/hosted/uploads")) return json(201, { upload_id: "up1", part_size: MiB });
+      if (init.method === "DELETE") return new Response(null, { status: 204 });
       puts++;
       if (puts === 1) controller.abort();
       if (init.signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -180,6 +181,8 @@ describe("TinyCloud's AssemblyAI account (hosted client)", () => {
     const err = (await c.upload(file, { signal: controller.signal }).catch((e) => e)) as AssemblyAiError;
     expect(err).toBeInstanceOf(AssemblyAiError);
     expect(puts).toBe(1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.map((x) => `${x.init.method} ${x.url}`)).toContain("DELETE https://api.example/api/transcriber/assemblyai/hosted/uploads/up1");
   });
 
   test("the account's limits and outages read as retryable or not, never as a key problem", async () => {
