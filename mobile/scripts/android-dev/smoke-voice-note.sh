@@ -19,8 +19,10 @@ $ADB shell pm grant xyz.tinycloud.exo android.permission.POST_NOTIFICATIONS 2>/d
 ready=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++;
   if (location.pathname !== "/chat/connectors" && n % 10 === 1) { history.pushState({}, "", "/chat/connectors"); dispatchEvent(new PopStateEvent("popstate")); }
   const card = document.querySelector("[data-testid=voice-note-record]"), busy = document.querySelector("[data-testid=voice-note-stop]");
-  if (((card || busy) && !/Loading your voice notes/.test(document.body.innerText)) || n > 150) { clearInterval(t);
-    r(JSON.stringify({ ok: !!card, recording: !!busy, items: document.querySelectorAll("[data-testid=voice-note-item]").length, signedOut: /Sign in to start/.test(document.body.innerText) })); } }, 300); })')
+  if (((card || busy) && !/Loading your voice notes/.test(document.body.textContent)) || n > 400) { clearInterval(t);
+    r(JSON.stringify({ ok: !!card, recording: !!busy, items: document.querySelectorAll("[data-testid=voice-note-item]").length, signedOut: /Sign in to start/.test(document.body.textContent) })); } }, 300); })')
+# A cold start reads several TinyCloud tables one call at a time (2-4 s each), so allow ~2 minutes.
+echo "$ready" | json '["ok"]' >/dev/null 2>&1 || fail "unexpected page state: $ready"
 [ "$(echo "$ready" | json '["recording"]')" = "False" ] || fail "a recording is already in progress; stop it in the app first"
 [ "$(echo "$ready" | json '["ok"]')" = "True" ] || fail "voice notes card not reachable (signed out? $ready)"
 before=$(echo "$ready" | json '["items"]')
