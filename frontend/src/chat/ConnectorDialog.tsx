@@ -90,6 +90,7 @@ import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   capacitorNativeOAuthPorts,
+  googleAuthorizeSurface,
   nativeGoogleOAuthEnabled,
   nativeOAuthState,
   startNativeOAuth,
@@ -108,6 +109,7 @@ import {
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
+  googleConsentCopyForSystemBrowser,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
 import {
@@ -791,6 +793,10 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
   const busy =
     phase === "exchange" || phase === "save-token" || phase === "initial-sync";
+  // Inside the Exo app: the system browser, or (while this build keeps it off) an
+  // explanation in place of "Continue with Google". Never a popup there.
+  const authorizeSurface = googleAuthorizeSurface();
+  const consentCopy = autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY;
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
@@ -1218,9 +1224,13 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           </DialogDescription>
         </DialogHeader>
 
-        {phase === "authorize" && (
+        {phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}
+        {phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (
           <>
-            <AuthorizePanel copy={autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY} error={error} />
+            <AuthorizePanel
+              copy={authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy}
+              error={error}
+            />
             {autojoin && <label className="flex items-start gap-2 text-xs">
               <input type="checkbox" checked={custodyConsent} onChange={(event) => setCustodyConsent(event.target.checked)} />
               <span>{GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY.consentCheckbox}</span>
@@ -1249,6 +1259,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
 
         <OAuthConnectFooter
           phase={phase}
+          canAuthorize={authorizeSurface !== "unavailable-in-app"}
           authorizeDisabled={autojoin && !custodyConsent}
           onAuthorize={handleAuthorize}
           onCancelAuthorize={handleCancelAuthorize}
@@ -1295,6 +1306,17 @@ const AuthorizePanel: FC<{
       </p>
     )}
   </div>
+);
+
+/** Inside the Exo app while this build keeps Google sign-in off: said up front, nothing offered (TC-522). */
+const NativeUnavailablePanel: FC = () => (
+  <p
+    data-testid="google-connect-unavailable-in-app"
+    className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground"
+  >
+    <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+    <span>{formatOAuthError({ kind: "native-unavailable", message: "" })}</span>
+  </p>
 );
 
 const WaitCallbackPanel: FC<{ systemBrowser: boolean }> = ({ systemBrowser }) => (
@@ -1485,15 +1507,22 @@ const OAuthFailedPanel: FC<{ error: OAuthErrorState }> = ({ error }) => (
 );
 
 const OAuthConnectFooter: FC<{
+  /** False inside the Exo app while this build keeps Google sign-in off: Close only. */
+  canAuthorize: boolean;
   authorizeDisabled?: boolean;
   phase: OAuthConnectPhase;
   onAuthorize: () => void;
   onCancelAuthorize: () => void;
   onClose: () => void;
   onStopSync: () => void;
-}> = ({ phase, authorizeDisabled, onAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
+}> = ({ phase, canAuthorize, authorizeDisabled, onAuthorize, onCancelAuthorize, onClose, onStopSync }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-    {phase === "authorize" && (
+    {phase === "authorize" && !canAuthorize && (
+      <Button size="sm" onClick={onClose}>
+        Close
+      </Button>
+    )}
+    {phase === "authorize" && canAuthorize && (
       <>
         <Button variant="outline" size="sm" onClick={onClose}>
           Cancel

@@ -97,6 +97,8 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
+import { QuickVoiceNote } from "./chat/QuickVoiceNote";
+import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
@@ -104,6 +106,7 @@ import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
 import {
   ChevronDownIcon,
+  MicIcon,
   PanelLeftIcon,
   PlugIcon,
   SettingsIcon,
@@ -200,6 +203,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [voiceNoteOpen, setVoiceNoteOpen] = useState(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -716,6 +720,17 @@ export function App() {
   // still resolve — they are replaced with the canonical address below.
   const legacyMeetings = location.pathname.endsWith("/chat/meetings");
 
+  // TC-522: the one-tap voice note, inside the Exo mobile app only. Offered
+  // wherever the Voice notes card is NOT on screen (Connectors has its own
+  // Record and picks a running recording up), so only one view of the
+  // recorder is ever mounted. Leaving for Connectors, or signing out, closes it.
+  const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
+  const quickVoiceNoteAvailable =
+    voiceNotesInApp && isReady && !LOCAL_VALIDATION && !showConnectors && !shareToken;
+  useEffect(() => {
+    if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
+  }, [quickVoiceNoteAvailable]);
+
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
   // queue next (the headless drainer or a Connectors sync) publishes into the
@@ -836,6 +851,20 @@ export function App() {
           <span className="hidden sm:inline-flex">
             <ThemeToggle />
           </span>
+          {quickVoiceNoteAvailable && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Record a voice note"
+              aria-pressed={voiceNoteOpen}
+              onClick={() => setVoiceNoteOpen(true)}
+              className="h-11 shrink-0 gap-1.5 px-3 md:h-8"
+              data-testid="header-voice-note"
+            >
+              <MicIcon className="size-4" />
+              Voice note
+            </Button>
+          )}
           {isReady && (
             <Button
               variant="outline"
@@ -855,6 +884,16 @@ export function App() {
           )}
         </div>
       </header>
+
+      {voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
+        <QuickVoiceNote
+          tcw={tcw}
+          backendUrl={BACKEND_URL}
+          sessionStore={sessionStoreRef.current}
+          onClose={() => setVoiceNoteOpen(false)}
+          onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}
+        />
+      )}
 
       {LOCAL_VALIDATION && (
         <div role="status" className="border-b px-4 py-2 text-sm">

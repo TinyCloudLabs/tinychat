@@ -12,7 +12,7 @@
 // recorder itself; when it stops there, its "autoStopped" event is saved exactly
 // like a Stop, and the card says it stopped at the limit.
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { FileTextIcon, Loader2Icon, MicIcon, PlayIcon, RefreshCwIcon, SquareIcon } from "lucide-react";
@@ -492,10 +492,20 @@ function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   return pendingRunInFlight;
 }
 
+/** The chat screen's one-tap voice note (QuickVoiceNote.tsx) is this same controller with a compact view. */
 interface ControllerProps {
   tcw: TinyCloudWeb;
   backendUrl?: string;
   sessionStore?: SessionStore;
+  /**
+   * The chat screen's one-tap voice note (TC-522): start recording as soon as this mounts,
+   * unless a recording is already running (that one is picked up, as after a reload).
+   */
+  autoStart?: boolean;
+  /** A stopped recording was saved to the space. */
+  onSaved?: (recording: VoiceNoteRecording) => void;
+  /** Another view of the same recorder (the chat screen's bar); the card by default. */
+  render?: (view: VoiceNotesViewProps) => ReactNode;
 }
 
 const HIDDEN_SNAPSHOT: VoiceNoteTranscriberSnapshot = {
@@ -524,8 +534,8 @@ export function transcriptionProps(
   };
 }
 
-function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps) {
-  const [phase, setPhase] = useState<RecorderPhase>("idle");
+function VoiceNotesController({ tcw, backendUrl, sessionStore, autoStart, onSaved, render }: ControllerProps) {
+  const [phase, setPhase] = useState<RecorderPhase>(autoStart ? "starting" : "idle");
   const [mic, setMic] = useState<{ state: MicState; reason: MicStateReason }>({ state: "idle", reason: null });
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -686,12 +696,13 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
     if (outcome.saved) {
       await refresh();
       transcriber?.noteSaved(recording, outcome.audio ?? undefined);
+      onSaved?.(recording);
     } else if (outcome.failure !== null && mounted.current) {
       // The audio stays on the device; nothing is lost if the save failed.
       setPending((current) => [...current.filter((r) => r.id !== recording.id), recording]);
       setError(`Recorded, but saving to your space failed: ${outcome.failure}`);
     }
-  }, [refresh, tcw, transcriber]);
+  }, [onSaved, refresh, tcw, transcriber]);
 
   const onStop = useCallback(async () => {
     setPhase("stopping");
@@ -751,10 +762,24 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
     setPlaying({ sourceId, src: url, percent: null });
   }, [stopPlayback, tcw]);
 
+  // One tap from the chat screen records at once; a recording already running is left to the
+  // mount-time pickup. Once per mount (StrictMode's second effect run included).
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || autoStarted.current) return;
+    autoStarted.current = true;
+    void VoiceNotes.status()
+      .then((status) => status.state === "idle", () => true)
+      .then((idle) => {
+        if (idle && mounted.current) void onRecord();
+      });
+  }, [autoStart, onRecord]);
+
   const transcription = transcriptionProps(transcriber, snapshot);
 
   return (
-    <VoiceNotesView
+    <VoiceNotesSurface
+      render={render}
       phase={phase}
       mic={mic}
       elapsedMs={startedAt === null ? 0 : now - startedAt}
@@ -775,6 +800,11 @@ function VoiceNotesController({ tcw, backendUrl, sessionStore }: ControllerProps
       transcription={transcription}
     />
   );
+}
+
+/** The card, or another view of the same recorder (the chat screen's bar). */
+function VoiceNotesSurface({ render, ...view }: VoiceNotesViewProps & Pick<ControllerProps, "render">) {
+  return render ? <>{render(view)}</> : <VoiceNotesView {...view} />;
 }
 
 /** Renders nothing outside the Exo mobile app. */

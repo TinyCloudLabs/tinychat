@@ -12,6 +12,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
+import {
+  consentCopyText,
+  GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
+  GOOGLE_MEET_CONSENT_COPY,
+  googleConsentCopyForSystemBrowser,
+} from "@/lib/connectors/consentCopy";
 import { CONNECTORS } from "@/lib/connectors/registry";
 import type { ConnectorConnection } from "@/lib/connectors/types";
 
@@ -306,6 +312,38 @@ describe("Google Meet OAuth connect variant", () => {
     const nativeBranch = authorize.slice(0, authorize.indexOf("authorizeInSystemBrowser(nativePorts);"));
     expect(nativeBranch).toContain("if (!nativeGoogleOAuthEnabled()) {");
     expect(nativeBranch).toContain('setError({ kind: "native-unavailable", message: "" });');
+  });
+
+  test("inside the app with native OAuth off, the dialog explains instead of offering Continue with Google (TC-522)", () => {
+    const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
+    expect(connectHalf).toContain("const authorizeSurface = googleAuthorizeSurface();");
+    // No consent copy, no custody checkbox: the explanation alone…
+    expect(render).toContain('{phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}');
+    expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (');
+    const panel = connectHalf.slice(connectHalf.indexOf("const NativeUnavailablePanel"), connectHalf.indexOf("const WaitCallbackPanel"));
+    expect(panel).toContain('formatOAuthError({ kind: "native-unavailable", message: "" })');
+    expect(dialog).toContain("Connecting Google isn’t available in the Exo app yet.");
+    // …and a footer with Close only.
+    expect(render).toContain('canAuthorize={authorizeSurface !== "unavailable-in-app"}');
+    const footer = connectHalf.slice(connectHalf.indexOf("const OAuthConnectFooter"), connectHalf.indexOf("const Emphasized"));
+    const closeOnly = footer.slice(footer.indexOf('{phase === "authorize" && !canAuthorize && ('), footer.indexOf('{phase === "authorize" && canAuthorize && ('));
+    expect(closeOnly).toContain("Close");
+    expect(closeOnly).not.toContain("Continue with Google");
+  });
+
+  test("the app's consent copy never says popup window; every claim stays word for word (TC-522)", () => {
+    const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
+    expect(render).toContain('authorizeSurface === "system-browser" ? googleConsentCopyForSystemBrowser(consentCopy) : consentCopy');
+    const inApp = googleConsentCopyForSystemBrowser(GOOGLE_MEET_CONSENT_COPY);
+    expect(GOOGLE_MEET_CONSENT_COPY.intro).toContain("in a popup window");
+    expect(inApp.intro).not.toMatch(/popup/i);
+    expect(inApp.intro).toContain("You'll sign in with Google in your browser and approve");
+    expect(consentCopyText(inApp)).not.toMatch(/popup/i);
+    expect(inApp.bullets).toEqual(GOOGLE_MEET_CONSENT_COPY.bullets);
+    expect(inApp.disconnectNote).toBe(GOOGLE_MEET_CONSENT_COPY.disconnectNote);
+    expect(inApp.variant).toBe(GOOGLE_MEET_CONSENT_COPY.variant);
+    // The autojoin text never mentioned a popup, and stays identical.
+    expect(googleConsentCopyForSystemBrowser(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY)).toEqual(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY);
   });
 
   test("closing or cancelling the dialog also ends a native attempt", () => {
