@@ -8,7 +8,8 @@
 //   6. outside the native app the section renders nothing;
 //   7. transcription is offered only when available to this build AND account, and only after the
 //      one-time private cloud consent; a hidden or still-checking engine shows nothing at all;
-//   8. each note shows its transcript, its progress, or its failure (with Retry when it can help).
+//   8. each note shows its transcript, its progress, or its failure (with Retry when it can help);
+//   9. a recording near its length limit shows the limit, and one stopped there says so (TC-517).
 
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -17,6 +18,9 @@ import {
   VoiceNotesSection,
   VoiceNotesView,
   formatDuration,
+  formatLimit,
+  limitNoticeText,
+  micStatusText,
   transcriptionProps,
   type VoiceNoteTranscriptionProps,
   type VoiceNotesViewProps,
@@ -112,11 +116,49 @@ describe("VoiceNotesView", () => {
   test("saved notes list with duration, and the open one gets a player", () => {
     const html = render({
       notes: [note()],
-      playing: { sourceId: "rec-1", src: "data:audio/mp4;base64,AAAA" },
+      playing: { sourceId: "rec-1", src: "blob:capacitor://localhost/0f1e" },
     });
     expect(html).toContain('data-source-id="rec-1"');
     expect(html).toContain("0:12");
     expect(html).toContain('data-testid="voice-note-player"');
+    expect(html).toContain('src="blob:capacitor://localhost/0f1e"');
+  });
+
+  test("a long note shows how much of its audio has loaded", () => {
+    const html = render({ notes: [note()], playing: { sourceId: "rec-1", src: null, percent: 41 } });
+    expect(html).toContain("Loading audio… 41%");
+    expect(html).not.toContain('data-testid="voice-note-player"');
+  });
+});
+
+describe("the recording length limit (TC-517)", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  test("the card says how long a note can be", () => {
+    expect(render()).toContain("up to 60 minutes");
+  });
+
+  test("the limit shows only in the last five minutes", () => {
+    const recording = { state: "recording", reason: null } as const;
+    expect(micStatusText("recording", recording, 54 * 60_000, HOUR)).toBe("Recording 54:00");
+    expect(micStatusText("recording", recording, 55 * 60_000, HOUR)).toBe("Recording 55:00 of 60:00");
+    expect(micStatusText("recording", { state: "silenced", reason: "os_silenced" }, 59 * 60_000, HOUR)).toContain("Recording 59:00 of 60:00, but");
+    expect(render({ phase: "recording", mic: recording, elapsedMs: 58 * 60_000 + 5_000, maxDurationMs: HOUR })).toContain("Recording 58:05 of 60:00");
+  });
+
+  test("a note stopped at the limit says so once the card is idle again", () => {
+    expect(limitNoticeText(HOUR)).toBe("Stopped at the 60-minute limit.");
+    expect(formatLimit(15_000)).toBe("15-second");
+    expect(formatLimit(90_000)).toBe("90-second");
+    const idle = render({ limitNotice: limitNoticeText(HOUR) });
+    expect(idle).toContain('data-testid="voice-note-limit"');
+    expect(idle).toContain("Stopped at the 60-minute limit.");
+    // While it saves the status line says so, and the notice is already there.
+    expect(render({ phase: "saving", limitNotice: limitNoticeText(HOUR) })).toContain("Stopped at the 60-minute limit.");
+    // A long note's save shows how much is stored.
+    expect(render({ phase: "saving", savePercent: 40 })).toContain("Saving to your TinyCloud space… 40%");
+    // A new recording clears it (the controller resets it), and it never shows while recording.
+    expect(render({ phase: "recording", mic: { state: "recording", reason: null }, limitNotice: "x" })).not.toContain('data-testid="voice-note-limit"');
   });
 });
 

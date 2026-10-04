@@ -33,7 +33,13 @@ $H/smoke-voice-note.sh                     # PASS/FAIL voice-note round trip
 `smoke-voice-note.sh` grants the mic permission. It records through the app, plays a speech clip
 into the emulator mic (`inject-audio.sh`) and stops. Then it waits for the note to be saved to
 TinyCloud and listed, reads the stored audio back through the app's player, and checks it contains
-speech (duration > 2 s, mean > -45 dB).
+speech (duration > 2 s, mean > -45 dB). The player loads the note part by part from TinyCloud into an
+object URL; the script fetches that `blob:` URL in the page to measure it.
+
+`SMOKE_LIMIT_MS=15000 smoke-voice-note.sh` checks the recording limit instead of Stop: it lowers the
+limit for that run (the app's `exo.voiceNotes.maxDurationMs` localStorage override, which can only
+lower the 60-minute cap and is removed on exit), lets the native recorder stop itself, and requires
+the "Stopped at the 15-second limit." notice, a saved note, and stored audio no longer than the limit.
 
 All settings live in `env.sh` and can be overridden from the environment: `EXO_AVD`,
 `EXO_EMULATOR_PORT`, `EXO_VITE_PORT`, `EXO_DEVTOOLS_PORT`, and `EXO_STATE` (default

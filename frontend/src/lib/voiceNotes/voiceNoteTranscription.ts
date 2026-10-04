@@ -45,6 +45,7 @@ import {
 } from "../privateCloud";
 import { nativeHttpFileUploadSupported } from "./nativeVoiceNotes";
 import {
+  MAX_ENCODED_BYTES_PER_SECOND,
   prepareTranscriptionAudio,
   VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS,
   VoiceNoteAudioError,
@@ -54,6 +55,7 @@ import {
   loadVoiceNoteAudio,
   readVoiceNoteForTranscription,
   saveVoiceNoteTranscript,
+  VOICE_NOTE_AUDIO_TOO_LARGE,
   type VoiceNoteAudio,
   type VoiceNoteTranscriptSave,
 } from "./voiceNoteStore";
@@ -914,8 +916,14 @@ export async function transcribeVoiceNote(args: {
 
   const loadAudio = async (): Promise<VoiceNoteAudio> => {
     if (args.audio) return args.audio;
-    const res = await loadVoiceNoteAudio(tcw, sourceId);
-    if (!res.ok) throw new Error(`Could not read the note's audio: ${res.error.message}`);
+    // Bounded like the decode: a note over the phone's limit is refused from its manifest, unread.
+    const res = await loadVoiceNoteAudio(tcw, sourceId, { maxBytes: VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS * MAX_ENCODED_BYTES_PER_SECOND });
+    if (!res.ok) {
+      if (res.error.code === VOICE_NOTE_AUDIO_TOO_LARGE) {
+        throw new VoiceNoteAudioError("recording_too_long_for_phone", "This note is too long to transcribe from the phone.");
+      }
+      throw new Error(`Could not read the note's audio: ${res.error.message}`);
+    }
     return res.data;
   };
   const save = async (prepared: VoiceNoteTranscriptSave) => {

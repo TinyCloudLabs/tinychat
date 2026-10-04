@@ -3,7 +3,8 @@
 # up. Fails unless, within SMOKE_TIMEOUT seconds:
 #   - the debug-only probe in ExoBridgeViewController logs `EXO_SMOKE {json}` with the bundled web app at
 #     capacitor://localhost, platform "ios", React mounted into #root, the VoiceNotes plugin visible to JS and
-#     its status() answering over the bridge with state "idle";
+#     its status() answering over the bridge with state "idle" and the 60-minute recording limit, and its
+#     readAudioChunk() refusing a missing recording with "not_found";
 #   - the app is still running SMOKE_SETTLE seconds later, and left no crash report.
 # Always writes screenshot.png, console.log (the app's stdout/stderr: Capacitor's "⚡️" lines and the WebView
 # console), unified.log (os_log of the App process), any crash reports and summary.md to <out-dir>.
@@ -137,6 +138,8 @@ check '.platform == "ios"' 'Capacitor platform is "ios"'
 check '.mounted == true' "React mounted into #root"
 check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes plugin registered and visible to JS"
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
+check '.voiceNotesStatus.maxDurationMs == 3600000' "VoiceNotes reports the 60-minute recording limit"
+check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
 loads=$(grep -a -c 'Loading app at capacitor://localhost' "$out/console.log" || true)
 [ "${loads:-0}" -le 1 ] || fail "the web app was loaded $loads times (two bridges?)"
 
