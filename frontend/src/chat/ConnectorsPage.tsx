@@ -2,7 +2,6 @@ import { lazy, Suspense } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { healthSpikeEnabled } from "@/lib/health/nativeHealth";
 
 import { ConnectorsCard } from "./ConnectorsCard";
 import { ConnectorsTabs, type ConnectorsTab } from "./connectorsNav";
@@ -10,9 +9,9 @@ import { LibraryPage } from "./LibraryPage";
 import { TranscriberSection } from "./TranscriberSection";
 import { VoiceNotesSection } from "./VoiceNotesSection";
 
-// Health spike (TC-525): development-only, and only in builds with VITE_EXO_HEALTH_SPIKE=true. The module is a
-// separate chunk that normal builds never load.
-const HealthSpikeSection = healthSpikeEnabled()
+// Health spike (TC-525): development-only, and only in builds with VITE_EXO_HEALTH_SPIKE=true (the rule of
+// healthSpikeEnabled, written out so Vite can inline it: a normal build drops the card's chunk entirely).
+const HealthSpikeSection = import.meta.env.VITE_EXO_HEALTH_SPIKE === "true"
   ? lazy(() => import("./HealthSpikeSection").then((m) => ({ default: m.HealthSpikeSection })))
   : null;
 

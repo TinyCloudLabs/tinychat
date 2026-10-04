@@ -131,7 +131,7 @@ export interface HealthPlugin {
 
 export const Health = registerPlugin<HealthPlugin>("Health");
 
-/** The spike's build flag. Off (unset) in every normal build. */
+/** The spike's build flag. Off (unset) in every normal build. ConnectorsPage inlines the same check. */
 export function healthSpikeEnabled(env: { VITE_EXO_HEALTH_SPIKE?: string } = import.meta.env): boolean {
   return env.VITE_EXO_HEALTH_SPIKE === "true";
 }
