@@ -17,6 +17,7 @@ import {
   type PublicError,
 } from "../services/private-cloud-transcription.js";
 import {
+  CHANNEL_MODES,
   CONTENT_TYPES,
   LANGUAGE_RE,
   MAX_RECORDING_BYTES,
@@ -67,7 +68,6 @@ export interface PrivateCloudTranscriptionRouterOptions {
   log?: (line: string, alert: boolean) => void;
 }
 
-const CHANNEL_MODES: ReadonlySet<string> = new Set(["separate", "mixed"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const MAX_CHANNEL_LABEL_LENGTH = 64;
 const DEFAULT_LIST_LIMIT = 20;
@@ -111,7 +111,7 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
     body.language = language;
   }
   if (channel_mode !== undefined) {
-    if (typeof channel_mode !== "string" || !CHANNEL_MODES.has(channel_mode)) return "invalid_request";
+    if (typeof channel_mode !== "string" || !(CHANNEL_MODES as readonly string[]).includes(channel_mode)) return "invalid_request";
     body.channel_mode = channel_mode;
   }
   if (channel_labels !== undefined) {

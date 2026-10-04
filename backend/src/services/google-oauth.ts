@@ -29,6 +29,21 @@ export const GOOGLE_AUTOJOIN_SCOPES = `${GOOGLE_MEET_SCOPES} ${GOOGLE_CALENDAR_S
 /** The arming flag. Mirrors `connectorWebhooksEnabled()` (index.ts :140-142) exactly. */
 export const GOOGLE_MEET_OAUTH_ENABLED_ENV = "GOOGLE_MEET_OAUTH_ENABLED";
 
+/**
+ * Whether `/callback` may return a `native.`-tagged flow to the Exo app's private-use deep link
+ * (TC-521). OFF unless exactly "true". A private-use scheme can be claimed by any app, and the
+ * exchange accepts any signed-in session, so an app that starts its OWN flow and captures the return
+ * could redeem a victim's consent (RFC 8252 §8.6). Turn this on only once the return is a claimed
+ * https link (Android App Links / iOS Universal Links) verified for Exo's signing identity.
+ */
+export const GOOGLE_OAUTH_NATIVE_RETURN_ENV = "GOOGLE_OAUTH_NATIVE_RETURN";
+
+export function googleOAuthNativeReturnEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env[GOOGLE_OAUTH_NATIVE_RETURN_ENV] === "true";
+}
+
 export function googleMeetOAuthEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {

@@ -41,6 +41,14 @@ import {
   DEFAULT_TITLE,
   type ThreadDoc,
 } from "../lib/threadStore";
+import {
+  deleteCanvas,
+  isCanvasPromoted,
+  loadCanvasState,
+  notifyCanvasChanged,
+  recordPromotedChatMessage,
+} from "../lib/conversationCanvasStore";
+import { activePathItems, type ConversationCanvas } from "./canvas/model";
 import { historyPrefetch, setPrefetchFetcher } from "../lib/historyPrefetch";
 import { privateMemoryContext, runPrivateMemoryExtraction } from "./privateAgentMemory";
 import type { PrivateAgentAccess } from "./useAgentEnablement";
@@ -125,6 +133,8 @@ export interface ChatRuntimeDeps {
   summarize: (opts: { model: string; messages: ChatMessage[] }) => Promise<string>;
   /** Context window (tokens) for a model, falling back to DEFAULT_CONTEXT_TOKENS. */
   contextTokensFor: (modelId: string) => number;
+  /** The Canvas of a chat switched to Conversation Canvas; null for every other chat. */
+  getPromotedCanvas?: (threadId: string) => Promise<ConversationCanvas | null>;
 }
 
 // ── Receipt + completion handoff (per-thread; see pendingHandoff.ts) ──
@@ -270,7 +280,7 @@ const RECEIPT_COMPUTE_TIMEOUT_MS = 1500;
  * order so MessageRepository.import never throws "parent not found" on
  * partial/legacy data. Drop any item lacking a message id.
  */
-function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
+function repositoryFromDoc(doc: Pick<ThreadDoc, "messages">): ExportedMessageRepository {
   const valid = doc.messages.filter(
     (it) => typeof (it.message as { id?: unknown })?.id === "string",
   );
@@ -295,6 +305,11 @@ function repositoryFromDoc(doc: ThreadDoc): ExportedMessageRepository {
   }));
   const headId = (valid[valid.length - 1].message as { id: string }).id;
   return { headId, messages };
+}
+
+/** The Canvas active branch as the chat shows it (the same items the chat history holds). */
+export function repositoryFromCanvas(canvas: ConversationCanvas): ExportedMessageRepository {
+  return repositoryFromDoc({ messages: activePathItems(canvas) });
 }
 
 /**
@@ -442,14 +457,23 @@ export function createHistoryAdapter(
 
       if (!origin) throw new Error("Cannot persist a message without a captured turn origin.");
       const firstInsert = role === "user" && selection.needsFirstInsert(origin);
+      const persist = async () => {
+        // The chat history stays the one history every reader uses. A chat
+        // switched to Canvas also records the message in its Canvas first
+        // (additive, so a Canvas failure saves nothing and overwrites
+        // nothing); other chats never touch Canvas.
+        const recorded = await recordPromotedChatMessage(tcw, threadId, item);
+        await appendMessage(tcw, threadId, item, origin!.model);
+        if (recorded) notifyCanvasChanged(threadId);
+      };
       const retryFirstInsert = firstInsert && origin
-        ? () => appendMessage(tcw, threadId, item, origin!.model)
+        ? () => persist()
         : undefined;
       if (firstInsert && origin) {
         selection.markFirstAppend(origin, true, false, retryFirstInsert);
       }
       try {
-        await appendMessage(tcw, threadId, item, origin.model);
+        await persist();
         if (firstInsert) selection.markFirstAppend(origin, false);
         if (role === "user") selection.confirmAppend(origin, true);
       } catch (error) {
@@ -644,7 +668,9 @@ function useThreadListAdapter(
   return useMemo<RemoteThreadListAdapter>(
     () => ({
       async list() {
-        const summaries = await listThreads(tcw);
+        // The account's Canvas state is read once with the thread list, so a
+        // failure surfaces here rather than in a send.
+        const [summaries] = await Promise.all([listThreads(tcw), loadCanvasState(tcw)]);
         selection.setKnownThreadIds(summaries.map((thread) => thread.id));
         return {
           threads: summaries.map((t) => ({
@@ -672,6 +698,7 @@ function useThreadListAdapter(
         // no-op
       },
       async delete(remoteId: string) {
+        if (await isCanvasPromoted(tcw, remoteId)) await deleteCanvas(tcw, remoteId);
         await deleteThread(tcw, remoteId);
       },
       async generateTitle(remoteId: string) {

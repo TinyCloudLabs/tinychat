@@ -1,6 +1,9 @@
 package xyz.tinycloud.exo.voicenotes;
 
 import android.Manifest;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Build;
 import android.util.Base64;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -13,8 +16,8 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONException;
 
@@ -22,20 +25,34 @@ import org.json.JSONException;
  * JS bridge for native voice notes. Contract (shared with iOS and the TS
  * definitions in frontend/src/lib/voiceNotes/nativeVoiceNotes.ts):
  *
- *   start()              → { id, startedAt }
- *   stop()               → { id, startedAt, durationMs, mimeType, sizeBytes,
- *                            silencedMs, silencedEvents, noSignalMs }
- *   status()             → { state, reason, id?, elapsedMs }
- *   readAudio({ id })    → { id, mimeType, base64 }
- *   deleteAudio({ id })  → {}
- *   listPending()        → { recordings: [stop() result, ...] } still on the device
- *   events: "micState" { state, reason, at }, "level" { level }
+ *   start({ maxDurationMs? })  → { id, startedAt, maxDurationMs }
+ *   stop()                     → { id, startedAt, durationMs, mimeType, sizeBytes,
+ *                                  silencedMs, silencedEvents, noSignalMs }
+ *   status()                   → { state, reason, id?, elapsedMs, maxDurationMs, androidSdkInt }
+ *   readAudioChunk({ id, offset, length })
+ *                              → { id, offset, base64, bytesRead, size, eof }
+ *   deleteAudio({ id })        → {}
+ *   listPending()              → { recordings: [stop() result, ...] } still on the device
+ *   events: "micState" { state, reason, at }, "level" { level },
+ *           "autoStopped" { reason: "max_duration", maxDurationMs, at, recording: stop() result | null }
+ *
+ * A recording stops itself at maxDurationMs (VoiceRecorder.MAX_DURATION_MS,
+ * or less when start asks for less): micState goes idle with reason
+ * "max_duration" and "autoStopped" carries the result, which is also pending
+ * (listPending) until the web layer saves it, exactly like a manual stop.
+ * Audio crosses the bridge one chunk at a time, never the whole file.
  */
 @CapacitorPlugin(
     name = "VoiceNotes",
-    permissions = { @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO }) }
+    permissions = {
+        @Permission(alias = "microphone", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "notifications", strings = { Manifest.permission.POST_NOTIFICATIONS })
+    }
 )
 public class VoiceNotesPlugin extends Plugin {
+
+    private static final String PREFS = "xyz.tinycloud.exo.voicenotes";
+    private static final String PREF_NOTIFICATIONS_ASKED = "notificationPermissionAsked";
 
     private VoiceRecorder recorder;
 
@@ -58,6 +75,18 @@ public class VoiceNotesPlugin extends Plugin {
                 event.put("level", level);
                 notifyListeners("level", event);
             }
+
+            @Override
+            public void onAutoStopped(VoiceRecorder.Result result, long maxDurationMs) {
+                JSObject event = new JSObject();
+                event.put("reason", VoiceRecorder.REASON_MAX_DURATION);
+                event.put("maxDurationMs", maxDurationMs);
+                event.put("at", System.currentTimeMillis());
+                event.put("recording", result == null ? JSObject.NULL : describe(result));
+                // Retained until the webview listens: a reload mid-save still hears it (and
+                // listPending() has the recording regardless).
+                notifyListeners("autoStopped", event, true);
+            }
         });
     }
 
@@ -67,16 +96,49 @@ public class VoiceNotesPlugin extends Plugin {
             requestPermissionForAlias("microphone", call, "afterMicPermission");
             return;
         }
-        startRecording(call);
+        startWithMic(call);
     }
 
     @PermissionCallback
     private void afterMicPermission(PluginCall call) {
         if (getPermissionState("microphone") == PermissionState.GRANTED) {
-            startRecording(call);
+            startWithMic(call);
         } else {
             call.reject("Microphone permission denied", "permission_denied");
         }
+    }
+
+    /**
+     * Android 13+ hides the recording notification until the app holds
+     * POST_NOTIFICATIONS. Ask once, at the first Record after the mic is
+     * granted. The answer never blocks recording: denied, the foreground
+     * service still runs (listed in the Task Manager) and the OS mic indicator
+     * still shows; only the notification is hidden.
+     */
+    private void startWithMic(PluginCall call) {
+        if (shouldAskForNotifications()) {
+            preferences().edit().putBoolean(PREF_NOTIFICATIONS_ASKED, true).apply();
+            requestPermissionForAlias("notifications", call, "afterNotificationPermission");
+            return;
+        }
+        startRecording(call);
+    }
+
+    @PermissionCallback
+    private void afterNotificationPermission(PluginCall call) {
+        startRecording(call);
+    }
+
+    private boolean shouldAskForNotifications() {
+        return (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            getPermissionState("notifications") != PermissionState.GRANTED &&
+            !preferences().getBoolean(PREF_NOTIFICATIONS_ASKED, false)
+        );
+    }
+
+    private SharedPreferences preferences() {
+        return getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     private void startRecording(PluginCall call) {
@@ -84,10 +146,11 @@ public class VoiceNotesPlugin extends Plugin {
             // Foreground first: Android 14+ only lets a microphone-type service
             // start while the app is visible, which it is (the user just tapped).
             VoiceNoteService.start(getContext());
-            recorder.start();
+            recorder.start(VoiceRecorder.clampMaxDurationMs(number(call, "maxDurationMs")));
             JSObject ret = new JSObject();
             ret.put("id", recorder.getId());
             ret.put("startedAt", recorder.getStartedAtMs());
+            ret.put("maxDurationMs", recorder.getMaxDurationMs());
             call.resolve(ret);
         } catch (IllegalStateException e) {
             call.reject("A voice note is already recording", "already_recording");
@@ -105,22 +168,15 @@ public class VoiceNotesPlugin extends Plugin {
         }
         try {
             VoiceRecorder.Result result = recorder.stop();
-            JSObject ret = new JSObject();
-            ret.put("id", result.id);
-            ret.put("startedAt", result.startedAtMs);
-            ret.put("durationMs", result.durationMs);
-            ret.put("mimeType", VoiceRecorder.MIME_TYPE);
-            ret.put("sizeBytes", result.file.length());
-            ret.put("silencedMs", result.silencedMs);
-            ret.put("silencedEvents", result.silencedEvents);
-            ret.put("noSignalMs", result.noSignalMs);
-            // Until the web layer confirms the save (deleteAudio), the sidecar
-            // lets listPending() hand the recording back after a failed upload
-            // or an app restart.
-            writeSidecar(result.id, ret);
-            call.resolve(ret);
+            VoiceRecorder.writeSidecar(getContext(), result);
+            call.resolve(describe(result));
         } catch (IllegalStateException e) {
-            call.reject("The recording captured no audio", e.getMessage());
+            if ("not_recording".equals(e.getMessage())) {
+                // The limit stopped it first; "autoStopped" carries that recording.
+                call.reject("No voice note is recording", "not_recording");
+            } else {
+                call.reject("The recording captured no audio", e.getMessage());
+            }
         } finally {
             VoiceNoteService.stop(getContext());
         }
@@ -133,29 +189,59 @@ public class VoiceNotesPlugin extends Plugin {
         ret.put("reason", recorder.getReason());
         ret.put("id", recorder.getId());
         ret.put("elapsedMs", recorder.elapsedMs());
+        ret.put("maxDurationMs", recorder.getMaxDurationMs());
+        // The webview offers voice-note transcription only from API 26: below it Capacitor's
+        // native HTTP cannot send a file body (it needs java.util.Base64).
+        ret.put("androidSdkInt", Build.VERSION.SDK_INT);
         call.resolve(ret);
     }
 
+    /** The most one readAudioChunk call returns, whatever it asks for (it crosses the bridge as base64). */
+    private static final int MAX_CHUNK_BYTES = 4 * 1024 * 1024;
+
+    /**
+     * Up to `length` bytes of a recording from `offset`, as base64. The web layer
+     * reads a note part by part (1 MiB, the size of one stored part) so neither
+     * side ever holds the whole file as one string.
+     */
     @PluginMethod
-    public void readAudio(PluginCall call) {
+    public void readAudioChunk(PluginCall call) {
         String id = call.getString("id");
-        File file = id == null ? null : VoiceRecorder.fileFor(getContext(), id);
-        if (file == null || !file.isFile()) {
+        Long offset = number(call, "offset");
+        Long length = number(call, "length");
+        if (id == null || offset == null || offset < 0 || length == null || length <= 0) {
+            call.reject("readAudioChunk needs an id, an offset >= 0 and a length > 0", "invalid_argument");
+            return;
+        }
+        File file = VoiceRecorder.fileFor(getContext(), id);
+        if (id.contains("/") || !file.isFile()) {
             call.reject("Voice note audio not found", "not_found");
             return;
         }
-        byte[] bytes;
-        try {
-            bytes = readAll(file);
+        try (RandomAccessFile in = new RandomAccessFile(file, "r")) {
+            long size = in.length();
+            int want = (int) Math.max(0, Math.min(Math.min(length, MAX_CHUNK_BYTES), size - offset));
+            byte[] bytes = new byte[want];
+            int read = 0;
+            if (want > 0) {
+                in.seek(offset);
+                while (read < want) {
+                    int n = in.read(bytes, read, want - read);
+                    if (n < 0) break;
+                    read += n;
+                }
+            }
+            JSObject ret = new JSObject();
+            ret.put("id", id);
+            ret.put("offset", offset);
+            ret.put("base64", Base64.encodeToString(bytes, 0, read, Base64.NO_WRAP));
+            ret.put("bytesRead", read);
+            ret.put("size", size);
+            ret.put("eof", offset + read >= size);
+            call.resolve(ret);
         } catch (IOException e) {
             call.reject("Could not read voice note audio", "read_failed", e);
-            return;
         }
-        JSObject ret = new JSObject();
-        ret.put("id", id);
-        ret.put("mimeType", VoiceRecorder.MIME_TYPE);
-        ret.put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP));
-        call.resolve(ret);
     }
 
     @PluginMethod
@@ -163,7 +249,7 @@ public class VoiceNotesPlugin extends Plugin {
         String id = call.getString("id");
         if (id != null) {
             VoiceRecorder.fileFor(getContext(), id).delete();
-            sidecarFor(id).delete();
+            VoiceRecorder.sidecarFor(getContext(), id).delete();
         }
         call.resolve();
     }
@@ -192,15 +278,23 @@ public class VoiceNotesPlugin extends Plugin {
         call.resolve(ret);
     }
 
-    private File sidecarFor(String id) {
-        return new File(VoiceRecorder.directory(getContext()), id + ".json");
+    /**
+     * A numeric option as a long. PluginCall.getLong() answers only for values the JSON
+     * parser made Longs, and a small number (an offset of 0, 3600000 ms) parses as an Integer.
+     */
+    private static Long number(PluginCall call, String name) {
+        Object value = call.getData().opt(name);
+        if (!(value instanceof Number)) return null;
+        double d = ((Number) value).doubleValue();
+        return Double.isNaN(d) || Double.isInfinite(d) ? null : ((Number) value).longValue();
     }
 
-    private void writeSidecar(String id, JSObject result) {
-        try (FileOutputStream out = new FileOutputStream(sidecarFor(id))) {
-            out.write(result.toString().getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            // Best effort: without it the note still saves now, it just cannot be retried later.
+    private static JSObject describe(VoiceRecorder.Result result) {
+        try {
+            return JSObject.fromJSONObject(VoiceRecorder.describe(result));
+        } catch (JSONException e) {
+            // describe() holds only strings and numbers.
+            return new JSObject();
         }
     }
 

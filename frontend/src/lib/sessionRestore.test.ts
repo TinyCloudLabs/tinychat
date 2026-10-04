@@ -285,7 +285,7 @@ describe("App wiring (TC-514)", () => {
   test("Try again re-runs the restore while offline and signs in otherwise", () => {
     expect(app).toContain('const authAction = state === "offline" ? restoreSession : signIn;');
     expect(app).toContain("<Button size=\"sm\" onClick={authAction}");
-    expect(app).toContain("<BootSurface state={state} error={error} onAction={authAction} />");
+    expect(app).toMatch(/<BootSurface\s+state=\{state\}\s+error=\{error\}\s+onAction=\{authAction\}/);
     // No sign-in button is wired straight to OpenKey any more.
     expect(app).not.toContain("onClick={signIn}");
     expect(app).not.toContain("onSignIn={signIn}");

@@ -284,6 +284,14 @@ export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
 };
 
 /**
+ * TC-522: the Exo app signs in with Google through the system browser (TC-521), never in a popup
+ * window. Only that phrase changes; every claim is the pinned text, word for word.
+ */
+export function googleConsentCopyForSystemBrowser(copy: BackgroundSyncConsentCopy): BackgroundSyncConsentCopy {
+  return { ...copy, intro: copy.intro.replace("in a popup window", "in your browser") };
+}
+
+/**
  * GMEET(plan §2b gate G3) — the testing-mode re-auth caveat.
  *
  * Kept OUT of the bullets above deliberately: it is true only while the Google app is in Google's

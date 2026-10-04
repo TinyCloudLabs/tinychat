@@ -154,22 +154,37 @@ async function startMockPtx() {
   });
   const ptxError = (res: express.Response, status: number, code: string, extra: object = {}) =>
     res.status(status).json({ error: { type: "invalid_request_error", code, message: `upstream says ${code}`, ...extra } });
-  // The full §4.2 status shape, plus fields TinyChat must drop (request_id, tenant_ref, storage_path).
-  const view = (job: Job) => ({
-    id: job.id,
-    status: job.status,
-    byte_size: job.byte_size,
-    duration_seconds: job.status === "completed" ? 26 : null,
-    channels: job.status === "awaiting_upload" ? null : 2,
-    progress: { stage: job.status === "processing" ? "transcribe" : "waiting", queue_position: 0, regions_completed: 0, regions_total: 0 },
-    retention: { audio: "stored", audio_deleted_at: null, transcript_expires_at: null },
-    error: null,
-    created_at: "2026-09-29T10:00:00.000Z",
-    updated_at: "2026-09-29T10:00:05.000Z",
-    request_id: "req_mock",
-    tenant_ref: job.tenant,
-    storage_path: `/data/uploads/${job.id}.mp3`,
-  });
+  // PTX batch's own job shape (tinycloud-private-transcription src/uploads/service.ts serializeJob:
+  // lifecycle timestamps, no updated_at, audio `not_received` until the upload), plus fields
+  // TinyChat must drop (request_id, tenant_ref, storage_path).
+  const view = (job: Job) => {
+    const uploaded = job.status !== "awaiting_upload";
+    const started = job.status === "processing" || job.status === "completed";
+    const finished = job.status === "completed" || job.status === "failed" || job.status === "cancelled";
+    return {
+      id: job.id,
+      object: "transcription",
+      status: job.status,
+      content_type: "audio/mpeg",
+      byte_size: job.byte_size,
+      language: "en",
+      channel_mode: "separate",
+      channel_labels: ["Speaker 1", "Speaker 2"],
+      duration_seconds: job.status === "completed" ? 26 : null,
+      channels: uploaded ? 2 : null,
+      progress: { stage: job.status === "processing" ? "transcribing" : job.status, queue_position: job.status === "queued" ? 1 : null, regions_completed: 0, regions_total: 0 },
+      retention: { audio: uploaded ? "stored" : "not_received", audio_deleted_at: null, transcript_expires_at: null, transcript_deleted_at: null },
+      error: null,
+      created_at: "2026-09-29T10:00:00.000Z",
+      upload_deadline_at: "2026-09-29T12:00:00.000Z",
+      uploaded_at: uploaded ? "2026-09-29T10:00:05.000Z" : null,
+      processing_started_at: started ? "2026-09-29T10:00:06.000Z" : null,
+      finished_at: finished ? "2026-09-29T10:00:30.000Z" : null,
+      request_id: "req_mock",
+      tenant_ref: job.tenant,
+      storage_path: `/data/uploads/${job.id}.mp3`,
+    };
+  };
   const owned = (req: express.Request, res: express.Response): Job | null => {
     const job = jobs.get(String(req.params.id));
     if (!job || job.tenant !== req.get("x-tenant-ref")) {
@@ -224,7 +239,7 @@ async function startMockPtx() {
   });
   app.get("/v1/transcriptions", (req, res) => {
     const tenant = req.get("x-tenant-ref");
-    res.json({ transcriptions: [...jobs.values()].filter((j) => j.tenant === tenant).slice(0, Number(req.query.limit)).map(view) });
+    res.json({ object: "list", data: [...jobs.values()].filter((j) => j.tenant === tenant).slice(0, Number(req.query.limit)).map(view) });
   });
   app.get("/v1/transcriptions/:id", (req, res) => {
     const job = owned(req, res);
@@ -694,7 +709,7 @@ describe("status, result, list, cancel, delete", () => {
       [`/transcriptions/${id}`, { status: 200, body: { id, status: "done" } }],
       [`/transcriptions/${id}/result`, { status: 202, body: { id, status: "later" } }],
       [`/transcriptions/${id}/result`, { status: 200, body: { status: "completed", text: TRANSCRIPT_TEXT } }],
-      ["/transcriptions", { status: 200, body: { transcriptions: [{ id: "bad", status: "queued" }] } }],
+      ["/transcriptions", { status: 200, body: { object: "list", data: [{ id: "bad", status: "queued" }] } }],
       ["/capabilities", { status: 200, body: { admission: "open" } }],
     ];
     for (const [path, override] of cases) {
@@ -981,18 +996,22 @@ describe("e2e script", () => {
 
 describe("response DTOs", () => {
   const ID = "trn_0123456789ABCDEFGHJKMNPQRS";
-  const JOB_KEYS = ["byte_size", "channels", "created_at", "duration_seconds", "error", "id", "progress", "retention", "status", "updated_at"];
+  const JOB_KEYS = ["byte_size", "channel_labels", "channel_mode", "channels", "created_at", "duration_seconds", "error", "id", "progress", "retention", "status", "updated_at"];
   const job = (patch: Record<string, unknown> = {}) => ({
     id: ID,
     status: "processing",
     byte_size: 1000,
+    channel_mode: "separate",
+    channel_labels: ["Speaker 1", "Speaker 2"],
     duration_seconds: 26,
     channels: 2,
     progress: { stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7, internal_worker: "w-1" },
     retention: { audio: "stored", audio_deleted_at: null, transcript_expires_at: null, volume: "/data" },
     error: null,
     created_at: "2026-09-29T10:00:00Z",
-    updated_at: "2026-09-29T10:00:05.123Z",
+    uploaded_at: "2026-09-29T10:00:04Z",
+    processing_started_at: "2026-09-29T10:00:05.123Z",
+    finished_at: null,
     ...patch,
   });
   const LEAKS = { tenant_ref: "f".repeat(64), storage_path: "/data/uploads/x.mp3", capability: "tcu_leakleakleakleakleak", provider_diagnostics: "UPSTREAM-DETAIL" };
@@ -1005,19 +1024,89 @@ describe("response DTOs", () => {
     expect(Object.keys(status.json).sort()).toEqual(JOB_KEYS);
     expect(status.json.progress).toEqual({ stage: "transcribe", queue_position: null, regions_completed: 3, regions_total: 7 });
     expect(status.json.retention).toEqual({ audio: "stored", audio_deleted_at: null, transcript_expires_at: null });
-    ptx.state.override = () => ({ status: 200, body: { transcriptions: [{ ...job(), ...LEAKS }], cursor: "UPSTREAM-DETAIL" } });
+    // When the job last changed: PTX has no updated_at, so the latest lifecycle timestamp.
+    expect(status.json.updated_at).toBe("2026-09-29T10:00:05.123Z");
+    ptx.state.override = () => ({ status: 200, body: { object: "list", data: [{ ...job(), ...LEAKS }], cursor: "UPSTREAM-DETAIL" } });
     const list = await call(backend.url, "GET", "/transcriptions");
     expect(Object.keys(list.json)).toEqual(["transcriptions"]);
     expect(Object.keys(list.json.transcriptions[0]).sort()).toEqual(JOB_KEYS);
     // Absent nullable fields come back as explicit nulls.
-    ptx.state.override = () => ({ status: 200, body: { id: ID, status: "queued", byte_size: 5, retention: job().retention, created_at: "2026-09-29T10:00:00Z", updated_at: "2026-09-29T10:00:00Z" } });
+    ptx.state.override = () => ({ status: 200, body: { id: ID, status: "queued", byte_size: 5, retention: job().retention, created_at: "2026-09-29T10:00:00Z" } });
     const sparse = await call(backend.url, "GET", `/transcriptions/${ID}`);
-    expect(sparse.json).toMatchObject({ duration_seconds: null, channels: null, progress: null, error: null });
+    expect(sparse.json).toMatchObject({
+      duration_seconds: null,
+      channels: null,
+      progress: null,
+      error: null,
+      channel_mode: null,
+      channel_labels: null,
+      updated_at: "2026-09-29T10:00:00Z",
+    });
+    // The caller's own channel choices are relayed (clients tell their jobs apart by them).
+    expect(status.json).toMatchObject({ channel_mode: "separate", channel_labels: ["Speaker 1", "Speaker 2"] });
     for (const r of [status, list, sparse]) {
       for (const leak of Object.values(LEAKS)) expect(r.text).not.toContain(leak);
       expect(r.text).not.toContain("internal_worker");
       expect(r.text).not.toContain("/data");
     }
+  });
+
+  test("PTX batch's real job shape is on contract: not_received before the upload, updated_at from its lifecycle", async () => {
+    const { ptx, backend } = await setup();
+    // Verbatim key set of tinycloud-private-transcription serializeJob (origin/main a3422ae).
+    const ptxJob = (patch: Record<string, unknown>) => ({
+      id: ID,
+      object: "transcription",
+      status: "awaiting_upload",
+      content_type: "audio/wav",
+      byte_size: 448_096,
+      language: "en",
+      channel_mode: "separate",
+      channel_labels: ["Speaker 1", "Speaker 2"],
+      duration_seconds: null,
+      channels: null,
+      progress: { stage: "awaiting_upload", queue_position: null, regions_completed: 0, regions_total: 0 },
+      retention: { audio: "not_received", audio_deleted_at: null, transcript_expires_at: null, transcript_deleted_at: null },
+      error: null,
+      created_at: "2026-10-03T12:00:00.000Z",
+      upload_deadline_at: "2026-10-03T14:00:00.000Z",
+      uploaded_at: null,
+      processing_started_at: null,
+      finished_at: null,
+      ...patch,
+    });
+    ptx.state.override = () => ({ status: 200, body: ptxJob({}) });
+    const awaiting = await call(backend.url, "GET", `/transcriptions/${ID}`);
+    expect(awaiting.status).toBe(200);
+    expect(awaiting.json).toMatchObject({
+      status: "awaiting_upload",
+      retention: { audio: "not_received" },
+      updated_at: "2026-10-03T12:00:00.000Z",
+      // The caller's channel choices come back: how Exo desktop tells its jobs from a phone's.
+      channel_mode: "separate",
+      channel_labels: ["Speaker 1", "Speaker 2"],
+    });
+    ptx.state.override = () => ({ status: 200, body: ptxJob({ channel_mode: "mixed", channel_labels: ["Exo voice note"] }) });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}`)).json).toMatchObject({ channel_mode: "mixed", channel_labels: ["Exo voice note"] });
+    ptx.state.override = () => ({
+      status: 200,
+      body: ptxJob({
+        status: "completed",
+        duration_seconds: 14.002,
+        channels: 1,
+        progress: { stage: "completed", queue_position: null, regions_completed: 3, regions_total: 3 },
+        retention: { audio: "deleted", audio_deleted_at: "2026-10-03T12:00:21.000Z", transcript_expires_at: "2026-10-04T12:00:20.000Z", transcript_deleted_at: null },
+        uploaded_at: "2026-10-03T12:00:03.000Z",
+        processing_started_at: "2026-10-03T12:00:04.000Z",
+        finished_at: "2026-10-03T12:00:20.000Z",
+      }),
+    });
+    const done = await call(backend.url, "GET", `/transcriptions/${ID}`);
+    expect(done.status).toBe(200);
+    expect(done.json).toMatchObject({ status: "completed", channels: 1, retention: { audio: "deleted" }, updated_at: "2026-10-03T12:00:20.000Z" });
+    // A lifecycle timestamp that is not a timestamp is still off contract.
+    ptx.state.override = () => ({ status: 200, body: ptxJob({ uploaded_at: "soon" }) });
+    expect((await call(backend.url, "GET", `/transcriptions/${ID}`)).status).toBe(502);
   });
 
   test("a job error is rebuilt as { code, our message }; the upstream message never passes", async () => {
@@ -1075,10 +1164,16 @@ describe("response DTOs", () => {
       [`/transcriptions/${ID}`, 200, job({ retention: undefined })],
       [`/transcriptions/${ID}`, 200, job({ created_at: "yesterday" })],
       [`/transcriptions/${ID}`, 200, [job()]],
-      // list
-      ["/transcriptions?limit=1", 200, { transcriptions: [job(), job({ id: newId() })] }],
-      ["/transcriptions", 200, { transcriptions: [job({ status: "done" })] }],
-      ["/transcriptions", 200, { data: [job()] }],
+      [`/transcriptions/${ID}`, 200, job({ finished_at: "later" })],
+      [`/transcriptions/${ID}`, 200, job({ channel_mode: "stereo" })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: [] })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: ["a", "b", "c"] })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: ["  "] })],
+      [`/transcriptions/${ID}`, 200, job({ channel_labels: ["x".repeat(65)] })],
+      // list (PTX answers { object: "list", data })
+      ["/transcriptions?limit=1", 200, { object: "list", data: [job(), job({ id: newId() })] }],
+      ["/transcriptions", 200, { object: "list", data: [job({ status: "done" })] }],
+      ["/transcriptions", 200, { transcriptions: [job()] }],
       // capabilities
       ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 2, content_types: ["audio/mpeg"], transcript_ttl_seconds: 1, admission: "maybe" }],
       ["/capabilities", 200, { max_bytes: 1, max_duration_seconds: 1, max_channels: 3, content_types: ["audio/mpeg"], transcript_ttl_seconds: 1, admission: "open" }],

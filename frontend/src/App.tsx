@@ -97,6 +97,10 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
+import { QuickVoiceNote } from "./chat/QuickVoiceNote";
+import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
+import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
+import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
 import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
@@ -104,6 +108,7 @@ import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
 import {
   ChevronDownIcon,
+  MicIcon,
   PanelLeftIcon,
   PlugIcon,
   SettingsIcon,
@@ -121,6 +126,8 @@ import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
+import { useConversationCanvasFeature } from "./chat/useExperimentalFeatures";
+import { promotedCanvasForTurn, useLocalCanvasStorage } from "./lib/conversationCanvasStore";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
@@ -198,6 +205,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // The chat screen's voice note bar: opened to record (the header button) or to
+  // show a recording that is already running (one started on the offline screen).
+  const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -348,7 +358,7 @@ export function App() {
       });
       switch (restored.kind) {
         case "restored":
-          setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(restored.tcw) : restored.tcw);
+          setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(restored.tcw)) : restored.tcw);
           setAddress(restored.address);
           setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
           setSpaceId(restored.tcw.spaceId ?? null);
@@ -617,7 +627,7 @@ export function App() {
       const verified = await verifySession(BACKEND_URL, session.siwe, session.signature);
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
 
-      setTcw(LOCAL_VALIDATION ? useLocalThreadStorage(signedTcw) : signedTcw);
+      setTcw(LOCAL_VALIDATION ? useLocalCanvasStorage(useLocalThreadStorage(signedTcw)) : signedTcw);
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
@@ -714,6 +724,36 @@ export function App() {
   // still resolve — they are replaced with the canonical address below.
   const legacyMeetings = location.pathname.endsWith("/chat/meetings");
 
+  // TC-522: the one-tap voice note, inside the Exo mobile app only. Offered
+  // wherever the Voice notes card is NOT on screen (Connectors has its own
+  // Record and picks a running recording up), so only one view of the
+  // recorder is ever mounted. Leaving for Connectors, or signing out, closes it.
+  const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
+  const quickVoiceNoteAvailable =
+    voiceNotesInApp && isReady && !LOCAL_VALIDATION && !showConnectors && !shareToken;
+  useEffect(() => {
+    if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
+  }, [quickVoiceNoteAvailable]);
+
+  // TC-515: with the session held but out of reach (`offline`), the app can
+  // still record a voice note; it stays on the phone until the session is back.
+  // Not signed out: there is no account to save to then. "Try again" (`booting`)
+  // keeps the recorder on screen, so a running recording stays visible.
+  const [offlineCapture, setOfflineCapture] = useState(false);
+  useEffect(() => {
+    if (state === "offline") setOfflineCapture(true);
+    else if (state !== "booting") setOfflineCapture(false);
+  }, [state]);
+  const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
+  // A recording started offline keeps running through the restore: once the
+  // session is back, the chat screen's bar shows it (picked up, never restarted).
+  const offlineRecordingRef = useRef(false);
+  useEffect(() => {
+    if (state !== "ready" || !offlineRecordingRef.current) return;
+    offlineRecordingRef.current = false;
+    if (quickVoiceNoteAvailable) setVoiceNoteOpen("show");
+  }, [state, quickVoiceNoteAvailable]);
+
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
   // queue next (the headless drainer or a Connectors sync) publishes into the
@@ -776,7 +816,7 @@ export function App() {
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)]"
+      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
       style={{ height: "var(--tc-app-height, 100dvh)" }}
     >
       <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
@@ -834,6 +874,20 @@ export function App() {
           <span className="hidden sm:inline-flex">
             <ThemeToggle />
           </span>
+          {quickVoiceNoteAvailable && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Record a voice note"
+              aria-pressed={voiceNoteOpen !== false}
+              onClick={() => setVoiceNoteOpen((open) => open || "record")}
+              className="h-11 shrink-0 gap-1.5 px-3 md:h-8"
+              data-testid="header-voice-note"
+            >
+              <MicIcon className="size-4" />
+              Voice note
+            </Button>
+          )}
           {isReady && (
             <Button
               variant="outline"
@@ -853,6 +907,17 @@ export function App() {
           )}
         </div>
       </header>
+
+      {voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
+        <QuickVoiceNote
+          autoStart={voiceNoteOpen === "record"}
+          tcw={tcw}
+          backendUrl={BACKEND_URL}
+          sessionStore={sessionStoreRef.current}
+          onClose={() => setVoiceNoteOpen(false)}
+          onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}
+        />
+      )}
 
       {LOCAL_VALIDATION && (
         <div role="status" className="border-b px-4 py-2 text-sm">
@@ -916,6 +981,7 @@ export function App() {
                     />
                   }
                 />}
+                billingStatus={billingStatus}
               />
             </div>
             {showSettings && (
@@ -944,7 +1010,16 @@ export function App() {
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <BootSurface state={state} error={error} onAction={authAction} />
+          <BootSurface
+            state={state}
+            error={error}
+            onAction={authAction}
+            voiceNotes={
+              offlineRecorder ? (
+                <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
+              ) : null
+            }
+          />
         )}
       </main>
 
@@ -973,6 +1048,17 @@ export function App() {
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* TC-515: voice notes left on the phone (recorded offline, or a save that
+          failed) are saved once the session is ready, without opening
+          Connectors. The Voice notes card's own single-flight retry. */}
+      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && (
+        <PendingVoiceNotesSaver
+          tcw={tcw}
+          backendUrl={BACKEND_URL}
+          sessionStore={sessionStoreRef.current}
         />
       )}
 
@@ -1286,11 +1372,13 @@ function ChatWorkspace(props: {
   onToggleConnectors: () => void;
   onOpenChat: () => void;
   connectorsSurface: React.ReactNode;
+  billingStatus: BillingStatus | null;
 }) {
   const {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
   } = useAgentAccess();
   const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
+  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
   // One instance per mounted workspace: its thread selection state is
   // intentionally in-memory only, survives render churn, and vanishes on a
   // workspace reload. It receives only browser-local handles and the existing
@@ -1323,6 +1411,7 @@ function ChatWorkspace(props: {
       meetingMessageRegistry,
       // ── Compaction deps (§D.3) ─────────────────────────────────────
       contextTokensFor: props.contextTokensFor,
+      getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(props.tcw, threadId),
       getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
       appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
         appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),
@@ -1438,6 +1527,7 @@ function ChatWorkspace(props: {
               selection={props.selectionView}
               onRetrySelection={() => props.selectionControllerRef.current?.retry()}
               onReload={() => props.selectionControllerRef.current?.reload()}
+              canvasEnabled={conversationCanvas.enabled}
             />
           </div>
           {showConnectors && props.connectorsSurface}
@@ -1564,6 +1654,8 @@ function BootSurface(props: {
   error: string | null;
   /** Sign in, or — in the `offline` state — retry the session restore. */
   onAction: () => void;
+  /** The offline voice recorder (TC-515), under the action. */
+  voiceNotes?: React.ReactNode;
 }) {
   const message =
     props.state === "booting"
@@ -1598,6 +1690,7 @@ function BootSurface(props: {
         {busy && (
           <span className="text-xs text-muted-foreground">Working…</span>
         )}
+        {props.voiceNotes}
       </div>
     </div>
   );

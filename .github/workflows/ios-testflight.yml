@@ -1,0 +1,117 @@
+name: iOS TestFlight (Exo)
+
+# Archives Exo for iOS from main, signs it for the App Store and uploads it to TestFlight. Dispatch it from main:
+#   gh workflow run ios-testflight.yml --ref main                  # upload to TestFlight
+#   gh workflow run ios-testflight.yml --ref main -f mode=validate # sign and let App Store Connect validate, no upload
+# Dormant until the Apple Developer account is set up: the plan job refuses any other ref, and while the ios-release
+# environment lacks a secret it fails in seconds with the missing names, before any macOS runner or build. Setup and
+# the on-device checklist: mobile/README.md, "iOS release".
+#
+# Jobs: plan (ios-release: main only, secrets present; runs only scripts/release from the workflow commit) -> build
+# (ios-build.yml with sign: true: its archive job builds with no environment and no secret, its sign job runs in
+# ios-release with only scripts/release checked out at the workflow commit and exports, verifies and uploads) ->
+# report. CI runs the same ios-build.yml unsigned on every iOS change (mobile.yml). The version is
+# frontend/package.json's product version (X.Y.Z, beta suffix dropped) and the build number is this workflow's run
+# number, so every upload is a new TestFlight build. The .ipa that scripts/release/ios-signing.sh verified (an App
+# Store signature from APPLE_TEAM_ID) is the one uploaded; there is no unsigned fallback.
+#
+# Environment `ios-release`: deployment branches main only, and a required reviewer (Sam), because the API key has
+# the Admin role (setup: mobile/README.md, "iOS release"). With the reviewer, each run waits for approval twice: the
+# plan job right after dispatch, the sign job once the archive is built and checked. Secrets:
+#   APPLE_TEAM_ID           10-character Team ID
+#   APPLE_API_KEY           App Store Connect API key ID (Admin role: cloud signing creates the distribution
+#   APPLE_API_ISSUER        issuer ID (UUID)                 certificate and the App Store profile)
+#   APPLE_API_PRIVATE_KEY   the AuthKey_<key id>.p8 file (as is, collapsed onto one line, or base64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "upload: send the build to TestFlight; validate: sign and let App Store Connect check it, no upload"
+        type: choice
+        options: [upload, validate]
+        default: upload
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ios-release
+    steps:
+      - name: Require the TestFlight workflow from main
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/ios-testflight.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::TestFlight builds run only from main (got $GITHUB_REF, $WORKFLOW_REF). Use: gh workflow run ios-testflight.yml --ref main"
+            exit 1
+          fi
+
+      # The release tooling only, from the workflow's own commit; nothing is built here.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
+      - name: Check the ios-release secrets
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if ! scripts/release/ios-signing.sh check > "$RUNNER_TEMP/check.txt"; then
+            cat "$RUNNER_TEMP/check.txt"
+            {
+              echo "### TestFlight is not set up yet"
+              echo
+              sed 's/^::error:://' "$RUNNER_TEMP/check.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/check.txt"
+
+  build:
+    name: Build
+    needs: plan
+    uses: ./.github/workflows/ios-build.yml
+    with:
+      build-number: ${{ github.run_number }}
+      sign: true
+      mode: ${{ inputs.mode }}
+
+  report:
+    name: Report
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the signed build
+        env:
+          MODE: ${{ inputs.mode }}
+          SIGNED: ${{ needs.build.outputs.signed }}
+          UPLOADED: ${{ needs.build.outputs.uploaded }}
+          VERSION: ${{ needs.build.outputs.short-version }}
+          BUILD: ${{ needs.build.outputs.build-number }}
+        run: |
+          if [ "$SIGNED" != true ] || { [ "$MODE" = upload ] && [ "$UPLOADED" != true ]; }; then
+            echo "::error::Exo $VERSION ($BUILD) did not finish signed ($MODE: signed=$SIGNED, uploaded=$UPLOADED)"
+            exit 1
+          fi
+          if [ "$MODE" = upload ]; then
+            line="Uploaded Exo $VERSION ($BUILD) to App Store Connect. It appears in TestFlight once Apple has processed it (usually 5 to 30 minutes)."
+          else
+            line="Exo $VERSION ($BUILD) is signed for the App Store and passed App Store Connect validation; nothing was uploaded."
+          fi
+          echo "$line" | tee -a "$GITHUB_STEP_SUMMARY"

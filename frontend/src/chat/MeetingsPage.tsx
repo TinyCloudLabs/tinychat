@@ -217,7 +217,6 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
           <ul className="mt-2 flex flex-col gap-0.5">
             {meetings.map((m) => {
               const isOpen = openId === m.id;
-              const dateLabel = formatStartedAt(m.startedAt);
               const panelId = `transcript-${m.id}`;
               return (
                 <li key={m.id}>
@@ -228,20 +227,7 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
                     aria-controls={panelId}
                     className="group flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent md:min-h-0"
                   >
-                    <span className="flex-1 truncate">
-                      {m.title ?? "Untitled meeting"}
-                    </span>
-                    {/* Which connector this row came from — the list is
-                        merged, so the source has to be on the row itself.
-                        Read out as part of the row's own label. */}
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                      {meetingSourceLabel(m.source)}
-                    </span>
-                    {dateLabel && (
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {dateLabel}
-                      </span>
-                    )}
+                    <MeetingRowLabel meeting={m} />
                     <ChevronDownIcon
                       aria-hidden
                       className={`size-4 shrink-0 text-muted-foreground transition-transform ${
@@ -341,6 +327,40 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
         </>
       )}
     </SectionCard>
+  );
+}
+
+/**
+ * A row's title, source chip and date. On phones the title gets its own
+ * line(s) and the chip and date sit under it: beside them, a 412 px screen
+ * truncated a voice note to "Voice note · Sep 29, 1…". From `sm` up it is one
+ * row with the title truncated, as before.
+ */
+export function MeetingRowLabel({
+  meeting,
+}: {
+  meeting: Pick<MeetingListItem, "title" | "source" | "startedAt">;
+}) {
+  const dateLabel = formatStartedAt(meeting.startedAt);
+  return (
+    <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+      <span className="break-words sm:min-w-0 sm:flex-1 sm:truncate">
+        {meeting.title ?? "Untitled meeting"}
+      </span>
+      <span className="flex shrink-0 items-center gap-2">
+        {/* Which connector this row came from — the list is merged, so the
+            source has to be on the row itself. Read out as part of the
+            row's own label. */}
+        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+          {meetingSourceLabel(meeting.source)}
+        </span>
+        {dateLabel && (
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {dateLabel}
+          </span>
+        )}
+      </span>
+    </span>
   );
 }
 

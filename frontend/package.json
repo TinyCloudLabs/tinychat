@@ -1,6 +1,6 @@
 {
   "name": "@tinychat/frontend",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,8 @@
   "dependencies": {
     "@assistant-ui/react": "^0.14.13",
     "@assistant-ui/react-markdown": "0.14.1",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
     "@capacitor/core": "^8.5.2",
     "@openkey/sdk": "^0.10.0",
     "@peculiar/x509": "^2.0.0",
@@ -24,6 +26,7 @@
     "@tinyboilerplate/core": "workspace:*",
     "@tinycloud/sdk-core": "2.11.0",
     "@tinycloud/web-sdk": "2.11.0",
+    "@xyflow/react": "^12.8.5",
     "assistant-stream": "0.3.19",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -7,6 +7,7 @@ import {
   SQL_DISCOVERY_MAX_MEETINGS,
   SQL_MEETING_METADATA_QUERY,
   SUPPORTED_MEETING_SOURCES,
+  TRANSCRIBED_ONLY_SOURCES,
   discoverKvMeetings,
   discoverMeetingCorpus,
   discoverServerMeetings,
@@ -14,6 +15,8 @@ import {
   mergeMeetingCorpus,
 } from "./corpus";
 import { CONNECTORS_KV_PREFIX } from "../connectors/connectorStore";
+import { LOCAL_MEETING_SOURCE } from "../localTranscriber";
+import { VOICE_NOTE_SOURCE } from "../voiceNotes/voiceNoteStore";
 import type {
   ConnectorMeetingList,
   ConnectorMeetingMeta,
@@ -133,7 +136,13 @@ describe("SQL meeting metadata discovery", () => {
 
     expect(queries).toEqual([SQL_MEETING_METADATA_QUERY]);
     expect(SQL_MEETING_METADATA_QUERY).toMatch(/^SELECT\b/i);
-    expect(SQL_MEETING_METADATA_QUERY).not.toMatch(/\bmetadata\b/i);
+    // Provider metadata is never selected: it appears only in the WHERE predicate that admits a
+    // transcribed voice note, as two references inside json_valid/json_extract of one field.
+    const [selectList, predicate] = SQL_MEETING_METADATA_QUERY.split(/\bFROM connector_meeting\b/);
+    expect(selectList).not.toMatch(/\bmetadata\b/i);
+    expect(predicate!.match(/\bmetadata\b/gi)).toHaveLength(2);
+    expect(predicate).toContain("json_valid(metadata)");
+    expect(predicate).toContain("json_extract(metadata, '$.transcription_outcome')");
     expect(SQL_MEETING_METADATA_QUERY).not.toMatch(/\btranscript\b/i);
     expect(SQL_MEETING_METADATA_QUERY).not.toMatch(/\bsummary_overview\s*,|\bsummary_action_items\s*,/i);
     expect(result.lane).toEqual({ state: "healthy" });
@@ -213,13 +222,60 @@ describe("SQL meeting metadata discovery", () => {
     unsupported[1] = "granola";
     const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [unsupported] } })));
     expect(SQL_MEETING_METADATA_QUERY).toContain(
-      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local')",
+      "source IN ('fireflies', 'google-meet', 'tinycloud-transcriber', 'exo-local', 'exo-voice-note')",
     );
+    // The browser-local capture sources are named by their writers' own constants.
+    expect(SUPPORTED_MEETING_SOURCES).toEqual(expect.arrayContaining([LOCAL_MEETING_SOURCE, VOICE_NOTE_SOURCE]));
     // The SQL filter and the row/KV allowlist are one definition: none can drift.
     for (const source of SUPPORTED_MEETING_SOURCES) {
       expect(SQL_MEETING_METADATA_QUERY).toContain(`'${source}'`);
     }
     expect(result).toEqual({ candidates: [], lane: { state: "partial", malformedRows: 1 } });
+  });
+
+  test("a voice note row the SQL predicate admitted (transcribed) is a candidate", async () => {
+    const voiceNote = [...validRow];
+    voiceNote[1] = VOICE_NOTE_SOURCE;
+    const result = await discoverSqlMeetings(fakeTcw(async () => ({ ok: true, data: { rows: [voiceNote] } })));
+    expect(result.lane).toEqual({ state: "healthy" });
+    expect(result.candidates).toEqual([expect.objectContaining({ source: VOICE_NOTE_SOURCE, sourceId: "meeting-1" })]);
+    expect(TRANSCRIBED_ONLY_SOURCES).toEqual([VOICE_NOTE_SOURCE]);
+  });
+
+  test("a voice note known only by its KV transcript key (written empty at save) is never a candidate", () => {
+    const kvOnly = (source: string, sourceId: string) => ({
+      source,
+      sourceId,
+      title: null,
+      startedAt: null,
+      participantNames: [],
+      participantEmails: [],
+      organizerEmail: null,
+      hasSqlSummary: false,
+      hasLocalRecord: false,
+      hasLocalTranscript: true,
+      hasServerSummary: false,
+      hasServerTranscript: false,
+      localRowId: null,
+      createdAt: null,
+      updatedAt: null,
+    });
+    const admitted = { ...kvOnly(VOICE_NOTE_SOURCE, "rec-transcribed"), title: "Voice note", startedAt: "2026-10-03T09:00:00.000Z", localRowId: "row-v", hasLocalTranscript: false };
+    const corpus = mergeMeetingCorpus({
+      sql: { candidates: [admitted], lane: { state: "healthy" } },
+      server: { candidates: [], lane: { state: "feature-dark" } },
+      kv: {
+        candidates: [kvOnly(VOICE_NOTE_SOURCE, "rec-transcribed"), kvOnly(VOICE_NOTE_SOURCE, "rec-untranscribed"), kvOnly("exo-local", "local:s1")],
+        lane: { state: "healthy" },
+      },
+    });
+    expect(corpus.candidates.map((c) => `${c.source}/${c.sourceId}`)).toEqual([
+      "exo-local/local:s1",
+      "exo-voice-note/rec-transcribed",
+    ]);
+    expect(corpus.candidates.find((c) => c.sourceId === "rec-transcribed")).toEqual(
+      expect.objectContaining({ hasLocalTranscript: true, localRowId: "row-v" }),
+    );
   });
 });
 

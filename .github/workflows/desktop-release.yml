@@ -4,12 +4,17 @@ name: Desktop release (Exo)
 # main's, never a tag's: the Release workflow dispatches it for every new exo-desktop tag with
 #   gh workflow run desktop-release.yml --ref main -f tag=exo-desktop@<version>
 # (the same command retries a failed release). The plan job refuses any other ref, requires the tag to point at a
-# commit of main (fetched fresh) and builds exactly that commit.
+# commit of main (fetched fresh) and builds exactly that commit. Only the app source comes from the tag's commit: the
+# release tooling (scripts/release) always runs from the workflow commit (github.workflow_sha), here and in
+# desktop-build.yml, so an older tag never runs its own older scripts. The plan refuses a beta older than the latest
+# stable exo-desktop tag on main (0.2.0-beta.3 once 0.2.0 is out): superseded betas are not published.
 # - beta (X.Y.Z-beta.N): a GitHub pre-release, never "latest";
 # - stable (X.Y.Z): a published GitHub Release marked latest.
 # Signing follows the EXO_DESKTOP_SIGNING repository variable, read once by the plan job; it has no default:
-# - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true, secrets from the
-#   desktop-release environment, which only main can deploy to); publishing requires the build's signed=true;
+# - required: Developer ID signed, notarized and stapled (desktop-build.yml with sign: true: the app is built with no
+#   environment and no secret, then signed by a job in the desktop-release environment, which only main can deploy to,
+#   that runs only scripts/release from the workflow commit and Apple's tools); publishing requires the build's
+#   signed=true;
 # - unsigned (until the Apple Developer ID exists): desktop-build.yml with sign: false, so no environment and no
 #   signing secret is requested (the app is only ad-hoc sealed); the release title and notes say UNSIGNED.
 # Any other value, including unset, fails the plan before anything is built. The provenance checks (main only, tag
@@ -61,8 +66,10 @@ jobs:
             exit 1
           fi
 
+      # The release tooling: the workflow's own commit on main, never the tag's.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -72,7 +79,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           SIGNING: ${{ vars.EXO_DESKTOP_SIGNING }}
         run: |
-          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/$TAG:refs/tags/$TAG"
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main '+refs/tags/exo-desktop@*:refs/tags/exo-desktop@*'
           node scripts/release/desktop-release-plan.mjs --tag "$TAG" --notes "$RUNNER_TEMP/release-notes.md" --signing "$SIGNING"
 
       - name: Refuse to touch a published release

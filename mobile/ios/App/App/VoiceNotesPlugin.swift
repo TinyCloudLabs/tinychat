@@ -5,14 +5,22 @@ import Foundation
 /// Native voice notes for iOS. Same JS contract as the Android plugin
 /// (frontend/src/lib/voiceNotes/nativeVoiceNotes.ts):
 ///
-///   start()             → { id, startedAt }
-///   stop()              → { id, startedAt, durationMs, mimeType, sizeBytes,
-///                           silencedMs, silencedEvents, noSignalMs }
-///   status()            → { state, reason, id?, elapsedMs }
-///   readAudio({ id })   → { id, mimeType, base64 }
-///   deleteAudio({ id }) → {}
-///   listPending()       → { recordings: [stop() result, ...] } still on the device
-///   events: "micState" { state, reason, at }, "level" { level }
+///   start({ maxDurationMs? })  → { id, startedAt, maxDurationMs }
+///   stop()                     → { id, startedAt, durationMs, mimeType, sizeBytes,
+///                                  silencedMs, silencedEvents, noSignalMs }
+///   status()                   → { state, reason, id?, elapsedMs, maxDurationMs }
+///   readAudioChunk({ id, offset, length })
+///                              → { id, offset, base64, bytesRead, size, eof }
+///   deleteAudio({ id })        → {}
+///   listPending()              → { recordings: [stop() result, ...] } still on the device
+///   events: "micState" { state, reason, at }, "level" { level },
+///           "autoStopped" { reason: "max_duration", maxDurationMs, at, recording: stop() result | null }
+///
+/// A recording stops itself at maxDurationMs (`maxDuration`, or less when start
+/// asks for less) through the same path as stop(): micState goes idle with reason
+/// "max_duration", and "autoStopped" carries the result, which stays pending
+/// (listPending) until the web layer saves it. Audio crosses the bridge one chunk
+/// at a time, never the whole file.
 ///
 /// Mic state comes from the OS: an audio-session interruption (a call, Siri,
 /// another app taking the mic) or the system input mute (iOS 17+) reads as
@@ -26,7 +34,7 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "readAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readAudioChunk", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteAudio", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "listPending", returnType: CAPPluginReturnPromise)
     ]
@@ -36,11 +44,19 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
     /// Silence at or below this level for `noSignalAfter` counts as no signal.
     private static let silenceFloorDb: Float = -120
     private static let noSignalAfter: TimeInterval = 2
+    /// The longest voice note (60 min): about 29 MB of 64 kbps AAC, 29 one-MiB parts in the
+    /// user's space. Matches VoiceRecorder.MAX_DURATION_MS on Android.
+    static let maxDuration: TimeInterval = 60 * 60
+    /// The shortest limit start() accepts (tests ask for seconds).
+    private static let minDurationLimit: TimeInterval = 1
+    /// The most one readAudioChunk call returns (it crosses the bridge as base64).
+    private static let maxChunkBytes = 4 * 1024 * 1024
 
     private var recorder: AVAudioRecorder?
     private var recordingId: String?
     private var startedAtMs: Int64 = 0
     private var startedUptime: TimeInterval = 0
+    private var limit: TimeInterval = VoiceNotesPlugin.maxDuration
     private var state = "idle"
     private var reason: String?
 
@@ -73,52 +89,86 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
                     call.reject("Microphone permission denied", "permission_denied")
                     return
                 }
-                self.startRecording(call)
+                self.startRecording(call, limit: Self.clampLimit(call.getDouble("maxDurationMs")))
             }
         }
     }
 
+    /// A requested limit (ms) clamped to [minDurationLimit, maxDuration]; absent or <= 0 means the default.
+    private static func clampLimit(_ requestedMs: Double?) -> TimeInterval {
+        guard let ms = requestedMs, ms.isFinite, ms > 0 else { return maxDuration }
+        return min(maxDuration, max(minDurationLimit, ms / 1000))
+    }
+
     @objc func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            guard let recorder = self.recorder, let id = self.recordingId else {
+            guard self.recorder != nil else {
+                // Also when the limit stopped it first: "autoStopped" carries that recording.
                 call.reject("No voice note is recording", "not_recording")
                 return
             }
-            let now = ProcessInfo.processInfo.systemUptime
-            if let since = self.silencedSince { self.silencedTotal += now - since }
-            if self.noSignal, let since = self.zeroSince { self.noSignalTotal += now - since }
-            self.levelTimer?.invalidate()
-            self.levelTimer = nil
-            recorder.stop()
-            self.recorder = nil
-            self.recordingId = nil
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            self.setState("idle", nil)
-
-            let file = Self.fileURL(id)
-            let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
-            guard size > 0 else {
-                try? FileManager.default.removeItem(at: file)
+            guard let result = self.finishRecording(reason: nil) else {
                 call.reject("The recording captured no audio", "no_audio_captured")
                 return
             }
-            let result: [String: Any] = [
-                "id": id,
-                "startedAt": self.startedAtMs,
-                "durationMs": Int64((now - self.startedUptime) * 1000),
-                "mimeType": Self.mimeType,
-                "sizeBytes": size,
-                "silencedMs": Int64(self.silencedTotal * 1000),
-                "silencedEvents": self.silencedEvents,
-                "noSignalMs": Int64(self.noSignalTotal * 1000)
-            ]
-            // Until the web layer confirms the save (deleteAudio), the sidecar lets
-            // listPending() hand the recording back after a failed upload or a relaunch.
-            if let json = try? JSONSerialization.data(withJSONObject: result) {
-                try? json.write(to: Self.sidecarURL(id))
-            }
             call.resolve(result)
         }
+    }
+
+    /// Stops and finalizes the file (manual stop and the limit alike), writes the sidecar,
+    /// and returns stop()'s result; nil when no audio was captured. Main thread only.
+    private func finishRecording(reason: String?) -> [String: Any]? {
+        guard let recorder = recorder, let id = recordingId else { return nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let since = silencedSince { silencedTotal += now - since }
+        if noSignal, let since = zeroSince { noSignalTotal += now - since }
+        levelTimer?.invalidate()
+        levelTimer = nil
+        recorder.stop()
+        self.recorder = nil
+        recordingId = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        setState("idle", reason)
+
+        let file = Self.fileURL(id)
+        // URLResourceValues.fileSize, not FileManager.attributesOfItem: the latter is a file-timestamp
+        // "required reason" API that PrivacyInfo.xcprivacy would have to declare.
+        let size = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        guard size > 0 else {
+            try? FileManager.default.removeItem(at: file)
+            return nil
+        }
+        let result: [String: Any] = [
+            "id": id,
+            "startedAt": startedAtMs,
+            "durationMs": Int64((now - startedUptime) * 1000),
+            "mimeType": Self.mimeType,
+            "sizeBytes": size,
+            "silencedMs": Int64(silencedTotal * 1000),
+            "silencedEvents": silencedEvents,
+            "noSignalMs": Int64(noSignalTotal * 1000)
+        ]
+        // Until the web layer confirms the save (deleteAudio), the sidecar lets listPending()
+        // hand the recording back after a failed upload, a relaunch, or an unheard auto-stop.
+        if let json = try? JSONSerialization.data(withJSONObject: result) {
+            try? json.write(to: Self.sidecarURL(id))
+        }
+        return result
+    }
+
+    /// The limit was reached: the same stop as the user's, then "autoStopped" (retained until
+    /// the webview listens; listPending() has the recording regardless).
+    private func autoStop() {
+        guard recorder != nil else { return }
+        let limitMs = Int64(limit * 1000)
+        var recording: Any = NSNull()
+        if let result = finishRecording(reason: "max_duration") { recording = result }
+        notifyListeners("autoStopped", data: [
+            "reason": "max_duration",
+            "maxDurationMs": limitMs,
+            "at": Int64(Date().timeIntervalSince1970 * 1000),
+            "recording": recording
+        ], retainUntilConsumed: true)
     }
 
     @objc func status(_ call: CAPPluginCall) {
@@ -128,17 +178,45 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
                 "state": self.state,
                 "reason": Self.jsonValue(self.reason),
                 "id": Self.jsonValue(self.recordingId),
-                "elapsedMs": Int64(elapsed * 1000)
+                "elapsedMs": Int64(elapsed * 1000),
+                "maxDurationMs": Int64((self.recorder == nil ? Self.maxDuration : self.limit) * 1000)
             ])
         }
     }
 
-    @objc func readAudio(_ call: CAPPluginCall) {
-        guard let id = call.getString("id"), let data = try? Data(contentsOf: Self.fileURL(id)) else {
+    /// Up to `length` bytes of a recording from `offset`, as base64. The web layer reads a note
+    /// part by part (1 MiB, one stored part) so neither side holds the whole file as one string.
+    @objc func readAudioChunk(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), !id.contains("/"),
+              let offset = call.getDouble("offset"), offset.isFinite, offset >= 0,
+              let length = call.getDouble("length"), length.isFinite, length > 0 else {
+            call.reject("readAudioChunk needs an id, an offset >= 0 and a length > 0", "invalid_argument")
+            return
+        }
+        let file = Self.fileURL(id)
+        guard let handle = try? FileHandle(forReadingFrom: file) else {
             call.reject("Voice note audio not found", "not_found")
             return
         }
-        call.resolve(["id": id, "mimeType": Self.mimeType, "base64": data.base64EncodedString()])
+        defer { try? handle.close() }
+        do {
+            let size = try handle.seekToEnd()
+            let start = offset >= Double(size) ? size : UInt64(offset)
+            try handle.seek(toOffset: start)
+            let want = Int(min(UInt64(min(length, Double(Self.maxChunkBytes))), size - start))
+            var data = Data()
+            if want > 0 { data = try handle.read(upToCount: want) ?? Data() }
+            call.resolve([
+                "id": id,
+                "offset": Int64(start),
+                "base64": data.base64EncodedString(),
+                "bytesRead": data.count,
+                "size": Int64(size),
+                "eof": start + UInt64(data.count) >= size
+            ])
+        } catch {
+            call.reject("Could not read voice note audio", "read_failed", error)
+        }
     }
 
     @objc func deleteAudio(_ call: CAPPluginCall) {
@@ -172,7 +250,7 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // MARK: - Recording
 
-    private func startRecording(_ call: CAPPluginCall) {
+    private func startRecording(_ call: CAPPluginCall, limit: TimeInterval) {
         let id = UUID().uuidString.lowercased()
         let file = Self.fileURL(id)
         let settings: [String: Any] = [
@@ -198,6 +276,7 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         recordingId = id
+        self.limit = limit
         startedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
         startedUptime = ProcessInfo.processInfo.systemUptime
         silencedSince = nil
@@ -214,7 +293,7 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         let timer = Timer(timeInterval: Self.levelInterval, repeats: true) { [weak self] _ in self?.levelTick() }
         RunLoop.main.add(timer, forMode: .common)
         levelTimer = timer
-        call.resolve(["id": id, "startedAt": startedAtMs])
+        call.resolve(["id": id, "startedAt": startedAtMs, "maxDurationMs": Int64(limit * 1000)])
     }
 
     private func levelTick() {
@@ -238,6 +317,10 @@ public class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let level = min(1, max(0, pow(10, recorder.averagePower(forChannel: 0) / 20)))
         notifyListeners("level", data: ["level": level])
+        // Wall time, like durationMs: an interruption pauses the file but not the limit.
+        if now - startedUptime >= limit {
+            autoStop()
+        }
     }
 
     // MARK: - OS mic state

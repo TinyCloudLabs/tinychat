@@ -1,4 +1,41 @@
+import groovy.json.JsonSlurper
+
 apply plugin: 'com.android.application'
+
+// Release inputs, each a Gradle property (-PNAME=..., ~/.gradle/gradle.properties) or an environment variable of the
+// same name. CI sets them in .github/workflows/mobile-release-android.yml; see mobile/README.md, "Android release".
+def exoInput = { String name ->
+    def value = providers.gradleProperty(name).orElse(providers.environmentVariable(name)).getOrElse('').trim()
+    return value ? value : null
+}
+
+// One product version for web, desktop and mobile: versionName is frontend/package.json's version (X.Y.Z or
+// X.Y.Z-beta.N). versionCode must grow with every build uploaded to Play, so CI passes one (the release workflow's run
+// number); local builds default to 1.
+def exoVersionName = new JsonSlurper().parse(rootProject.file('../../frontend/package.json')).version
+def exoVersionCodeInput = exoInput('EXO_VERSION_CODE')
+if (exoVersionCodeInput != null && !(exoVersionCodeInput ==~ /[1-9][0-9]{0,9}/ && exoVersionCodeInput.toLong() <= 2100000000L)) {
+    throw new GradleException("EXO_VERSION_CODE must be an integer from 1 to 2100000000 (Play's maximum), got '${exoVersionCodeInput}'")
+}
+def exoVersionCode = exoVersionCodeInput != null ? exoVersionCodeInput.toInteger() : 1
+
+// Upload-key signing for release builds, applied only when all four are set. ANDROID_KEYSTORE_FILE is the path to the
+// upload keystore (.jks); keep it, and the passwords, out of the repo.
+def releaseSigningNames = ['ANDROID_KEYSTORE_FILE', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']
+def releaseSigning = releaseSigningNames.collectEntries { [(it): exoInput(it)] }
+def missingReleaseSigning = releaseSigningNames.findAll { releaseSigning[it] == null }
+
+// EXO_UNSIGNED_RELEASE=true is the one way past the gate's signing check: an unsigned release AAB and APK for
+// mobile-release-android.yml's build job, which has no key. Its separate signing job signs them with apksigner and
+// jarsigner (scripts/release/android-signing.sh), so the upload key never reaches Gradle, its plugins or bun. Refused
+// together with any signing input, so a build is either signed by Gradle or explicitly unsigned for that job. An
+// unsigned release is not installable and Play rejects it; nothing ships without the signing job.
+def unsignedReleaseInput = exoInput('EXO_UNSIGNED_RELEASE')
+if (unsignedReleaseInput != null && unsignedReleaseInput != 'true') {
+    throw new GradleException("EXO_UNSIGNED_RELEASE must be 'true' or unset, got '${unsignedReleaseInput}'")
+}
+def unsignedRelease = unsignedReleaseInput == 'true'
+def signGradleRelease = !unsignedRelease && missingReleaseSigning.isEmpty()
 
 android {
     namespace = "xyz.tinycloud.exo"
@@ -7,8 +44,8 @@ android {
         applicationId "xyz.tinycloud.exo"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode exoVersionCode
+        versionName exoVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,11 +53,67 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (signGradleRelease) {
+            release {
+                storeFile file(releaseSigning.ANDROID_KEYSTORE_FILE)
+                storePassword releaseSigning.ANDROID_KEYSTORE_PASSWORD
+                keyAlias releaseSigning.ANDROID_KEY_ALIAS
+                keyPassword releaseSigning.ANDROID_KEY_PASSWORD
+            }
+        }
+    }
     buildTypes {
         release {
+            if (signGradleRelease) {
+                signingConfig signingConfigs.release
+            }
+            // R8 stays off until a minified build has been exercised on a device: Capacitor ships keep rules for
+            // its plugins, but the app-local VoiceNotes plugin and the WebView bridge have not been checked under R8.
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+    }
+}
+
+// Every release task (assembleRelease, bundleRelease, ...) runs preReleaseBuild, so this gate runs first. Without it AGP
+// quietly builds an unsigned "release", and a `cap sync` run with EXO_DEV_SERVER_URL would ship a shell that loads a
+// dev server instead of the bundled frontend/dist.
+def verifyExoRelease = tasks.register('verifyExoRelease') {
+    group = 'verification'
+    description = 'Refuses a release build that is unsigned (unless EXO_UNSIGNED_RELEASE=true), lacks the bundled web app, or points at a dev server.'
+    def missing = missingReleaseSigning
+    def present = releaseSigningNames.findAll { releaseSigning[it] != null }
+    def unsigned = unsignedRelease
+    def keystore = releaseSigning.ANDROID_KEYSTORE_FILE ? file(releaseSigning.ANDROID_KEYSTORE_FILE) : null
+    def capacitorConfig = file('src/main/assets/capacitor.config.json')
+    def webIndex = file('src/main/assets/public/index.html')
+    doLast {
+        if (unsigned) {
+            if (!present.isEmpty()) {
+                throw new GradleException("EXO_UNSIGNED_RELEASE=true builds without a key, but ${present.join(', ')} is set: unset one or the other.")
+            }
+            logger.warn('EXO_UNSIGNED_RELEASE=true: building an UNSIGNED release for the signing job (scripts/release/android-signing.sh). It is not installable as is.')
+        } else {
+            if (!missing.isEmpty()) {
+                throw new GradleException("Refusing to build an unsigned Exo release: set ${missing.join(', ')} (Gradle properties or environment variables; see mobile/README.md, Android release). Debug builds need none of them.")
+            }
+            if (!keystore.isFile()) {
+                throw new GradleException("ANDROID_KEYSTORE_FILE is not a file: ${keystore}")
+            }
+        }
+        if (!webIndex.isFile() || !capacitorConfig.isFile()) {
+            throw new GradleException("No bundled web app in ${webIndex.parentFile}: run `bun run build:packages && bun run build:frontend`, then `bunx cap sync android` in mobile/.")
+        }
+        def server = new JsonSlurper().parse(capacitorConfig).server
+        if (server?.url) {
+            throw new GradleException("Refusing to build a release that loads ${server.url} instead of the bundled app: ${capacitorConfig} has server.url (EXO_DEV_SERVER_URL was set during `cap sync`). Re-run `bunx cap sync android` without it.")
+        }
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn verifyExoRelease
     }
 }
 
