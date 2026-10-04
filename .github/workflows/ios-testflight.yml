@@ -7,12 +7,17 @@ name: iOS TestFlight (Exo)
 # environment lacks a secret it fails in seconds with the missing names, before any macOS runner or build. Setup and
 # the on-device checklist: mobile/README.md, "iOS release".
 #
-# The build is ios-build.yml with sign: true, the same job CI runs unsigned on every iOS change (mobile.yml). The
-# version is frontend/package.json's product version (X.Y.Z, beta suffix dropped) and the build number is this
-# workflow's run number, so every upload is a new TestFlight build. It is uploaded only after
-# scripts/release/ios-signing.sh verified an App Store signature from APPLE_TEAM_ID; there is no unsigned fallback.
+# Jobs: plan (ios-release: main only, secrets present; runs only scripts/release from the workflow commit) -> build
+# (ios-build.yml with sign: true: its archive job builds with no environment and no secret, its sign job runs in
+# ios-release with only scripts/release checked out at the workflow commit and exports, verifies and uploads) ->
+# report. CI runs the same ios-build.yml unsigned on every iOS change (mobile.yml). The version is
+# frontend/package.json's product version (X.Y.Z, beta suffix dropped) and the build number is this workflow's run
+# number, so every upload is a new TestFlight build. The .ipa that scripts/release/ios-signing.sh verified (an App
+# Store signature from APPLE_TEAM_ID) is the one uploaded; there is no unsigned fallback.
 #
-# Environment `ios-release` (deployment branches: main only; no required reviewer), secrets:
+# Environment `ios-release`: deployment branches main only, and a required reviewer (Sam), because the API key has
+# the Admin role (setup: mobile/README.md, "iOS release"). With the reviewer, each run waits for approval twice: the
+# plan job right after dispatch, the sign job once the archive is built and checked. Secrets:
 #   APPLE_TEAM_ID           10-character Team ID
 #   APPLE_API_KEY           App Store Connect API key ID (Admin role: cloud signing creates the distribution
 #   APPLE_API_ISSUER        issuer ID (UUID)                 certificate and the App Store profile)
@@ -51,10 +56,13 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The release tooling only, from the workflow's own commit; nothing is built here.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
           sparse-checkout: scripts/release
+          persist-credentials: false
 
       - name: Check the ios-release secrets
         env:

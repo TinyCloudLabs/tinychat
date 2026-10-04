@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# App Store Connect helpers for signed Exo iOS builds (.github/workflows/ios-build.yml with sign: true, dispatched by
-# ios-testflight.yml on main). Values come from the ios-release environment secrets and are never printed.
+# App Store Connect helpers for signed Exo iOS builds: ios-testflight.yml's plan job (check) and ios-build.yml's sign
+# job (sign: true, dispatched by ios-testflight.yml on main), which run it from the workflow commit's scripts/release
+# and never run project code. Values come from the ios-release environment secrets and are never printed.
 #
 #   ios-signing.sh check            require APPLE_TEAM_ID, APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_PRIVATE_KEY and
 #                                   their shapes; a missing one fails with its name and nothing is built
@@ -8,8 +9,8 @@
 #                                   the path. Accepts the .p8 file as is, collapsed onto one line (as a single-line
 #                                   secret prompt may deliver it), or base64 of the file; fails unless openssl reads it
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
-#                                   Distribution authority, the team's App Store profile (no devices, no
-#                                   get-task-allow) for xyz.tinycloud.exo
+#                                   Distribution authority, the team's App Store profile (no devices, not an
+#                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.exo
 set -euo pipefail
 
 BUNDLE_ID=xyz.tinycloud.exo
@@ -81,6 +82,10 @@ verify_ipa() {
   security cms -D -i "$app/embedded.mobileprovision" >"$profile" 2>/dev/null || fail "App.app has no readable embedded.mobileprovision"
   if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$profile" >/dev/null 2>&1; then
     fail "the embedded profile lists devices, so it is not an App Store profile"
+  fi
+  # Enterprise (in-house) profiles list no devices either; they carry ProvisionsAllDevices instead.
+  if /usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$profile" >/dev/null 2>&1; then
+    fail "the embedded profile has ProvisionsAllDevices (an in-house enterprise profile), so it is not an App Store profile"
   fi
   [ "$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$profile" 2>/dev/null || echo false)" = false ] ||
     fail "the embedded profile allows get-task-allow (a development profile)"

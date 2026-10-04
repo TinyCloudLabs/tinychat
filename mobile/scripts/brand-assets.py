@@ -13,7 +13,7 @@ Writes (every path is already wired, so nothing else changes):
                                                       splash from styles.xml: brand color + adaptive foreground)
   iOS      Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png   1024 px, opaque (App Store rejects alpha)
            Assets.xcassets/Splash.imageset/splash-2732x2732*.png
-  Store    mobile/assets/play-store-icon.png         512 px Play Console listing icon (not bundled)
+  Store    mobile/assets/play-store-icon.png         512 px Play Console listing icon, 32-bit RGBA PNG (not bundled)
 
 Needs Pillow (`python3 -m pip install pillow`). Run from anywhere: python3 mobile/scripts/brand-assets.py
 """
@@ -100,4 +100,5 @@ ios_splash = place_mark(solid((2732, 2732)), 0.22)
 for name in ("splash-2732x2732.png", "splash-2732x2732-1.png", "splash-2732x2732-2.png"):
     save(ios_splash, XCASSETS / f"Splash.imageset/{name}", opaque=True)
 
-save(MASTER.resize((512, 512), Image.LANCZOS), MOBILE / "assets/play-store-icon.png", opaque=True)
+# Play Console wants a 32-bit PNG (RGBA) for the listing icon; MASTER is RGBA and fully opaque, so keep its alpha channel.
+save(MASTER.resize((512, 512), Image.LANCZOS), MOBILE / "assets/play-store-icon.png")

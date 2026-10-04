@@ -4,13 +4,23 @@ name: Mobile release (Android)
 # upload key and both bundling the production web app (frontend/dist from a production `vite build`; Capacitor synced
 # without EXO_DEV_SERVER_URL, so there is no live-reload server.url).
 #
-# - workflow_dispatch, from main only: `gh workflow run mobile-release-android.yml --ref main`. The job runs in the
-#   `android-release` environment (deployable from main only), the only place the upload key lives, and refuses any
-#   other ref before a secret is referenced. A missing secret fails the run before anything is built; there is no
-#   unsigned fallback (mobile/android/app/build.gradle refuses an unsigned release build as well). The verified AAB,
-#   APK and SHA256SUMS.txt are uploaded as the workflow artifact exo-android-<versionName>-<versionCode>.
-# - pull_request: a rehearsal of the same build, signed with a throwaway key generated on the runner and verified the
-#   same way, so changes to the Android release build are proven before merge. Nothing is uploaded and no secret is used.
+# Three jobs, so the upload key is never on a runner that runs project or third-party build code:
+# - plan (releases only, `android-release` environment): main only, every secret and the pinned certificate variable
+#   present. Runs only scripts/release/android-signing.sh from the workflow commit; nothing is built if it fails.
+# - build (no environment, no secret): bun install, the Vite build, cap sync and Gradle (--no-daemon) build an
+#   UNSIGNED release AAB and APK (EXO_UNSIGNED_RELEASE=true, the one exception mobile/android/app/build.gradle's
+#   verifyExoRelease gate allows) and hand them to the sign job as a short-lived artifact.
+# - sign (releases: `android-release` environment): checks out only scripts/release at the workflow commit and runs no
+#   project code. scripts/release/android-signing.sh signs the APK with apksigner and the AAB with jarsigner, after
+#   refusing a keystore whose certificate is not vars.ANDROID_UPLOAD_CERT_SHA256 (pinned on its own, never derived
+#   from the keystore secret). scripts/release/verify-android-release.sh then checks both files against that variable
+#   before the verified AAB, APK and SHA256SUMS.txt are uploaded as the artifact exo-android-<versionName>-<versionCode>.
+#
+# - workflow_dispatch, from main only: `gh workflow run mobile-release-android.yml --ref main`. Every secret and
+#   variable reference is gated on workflow_dispatch, so no other event can read one.
+# - pull_request: a rehearsal of the same three-job path without the plan: the same unsigned build, signed in the sign
+#   job with a throwaway key generated there and verified the same way (against the throwaway certificate). No
+#   environment, no secret; only the unsigned build is handed between the jobs, and nothing signed is uploaded.
 #
 # Versions (see mobile/README.md, Android release): versionName is frontend/package.json's version, the product version
 # web, desktop and mobile share. versionCode is this workflow's run number: Play needs a strictly greater code for every
@@ -18,7 +28,7 @@ name: Mobile release (Android)
 # merges). A re-run keeps its run number, so it rebuilds the same versionCode; dispatch a new run for a new upload.
 #
 # TODO(play, once the Play Console app exists and its first AAB was uploaded by hand): upload the verified AAB to the
-# internal testing track from this job, after "Verify the signed AAB and APK", with a pinned
+# internal testing track from the sign job, after "Verify the signed AAB and APK", with a pinned
 # r0adkll/upload-google-play (packageName xyz.tinycloud.exo, track internal, status draft until the first review) and a
 # PLAY_SERVICE_ACCOUNT_JSON secret in the android-release environment. Until then, upload the artifact's .aab in Play
 # Console by hand.
@@ -31,6 +41,7 @@ on:
       - "mobile/capacitor.config.ts"
       - "mobile/package.json"
       - ".github/workflows/mobile-release-android.yml"
+      - "scripts/release/android-signing.sh"
       - "scripts/release/verify-android-release.sh"
 
 concurrency:
@@ -41,18 +52,16 @@ permissions:
   contents: read
 
 jobs:
-  android:
-    name: Android (signed AAB + APK)
+  plan:
+    name: Plan (main, secrets, pinned certificate)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # The upload key lives only in this environment (deployment branches: main; no required reviewer).
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'android-release' || '' }}
-    timeout-minutes: 30
-    env:
-      RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+    # The upload key lives only in this environment (deployment branches: main).
+    environment: android-release
+    timeout-minutes: 5
     steps:
       # Before any secret is referenced: only main's copy of this workflow, dispatched on main.
       - name: Require the release workflow from main
-        if: env.RELEASE == 'true'
         env:
           EXPECTED: ${{ github.repository }}/.github/workflows/mobile-release-android.yml@refs/heads/main
           WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -62,27 +71,42 @@ jobs:
             exit 1
           fi
 
-      # Before any build minutes are spent.
-      - name: Check signing secrets
-        if: env.RELEASE == 'true'
-        env:
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          missing=()
-          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [ -z "${!name}" ]; then missing+=("$name"); fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing android-release environment secrets: ${missing[*]} (see mobile/README.md, Android release). Exo for Android is never built unsigned."
-            exit 1
-          fi
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/release
+          persist-credentials: false
 
+      # Before any build minutes are spent; a missing value fails with its name.
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_B64: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_PASSWORD || '' }}
+          ANDROID_UPLOAD_CERT_SHA256: ${{ github.event_name == 'workflow_dispatch' && vars.ANDROID_UPLOAD_CERT_SHA256 || '' }}
+        run: scripts/release/android-signing.sh check
+
+  build:
+    name: Build (unsigned AAB + APK, no secrets)
+    needs: plan
+    # Releases need a passing plan; PR rehearsals have none (skipped).
+    if: ${{ !cancelled() && (needs.plan.result == 'success' || (github.event_name == 'pull_request' && needs.plan.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    # No environment: this job runs bun install, the Vite build, cap sync and Gradle with their plugins, and no
+    # secret is in reach of any of them.
+    timeout-minutes: 30
+    outputs:
+      version-name: ${{ steps.version.outputs.name }}
+    steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      # gradle-wrapper.jar must be a published Gradle wrapper; gradle-wrapper.properties pins the distribution's SHA-256.
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -112,80 +136,144 @@ jobs:
         run: |
           name=$(node -p 'require("./frontend/package.json").version')
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "code=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Exo for Android $name, versionCode $RUN_NUMBER" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # Release: the upload keystore from the environment secret. Rehearsal: a throwaway key that never leaves the
-      # runner. Either way the certificate digest is taken from the keystore, so verification checks the actual signer.
-      - name: Prepare the signing key
-        id: signing
+      # app/build.gradle's verifyExoRelease gate still refuses a missing bundled web app or a dev-server config; with
+      # EXO_UNSIGNED_RELEASE=true (and no signing input) it builds the release unsigned for the sign job.
+      - name: Build the unsigned AAB and APK
+        working-directory: mobile/android
         env:
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          EXO_UNSIGNED_RELEASE: "true"
+          EXO_VERSION_CODE: ${{ github.run_number }}
+        run: ./gradlew --no-daemon bundleRelease assembleRelease --console=plain
+
+      - name: Collect the unsigned build
+        run: |
+          mkdir unsigned
+          cp mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk unsigned/
+          cp mobile/android/app/build/outputs/bundle/release/app-release.aab unsigned/app-release-unsigned.aab
+          (cd unsigned && sha256sum app-release-unsigned.apk app-release-unsigned.aab > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      # Unsigned, so nothing in it is secret. Overwritten by a full re-run; "re-run failed jobs" signs this one again.
+      - name: Hand the unsigned build to the sign job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-android-unsigned
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 3
+          path: unsigned/*
+
+  sign:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'Sign, verify and upload (upload key)' || 'Sign and verify (rehearsal, throwaway key)' }}
+    needs: build
+    # Explicit: on PRs the skipped plan job would otherwise skip this one too.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    # The upload key lives only in this environment (deployment branches: main). This job checks out nothing but
+    # scripts/release at the workflow commit and runs no project code: no bun, no Gradle, no build plugin.
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'android-release' || '' }}
+    timeout-minutes: 15
+    env:
+      RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      # Before any secret is referenced: only main's copy of this workflow, dispatched on main.
+      - name: Require the release workflow from main
+        if: env.RELEASE == 'true'
+        env:
+          EXPECTED: ${{ github.repository }}/.github/workflows/mobile-release-android.yml@refs/heads/main
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$WORKFLOW_REF" != "$EXPECTED" ]; then
+            echo "::error::Android releases run only from main (got $GITHUB_REF, $WORKFLOW_REF). Use: gh workflow run mobile-release-android.yml --ref main"
+            exit 1
+          fi
+
+      # The only checkout: the release tooling from the workflow's own commit.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
+      # keytool, jarsigner and the JDK apksigner runs on; apksigner and zipalign come from the runner's Android SDK.
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Download the unsigned build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: exo-android-unsigned
+          path: ${{ runner.temp }}/unsigned
+
+      # The build job's output is only a string: it must look like a product version before it names anything.
+      - name: Version
+        id: version
+        env:
+          NAME: ${{ needs.build.outputs.version-name }}
+          CODE: ${{ github.run_number }}
+        run: |
+          if ! [[ $NAME =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            echo "::error::the build reports versionName '$NAME', not X.Y.Z or X.Y.Z-beta.N"
+            exit 1
+          fi
+          (cd "$RUNNER_TEMP/unsigned" && sha256sum -c SHA256SUMS.txt)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+
+      # Release: the upload keystore from the environment, its certificate checked against the pinned variable before
+      # anything is signed. Rehearsal: a throwaway key that never leaves this step. The key is deleted when the step
+      # ends, whatever happens.
+      - name: Sign the AAB and APK
+        id: sign
+        env:
+          ANDROID_KEYSTORE_B64: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.ANDROID_KEY_PASSWORD || '' }}
+          ANDROID_UPLOAD_CERT_SHA256: ${{ github.event_name == 'workflow_dispatch' && vars.ANDROID_UPLOAD_CERT_SHA256 || '' }}
         run: |
           dir="$RUNNER_TEMP/android-signing"
-          mkdir -p "$dir"
-          chmod 700 "$dir"
-          keystore="$dir/upload.jks"
+          (umask 077 && mkdir "$dir")
+          trap 'rm -rf "$dir"' EXIT
+          export ANDROID_KEYSTORE_FILE="$dir/upload.jks"
           if [ "$RELEASE" = true ]; then
-            if ! (umask 077 && printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > "$keystore"); then
-              echo "::error::ANDROID_KEYSTORE_B64 is not base64 (store it with: base64 < upload.jks | tr -d '\\n')"
+            scripts/release/android-signing.sh check
+            if ! (umask 077 && printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"); then
+              echo "::error::ANDROID_KEYSTORE_B64 is not base64 of the keystore (mobile/README.md, Android release, shows how to store it)"
               exit 1
             fi
-            alias=$ANDROID_KEY_ALIAS
+            cert=$ANDROID_UPLOAD_CERT_SHA256
           else
             ANDROID_KEYSTORE_PASSWORD=$(openssl rand -hex 24)
             echo "::add-mask::$ANDROID_KEYSTORE_PASSWORD"
-            export ANDROID_KEYSTORE_PASSWORD
-            alias=rehearsal
-            keytool -genkeypair -keystore "$keystore" -storetype PKCS12 -alias "$alias" -keyalg RSA -keysize 2048 \
+            export ANDROID_KEY_ALIAS=rehearsal ANDROID_KEY_PASSWORD=$ANDROID_KEYSTORE_PASSWORD
+            keytool -genkeypair -keystore "$ANDROID_KEYSTORE_FILE" -storetype PKCS12 -alias rehearsal -keyalg RSA -keysize 2048 \
               -validity 1 -dname "CN=Exo CI rehearsal (throwaway)" \
               -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEYSTORE_PASSWORD
-            echo "REHEARSAL_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            # The rehearsal's stand-in for the pinned variable.
+            cert=$(keytool -list -v -keystore "$ANDROID_KEYSTORE_FILE" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias rehearsal |
+              sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1)
+            echo "rehearsal-cert-sha256=$cert" >> "$GITHUB_OUTPUT"
           fi
-          if ! listing=$(keytool -list -v -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$alias" 2>&1); then
-            echo "::error::Cannot open key '$alias' in the keystore: wrong ANDROID_KEYSTORE_PASSWORD or ANDROID_KEY_ALIAS, or ANDROID_KEYSTORE_B64 is not the keystore"
-            exit 1
-          fi
-          cert=$(sed -n 's/^[[:space:]]*SHA256: //p' <<<"$listing" | head -n 1)
-          test -n "$cert"
-          echo "keystore=$keystore" >> "$GITHUB_OUTPUT"
-          echo "cert-sha256=$cert" >> "$GITHUB_OUTPUT"
+          unset ANDROID_KEYSTORE_B64
+          scripts/release/android-signing.sh sign "$RUNNER_TEMP/unsigned/app-release-unsigned.apk" \
+            "$RUNNER_TEMP/unsigned/app-release-unsigned.aab" "$RUNNER_TEMP/signed" "$cert"
           echo "Signing certificate SHA-256: $cert" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # app/build.gradle reads ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
-      # and EXO_VERSION_CODE, and its verifyExoRelease gate refuses an unsigned release or a dev-server config.
-      - name: Build the signed AAB and APK
-        working-directory: mobile/android
-        env:
-          ANDROID_KEYSTORE_FILE: ${{ steps.signing.outputs.keystore }}
-          EXO_VERSION_CODE: ${{ steps.version.outputs.code }}
-          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          if [ "$RELEASE" = true ]; then
-            export ANDROID_KEYSTORE_PASSWORD="$UPLOAD_KEYSTORE_PASSWORD" ANDROID_KEY_ALIAS="$UPLOAD_KEY_ALIAS" ANDROID_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
-          else
-            export ANDROID_KEYSTORE_PASSWORD="$REHEARSAL_PASSWORD" ANDROID_KEY_ALIAS=rehearsal ANDROID_KEY_PASSWORD="$REHEARSAL_PASSWORD"
-          fi
-          unset UPLOAD_KEYSTORE_PASSWORD UPLOAD_KEY_ALIAS UPLOAD_KEY_PASSWORD
-          ./gradlew bundleRelease assembleRelease --console=plain
-
+      # Against the pinned variable for releases (verify-android-release.sh refuses an empty one), the throwaway
+      # certificate for rehearsals.
       - name: Verify the signed AAB and APK
         env:
           VERSION_NAME: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
-          CERT_SHA256: ${{ steps.signing.outputs.cert-sha256 }}
+          CERT_SHA256: ${{ github.event_name == 'workflow_dispatch' && vars.ANDROID_UPLOAD_CERT_SHA256 || steps.sign.outputs.rehearsal-cert-sha256 }}
         run: |
-          outputs=mobile/android/app/build/outputs
-          scripts/release/verify-android-release.sh "$outputs/apk/release/app-release.apk" \
-            "$outputs/bundle/release/app-release.aab" "$VERSION_NAME" "$VERSION_CODE" "$CERT_SHA256"
-
-      - name: Remove the signing key
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/android-signing"
+          scripts/release/verify-android-release.sh "$RUNNER_TEMP/signed/app-release.apk" \
+            "$RUNNER_TEMP/signed/app-release.aab" "$VERSION_NAME" "$VERSION_CODE" "$CERT_SHA256"
 
       - name: Name the release files
         if: env.RELEASE == 'true'
@@ -193,8 +281,8 @@ jobs:
           PREFIX: Exo-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
         run: |
           mkdir dist
-          cp mobile/android/app/build/outputs/bundle/release/app-release.aab "dist/$PREFIX.aab"
-          cp mobile/android/app/build/outputs/apk/release/app-release.apk "dist/$PREFIX.apk"
+          cp "$RUNNER_TEMP/signed/app-release.aab" "dist/$PREFIX.aab"
+          cp "$RUNNER_TEMP/signed/app-release.apk" "dist/$PREFIX.apk"
           (cd dist && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: Upload AAB + APK
