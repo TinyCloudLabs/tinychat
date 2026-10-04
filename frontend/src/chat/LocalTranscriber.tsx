@@ -42,6 +42,7 @@ import {
   type PreparedLocalTranscript,
   type WhisperModel,
 } from "@/lib/localTranscriber";
+import { PrivateCloudDisclosure } from "./PrivateCloudDisclosure";
 
 export type LocalPanelState =
   | "checking-model"
@@ -166,44 +167,18 @@ export interface LocalTranscriberViewProps {
   nearCloudLimit?: boolean;
 }
 
-const TINFOIL_FAQ_URL = "https://tinfoil.sh/security-and-privacy-faq";
-const TINFOIL_PRIVACY_URL = "https://tinfoil.sh/privacy";
-
-/** Plan §5: separate claims for PTX, Tinfoil and TinyChat; nothing "verified" or "end-to-end". */
-const PrivateCloudDisclosure: FC = () => (
-  <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
-    <p>
-      No download needed. After you stop, this recording (up to 2 hours) is uploaded over an encrypted
-      connection to <strong>TinyCloud Private Transcription</strong>, a dedicated confidential virtual machine
-      on Phala Cloud. It sends short speech segments to <strong>Tinfoil</strong> for speech-to-text.
-    </p>
-    <ul className="list-disc space-y-1 pl-4">
-      <li>
-        TinyCloud Private Transcription deletes the audio once transcription finishes or fails. It deletes the
-        text transcript when this app has saved it to your TinyCloud space; otherwise the transcript is
-        scheduled for deletion 24 hours after transcription. Deleted data is no longer available through the
-        service but may remain on its storage media until overwritten. It receives an anonymous account
-        identifier, not your wallet address.
-      </li>
-      <li>
-        Tinfoil processes the segments inside hardware enclaves. It states that it does not retain request or
-        response content after responding, and it keeps billing and usage metadata. See Tinfoil&apos;s{" "}
-        <a href={TINFOIL_FAQ_URL} target="_blank" rel="noopener noreferrer" className="underline">
-          security FAQ
-        </a>{" "}
-        and{" "}
-        <a href={TINFOIL_PRIVACY_URL} target="_blank" rel="noopener noreferrer" className="underline">
-          privacy policy
-        </a>
-        .
-      </li>
-      <li>
-        TinyChat&apos;s server authorizes the upload and relays status and the transcript text back to this
-        app. It never receives your audio.
-      </li>
-      <li>The original recording stays on this Mac.</li>
-    </ul>
-  </div>
+/** The desktop's opening paragraph and recording location for the shared disclosure. */
+const DesktopPrivateCloudDisclosure: FC = () => (
+  <PrivateCloudDisclosure
+    intro={
+      <>
+        No download needed. After you stop, this recording (up to 2 hours) is uploaded over an encrypted
+        connection to <strong>TinyCloud Private Transcription</strong>, a dedicated confidential virtual machine
+        on Phala Cloud. It sends short speech segments to <strong>Tinfoil</strong> for speech-to-text.
+      </>
+    }
+    originalStays="The original recording stays on this Mac."
+  />
 );
 
 const selectClass =
@@ -279,7 +254,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       )}
 
       {cloud ? (
-        <PrivateCloudDisclosure />
+        <DesktopPrivateCloudDisclosure />
       ) : (
         <p className="text-xs text-muted-foreground">
           Record this Mac&apos;s microphone and meeting audio, then transcribe on-device with

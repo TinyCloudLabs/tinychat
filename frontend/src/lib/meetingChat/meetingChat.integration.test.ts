@@ -4,7 +4,10 @@ import { describe, expect, test } from "bun:test";
 import { createChatModelAdapter, type AdapterDeps } from "../../chat/chatModelAdapter";
 import { createMeetingMessageRegistry } from "../../chat/pendingHandoff";
 import { CONNECTORS_KV_PREFIX, meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
+import { readTranscript } from "../connectors/meetingExplorer";
 import { LOCAL_MEETING_SOURCE, prepareLocalTranscript, saveLocalTranscript } from "../localTranscriber";
+import { VOICE_NOTE_SOURCE, listVoiceNotes, saveVoiceNote, saveVoiceNoteTranscript } from "../voiceNotes/voiceNoteStore";
+import { prepareVoiceNoteTranscript } from "../voiceNotes/voiceNoteTranscription";
 import { buildMeetingContext } from "./context";
 import { mergeMeetingCorpus } from "./corpus";
 import { createBrowserMeetingTurnRetriever } from "./retriever";
@@ -204,6 +207,155 @@ describe("exo-local recordings in meeting chat", () => {
       meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE, sourceId: "local:exo-session" }),
       systemMessage: expect.stringContaining("EXO_LOCAL_CANARY"),
     }));
+  });
+});
+
+describe("transcribed voice notes in meeting chat and Library", () => {
+  test("a voice note's private cloud transcript is read by Library and grounds a meeting-chat answer", async () => {
+    const space = sqliteSpace();
+    const recording = {
+      id: "rec-voice-1",
+      startedAt: Date.parse(NOW),
+      durationMs: 42_000,
+      mimeType: "audio/mp4",
+      sizeBytes: 336_000,
+      silencedMs: 0,
+      silencedEvents: 0,
+      noSignalMs: 0,
+    };
+    expect((await saveVoiceNote(space as never, recording, { mimeType: "audio/mp4", base64: "AAAA" }, "android")).ok).toBe(true);
+    // Saved, not yet transcribed: an empty transcript, and nothing for chat to ground on.
+    expect(await readTranscript(space as never, VOICE_NOTE_SOURCE, "rec-voice-1")).toEqual({ status: "ok", sentences: [] });
+
+    const transcript = {
+      language: "en",
+      duration_seconds: 42,
+      provider: "tinfoil",
+      model: "whisper-large-v3-turbo",
+      channels: 1,
+      segments: [
+        { id: "seg_0001", speaker_id: "channel_0", channel: 0, start: 0.5, end: 6, text: "VOICE_NOTE_CANARY remember to book the venue." },
+        { id: "seg_0002", speaker_id: "channel_0", channel: 0, start: 7, end: 12, text: "And send the budget to Avery." },
+      ],
+      text: "Speaker 1: VOICE_NOTE_CANARY remember to book the venue.\nSpeaker 1: And send the budget to Avery.",
+    };
+    const saved = await saveVoiceNoteTranscript(space as never, "rec-voice-1", prepareVoiceNoteTranscript(transcript, NOW));
+    expect(saved.ok).toBe(true);
+
+    // Library: the note's transcript key holds the sentences; the row keeps its title and gains the text.
+    const read = await readTranscript(space as never, VOICE_NOTE_SOURCE, "rec-voice-1");
+    expect(read).toEqual({
+      status: "ok",
+      sentences: [{
+        index: 0,
+        speaker_name: "You",
+        text: "VOICE_NOTE_CANARY remember to book the venue. And send the budget to Avery.",
+        start_time: 0.5,
+        end_time: 12,
+      }],
+    });
+    const listed = await listVoiceNotes(space as never);
+    expect(listed.ok && listed.data).toEqual([expect.objectContaining({
+      sourceId: "rec-voice-1",
+      title: expect.stringContaining("Voice note"),
+      durationSecs: 42,
+      transcript: { status: "transcribed", preview: "VOICE_NOTE_CANARY remember to book the venue. And send the budget to Avery." },
+    })]);
+
+    const retriever = createBrowserMeetingTurnRetriever({
+      tcw: space,
+      // Voice notes have no server copy.
+      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
+    } as never);
+    const outcome = await retriever.retrieve({ threadId: "voice-thread", question: "What did you say in the latest meeting?" });
+    expect(outcome).toEqual(expect.objectContaining({
+      status: "grounded",
+      meeting: expect.objectContaining({ source: VOICE_NOTE_SOURCE, sourceId: "rec-voice-1" }),
+      systemMessage: expect.stringContaining("VOICE_NOTE_CANARY"),
+    }));
+  });
+});
+
+describe("untranscribed voice notes are not meetings", () => {
+  const voiceNote = (id: string, startedAt: string) => ({
+    id,
+    startedAt: Date.parse(startedAt),
+    durationMs: 5_000,
+    mimeType: "audio/mp4",
+    sizeBytes: 40_000,
+    silencedMs: 0,
+    silencedEvents: 0,
+    noSignalMs: 0,
+  });
+  const localMeeting = async (space: ReturnType<typeof sqliteSpace>) =>
+    saveLocalTranscript(space as never, prepareLocalTranscript({
+      sessionId: "real-meeting",
+      startedAt: NOW,
+      model: "QuantizedTinyEn",
+      language: "en",
+      response: {
+        metadata: {},
+        results: { channels: [{ alternatives: [{ transcript: "", confidence: 1, words: [
+          { word: "REAL_MEETING_CANARY", start: 1, end: 1.5, channel: 0 },
+          { word: "agreed", start: 1.6, end: 2, channel: 0 },
+        ] }] }] },
+      } as never,
+    }));
+  const retrieve = (space: ReturnType<typeof sqliteSpace>, question: string) =>
+    createBrowserMeetingTurnRetriever({
+      tcw: space,
+      meetings: { list: async () => ({ status: "feature-dark" }), read: async () => ({ status: "not-found" }) },
+    } as never).retrieve({ threadId: `t-${crypto.randomUUID()}`, question });
+
+  test("a real meeting + a newer untranscribed voice note: the meeting is answered", async () => {
+    const space = sqliteSpace();
+    expect((await localMeeting(space)).ok).toBe(true);
+    // An hour later, a voice note is saved (transcript key written empty) and never transcribed.
+    expect((await saveVoiceNote(space as never, voiceNote("rec-newer", "2026-08-24T10:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios")).ok).toBe(true);
+
+    const outcome = await retrieve(space, "summarize my latest meeting");
+    expect(outcome).toEqual(expect.objectContaining({
+      status: "grounded",
+      meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE, sourceId: "local:real-meeting" }),
+      systemMessage: expect.stringContaining("REAL_MEETING_CANARY"),
+    }));
+  });
+
+  test("the same note becomes the latest meeting once it is transcribed; no speech never does", async () => {
+    const space = sqliteSpace();
+    await localMeeting(space);
+    await saveVoiceNote(space as never, voiceNote("rec-silent", "2026-08-24T11:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios");
+    await saveVoiceNoteTranscript(space as never, "rec-silent", {
+      sentences: [],
+      speakers: [],
+      metadata: { transcription_engine: "private-cloud", transcript_text: null, transcription_outcome: "no_speech" },
+    });
+    await saveVoiceNote(space as never, voiceNote("rec-spoken", "2026-08-24T10:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios");
+    const before = await retrieve(space, "summarize my latest meeting");
+    expect(before).toEqual(expect.objectContaining({ meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE }) }));
+
+    await saveVoiceNoteTranscript(space as never, "rec-spoken", prepareVoiceNoteTranscript({
+      segments: [{ channel: 0, start: 0, end: 3, text: "VOICE_NOTE_LATEST_CANARY call the venue" }],
+      text: "",
+      model: "m",
+      language: "en",
+      provider: "tinfoil",
+    }, NOW));
+    const after = await retrieve(space, "summarize my latest meeting");
+    expect(after).toEqual(expect.objectContaining({
+      status: "grounded",
+      meeting: expect.objectContaining({ source: VOICE_NOTE_SOURCE, sourceId: "rec-spoken" }),
+      systemMessage: expect.stringContaining("VOICE_NOTE_LATEST_CANARY"),
+    }));
+  });
+
+  test("a voice note row with malformed metadata is skipped, not a failed read", async () => {
+    const space = sqliteSpace();
+    await localMeeting(space);
+    await saveVoiceNote(space as never, voiceNote("rec-bad", "2026-08-24T10:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios");
+    await space.sql.db().execute("UPDATE connector_meeting SET metadata = ? WHERE source_id = ?", ["{not json", "rec-bad"]);
+    const outcome = await retrieve(space, "summarize my latest meeting");
+    expect(outcome).toEqual(expect.objectContaining({ status: "grounded", meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE }) }));
   });
 });
 

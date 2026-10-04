@@ -1,6 +1,7 @@
 package xyz.tinycloud.exo.voicenotes;
 
 import android.Manifest;
+import android.os.Build;
 import android.util.Base64;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -25,7 +26,7 @@ import org.json.JSONException;
  *   start()              → { id, startedAt }
  *   stop()               → { id, startedAt, durationMs, mimeType, sizeBytes,
  *                            silencedMs, silencedEvents, noSignalMs }
- *   status()             → { state, reason, id?, elapsedMs }
+ *   status()             → { state, reason, id?, elapsedMs, androidSdkInt }
  *   readAudio({ id })    → { id, mimeType, base64 }
  *   deleteAudio({ id })  → {}
  *   listPending()        → { recordings: [stop() result, ...] } still on the device
@@ -133,6 +134,9 @@ public class VoiceNotesPlugin extends Plugin {
         ret.put("reason", recorder.getReason());
         ret.put("id", recorder.getId());
         ret.put("elapsedMs", recorder.elapsedMs());
+        // The webview offers voice-note transcription only from API 26: below it Capacitor's
+        // native HTTP cannot send a file body (it needs java.util.Base64).
+        ret.put("androidSdkInt", Build.VERSION.SDK_INT);
         call.resolve(ret);
     }
 

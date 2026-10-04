@@ -38,7 +38,8 @@ export interface VoiceNoteRecording {
 export interface VoiceNotesPlugin {
   start(): Promise<{ id: string; startedAt: number }>;
   stop(): Promise<VoiceNoteRecording>;
-  status(): Promise<{ state: MicState; reason: MicStateReason; id: string | null; elapsedMs: number }>;
+  /** `androidSdkInt`: Android only, the OS API level (Build.VERSION.SDK_INT). */
+  status(): Promise<{ state: MicState; reason: MicStateReason; id: string | null; elapsedMs: number; androidSdkInt?: number }>;
   readAudio(options: { id: string }): Promise<{ id: string; mimeType: string; base64: string }>;
   /** Delete after a confirmed save: until then the recording stays on the device. */
   deleteAudio(options: { id: string }): Promise<void>;
@@ -56,4 +57,30 @@ export function nativeVoiceNotesAvailable(): boolean {
 
 export function nativePlatform(): string {
   return Capacitor.getPlatform();
+}
+
+/**
+ * Android 8.0 (API 26). Below it, Capacitor's native HTTP writes an empty body
+ * for a `dataType: "file"` request (CapacitorHttpUrlConnection uses
+ * java.util.Base64, which API 24-25 lack), so a voice note cannot be uploaded.
+ */
+export const MIN_ANDROID_SDK_FOR_FILE_UPLOAD = 26;
+
+/**
+ * Whether this device's native HTTP can send a voice note's bytes. iOS can.
+ * Android asks the plugin for its API level; a shell too old to say is
+ * treated as unable (fail closed).
+ */
+export async function nativeHttpFileUploadSupported(
+  platform: string = Capacitor.getPlatform(),
+  status: () => Promise<{ androidSdkInt?: number }> = () => VoiceNotes.status(),
+): Promise<boolean> {
+  if (platform === "ios") return true;
+  if (platform !== "android") return false;
+  try {
+    const { androidSdkInt } = await status();
+    return typeof androidSdkInt === "number" && androidSdkInt >= MIN_ANDROID_SDK_FOR_FILE_UPLOAD;
+  } catch {
+    return false;
+  }
 }

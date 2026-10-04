@@ -4,13 +4,16 @@
 // a voice note is a Library item like any meeting.
 //
 //   SQL  connector_meeting  source = "exo-voice-note", source_id = recording id
-//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}  → JSON { mimeType, base64 }
+//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}       → JSON { mimeType, base64 }
+//   KV   {APP_ID}/connectors/exo-voice-note/transcript/{id}  → FirefliesSentence[]
 //
-// The transcript key (transcriptKvKey) is written empty until transcription
-// lands; the Library and the meeting chat corpus read it like any other.
+// The transcript key (transcriptKvKey) is written empty with the note and
+// filled when private cloud transcription lands (saveVoiceNoteTranscript);
+// the Library and the meeting chat corpus read it like any other.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import type { FirefliesSentence } from "../connectors/firefliesClient";
 import {
   CONNECTORS_KV_PREFIX,
   CONNECTORS_SQL_DB_NAME,
@@ -46,12 +49,45 @@ export interface VoiceNoteAudio {
   base64: string;
 }
 
+/** Where a note's transcript stands, from its row's metadata. */
+export interface VoiceNoteTranscriptState {
+  status: "none" | "transcribed" | "no_speech";
+  /** The start of the transcript text, for the card; the full text is in Library. */
+  preview: string | null;
+}
+
 export interface VoiceNoteListItem {
   id: string;
   sourceId: string;
   title: string | null;
   startedAt: string | null;
   durationSecs: number | null;
+  transcript: VoiceNoteTranscriptState;
+}
+
+const TRANSCRIPT_PREVIEW_CHARS = 280;
+
+/** Reads the transcript fields saveVoiceNoteTranscript writes; anything else is "none". */
+export function voiceNoteTranscriptState(metadata: unknown): VoiceNoteTranscriptState {
+  let parsed = metadata;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed) as unknown;
+    } catch {
+      parsed = null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return { status: "none", preview: null };
+  const m = parsed as Record<string, unknown>;
+  if (m.transcription_outcome === "no_speech") return { status: "no_speech", preview: null };
+  if (typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0) {
+    const text = m.transcript_text.trim();
+    return {
+      status: "transcribed",
+      preview: text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text,
+    };
+  }
+  return { status: "none", preview: null };
 }
 
 /** Audio first, then the row: a listed note always has audio behind it. */
@@ -102,7 +138,7 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const res = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-    `SELECT id, source_id, title, started_at, duration_secs FROM connector_meeting
+    `SELECT id, source_id, title, started_at, duration_secs, metadata FROM connector_meeting
      WHERE source = ? ORDER BY started_at DESC LIMIT ?`,
     [VOICE_NOTE_SOURCE, limit],
   );
@@ -123,9 +159,99 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
       title: typeof row[2] === "string" ? row[2] : null,
       startedAt: typeof row[3] === "string" ? row[3] : null,
       durationSecs: typeof row[4] === "number" ? row[4] : null,
+      transcript: voiceNoteTranscriptState(row[5]),
     });
   }
   return { ok: true, data: notes };
+}
+
+/** One note's row as transcription needs it; `null` when the note does not exist. */
+export interface VoiceNoteForTranscription {
+  transcript: VoiceNoteTranscriptState;
+  /** From the row (or its capture metadata); null when neither says. */
+  durationSeconds: number | null;
+}
+
+export async function readVoiceNoteForTranscription(
+  tcw: TinyCloudWeb,
+  sourceId: string,
+): Promise<StoreResult<VoiceNoteForTranscription | null>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const res = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+    `SELECT duration_secs, metadata FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
+    [VOICE_NOTE_SOURCE, sourceId],
+  );
+  if (!res.ok) {
+    return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `readVoiceNoteForTranscription: ${res.error.message}` } };
+  }
+  const row = res.data.rows[0];
+  if (!row) return { ok: true, data: null };
+  let durationSeconds: number | null = typeof row[0] === "number" ? row[0] : null;
+  if (durationSeconds === null && typeof row[1] === "string") {
+    try {
+      const ms = (JSON.parse(row[1]) as { capture?: { duration_ms?: unknown } }).capture?.duration_ms;
+      if (typeof ms === "number") durationSeconds = ms / 1000;
+    } catch {
+      // Unknown length: the audio's own size is checked before it is decoded.
+    }
+  }
+  return { ok: true, data: { transcript: voiceNoteTranscriptState(row[1]), durationSeconds } };
+}
+
+/** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
+export interface VoiceNoteTranscriptSave {
+  /** Empty when no speech was found: the transcript key stays `[]`. */
+  sentences: FirefliesSentence[];
+  /** Merged into the row's metadata (engine, provider, model, transcript_text, ...). */
+  metadata: Record<string, unknown>;
+  /** Speakers named in the sentences, as the row's participants. */
+  speakers: string[];
+}
+
+/**
+ * Write a transcription onto an EXISTING note: the sentences go to the note's
+ * transcript key (`transcriptKvKey("exo-voice-note", id)`) and the metadata is
+ * merged into its row through upsertMeeting, which keeps the title, start time
+ * and duration because they are passed as null. Refuses (rather than create a
+ * row with no audio behind it) when the note is gone.
+ */
+export async function saveVoiceNoteTranscript(
+  tcw: TinyCloudWeb,
+  sourceId: string,
+  transcript: VoiceNoteTranscriptSave,
+): Promise<StoreResult<UpsertMeetingOutcome>> {
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const existing = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+    `SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1`,
+    [VOICE_NOTE_SOURCE, sourceId],
+  );
+  if (!existing.ok) {
+    return { ok: false, error: { code: existing.error.code ?? "STORE_ERROR", message: `saveVoiceNoteTranscript: ${existing.error.message}` } };
+  }
+  if (existing.data.rows.length === 0) {
+    return { ok: false, error: { code: "VOICE_NOTE_NOT_FOUND", message: "saveVoiceNoteTranscript: the voice note no longer exists" } };
+  }
+  return upsertMeeting(
+    tcw,
+    {
+      id: crypto.randomUUID(),
+      source: VOICE_NOTE_SOURCE,
+      sourceId,
+      title: null,
+      startedAt: null,
+      durationSecs: null,
+      organizerEmail: null,
+      participants: transcript.speakers.map((name) => ({ name, email: null })),
+      summaryOverview: null,
+      summaryActionItems: null,
+      keywords: null,
+      meetingType: null,
+      metadata: transcript.metadata,
+    },
+    transcript.sentences,
+  );
 }
 
 export async function loadVoiceNoteAudio(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<VoiceNoteAudio>> {

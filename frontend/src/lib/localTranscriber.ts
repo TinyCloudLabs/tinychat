@@ -40,6 +40,7 @@ import {
   isTransientCloudError,
   loadPrivateCloudNative,
   localStoragePendingCloudStore,
+  privateCloudJobClient,
   privateCloudMessage,
   PrivateCloudError,
   toPrivateCloudError,
@@ -1265,6 +1266,9 @@ export function createLocalTranscriber(
         if (err instanceof PrivateCloudError && err.code === "transcription_not_found") return "ended";
         throw err;
       }
+      // Another client's job on this account (an Exo mobile voice note): its own app finishes and
+      // deletes it. Adopting it here would save it as an Exo Local recording and delete it at PTX.
+      if (privateCloudJobClient(first) !== "exo-desktop") return "unfinishable";
       if (first.status === "awaiting_upload") return "unfinishable";
       if (first.status === "failed" || first.status === "cancelled") return "ended";
       report?.({ kind: "cloud-recovering" });
@@ -1885,6 +1889,8 @@ export function createLocalTranscriber(
       let finished = 0;
       for (const listed of await cloud.api.list()) {
         if (known.has(listed.id)) continue;
+        // Only jobs this desktop app made (its channel labels); a phone's voice note is not ours.
+        if (privateCloudJobClient(listed) !== "exo-desktop") continue;
         // awaiting_upload: only its own recording can upload it; it expires on its own.
         if (listed.status !== "queued" && listed.status !== "processing" && listed.status !== "completed") continue;
         try {
