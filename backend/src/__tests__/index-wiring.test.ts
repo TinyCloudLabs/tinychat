@@ -101,6 +101,7 @@ async function runIsolatedStartup(env: Record<string, string | undefined>) {
       if (id === "./agent-stream-policy.js") return load("./agent-stream-policy.ts");
       if (id === "./transcripts/meeting-rollout.js") return load("./transcripts/meeting-rollout.ts");
       if (id === "./services/private-cloud-transcription.js") return load("./services/private-cloud-transcription.ts");
+      if (id === "./services/assemblyai-hosted.js") return load("./services/assemblyai-hosted.ts");
       if (id in known) return known[id];
       // These import collaborators only register handlers or hold inert local state.
       return new Proxy({}, { get: (_target, name) => {
@@ -433,6 +434,16 @@ describe("backend index middleware wiring", () => {
     expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
   });
 
+  test("hosted AssemblyAI mounts once, unconditionally, behind auth, and its parts skip the global JSON parser", () => {
+    const mount = INDEX.indexOf("\n  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter(");
+    expect(mount).toBeGreaterThan(-1);
+    expect(INDEX.match(/app\.use\(\s*ASSEMBLYAI_HOSTED_MOUNT/g)).toHaveLength(1);
+    expect(mount).toBeGreaterThan(INDEX.indexOf("createCsrfMiddleware()"));
+    expect(mount).toBeGreaterThan(INDEX.indexOf("applyRateLimiters(app)"));
+    const parser = INDEX.slice(INDEX.indexOf("const globalJsonParser"), INDEX.indexOf("app.use(createCsrfMiddleware())"));
+    expect(parser).toContain("isHostedPartPath(req.path)");
+  });
+
   test("large NRAS JSON parsing happens after auth on the route mount", () => {
     expect(INDEX).not.toContain('app.use("/api/nras-proxy", express.json({ limit: "4mb" }))');
     expect(INDEX).toContain(
@@ -487,6 +498,25 @@ test("armed private cloud transcription with a bad or missing value refuses boot
     expect(result.logs.join(" ")).toContain("PRIVATE_CLOUD_TRANSCRIPTION_");
     expect(result.logs.join(" ")).not.toContain("synthetic-ptx-batch-key");
     expect(result.logs.join(" ")).not.toContain("q3Jm8V0t");
+    expect(result.calls).toEqual(["exit"]);
+  }
+});
+
+test("a set but weak or reused hosted AssemblyAI handle key refuses boot before startup effects, without logging values", async () => {
+  const unset = await runIsolatedStartup({ ...AGENT_ENV, ...STREAM_ENV, ASSEMBLYAI_API_KEY: "synthetic-assemblyai-server-key" });
+  // One key alone is "hosted off", not a boot failure.
+  expect(unset.logs).toEqual([]);
+  expect(unset.calls).toContain("agent-router");
+  for (const handleKey of ["short-weak-value", "synthetic-assemblyai-server-key"]) {
+    const result = await runIsolatedStartup({
+      ...AGENT_ENV,
+      ...STREAM_ENV,
+      ASSEMBLYAI_API_KEY: "synthetic-assemblyai-server-key",
+      ASSEMBLYAI_HOSTED_HANDLE_KEY: handleKey,
+    });
+    expect(result.logs.join(" ")).toContain("ASSEMBLYAI_HOSTED_HANDLE_KEY");
+    expect(result.logs.join(" ")).not.toContain("synthetic-assemblyai-server-key");
+    expect(result.logs.join(" ")).not.toContain("short-weak-value");
     expect(result.calls).toEqual(["exit"]);
   }
 });

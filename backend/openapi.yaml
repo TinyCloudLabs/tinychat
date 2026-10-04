@@ -1776,6 +1776,310 @@ paths:
               schema:
                 $ref: "#/components/schemas/AssemblyAiDeleteError"
 
+  /api/transcriber/assemblyai/capabilities:
+    get:
+      operationId: getAssemblyAiCapabilities
+      summary: Whether AssemblyAI under TinyCloud's account is available, and its limits
+      description: >-
+        Always mounted. `hosted` is false when the server key or the handle key is not
+        configured; clients can still use their own AssemblyAI key.
+        `daily_bytes_remaining` is this account's allowance left today (UTC), null when
+        hosted mode is off. The allowance is in memory: a backend restart resets it.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiCapabilities"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /api/transcriber/assemblyai/hosted/uploads:
+    post:
+      operationId: createAssemblyAiHostedUpload
+      summary: Start a hosted upload (audio follows in ≤1 MiB parts)
+      description: >-
+        Charges `byte_size` to this account's daily allowance. One upload per account: a
+        new create replaces the account's previous upload if it was never sent (its bytes
+        are refunded). A global cap bounds concurrent uploads. The upload expires after
+        one hour. Requires `X-Requested-With: XMLHttpRequest`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [byte_size, content_type]
+              properties:
+                byte_size:
+                  type: integer
+                  minimum: 1
+                  maximum: 120960000
+                content_type:
+                  type: string
+                  enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upload_id, part_size, expires_at]
+                properties:
+                  upload_id:
+                    type: string
+                  part_size:
+                    type: integer
+                    const: 1048576
+                  expires_at:
+                    type: string
+                    format: date-time
+        "400":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "413":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "415":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "429":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/uploads/{upload_id}:
+    parameters:
+      - name: upload_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteAssemblyAiHostedUpload
+      summary: Abandon an upload that was not sent (spool deleted, bytes refunded)
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Abandoned
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "409":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "410":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/uploads/{upload_id}/parts/{index}:
+    parameters:
+      - name: upload_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 0
+    put:
+      operationId: putAssemblyAiHostedUploadPart
+      summary: One part of the audio, written at index × part_size
+      description: >-
+        Exactly `part_size` bytes, except the last part (the remainder). A re-PUT of the
+        same index overwrites it. Has its own rate-limit bucket, sized so a full-size
+        upload's 116 parts fit several times per window.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              maxLength: 1048576
+      responses:
+        "204":
+          description: Stored
+        "400":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "409":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "410":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/transcripts:
+    post:
+      operationId: createAssemblyAiHostedTranscript
+      summary: Send a complete upload to AssemblyAI and start its transcript
+      description: >-
+        Requires every part. Streams the spooled audio to AssemblyAI with TinyCloud's key,
+        deletes the spool in every outcome, then creates the transcript with
+        `language_detection` on. Answers a signed handle, never AssemblyAI's transcript
+        id; the handle is bound to this account and expires after 7 days. A refused
+        server key is answered 502 (our fault), never 401/422.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [upload_id, speaker_labels]
+              properties:
+                upload_id:
+                  type: string
+                speaker_labels:
+                  type: boolean
+      responses:
+        "201":
+          description: Started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                    description: The handle (`aah1.<payload>.<signature>`).
+                  status:
+                    type: string
+                    enum: [queued, processing, completed, error]
+        "400":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "409":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "410":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "429":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "502":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/transcripts/{handle}:
+    parameters:
+      - name: handle
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getAssemblyAiHostedTranscript
+      summary: The transcript, rebuilt to a fixed subset
+      description: >-
+        A forged, expired or other account's handle is 404 and AssemblyAI is not asked.
+        `error` is a fixed sentence when AssemblyAI failed the transcript; its own text is
+        never relayed.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The transcript
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssemblyAiHostedTranscript"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "429":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "502":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+    delete:
+      operationId: deleteAssemblyAiHostedTranscript
+      summary: Delete the transcript (and its audio) at AssemblyAI
+      description: AssemblyAI's "not found" answers also map to 204.
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Deleted, or already gone
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "429":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "502":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
+  /api/transcriber/assemblyai/hosted/transcripts/{handle}/sentences:
+    parameters:
+      - name: handle
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getAssemblyAiHostedSentences
+      summary: The transcript's sentences
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Sentences
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sentences]
+                properties:
+                  sentences:
+                    type: array
+                    items:
+                      type: object
+                      required: [start, end, text, speaker]
+                      properties:
+                        start:
+                          type: number
+                        end:
+                          type: number
+                        text:
+                          type: string
+                        speaker:
+                          type: [string, "null"]
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "429":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "502":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+        "503":
+          $ref: "#/components/responses/AssemblyAiHostedFailure"
+
   /api/transcriber/private-cloud/capabilities:
     get:
       operationId: getPrivateCloudTranscriptionCapabilities
@@ -2215,6 +2519,82 @@ components:
             - assemblyai_unavailable
         message:
           type: string
+    AssemblyAiCapabilities:
+      type: object
+      required: [hosted, max_bytes, part_size, content_types, daily_bytes_remaining]
+      properties:
+        hosted:
+          type: boolean
+        max_bytes:
+          type: integer
+          const: 120960000
+        part_size:
+          type: integer
+          const: 1048576
+        content_types:
+          type: array
+          items:
+            type: string
+            enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
+        daily_bytes_remaining:
+          type: [integer, "null"]
+    AssemblyAiHostedTranscript:
+      type: object
+      required: [id, status, error, language_code, audio_duration, text, utterances]
+      properties:
+        id:
+          type: string
+          description: The handle.
+        status:
+          type: string
+          enum: [queued, processing, completed, error]
+        error:
+          type: [string, "null"]
+        language_code:
+          type: [string, "null"]
+        audio_duration:
+          type: [number, "null"]
+        text:
+          type: [string, "null"]
+        utterances:
+          type: [array, "null"]
+          items:
+            type: object
+            required: [speaker, start, end, text]
+            properties:
+              speaker:
+                type: [string, "null"]
+              start:
+                type: number
+              end:
+                type: number
+              text:
+                type: string
+    AssemblyAiHostedError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - assemblyai_upload_not_found
+            - assemblyai_transcript_not_found
+            - assemblyai_upload_incomplete
+            - assemblyai_upload_in_progress
+            - assemblyai_upload_expired
+            - recording_too_large
+            - unsupported_audio
+            - assemblyai_quota_exceeded
+            - assemblyai_busy
+            - assemblyai_rate_limited
+            - assemblyai_unavailable
+            - assemblyai_hosted_unavailable
+        message:
+          type: string
+        retry_after_seconds:
+          type: integer
+          description: With a 429 (also the Retry-After header).
     PrivateCloudJobStatus:
       type: string
       enum: [awaiting_upload, queued, processing, completed, failed, cancelled]
@@ -3332,6 +3712,12 @@ components:
             (a Google 5xx is answered 502). 0 means the request never completed.
 
   responses:
+    AssemblyAiHostedFailure:
+      description: A fixed error code and message (never AssemblyAI's text)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AssemblyAiHostedError"
     PrivateCloudFailure:
       description: A stable public error code with a correlation id
       content:

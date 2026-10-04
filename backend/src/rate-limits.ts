@@ -88,6 +88,16 @@ export const CALENDAR_AUTOJOIN_PATHS = ["/api/connectors/google/autojoin"] as co
 export const TRANSCRIBER_LIMIT = 600;
 export const TRANSCRIBER_PATHS = ["/api/transcriber"] as const;
 
+/**
+ * Hosted AssemblyAI uploads (routes/assemblyai-hosted.ts) arrive in 1 MiB parts, because the
+ * ingress refuses larger bodies: one 120,960,000-byte recording is 116 part PUTs plus its create.
+ * They get their own bucket (and leave the transcriber one) so an upload can never starve the
+ * polling that follows it, and one IP fits four full-size uploads per window: more than the
+ * per-account daily allowance (three) and the one-active-upload-per-account rule allow anyway.
+ */
+export const ASSEMBLYAI_HOSTED_UPLOAD_LIMIT = 480;
+export const ASSEMBLYAI_HOSTED_UPLOAD_PATHS = ["/api/transcriber/assemblyai/hosted/uploads"] as const;
+
 const DEDICATED_PATHS = [
   ...VERIFICATION_PATHS,
   ...CONNECTOR_COMPANION_PATHS,
@@ -104,7 +114,7 @@ function matchesMountPath(path: string, mount: string): boolean {
 
 /** Mount the global limiter (exempting every path that carries its own bucket) plus one
  *  dedicated limiter per group: verification, connector companions, connector meetings,
- *  delegations, google oauth, transcriber. */
+ *  delegations, google oauth, transcriber, hosted AssemblyAI uploads. */
 export function applyRateLimiters(app: Express): void {
   app.set("trust proxy", 1);
   const verificationLimiter = rateLimit({
@@ -148,6 +158,14 @@ export function applyRateLimiters(app: Express): void {
     limit: TRANSCRIBER_LIMIT,
     standardHeaders: "draft-7",
     legacyHeaders: false,
+    // Mounted under /api/transcriber, so the full path is baseUrl + path.
+    skip: (req) => ASSEMBLYAI_HOSTED_UPLOAD_PATHS.some((p) => matchesMountPath(`${req.baseUrl}${req.path}`, p)),
+  });
+  const hostedUploadLimiter = rateLimit({
+    windowMs: WINDOW_MS,
+    limit: ASSEMBLYAI_HOSTED_UPLOAD_LIMIT,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
   });
   const globalLimiter = rateLimit({
     windowMs: WINDOW_MS,
@@ -164,4 +182,5 @@ export function applyRateLimiters(app: Express): void {
   for (const p of GOOGLE_OAUTH_PATHS) app.use(p, googleOAuthLimiter);
   for (const p of CALENDAR_AUTOJOIN_PATHS) app.use(p, calendarAutojoinLimiter);
   for (const p of TRANSCRIBER_PATHS) app.use(p, transcriberLimiter);
+  for (const p of ASSEMBLYAI_HOSTED_UPLOAD_PATHS) app.use(p, hostedUploadLimiter);
 }
