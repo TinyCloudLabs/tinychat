@@ -67,30 +67,12 @@ Debug the WebView over CDP:
 `adb forward tcp:9333 localabstract:$(adb shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -1)`.
 Then connect a DevTools client to `http://127.0.0.1:9333`.
 
-### Known issue: Android cannot resolve Phala-gateway hostnames
+### Emulator smoke harness
 
-`api.openkey.so`, `api.tinycloud.chat` and `tee.node.tinycloud.xyz` are CNAMEs
-to `_.dstack-pha-prod5.phala.network`. Android's system resolver rejects a
-CNAME target whose label is `_`, so inside the WebView these hosts fail with
-`net::ERR_NAME_NOT_RESOLVED`. This happens even over Private DNS (DoT)
-straight to Cloudflare, so it is not an emulator artifact. Sign-in, the backend
-and the TinyCloud node are all unreachable until it is fixed.
-
-- **Fix (DNS):** point each CNAME at an underscore-free name under the same
-  gateway. For example `<app-id>-443.dstack-pha-prod5.phala.network`: the
-  gateway's wildcard resolves it, and routing still comes from the
-  `_dstack-app-address` TXT record.
-- **Dev workaround:** run a local forwarder that answers those hosts with the
-  gateway IP, e.g. `dnsmasq` with `address=/api.openkey.so/<ip>` on
-  `127.0.0.2`. Then start the emulator with `-dns-server 127.0.0.2` and set
-  Private DNS off.
-
-### Emulator microphone
-
-`-no-window` runs a headless qemu build without PulseAudio, so the guest mic is
-silent. Use `-qt-hide-window` with `QT_QPA_PLATFORM=offscreen`, and route a
-PulseAudio null sink's monitor to the guest mic (`PULSE_SOURCE=<sink>.monitor`).
-Then play a clip into that sink while the app records.
+`mobile/scripts/android-dev/` runs the app on a headless emulator with a working microphone, drives
+the WebView over DevTools, and has an end-to-end voice-note smoke test (`smoke-voice-note.sh`). See
+its README for setup and gotchas: the `-no-window` mic trap, OpenKey email-code sign-in, and the
+Android `_` CNAME DNS issue (fixed in production, TC-513).
 
 ## Android release
 
