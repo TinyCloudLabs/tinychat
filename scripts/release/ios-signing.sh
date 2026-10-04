@@ -7,7 +7,8 @@
 #                                   their shapes; a missing one fails with its name and nothing is built
 #   ios-signing.sh write-key <dir>  write APPLE_API_PRIVATE_KEY to <dir>/AuthKey_<APPLE_API_KEY>.p8 (mode 600) and print
 #                                   the path. Accepts the .p8 file as is, collapsed onto one line (as a single-line
-#                                   secret prompt may deliver it), or base64 of the file; fails unless openssl reads it
+#                                   secret prompt may deliver it), or base64 of the file; fails unless openssl reads it.
+#                                   desktop-signing.sh write-key (desktop notarization) runs this too
 #   ios-signing.sh verify-ipa <ipa> require an App Store build signed by APPLE_TEAM_ID: valid deep signature, Apple
 #                                   Distribution authority, the team's App Store profile (no devices, not an
 #                                   in-house ProvisionsAllDevices profile, no get-task-allow) for xyz.tinycloud.exo

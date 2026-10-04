@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -906,17 +906,25 @@ test('desktop releases run main\'s workflow on a validated tag and publish unsig
   assert.match(publish, /--title "\$TITLE"/);
 });
 
-// The `run: |` script of the named workflow step, dedented.
+// The `run:` script of the named workflow step (a `run: |` block dedented, or a one-line `run: <command>`).
 function stepScript(text, name) {
-  const lines = text.slice(text.indexOf(`- name: ${name}\n`)).split('\n');
-  const runLine = lines.findIndex(line => /^\s+run: \|$/.test(line));
-  const indent = lines[runLine].indexOf('run:') + 2;
+  const start = text.indexOf(`- name: ${name}\n`);
+  assert.notEqual(start, -1, `no step ${name}`);
+  const lines = text.slice(start).split('\n');
+  const stepIndent = lines[0].indexOf('- name:');
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() && line.search(/\S/) <= stepIndent);
+  const step = end === -1 ? lines : lines.slice(0, end);
+  const runLine = step.findIndex(line => /^\s+run: /.test(line));
+  assert.notEqual(runLine, -1, `step ${name} has no run:`);
+  const inline = /^\s+run: (.*)$/.exec(step[runLine])[1];
+  if (inline !== '|') return inline;
+  const indent = step[runLine].indexOf('run:') + 2;
   const body = [];
-  for (const line of lines.slice(runLine + 1)) {
+  for (const line of step.slice(runLine + 1)) {
     if (line.trim() && line.search(/\S/) < indent) break;
     body.push(line.slice(indent));
   }
-  return body.join('\n');
+  return body.join('\n').replace(/\n+$/, '');
 }
 
 test('the publish gate passes only a build that matches the plan\'s explicit signing mode', () => {
@@ -990,57 +998,14 @@ test('deploy-target.mjs gates an older release commit from main\'s checkout (rol
   assert.match(rollback.stdout, /^label=@tinychat\/backend@0\.1\.1$/m);
 });
 
-// Signing: only main's release workflow reaches the desktop-release environment, compiles without secrets, and
-// verifies signing and notarization before anything is uploaded or published.
-test('release builds are signed from main only, compiled without secrets, and verified before upload', () => {
-  const build = read(repo, '.github/workflows/desktop-build.yml');
-  assert.match(build, /environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}/);
-  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
-  assert.doesNotMatch(read(repo, '.github/workflows/desktop.yml'), /sign:/);
-  assert.doesNotMatch(build, /continue-on-error/);
-
-  const steps = ['Verify signing provenance', 'Check signing secrets', 'Build Exo desktop app', 'Write the App Store Connect API key',
-    'Bundle Exo (signed and notarized for releases)', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Verify the ad-hoc seal',
-    'Package .app', 'Upload dmg + app'];
-  const order = steps.map(name => build.indexOf(`- name: ${name}\n`));
-  assert.ok(order.every(index => index !== -1), `steps: ${order}`);
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'provenance and secrets are checked first; verification passes before packaging and upload');
-  assert.ok(build.indexOf('${{ secrets.') > build.indexOf('- name: Verify signing provenance\n'), 'no secret is referenced before the provenance check');
-  for (const name of ['Verify signing provenance', 'Check signing secrets', 'Write the App Store Connect API key', 'Notarize and staple the DMG', 'Verify signing and notarization']) {
-    assert.match(build, new RegExp(`- name: ${name}\\n(?:\\s+id: \\w+\\n)?\\s+if: inputs\\.sign\\n`));
-  }
-  const provenance = build.slice(build.indexOf('- name: Verify signing provenance'), build.indexOf('- name: Check signing secrets'));
-  assert.match(provenance, /EXPECTED: \$\{\{ github\.repository \}\}\/\.github\/workflows\/desktop-release\.yml@refs\/heads\/main/);
-  assert.match(provenance, /\[ "\$GITHUB_REF" != refs\/heads\/main \]/);
-  assert.match(provenance, /git merge-base --is-ancestor "\$WORKFLOW_SHA" origin\/main/);
-  assert.match(provenance, /git merge-base --is-ancestor "\$sha" origin\/main/);
-  assert.match(provenance, /git tag --points-at "\$sha"/);
-
-  // Signing secrets reach only the bundle step (tauri bundle compiles nothing), never the compile step.
-  const step = name => build.slice(build.indexOf(`- name: ${name}\n`), build.indexOf('\n\n', build.indexOf(`- name: ${name}\n`)));
-  assert.doesNotMatch(step('Build Exo desktop app'), /secrets\./);
-  assert.match(step('Bundle Exo (signed and notarized for releases)'), /secrets\.APPLE_CERTIFICATE/);
-  assert.match(build, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
-
-  // Unsigned builds (CI and EXO_DESKTOP_SIGNING=unsigned releases) are ad-hoc sealed and must pass codesign --verify.
-  assert.match(step('Bundle versions'), /if \[ "\$SIGN" = true \]; then\n\s+node \.release-tooling\/scripts\/release\/desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle"\n\s+else\n\s+node \.release-tooling\/scripts\/release\/desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign\n/);
-  const seal = step('Verify the ad-hoc seal');
-  assert.match(seal, /^- name: Verify the ad-hoc seal\n\s+if: \$\{\{ !inputs\.sign \}\}\n/);
-  assert.match(seal, /for bundle in desktop\/src-tauri\/target\/release\/bundle\/macos\/Exo\.app "\$mnt\/Exo\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
-  assert.doesNotMatch(seal, /\|\| true|continue-on-error|secrets\./);
-
-  const conf = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
-  assert.equal(conf.bundle.macOS.hardenedRuntime, true);
-  assert.equal(conf.bundle.macOS.entitlements, 'Entitlements.plist');
-  assert.match(read(repo, 'desktop/src-tauri/Entitlements.plist'), /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/);
-  assert.equal(conf.bundle.macOS.signingIdentity, undefined, 'the identity comes from CI only, so local builds stay unsigned');
-});
-
 // Release tooling vs app source: a release builds the tag's commit, but every script the workflows run comes from the
 // workflow commit (github.workflow_sha, main for releases). exo-desktop@0.2.0-beta.3 failed when main's desktop-build.yml
 // passed --ad-hoc-sign to the tag's older desktop-bundle-config.mjs.
 test('desktop builds and releases run release tooling from the workflow commit, never from the built tree', t => {
-  const build = read(repo, '.github/workflows/desktop-build.yml');
+  const workflow = read(repo, '.github/workflows/desktop-build.yml');
+  // The build job checks out the app at `ref` and the tooling separately; the preflight and sign jobs check out only
+  // the tooling (see the signing job-graph test below).
+  const build = jobText(workflow, 'build');
   const at = name => build.indexOf(`- name: ${name}\n`);
   const tooling = build.slice(at('Check out the release tooling'), build.indexOf('\n\n', at('Check out the release tooling')));
   assert.match(tooling, /\n\s+uses: actions\/checkout@[0-9a-f]{40} # v\S+\n\s+with:\n/);
@@ -1048,16 +1013,10 @@ test('desktop builds and releases run release tooling from the workflow commit, 
   assert.match(tooling, /\n\s+path: \.release-tooling\n/);
   assert.match(tooling, /\n\s+persist-credentials: false$/);
   assert.doesNotMatch(tooling, /secrets\.|inputs\.|if:/);
-  // Checked out after the provenance check verified the workflow commit is on main, before any secret or tooling use.
-  assert.ok(at('Verify signing provenance') < at('Check out the release tooling') && at('Check out the release tooling') < at('Check signing secrets'));
-  // Every script under scripts/release that the build runs (comments aside) is the tooling checkout's.
+  assert.ok(at('Check out the release tooling') !== -1 && at('Check out the release tooling') < at('Bundle versions'));
+  // Every script under scripts/release that the build job runs (comments aside) is the tooling checkout's.
   const code = text => text.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
-  const scripts = code(build).match(/\S*scripts\/release\/\S+/g) ?? [];
-  assert.deepEqual(scripts, [
-    '.release-tooling/scripts/release/desktop-bundle-config.mjs',
-    '.release-tooling/scripts/release/desktop-bundle-config.mjs',
-    '.release-tooling/scripts/release/verify-desktop-signing.sh',
-  ]);
+  assert.deepEqual(code(build).match(/\S*scripts\/release\/\S+/g) ?? [], ['.release-tooling/scripts/release/desktop-bundle-config.mjs']);
 
   // The plan job's only checkout is the workflow commit; no other release job runs scripts/release.
   const release = read(repo, '.github/workflows/desktop-release.yml');
@@ -1079,7 +1038,7 @@ test('desktop builds and releases run release tooling from the workflow commit, 
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', stepScript(build, 'Bundle versions')], {
     cwd: workspace,
     encoding: 'utf8',
-    env: { PATH: process.env.PATH, SIGN: 'false', GITHUB_WORKSPACE: workspace, RUNNER_TEMP: temp, GITHUB_OUTPUT: output },
+    env: { PATH: process.env.PATH, GITHUB_WORKSPACE: workspace, RUNNER_TEMP: temp, GITHUB_OUTPUT: output },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(output, 'utf8'), /^version=0\.2\.0-beta\.3$/m);
@@ -1423,4 +1382,301 @@ test('verify-android-release.sh rejects a missing APK before running any check',
   const result = spawnSync('bash', [join(repo, 'scripts/release/verify-android-release.sh'), join(tempDir(t), 'app-release.apk'), 'app-release.aab', '0.2.0', '1', 'ab'.repeat(32)], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /::error::no APK at/);
+});
+
+// Desktop (Exo for macOS): the Developer ID certificate and the App Store Connect key are never on a runner that runs
+// project or third-party build code. The build job compiles and ad-hoc seals the app with no environment and no secret;
+// only the preflight and sign jobs, which check out nothing but scripts/release (and the entitlements) at the workflow
+// commit, are in desktop-release. CI runs the sign job as an ad-hoc dry run.
+const DESKTOP_PROJECT_CODE = /\bbunx?\b|setup-bun|setup-node|\bnpm\b|\bnpx\b|\bnode\b|node_modules|\bcargo\b|rust-toolchain|rust-cache|tauri (?:build|bundle|dev)|swift build|xcodebuild (?:archive|build)|\.release-tooling/;
+
+test('desktop signing: keys only in tooling-only jobs, the app built with none, signed inside-out and verified before upload', () => {
+  const workflow = read(repo, '.github/workflows/desktop-build.yml');
+  assert.deepEqual(jobIds(workflow), ['preflight', 'build', 'sign']);
+  assert.doesNotMatch(workflow, /continue-on-error|secrets: inherit|vars\./);
+  // Every secret reference is gated on inputs.sign, so CI and unsigned releases never resolve one.
+  const refs = withoutComments(workflow).match(/\$\{\{[^}]*\bsecrets\.[^}]*\}\}/g) ?? [];
+  assert.ok(refs.length >= 15, refs.join('\n'));
+  for (const ref of refs) assert.match(ref, /^\$\{\{ inputs\.sign && secrets\.APPLE_[A-Z_]+ \|\| '' \}\}$/, ref);
+  assert.match(workflow, /\n {2}BUILD_ARTIFACT: \$\{\{ inputs\.sign && format\('\{0\}-unsigned', inputs\.artifact-name\) \|\| inputs\.artifact-name \}\}\n/);
+  assert.match(workflow, /signed:\n\s+description: .*\n\s+value: \$\{\{ jobs\.sign\.outputs\.signed \}\}/);
+  const tooling = (job, paths) => {
+    assert.equal((job.match(/uses: actions\/checkout@/g) ?? []).length, 1, 'one checkout: the release tooling');
+    const checkout = stepNamed(job, 'Check out the release tooling');
+    assert.match(checkout, /\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n/);
+    assert.match(checkout, new RegExp(`\\n\\s+sparse-checkout: \\|\\n${paths.map(path => `\\s+${path.replace(/[./]/g, '\\$&')}\\n`).join('')}\\s+sparse-checkout-cone-mode: false\\n\\s+persist-credentials: false`));
+    assert.doesNotMatch(checkout, /\n\s+path:/);
+    assert.doesNotMatch(withoutComments(job), DESKTOP_PROJECT_CODE);
+  };
+  const scriptsIn = job => [...new Set(withoutComments(job).match(/(?<![\w/.-])scripts\/release\/[\w.-]+/g))].sort();
+
+  // preflight: main's release workflow and every secret present, in seconds, before the macOS build.
+  const preflight = jobText(workflow, 'preflight');
+  assert.match(preflight, /\n {4}if: inputs\.sign\n/);
+  assert.match(preflight, /\n {4}runs-on: ubuntu-latest\n/);
+  assert.match(preflight, /\n {4}environment: desktop-release\n/);
+  tooling(preflight, ['/scripts/release/']);
+  assert.match(stepNamed(preflight, 'Check out the release tooling'), /\n\s+fetch-depth: 0\n/);
+  assert.deepEqual(scriptsIn(preflight), ['scripts/release/desktop-signing.sh']);
+  assert.match(stepNamed(preflight, 'Verify signing provenance'), /run: scripts\/release\/desktop-signing\.sh provenance "\$BUILD_REF"\n/);
+  assert.match(stepNamed(preflight, 'Check signing secrets'), /run: scripts\/release\/desktop-signing\.sh check/);
+  assert.ok(preflight.indexOf('secrets.') > preflight.indexOf('- name: Verify signing provenance\n'), 'no secret before the provenance check');
+
+  // build: every build script, never an environment or a secret; ad-hoc sealed in every mode.
+  const build = jobText(workflow, 'build');
+  assert.match(build, /\n {4}needs: preflight\n/);
+  assert.match(build, /\n {4}if: \$\{\{ !cancelled\(\) && \(needs\.preflight\.result == 'success' \|\| \(!inputs\.sign && needs\.preflight\.result == 'skipped'\)\) \}\}\n/);
+  assert.doesNotMatch(withoutComments(build), /environment:|secrets\.|vars\.|APPLE_|security import|notarytool|--sign |keychain/);
+  const buildOrder = ['Install JS deps', 'Build workspace packages', 'Bundle versions', 'Build Exo desktop app', 'Bundle Exo', 'Check Info.plist',
+    'Verify the ad-hoc seal', 'Package .app', 'Upload dmg + app'].map(name => build.indexOf(`- name: ${name}\n`));
+  assert.ok(buildOrder.every(index => index !== -1), `build steps: ${buildOrder}`);
+  assert.deepEqual([...buildOrder].sort((a, b) => a - b), buildOrder, 'the seal is verified before the app is handed over');
+  assert.match(stepNamed(build, 'Bundle versions'), /desktop-bundle-config\.mjs --root "\$GITHUB_WORKSPACE" --out "\$RUNNER_TEMP\/exo-bundle" --ad-hoc-sign\n/);
+  const seal = stepNamed(build, 'Verify the ad-hoc seal');
+  assert.doesNotMatch(seal, /\n\s+if:|\|\| true/);
+  assert.match(seal, /for bundle in desktop\/src-tauri\/target\/release\/bundle\/macos\/Exo\.app "\$mnt\/Exo\.app"; do\n\s+codesign --verify --deep --strict --verbose=2 "\$bundle"\n/);
+  assert.match(stepNamed(build, 'Package .app'), /ditto -c -k --sequesterRsrc --keepParent Exo\.app Exo-macos-arm64\.app\.zip\n/);
+  assert.match(stepNamed(build, 'Upload dmg + app'), /name: \$\{\{ env\.BUILD_ARTIFACT \}\}\n/);
+
+  // sign: desktop-release only when signing, its one checkout is the tooling and the entitlements, no project code.
+  const sign = jobText(workflow, 'sign');
+  assert.match(sign, /\n {4}needs: build\n/);
+  assert.match(sign, /\n {4}if: \$\{\{ !cancelled\(\) && needs\.build\.result == 'success' \}\}\n/);
+  assert.match(sign, /\n {4}environment: \$\{\{ inputs\.sign && 'desktop-release' \|\| '' \}\}\n/);
+  tooling(sign, ['/scripts/release/', '/desktop/src-tauri/Entitlements.plist']);
+  assert.deepEqual(scriptsIn(sign), ['scripts/release/desktop-signing.sh', 'scripts/release/verify-desktop-signing.sh']);
+  const signOrder = ['Check out the release tooling', 'Verify signing provenance', 'Check signing secrets', 'Download the build', 'Unpack the app',
+    'Import the Developer ID certificate', 'Sign Exo.app (inside-out)', 'Write the App Store Connect API key', 'Notarize and staple the app',
+    'Build the DMG', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Remove the keychain and the API key',
+    'Package the signed app', 'Upload the signed dmg + app'].map(name => sign.indexOf(`- name: ${name}\n`));
+  assert.ok(signOrder.every(index => index !== -1), `sign steps: ${signOrder}`);
+  assert.deepEqual([...signOrder].sort((a, b) => a - b), signOrder, 'provenance, secrets, app, keychain, sign, notarize, verify, clean up, then upload');
+  assert.ok(sign.indexOf('secrets.') > sign.indexOf('- name: Verify signing provenance\n'), 'no secret before the provenance check');
+  for (const name of ['Verify signing provenance', 'Check signing secrets', 'Import the Developer ID certificate', 'Write the App Store Connect API key',
+    'Notarize and staple the app', 'Notarize and staple the DMG', 'Verify signing and notarization', 'Package the signed app']) {
+    assert.match(stepNamed(sign, name), /\n\s+if: inputs\.sign\n/, name);
+  }
+  // The dry run runs the same unpack, codesign and hdiutil steps; a signed build never falls back to ad-hoc.
+  for (const name of ['Download the build', 'Unpack the app', 'Sign Exo.app (inside-out)', 'Build the DMG']) assert.doesNotMatch(stepNamed(sign, name), /\n\s+if:/, name);
+  for (const name of ['Sign Exo.app (inside-out)', 'Build the DMG']) {
+    assert.match(stepNamed(sign, name), /if \[ "\$SIGN" != true \]; then IDENTITY=-; elif \[ -z "\$IDENTITY" \]; then echo "::error::APPLE_SIGNING_IDENTITY is empty"; exit 1; fi\n/, name);
+  }
+  assert.match(stepNamed(sign, 'Sign Exo.app (inside-out)'), /scripts\/release\/desktop-signing\.sh sign "\$EXO_APP" desktop\/src-tauri\/Entitlements\.plist "\$IDENTITY" "\$\{EXO_KEYCHAIN:-\}"/);
+  assert.match(stepNamed(sign, 'Download the build'), /name: \$\{\{ env\.BUILD_ARTIFACT \}\}\n/);
+  const unpack = stepNamed(sign, 'Unpack the app');
+  assert.match(unpack, /SHA256: \$\{\{ needs\.build\.outputs\.app-sha256 \}\}/);
+  assert.ok(unpack.indexOf('!= "$SHA256"') !== -1 && unpack.indexOf('!= "$SHA256"') < unpack.indexOf('desktop-signing.sh unpack'), 'the hand-off digest is checked before unpacking');
+  assert.match(stepNamed(sign, 'Notarize and staple the app'), /desktop-signing\.sh notarize "\$EXO_APP" "\$APPLE_API_KEY_PATH"/);
+  assert.match(stepNamed(sign, 'Notarize and staple the DMG'), /desktop-signing\.sh notarize "\$EXO_DMG" "\$APPLE_API_KEY_PATH"/);
+  assert.match(stepNamed(sign, 'Verify signing and notarization'), /scripts\/release\/verify-desktop-signing\.sh "\$EXO_APP" "\$EXO_DMG" "\$APPLE_TEAM_ID"\n\s+echo "signed=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(sign, /signed: \$\{\{ steps\.verify\.outputs\.signed \|\| 'false' \}\}/);
+  const cleanup = stepNamed(sign, 'Remove the keychain and the API key');
+  assert.match(cleanup, /\n\s+if: always\(\)\n/);
+  assert.match(cleanup, /security delete-keychain "\$EXO_KEYCHAIN"/);
+  assert.match(cleanup, /rm -rf "\$RUNNER_TEMP\/exo-signing"/);
+  const upload = stepNamed(sign, 'Upload the signed dmg + app');
+  assert.match(upload, /\n\s+if: inputs\.sign && steps\.verify\.outputs\.signed == 'true'\n/);
+  assert.match(upload, /\n\s+name: \$\{\{ inputs\.artifact-name \}\}\n/);
+  assert.equal((sign.match(/upload-artifact@/g) ?? []).length, 1);
+
+  // Apple's tools only, inside-out, never --deep when signing.
+  const script = read(repo, 'scripts/release/desktop-signing.sh');
+  for (const line of withoutComments(script).split('\n').filter(text => /\bcodesign\b.*--deep/.test(text))) assert.match(line, /codesign --verify --deep --strict/, line);
+  assert.match(script, /opts=\(--force --options runtime --sign "\$identity"\)/);
+  assert.match(script, /codesign "\$\{opts\[@\]\}" --entitlements "\$entitlements" "\$app"/);
+  assert.equal((script.match(/--entitlements "\$entitlements"/g) ?? []).length, 1, 'only the app gets the entitlements');
+  assert.match(script, /hdiutil create -volname Exo -srcfolder "\$staging" -fs HFS\+ -format UDZO/);
+  assert.match(script, /xcrun notarytool submit "\$submit" --key "\$key" --key-id "\$APPLE_API_KEY" --issuer "\$APPLE_API_ISSUER"/);
+  assert.match(script, /xcrun stapler staple "\$file"/);
+  assert.doesNotMatch(withoutComments(script), DESKTOP_PROJECT_CODE);
+
+  // Releases sign only for an explicit `required`; CI never signs but runs the dry run on signing changes too.
+  assert.match(read(repo, '.github/workflows/desktop-release.yml'), /uses: \.\/\.github\/workflows\/desktop-build\.yml\n\s+with:\n(?:.*\n){2}\s+sign: \$\{\{ needs\.plan\.outputs\.signing == 'required' \}\}\n/);
+  const ci = read(repo, '.github/workflows/desktop.yml');
+  assert.doesNotMatch(ci, /sign:/);
+  for (const path of ['scripts/release/desktop-*', 'scripts/release/verify-desktop-signing.sh']) assert.equal(triggers('.github/workflows/desktop.yml').split(`"${path}"`).length, 3, path);
+
+  const conf = JSON.parse(read(repo, 'desktop/src-tauri/tauri.conf.json'));
+  assert.equal(conf.bundle.macOS.hardenedRuntime, true);
+  assert.equal(conf.bundle.macOS.entitlements, 'Entitlements.plist');
+  assert.match(read(repo, 'desktop/src-tauri/Entitlements.plist'), /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/);
+  assert.equal(conf.bundle.macOS.signingIdentity, undefined, 'the identity comes from CI only, so local builds stay unsigned');
+});
+
+const desktopSigning = (args, env = {}, cwd = repo) => spawnSync('bash', [join(repo, 'scripts/release/desktop-signing.sh'), ...args], {
+  cwd,
+  encoding: 'utf8',
+  env: { PATH: process.env.PATH, ...env },
+});
+
+test('desktop-signing.sh check names the missing desktop-release secrets and checks their shapes', () => {
+  const none = desktopSigning(['check']);
+  assert.equal(none.status, 1);
+  assert.match(none.stdout, /::error::Desktop signing is not set up: the desktop-release environment is missing APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_PRIVATE_KEY\. Nothing was built or signed\./);
+  const good = {
+    APPLE_CERTIFICATE: Buffer.from('p12').toString('base64'), APPLE_CERTIFICATE_PASSWORD: 'x', APPLE_SIGNING_IDENTITY: 'Developer ID Application: TinyCloud Labs (ABCDE12345)',
+    APPLE_TEAM_ID: 'ABCDE12345', APPLE_API_KEY: 'XYZ9876543', APPLE_API_ISSUER: '69a6de7e-1234-47e3-e053-5b8c7c11a4d1', APPLE_API_PRIVATE_KEY: 'x',
+  };
+  assert.equal(desktopSigning(['check'], good).status, 0);
+  assert.match(desktopSigning(['check'], { ...good, APPLE_API_ISSUER: '' }).stdout, /is missing APPLE_API_ISSUER\./);
+  assert.match(desktopSigning(['check'], { ...good, APPLE_SIGNING_IDENTITY: 'Apple Distribution: TinyCloud Labs (ABCDE12345)' }).stdout, /APPLE_SIGNING_IDENTITY must be the 'Developer ID Application/);
+  assert.match(desktopSigning(['check'], { ...good, APPLE_SIGNING_IDENTITY: 'Developer ID Application: TinyCloud Labs (ZZZZZ99999)' }).stdout, /APPLE_SIGNING_IDENTITY must be the 'Developer ID Application/);
+  assert.match(desktopSigning(['check'], { ...good, APPLE_TEAM_ID: 'abc' }).stdout, /APPLE_TEAM_ID must be the 10-character Team ID/);
+  assert.match(desktopSigning(['check'], { ...good, APPLE_CERTIFICATE: 'not base64!' }).stdout, /APPLE_CERTIFICATE must be base64/);
+  assert.equal(desktopSigning(['nope']).status, 2);
+});
+
+// The provenance check against a real origin: only main's desktop-release.yml dispatched on main, signing a
+// release-tagged commit of main.
+test('desktop-signing.sh provenance signs only a release-tagged commit of main from main\'s desktop-release.yml', t => {
+  const origin = tempDir(t);
+  initRepo(origin);
+  write(origin, 'desktop/package.json', '{"version":"0.2.0-beta.3"}\n');
+  const release = commitAll(origin, 'chore(release): beta versions');
+  git(origin, 'tag', '-a', 'exo-desktop@0.2.0-beta.3', '-m', '0.2.0-beta.3', release);
+  write(origin, 'README.md', 'later\n');
+  const untagged = commitAll(origin, 'later main work');
+  git(origin, 'checkout', '-q', '-b', 'feature');
+  write(origin, 'feature.txt', 'x\n');
+  const off = commitAll(origin, 'off main');
+  git(origin, 'tag', '-a', 'exo-desktop@0.2.0-beta.4', '-m', 'off main', off);
+  git(origin, 'checkout', '-q', 'main');
+  const clone = join(tempDir(t), 'clone');
+  git(origin, 'clone', '-q', origin, clone);
+  const repoName = 'TinyCloudLabs/tinychat';
+  const env = {
+    GITHUB_REPOSITORY: repoName, GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
+    WORKFLOW_REF: `${repoName}/.github/workflows/desktop-release.yml@refs/heads/main`, WORKFLOW_SHA: untagged,
+  };
+  const provenance = (sha, overrides = {}) => desktopSigning(['provenance', sha], { ...env, ...overrides }, clone);
+
+  const ok = provenance(release);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, new RegExp(`^Signing ${release} \\(exo-desktop@0\\.2\\.0-beta\\.3\\) with ${repoName}/\\.github/workflows/desktop-release\\.yml@refs/heads/main at ${untagged}$`, 'm'));
+  const refused = (result, pattern) => {
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, new RegExp(`::error::Refusing to sign: ${pattern}`));
+  };
+  refused(provenance(release, { GITHUB_EVENT_NAME: 'push' }), 'signing runs only in .*desktop-release\\.yml@refs/heads/main dispatched on main');
+  refused(provenance(release, { GITHUB_REF: 'refs/heads/feature' }), 'signing runs only in');
+  refused(provenance(release, { WORKFLOW_REF: `${repoName}/.github/workflows/desktop-release.yml@refs/heads/feature` }), 'signing runs only in');
+  refused(provenance(release, { WORKFLOW_REF: `${repoName}/.github/workflows/desktop.yml@refs/heads/main` }), 'signing runs only in');
+  refused(provenance(release, { WORKFLOW_SHA: off }), `workflow commit ${off} is not on main`);
+  refused(provenance(release.slice(0, 12)), 'the build ref must be the release commit\'s full SHA');
+  refused(provenance(''), 'the build ref must be the release commit\'s full SHA');
+  refused(provenance(untagged), `no exo-desktop release tag points at ${untagged}`);
+  refused(provenance(off), `${off} is not on main`);
+});
+
+// codesign, plutil and ditto stubbed: unpack's checks and sign's inside-out order on a bundle with nested code.
+function stubbedMacTools(t) {
+  const dir = tempDir(t);
+  const bin = join(dir, 'bin');
+  write(dir, 'bin/codesign', `#!/usr/bin/env bash
+echo "codesign $*" >> "$CODESIGN_LOG"
+case " $* " in
+  *" -dvvv "*) echo "CodeDirectory v=20500 size=1 flags=0x10002(adhoc,runtime) hashes=1+7 location=embedded" >&2 ;;
+  *" --entitlements - "*) cat "$ENTITLEMENTS" ;;
+esac
+`);
+  write(dir, 'bin/plutil', `#!/usr/bin/env bash
+if [ "$1" = -lint ]; then exit 0; fi
+if [ "$1" = -extract ]; then sed -n "/<key>$2<\\/key>/{n;s/.*<string>\\(.*\\)<\\/string>.*/\\1/p;}" "\${!#}"; exit 0; fi
+exit 1
+`);
+  write(dir, 'bin/ditto', '#!/usr/bin/env bash\n[ "$1" = -x ] && [ "$2" = -k ] && exec tar -xf "$3" -C "$4"\nexit 1\n');
+  for (const name of ['codesign', 'plutil', 'ditto']) chmodSync(join(bin, name), 0o755);
+  const contents = join(dir, 'src/Exo.app/Contents');
+  write(contents, 'Info.plist', ['<plist><dict>', ...Object.entries({ CFBundleExecutable: 'exo-desktop', CFBundleIdentifier: 'xyz.tinycloud.exo',
+    CFBundleShortVersionString: '0.2.0', CFBundleVersion: '200003' }).flatMap(([key, value]) => [`<key>${key}</key>`, `<string>${value}</string>`]), '</dict></plist>', ''].join('\n'));
+  const macho = rel => {
+    write(contents, rel, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01])); // a 64-bit Mach-O header's start
+    chmodSync(join(contents, rel), 0o755);
+  };
+  for (const rel of ['MacOS/exo-desktop', 'MacOS/helper', 'Frameworks/Foo.framework/Versions/A/Foo', 'Resources/lib/libbar.dylib']) macho(rel);
+  symlinkSync('A', join(contents, 'Frameworks/Foo.framework/Versions/Current'));
+  symlinkSync('Versions/Current/Foo', join(contents, 'Frameworks/Foo.framework/Foo'));
+  write(contents, 'Resources/icon.icns', 'icon');
+  write(contents, 'Resources/Res.bundle/Contents/Resources/strings.txt', 'resources only');
+  const archive = name => {
+    const tar = join(dir, name);
+    assert.equal(spawnSync('tar', ['-cf', tar, 'Exo.app'], { cwd: join(dir, 'src') }).status, 0);
+    return tar;
+  };
+  const log = join(dir, 'codesign.log');
+  const env = { PATH: `${bin}:${process.env.PATH}`, CODESIGN_LOG: log, ENTITLEMENTS: join(repo, 'desktop/src-tauri/Entitlements.plist') };
+  return { dir, contents, archive, env, log };
+}
+
+test('desktop-signing.sh unpack checks the handed-over app before anything signs it', t => {
+  const { dir, contents, archive, env } = stubbedMacTools(t);
+  const unpack = (tar, ...versions) => desktopSigning(['unpack', tar, join(dir, 'out'), ...versions], env);
+  const good = archive('good.tar');
+  const ok = unpack(good, '0.2.0-beta.3', '0.2.0', '200003');
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.equal(ok.stdout.trim(), join(dir, 'out/Exo.app'));
+  // The build job's outputs are strings from a job that ran build code: refused unless they look like versions.
+  assert.match(unpack(good, '0.2.0-beta.3; touch pwned', '0.2.0', '200003').stdout, /::error::the build reports version '0\.2\.0-beta\.3; touch pwned', not X\.Y\.Z or X\.Y\.Z-beta\.N/);
+  assert.match(unpack(good, '0.2.0-beta.3', '0.2.1', '200003').stdout, /::error::the build reports short version '0\.2\.1' for 0\.2\.0-beta\.3/);
+  assert.match(unpack(good, '0.2.0-beta.3', '0.2.0', '200004').stdout, /::error::the app is not build 200004/);
+  assert.match(unpack(join(dir, 'missing.zip'), '0.2.0-beta.3', '0.2.0', '200003').stdout, /::error::no app archive at/);
+  symlinkSync('../../../../etc/passwd', join(contents, 'Resources/escape'));
+  const escape = unpack(archive('escape.tar'), '0.2.0-beta.3', '0.2.0', '200003');
+  assert.equal(escape.status, 1);
+  assert.match(escape.stdout, /::error::symlink Exo\.app\/Contents\/Resources\/escape points outside the app/);
+  chmodSync(join(contents, 'MacOS/exo-desktop'), 0o644);
+  rmSync(join(contents, 'Resources/escape'));
+  assert.match(unpack(archive('noexec.tar'), '0.2.0-beta.3', '0.2.0', '200003').stdout, /::error::Contents\/MacOS\/exo-desktop lost its executable bit/);
+});
+
+test('desktop-signing.sh sign signs nested code deepest first, the app last with the entitlements, never with --deep', t => {
+  const { dir, archive, env, log } = stubbedMacTools(t);
+  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
+  const entitlements = join(repo, 'desktop/src-tauri/Entitlements.plist');
+  const signed = identity => {
+    writeFileSync(log, '');
+    const result = desktopSigning(['sign', app, entitlements, identity, ...(identity === '-' ? [] : [join(dir, 'exo-signing.keychain-db')])], env);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return read(dir, 'codesign.log').trim().split('\n');
+  };
+  const adHoc = signed('-');
+  const signs = adHoc.filter(line => line.includes(' --sign '));
+  const target = line => line.split(' ').at(-1).replace(`${app}/`, '').replace(app, 'Exo.app');
+  assert.deepEqual(signs.map(target), [
+    'Contents/Frameworks/Foo.framework/Versions/A/Foo',
+    'Contents/Resources/lib/libbar.dylib',
+    'Contents/Frameworks/Foo.framework',
+    'Contents/MacOS/helper',
+    'Exo.app',
+  ]);
+  for (const line of signs) {
+    assert.match(line, /^codesign --force --options runtime --sign - --timestamp=none /);
+    assert.doesNotMatch(line, /--deep/);
+  }
+  assert.deepEqual(signs.filter(line => line.includes('--entitlements')).map(target), ['Exo.app']);
+  assert.ok(adHoc.findIndex(line => line.startsWith('codesign --verify --deep --strict')) > adHoc.indexOf(signs.at(-1)), 'verified after signing');
+
+  const developerId = signed('Developer ID Application: TinyCloud Labs (ABCDE12345)').filter(line => line.includes(' --sign '));
+  assert.equal(developerId.length, 5);
+  for (const line of developerId) {
+    assert.match(line, new RegExp(`^codesign --force --options runtime --sign Developer ID Application: TinyCloud Labs \\(ABCDE12345\\) --timestamp --keychain ${join(dir, 'exo-signing.keychain-db').replace(/[.]/g, '\\.')} `));
+  }
+});
+
+// The real "Sign Exo.app" step: an ad-hoc re-seal in the dry run, a refusal (never an ad-hoc fallback) when signing
+// without an identity.
+test('the desktop sign step re-seals ad-hoc in the dry run and never signs ad-hoc for a signed build', t => {
+  const { dir, archive, env, log } = stubbedMacTools(t);
+  const app = desktopSigning(['unpack', archive('app.tar'), join(dir, 'out'), '0.2.0-beta.3', '0.2.0', '200003'], env).stdout.trim();
+  const script = stepScript(jobText(read(repo, '.github/workflows/desktop-build.yml'), 'sign'), 'Sign Exo.app (inside-out)');
+  const step = extra => spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { cwd: repo, encoding: 'utf8', env: { ...env, EXO_APP: app, ...extra } });
+  writeFileSync(log, '');
+  const dryRun = step({ SIGN: 'false', IDENTITY: '' });
+  assert.equal(dryRun.status, 0, dryRun.stdout + dryRun.stderr);
+  assert.match(dryRun.stdout, /Exo\.app re-sealed ad-hoc inside-out \(4 nested\)/);
+  writeFileSync(log, '');
+  const missing = step({ SIGN: 'true', IDENTITY: '' });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /::error::APPLE_SIGNING_IDENTITY is empty/);
+  assert.equal(read(dir, 'codesign.log'), '', 'nothing was signed');
 });
