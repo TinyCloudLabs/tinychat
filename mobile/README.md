@@ -150,6 +150,8 @@ emulator.
 
 ```sh
 bun install && bun run build:packages
+# Once per fresh checkout: `cap sync` needs frontend/dist/index.html even when the shell loads a dev server.
+bun run build:frontend
 # Frontend dev server against production services:
 bun run --cwd frontend dev -- --mode production --port 5391 --strictPort
 # Build and install a live-reload shell; the WebView loads http://localhost:5186:
