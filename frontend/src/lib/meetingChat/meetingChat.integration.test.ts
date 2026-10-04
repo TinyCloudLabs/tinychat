@@ -6,7 +6,13 @@ import { createMeetingMessageRegistry } from "../../chat/pendingHandoff";
 import { CONNECTORS_KV_PREFIX, meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
 import { readTranscript } from "../connectors/meetingExplorer";
 import { LOCAL_MEETING_SOURCE, prepareLocalTranscript, saveLocalTranscript } from "../localTranscriber";
-import { VOICE_NOTE_SOURCE, listVoiceNotes, saveVoiceNote, saveVoiceNoteTranscript } from "../voiceNotes/voiceNoteStore";
+import {
+  VOICE_NOTE_SOURCE,
+  listVoiceNotes,
+  saveVoiceNote,
+  saveVoiceNoteTranscript,
+  voiceNoteAudioSourceFromBase64,
+} from "../voiceNotes/voiceNoteStore";
 import { prepareVoiceNoteTranscript } from "../voiceNotes/voiceNoteTranscription";
 import { buildMeetingContext } from "./context";
 import { mergeMeetingCorpus } from "./corpus";
@@ -223,7 +229,7 @@ describe("transcribed voice notes in meeting chat and Library", () => {
       silencedEvents: 0,
       noSignalMs: 0,
     };
-    expect((await saveVoiceNote(space as never, recording, { mimeType: "audio/mp4", base64: "AAAA" }, "android")).ok).toBe(true);
+    expect((await saveVoiceNote(space as never, recording, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android")).ok).toBe(true);
     // Saved, not yet transcribed: an empty transcript, and nothing for chat to ground on.
     expect(await readTranscript(space as never, VOICE_NOTE_SOURCE, "rec-voice-1")).toEqual({ status: "ok", sentences: [] });
 
@@ -311,7 +317,7 @@ describe("untranscribed voice notes are not meetings", () => {
     const space = sqliteSpace();
     expect((await localMeeting(space)).ok).toBe(true);
     // An hour later, a voice note is saved (transcript key written empty) and never transcribed.
-    expect((await saveVoiceNote(space as never, voiceNote("rec-newer", "2026-08-24T10:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios")).ok).toBe(true);
+    expect((await saveVoiceNote(space as never, voiceNote("rec-newer", "2026-08-24T10:00:00.000Z"), voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "ios")).ok).toBe(true);
 
     const outcome = await retrieve(space, "summarize my latest meeting");
     expect(outcome).toEqual(expect.objectContaining({
@@ -324,13 +330,13 @@ describe("untranscribed voice notes are not meetings", () => {
   test("the same note becomes the latest meeting once it is transcribed; no speech never does", async () => {
     const space = sqliteSpace();
     await localMeeting(space);
-    await saveVoiceNote(space as never, voiceNote("rec-silent", "2026-08-24T11:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios");
+    await saveVoiceNote(space as never, voiceNote("rec-silent", "2026-08-24T11:00:00.000Z"), voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "ios");
     await saveVoiceNoteTranscript(space as never, "rec-silent", {
       sentences: [],
       speakers: [],
       metadata: { transcription_engine: "private-cloud", transcript_text: null, transcription_outcome: "no_speech" },
     });
-    await saveVoiceNote(space as never, voiceNote("rec-spoken", "2026-08-24T10:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios");
+    await saveVoiceNote(space as never, voiceNote("rec-spoken", "2026-08-24T10:00:00.000Z"), voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "ios");
     const before = await retrieve(space, "summarize my latest meeting");
     expect(before).toEqual(expect.objectContaining({ meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE }) }));
 
@@ -352,7 +358,7 @@ describe("untranscribed voice notes are not meetings", () => {
   test("a voice note row with malformed metadata is skipped, not a failed read", async () => {
     const space = sqliteSpace();
     await localMeeting(space);
-    await saveVoiceNote(space as never, voiceNote("rec-bad", "2026-08-24T10:00:00.000Z"), { mimeType: "audio/mp4", base64: "AAAA" }, "ios");
+    await saveVoiceNote(space as never, voiceNote("rec-bad", "2026-08-24T10:00:00.000Z"), voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "ios");
     await space.sql.db().execute("UPDATE connector_meeting SET metadata = ? WHERE source_id = ?", ["{not json", "rec-bad"]);
     const outcome = await retrieve(space, "summarize my latest meeting");
     expect(outcome).toEqual(expect.objectContaining({ status: "grounded", meeting: expect.objectContaining({ source: LOCAL_MEETING_SOURCE }) }));

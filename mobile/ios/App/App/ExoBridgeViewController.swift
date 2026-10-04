@@ -19,8 +19,9 @@ class ExoBridgeViewController: CAPBridgeViewController {
 
     /// Once the bundled web app has mounted (or after `smokeProbeAttempts` seconds), log one `EXO_SMOKE {json}`
     /// line with what the WebView sees: its URL, the Capacitor platform, whether React rendered into #root,
-    /// whether JS sees the VoiceNotes plugin, and the plugin's own answer to `status()` over the bridge. The CI
-    /// simulator smoke test (mobile/scripts/ios-simulator-smoke.sh) gates on that line.
+    /// whether JS sees the VoiceNotes plugin, the plugin's own answer to `status()` over the bridge, and its
+    /// `readAudioChunk` refusing a recording that does not exist. The CI simulator smoke test
+    /// (mobile/scripts/ios-simulator-smoke.sh) gates on that line.
     private static let smokeProbeAttempts = 60
     private static let smokeProbeScript = """
         const cap = window.Capacitor;
@@ -41,6 +42,12 @@ class ExoBridgeViewController: CAPBridgeViewController {
             probe.voiceNotesStatus = await Promise.race([cap.nativePromise("VoiceNotes", "status", {}), timeout]);
           } catch (error) {
             probe.voiceNotesStatus = { error: String((error && error.message) || error) };
+          }
+          try {
+            const chunk = cap.nativePromise("VoiceNotes", "readAudioChunk", { id: "smoke-missing", offset: 0, length: 16 });
+            probe.voiceNotesReadChunk = { resolved: await Promise.race([chunk, timeout]) };
+          } catch (error) {
+            probe.voiceNotesReadChunk = { code: (error && error.code) || null, error: String((error && error.message) || error) };
           }
         }
         return JSON.stringify(probe);

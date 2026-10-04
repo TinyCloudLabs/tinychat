@@ -29,7 +29,16 @@ import {
   type PrivateCloudTranscript,
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
-import { VOICE_NOTE_SOURCE, listVoiceNotes, saveVoiceNote, saveVoiceNoteTranscript } from "./voiceNoteStore";
+import {
+  VOICE_NOTE_SOURCE,
+  listVoiceNotes,
+  saveVoiceNote as storeVoiceNote,
+  saveVoiceNoteTranscript,
+  voiceNoteAudioKvKey,
+  voiceNoteAudioPartKey,
+  voiceNoteAudioSourceFromBase64,
+  type VoiceNoteAudio,
+} from "./voiceNoteStore";
 import {
   accountStorageKey,
   buildPtxUploadOrigin,
@@ -113,6 +122,7 @@ function harness(script: {
   now?: () => number;
   removeFails?: boolean;
   uploadSupported?: () => Promise<boolean>;
+  decode?: AudioDecoder;
 }) {
   const calls: string[] = [];
   const creates: { attemptId: string; body: PrivateCloudCreateBody }[] = [];
@@ -162,7 +172,7 @@ function harness(script: {
     origin: ORIGIN,
     pending,
     uploadSupported: script.uploadSupported,
-    decode: silentDecoder(),
+    decode: script.decode ?? silentDecoder(),
     newId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
     clock: {
       now: script.now ?? (() => clockNow),
@@ -648,10 +658,14 @@ describe("transcript normalization", () => {
   });
 });
 
-/** The connector store on real SQLite plus in-memory KV. */
+/** Save a note whose audio is already in memory (the phone reads it part by part instead). */
+const saveVoiceNote = (tcw: never, recording: typeof RECORDING, audio: VoiceNoteAudio, platform: string) =>
+  storeVoiceNote(tcw, recording, voiceNoteAudioSourceFromBase64(audio), platform);
+
+/** The connector store on real SQLite plus in-memory KV (strings, and raw bytes for audio parts). */
 function sqliteSpace() {
   const sqlite = new Database(":memory:");
-  const kv = new Map<string, string>();
+  const kv = new Map<string, string | Uint8Array>();
   const runSql = <T>(fn: () => T) => {
     try {
       return { ok: true, data: fn() };
@@ -674,11 +688,12 @@ function sqliteSpace() {
         }),
       },
       kv: {
-        put: async (key: string, value: string) => {
+        put: async (key: string, value: string | Uint8Array) => {
           kv.set(key, value);
-          return { ok: true, data: null };
+          return { ok: true, data: { headers: {} } };
         },
         get: async (key: string) => (kv.has(key) ? { ok: true, data: { data: kv.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } }),
+        list: async ({ path }: { path: string }) => ({ ok: true, data: { keys: [...kv.keys()].filter((k) => k.startsWith(path)) } }),
       },
     } as never,
   };
@@ -711,7 +726,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       now: () => new Date("2026-10-03T10:00:00.000Z"),
     });
     expect(outcome).toBe("transcribed");
-    expect(JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1"))!)).toEqual([
+    expect(JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1")) as string)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
     ]);
     const listed = await listVoiceNotes(space.tcw);
@@ -814,6 +829,56 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
     expect(h.puts).toHaveLength(1);
     expect(h.removed).toEqual([ID]);
+  });
+});
+
+describe("transcribeVoiceNote reads the note's stored audio (TC-517)", () => {
+  beforeEach(() => _resetConnectorSchemaMemoForTests());
+
+  test("a note stored in parts is reassembled, in order, for the upload", async () => {
+    const space = sqliteSpace();
+    const bytes = new Uint8Array(2_500).map((_, i) => i % 251);
+    await storeVoiceNote(space.tcw, RECORDING, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: bytesToBase64(bytes) }), "android", { partSize: 1_000 });
+    expect(space.kv.get(voiceNoteAudioPartKey("rec-1", 2))).toBeInstanceOf(Uint8Array);
+    let decoded: Uint8Array | null = null;
+    const quiet = silentDecoder();
+    const h = harness({
+      decode: async (buffer, rate) => {
+        decoded = new Uint8Array(buffer.slice(0));
+        return quiet(buffer, rate);
+      },
+    });
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(decoded).toEqual(bytes);
+  });
+
+  test("a note saved before TC-517 (one base64 value) still transcribes", async () => {
+    const space = sqliteSpace();
+    await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
+    // Rewrite it the old way: no manifest, the whole audio at the base key.
+    for (const key of [...space.kv.keys()]) if (key.startsWith(`${voiceNoteAudioKvKey("rec-1")}/`)) space.kv.delete(key);
+    space.kv.set(voiceNoteAudioKvKey("rec-1"), JSON.stringify(AUDIO));
+    const h = harness({});
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+  });
+
+  test("a note of unknown length that is too large is refused from its manifest, before any part is read", async () => {
+    const space = sqliteSpace();
+    // 10 min at twice the phone's bitrate is the most read back; this note claims more.
+    const big = new Uint8Array(600 * 16_000 + 1);
+    await storeVoiceNote(space.tcw, { ...RECORDING, durationMs: 0 }, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: bytesToBase64(big) }), "android");
+    const h = harness({});
+    const gets: string[] = [];
+    const realGet = (space.tcw as { kv: { get: (k: string) => Promise<unknown> } }).kv.get;
+    (space.tcw as { kv: { get: unknown } }).kv.get = async (k: string) => {
+      gets.push(k);
+      return realGet(k);
+    };
+    const err = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS, sourceId: "rec-1", report: () => {} })
+      .catch((e: unknown) => e);
+    expect((err as { code: string }).code).toBe("recording_too_long_for_phone");
+    expect(gets.filter((k) => k.includes("/p/"))).toEqual([]);
+    expect(h.creates).toHaveLength(0);
   });
 });
 
