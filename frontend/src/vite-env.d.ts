@@ -23,6 +23,11 @@ interface ImportMetaEnv {
    * never offered, whatever the backend says; the backend never supplies an upload origin.
    */
   readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
+  /**
+   * Exo mobile health spike (TC-525): "true" shows the development-only Health card in Connectors → Sources
+   * (when the app's native Health plugin exists, i.e. Android and iOS debug builds). Unset in every normal build.
+   */
+  readonly VITE_EXO_HEALTH_SPIKE?: string;
 }
 
 interface ImportMeta {

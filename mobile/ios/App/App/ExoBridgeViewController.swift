@@ -9,6 +9,10 @@ import os
 class ExoBridgeViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(VoiceNotesPlugin())
+        #if EXO_HEALTH
+        // Health spike (TC-525): Debug builds only (see HealthPlugin.swift).
+        bridge?.registerPluginInstance(HealthPlugin())
+        #endif
         #if DEBUG
         startSmokeProbe()
         #endif
@@ -34,6 +38,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
           mounted: !!root && root.childElementCount > 0,
           voiceNotesHeader: headers.some((h) => h.name === "VoiceNotes"),
           voiceNotesAvailable: !!(cap && cap.isPluginAvailable && cap.isPluginAvailable("VoiceNotes")),
+          healthHeader: headers.some((h) => h.name === "Health"),
           title: document.title,
         };
         if (probe.mounted && probe.voiceNotesHeader && cap.nativePromise) {
@@ -49,6 +54,18 @@ class ExoBridgeViewController: CAPBridgeViewController {
           } catch (error) {
             probe.voiceNotesReadChunk = { code: (error && error.code) || null, error: String((error && error.message) || error) };
           }
+        }
+        // Health spike (TC-525), informational: the smoke test reports it but does not gate on it.
+        if (probe.mounted && probe.healthHeader && cap.nativePromise) {
+          const ask = async (method) => {
+            const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000));
+            try {
+              return await Promise.race([cap.nativePromise("Health", method, {}), timeout]);
+            } catch (error) {
+              return { error: String((error && error.message) || error), code: (error && error.code) || null };
+            }
+          };
+          probe.health = { availability: await ask("availability"), authorization: await ask("authorizationStatus") };
         }
         return JSON.stringify(probe);
         """
@@ -80,8 +97,71 @@ class ExoBridgeViewController: CAPBridgeViewController {
             self.smokeProbeTimer = nil
             print("EXO_SMOKE \(line)")
             Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_SMOKE \(line, privacy: .public)")
+            #if EXO_HEALTH
+            self.startHealthProbe()
+            #endif
         }
     }
+
+    #if EXO_HEALTH
+    // MARK: - HealthKit probe (Debug builds, and only when launched with EXO_HEALTH_PROBE=1)
+
+    /// The CI HealthKit spike (mobile/scripts/ios-health-probe.sh) launches an ad-hoc signed build with
+    /// SIMCTL_CHILD_EXO_HEALTH_PROBE=1. Once the smoke probe has seen React mount, this drives the Health plugin over
+    /// the bridge the way the web app would, logging one `EXO_HEALTH_PROBE {"stage":…,"response":…}` line per step:
+    /// availability and status, a read-only authorization request (the product's), then the write request the
+    /// sample data needs (the script answers each Health sheet, if it can), sample data, a 7-day read and
+    /// background delivery. Before each request it logs `requesting-<stage>` so the script knows a sheet is up.
+    private static let healthProbeSteps: [(stage: String, method: String, args: [String: Any])] = [
+        ("availability", "availability", [:]),
+        ("status", "authorizationStatus", [:]),
+        ("authorized-read", "requestAuthorization", [:]),
+        ("authorized-write", "requestAuthorization", ["sampleWrite": true]),
+        ("inserted", "insertSampleData", [:]),
+        ("read", "readDailySummaries", ["days": 7]),
+        ("background", "enableBackgroundDelivery", ["types": ["steps"]]),
+        ("status-after", "authorizationStatus", [:]),
+        ("read-steps-only", "readDailySummaries", ["days": 3, "types": ["steps"]])
+    ]
+    private static let healthProbeScript = """
+        try {
+          return JSON.stringify({ ok: true, result: await window.Capacitor.nativePromise("Health", method, args) });
+        } catch (error) {
+          return JSON.stringify({ ok: false, code: (error && error.code) || null, message: String((error && error.message) || error) });
+        }
+        """
+
+    private func startHealthProbe() {
+        guard ProcessInfo.processInfo.environment["EXO_HEALTH_PROBE"] == "1" else { return }
+        runHealthProbeStep(0)
+    }
+
+    private func runHealthProbeStep(_ index: Int) {
+        guard index < Self.healthProbeSteps.count, let webView = webView else {
+            logHealthProbe(stage: "done", response: "{}")
+            return
+        }
+        let step = Self.healthProbeSteps[index]
+        if step.method == "requestAuthorization" { logHealthProbe(stage: "requesting-\(step.stage)", response: "{}") }
+        let arguments: [String: Any] = ["method": step.method, "args": step.args]
+        webView.callAsyncJavaScript(Self.healthProbeScript, arguments: arguments, in: nil, in: .page) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let value):
+                self.logHealthProbe(stage: step.stage, response: (value as? String) ?? Self.smokeProbeError("non-string result"))
+            case .failure(let error):
+                self.logHealthProbe(stage: step.stage, response: Self.smokeProbeError(error.localizedDescription))
+            }
+            self.runHealthProbeStep(index + 1)
+        }
+    }
+
+    private func logHealthProbe(stage: String, response: String) {
+        let line = "{\"stage\":\"\(stage)\",\"response\":\(response)}"
+        print("EXO_HEALTH_PROBE \(line)")
+        Logger(subsystem: "xyz.tinycloud.exo", category: "health").notice("EXO_HEALTH_PROBE \(line, privacy: .public)")
+    }
+    #endif
 
     private static func smokeProbeError(_ message: String) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: ["error": message]) else { return #"{"error":"unknown"}"# }
