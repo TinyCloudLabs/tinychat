@@ -7,10 +7,12 @@ import {
   createThread,
   getThread,
   getThreadModel,
+  importThread,
   listThreads,
   setThreadModel,
 } from "./threadStore";
-import { isStorageReadOnly, reportStorageWriteSucceeded } from "./storageStatus";
+import { runImportLoop } from "../chat/importLoop";
+import { isStorageReadOnly, reportStorageWriteSucceeded, STORAGE_FULL_SAVE_MESSAGE } from "./storageStatus";
 
 type Gate = { promise: Promise<void>; release: () => void };
 function gate(): Gate {
@@ -128,6 +130,73 @@ describe("thread reads with partial schemas", () => {
       const thread = await getThread(tcw(service), "readable");
       expect(thread?.title).toBe("Existing thread");
       expect(thread?.messages[0]?.message?.id).toBe("m1");
+      expect(service.batchCalls).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      reportStorageWriteSucceeded();
+    }
+  });
+});
+
+describe("thread writes with partial schemas", () => {
+  function rejectSchemaWrites(service: SqlService) {
+    service.sqlite.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `);
+    service.rejectWrites = true;
+  }
+
+  test("appendMessage preserves the storage rejection before reading missing messages", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    rejectSchemaWrites(service);
+
+    try {
+      await expect(appendMessage(tcw(service), "partial", message("u1"))).rejects.toMatchObject({
+        code: "STORAGE_QUOTA_EXCEEDED",
+        retryable: false,
+        message: STORAGE_FULL_SAVE_MESSAGE,
+      });
+      expect(service.batchCalls).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      reportStorageWriteSucceeded();
+    }
+  });
+
+  test("Claude import stops on the typed storage rejection before missing-table writes", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    rejectSchemaWrites(service);
+    const attempts: string[] = [];
+    let progress = 0;
+
+    try {
+      const result = await runImportLoop(
+        ["first", "later"],
+        async (id) => {
+          attempts.push(id);
+          await importThread(tcw(service), {
+            id,
+            title: id,
+            createdAt: "2026-01-01",
+            updatedAt: "2026-01-01",
+            items: [],
+          });
+        },
+        () => false,
+        () => { progress++; },
+      );
+
+      expect(attempts).toEqual(["first"]);
+      expect(result.failures.map((failure) => failure.item)).toEqual(["first"]);
+      expect(result.failures[0]?.error).toMatchObject({
+        code: "STORAGE_QUOTA_EXCEEDED",
+        retryable: false,
+        message: STORAGE_FULL_SAVE_MESSAGE,
+      });
+      expect(result.canceled).toBe(1);
+      expect(progress).toBe(2);
       expect(service.batchCalls).toBe(1);
       expect(isStorageReadOnly()).toBe(true);
     } finally {
