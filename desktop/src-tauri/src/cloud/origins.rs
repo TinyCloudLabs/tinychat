@@ -8,10 +8,10 @@ use super::CloudError;
 
 /// The TinyCloud Private Transcription batch origin audio may be uploaded to.
 ///
-/// `None` in this build: the engine stays hidden (`origin_not_configured`) until
-/// the `ptx-batch` CVM exists and a follow-up sets its exact gateway origin
-/// (plan P7), e.g. `Some("https://<app-id>-8080.<gateway-domain>")`.
-pub const PTX_UPLOAD_ORIGIN: Option<&str> = None;
+/// The production `ptx-batch` CVM's gateway origin (`<app-id>-8080.<gateway>`).
+/// `None` would hide the engine (`origin_not_configured`).
+pub const PTX_UPLOAD_ORIGIN: Option<&str> =
+    Some("https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha-prod5.phala.network");
 
 /// The TinyChat backend the bundled frontend talks to (VITE_BACKEND_URL at
 /// build time; see build.rs).
@@ -199,11 +199,18 @@ mod tests {
     }
 
     #[test]
-    fn no_compiled_origin_means_not_configured() {
+    fn compiled_origin_is_the_production_ptx_batch_cvm() {
+        let origin = resolve_ptx_origin(PTX_UPLOAD_ORIGIN).unwrap();
         assert_eq!(
-            PTX_UPLOAD_ORIGIN, None,
-            "this build must keep the engine hidden"
+            origin.as_str(),
+            "https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha-prod5.phala.network/"
         );
+        let url = upload_url(&origin, &format!("/uploads/{ID}")).unwrap();
+        assert_eq!(url.origin(), origin.origin());
+    }
+
+    #[test]
+    fn no_compiled_origin_means_not_configured() {
         let err = resolve_ptx_origin(None).unwrap_err();
         assert_eq!(err.code, "origin_not_configured");
         assert_eq!(
