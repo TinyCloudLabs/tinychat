@@ -1,5 +1,19 @@
 # @tinychat/backend
 
+## 0.4.0-beta.1
+
+### Minor Changes
+
+- 874ad74: Hosted AssemblyAI for Exo uploads: transcribe with TinyCloud's AssemblyAI key through the backend (capabilities, ≤1 MiB upload parts, signed transcript handles, per-account daily allowance)
+- 874ad74: AssemblyAI delete proxy for Exo uploads
+
+### Patch Changes
+
+- 874ad74: Claim hosted AssemblyAI outcomes only when their handles are used, bound retained outcomes, and retry shutdown cleanup within a total deadline (TC-592).
+- 874ad74: Delete unclaimed hosted AssemblyAI transcripts after 24 hours and retain bounded expiry tombstones. Resolve expired upload cleanup after reload and bound missing-outcome retries with persistent timestamps and a retention notice (TC-592).
+- 874ad74: Keep hosted AssemblyAI submission outcomes visible while deleting temporary audio, retain unresolved Discard cleanup across reloads, and preserve Retry for recoverable hosted uploads without the original file.
+- 874ad74: The app manifest grants the user's ASSEMBLYAI_API_KEY secret (read, write, delete) so Upload audio can keep an AssemblyAI key in the user's encrypted secrets.
+
 ## 0.4.0-beta.0
 
 ### Minor Changes
