@@ -22,6 +22,7 @@ import {
   listThreads,
 } from "@/lib/threadStore";
 import { FilePicker } from "./FilePicker";
+import { runImportLoop } from "./importLoop";
 
 // Spec §5: thread id is `claude-<uuid>` (stable across re-imports).
 const CLAUDE_THREAD_PREFIX = "claude-";
@@ -189,17 +190,10 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
     // belt-and-suspenders.
     clearThreadIndexCache(tcw);
 
-    let imported = 0;
-    let canceled = 0;
-    const failures: ImportFailure[] = [];
-    // SEQUENTIAL — TinyCloud SQL drops concurrent responses, so an import loop
-    // that fires in parallel would silently lose writes.
-    for (const row of chosen) {
-      if (cancelRequestedRef.current) {
-        canceled++;
-        continue;
-      }
-      try {
+    // Sequential by design: TinyCloud SQL drops concurrent responses.
+    const result = await runImportLoop(
+      chosen,
+      async (row) => {
         const items = row.conv.messages.map((m, i) =>
           toStoredItem(m.role, m.text, m.createdAt, i, row.threadId),
         );
@@ -210,17 +204,19 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
           updatedAt: row.conv.updatedAt,
           items,
         });
-        imported++;
-      } catch (err) {
-        console.error("[ImportDialog] import failed", row.threadId, err);
-        failures.push({
-          title: row.conv.title,
-          reason: err instanceof Error ? err.message : "Unknown error",
-        });
-      } finally {
-        setProgress((p) => ({ ...p, done: p.done + 1 }));
-      }
-    }
+      },
+      () => cancelRequestedRef.current,
+      () => setProgress((p) => ({ ...p, done: p.done + 1 })),
+    );
+    const imported = result.imported;
+    const canceled = result.canceled;
+    const failures = result.failures.map(({ item: row, error: err }) => {
+      console.error("[ImportDialog] import failed", row.threadId, err);
+      return {
+        title: row.conv.title,
+        reason: err instanceof Error ? err.message : "Unknown error",
+      };
+    });
 
     clearThreadIndexCache(tcw);
 

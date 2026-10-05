@@ -139,14 +139,28 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
     expect(await getMemory(makeTcw(db))).toBe("LIVE DOC");
   });
 
-  it("getMemory auto-restores from the backup row when the live row is empty/missing", async () => {
+  it("reads an existing table when an unrelated missing-schema write is rejected", async () => {
+    reportStorageWriteSucceeded();
+    const db = new FakeSqlDb();
+    db.existingTables.delete("compactions");
+    db.rows.set(LIVE, "READABLE DOC");
+    db.rejectWrites = true;
+    try {
+      expect(await getMemory(makeTcw(db))).toBe("READABLE DOC");
+      expect(db.writes).toBe(1); // only the rejected missing-table migration
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      reportStorageWriteSucceeded();
+    }
+  });
+
+  it("getMemory returns the backup without repairing the live row", async () => {
     const db = new FakeSqlDb();
     db.rows.set(BACKUP, "BACKUP DOC"); // backup present, live absent
 
-    const restored = await getMemory(makeTcw(db));
-
-    expect(restored).toBe("BACKUP DOC");
-    expect(db.rows.get(LIVE)).toBe("BACKUP DOC"); // restored into live
+    expect(await getMemory(makeTcw(db))).toBe("BACKUP DOC");
+    expect(db.rows.has(LIVE)).toBe(false);
+    expect(db.writes).toBe(0);
   });
 
   it("getMemory returns null when neither live nor backup exists", async () => {
@@ -193,7 +207,7 @@ describe("threadStore memory backup/restore (Layer 3)", () => {
 
     expect(db.rows.get(LIVE)).toBe(MEMORY_TEMPLATE);
     // Prior doc is preserved as last-known-good so the user can still surface
-    // it (via getMemory's auto-restore) if the reset turns out to be a mistake.
+    // it through getMemory's backup fallback if the reset turns out to be a mistake.
     expect(db.rows.get(BACKUP)).toBe("PRIOR USER NOTES");
   });
 

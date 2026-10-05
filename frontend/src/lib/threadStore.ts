@@ -91,9 +91,9 @@ const MEMORY_ROW_ID = "user_context";
 /**
  * Stable id of the last-known-good backup row, stored in the SAME `memory`
  * table (no schema change). `setMemory` snapshots the prior live doc here
- * before writing the new one; `getMemory` auto-restores from it if the live
- * row is ever found missing/empty; `clearMemory` deletes both rows so an
- * explicit "Clear memory" is not silently resurrected.
+ * before writing the new one; `getMemory` falls back to it if the live row is
+ * ever found missing/empty; `clearMemory` deletes both rows so an explicit
+ * "Clear memory" is not silently resurrected.
  */
 const MEMORY_BACKUP_ROW_ID = "user_context_backup";
 
@@ -300,7 +300,13 @@ async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
     });
     if (missing.length > 0) {
       const result = await db.batch(missing.map((sql) => ({ sql })));
-      if (!result.ok) throw new SqlOpError(result.error, "ensureSchema");
+      if (!result.ok) {
+        // A rejected, unrelated migration must not hide tables that already
+        // exist. Do not memoize: callers that need a missing table still get
+        // the SQL error, and a later call can retry the migration.
+        if (isStorageFullError(result.error)) return;
+        throw new SqlOpError(result.error, "ensureSchema");
+      }
     }
     if (memoKey) schemaReadySpaces.add(memoKey);
   })();
@@ -509,9 +515,8 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
       writeMemoryCache(tcw, liveContent);
       return liveContent;
     }
-    // Live row empty/missing — try the last-known-good backup. If present,
-    // restore it into the live row so subsequent reads short-circuit on the
-    // happy path without paying the second query each time.
+    // Live row empty/missing — use the last-known-good backup without trying
+    // to repair TinyCloud storage on the read path.
     const bk = await store(tcw).query(
       "SELECT content FROM memory WHERE id = ?",
       [MEMORY_BACKUP_ROW_ID],
@@ -519,21 +524,6 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
     if (bk.ok && bk.data.rows.length > 0) {
       const bkContent = cellStr(bk.data.rows[0], 0, "");
       if (bkContent.trim().length > 0) {
-        const now = new Date().toISOString();
-        const restoreRes = await store(tcw).execute(
-          `INSERT INTO memory (id, content, updated_at) VALUES (?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
-          [MEMORY_ROW_ID, bkContent, now],
-        );
-        if (!restoreRes.ok) {
-          // Data is still safe — bkContent is returned to the caller — but
-          // subsequent reads will pay the extra backup query until the live
-          // row is repopulated. Log so the failure is observable.
-          console.warn(
-            "[threadStore] getMemory: failed to restore backup row into live",
-            restoreRes.error,
-          );
-        }
         writeMemoryCache(tcw, bkContent);
         return bkContent;
       }

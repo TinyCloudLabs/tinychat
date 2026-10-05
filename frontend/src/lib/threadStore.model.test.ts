@@ -5,10 +5,12 @@ import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import {
   appendMessage,
   createThread,
+  getThread,
   getThreadModel,
   listThreads,
   setThreadModel,
 } from "./threadStore";
+import { isStorageReadOnly, reportStorageWriteSucceeded } from "./storageStatus";
 
 type Gate = { promise: Promise<void>; release: () => void };
 function gate(): Gate {
@@ -40,7 +42,8 @@ class SqlService {
   beforeExecute: (() => Promise<void>) | null = null;
   uncertainExecute = false;
   uncertainBatch = false;
-
+  rejectWrites = false;
+  batchCalls = 0;
   query = async (sql: string, params: unknown[] = []) => {
     try {
       return { ok: true as const, data: { rows: this.sqlite.query(sql).values(...params) } };
@@ -64,6 +67,10 @@ class SqlService {
   };
 
   batch = async (operations: Array<{ sql: string; params?: unknown[] }>) => {
+    this.batchCalls++;
+    if (this.rejectWrites) {
+      return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
+    }
     try {
       if (this.beforeBatch) await this.beforeBatch();
       this.sqlite.run("BEGIN");
@@ -104,6 +111,30 @@ async function model(service: SqlService, id: string): Promise<string | null> {
   const rows = service.sqlite.query("SELECT model FROM threads WHERE id = ?").values(id);
   return rows.length ? String(rows[0]![0]) : null;
 }
+
+describe("thread reads with partial schemas", () => {
+  test("a rejected unrelated compactions migration does not hide existing thread data", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    service.sqlite.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE messages (thread_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (thread_id, position));
+      INSERT INTO threads VALUES ('readable', 'Existing thread', 'model-a', '2026-01-01', '2026-01-02');
+      INSERT INTO messages VALUES ('readable', 0, '{"message":{"id":"m1","role":"user","content":[{"type":"text","text":"hello"}]}}', '2026-01-01');
+    `);
+    service.rejectWrites = true;
+
+    try {
+      const thread = await getThread(tcw(service), "readable");
+      expect(thread?.title).toBe("Existing thread");
+      expect(thread?.messages[0]?.message?.id).toBe("m1");
+      expect(service.batchCalls).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      reportStorageWriteSucceeded();
+    }
+  });
+});
 
 describe("per-thread model persistence FIFO", () => {
   test("unused chats never create a SQL row", async () => {

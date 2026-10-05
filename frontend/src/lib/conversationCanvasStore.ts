@@ -1,4 +1,4 @@
-import { reportStorageError, storageSaveMessage, trackStorageWrites } from "./storageStatus";
+import { isStorageFullError, reportStorageError, storageSaveMessage, trackStorageWrites } from "./storageStatus";
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { getSettingsByPrefix, getThread, rewriteThreadMessages, setSetting, type StoredMessageItem } from "./threadStore";
 import {
@@ -426,10 +426,13 @@ export async function mutateCanvas(
         ...writeStatements(next),
       ]);
       if (result.ok) return next;
-      lastError = result.error.message;
-      // An unchanged revision means the check passed and a real error stopped the batch.
-      const after = await readStoredCanvas(tcw, threadId);
-      if (after.revision === stored.revision) throw new Error(`Conversation Canvas could not be saved: ${result.error.message}`);
+      if (!result.ok) {
+        if (isStorageFullError(result.error)) throw canvasStorageError(result.error, "saved");
+        lastError = result.error.message;
+        // An unchanged revision means the check passed and a real error stopped the batch.
+        const after = await readStoredCanvas(tcw, threadId);
+        if (after.revision === stored.revision) throw new Error(`Conversation Canvas could not be saved: ${result.error.message}`);
+      }
     }
     throw new Error(`Conversation Canvas kept changing on another device while saving; try again. (${lastError})`);
   });
@@ -475,12 +478,8 @@ export async function openCanvas(
   if (!state.promoted.has(threadId)) return { canvas: normalizeLegacyMessages(legacy?.messages ?? [], threadId), promoted: false };
   const current = await getCanvas(tcw, threadId);
   if (!current) throw new Error(CANVAS_MISSING_MESSAGE);
-  if (!alignActivePath(current, path).changed) return { canvas: current, promoted: true };
-  const canvas = await mutateCanvas(tcw, threadId, (fresh) => {
-    if (!fresh) throw new Error(CANVAS_MISSING_MESSAGE);
-    return alignActivePath(fresh, path).canvas;
-  });
-  return { canvas, promoted: true };
+  const aligned = alignActivePath(current, path);
+  return { canvas: aligned.canvas, promoted: true };
 }
 
 /** Switch a chat to Canvas. Only ever called from the user's explicit confirmation. */
