@@ -20,8 +20,8 @@ import type { MeetingCandidate, MeetingCorpus, MeetingLaneHealth, MeetingRef } f
 
 /**
  * The deliberately small MVP source allowlist, shared by SQL and KV discovery.
- * `exo-local` is a desktop recording and `exo-voice-note` a phone voice note:
- * both are browser-local rows. A voice note is saved before it is transcribed
+ * `exo-local` is a desktop recording, `exo-voice-note` a phone voice note and
+ * `exo-upload` an uploaded audio file: all three are browser-local rows. A voice note is saved before it is transcribed
  * (with an empty transcript body), so it is a meeting only once transcribed:
  * see TRANSCRIBED_ONLY_SOURCES.
  */
@@ -31,6 +31,7 @@ export const SUPPORTED_MEETING_SOURCES = [
   "tinycloud-transcriber",
   "exo-local",
   "exo-voice-note",
+  "exo-upload",
 ] as const;
 
 function isSupportedMeetingSource(source: string): boolean {

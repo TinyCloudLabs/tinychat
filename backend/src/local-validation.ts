@@ -15,6 +15,7 @@ export function localValidationFromEnv(env: NodeJS.ProcessEnv): boolean {
   for (const key of [
     "LEDGER_SERVICE_URL", "LEDGER_SERVICE_SECRET", "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET", "TRANSCRIPTION_API_URL", "TRANSCRIPTION_API_KEY",
+    "ASSEMBLYAI_API_KEY", "ASSEMBLYAI_HOSTED_HANDLE_KEY",
   ]) {
     if (env[key]) throw new Error(`Local validation requires ${key} unset`);
   }

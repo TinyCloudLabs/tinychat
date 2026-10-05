@@ -143,9 +143,12 @@ export async function unlockSecrets<E>(
   return result;
 }
 
+/** Where a key lives in the vault: a connector's descriptor, or another source key's name. */
+export type SecretLocation = Pick<ConnectorDescriptor, "secretName" | "secretScope">;
+
 export async function saveConnectorKey<E>(
   tcw: SecretsTcw,
-  descriptor: ConnectorDescriptor,
+  descriptor: SecretLocation,
   key: string,
 ): Promise<SecretsResult<void, E>> {
   const options = descriptor.secretScope
@@ -169,7 +172,7 @@ export async function saveConnectorKey<E>(
 
 export async function getConnectorKey<E>(
   tcw: SecretsTcw,
-  descriptor: ConnectorDescriptor,
+  descriptor: SecretLocation,
 ): Promise<SecretsResult<string, E>> {
   const options = descriptor.secretScope
     ? { scope: descriptor.secretScope }
@@ -182,7 +185,7 @@ export async function getConnectorKey<E>(
 
 export async function deleteConnectorKey<E>(
   tcw: SecretsTcw,
-  descriptor: ConnectorDescriptor,
+  descriptor: SecretLocation,
 ): Promise<SecretsResult<void, E>> {
   const options = descriptor.secretScope
     ? { scope: descriptor.secretScope }

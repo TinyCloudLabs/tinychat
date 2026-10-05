@@ -18,9 +18,9 @@ interface ImportMetaEnv {
    */
   readonly VITE_EXO_NATIVE_GOOGLE_OAUTH?: string;
   /**
-   * Exo mobile: the TinyCloud Private Transcription (ptx-batch) origin voice notes are uploaded to,
-   * e.g. `https://<app_id>-8080.<gateway>`. Unset (every build today) = voice-note transcription is
-   * never offered, whatever the backend says; the backend never supplies an upload origin.
+   * The TinyCloud Private Transcription (ptx-batch) origin that voice notes (Exo mobile) and Upload
+   * audio (every platform) upload to, e.g. `https://<app_id>-8080.<gateway>`. Unset = neither offers
+   * private transcription, whatever the backend says; the backend never supplies an upload origin.
    */
   readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
   /**

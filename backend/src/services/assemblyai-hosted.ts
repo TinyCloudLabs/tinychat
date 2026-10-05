@@ -1,0 +1,691 @@
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { chmod, mkdir, open, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+
+import { assertStrongSecret } from "./webhook-tokens.js";
+
+/**
+ * AssemblyAI under TinyCloud's account for Exo uploads ("hosted" mode, contract C10).
+ *
+ * The browser cannot hold TinyCloud's AssemblyAI key, so in hosted mode the audio passes through
+ * this backend: the client PUTs it in ≤1 MiB parts (api.tinycloud.chat's ingress refuses larger
+ * bodies) into a spool file, then asks for a transcript; the backend streams the spool to
+ * AssemblyAI with the server key, deletes the spool, and hands back a signed HANDLE instead of the
+ * AssemblyAI transcript id. Every later read or delete presents the handle, which binds the
+ * transcript to the session address that created it.
+ *
+ * Nothing here is persisted: uploads, slots and the daily allowance live in this process, and a
+ * restart forgets them (clients re-upload; the allowance resets). Spool files left by a previous
+ * process are removed at start.
+ */
+
+export const MAX_HOSTED_BYTES = 120_960_000;
+export const HOSTED_PART_SIZE = 1_048_576;
+/** The six audio containers Exo uploads (contract C1). */
+export const HOSTED_CONTENT_TYPES: readonly string[] = ["audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/webm", "audio/flac"];
+export const DEFAULT_DAILY_BYTES = 3 * MAX_HOSTED_BYTES;
+export const DEFAULT_MAX_CONCURRENT_UPLOADS = 4;
+export const UPLOAD_TTL_MS = 60 * 60 * 1000;
+export const HANDLE_TTL_SECONDS = 7 * 24 * 60 * 60;
+/** AssemblyAI transcript ids (UUIDs today); the same bound the C9 delete proxy accepts. */
+export const ASSEMBLYAI_TRANSCRIPT_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+// ── Config ───────────────────────────────────────────────────────────
+
+export type AssemblyAiHostedConfig =
+  | { hosted: false; reason: "api_key_unset" | "handle_key_unset" | "both_unset" }
+  | {
+      hosted: true;
+      apiKey: string;
+      handleKey: string;
+      dailyBytes: number;
+      spoolDir: string;
+    };
+
+function fail(message: string): never {
+  throw new Error(`[startup] FATAL: ${message}`);
+}
+
+/** Names of env vars that hold secrets; the handle key must equal none of them. */
+const SECRET_NAME_RE = /(KEY|SECRET|MASTER|TOKEN|PASSWORD)/;
+
+/**
+ * Both `ASSEMBLYAI_API_KEY` and `ASSEMBLYAI_HOSTED_HANDLE_KEY` set = hosted mode on; either unset =
+ * off (capabilities say `hosted: false`, the hosted routes answer 503). A value that IS set but
+ * unusable refuses boot: a weak or reused handle key, a key with whitespace, a bad allowance or
+ * spool dir. Error messages name variables, never values (public CVM logs).
+ */
+export function assemblyAiHostedConfigFromEnv(env: Record<string, string | undefined>): AssemblyAiHostedConfig {
+  const apiKey = env.ASSEMBLYAI_API_KEY?.trim() ?? "";
+  const handleKey = env.ASSEMBLYAI_HOSTED_HANDLE_KEY?.trim() ?? "";
+  if (apiKey && /[^\x21-\x7e]/.test(apiKey)) fail("ASSEMBLYAI_API_KEY must be printable ASCII without whitespace");
+  if (handleKey) {
+    assertStrongSecret("ASSEMBLYAI_HOSTED_HANDLE_KEY", handleKey, { quiet: true });
+    for (const [name, value] of Object.entries(env)) {
+      if (name === "ASSEMBLYAI_HOSTED_HANDLE_KEY" || !SECRET_NAME_RE.test(name)) continue;
+      if (value?.trim() === handleKey) fail(`ASSEMBLYAI_HOSTED_HANDLE_KEY must not reuse ${name}`);
+    }
+  }
+
+  const rawDaily = env.ASSEMBLYAI_HOSTED_DAILY_BYTES?.trim() ?? "";
+  let dailyBytes = DEFAULT_DAILY_BYTES;
+  if (rawDaily) {
+    if (!/^\d{1,15}$/.test(rawDaily) || Number(rawDaily) < 1) fail("ASSEMBLYAI_HOSTED_DAILY_BYTES must be a positive integer");
+    dailyBytes = Number(rawDaily);
+  }
+  const spoolDir = env.ASSEMBLYAI_HOSTED_SPOOL_DIR?.trim() || join(tmpdir(), "tinychat-assemblyai");
+  if (!isAbsolute(spoolDir)) fail("ASSEMBLYAI_HOSTED_SPOOL_DIR must be an absolute path");
+
+  if (!apiKey || !handleKey) {
+    return { hosted: false, reason: !apiKey && !handleKey ? "both_unset" : !apiKey ? "api_key_unset" : "handle_key_unset" };
+  }
+  return { hosted: true, apiKey, handleKey, dailyBytes, spoolDir };
+}
+
+// ── Handles ──────────────────────────────────────────────────────────
+
+const HANDLE_PREFIX = "aah1";
+const B64URL_RE = /^[A-Za-z0-9_-]+$/;
+const MAX_HANDLE_LENGTH = 512;
+
+function sign(handleKey: string, signed: string): Buffer {
+  return createHmac("sha256", handleKey).update(signed).digest();
+}
+
+/** `aah1.<b64url(json{t, a, e})>.<b64url(HMAC-SHA256(key, "aah1.<payload>"))>`. */
+export function issueHandle(handleKey: string, transcriptId: string, address: string, nowMs: number): string {
+  const payload = Buffer.from(
+    JSON.stringify({ t: transcriptId, a: address.toLowerCase(), e: Math.floor(nowMs / 1000) + HANDLE_TTL_SECONDS }),
+  ).toString("base64url");
+  const signed = `${HANDLE_PREFIX}.${payload}`;
+  return `${signed}.${sign(handleKey, signed).toString("base64url")}`;
+}
+
+/**
+ * The AssemblyAI transcript id behind a handle, or null when the handle is malformed, forged,
+ * expired, or was issued to a different address. Callers answer every null the same (404).
+ */
+export function openHandle(handleKey: string, handle: string, address: string, nowMs: number): string | null {
+  if (handle.length > MAX_HANDLE_LENGTH) return null;
+  const parts = handle.split(".");
+  if (parts.length !== 3 || parts[0] !== HANDLE_PREFIX || !B64URL_RE.test(parts[1]!) || !B64URL_RE.test(parts[2]!)) return null;
+  const expected = sign(handleKey, `${parts[0]}.${parts[1]}`);
+  const presented = Buffer.from(parts[2]!, "base64url");
+  const payload = Buffer.from(parts[1]!, "base64url");
+  if (payload.toString("base64url") !== parts[1] || presented.toString("base64url") !== parts[2]) return null;
+  if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) return null;
+  let claims: unknown;
+  try {
+    claims = JSON.parse(payload.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof claims !== "object" || claims === null) return null;
+  const { t, a, e } = claims as Record<string, unknown>;
+  if (typeof t !== "string" || !ASSEMBLYAI_TRANSCRIPT_ID_RE.test(t)) return null;
+  if (typeof a !== "string" || !ADDRESS_RE.test(a) || a !== address.toLowerCase()) return null;
+  if (typeof e !== "number" || !Number.isSafeInteger(e) || e * 1000 <= nowMs) return null;
+  return t;
+}
+
+// ── Uploads: spool, slots, daily allowance ───────────────────────────
+
+const UPLOAD_ID_RE = /^aau_[A-Za-z0-9_-]{32}$/;
+const SPOOL_FILE_RE = /^aau_[A-Za-z0-9_-]{32}\.part$/;
+export const MAX_SETTLED_OUTCOMES = 10_000;
+export const MAX_ACCOUNT_SETTLED_OUTCOMES = 20;
+export const SHUTDOWN_DEADLINE_MS = 20_000;
+export const MAX_UPLOAD_TOMBSTONES = 50_000;
+export const MAX_ACCOUNT_UPLOAD_TOMBSTONES = 100;
+/** How long a background submit (stream to AssemblyAI, then create the transcript) may take. */
+export const SUBMIT_DEADLINE_MS = 15 * 60 * 1000;
+/** Readability window after failure or after a submitted handle is first claimed. */
+export const SETTLED_TTL_MS = 60 * 60 * 1000;
+/** Give an absent owner a day to collect the handle before deleting the unclaimed transcript. */
+export const UNCLAIMED_SUBMITTED_TTL_MS = 24 * 60 * 60 * 1000;
+
+export interface HostedUpload {
+  id: string;
+  owner: string;
+  byteSize: number;
+  contentType: string;
+  partCount: number;
+  received: boolean[];
+  path: string;
+  expiresAt: number;
+  /** The allowance key this upload was charged to (refunded if it is abandoned unsent). */
+  dayKey: string;
+  /** `receiving` takes parts; `submitting` is being sent to AssemblyAI (no parts, no abandon). */
+  state: "receiving" | "submitting";
+  /** Aborts the background submit (deadline, sweep, shutdown). Set while submitting. */
+  abort: AbortController | null;
+  submitDeadline: number;
+}
+
+/** How a background submit ended. Codes are the router's public error codes. */
+export type SubmitOutcome =
+  | { status: "submitted"; handle: string; expiresAt?: number }
+  | { status: "failed"; code: "assemblyai_unavailable" | "assemblyai_rate_limited" };
+
+export type CreateUploadResult =
+  | { ok: true; upload: HostedUpload }
+  | { ok: false; code: "assemblyai_quota_exceeded" | "assemblyai_busy"; retryAfterSeconds: number };
+
+export type LookupResult =
+  | { kind: "active"; upload: HostedUpload }
+  | { kind: "settled"; outcome: SubmitOutcome }
+  | { kind: "expired" }
+  | { kind: "missing" };
+
+function utcDay(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+function secondsToUtcMidnight(nowMs: number): number {
+  const next = new Date(nowMs);
+  next.setUTCHours(24, 0, 0, 0);
+  return Math.max(1, Math.ceil((next.getTime() - nowMs) / 1000));
+}
+
+/** Expected length of part `index` of an upload of `byteSize` bytes. */
+export function partLength(byteSize: number, index: number): number {
+  return Math.min(HOSTED_PART_SIZE, byteSize - index * HOSTED_PART_SIZE);
+}
+
+export class HostedUploadStore {
+  /** Uploads holding a slot: receiving parts, or being submitted. */
+  private readonly uploads = new Map<string, HostedUpload>();
+  /** Submitted or failed uploads: their outcome, readable by the owner until `until`. */
+  private readonly settled = new Map<string, { owner: string; until: number; expiresAt: number; claimed: boolean; outcome: SubmitOutcome }>();
+  private expireDelete: ((handle: string, owner: string, signal?: AbortSignal) => Promise<void>) | null = null;
+  /** Expired outcomes contain only the id, owner and original handle expiry. */
+  private readonly tombstones = new Map<string, { owner: string; until: number }>();
+  /** Bounded index for oldest-first per-owner eviction without scanning every tombstone. */
+  private readonly ownerTombstones = new Map<string, Set<string>>();
+  /** `${utcDay}|${address}` → bytes charged today. */
+  private readonly charged = new Map<string, number>();
+  /** Background submits in flight. */
+  private readonly inFlight = new Set<Promise<void>>();
+
+  /** Serialize account mutations, including file IO, so a claim cannot overtake a part or cleanup. */
+  private readonly mutations = new Map<string, Promise<void>>();
+  private stopping = false;
+
+  private withAccount<T>(address: string, action: () => Promise<T>): Promise<T> {
+    const result = (this.mutations.get(address) ?? Promise.resolve()).then(action);
+    const drained = result.then(() => {}, () => {});
+    this.mutations.set(address, drained);
+    void drained.then(() => {
+      if (this.mutations.get(address) === drained) this.mutations.delete(address);
+    });
+    return result;
+  }
+
+  private receiving(upload: HostedUpload): boolean {
+    return !this.stopping && this.uploads.get(upload.id) === upload && upload.state === "receiving";
+  }
+
+  constructor(
+    private readonly spoolDir: string,
+    private readonly dailyBytes: number,
+    private readonly maxConcurrent: number,
+    private readonly removeSpool: typeof rm = rm,
+    private readonly tombstoneLimits = { global: MAX_UPLOAD_TOMBSTONES, account: MAX_ACCOUNT_UPLOAD_TOMBSTONES },
+    private readonly outcomeLimits = { global: MAX_SETTLED_OUTCOMES, account: MAX_ACCOUNT_SETTLED_OUTCOMES },
+  ) {}
+
+  /** Create the spool dir (0700) and remove whatever a previous process left in it. */
+  async init(): Promise<void> {
+    await mkdir(this.spoolDir, { recursive: true, mode: 0o700 });
+    await chmod(this.spoolDir, 0o700);
+    for (const name of await readdir(this.spoolDir)) {
+      if (SPOOL_FILE_RE.test(name)) await rm(join(this.spoolDir, name), { force: true });
+    }
+  }
+
+  dailyBytesRemaining(address: string, nowMs: number): number {
+    return Math.max(0, this.dailyBytes - (this.charged.get(`${utcDay(nowMs)}|${address}`) ?? 0));
+  }
+
+  get activeCount(): number {
+    return this.uploads.size;
+  }
+
+  /**
+   * A new upload for `address`. The account's previous upload, if it was never sent (a closed tab,
+   * a failed part), is abandoned and refunded so a retry never waits out its hour; one that is
+   * being sent to AssemblyAI right now still makes this `assemblyai_busy`.
+   */
+  async create(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
+    return this.withAccount(address, () => this.createLocked(address, byteSize, contentType, nowMs));
+  }
+
+  private async createLocked(address: string, byteSize: number, contentType: string, nowMs: number): Promise<CreateUploadResult> {
+    if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    const mine = [...this.uploads.values()].find((u) => u.owner === address);
+    if (mine?.state === "submitting") return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    if (mine) await this.abandonLocked(mine);
+    if (this.stopping) return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    if (this.uploads.size >= this.maxConcurrent) {
+      const soonest = Math.min(...[...this.uploads.values()].map((u) => u.expiresAt));
+      return { ok: false, code: "assemblyai_busy", retryAfterSeconds: Math.min(60, Math.max(1, Math.ceil((soonest - nowMs) / 1000))) };
+    }
+    // Every active upload reserves room for its eventual outcome. Retained failures must
+    // never be evicted to admit more work, even when upstream cleanup keeps failing.
+    const retainedForAccount = [...this.settled.values()].filter((entry) => entry.owner === address).length;
+    const reserved = [...this.uploads.keys()].filter((id) => !this.settled.has(id)).length;
+    if (retainedForAccount >= this.outcomeLimits.account || this.settled.size + reserved >= this.outcomeLimits.global) {
+      return { ok: false, code: "assemblyai_busy", retryAfterSeconds: 30 };
+    }
+    const dayKey = `${utcDay(nowMs)}|${address}`;
+    const used = this.charged.get(dayKey) ?? 0;
+    if (used + byteSize > this.dailyBytes) {
+      return { ok: false, code: "assemblyai_quota_exceeded", retryAfterSeconds: secondsToUtcMidnight(nowMs) };
+    }
+    const id = `aau_${randomBytes(24).toString("base64url")}`;
+    const path = join(this.spoolDir, `${id}.part`);
+    const upload: HostedUpload = {
+      id,
+      owner: address,
+      byteSize,
+      contentType,
+      partCount: Math.ceil(byteSize / HOSTED_PART_SIZE),
+      received: [],
+      path,
+      expiresAt: nowMs + UPLOAD_TTL_MS,
+      dayKey,
+      state: "receiving",
+      abort: null,
+      submitDeadline: 0,
+    };
+    // Reserve the slot and charge the allowance before the first await, so concurrent creates
+    // cannot both pass the checks above.
+    this.uploads.set(id, upload);
+    this.charged.set(dayKey, used + byteSize);
+    try {
+      const handle = await open(path, "wx", 0o600);
+      await handle.close();
+    } catch (error) {
+      this.uploads.delete(id);
+      this.charged.set(dayKey, used);
+      throw error;
+    }
+    return { ok: true, upload };
+  }
+
+  /** The caller's upload in whatever state it is in; another account's is `missing`. */
+  lookup(id: string, address: string, nowMs: number): LookupResult {
+    if (!UPLOAD_ID_RE.test(id)) return { kind: "missing" };
+    const upload = this.uploads.get(id);
+    if (upload && upload.owner === address) {
+      // A submit in flight outlives the upload's hour; it is bounded by its own deadline.
+      return upload.state === "receiving" && upload.expiresAt <= nowMs ? { kind: "expired" } : { kind: "active", upload };
+    }
+    const settled = this.settled.get(id);
+    if (settled && settled.owner === address) return { kind: "settled", outcome: settled.outcome };
+    const tombstone = this.tombstones.get(id);
+    if (tombstone && tombstone.owner === address && tombstone.until > nowMs) return { kind: "expired" };
+    return { kind: "missing" };
+  }
+
+  async writePart(upload: HostedUpload, index: number, bytes: Uint8Array): Promise<boolean> {
+    return this.withAccount(upload.owner, async () => {
+      if (!this.receiving(upload)) return false;
+      await this.writePartLocked(upload, index, bytes);
+      return true;
+    });
+  }
+
+  private async writePartLocked(upload: HostedUpload, index: number, bytes: Uint8Array): Promise<void> {
+    const handle = await open(upload.path, "r+");
+    try {
+      await handle.write(bytes, 0, bytes.byteLength, index * HOSTED_PART_SIZE);
+    } finally {
+      await handle.close();
+    }
+    upload.received[index] = true;
+  }
+
+  /** Every part arrived and the spool is exactly the declared size. */
+  async complete(upload: HostedUpload): Promise<boolean> {
+    for (let i = 0; i < upload.partCount; i++) if (!upload.received[i]) return false;
+    return (await stat(upload.path)).size === upload.byteSize;
+  }
+
+  /** Validate and claim under the same lock as parts, replacement and abandonment. */
+  async submitIfComplete(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): Promise<boolean> {
+    return this.withAccount(upload.owner, async () => {
+      if (!this.receiving(upload) || upload.expiresAt <= now()) return true;
+      if (!(await this.complete(upload))) return false;
+      this.startSubmit(upload, now, submit);
+      return true;
+    });
+  }
+
+  /**
+   * Move a complete upload to `submitting` and run `submit` in the background with an abort
+   * signal (its own deadline, the sweep, or shutdown). Whatever happens, the spool is deleted,
+   * the slot freed, and the outcome kept for the owner to read.
+   */
+  startSubmit(upload: HostedUpload, now: () => number, submit: (signal: AbortSignal) => Promise<SubmitOutcome>): void {
+    if (!this.receiving(upload)) return;
+    const controller = new AbortController();
+    upload.state = "submitting";
+    upload.abort = controller;
+    upload.submitDeadline = now() + SUBMIT_DEADLINE_MS;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(SUBMIT_DEADLINE_MS)]);
+    const run = (async () => {
+      let outcome: SubmitOutcome;
+      try {
+        outcome = await submit(signal);
+      } catch {
+        outcome = { status: "failed", code: "assemblyai_unavailable" };
+      }
+      // Publish the outcome before release removes the active entry; no lookup can see a gap
+      // while the spool deletion is pending (or if deleting the file fails).
+      const settledAt = now();
+      this.settled.set(upload.id, {
+        owner: upload.owner,
+        until: settledAt + (outcome.status === "submitted" ? UNCLAIMED_SUBMITTED_TTL_MS : SETTLED_TTL_MS),
+        expiresAt: outcome.status === "submitted" && outcome.expiresAt !== undefined
+          ? outcome.expiresAt : (Math.floor(settledAt / 1000) + HANDLE_TTL_SECONDS) * 1000,
+        claimed: false, outcome,
+      });
+      await this.release(upload).catch(() => {});
+    })();
+    this.inFlight.add(run);
+    void run.finally(() => this.inFlight.delete(run));
+  }
+
+  /** Resolves when every background submit started so far has settled. */
+  async idle(): Promise<void> {
+    while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+  }
+
+  /** Delete the spool and free the slot. Safe to call more than once. */
+  async release(upload: HostedUpload): Promise<void> {
+    this.uploads.delete(upload.id);
+    await this.removeSpool(upload.path, { force: true });
+  }
+
+  /** Drop an upload that was never sent: spool deleted, slot freed, its bytes refunded. */
+  async abandon(upload: HostedUpload): Promise<boolean> {
+    return this.withAccount(upload.owner, () => this.abandonLocked(upload));
+  }
+
+  private async abandonLocked(upload: HostedUpload): Promise<boolean> {
+    if (this.uploads.get(upload.id) !== upload || upload.state !== "receiving") return false;
+    const used = this.charged.get(upload.dayKey);
+    if (used !== undefined) this.charged.set(upload.dayKey, Math.max(0, used - upload.byteSize));
+    await this.release(upload);
+    return true;
+  }
+
+  /** The router supplies the same authenticated upstream delete used by the handle route. */
+  onExpireDelete(remove: (handle: string, owner: string, signal?: AbortSignal) => Promise<void>): void {
+    this.expireDelete = remove;
+  }
+
+  private removeTombstone(id: string): void {
+    const entry = this.tombstones.get(id);
+    if (!entry) return;
+    this.tombstones.delete(id);
+    const mine = this.ownerTombstones.get(entry.owner)!;
+    mine.delete(id);
+    if (mine.size === 0) this.ownerTombstones.delete(entry.owner);
+  }
+
+  private tombstone(id: string, owner: string, until: number): void {
+    this.tombstones.set(id, { owner, until });
+    const mine = this.ownerTombstones.get(owner) ?? new Set<string>();
+    mine.add(id);
+    this.ownerTombstones.set(owner, mine);
+    while (mine.size > this.tombstoneLimits.account) this.removeTombstone(mine.values().next().value!);
+    while (this.tombstones.size > this.tombstoneLimits.global) this.removeTombstone(this.tombstones.keys().next().value!);
+  }
+
+  private async expireOutcome(id: string, signal?: AbortSignal): Promise<void> {
+    const settled = this.settled.get(id);
+    if (!settled) return;
+    if (settled.outcome.status === "submitted" && !settled.claimed) {
+      // Never advertise terminal cleanup until upstream deletion succeeds. A failed delete
+      // keeps the handle for the next sweep (and uses the router's fixed, redacted logging).
+      if (!this.expireDelete) throw new Error("Hosted expiry deletion is not configured");
+      await this.expireDelete(settled.outcome.handle, settled.owner, signal);
+    }
+    this.tombstone(id, settled.owner, settled.expiresAt);
+    this.settled.delete(id);
+  }
+
+  /** Expire an outcome atomically with sweep/shutdown for this owner. Reading is not a claim. */
+  async resolve(id: string, address: string, nowMs: number): Promise<LookupResult> {
+    return this.withAccount(address, async () => {
+      const settled = this.settled.get(id);
+      if (settled?.owner === address && settled.until <= nowMs) await this.expireOutcome(id);
+      return this.lookup(id, address, nowMs);
+    });
+  }
+
+  /** Only an authenticated request using the handle proves the owner received it. */
+  async claimHandle(handle: string, address: string, nowMs: number): Promise<void> {
+    await this.withAccount(address, async () => {
+      for (const [id, settled] of this.settled) {
+        if (settled.owner !== address || settled.outcome.status !== "submitted" || settled.outcome.handle !== handle) continue;
+        if (settled.until <= nowMs) await this.expireOutcome(id);
+        else if (!settled.claimed) {
+          settled.claimed = true;
+          settled.until = Math.min(settled.until, nowMs + SETTLED_TTL_MS);
+        }
+      }
+    });
+  }
+
+  /** Forget a settled outcome (the owner has read it). */
+  forget(id: string): void {
+    this.settled.delete(id);
+  }
+
+  /**
+   * Delete expired unsent spools and free their slots; abort submits past their deadline (they
+   * then settle as failed and delete their own spool); forget old outcomes and old days.
+   */
+  async sweep(nowMs: number): Promise<number> {
+    let removed = 0;
+    for (const upload of [...this.uploads.values()]) {
+      if (upload.state === "submitting") {
+        if (nowMs >= upload.submitDeadline) upload.abort?.abort();
+        continue;
+      }
+      if (upload.expiresAt > nowMs) continue;
+      if (!(await this.abandon(upload))) continue;
+      this.tombstone(upload.id, upload.owner, upload.expiresAt - UPLOAD_TTL_MS + HANDLE_TTL_SECONDS * 1000);
+      removed++;
+    }
+    for (const [id, tombstone] of this.tombstones) if (tombstone.until <= nowMs) this.removeTombstone(id);
+    for (const [id, settled] of this.settled) {
+      if (settled.until <= nowMs) await this.resolve(id, settled.owner, nowMs).catch(() => {});
+    }
+    const today = utcDay(nowMs);
+    for (const key of this.charged.keys()) if (!key.startsWith(`${today}|`)) this.charged.delete(key);
+    return removed;
+  }
+
+  /** Close mutations and attempt every cleanup, bounded by one total shutdown deadline. */
+  async shutdown(timeoutMs = SHUTDOWN_DEADLINE_MS): Promise<void> {
+    this.stopping = true;
+    const controller = new AbortController();
+    const deadline = new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    for (const upload of this.uploads.values()) upload.abort?.abort();
+    const cleanup = (async () => {
+      await Promise.allSettled([...this.mutations.values()]);
+      await Promise.allSettled([...this.uploads.values()]
+        .filter((upload) => upload.state === "receiving").map((upload) => this.abandonLocked(upload)));
+      await this.idle();
+      await Promise.allSettled([...this.settled].map(([id, entry]) => this.withAccount(entry.owner, async () => {
+        if (!controller.signal.aborted) await this.expireOutcome(id, controller.signal);
+      })));
+    })();
+    // Even a stuck local IO or a transport ignoring abort cannot hold shutdown forever.
+    await Promise.race([Promise.allSettled([cleanup]), deadline]);
+    clearTimeout(timer);
+    for (const entry of this.settled.values()) {
+      if (entry.outcome.status === "submitted" && !entry.claimed) {
+        console.error(`[assemblyai-hosted] route=shutdown status=502 code=assemblyai_cleanup_incomplete cid=${randomUUID()}`);
+      }
+    }
+  }
+}
+
+// ── AssemblyAI ───────────────────────────────────────────────────────
+
+export const ASSEMBLYAI_API = "https://api.assemblyai.com";
+export const SPEECH_MODELS = ["universal-3-5-pro", "universal-2"] as const;
+/**
+ * AssemblyAI answers an unknown transcript id with `400 {"error": "Transcript lookup error,
+ * transcript id not found"}`, not 404 (observed 2026-10-03); this fragment tells it apart.
+ */
+export const NOT_FOUND_400 = "transcript id not found";
+
+/** Read at most `max` bytes of a body; null when it is longer (not read past the cap). */
+export async function readCapped(response: Response, max: number): Promise<Uint8Array | null> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && Number(declared) > max) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!response.body) return new Uint8Array(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+export function parseJson(bytes: Uint8Array | null): unknown {
+  if (bytes === null || bytes.byteLength === 0) return undefined;
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when an AssemblyAI 400 body is its "transcript id not found" answer. */
+export function isNotFound400(bytes: Uint8Array | null): boolean {
+  return bytes !== null && new TextDecoder().decode(bytes).toLowerCase().includes(NOT_FOUND_400);
+}
+
+// ── Rebuilt transcript views (nothing AssemblyAI sends is relayed by reference) ──
+
+export const TRANSCRIPT_STATUSES: readonly string[] = ["queued", "processing", "completed", "error"];
+const STATUSES = TRANSCRIPT_STATUSES as readonly ("queued" | "processing" | "completed" | "error")[];
+const LANGUAGE_CODE_RE = /^[a-z]{2,3}(?:_[a-z]{2,4})?$/i;
+const SPEAKER_RE = /^[A-Za-z0-9]{1,8}$/;
+const MAX_TEXT = 4_000_000;
+/** Fixed text for a transcript AssemblyAI failed; its own error text is never relayed. */
+export const TRANSCRIPT_FAILED_MESSAGE = "AssemblyAI could not transcribe this recording.";
+
+class Invalid extends Error {}
+function check(condition: boolean): asserts condition {
+  if (!condition) throw new Invalid();
+}
+function obj(value: unknown): Record<string, unknown> {
+  check(typeof value === "object" && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+function ms(value: unknown): number {
+  check(typeof value === "number" && Number.isFinite(value) && value >= 0);
+  return value as number;
+}
+function text(value: unknown): string {
+  check(typeof value === "string" && value.length <= MAX_TEXT);
+  return value as string;
+}
+function speaker(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  check(typeof value === "string" && SPEAKER_RE.test(value));
+  return value as string;
+}
+function orNull<T>(parse: () => T): T | null {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof Invalid) return null;
+    throw error;
+  }
+}
+
+export interface HostedTranscriptView {
+  id: string;
+  status: (typeof STATUSES)[number];
+  error: string | null;
+  language_code: string | null;
+  audio_duration: number | null;
+  text: string | null;
+  utterances: { speaker: string | null; start: number; end: number; text: string }[] | null;
+}
+
+/** `GET /v2/transcript/{id}` rebuilt to the public subset, or null when off-contract. */
+export function rebuildTranscript(body: unknown, handle: string): HostedTranscriptView | null {
+  return orNull(() => {
+    const o = obj(body);
+    check(typeof o.status === "string" && (STATUSES as readonly string[]).includes(o.status));
+    const status = o.status as HostedTranscriptView["status"];
+    const languageCode = o.language_code === null || o.language_code === undefined ? null : o.language_code;
+    check(languageCode === null || (typeof languageCode === "string" && LANGUAGE_CODE_RE.test(languageCode)));
+    const duration = o.audio_duration === null || o.audio_duration === undefined ? null : ms(o.audio_duration);
+    const utterances =
+      o.utterances === null || o.utterances === undefined
+        ? null
+        : (() => {
+            check(Array.isArray(o.utterances));
+            return (o.utterances as unknown[]).map((raw) => {
+              const u = obj(raw);
+              const start = ms(u.start);
+              const end = ms(u.end);
+              check(end >= start);
+              return { speaker: speaker(u.speaker), start, end, text: text(u.text) };
+            });
+          })();
+    return {
+      id: handle,
+      status,
+      error: status === "error" ? TRANSCRIPT_FAILED_MESSAGE : null,
+      language_code: languageCode as string | null,
+      audio_duration: duration,
+      text: o.text === null || o.text === undefined ? null : text(o.text),
+      utterances,
+    };
+  });
+}
+
+/** `GET /v2/transcript/{id}/sentences` rebuilt to `{ sentences: [{ start, end, text, speaker }] }`. */
+export function rebuildSentences(body: unknown) {
+  return orNull(() => {
+    const list = obj(body).sentences;
+    check(Array.isArray(list));
+    return {
+      sentences: (list as unknown[]).map((raw) => {
+        const s = obj(raw);
+        const start = ms(s.start);
+        const end = ms(s.end);
+        check(end >= start);
+        return { start, end, text: text(s.text), speaker: speaker(s.speaker) };
+      }),
+    };
+  });
+}

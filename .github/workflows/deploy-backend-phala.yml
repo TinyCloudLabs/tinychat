@@ -464,6 +464,12 @@ jobs:
           PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${{ vars.PRIVATE_CLOUD_TRANSCRIPTION_API_URL }}
           PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_API_KEY }}
           PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${{ secrets.PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY }}
+          # Hosted AssemblyAI for Exo uploads (backend/src/routes/assemblyai-hosted.ts): TinyCloud's
+          # AssemblyAI key and the handle HMAC key (>=32 random bytes, `openssl rand -base64 32`,
+          # distinct from every other secret). Both set = hosted mode on; either empty = off (users
+          # can still bring their own key). Declared in all four places for the allowed_envs reason.
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          ASSEMBLYAI_HOSTED_HANDLE_KEY: ${{ secrets.ASSEMBLYAI_HOSTED_HANDLE_KEY }}
         run: |
           ENV_FILE="$RUNNER_TEMP/phala-prod.env"
           DEPLOY_RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -537,6 +543,8 @@ jobs:
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_URL=$PRIVATE_CLOUD_TRANSCRIPTION_API_URL"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_API_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_API_KEY"
             printf '%s\n' "PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY=$PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY"
+            printf '%s\n' "ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY"
+            printf '%s\n' "ASSEMBLYAI_HOSTED_HANDLE_KEY=$ASSEMBLYAI_HOSTED_HANDLE_KEY"
           } > "$ENV_FILE"
 
           echo "::group::Deploy environment keys"

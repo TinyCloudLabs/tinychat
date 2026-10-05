@@ -45,6 +45,10 @@
       "actions": ["read", "write", "delete"],
       "description": "Store your Granola API key, encrypted, in your secrets space."
     },
+    "ASSEMBLYAI_API_KEY": {
+      "actions": ["read", "write", "delete"],
+      "description": "Store your AssemblyAI API key, encrypted, in your secrets space."
+    },
     "REFRESH_TOKEN": {
       "scope": "google-meet",
       "actions": ["read", "write", "delete"],
