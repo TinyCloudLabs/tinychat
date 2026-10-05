@@ -1,5 +1,6 @@
 /**
- * Response DTOs for the private cloud transcription relay (plan §4.2 contract).
+ * Response DTOs for the private cloud transcription relay. The contract is the TinyCloud Private
+ * Transcription batch API (`ptx-batch`, PTX `SPEC.md` "Batch transcription", `src/uploads/`).
  *
  * Every public response is REBUILT here field by field from the PTX body: nothing PTX sends is
  * relayed by reference, so a serializer regression upstream (a `tenant_ref`, a storage path,
@@ -14,8 +15,10 @@ export const MAX_RECORDING_BYTES = 120_960_000;
 export const TRANSCRIPTION_ID_RE = /^trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const UPLOAD_PATH_RE = /^\/uploads\/trn_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const CAPABILITY_RE = /^tcu_[A-Za-z0-9_-]{16,256}$/;
-export const CONTENT_TYPES: readonly string[] = ["audio/mpeg", "audio/wav", "audio/ogg"];
-export const LANGUAGE_RE = /^[a-z]{2}(-[A-Za-z]{2})?$/;
+/** The audio containers PTX accepts; the upload's Content-Type must equal the create's. */
+export const CONTENT_TYPES: readonly string[] = ["audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/webm", "audio/flac"];
+/** PTX's BCP-47 subset (`en`, `pt-BR`, `zh-Hant-TW`), at most 35 characters. */
+export const LANGUAGE_RE = /^(?=.{2,35}$)[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/;
 
 export const TRANSCRIPTION_STATUSES = [
   "awaiting_upload",
@@ -29,7 +32,7 @@ export type TranscriptionStatus = (typeof TRANSCRIPTION_STATUSES)[number];
 const ACTIVE_STATUSES: readonly TranscriptionStatus[] = ["awaiting_upload", "queued", "processing"];
 const TERMINAL_STATUSES: readonly TranscriptionStatus[] = ["completed", "failed", "cancelled"];
 
-/** Why a job failed (plan §4.2/§4.3/§4.6). Our messages; PTX's text is never relayed. */
+/** Why a job failed or ended (PTX job `error.code`). Our messages; PTX's text is never relayed. */
 export const JOB_ERRORS = {
   upload_expired: "The upload window closed before the recording arrived.",
   upload_integrity_failed: "The uploaded recording did not match its checksum.",
@@ -40,7 +43,9 @@ export const JOB_ERRORS = {
   provider_unavailable: "The speech-to-text provider was unavailable.",
   provider_outcome_unknown: "The speech-to-text result was lost; retrying transcribes the recording again.",
   processing_timeout: "Transcription took too long and was stopped.",
+  processing_failed: "Processing was interrupted and could not finish.",
   transcription_failed: "Transcription failed.",
+  cancelled: "The transcription was cancelled.",
 } as const;
 export type JobErrorCode = keyof typeof JOB_ERRORS;
 
@@ -53,7 +58,10 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{
 const STAGE_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
 const SEGMENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const SPEAKER_ID_RE = /^channel_[01]$/;
+const CHANNEL_SPEAKER_ID_RE = /^channel_[01]$/;
+/** Diarized speakers: `speaker_0` … `speaker_31`. */
+const DIARIZED_SPEAKER_ID_RE = /^speaker_(?:[0-9]|[12][0-9]|3[01])$/;
+const MAX_DIARIZED_SPEAKERS = 32;
 const MAX_LABEL_LENGTH = 64;
 
 class Invalid extends Error {}
@@ -94,6 +102,11 @@ function iso(value: unknown): string {
   return value as string;
 }
 
+function bool(value: unknown): boolean {
+  check(typeof value === "boolean");
+  return value as boolean;
+}
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
   check(typeof value === "string" && (allowed as readonly string[]).includes(value));
   return value as T;
@@ -125,10 +138,12 @@ function jobError(value: unknown): JobError {
   return { code, message: JOB_ERRORS[code] };
 }
 
-/** `failed` carries its reason; nothing else carries one. */
+/** `failed` carries its reason; `cancelled` may carry PTX's `cancelled` marker; nothing else carries one. */
 function statusError(status: TranscriptionStatus, raw: unknown): JobError | null {
   const error = nullable(raw, jobError);
-  check(status === "failed" ? error !== null : error === null);
+  if (status === "failed") check(error !== null && error.code !== "cancelled");
+  else if (status === "cancelled") check(error === null || error.code === "cancelled");
+  else check(error === null);
   return error;
 }
 
@@ -223,6 +238,8 @@ export function parseCapabilities(body: unknown) {
       content_types: contentTypes,
       transcript_ttl_seconds: int(o.transcript_ttl_seconds, 1),
       admission: oneOf(o.admission, ADMISSION_MODES),
+      // Absent on a PTX without the diarization stage: it cannot diarize.
+      diarization: o.diarization === undefined ? false : bool(o.diarization),
     };
   });
 }
@@ -279,31 +296,44 @@ export function parseResultPending(body: unknown, expectedId: string) {
   });
 }
 
+/**
+ * The speakers of a completed result. Diarized: `speaker_<n>` (n 0-31) voices of the mono downmix,
+ * all on channel 0. Otherwise one speaker per transcribed channel, `channel_<n>` on channel n.
+ */
+function resultSpeakers(raw: unknown, channels: number, diarized: boolean) {
+  check(Array.isArray(raw) && raw.length >= 1 && raw.length <= (diarized ? MAX_DIARIZED_SPEAKERS : channels));
+  const speakers = (raw as unknown[]).map((value) => {
+    const s = obj(value);
+    const channel = int(s.channel, 0, channels - 1);
+    const id = str(s.id, diarized ? DIARIZED_SPEAKER_ID_RE : CHANNEL_SPEAKER_ID_RE);
+    check(diarized ? channel === 0 : id === `channel_${channel}`);
+    const name = text(s.name, MAX_LABEL_LENGTH);
+    check(name.trim().length > 0);
+    return { id, name, channel };
+  });
+  check(new Set(speakers.map((s) => s.id)).size === speakers.length);
+  return speakers;
+}
+
 /** 200: the transcript, or the failed/cancelled outcome. */
 export function parseResult(body: unknown, expectedId: string) {
   return parseOrNull(() => {
     const o = obj(body);
+    check(str(o.id, TRANSCRIPTION_ID_RE) === expectedId);
     if (o.status === "failed" || o.status === "cancelled") {
       const status = o.status as TranscriptionStatus;
       return { id: expectedId, status, error: statusError(status, o.error) };
     }
-    check(o.status === undefined || o.status === "completed");
+    check(o.status === "completed");
     const channels = int(o.channels, 1, 2);
-    check(Array.isArray(o.speakers) && o.speakers.length >= 1 && o.speakers.length <= channels);
-    const speakers = (o.speakers as unknown[]).map((raw) => {
-      const s = obj(raw);
-      const channel = int(s.channel, 0, channels - 1);
-      const id = str(s.id, SPEAKER_ID_RE);
-      check(id === `channel_${channel}`);
-      const name = text(s.name, MAX_LABEL_LENGTH);
-      check(name.trim().length > 0);
-      return { id, name, channel };
-    });
-    check(new Set(speakers.map((s) => s.id)).size === speakers.length);
+    // Results stored before diarization existed carry no `diarized`: they are channel-labelled.
+    const diarized = o.diarized === undefined ? false : bool(o.diarized);
+    const speakers = resultSpeakers(o.speakers, channels, diarized);
+    const byId = new Map(speakers.map((speaker) => [speaker.id, speaker]));
     check(Array.isArray(o.segments));
     const segments = (o.segments as unknown[]).map((raw) => {
       const s = obj(raw);
-      const speaker = speakers.find((candidate) => candidate.id === s.speaker_id);
+      const speaker = typeof s.speaker_id === "string" ? byId.get(s.speaker_id) : undefined;
       check(speaker !== undefined);
       const start = num(s.start);
       const end = num(s.end, start);
@@ -321,11 +351,13 @@ export function parseResult(body: unknown, expectedId: string) {
     return {
       id: expectedId,
       status: "completed" as const,
-      language: str(o.language, LANGUAGE_RE),
+      // The language the job was created with; null when none was given.
+      language: nullable(o.language, (v) => str(v, LANGUAGE_RE)),
       duration_seconds: num(o.duration_seconds),
       provider: oneOf(o.provider, ["tinfoil"] as const),
       model: str(o.model, MODEL_RE),
       channels,
+      diarized,
       speakers,
       segments,
       text: text(o.text, 4_000_000),

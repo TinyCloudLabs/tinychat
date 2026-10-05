@@ -122,14 +122,17 @@ export type PrivateCloudErrorClass = "client" | "transient" | "operator_fault";
 
 export const PUBLIC_ERRORS = {
   invalid_request: { status: 400, class: "client", message: "The request is invalid." },
+  diarization_unavailable: { status: 400, class: "client", message: "Speaker detection is not available for private cloud transcription." },
   invalid_idempotency_key: { status: 400, class: "client", message: "Idempotency-Key must be a UUID." },
   unsupported_media_type: { status: 415, class: "client", message: "Only application/json is accepted." },
   recording_too_large: { status: 413, class: "client", message: "The recording is larger than the private cloud limit." },
   transcription_not_found: { status: 404, class: "client", message: "No such transcription." },
+  transcript_expired: { status: 410, class: "client", message: "The transcript is no longer available." },
   active_transcription_exists: { status: 409, class: "client", message: "A transcription is already in progress." },
   idempotency_conflict: { status: 409, class: "client", message: "This Idempotency-Key was used for a different request." },
   quota_exceeded: { status: 429, class: "transient", message: "Daily private cloud limit reached." },
   service_busy: { status: 429, class: "transient", message: "Private cloud transcription is busy." },
+  upload_capability_limit: { status: 429, class: "transient", message: "Too many uploads are open for this transcription." },
   service_paused: { status: 503, class: "transient", message: "Private cloud transcription is paused." },
   service_unavailable: { status: 503, class: "transient", message: "Private cloud transcription is unavailable." },
   upstream_bad_response: { status: 502, class: "transient", message: "Private cloud transcription returned an unexpected response." },
@@ -142,7 +145,8 @@ export type PrivateCloudRoute = "capabilities" | "create" | "list" | "get" | "re
 
 /**
  * The ONLY upstream error answers relayed as themselves: exact (HTTP status, code) pairs per route
- * (plan §4.2). Anything else is classified by `classifyUpstreamError`, never trusted by its code.
+ * (PTX `SPEC.md` "Errors and correlation"). Anything else is classified by `classifyUpstreamError`,
+ * never trusted by its code.
  */
 const JOB_READ_ERRORS = [
   [404, "transcription_not_found"],
@@ -152,17 +156,23 @@ export const UPSTREAM_ERROR_CONTRACT: Record<PrivateCloudRoute, readonly (readon
   capabilities: [[503, "service_unavailable"]],
   create: [
     [400, "invalid_request"],
+    // `diarize: true` while PTX's diarization stage is not installed or disabled.
+    [400, "diarization_unavailable"],
     [413, "recording_too_large"],
+    // A replay of an Idempotency-Key whose job was deleted.
+    [404, "transcription_not_found"],
     [409, "idempotency_conflict"],
     [409, "active_transcription_exists"],
     [429, "quota_exceeded"],
     [429, "service_busy"],
+    // A replay while the job already has its maximum of live upload capabilities.
+    [429, "upload_capability_limit"],
     [503, "service_paused"],
     [503, "service_unavailable"],
   ],
   list: [[503, "service_unavailable"]],
   get: JOB_READ_ERRORS,
-  result: JOB_READ_ERRORS,
+  result: [...JOB_READ_ERRORS, [410, "transcript_expired"]],
   cancel: JOB_READ_ERRORS,
   delete: JOB_READ_ERRORS,
 };

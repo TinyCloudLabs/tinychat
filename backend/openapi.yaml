@@ -1774,12 +1774,18 @@ paths:
       description: >-
         Metadata only: the audio never passes through this server. The response
         carries a RELATIVE `upload.path` (`/uploads/<id>`) and a job-scoped
-        `upload.capability`; the desktop PUTs the recording to its compiled-in PTX
-        origin + path with that capability. `upload` is present exactly while the
-        job is `awaiting_upload`. A retry with the same Idempotency-Key and body
-        returns the same job (200). Requires `X-Requested-With: XMLHttpRequest`.
-        The address is never sent upstream: the service receives
-        HMAC-SHA256(tenant key, lower(address)).
+        `upload.capability`; the client PUTs the recording to its configured PTX
+        origin + path with that capability and `Content-Type` equal to
+        `content_type`. `upload` is present exactly while the job is
+        `awaiting_upload`. A retry with the same Idempotency-Key and body returns
+        the same job (200); replaying the key of a deleted job is
+        `transcription_not_found` (404). `diarize: true` asks for speaker
+        diarization of a mono mixdown (not with `channel_mode: separate`). While
+        capabilities report `diarization: false` it is rejected with
+        `diarization_unavailable` (a PTX with diarization support) or
+        `invalid_request` (a PTX that predates the option).
+        Requires `X-Requested-With: XMLHttpRequest`. The address is never sent
+        upstream: the service receives HMAC-SHA256(tenant key, lower(address)).
       security:
         - bearerAuth: []
       parameters:
@@ -1820,6 +1826,8 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           description: Missing X-Requested-With (CSRF)
+        "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
         "409":
           $ref: "#/components/responses/PrivateCloudFailure"
         "413":
@@ -1915,6 +1923,8 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "404":
+          $ref: "#/components/responses/PrivateCloudFailure"
+        "410":
           $ref: "#/components/responses/PrivateCloudFailure"
         "502":
           $ref: "#/components/responses/PrivateCloudFailure"
@@ -2131,12 +2141,14 @@ components:
             - provider_unavailable
             - provider_outcome_unknown
             - processing_timeout
+            - processing_failed
             - transcription_failed
+            - cancelled
         message:
           type: string
     PrivateCloudCapabilities:
       type: object
-      required: [max_bytes, max_duration_seconds, max_channels, content_types, transcript_ttl_seconds, admission]
+      required: [max_bytes, max_duration_seconds, max_channels, content_types, transcript_ttl_seconds, admission, diarization]
       properties:
         max_bytes:
           type: integer
@@ -2150,12 +2162,15 @@ components:
           type: array
           items:
             type: string
-            enum: [audio/mpeg, audio/wav, audio/ogg]
+            enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
         transcript_ttl_seconds:
           type: integer
         admission:
           type: string
           enum: [open, drain, closed]
+        diarization:
+          type: boolean
+          description: "Whether create accepts `diarize: true` (false when the service reports nothing)."
     PrivateCloudJob:
       type: object
       required: [id, status, byte_size, channel_mode, channel_labels, duration_seconds, channels, progress, retention, error, created_at, updated_at]
@@ -2216,7 +2231,9 @@ components:
               type: [string, "null"]
               format: date-time
         error:
-          description: Set exactly when status is failed.
+          description: >-
+            Set exactly when status is failed; a cancelled job may carry the
+            `cancelled` code.
           oneOf:
             - type: "null"
             - $ref: "#/components/schemas/PrivateCloudJobError"
@@ -2229,7 +2246,7 @@ components:
           format: date-time
     PrivateCloudTranscript:
       type: object
-      required: [id, status, language, duration_seconds, provider, model, channels, speakers, segments, text, stats]
+      required: [id, status, language, duration_seconds, provider, model, channels, diarized, speakers, segments, text, stats]
       properties:
         id:
           type: string
@@ -2237,7 +2254,8 @@ components:
           type: string
           enum: [completed]
         language:
-          type: string
+          type: [string, "null"]
+          description: The language the job was created with; null when none was given.
         duration_seconds:
           type: number
         provider:
@@ -2247,6 +2265,12 @@ components:
           type: string
         channels:
           type: integer
+        diarized:
+          type: boolean
+          description: >-
+            True when the transcript was diarized: speakers are `speaker_<n>` (n 0-31)
+            voices of a mono mixdown, all on channel 0. Otherwise one speaker per
+            channel, `channel_<n>`.
         speakers:
           type: array
           items:
@@ -2255,7 +2279,7 @@ components:
             properties:
               id:
                 type: string
-                pattern: "^channel_[01]$"
+                pattern: "^(channel_[01]|speaker_([0-9]|[12][0-9]|3[01]))$"
               name:
                 type: string
               channel:
@@ -2307,7 +2331,8 @@ components:
       properties:
         content_type:
           type: string
-          enum: [audio/mpeg, audio/wav, audio/ogg]
+          enum: [audio/mpeg, audio/wav, audio/ogg, audio/mp4, audio/webm, audio/flac]
+          description: Also the upload's Content-Type.
         byte_size:
           type: integer
           minimum: 1
@@ -2317,7 +2342,7 @@ components:
           pattern: "^[0-9a-f]{64}$"
         language:
           type: string
-          description: e.g. `en` or `en-US`.
+          description: A BCP-47 tag such as `en` or `pt-BR`.
         channel_mode:
           type: string
           enum: [separate, mixed]
@@ -2328,6 +2353,12 @@ components:
           items:
             type: string
             maxLength: 64
+        diarize:
+          type: boolean
+          default: false
+          description: >-
+            Speaker diarization of a mono mixdown; `channel_labels` is ignored.
+            Invalid with `channel_mode: separate`.
     PrivateCloudCreated:
       type: object
       required: [id, status, byte_size]
@@ -2368,14 +2399,17 @@ components:
                 operator_fault (service_misconfigured: alerted, never retried).
               enum:
                 - invalid_request
+                - diarization_unavailable
                 - invalid_idempotency_key
                 - unsupported_media_type
                 - recording_too_large
                 - transcription_not_found
+                - transcript_expired
                 - active_transcription_exists
                 - idempotency_conflict
                 - quota_exceeded
                 - service_busy
+                - upload_capability_limit
                 - service_paused
                 - service_unavailable
                 - upstream_bad_response
