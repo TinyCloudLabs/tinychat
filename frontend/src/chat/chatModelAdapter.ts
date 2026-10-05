@@ -241,7 +241,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // Separate the memory system block (kept caller-side, prepended first so it
       // lands at the least-context-rotted position) from the conversation
       // messages (which compaction may fold into a summary checkpoint).
-      const privateAccess = deps.privateAccessRef.current;
+      // Rebound only when this turn's own delegation error downgrades access.
+      let privateAccess = deps.privateAccessRef.current;
       const systemContent = privateAccess.active ? context?.system : undefined;
       const memoryBlock: ChatMessage | null =
         typeof systemContent === "string" && systemContent.length > 0
@@ -473,6 +474,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         if (canvasState) publishRequestAttempt(threadId, "sent", sendPayload);
         if (agentEnabled && !meetingSystemBlock) {
           const roomId = origin.threadId;
+          const reportDelegationError = deps.onAgentDelegationError;
           try {
             deps.selection.assertActive(origin);
             for await (const text of streamAgentChat({
@@ -484,7 +486,15 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
               abortSignal,
               onUsage,
               onCompletionId,
-              onDelegationError: deps.onAgentDelegationError,
+              onDelegationError: reportDelegationError && ((code) => {
+                const before = deps.privateAccessRef.current;
+                reportDelegationError(code);
+                const after = deps.privateAccessRef.current;
+                // The server already answers this turn without private tools,
+                // so the downgrade it reports must not abort that public
+                // answer. Any other access change still ends the turn.
+                if (before === privateAccess && !after.active) privateAccess = after;
+              }),
               onToolActivity: unstable_assistantMessageId
                 ? (a) => setToolActivity(unstable_assistantMessageId, a)
                 : undefined,

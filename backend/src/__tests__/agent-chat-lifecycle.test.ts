@@ -333,6 +333,28 @@ describe("private access lifecycle", () => {
     expect(offered).toEqual([["web_search"]]);
     expect(turn.res.text()).toContain("safe answer");
   });
+  for (const [label, status, code] of [
+    ["no session", async () => ({ status: "none", revision: "r2" }), "delegation_required"],
+    ["an expired grant", async () => ({ status: "expired", transcriptStatus: "expired", revision: "r3" }), "delegation_expired"],
+    ["a failed status check", async () => { throw new Error("status unavailable"); }, "delegation_unverified"],
+  ] as const) it(`legacy loop signals ${code} for ${label} before the public answer`, async () => {
+    const prompts: string[] = [];
+    const controller = { ...access(), status };
+    const cfg = { ...config((async (_url, init) => { prompts.push(JSON.parse(String(init?.body)).messages[0].content); return provider(answer() + done); }) as typeof fetch), access: controller };
+    const turn = run(cfg); await turn.finished;
+    const text = turn.res.text();
+    const signal = text.indexOf(`"delegation_error":{"code":"${code}"}`);
+    expect(signal).toBeGreaterThan(-1);
+    expect(signal).toBeLessThan(text.indexOf("safe answer"));
+    expect(text).not.toContain("stream_error");
+    expect(text.match(/data: \[DONE\]/g)).toHaveLength(1);
+    expect(prompts[0]).toContain("Settings > Agent access");
+  });
+  it("an active grant sends no access signal", async () => {
+    const turn = run({ ...config((async () => provider(answer() + done)) as typeof fetch), access: access(true) }); await turn.finished;
+    expect(turn.res.text()).toContain("safe answer");
+    expect(turn.res.text()).not.toContain("delegation_error");
+  });
   it("disconnect cancels an active turn before any late private answer is delivered", async () => {
     const pending = deferred<globalThis.Response>(); const started = deferred<void>();
     const controller = access(); let signal: AbortSignal | undefined;

@@ -64,13 +64,48 @@ export interface ChatMsg {
 
 export interface AgentChatAccess {
   capture(entityId: string): { isCurrent(): boolean; onInvalidate(callback: () => void): () => void };
+  /** Throws when the service cannot say; the turn then reports `delegation_unverified`. */
   status(entityId: string): Promise<{ status?: unknown; transcriptStatus?: unknown; revision?: unknown }>;
+}
+
+/**
+ * Why a turn was admitted without private tools. Sent to the browser as a
+ * `delegation_error` frame. `delegation_unverified` means the status check
+ * failed, not that the grant is gone.
+ */
+export type PrivateAccessIssue = "delegation_required" | "delegation_expired" | "delegation_unverified";
+
+/** `undefined` admits private tools; a missing or malformed snapshot is unverified. */
+export function privateAccessIssue(snapshot?: Awaited<ReturnType<AgentChatAccess["status"]>>): PrivateAccessIssue | undefined {
+  if (!snapshot || typeof snapshot.status !== "string") return "delegation_unverified";
+  if (snapshot.status === "active" && snapshot.transcriptStatus === "active") {
+    return typeof snapshot.revision === "string" && snapshot.revision.length > 0 ? undefined : "delegation_unverified";
+  }
+  return snapshot.status === "expired" || snapshot.transcriptStatus === "expired" ? "delegation_expired" : "delegation_required";
+}
+
+/**
+ * System guidance for a turn without private access. The remedy is reconnecting
+ * the agent, never switching models.
+ */
+export function privateAccessGuidance(issue: PrivateAccessIssue): string {
+  const [state, remedy] = issue === "delegation_unverified"
+    ? ["could not be verified for this reply", "they can try again, and if it keeps happening, reconnect the agent in Settings > Agent access"]
+    : issue === "delegation_expired"
+      ? ["has expired", "they need to reconnect the agent in Settings > Agent access"]
+      : ["is not connected", "they need to connect or reconnect the agent in Settings > Agent access"];
+  return `Private meeting access for this account ${state}, so meeting and transcript tools are unavailable. ` +
+    `For questions about the user's meetings, transcripts, or meeting action items, say you cannot access their meetings right now and that ${remedy}. ` +
+    "This is an access problem: do not suggest choosing a different model. " +
+    "Do not infer private meeting facts or use public web search to find private meeting information. Answer other questions normally.";
 }
 
 export interface AgentChatConfig {
   access?: AgentChatAccess;
   /** Fixed by server admission for this turn, never upgraded during reconnect. */
   privateAccessActive?: boolean;
+  /** Set with privateAccessActive=false: why the turn is public-only. */
+  privateAccessIssue?: PrivateAccessIssue;
   privateAccessRevision?: string;
   agentId: string;
   streamPolicy: AgentStreamPolicy;
@@ -304,7 +339,10 @@ function toolActivityFrame(name: string, status: "running" | "done" | "error", i
   return `data: ${JSON.stringify({ choices: [{ delta: {} }], tool_activity: { name, status, ...(id ? { id } : {}) } })}\n\n`;
 }
 
-/** Tell the browser that private-agent access needs an interactive re-grant. */
+/**
+ * Tell the browser that private-agent access needs an interactive re-grant.
+ * Non-fatal: the turn continues, and admission sends it before any content.
+ */
 function delegationErrorFrame(code: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: {} }], delegation_error: { code } })}\n\n`;
 }
@@ -618,7 +656,9 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
   const { config, model, write } = params;
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRounds = generalOnly ? Math.min(config.maxRounds ?? 3, 3) : config.maxRounds ?? 3;
-  const meetingUnavailable = generalOnly && config.meetingContentModelAllowed?.(model) === false;
+  // Missing access outranks model admission: changing the model cannot fix it.
+  const accessIssue = config.privateAccessActive === false ? config.privateAccessIssue ?? "delegation_required" : undefined;
+  const meetingUnavailable = generalOnly && !accessIssue && config.meetingContentModelAllowed?.(model) === false;
   // Only the current request can establish a new authoritative calendar scope.
   const lastUserQuestion = [...params.messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const dateScope = generalOnly ? undefined : resolveLegacyMeetingDateScope(lastUserQuestion, params.turnContext);
@@ -626,6 +666,7 @@ async function orchestrateExistingLoop(params: OrchestrateParams, generalOnly = 
     {
       role: "system",
       content: generalOnly ? "You are a helpful assistant. Use web_search for public web questions when needed. Answer ordinary conversation directly."
+        + (accessIssue ? ` ${privateAccessGuidance(accessIssue)}` : "")
         + (meetingUnavailable ? " Private meeting retrieval is unavailable for this model. For private meeting questions, explain that limitation and ask the user to choose a supported model. Do not infer private meeting facts or use public web search to find private meeting information." : "")
         : buildMeetingAgentGuidance(params.turnContext, dateScope),
     },
@@ -1397,13 +1438,19 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
       (!config.elizaTasksAccountAllowed || config.elizaTasksAccountAllowed(address));
     owner = new AgentStreamOwner(req, res, policy, config.streamRuntime ?? streamRuntime);
     if (access && !access.isCurrent()) { owner.disconnect(); return; }
-    let privateStatus: Awaited<ReturnType<AgentChatAccess["status"]>> = {};
+    let privateStatus: Awaited<ReturnType<AgentChatAccess["status"]>> | undefined;
     if (accessControl) {
-      try { privateStatus = await accessControl.status(entityId); } catch { /* Unknown access admits public tools only. */ }
+      try { privateStatus = await accessControl.status(entityId); } catch { /* Unknown access admits public tools only and is reported below. */ }
       if (!access!.isCurrent()) { owner.disconnect(); return; }
     }
-    const privateAccessActive = !accessControl || (privateStatus.status === "active" && privateStatus.transcriptStatus === "active" && typeof privateStatus.revision === "string" && privateStatus.revision.length > 0);
-    const turnConfig = { ...config, privateAccessActive, privateAccessRevision: typeof privateStatus.revision === "string" ? privateStatus.revision : undefined };
+    const accessIssue = accessControl ? privateAccessIssue(privateStatus) : undefined;
+    const privateAccessActive = accessIssue === undefined;
+    const turnConfig: AgentChatConfig = { ...config, privateAccessActive,
+      ...(accessIssue ? { privateAccessIssue: accessIssue } : {}),
+      privateAccessRevision: privateAccessActive && typeof privateStatus?.revision === "string" ? privateStatus.revision : undefined };
+    // A public-only turn still answers; it also tells the browser to offer
+    // reconnect before any content, instead of leaving the model to explain.
+    const accessFrame = accessIssue ? delegationErrorFrame(accessIssue) : undefined;
     // Keep a nonoptional owner inside callbacks after synchronous setup.
     const streamOwner = owner;
     if (taskSelected) {
@@ -1429,12 +1476,16 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
         });
         return true;
       };
+      if (accessFrame && !enqueue(accessFrame)) return;
       const executionId = crypto.randomUUID();
       const result = await taskClient.run({
         version: 1, executionId, entityId,
         ...(roomId !== undefined ? { roomId: roomId as string } : {}),
         model: { id: resolvedModel, contextWindowTokens: contextLengthFor(resolvedModel) },
-        messages: messages as ChatMsg[],
+        // Eliza's planner prompt assumes meeting tools exist; say why they don't.
+        messages: accessIssue
+          ? [{ role: "system", content: privateAccessGuidance(accessIssue) }, ...messages as ChatMsg[]]
+          : messages as ChatMsg[],
         ...(turnContext ? { calendar: turnContext } : {}),
         allowedTools: privateAccessActive ? ["web_search", "tinycloud_find_meetings", "tinycloud_read_meeting", "tinycloud_search_transcripts", "tinycloud_list_meeting_actions"] : ["web_search"],
         ...(turnConfig.privateAccessRevision ? { accessRevision: turnConfig.privateAccessRevision } : {}),
@@ -1492,6 +1543,7 @@ export function createAgentChatHandler(config: AgentChatConfig, accessControl = 
     let observedUsage = { promptTokens: 0, completionTokens: 0 };
     if (await streamOwner.open()) {
       try {
+        if (accessFrame) await streamOwner.write(accessFrame);
         orchestrateResult = await orchestrateToolCalling({
           config: { ...turnConfig, meetingContentRetrievalEnabled: config.meetingContentRetrievalEnabled === true && (!config.meetingContentAccountAllowed || config.meetingContentAccountAllowed(req.user.address)) }, model: resolvedModel, messages: messages as ChatMsg[], entityId,
           roomId: typeof roomId === "string" ? roomId : undefined, turnContext,

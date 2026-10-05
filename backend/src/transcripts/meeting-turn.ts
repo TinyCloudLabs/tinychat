@@ -1,4 +1,4 @@
-import { FILTER_PROPERTIES } from "./tool-contract.js";
+import { FILTER_PROPERTIES, MEETING_SOURCES } from "./tool-contract.js";
 import { createMeetingLedger, mergeMeetingOutcomes, packMeetingEvidence, type MeetingOutcome, type MeetingToolData } from "./meeting-evidence.js";
 import { hasUsableMeetingEvidence, renderMeetingAnswer, renderMeetingEvidenceFallback, validateMeetingDraft } from "./meeting-answer.js";
 import { trimConvoToBudget, truncateToolResults } from "../lib/contextGuard.js";
@@ -138,7 +138,7 @@ export function validateMeetingPlan(input: unknown, context?: CalendarContext, i
   }
   if (value.selectFirst !== undefined && typeof value.selectFirst !== "boolean") return fail("selectFirst must be a boolean when supplied; selected and exact omit it entirely.");
   if (value.sort !== undefined && value.sort !== "newest" && value.sort !== "oldest") return fail("sort must be newest or oldest when supplied; selected and exact omit it entirely.");
-  if (value.source !== undefined && (typeof value.source !== "string" || !["fireflies", "google-meet", "tinycloud-transcriber"].includes(value.source))) return fail("source must be fireflies, google-meet or tinycloud-transcriber.");
+  if (value.source !== undefined && (typeof value.source !== "string" || !(MEETING_SOURCES as readonly string[]).includes(value.source))) return fail(`source must be ${MEETING_SOURCES.slice(0, -1).join(", ")} or ${MEETING_SOURCES.at(-1)}.`);
   for (const key of ["title", "participant", "query", "speaker", "assignee"]) {
     const item = value[key];
     if (item !== undefined && (typeof item !== "string" || !item.trim() || item.length > (key === "query" ? 500 : 160))) return fail(`${key} must be a nonblank string of at most ${key === "query" ? 500 : 160} characters, or omitted.`);

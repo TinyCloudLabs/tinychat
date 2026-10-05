@@ -555,3 +555,41 @@ test("access invalidated during turn admission prevents browser private dispatch
   resume(); await work;
   expect(reads).toBe(0);
 });
+
+describe("turn admission without private access", () => {
+  afterEach(() => { globalThis.fetch = realFetch; });
+  function admissionStream(code: string, text: string): Response {
+    return new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: {} }], delegation_error: { code } })}\n\n`
+        + `data: ${JSON.stringify({ id: "c1", choices: [{ delta: { content: text } }] })}\n\n`
+        + "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  }
+
+  test("the server's own downgrade keeps the public answer streaming", async () => {
+    globalThis.fetch = (async () => admissionStream("delegation_required", "Public answer.")) as typeof fetch;
+    const privateAccessRef = ref({ active: true, revision: "old", generation: 1 });
+    const codes: string[] = [];
+    const { deps } = makeDeps({ privateAccessRef, agentEnabledRef: ref(true) as never, contextTokensFor: () => 64000,
+      // Mirrors the access controller: a report invalidates private access.
+      onAgentDelegationError: (code) => { codes.push(code); privateAccessRef.current = { active: false, revision: null, generation: 2 }; },
+    });
+    const result = await drain(createChatModelAdapter(deps).run({ messages: oneUserMessage(), abortSignal: new AbortController().signal } as never) as never);
+    expect(result.thrown).toBeUndefined();
+    expect(result.text).toBe("Public answer.");
+    expect(codes).toEqual(["delegation_required"]);
+  });
+
+  test("any other access change during the turn still ends it", async () => {
+    globalThis.fetch = (async () => admissionStream("delegation_required", "Late answer.")) as typeof fetch;
+    const privateAccessRef = ref({ active: true, revision: "old", generation: 1 });
+    const { deps } = makeDeps({ privateAccessRef, agentEnabledRef: ref(true) as never, contextTokensFor: () => 64000,
+      // A reconnect in another tab, not this turn's downgrade.
+      onAgentDelegationError: () => { privateAccessRef.current = { active: true, revision: "new", generation: 2 }; },
+    });
+    const result = await drain(createChatModelAdapter(deps).run({ messages: oneUserMessage(), abortSignal: new AbortController().signal } as never) as never);
+    expect(result.thrown).toBeDefined();
+    expect(result.text).toBe("");
+  });
+});

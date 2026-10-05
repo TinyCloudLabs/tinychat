@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import {
   actionsFromAuthJwt,
   AGENT_CONSENT_MANIFEST,
   AGENT_DID,
   AGENT_DELEGATION_EXPIRY_MS,
+  AgentSessionError,
   clearAgentSessionCache,
   ensureAgentSession,
   mintAgentSessionDelegations,
@@ -219,7 +221,7 @@ describe("two-grant session envelope", () => {
     });
   });
 
-  it("mints memory and transcripts as separate grants, sequentially, inside seven days", async () => {
+  it("mints memory and transcripts as separate grants, sequentially, for 29 days", async () => {
     // serializeDelegation is dynamically imported from the DOM-bound web-sdk;
     // supply the one global its custom-element registration touches.
     const shims = globalThis as { HTMLElement?: unknown; customElements?: unknown; window?: unknown };
@@ -261,6 +263,7 @@ describe("two-grant session envelope", () => {
       },
     } as unknown as TinyCloudWeb;
 
+    const mintedAt = Date.now();
     const envelope = await mintAgentSessionDelegations(tcw, { roomId: "thread-1" });
 
     expect(order).toEqual(["memory:start", "memory:end", "transcripts:start", "transcripts:end"]);
@@ -277,7 +280,30 @@ describe("two-grant session envelope", () => {
     expect(delegateArgs!.did).toBe(AGENT_DID);
     expect(delegateArgs!.permissions).toEqual(TRANSCRIPT_PERMISSIONS);
     expect(delegateArgs!.options.expiry).toBe(AGENT_DELEGATION_EXPIRY_MS);
-    expect(AGENT_DELEGATION_EXPIRY_MS).toBe(30 * 24 * 60 * 60 * 1000);
+    const memoryExpiry = (memoryArgs as { expiry: Date }).expiry.getTime();
+    expect(memoryExpiry - mintedAt).toBeGreaterThanOrEqual(AGENT_DELEGATION_EXPIRY_MS);
+    expect(memoryExpiry - mintedAt).toBeLessThan(AGENT_DELEGATION_EXPIRY_MS + 60_000);
+  });
+
+  it("mints a day inside the 30-day ceiling and the parent consent session", () => {
+    const day = 24 * 60 * 60 * 1000;
+    expect(AGENT_DELEGATION_EXPIRY_MS).toBe(29 * day);
+    // Backend courier and eliza-service reject grants longer than this on their clock.
+    expect(SESSION_EXPIRATION_MS).toBe(30 * day);
+    expect(SESSION_EXPIRATION_MS - AGENT_DELEGATION_EXPIRY_MS).toBe(day);
+    expect(AGENT_CONSENT_MANIFEST.expiry).toBe("30d");
+  });
+
+  it("reports the server's error code when the courier rejects a grant", async () => {
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => init?.method === "POST"
+      ? new Response(JSON.stringify({ error: "delegation_expiry_too_long" }), { status: 400 })
+      : new Response(JSON.stringify({ status: "none", revision: "instance:0" }), { status: 200 })) as typeof fetch;
+    const error = await ensureAgentSession({
+      tcw: fakeTcw(), backendUrl: "https://api.test", getToken: () => "tok",
+      _mint: async () => ({ version: 2, delegations: { memory: "m", transcripts: "t" } }),
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AgentSessionError);
+    expect(error).toMatchObject({ status: 400, code: "delegation_expiry_too_long" });
   });
 
   it("couriers a minted envelope under `session`, and a legacy string under `serialized`", async () => {

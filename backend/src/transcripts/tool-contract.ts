@@ -1,6 +1,12 @@
+/**
+ * Meeting sources the agent may filter on. Keep in step with the frontend's
+ * SUPPORTED_MEETING_SOURCES and eliza-service's source parsers.
+ */
+export const MEETING_SOURCES = ["fireflies", "google-meet", "tinycloud-transcriber", "exo-local"] as const;
+
 const SOURCE_SCHEMA = {
   type: "string",
-  enum: ["fireflies", "google-meet", "tinycloud-transcriber"],
+  enum: MEETING_SOURCES,
 } as const;
 
 export const FILTER_PROPERTIES = {
