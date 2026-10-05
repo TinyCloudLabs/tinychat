@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.5.0-beta.0
+
+### Minor Changes
+
+- d451a1a: Store the original audio of uploaded meetings in your TinyCloud space and play it back from the meeting in Library.
+
 ## 0.4.1
 
 ### Patch Changes
