@@ -439,8 +439,8 @@ async function saveRecording(
     const source: VoiceNoteAudioSource = keep
       ? {
           ...native,
-          read: async (offset, length) => {
-            const bytes = await native.read(offset, length);
+          readPart: async (offset, length) => {
+            const bytes = await native.readPart(offset, length);
             kept.push(bytes);
             return bytes;
           },

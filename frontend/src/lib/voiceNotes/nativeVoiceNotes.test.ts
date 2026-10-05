@@ -56,8 +56,8 @@ describe("nativeRecordingSource", () => {
     const source = nativeRecordingSource(recording, native);
     expect(source.size).toBe(2_500);
     expect(source.mimeType).toBe("audio/mp4");
-    expect(await source.read(1_000, 1_000)).toEqual(file.slice(1_000, 2_000));
-    expect(await source.read(2_000, 500)).toEqual(file.slice(2_000));
+    expect(await source.readPart(1_000, 1_000)).toEqual(file.slice(1_000, 2_000));
+    expect(await source.readPart(2_000, 500)).toEqual(file.slice(2_000));
     expect(native.calls).toEqual([
       { id: "rec-1", offset: 1_000, length: 1_000 },
       { id: "rec-1", offset: 2_000, length: 500 },
@@ -66,8 +66,8 @@ describe("nativeRecordingSource", () => {
 
   test("a short read, or a file whose size changed, rejects", async () => {
     const short = nativeRecordingSource(recording, plugin((c) => ({ ...c, base64: bytesToBase64(new Uint8Array(10)), bytesRead: 10 })));
-    await expect(short.read(0, 1_000)).rejects.toThrow("changed while it was being saved");
+    await expect(short.readPart(0, 1_000)).rejects.toThrow("changed while it was being saved");
     const grown = nativeRecordingSource(recording, plugin((c) => ({ ...c, size: 9_999 })));
-    await expect(grown.read(0, 1_000)).rejects.toThrow("changed while it was being saved");
+    await expect(grown.readPart(0, 1_000)).rejects.toThrow("changed while it was being saved");
   });
 });

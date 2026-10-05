@@ -27,7 +27,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: blob: https:",
         "font-src": "'self' data:",
-        "connect-src": "'self' ipc: http://ipc.localhost https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com",
+        "connect-src": "'self' ipc: http://ipc.localhost https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha-prod5.phala.network",
         "frame-src": "https://openkey.so",
         "object-src": "'none'",
         "base-uri": "'none'",

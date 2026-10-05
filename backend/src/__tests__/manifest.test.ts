@@ -117,6 +117,11 @@ describe("TinyChat manifest and backend policy", () => {
         description:
           "Store your Granola API key, encrypted, in your secrets space.",
       },
+      ASSEMBLYAI_API_KEY: {
+        actions: ["read", "write", "delete"],
+        description:
+          "Store your AssemblyAI API key, encrypted, in your secrets space.",
+      },
       REFRESH_TOKEN: {
         scope: "google-meet",
         actions: ["read", "write", "delete"],
@@ -131,6 +136,7 @@ describe("TinyChat manifest and backend policy", () => {
 
     expect(secrets.FIREFLIES_API_KEY?.scope).toBeUndefined();
     expect(secrets.GRANOLA_API_KEY?.scope).toBeUndefined();
+    expect(secrets.ASSEMBLYAI_API_KEY?.scope).toBeUndefined();
     expect(secrets.REFRESH_TOKEN?.scope).toBe("google-meet");
   });
 

@@ -1,5 +1,25 @@
 # exo-desktop
 
+## 0.5.0
+
+### Patch Changes
+
+- 304587d: Exo: turn on the Private cloud transcription engine. The desktop now compiles in the production ptx-batch upload origin, so Local recording offers Private cloud (the default until an on-device model is downloaded) for accounts the backend enables.
+
+## 0.5.0-beta.2
+
+### Patch Changes
+
+- 304587d: Exo: turn on the Private cloud transcription engine. The desktop now compiles in the production ptx-batch upload origin, so Local recording offers Private cloud (the default until an on-device model is downloaded) for accounts the backend enables.
+
+## 0.5.0-beta.1
+
+No changes in this release.
+
+## 0.5.0-beta.0
+
+No changes in this release.
+
 ## 0.4.1
 
 No changes in this release.

@@ -36,9 +36,9 @@ import {
  * behind `authMiddleware` ONLY when `PRIVATE_CLOUD_TRANSCRIPTION_ENABLED=true`; otherwise every
  * path 404s. Global CSRF (`X-Requested-With`) and the `/api/transcriber` rate-limit bucket apply.
  *
- *   GET    /capabilities                 PTX limits + admission mode
+ *   GET    /capabilities                 PTX limits, content types, diarization + admission mode
  *   POST   /transcriptions               { content_type, byte_size, sha256, language?, channel_mode?,
- *                                          channel_labels? } + Idempotency-Key (UUID)
+ *                                          channel_labels?, diarize? } + Idempotency-Key (UUID)
  *                                         → { id, status, byte_size, upload?: { path, capability, expires_at } }
  *   GET    /transcriptions?limit=        the caller's jobs (resume after relaunch)
  *   GET    /transcriptions/:id           status
@@ -46,10 +46,10 @@ import {
  *   POST   /transcriptions/:id/cancel
  *   DELETE /transcriptions/:id           → 204
  *
- * No route accepts audio: create is JSON-only metadata, and the upload goes from Exo straight to
- * PTX. `upload.path` is relative and pinned to `/uploads/<id>`; the desktop joins it to its
- * compiled-in PTX origin. Every success body is rebuilt field by field (services/…-dto.ts) and
- * every response here is `Cache-Control: no-store`. Every error is
+ * No route accepts audio: create is JSON-only metadata, and the upload goes from the client
+ * (desktop, web, mobile) straight to PTX. `upload.path` is relative and pinned to `/uploads/<id>`;
+ * the client joins it to its build-time PTX origin. Every success body is rebuilt field by field
+ * (services/…-dto.ts) and every response here is `Cache-Control: no-store`. Every error is
  * `{ error: { code, message, correlation_id } }` with our own fixed message; upstream text is never
  * relayed. Logs carry route, status, code, class and correlation id only — never the address,
  * tenant_ref, capability or transcript text.
@@ -95,12 +95,13 @@ type CreateBody = {
   language?: string;
   channel_mode?: string;
   channel_labels?: string[];
+  diarize?: true;
 };
 
 /** Build the forwarded body field by field, so nothing but these reaches PTX. */
 function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
   if (!isObject(raw)) return "invalid_request";
-  const { content_type, byte_size, sha256, language, channel_mode, channel_labels } = raw;
+  const { content_type, byte_size, sha256, language, channel_mode, channel_labels, diarize } = raw;
   if (typeof content_type !== "string" || !CONTENT_TYPES.includes(content_type)) return "invalid_request";
   if (typeof byte_size !== "number" || !Number.isSafeInteger(byte_size) || byte_size < 1) return "invalid_request";
   if (byte_size > MAX_RECORDING_BYTES) return "recording_too_large";
@@ -126,6 +127,13 @@ function parseCreateBody(raw: unknown): CreateBody | PublicError["code"] {
       return "invalid_request";
     }
     body.channel_labels = channel_labels as string[];
+  }
+  if (diarize !== undefined) {
+    // Diarization runs on a mono downmix, so it cannot honour per-channel speakers.
+    if (typeof diarize !== "boolean" || (diarize && channel_mode === "separate")) return "invalid_request";
+    // `false` is PTX's default: forwarding only `true` keeps a plain create valid on a PTX that
+    // predates the option (it rejects unknown fields).
+    if (diarize) body.diarize = true;
   }
   return body;
 }

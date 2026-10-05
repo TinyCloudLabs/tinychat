@@ -116,6 +116,9 @@ services:
       PRIVATE_CLOUD_TRANSCRIPTION_API_URL: ${PRIVATE_CLOUD_TRANSCRIPTION_API_URL:-}
       PRIVATE_CLOUD_TRANSCRIPTION_API_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_API_KEY:-}
       PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY: ${PRIVATE_CLOUD_TRANSCRIPTION_TENANT_KEY:-}
+      # Hosted AssemblyAI (TinyCloud's key). Both set = on; either empty = off. Never leaves this process.
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+      ASSEMBLYAI_HOSTED_HANDLE_KEY: ${ASSEMBLYAI_HOSTED_HANDLE_KEY:-}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
     restart: unless-stopped

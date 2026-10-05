@@ -394,9 +394,9 @@ mod tests {
     }
 
     #[test]
-    fn status_is_unconfigured_in_this_build() {
+    fn status_is_configured_in_this_build() {
         if std::env::var_os("EXO_DEBUG_PTX_ORIGIN").is_none() {
-            assert!(!cloud_transcription_status().configured);
+            assert!(cloud_transcription_status().configured);
         }
     }
 }

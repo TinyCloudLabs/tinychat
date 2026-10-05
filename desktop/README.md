@@ -111,19 +111,25 @@ capture (`NSAudioCaptureUsageDescription`, process tap — macOS 14.2+). Dev
 builds attribute these to the launching terminal. `Entitlements.plist` adds
 `com.apple.security.device.audio-input` for signed/hardened-runtime bundles.
 
-### Private cloud engine (hidden)
+### Private cloud engine
 
 Local recording has a second engine, **Private cloud**: after Stop, the
 recording is uploaded to TinyCloud Private Transcription (a dedicated
 confidential VM that sends speech segments to Tinfoil) and the transcript is
 saved as the same Exo Local meeting, with `transcription_engine:
-"private-cloud"` in its metadata. It is **hidden in this build**:
-`src-tauri/src/cloud/origins.rs` compiles in no PTX origin
-(`PTX_UPLOAD_ORIGIN = None`), so `cloud_transcription_status` reports
-`configured: false`, the capture registry never opens a file, and the picker
-never appears. The engine shows only when a build sets that origin *and* the
-backend answers `GET /api/transcriber/private-cloud/capabilities` with 200
-(flag on, account in the cohort).
+"private-cloud"` in its metadata. `src-tauri/src/cloud/origins.rs` compiles in
+the production `ptx-batch` origin (`PTX_UPLOAD_ORIGIN`), so
+`cloud_transcription_status` reports `configured: true`. The picker shows the
+engine when the backend also answers
+`GET /api/transcriber/private-cloud/capabilities` with 200 (flag on, account
+in the cohort); with no explicit choice stored, Private cloud is the default
+until an on-device model is downloaded.
+
+Local recording's upload is native (`reqwest` in `cloud/client.rs`), not a
+webview fetch; for it the webview reaches only the backend's
+`/api/transcriber/private-cloud/*` routes. The PTX origin is still in the CSP
+`connect-src` because Upload audio's Private engine PUTs a picked file from the
+webview (see Content-Security-Policy below).
 
 Native side (`src-tauri/src/cloud/`):
 
@@ -176,7 +182,13 @@ the Vite dev server directly and applies no CSP.
   (`openkey.so`, `api.openkey.so`), model verification (`api.redpill.ai`,
   `rpc.ata.network`, `search.sigstore.dev`, Tinfoil's two GitHub proxies), and
   the browser-side connectors (Fireflies GraphQL; Google Drive, Docs and Meet
-  APIs). Local recording talks to its plugins over IPC only.
+  APIs), and AssemblyAI (`api.assemblyai.com`), which Upload audio calls
+  directly with the user's own key when they choose that engine (deleting the
+  finished transcript goes through the backend, as AssemblyAI's CORS allows no
+  DELETE). Local
+  recording talks to its plugins over IPC only. Upload audio's Private engine
+  PUTs the file to the production ptx-batch origin (`VITE_EXO_PTX_UPLOAD_ORIGIN`,
+  the same CVM as `PTX_UPLOAD_ORIGIN` in `src-tauri/src/cloud/origins.rs`).
 - `frame-src https://openkey.so`: the OpenKey sign-in/approval iframe.
 - `img-src` allows `https:`, `data:` and `blob:` (chat markdown and avatars);
   `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`.

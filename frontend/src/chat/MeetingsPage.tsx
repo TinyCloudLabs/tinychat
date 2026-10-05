@@ -11,14 +11,18 @@ import {
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
 import { copyText } from "@/lib/copyText";
+import { getAudio } from "@/lib/audio/audioStore";
 import {
   listMeetings,
   meetingSourceLabel,
+  readMeetingAudio,
   readTranscript,
   transcriptCopyText,
+  type MeetingAudioRead,
   type MeetingListItem,
   type TranscriptRead,
 } from "@/lib/connectors/meetingExplorer";
+import { MeetingAudioPlayer } from "./MeetingAudioPlayer";
 
 interface MeetingsPageProps {
   tcw: TinyCloudWeb;
@@ -29,13 +33,14 @@ const COPIED_DURATION = 1500;
 
 /**
  * Browse the meetings this space has already synced — every connector's, in one
- * newest-first list — and read (or copy) one transcript at a time.
+ * newest-first list — and read (or copy) one transcript at a time, or play a
+ * meeting's stored audio.
  *
  * Read-only by construction — every storage call goes through meetingExplorer,
- * which never issues DDL or a write. Transcripts are fetched lazily, cached for
- * the life of the page, and chained through a single promise so two fast
- * expands can never put two KV reads in flight at once (TinyCloud drops
- * concurrent responses on one space).
+ * which never issues DDL or a write, or audioStore's getAudio. Transcripts are
+ * fetched lazily, cached for the life of the page, and chained through a single
+ * promise with the audio reads so two fast expands can never put two reads in
+ * flight at once (TinyCloud drops concurrent responses on one space).
  *
  * Rows are keyed by their `connector_meeting.id` (a UUID), not by `sourceId`:
  * source ids are only unique WITHIN a connector, and the list now spans several.
@@ -59,6 +64,8 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
   // publishes a completed fetch — the cache itself is the source of truth.
   const cacheRef = useRef(new Map<string, TranscriptRead>());
   const [revision, setRevision] = useState(0);
+  // Where each opened meeting's stored audio lives, cached like transcripts.
+  const audioCacheRef = useRef(new Map<string, MeetingAudioRead>());
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const mountedRef = useRef(true);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -107,6 +114,10 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
     const entry = cacheRef.current.get(id);
     return entry === undefined || entry.status === "failed";
   }, []);
+  const needsAudioRead = useCallback((id: string) => {
+    const entry = audioCacheRef.current.get(id);
+    return entry === undefined || entry.status === "failed";
+  }, []);
 
   const onToggle = useCallback(
     (meeting: MeetingListItem) => {
@@ -115,36 +126,72 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
       const { id, source, sourceId } = meeting;
       const willOpen = openId !== id;
       setOpenId(willOpen ? id : null);
-      if (!willOpen || !needsFetch(id)) return;
+      if (!willOpen) return;
+      const transcriptDue = needsFetch(id);
+      if (!transcriptDue && !needsAudioRead(id)) return;
 
       // Drop a previous failure before retrying so the panel reads "loading"
       // rather than restating an error a fresh read may be about to clear.
-      cacheRef.current.delete(id);
+      if (transcriptDue) cacheRef.current.delete(id);
 
       const fetchOne = async () => {
-        if (!needsFetch(id)) return;
-        // Both halves of the identity: the transcript key is source-scoped, so
-        // a Meet meeting read under the Fireflies prefix is a guaranteed miss.
-        const read = await readTranscript(tcw, source, sourceId).catch(
-          (): TranscriptRead => ({ status: "failed" }),
-        );
-        // Cache-write-only: a completion that lands after the row was closed
-        // (or another row opened) is still a valid cache entry, so there is no
-        // stale-result race to arbitrate.
-        cacheRef.current.set(id, read);
-        if (mountedRef.current) setRevision((n) => n + 1);
+        if (needsFetch(id)) {
+          // Both halves of the identity: the transcript key is source-scoped, so
+          // a Meet meeting read under the Fireflies prefix is a guaranteed miss.
+          const read = await readTranscript(tcw, source, sourceId).catch(
+            (): TranscriptRead => ({ status: "failed" }),
+          );
+          // Cache-write-only: a completion that lands after the row was closed
+          // (or another row opened) is still a valid cache entry, so there is no
+          // stale-result race to arbitrate.
+          cacheRef.current.set(id, read);
+          if (mountedRef.current) setRevision((n) => n + 1);
+        }
+        // After the transcript, so a stored-audio lookup never delays reading.
+        if (needsAudioRead(id)) {
+          const audio = await readMeetingAudio(tcw, id).catch(
+            (): MeetingAudioRead => ({ status: "failed" }),
+          );
+          audioCacheRef.current.set(id, audio);
+          if (mountedRef.current) setRevision((n) => n + 1);
+        }
       };
       // Sequential by construction: each fetch waits for the previous one,
       // whether it resolved or rejected.
       chainRef.current = chainRef.current.then(fetchOne, fetchOne);
     },
-    [needsFetch, openId, resetCopy, tcw],
+    [needsAudioRead, needsFetch, openId, resetCopy, tcw],
+  );
+
+  // The stored file itself is read only when the player asks, and joins the
+  // same chain: TinyCloud drops concurrent responses on one space.
+  const loadAudio = useCallback(
+    (
+      base: string,
+      signal: AbortSignal,
+      onProgress: (loadedBytes: number, totalBytes: number) => void,
+    ) => {
+      const read = () => getAudio(tcw.kv, base, { signal, onProgress });
+      const result = chainRef.current.then(read, read);
+      chainRef.current = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    },
+    [tcw],
   );
 
   const openRead = useMemo(() => {
     if (!openId) return undefined;
     void revision;
     return cacheRef.current.get(openId);
+  }, [openId, revision]);
+
+  const openAudio = useMemo(() => {
+    if (!openId) return undefined;
+    void revision;
+    return audioCacheRef.current.get(openId);
   }, [openId, revision]);
 
   // One string for both the rendered block and the clipboard, computed once per
@@ -237,6 +284,16 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
                   </button>
                   {isOpen && (
                     <div id={panelId} className="px-3 pb-2">
+                      {openAudio?.status === "stored" && (
+                        <div className="py-2">
+                          <MeetingAudioPlayer
+                            key={openAudio.base}
+                            load={(signal, onProgress) =>
+                              loadAudio(openAudio.base, signal, onProgress)
+                            }
+                          />
+                        </div>
+                      )}
                       {openRead === undefined ? (
                         <p className="flex items-center gap-1.5 py-2 text-xs text-muted-foreground">
                           <Loader2Icon

@@ -1,28 +1,28 @@
 // "Private cloud" transcription engine: the webview half.
 //
-// The desktop's native side (desktop/src-tauri/src/cloud) opens each stopped
-// recording itself and gives this module only an opaque capture handle; it
-// hashes and uploads the file straight to TinyCloud Private Transcription
-// (PTX) with a job capability it gets from the TinyChat backend. Nothing here
-// ever sees audio, a file path or the capability. This module:
+// Three callers upload to TinyCloud Private Transcription (PTX):
 //
-//   - asks native whether this build can upload at all (a PTX origin is
-//     compiled in) and the backend whether this account may (capabilities
-//     200, not 404), which together decide whether the engine is shown;
-//   - submits a capture handle, then polls the job through the backend
-//     (bearer), fetches the transcript, and deletes it after it is saved.
+//   - Local recording (desktop): native code (desktop/src-tauri/src/cloud)
+//     opens each stopped recording itself and gives this module only an
+//     opaque capture handle; it hashes, creates the job and uploads natively.
+//   - Voice notes (Exo mobile, lib/voiceNotes) and Upload audio (every
+//     platform, lib/audioUpload.ts) make the create call from the webview with
+//     `createPrivateCloudJob` below and PUT the audio to this build's PTX
+//     origin (`buildPtxUploadOrigin`).
+//
+// Every caller asks the backend whether this account may upload
+// (capabilities 200, not 404), polls the job through the backend (bearer),
+// fetches the transcript, and deletes it after it is saved. Each client's
+// jobs carry its own channel labels (`privateCloudJobClient`).
 //
 // Backend routes (plan §4.4, TinyChat #99):
 //   GET    /api/transcriber/private-cloud/capabilities
+//   POST   /api/transcriber/private-cloud/transcriptions   (+ Idempotency-Key)
 //   GET    /api/transcriber/private-cloud/transcriptions?limit=   (this account's jobs)
 //   GET    /api/transcriber/private-cloud/transcriptions/:id
 //   GET    /api/transcriber/private-cloud/transcriptions/:id/result   (202 = pending)
 //   POST   /api/transcriber/private-cloud/transcriptions/:id/cancel
 //   DELETE /api/transcriber/private-cloud/transcriptions/:id
-// On the desktop the create call (POST /transcriptions) is made by native
-// code. Exo mobile has no native upload: its voice notes make the create call
-// from the webview with `createPrivateCloudJob` below
-// (lib/voiceNotes/voiceNoteTranscription.ts).
 
 import type { SessionStore } from "@tinyboilerplate/client";
 
@@ -63,6 +63,7 @@ export interface PrivateCloudJob {
 
 export interface PrivateCloudSegment {
   id?: string;
+  /** `channel_<n>`, or `speaker_<n>` when the job was diarized. */
   speaker_id?: string;
   channel: number;
   start: number;
@@ -70,12 +71,21 @@ export interface PrivateCloudSegment {
   text: string;
 }
 
+export interface PrivateCloudSpeaker {
+  id: string;
+  name: string;
+  channel: number;
+}
+
 export interface PrivateCloudTranscript {
-  language?: string;
+  language?: string | null;
   duration_seconds?: number | null;
   provider?: string;
   model?: string;
   channels?: number;
+  /** True when segments are speaker turns from diarization. */
+  diarized?: boolean;
+  speakers?: PrivateCloudSpeaker[];
   segments: PrivateCloudSegment[];
   text: string;
 }
@@ -135,6 +145,12 @@ export function privateCloudMessage(err: PrivateCloudError): string {
     case "invalid_audio":
     case "unsupported_recording":
       return "Private cloud transcription could not read this recording.";
+    case "unsupported_media_type":
+      return "Private cloud transcription doesn't take this file type. Use MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio.";
+    case "diarization_unavailable":
+      return "Speaker identification isn't available for private cloud transcription right now. Transcribe without it.";
+    case "upload_capability_limit":
+      return "Too many upload attempts for this file. Try again in a few minutes.";
     case "quota_exceeded":
       return "You've reached today's private cloud transcription limit.";
     case "service_busy":
@@ -181,6 +197,10 @@ export interface PrivateCloudCapabilities {
   max_bytes: number;
   max_duration_seconds?: number;
   admission?: string;
+  /** Accepted upload content types (contract C1). */
+  content_types?: string[];
+  /** True only when PTX can diarize (speaker turns) this deployment's jobs. */
+  diarization?: boolean;
   [key: string]: unknown;
 }
 
@@ -345,14 +365,17 @@ export function createPrivateCloudApi(
 // clients apart without new state anywhere:
 //   - Exo desktop (native, desktop/src-tauri/src/cloud/client.rs): separate,
 //     ["Speaker 1", "Speaker 2"];
-//   - Exo mobile voice notes (lib/voiceNotes): mixed, ["Exo voice note"].
+//   - Exo mobile voice notes (lib/voiceNotes): mixed, ["Exo voice note"];
+//   - Upload audio (lib/audioUpload.ts, every platform): mixed, ["Exo upload"],
+//     with or without diarization (PTX records the labels either way).
 // A job that matches neither (or a relay that does not relay them) is
 // "unknown", and no client adopts it.
 
 export const DESKTOP_CHANNEL_LABELS: readonly string[] = ["Speaker 1", "Speaker 2"];
 export const VOICE_NOTE_CHANNEL_LABELS: readonly string[] = ["Exo voice note"];
+export const UPLOAD_CHANNEL_LABELS: readonly string[] = ["Exo upload"];
 
-export type PrivateCloudJobClient = "exo-desktop" | "exo-voice-note" | "unknown";
+export type PrivateCloudJobClient = "exo-desktop" | "exo-voice-note" | "exo-upload" | "unknown";
 
 const sameLabels = (actual: readonly string[] | null | undefined, expected: readonly string[]) =>
   Array.isArray(actual) && actual.length === expected.length && actual.every((label, i) => label === expected[i]);
@@ -360,6 +383,7 @@ const sameLabels = (actual: readonly string[] | null | undefined, expected: read
 export function privateCloudJobClient(job: Pick<PrivateCloudJob, "channel_mode" | "channel_labels">): PrivateCloudJobClient {
   if (job.channel_mode === "separate" && sameLabels(job.channel_labels, DESKTOP_CHANNEL_LABELS)) return "exo-desktop";
   if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, VOICE_NOTE_CHANNEL_LABELS)) return "exo-voice-note";
+  if (job.channel_mode === "mixed" && sameLabels(job.channel_labels, UPLOAD_CHANNEL_LABELS)) return "exo-upload";
   return "unknown";
 }
 
@@ -377,9 +401,12 @@ export interface PrivateCloudCreateBody {
   content_type: string;
   byte_size: number;
   sha256: string;
-  language: string;
+  /** Omitted: PTX detects the language. */
+  language?: string;
   channel_mode?: "separate" | "mixed";
   channel_labels?: string[];
+  /** Speaker turns (contract C2); only when capabilities report `diarization: true`. */
+  diarize?: boolean;
 }
 
 export interface PrivateCloudCreated {
@@ -420,7 +447,7 @@ export function parseCreatedJob(body: unknown): PrivateCloudCreated {
  * POST the job to the backend (bearer, `Idempotency-Key`). Idempotent per
  * `attemptId`: a replay after a lost answer returns the same job, with a fresh
  * upload capability while it still awaits its upload. The desktop makes this
- * call natively; Exo mobile makes it here.
+ * call natively; voice notes and Upload audio make it here.
  */
 export async function createPrivateCloudJob(
   backendUrl: string,
@@ -477,6 +504,317 @@ export async function createPrivateCloudJob(
     retryAfterSeconds: err.retryAfterSeconds,
     transcriptionId: err.transcriptionId,
   });
+}
+
+// ── PTX upload (webview callers) ───────────────────────────────────────
+
+/**
+ * The PTX origin audio may be uploaded to, or null (the engine is hidden).
+ * A bare origin only: https, or http to a loopback port in dev builds.
+ */
+export function parsePtxUploadOrigin(raw: string | null | undefined, allowLoopbackHttp: boolean): string | null {
+  const value = raw?.trim() ?? "";
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && allowLoopbackHttp && loopback && url.port !== "")) return null;
+  if (url.username || url.password || url.search || url.hash || url.pathname !== "/") return null;
+  if (value.replace(/\/$/, "") !== url.origin) return null;
+  return url.origin;
+}
+
+/** This build's PTX upload origin (VITE_EXO_PTX_UPLOAD_ORIGIN), or null: then no webview caller offers private cloud. */
+export function buildPtxUploadOrigin(): string | null {
+  return parsePtxUploadOrigin(import.meta.env.VITE_EXO_PTX_UPLOAD_ORIGIN, import.meta.env.DEV === true);
+}
+
+/** Joins a backend-issued upload path to the build's origin; anything but `/uploads/trn_…` is refused. */
+export function ptxUploadUrl(origin: string, path: string): string {
+  if (!UPLOAD_PATH_RE.test(path)) throw new PrivateCloudError("upstream_bad_response", "The upload path is not a PTX upload path");
+  const url = new URL(path, origin);
+  if (url.origin !== origin || url.pathname !== path) {
+    throw new PrivateCloudError("upstream_bad_response", "The upload path leaves the PTX origin");
+  }
+  return url.toString();
+}
+
+/** A PTX PUT answer: its status and parsed JSON body (or null). */
+export interface PtxPutResponse {
+  status: number;
+  body: unknown;
+}
+
+/** Codes PTX's upload answers may carry as themselves (desktop client.rs RELAYED_CODES). */
+const RELAYED_UPLOAD_CODES: ReadonlySet<string> = new Set([
+  "recording_too_large",
+  "recording_too_long",
+  "unsupported_recording",
+  "invalid_audio",
+  "no_speech",
+  "quota_exceeded",
+  "service_busy",
+  "service_paused",
+  "service_unavailable",
+  "upload_expired",
+  "upload_integrity_failed",
+]);
+
+/**
+ * A PUT answer (desktop `upload_result`): 201 is the only success. Every other
+ * answer is a stable code; except for the decisive ones, the job's status
+ * decides what happened (PTX answers a replayed PUT of an accepted upload 401).
+ */
+export function interpretUploadResponse(response: PtxPutResponse, correlationId: string): void {
+  if (response.status === 201) return;
+  const body = (response.body && typeof response.body === "object" ? response.body : {}) as { error?: Record<string, unknown> };
+  const e = body.error && typeof body.error === "object" ? body.error : {};
+  const code = typeof e.code === "string" ? e.code : null;
+  const jobError = e.job_error as { code?: unknown } | undefined;
+  const jobErrorCode = typeof jobError?.code === "string" ? jobError.code : null;
+  const fail = (failure: string, message: string) =>
+    new PrivateCloudError(failure, message, {
+      correlationId: typeof e.correlation_id === "string" ? e.correlation_id : correlationId,
+      retryAfterSeconds: typeof e.retry_after_seconds === "number" ? e.retry_after_seconds : null,
+    });
+  const status = response.status;
+  if (status >= 300 && status < 400) throw fail("service_misconfigured", "PTX answered with a redirect; it was not followed");
+  if (status === 401) throw fail("upload_outcome_unknown", "PTX no longer accepts this upload; its status decides");
+  if (status === 409 && code === "upload_in_progress") throw fail("upload_outcome_unknown", "Another upload of this recording is in progress");
+  if (status === 400 || status === 408) throw fail("upload_interrupted", "PTX did not receive the whole recording");
+  if (status === 410) throw fail("upload_capability_expired", "The upload permission expired");
+  if (status === 413) throw fail("recording_too_large", "The recording is larger than the private cloud limit");
+  if (status === 415) throw fail("unsupported_recording", "This recording format is not supported");
+  if (status === 422) {
+    throw jobErrorCode !== null && RELAYED_UPLOAD_CODES.has(jobErrorCode)
+      ? fail(jobErrorCode, "PTX rejected the recording")
+      : fail("upstream_bad_response", "PTX rejected the recording");
+  }
+  if ((status === 429 || status === 503) && code !== null && RELAYED_UPLOAD_CODES.has(code)) {
+    throw fail(code, "PTX cannot take the upload right now");
+  }
+  throw fail("upload_outcome_unknown", "PTX's answer to the upload was unclear");
+}
+
+/** Lowercase hex SHA-256 of the whole file, as the create call declares it. */
+export async function sha256Hex(blob: Blob): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export interface PtxFileUpload {
+  /** `ptxUploadUrl(origin, upload.path)`. */
+  url: string;
+  capability: string;
+  file: Blob;
+  /** Must equal the create call's `content_type` (C1). */
+  contentType: string;
+  /** The attempt's correlation id: the reference shown with a failure PTX gave none for. */
+  correlationId: string;
+  onProgress?: (sentBytes: number, totalBytes: number) => void;
+  signal?: AbortSignal;
+  /** Injected in tests. */
+  createXhr?: () => XMLHttpRequest;
+}
+
+/**
+ * One PUT of a picked file to PTX with the job capability, from any webview
+ * (PTX answers CORS for the web, Tauri and Capacitor origins). XMLHttpRequest
+ * because only it reports upload progress, and it streams the File as is;
+ * voice notes' `capacitorPtxPut` sends base64 over the native bridge instead,
+ * which suits short notes, not files up to 120 MB. Only Authorization and
+ * Content-Type are sent: the headers PTX's CORS allows. Resolves on 201 only.
+ */
+export function putFileToPtx(input: PtxFileUpload): Promise<void> {
+  // Executor form: the TS lib here (ES2022) has no Promise.withResolvers.
+  return new Promise<void>((resolve, reject) => {
+    const xhr = input.createXhr?.() ?? new XMLHttpRequest();
+    let sent = 0;
+    const onAbort = () => xhr.abort();
+    const done = () => input.signal?.removeEventListener("abort", onAbort);
+    const fail = (code: string, message: string) => new PrivateCloudError(code, message, { correlationId: input.correlationId });
+    xhr.open("PUT", input.url);
+    xhr.setRequestHeader("Authorization", `Bearer ${input.capability}`);
+    xhr.setRequestHeader("Content-Type", input.contentType);
+    xhr.upload.onprogress = (e) => {
+      sent = e.loaded;
+      input.onProgress?.(e.loaded, e.lengthComputable ? e.total : input.file.size);
+    };
+    xhr.onload = () => {
+      done();
+      let body: unknown = null;
+      try {
+        body = xhr.responseText ? (JSON.parse(xhr.responseText) as unknown) : null;
+      } catch {
+        // Not JSON: classified by status alone.
+      }
+      try {
+        interpretUploadResponse({ status: xhr.status, body }, input.correlationId);
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
+    };
+    xhr.onerror = () => {
+      done();
+      // Nothing sent: PTX was never reached (offline, CORS). Otherwise the bytes may have landed.
+      reject(
+        sent === 0
+          ? fail("upload_interrupted", "Could not reach private cloud transcription")
+          : fail("upload_outcome_unknown", "The upload connection failed"),
+      );
+    };
+    xhr.onabort = () => {
+      done();
+      reject(fail("cancelled", "The upload was cancelled"));
+    };
+    if (input.signal?.aborted) {
+      reject(fail("cancelled", "The upload was cancelled"));
+      return;
+    }
+    input.signal?.addEventListener("abort", onAbort);
+    xhr.send(input.file);
+  });
+}
+
+// ── Polling ────────────────────────────────────────────────────────────
+
+/** Private cloud polling (plan §4.7): 5 s ± 20 %, 30 s after a minute of
+ *  transient failures, and "connection lost" (not failed) after 10 minutes. */
+export interface CloudPolling {
+  intervalMs: number;
+  slowIntervalMs: number;
+  slowAfterMs: number;
+  giveUpAfterMs: number;
+}
+
+export const DEFAULT_CLOUD_POLLING: CloudPolling = {
+  intervalMs: 5_000,
+  slowIntervalMs: 30_000,
+  slowAfterMs: 60_000,
+  giveUpAfterMs: 10 * 60_000,
+};
+
+export interface CloudClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  /** [0, 1): polling jitter. */
+  random(): number;
+}
+
+export const REAL_CLOCK: CloudClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  random: () => Math.random(),
+};
+
+/** A job that is not finished yet: waiting in PTX's queue or being transcribed. */
+export interface CloudJobProgress {
+  stage: "queued" | "processing";
+  queuePosition: number | null;
+  regionsCompleted: number | null;
+  regionsTotal: number | null;
+}
+
+export interface CloudJobPoller {
+  /** The job's status, riding out transient failures. */
+  readJob(id: string): Promise<PrivateCloudJob>;
+  /** Poll a job to its transcript (plan §4.7): transient failures are ridden
+   *  out for 10 minutes, then `connectionLost()` is thrown, not a failure.
+   *  An aborted `signal` stops it with a `cancelled` error at the next step. */
+  pollTranscript(id: string, onProgress: (p: CloudJobProgress) => void, signal?: AbortSignal): Promise<PrivateCloudTranscript>;
+}
+
+export function createCloudJobPoller(
+  api: Pick<PrivateCloudApi, "get" | "result">,
+  options: { clock?: CloudClock; polling?: Partial<CloudPolling>; connectionLost: () => Error },
+): CloudJobPoller {
+  const clock = options.clock ?? REAL_CLOCK;
+  const polling: CloudPolling = { ...DEFAULT_CLOUD_POLLING, ...options.polling };
+  const sleep = (baseMs: number) => clock.sleep(Math.round(baseMs * (0.8 + 0.4 * clock.random())));
+
+  /** Rides out transient failures: waits and returns while they last under
+   *  10 minutes, backing off after one; then "connection lost". */
+  const transientTolerance = () => {
+    let failingSince: number | null = null;
+    return {
+      reset: () => {
+        failingSince = null;
+      },
+      rideOut: async (err: unknown) => {
+        if (!isTransientCloudError(err)) throw err;
+        const now = clock.now();
+        failingSince ??= now;
+        const failingFor = now - failingSince;
+        if (failingFor >= polling.giveUpAfterMs) throw options.connectionLost();
+        await sleep(failingFor >= polling.slowAfterMs ? polling.slowIntervalMs : polling.intervalMs);
+      },
+    };
+  };
+
+  return {
+    async readJob(id) {
+      const tolerance = transientTolerance();
+      for (;;) {
+        try {
+          return await api.get(id);
+        } catch (err) {
+          await tolerance.rideOut(err);
+        }
+      }
+    },
+
+    async pollTranscript(id, onProgress, signal) {
+      const tolerance = transientTolerance();
+      const rideOut = tolerance.rideOut;
+      const cancelled = () => new PrivateCloudError("cancelled", "Stopped polling the transcription", { transcriptionId: id });
+      for (;;) {
+        if (signal?.aborted) throw cancelled();
+        let job: PrivateCloudJob;
+        try {
+          job = await api.get(id);
+        } catch (err) {
+          await rideOut(err);
+          continue;
+        }
+        if (signal?.aborted) throw cancelled();
+        if (job.status === "completed") {
+          let result: PrivateCloudResult;
+          try {
+            result = await api.result(id);
+          } catch (err) {
+            await rideOut(err);
+            continue;
+          }
+          tolerance.reset();
+          if (result.status === "completed") return result.transcript;
+          if (result.status !== "pending") throw result.error;
+        } else {
+          tolerance.reset();
+          if (job.status === "failed" || job.status === "cancelled") {
+            throw new PrivateCloudError(job.error?.code ?? job.status, job.error?.message ?? `The transcription ${job.status}`, {
+              transcriptionId: id,
+            });
+          }
+          if (job.status === "awaiting_upload") {
+            throw new PrivateCloudError("upload_interrupted", "PTX has not received the recording", { transcriptionId: id });
+          }
+          if (signal?.aborted) throw cancelled();
+          onProgress({
+            stage: job.status === "queued" ? "queued" : "processing",
+            queuePosition: job.progress?.queue_position ?? null,
+            regionsCompleted: job.progress?.regions_completed ?? null,
+            regionsTotal: job.progress?.regions_total ?? null,
+          });
+        }
+        await sleep(polling.intervalMs);
+      }
+    },
+  };
 }
 
 // ── Native bridge ──────────────────────────────────────────────────────

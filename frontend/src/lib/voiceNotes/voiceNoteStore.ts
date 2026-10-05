@@ -16,8 +16,8 @@
 // Why parts: the node itself accepts up to 1 GB per KV put, but the ingress in
 // front of the production node refuses request bodies over 1 MiB, so the old
 // single base64 value failed for any note over about 750 KB of audio (~1.5
-// minutes). The layout (parts + manifest under one base key) is the one TC-593's
-// audio store uses for uploaded audio, so either reader can play either.
+// minutes). Parts, manifest, resume and read checks are the shared audio
+// store's (lib/audio/audioStore.ts), the same one uploaded meeting audio uses.
 //
 // The transcript key (transcriptKvKey) is written empty with the note and
 // filled when private cloud transcription lands (saveVoiceNoteTranscript);
@@ -25,6 +25,19 @@
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import {
+  AUDIO_CORRUPT,
+  AUDIO_SOURCE_READ_FAILED,
+  AUDIO_STORAGE_FULL,
+  AUDIO_TOO_LARGE,
+  AudioStoreError,
+  audioManifestKey,
+  audioPartKey,
+  getAudio,
+  putAudio,
+  type AudioPartSource,
+  type StoredAudioManifest,
+} from "../audio/audioStore";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import {
   CONNECTORS_KV_PREFIX,
@@ -52,48 +65,20 @@ export function voiceNoteAudioKvKey(id: string): string {
 }
 
 export function voiceNoteAudioPartKey(id: string, index: number): string {
-  return `${voiceNoteAudioKvKey(id)}/p/${String(index).padStart(6, "0")}`;
+  return audioPartKey(voiceNoteAudioKvKey(id), index);
 }
 
 export function voiceNoteAudioManifestKey(id: string): string {
-  return `${voiceNoteAudioKvKey(id)}/manifest`;
+  return audioManifestKey(voiceNoteAudioKvKey(id));
 }
 
 /**
- * Bytes per stored part: the largest request body the production node's
- * ingress accepts. The node allows 1 GB per KV put (tinycloud-node-server
- * routes/mod.rs, `d.open(1u8.gigabytes())`), but nginx in front of
- * tee.node.tinycloud.xyz answers 413 (without CORS headers, so a webview sees
- * only "Failed to fetch") for any body over 1,048,576 bytes. A part is sent as
- * the raw request body, so a part of this size is exactly at that limit.
- */
-export const VOICE_NOTE_AUDIO_PART_BYTES = 1024 * 1024;
-
-/** Waits before each retry of a transient storage failure; its length bounds the retries. */
-const RETRY_DELAYS_MS: readonly number[] = [1_000, 3_000];
-
-/** Stored after every part, last: a manifest means the whole file is stored. Same shape as TC-593's. */
-export interface VoiceNoteAudioManifest {
-  v: 1;
-  mimeType: string;
-  fileName: string;
-  size: number;
-  partSize: number;
-  /** `etag` is null for a part kept from an interrupted attempt. */
-  parts: { size: number; etag: string | null }[];
-  sha256: string | null;
-  createdAt: string;
-}
-
-/**
- * The audio to store, read one part at a time (on the phone, from the native
+ * The note's audio, read one part at a time (on the phone, from the native
  * recorder through readAudioChunk), so the whole file never sits in one string.
- * `read` must return exactly `length` bytes.
  */
-export interface VoiceNoteAudioSource {
+export interface VoiceNoteAudioSource extends AudioPartSource {
   mimeType: string;
-  size: number;
-  read(offset: number, length: number): Promise<Uint8Array>;
+  readPart(offset: number, length: number): Promise<Uint8Array>;
 }
 
 /** A source over audio already in memory as base64. */
@@ -102,7 +87,7 @@ export function voiceNoteAudioSourceFromBase64(audio: VoiceNoteAudio): VoiceNote
   return {
     mimeType: audio.mimeType,
     size: bytes.byteLength,
-    read: async (offset, length) => bytes.slice(offset, offset + length),
+    readPart: async (offset, length) => bytes.slice(offset, offset + length),
   };
 }
 
@@ -111,193 +96,55 @@ export interface StoreAudioOptions {
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
-  sleep?: (ms: number) => Promise<void>;
 }
 
-/** Storage error codes this module adds to the SDK's. */
-export const VOICE_NOTE_STORAGE_FULL = "STORAGE_QUOTA_EXCEEDED";
+/** Storage error codes the voice notes UI tells apart. */
+export const VOICE_NOTE_STORAGE_FULL = AUDIO_STORAGE_FULL;
 export const VOICE_NOTE_AUDIO_TOO_LARGE = "VOICE_NOTE_AUDIO_TOO_LARGE";
-export const VOICE_NOTE_AUDIO_CORRUPT = "STORE_CORRUPT_AUDIO";
+export const VOICE_NOTE_AUDIO_CORRUPT = AUDIO_CORRUPT;
 
-type KvError = { code?: string; message?: string; meta?: unknown };
-type KvResult<T> = { ok: true; data: T } | { ok: false; error: KvError };
+type StoreFailure = { ok: false; error: { code: string; message: string } };
 
-function httpStatus(error: KvError): number | undefined {
-  const value = (error.meta as { status?: unknown } | undefined)?.status;
-  return typeof value === "number" ? value : undefined;
-}
-
-function isTransient(error: KvError): boolean {
-  if (error.code === "NETWORK_ERROR" || error.code === "TIMEOUT") return true;
-  const status = httpStatus(error);
-  return status !== undefined && (status >= 500 || status === 408 || status === 429);
-}
-
-function isQuota(error: KvError): boolean {
-  const status = httpStatus(error);
-  return error.code === VOICE_NOTE_STORAGE_FULL || error.code === "STORAGE_LIMIT_REACHED" || status === 402 || status === 413;
-}
-
-function storeFail(op: string, error: KvError): { ok: false; error: { code: string; message: string } } {
-  if (isQuota(error)) {
-    return { ok: false, error: { code: VOICE_NOTE_STORAGE_FULL, message: `${op}: your TinyCloud storage is full` } };
+/** A shared audio store rejection as this module's Result, in the codes the UI shows. */
+function audioFailure(op: string, err: unknown): StoreFailure {
+  if (!(err instanceof AudioStoreError)) {
+    return { ok: false, error: { code: "STORE_ERROR", message: `${op}: ${err instanceof Error ? err.message : String(err)}` } };
   }
-  return { ok: false, error: { code: error.code ?? "STORE_ERROR", message: `${op}: ${error.message ?? "unknown error"}` } };
-}
-
-/** One KV call, retrying transient failures (network, timeout, 5xx/408/429) with bounded backoff. */
-async function withRetry<T>(
-  call: () => Promise<KvResult<T>>,
-  opts: Pick<StoreAudioOptions, "retryDelaysMs" | "sleep">,
-): Promise<KvResult<T>> {
-  const delays = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  for (let attempt = 0; ; attempt++) {
-    const res = await call();
-    if (res.ok || attempt >= delays.length || !isTransient(res.error)) return res;
-    await sleep(delays[attempt]!);
+  switch (err.code) {
+    case AUDIO_STORAGE_FULL:
+      return { ok: false, error: { code: VOICE_NOTE_STORAGE_FULL, message: `${op}: your TinyCloud storage is full` } };
+    case AUDIO_SOURCE_READ_FAILED:
+      return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `${op}: ${err.message}` } };
+    case AUDIO_TOO_LARGE:
+      return { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `${op}: ${err.message}` } };
+    default:
+      return { ok: false, error: { code: err.code, message: `${op}: ${err.message}` } };
   }
-}
-
-/** Every stored key under `prefix` (following list cursors); an empty set when listing fails. */
-async function listedKeys(tcw: TinyCloudWeb, prefix: string): Promise<Set<string>> {
-  const keys = new Set<string>();
-  let cursor: string | undefined;
-  for (let page = 0; page < 1_000; page++) {
-    let res: KvResult<{ keys: string[]; truncated?: boolean; nextCursor?: string }>;
-    try {
-      res = await tcw.kv.list({ path: prefix, ...(cursor === undefined ? {} : { cursor }) }) as typeof res;
-    } catch {
-      return keys;
-    }
-    if (!res.ok) return keys;
-    for (const key of res.data.keys ?? []) if (typeof key === "string" && key.startsWith(prefix)) keys.add(key);
-    if (!res.data.truncated || !res.data.nextCursor || res.data.nextCursor === cursor) return keys;
-    cursor = res.data.nextCursor;
-  }
-  return keys;
 }
 
 /**
- * Store a note's audio as raw parts, then its manifest (last, so a manifest
- * always means a complete file). Parts go one at a time (TinyCloud handles one
- * request per space at a time best), each read from `source` just before it is
- * sent, so memory holds one part.
- *
- * Retry after any failure: parts already stored (listed under `${base}/p/`; a
- * KV put is all-or-nothing, so a listed part is whole) are not read or sent
- * again, and every key is fixed by the note id and part index, so a retry never
- * duplicates anything. Until the manifest is written the note reads as having
- * no audio.
+ * Store a note's audio with the shared audio store: raw parts of at most 1 MiB,
+ * then its manifest (last, so a manifest always means a complete file). Saving
+ * again after any failure resumes after the parts already stored, so a retry
+ * never reads, sends or duplicates anything twice. Until the manifest is
+ * written the note reads as having no audio.
  */
 export async function putVoiceNoteAudio(
   tcw: TinyCloudWeb,
   id: string,
   source: VoiceNoteAudioSource,
   opts: StoreAudioOptions = {},
-): Promise<StoreResult<VoiceNoteAudioManifest>> {
-  const partSize = opts.partSize ?? VOICE_NOTE_AUDIO_PART_BYTES;
-  if (!Number.isSafeInteger(partSize) || partSize <= 0 || partSize > VOICE_NOTE_AUDIO_PART_BYTES) {
-    return { ok: false, error: { code: "STORE_INVALID_PART_SIZE", message: `putVoiceNoteAudio: part size must be 1..${VOICE_NOTE_AUDIO_PART_BYTES}` } };
+): Promise<StoreResult<StoredAudioManifest>> {
+  try {
+    const manifest = await putAudio(tcw.kv, voiceNoteAudioKvKey(id), source, {
+      ...opts,
+      fileName: `${id}.m4a`,
+      mimeType: source.mimeType,
+    });
+    return { ok: true, data: manifest };
+  } catch (err) {
+    return audioFailure("saveVoiceNote(audio)", err);
   }
-  const total = source.size;
-  if (!Number.isSafeInteger(total) || total < 0) {
-    return { ok: false, error: { code: "STORE_INVALID_AUDIO", message: "putVoiceNoteAudio: the recording's size is unknown" } };
-  }
-  const existing = await listedKeys(tcw, `${voiceNoteAudioKvKey(id)}/p/`);
-  const parts: VoiceNoteAudioManifest["parts"] = [];
-  let stored = 0;
-  for (let index = 0, offset = 0; offset < total; index++, offset += partSize) {
-    const key = voiceNoteAudioPartKey(id, index);
-    const length = Math.min(partSize, total - offset);
-    let etag: string | null = null;
-    if (!existing.has(key)) {
-      let bytes: Uint8Array;
-      try {
-        bytes = await source.read(offset, length);
-      } catch (err) {
-        return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `putVoiceNoteAudio(read part ${index}): ${err instanceof Error ? err.message : String(err)}` } };
-      }
-      if (bytes.byteLength !== length) {
-        return { ok: false, error: { code: "VOICE_NOTE_SOURCE_READ_FAILED", message: `putVoiceNoteAudio(read part ${index}): got ${bytes.byteLength} of ${length} bytes` } };
-      }
-      const put = await withRetry(
-        () => tcw.kv.put(key, bytes, { contentType: "application/octet-stream" }) as Promise<KvResult<{ headers?: { etag?: string } }>>,
-        opts,
-      );
-      if (!put.ok) return storeFail(`saveVoiceNote(audio part ${index})`, put.error);
-      etag = put.data?.headers?.etag ?? null;
-    }
-    parts.push({ size: length, etag });
-    stored += length;
-    opts.onProgress?.(stored, total);
-  }
-  const manifest: VoiceNoteAudioManifest = {
-    v: 1,
-    mimeType: source.mimeType,
-    fileName: `${id}.m4a`,
-    size: total,
-    partSize,
-    parts,
-    sha256: null,
-    createdAt: new Date().toISOString(),
-  };
-  const written = await withRetry(
-    () => tcw.kv.put(voiceNoteAudioManifestKey(id), JSON.stringify(manifest), { contentType: "application/json" }) as Promise<KvResult<unknown>>,
-    opts,
-  );
-  if (!written.ok) return storeFail("saveVoiceNote(audio manifest)", written.error);
-  return { ok: true, data: manifest };
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-/** A stored manifest, or null when it is not one (wrong version, sizes that do not add up). */
-export function parseVoiceNoteAudioManifest(raw: unknown): VoiceNoteAudioManifest | null {
-  let value = raw;
-  if (typeof value === "string") {
-    try {
-      value = JSON.parse(value) as unknown;
-    } catch {
-      return null;
-    }
-  }
-  if (!value || typeof value !== "object") return null;
-  const m = value as Record<string, unknown>;
-  if (
-    m.v !== 1
-    || typeof m.mimeType !== "string"
-    || typeof m.fileName !== "string"
-    || !isNonNegativeInteger(m.size)
-    || !isNonNegativeInteger(m.partSize)
-    || (m.sha256 !== null && typeof m.sha256 !== "string")
-    || typeof m.createdAt !== "string"
-    || !Array.isArray(m.parts)
-  ) {
-    return null;
-  }
-  const parts: VoiceNoteAudioManifest["parts"] = [];
-  let sum = 0;
-  for (const part of m.parts as unknown[]) {
-    if (!part || typeof part !== "object") return null;
-    const { size, etag } = part as Record<string, unknown>;
-    if (!isNonNegativeInteger(size) || (etag !== null && typeof etag !== "string")) return null;
-    parts.push({ size, etag });
-    sum += size;
-  }
-  if (sum !== m.size) return null;
-  return {
-    v: 1,
-    mimeType: m.mimeType,
-    fileName: m.fileName,
-    size: m.size,
-    partSize: m.partSize,
-    parts,
-    sha256: m.sha256 as string | null,
-    createdAt: m.createdAt,
-  };
 }
 
 export function voiceNoteTitle(startedAt: number): string {
@@ -535,25 +382,23 @@ export interface LoadAudioOptions {
   onProgress?: (loadedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
-  sleep?: (ms: number) => Promise<void>;
 }
 
-/** The note's manifest; null when it has none (a note saved before TC-517, or no audio at all). */
-async function readManifest(tcw: TinyCloudWeb, sourceId: string, opts: LoadAudioOptions): Promise<StoreResult<VoiceNoteAudioManifest | null>> {
-  const res = await withRetry(() => tcw.kv.get(voiceNoteAudioManifestKey(sourceId)) as Promise<KvResult<{ data: unknown }>>, opts);
-  if (!res.ok) {
-    if (res.error.code === "KV_NOT_FOUND") return { ok: true, data: null };
-    return storeFail("loadVoiceNoteAudio(manifest)", res.error);
+/** The note's audio from its parts; null when it has no manifest (a note saved before TC-517, or no audio at all). */
+async function readStoredAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAudioOptions): Promise<StoreResult<Blob | null>> {
+  try {
+    return { ok: true, data: await getAudio(tcw.kv, voiceNoteAudioKvKey(sourceId), opts) };
+  } catch (err) {
+    return audioFailure("loadVoiceNoteAudio", err);
   }
-  const manifest = parseVoiceNoteAudioManifest(res.data.data);
-  if (!manifest) return { ok: false, error: { code: VOICE_NOTE_AUDIO_CORRUPT, message: "loadVoiceNoteAudio: the stored audio manifest is malformed" } };
-  return { ok: true, data: manifest };
 }
 
 /** A note saved before TC-517: its whole audio as one JSON value at the base key. */
-async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAudioOptions): Promise<StoreResult<VoiceNoteAudio>> {
-  const res = await withRetry(() => tcw.kv.get(voiceNoteAudioKvKey(sourceId)) as Promise<KvResult<{ data: unknown }>>, opts);
-  if (!res.ok) return storeFail("loadVoiceNoteAudio", res.error);
+async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<VoiceNoteAudio>> {
+  const res = await tcw.kv.get(voiceNoteAudioKvKey(sourceId));
+  if (!res.ok) {
+    return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `loadVoiceNoteAudio: ${res.error.message}` } };
+  }
   const raw = res.data.data;
   let parsed: unknown = raw;
   if (typeof raw === "string") {
@@ -574,38 +419,10 @@ async function readLegacyAudio(tcw: TinyCloudWeb, sourceId: string, opts: LoadAu
   return { ok: true, data: { mimeType: audio.mimeType, base64: audio.base64 } };
 }
 
-function tooLarge(size: number, maxBytes: number | undefined): { ok: false; error: { code: string; message: string } } | null {
+function tooLarge(size: number, maxBytes: number | undefined): StoreFailure | null {
   return maxBytes !== undefined && size > maxBytes
     ? { ok: false, error: { code: VOICE_NOTE_AUDIO_TOO_LARGE, message: `loadVoiceNoteAudio: the note's audio is ${size} bytes, over ${maxBytes}` } }
     : null;
-}
-
-/** Every part, in order, each checked against the manifest (a mismatched part never plays as the wrong audio). */
-async function readParts(
-  tcw: TinyCloudWeb,
-  sourceId: string,
-  manifest: VoiceNoteAudioManifest,
-  opts: LoadAudioOptions,
-  onPart: (bytes: Uint8Array) => void,
-): Promise<StoreResult<void>> {
-  let loaded = 0;
-  for (let index = 0; index < manifest.parts.length; index++) {
-    const expected = manifest.parts[index]!.size;
-    const key = voiceNoteAudioPartKey(sourceId, index);
-    const res = await withRetry(
-      () => tcw.kv.get(key, { binary: true, ...(expected > 0 ? { maxResponseBytes: expected } : {}) }) as Promise<KvResult<{ data: unknown }>>,
-      opts,
-    );
-    if (!res.ok) return storeFail(`loadVoiceNoteAudio(part ${index})`, res.error);
-    const bytes = res.data.data;
-    if (!(bytes instanceof Uint8Array) || bytes.byteLength !== expected) {
-      return { ok: false, error: { code: VOICE_NOTE_AUDIO_CORRUPT, message: `loadVoiceNoteAudio: stored part ${index} does not match its manifest` } };
-    }
-    onPart(bytes);
-    loaded += expected;
-    opts.onProgress?.(loaded, manifest.size);
-  }
-  return { ok: true, data: undefined };
 }
 
 /**
@@ -617,24 +434,16 @@ export async function loadVoiceNoteAudioBlob(
   sourceId: string,
   opts: LoadAudioOptions = {},
 ): Promise<StoreResult<Blob>> {
-  const manifest = await readManifest(tcw, sourceId, opts);
-  if (!manifest.ok) return manifest;
-  if (manifest.data === null) {
-    const legacy = await readLegacyAudio(tcw, sourceId, opts);
-    if (!legacy.ok) return legacy;
-    const bytes = base64ToBytes(legacy.data.base64);
-    const refused = tooLarge(bytes.byteLength, opts.maxBytes);
-    if (refused) return refused;
-    opts.onProgress?.(bytes.byteLength, bytes.byteLength);
-    return { ok: true, data: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: legacy.data.mimeType }) };
-  }
-  const refused = tooLarge(manifest.data.size, opts.maxBytes);
+  const stored = await readStoredAudio(tcw, sourceId, opts);
+  if (!stored.ok) return stored;
+  if (stored.data) return { ok: true, data: stored.data };
+  const legacy = await readLegacyAudio(tcw, sourceId);
+  if (!legacy.ok) return legacy;
+  const bytes = base64ToBytes(legacy.data.base64);
+  const refused = tooLarge(bytes.byteLength, opts.maxBytes);
   if (refused) return refused;
-  // One Blob per part lets the webview keep the bytes outside the JS heap.
-  const chunks: Blob[] = [];
-  const read = await readParts(tcw, sourceId, manifest.data, opts, (bytes) => chunks.push(new Blob([bytes as Uint8Array<ArrayBuffer>])));
-  if (!read.ok) return read;
-  return { ok: true, data: new Blob(chunks, { type: manifest.data.mimeType }) };
+  opts.onProgress?.(bytes.byteLength, bytes.byteLength);
+  return { ok: true, data: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: legacy.data.mimeType }) };
 }
 
 /**
@@ -647,22 +456,13 @@ export async function loadVoiceNoteAudio(
   sourceId: string,
   opts: LoadAudioOptions = {},
 ): Promise<StoreResult<VoiceNoteAudio>> {
-  const manifest = await readManifest(tcw, sourceId, opts);
-  if (!manifest.ok) return manifest;
-  if (manifest.data === null) {
-    const legacy = await readLegacyAudio(tcw, sourceId, opts);
-    if (!legacy.ok) return legacy;
-    const refused = tooLarge(Math.floor((legacy.data.base64.length * 3) / 4), opts.maxBytes);
-    return refused ?? legacy;
+  const stored = await readStoredAudio(tcw, sourceId, opts);
+  if (!stored.ok) return stored;
+  if (stored.data) {
+    const bytes = new Uint8Array(await stored.data.arrayBuffer());
+    return { ok: true, data: { mimeType: stored.data.type, base64: bytesToBase64(bytes) } };
   }
-  const refused = tooLarge(manifest.data.size, opts.maxBytes);
-  if (refused) return refused;
-  const all = new Uint8Array(manifest.data.size);
-  let at = 0;
-  const read = await readParts(tcw, sourceId, manifest.data, opts, (bytes) => {
-    all.set(bytes, at);
-    at += bytes.byteLength;
-  });
-  if (!read.ok) return read;
-  return { ok: true, data: { mimeType: manifest.data.mimeType, base64: bytesToBase64(all) } };
+  const legacy = await readLegacyAudio(tcw, sourceId);
+  if (!legacy.ok) return legacy;
+  return tooLarge(Math.floor((legacy.data.base64.length * 3) / 4), opts.maxBytes) ?? legacy;
 }

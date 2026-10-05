@@ -1,5 +1,41 @@
 # @tinychat/frontend
 
+## 0.5.0
+
+### Minor Changes
+
+- d451a1a: Store the original audio of uploaded meetings in your TinyCloud space and play it back from the meeting in Library.
+- 874ad74: Upload audio: transcribe an audio file on web, desktop and mobile with Private transcription (default) or AssemblyAI, under TinyCloud's AssemblyAI account by default or your own API key, with optional speaker identification; the transcript and the original file are saved to your TinyCloud space as an Uploaded audio meeting. Settings gains a Transcription card for the default engine and which AssemblyAI account to use (with the optional own key).
+
+### Patch Changes
+
+- 304587d: Exo: turn on the Private cloud transcription engine. The desktop now compiles in the production ptx-batch upload origin, so Local recording offers Private cloud (the default until an on-device model is downloaded) for accounts the backend enables.
+- 874ad74: Delete unclaimed hosted AssemblyAI transcripts after 24 hours and retain bounded expiry tombstones. Resolve expired upload cleanup after reload and bound missing-outcome retries with persistent timestamps and a retention notice (TC-592).
+- 874ad74: Keep hosted AssemblyAI submission outcomes visible while deleting temporary audio, retain unresolved Discard cleanup across reloads, and preserve Retry for recoverable hosted uploads without the original file.
+
+## 0.5.0-beta.2
+
+### Patch Changes
+
+- 304587d: Exo: turn on the Private cloud transcription engine. The desktop now compiles in the production ptx-batch upload origin, so Local recording offers Private cloud (the default until an on-device model is downloaded) for accounts the backend enables.
+
+## 0.5.0-beta.1
+
+### Minor Changes
+
+- 874ad74: Upload audio: transcribe an audio file on web, desktop and mobile with Private transcription (default) or AssemblyAI, under TinyCloud's AssemblyAI account by default or your own API key, with optional speaker identification; the transcript and the original file are saved to your TinyCloud space as an Uploaded audio meeting. Settings gains a Transcription card for the default engine and which AssemblyAI account to use (with the optional own key).
+
+### Patch Changes
+
+- 874ad74: Delete unclaimed hosted AssemblyAI transcripts after 24 hours and retain bounded expiry tombstones. Resolve expired upload cleanup after reload and bound missing-outcome retries with persistent timestamps and a retention notice (TC-592).
+- 874ad74: Keep hosted AssemblyAI submission outcomes visible while deleting temporary audio, retain unresolved Discard cleanup across reloads, and preserve Retry for recoverable hosted uploads without the original file.
+
+## 0.5.0-beta.0
+
+### Minor Changes
+
+- d451a1a: Store the original audio of uploaded meetings in your TinyCloud space and play it back from the meeting in Library.
+
 ## 0.4.1
 
 ### Patch Changes

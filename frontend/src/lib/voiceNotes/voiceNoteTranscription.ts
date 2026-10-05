@@ -7,7 +7,7 @@
 //   1. capabilities: the backend answers 200 only while the relay is armed and
 //      this account is in its cohort (404 otherwise = hidden). Like the
 //      desktop, the engine is also hidden unless this BUILD has a PTX upload
-//      origin (VITE_EXO_PTX_UPLOAD_ORIGIN); the backend never names one.
+//      origin (VITE_EXO_PTX_UPLOAD_ORIGIN, privateCloud.ts); the backend never names one.
 //   2. the note's audio is converted to 16 kHz mono WAV (voiceNoteAudio.ts),
 //      hashed, and a job is created at the backend (bearer, Idempotency-Key);
 //   3. ONE PUT of the bytes straight to `<PTX origin>/uploads/trn_…` with the
@@ -29,12 +29,14 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { FirefliesSentence } from "../connectors/firefliesClient";
 import { MAX_TURN_SECONDS } from "../localTranscriptTurns";
 import {
+  buildPtxUploadOrigin,
   createPrivateCloudApi,
   createPrivateCloudJob,
+  interpretUploadResponse,
+  ptxUploadUrl,
   isTransientCloudError,
   PrivateCloudError,
   privateCloudMessage,
-  UPLOAD_PATH_RE,
   VOICE_NOTE_CHANNEL_LABELS,
   type PrivateCloudApi,
   type PrivateCloudCapabilities,
@@ -42,6 +44,7 @@ import {
   type PrivateCloudCreated,
   type PrivateCloudJob,
   type PrivateCloudTranscript,
+  type PtxPutResponse,
 } from "../privateCloud";
 import { nativeHttpFileUploadSupported } from "./nativeVoiceNotes";
 import {
@@ -60,43 +63,6 @@ import {
   type VoiceNoteTranscriptSave,
 } from "./voiceNoteStore";
 
-// ── Build configuration ────────────────────────────────────────────────
-
-/**
- * The PTX origin audio may be uploaded to, or null (the engine is hidden).
- * A bare origin only: https, or http to a loopback port in dev builds.
- */
-export function parsePtxUploadOrigin(raw: string | null | undefined, allowLoopbackHttp: boolean): string | null {
-  const value = raw?.trim() ?? "";
-  if (!value) return null;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && allowLoopbackHttp && loopback && url.port !== "")) return null;
-  if (url.username || url.password || url.search || url.hash || url.pathname !== "/") return null;
-  if (value.replace(/\/$/, "") !== url.origin) return null;
-  return url.origin;
-}
-
-/** This build's PTX upload origin (unset in every build today: the engine stays hidden). */
-export function buildPtxUploadOrigin(): string | null {
-  return parsePtxUploadOrigin(import.meta.env.VITE_EXO_PTX_UPLOAD_ORIGIN, import.meta.env.DEV === true);
-}
-
-/** Joins a backend-issued upload path to the build's origin; anything but `/uploads/trn_…` is refused. */
-export function ptxUploadUrl(origin: string, path: string): string {
-  if (!UPLOAD_PATH_RE.test(path)) throw new PrivateCloudError("upstream_bad_response", "The upload path is not a PTX upload path");
-  const url = new URL(path, origin);
-  if (url.origin !== origin || url.pathname !== path) {
-    throw new PrivateCloudError("upstream_bad_response", "The upload path leaves the PTX origin");
-  }
-  return url.toString();
-}
-
 // ── Upload ─────────────────────────────────────────────────────────────
 
 export interface PtxPutRequest {
@@ -105,11 +71,6 @@ export interface PtxPutRequest {
   contentType: string;
   base64: string;
   correlationId: string;
-}
-
-export interface PtxPutResponse {
-  status: number;
-  body: unknown;
 }
 
 /** One PUT of the recording; rejects only when no HTTP answer arrived. */
@@ -153,57 +114,6 @@ export const capacitorPtxPut: PtxPut = async (request) => {
   }
   return { status: response.status, body };
 };
-
-/** Codes PTX's upload answers may carry as themselves (desktop client.rs RELAYED_CODES). */
-const RELAYED_UPLOAD_CODES: ReadonlySet<string> = new Set([
-  "recording_too_large",
-  "recording_too_long",
-  "unsupported_recording",
-  "invalid_audio",
-  "no_speech",
-  "quota_exceeded",
-  "service_busy",
-  "service_paused",
-  "service_unavailable",
-  "upload_expired",
-  "upload_integrity_failed",
-]);
-
-/**
- * A PUT answer (desktop `upload_result`): 201 is the only success. Every other
- * answer is a stable code; except for the decisive ones, the job's status
- * decides what happened (PTX answers a replayed PUT of an accepted upload 401).
- */
-export function interpretUploadResponse(response: PtxPutResponse, correlationId: string): void {
-  if (response.status === 201) return;
-  const body = (response.body && typeof response.body === "object" ? response.body : {}) as { error?: Record<string, unknown> };
-  const e = body.error && typeof body.error === "object" ? body.error : {};
-  const code = typeof e.code === "string" ? e.code : null;
-  const jobError = e.job_error as { code?: unknown } | undefined;
-  const jobErrorCode = typeof jobError?.code === "string" ? jobError.code : null;
-  const fail = (failure: string, message: string) =>
-    new PrivateCloudError(failure, message, {
-      correlationId: typeof e.correlation_id === "string" ? e.correlation_id : correlationId,
-      retryAfterSeconds: typeof e.retry_after_seconds === "number" ? e.retry_after_seconds : null,
-    });
-  const status = response.status;
-  if (status >= 300 && status < 400) throw fail("service_misconfigured", "PTX answered with a redirect; it was not followed");
-  if (status === 401) throw fail("upload_outcome_unknown", "PTX no longer accepts this upload; its status decides");
-  if (status === 409 && code === "upload_in_progress") throw fail("upload_outcome_unknown", "Another upload of this recording is in progress");
-  if (status === 400 || status === 408) throw fail("upload_interrupted", "PTX did not receive the whole recording");
-  if (status === 410) throw fail("upload_capability_expired", "The upload permission expired");
-  if (status === 413) throw fail("recording_too_large", "The recording is larger than the private cloud limit");
-  if (status === 415) throw fail("unsupported_recording", "This recording format is not supported");
-  if (status === 422) {
-    throw jobErrorCode !== null && RELAYED_UPLOAD_CODES.has(jobErrorCode)
-      ? fail(jobErrorCode, "PTX rejected the recording")
-      : fail("upstream_bad_response", "PTX rejected the recording");
-  }
-  if ((status === 429 || status === 503) && code !== null && RELAYED_UPLOAD_CODES.has(code)) {
-    throw fail(code, "PTX cannot take the upload right now");
-  }
-  throw fail("upload_outcome_unknown", "PTX's answer to the upload was unclear");
-}
 
 // ── Jobs in flight (per note), and consent: per account ────────────────
 //

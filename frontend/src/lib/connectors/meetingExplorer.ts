@@ -43,6 +43,7 @@ import {
   LOCAL_MEETING_SOURCE_LABEL,
 } from "../localTranscriber";
 import { VOICE_NOTE_SOURCE, VOICE_NOTE_SOURCE_LABEL } from "../voiceNotes/voiceNoteStore";
+import { UPLOAD_MEETING_SOURCE, UPLOAD_MEETING_SOURCE_LABEL } from "../audioUpload";
 import { CONNECTORS } from "./registry";
 
 /**
@@ -59,6 +60,7 @@ export const EXPLORER_MEETING_SOURCES: readonly string[] = [
   TRANSCRIBER_MEETING_SOURCE,
   LOCAL_MEETING_SOURCE,
   VOICE_NOTE_SOURCE,
+  UPLOAD_MEETING_SOURCE,
 ];
 
 /**
@@ -71,6 +73,7 @@ export function meetingSourceLabel(source: string): string {
   if (source === TRANSCRIBER_MEETING_SOURCE) return TRANSCRIBER_MEETING_SOURCE_LABEL;
   if (source === LOCAL_MEETING_SOURCE) return LOCAL_MEETING_SOURCE_LABEL;
   if (source === VOICE_NOTE_SOURCE) return VOICE_NOTE_SOURCE_LABEL;
+  if (source === UPLOAD_MEETING_SOURCE) return UPLOAD_MEETING_SOURCE_LABEL;
   return CONNECTORS.find((c) => c.source === source)?.name ?? source;
 }
 
@@ -235,4 +238,42 @@ export function transcriptCopyText(sentences: FirefliesSentence[]): string {
   return sentences
     .map((s) => (s.speaker_name ? `${s.speaker_name}: ${s.text}` : s.text))
     .join("\n");
+}
+
+/**
+ * Where a meeting's original audio is stored, read from its own row when the
+ * meeting is opened — the list query never selects `metadata`, which can carry
+ * a whole transcript. `stored` only for a finished upload
+ * (`metadata.audio.stored === true`); same settled/transient split as
+ * {@link TranscriptRead}.
+ */
+export type MeetingAudioRead =
+  | { status: "stored"; base: string }
+  | { status: "absent" }
+  | { status: "failed" };
+
+export async function readMeetingAudio(
+  tcw: TinyCloudWeb,
+  id: string,
+): Promise<MeetingAudioRead> {
+  const res = await tolerate(() =>
+    tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT metadata FROM connector_meeting WHERE id = ?",
+      [id],
+    ),
+  );
+  if (!res || !res.ok) return { status: "failed" };
+  const row: unknown = res.data?.rows?.[0];
+  const raw = Array.isArray(row) ? cellStr(row, 0) : null;
+  if (raw === null) return { status: "absent" };
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(raw);
+  } catch {
+    return { status: "absent" };
+  }
+  const audio = (metadata as { audio?: { stored?: unknown; base?: unknown } } | null)?.audio;
+  return audio?.stored === true && typeof audio.base === "string" && audio.base.length > 0
+    ? { status: "stored", base: audio.base }
+    : { status: "absent" };
 }

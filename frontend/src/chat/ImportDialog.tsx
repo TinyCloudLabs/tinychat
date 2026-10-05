@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { AlertTriangleIcon, Loader2Icon, UploadIcon } from "lucide-react";
+import { AlertTriangleIcon, UploadIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +21,7 @@ import {
   importThread,
   listThreads,
 } from "@/lib/threadStore";
+import { FilePicker } from "./FilePicker";
 
 // Spec §5: thread id is `claude-<uuid>` (stable across re-imports).
 const CLAUDE_THREAD_PREFIX = "claude-";
@@ -158,23 +159,6 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
     [tcw],
   );
 
-  const onFileInputChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      if (file) void handleFile(file);
-    },
-    [handleFile],
-  );
-
-  const onDrop = useCallback(
-    (event: React.DragEvent<HTMLLabelElement>) => {
-      event.preventDefault();
-      const file = event.dataTransfer.files?.[0];
-      if (file) void handleFile(file);
-    },
-    [handleFile],
-  );
-
   const toggleRow = useCallback((threadId: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -303,9 +287,11 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
         {(phase === "idle" || phase === "parsing" || phase === "error") && (
           <FilePicker
             fileInputRef={fileInputRef}
-            onChange={onFileInputChange}
-            onDrop={onDrop}
-            parsing={phase === "parsing"}
+            accept={ACCEPTED_EXTENSIONS}
+            label="Click or drop a Claude export"
+            hint=".json, .jsonl, or .zip"
+            onFile={(file) => void handleFile(file)}
+            busy={phase === "parsing"}
             error={error}
           />
         )}
@@ -349,62 +335,6 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
 };
 
 // ── Sub-views ────────────────────────────────────────────────────────
-
-const FilePicker: FC<{
-  fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
-  onChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  onDrop: (event: React.DragEvent<HTMLLabelElement>) => void;
-  parsing: boolean;
-  error: string | null;
-}> = ({ fileInputRef, onChange, onDrop, parsing, error }) => {
-  const [dragging, setDragging] = useState(false);
-  return (
-    <div className="flex flex-col gap-3">
-      <label
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          setDragging(false);
-          onDrop(e);
-        }}
-        className={
-          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/30 px-4 py-8 text-sm text-muted-foreground transition-colors hover:bg-muted/50" +
-          (parsing ? " pointer-events-none opacity-60" : "") +
-          (dragging ? " border-primary bg-accent" : "")
-        }
-      >
-        {parsing ? (
-          <>
-            <Loader2Icon className="size-5 animate-spin" />
-            Reading file…
-          </>
-        ) : (
-          <>
-            <UploadIcon className="size-5" />
-            <span>Click or drop a Claude export</span>
-            <span className="text-xs">.json, .jsonl, or .zip</span>
-          </>
-        )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={ACCEPTED_EXTENSIONS}
-          className="sr-only"
-          onChange={onChange}
-          disabled={parsing}
-        />
-      </label>
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-};
 
 const PickList: FC<{
   rows: PickRow[];

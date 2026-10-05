@@ -50,6 +50,14 @@ import { createConnectorCredentialRouter } from "./routes/connector-credentials.
 import { createConnectorMeetingsRouter } from "./routes/connector-meetings.js";
 import { createGoogleOAuthRouter, normalizeAppOrigin } from "./routes/google-oauth.js";
 import { createTranscriberRouter } from "./routes/transcriber.js";
+import { ASSEMBLYAI_DELETE_MOUNT, createAssemblyAiDeleteRouter } from "./routes/assemblyai-delete.js";
+import { ASSEMBLYAI_HOSTED_MOUNT, createAssemblyAiHostedRouter, isHostedPartPath } from "./routes/assemblyai-hosted.js";
+import {
+  DEFAULT_MAX_CONCURRENT_UPLOADS,
+  HostedUploadStore,
+  assemblyAiHostedConfigFromEnv,
+  type AssemblyAiHostedConfig,
+} from "./services/assemblyai-hosted.js";
 import { createPrivateCloudTranscriptionRouter } from "./routes/private-cloud-transcription.js";
 import { createCalendarAutojoinRouter } from "./routes/calendar-autojoin.js";
 import { CalendarAutojoinConnection } from "./services/calendar-autojoin-connection.js";
@@ -289,6 +297,21 @@ async function main() {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
     return;
+  }
+
+  // AssemblyAI under TinyCloud's account (routes/assemblyai-hosted.ts): on when the server key and
+  // the handle key are both set, off (capabilities say so) when either is unset; a value that is
+  // set but weak, reused or malformed refuses boot.
+  let assemblyAiHosted: AssemblyAiHostedConfig;
+  try {
+    assemblyAiHosted = assemblyAiHostedConfigFromEnv(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+    return;
+  }
+  if (!assemblyAiHosted.hosted) {
+    console.warn(`[startup] hosted AssemblyAI is off (${assemblyAiHosted.reason}); clients can still use their own key.`);
   }
 
   if (connectorWebhooksEnabled()) {
@@ -567,7 +590,8 @@ async function main() {
   // larger limit does not widen the unauthenticated attack surface. (compaction §C.4a)
   const globalJsonParser = express.json({ limit: "1mb" });
   app.use((req, res, next) => {
-    if (req.path === "/api/nras-proxy" || req.path.startsWith("/api/nras-proxy/")) {
+    // Hosted AssemblyAI parts are raw audio, read only by their route's own 1 MiB raw parser.
+    if (req.path === "/api/nras-proxy" || req.path.startsWith("/api/nras-proxy/") || isHostedPartPath(req.path)) {
       next();
       return;
     }
@@ -925,6 +949,26 @@ async function main() {
     );
   }
 
+  // AssemblyAI delete proxy for Exo uploads (routes/assemblyai-delete.ts). Always mounted: the
+  // user brings their own AssemblyAI key, so there is nothing to configure here. Browsers cannot
+  // DELETE at AssemblyAI (its CORS allows POST/PUT/GET only), so every client deletes through this.
+  app.use(ASSEMBLYAI_DELETE_MOUNT, authMiddleware, createAssemblyAiDeleteRouter());
+
+  // Hosted AssemblyAI (routes/assemblyai-hosted.ts): the same mount, always, so the frontend can
+  // tell "off" (capabilities `hosted: false`) from "dark". Uploads live in this process only: the
+  // spool is emptied at start and a minute sweep drops uploads past their hour.
+  let hostedUploads: HostedUploadStore | null = null;
+  if (assemblyAiHosted.hosted) {
+    hostedUploads = new HostedUploadStore(assemblyAiHosted.spoolDir, assemblyAiHosted.dailyBytes, DEFAULT_MAX_CONCURRENT_UPLOADS);
+    await hostedUploads.init();
+    const sweeper = hostedUploads;
+    setInterval(() => {
+      sweeper.sweep(Date.now()).catch(() => console.error("[assemblyai-hosted] sweep failed alert=true"));
+    }, 60_000).unref();
+    console.log("[startup] hosted AssemblyAI enabled.");
+  }
+  app.use(ASSEMBLYAI_HOSTED_MOUNT, authMiddleware, createAssemblyAiHostedRouter({ config: assemblyAiHosted, store: hostedUploads }));
+
   // Exo private cloud transcription (routes/private-cloud-transcription.ts). A different PTX
   // deployment (`ptx-batch`) and key from the meeting transcriber above. Flag off = never mounted,
   // so every path 404s; a non-cohort address gets the same 404 from inside the router.
@@ -1022,8 +1066,9 @@ async function main() {
     // Deployment must wait for this process to exit; the KV lease is not a distributed lock.
     const httpDrained = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeIdleConnections();
-    void Promise.all([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop()])
-      .then(() => process.exit(0), () => process.exit(1));
+    // Hosted AssemblyAI submits in flight are aborted; each deletes its own spool as it settles.
+    void Promise.allSettled([httpDrained, calendarAutojoinWorker?.stop(), ingestSupervisor?.stop(), hostedUploads?.shutdown()])
+      .then((results) => process.exit(results.some((result) => result.status === "rejected") ? 1 : 0));
     setTimeout(() => process.exit(1), 120_000).unref();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
