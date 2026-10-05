@@ -15,7 +15,7 @@
 //! - The user's bearer goes only to the compiled backend origin, and only for
 //!   the create call; the upload capability never leaves this process.
 //!
-//! With no PTX origin compiled in (this build), nothing here opens a file:
+//! With no PTX origin compiled in, nothing here opens a file:
 //! `cloud_transcription_status` reports `configured: false` and the webview
 //! hides the engine.
 

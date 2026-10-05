@@ -111,19 +111,23 @@ capture (`NSAudioCaptureUsageDescription`, process tap — macOS 14.2+). Dev
 builds attribute these to the launching terminal. `Entitlements.plist` adds
 `com.apple.security.device.audio-input` for signed/hardened-runtime bundles.
 
-### Private cloud engine (hidden)
+### Private cloud engine
 
 Local recording has a second engine, **Private cloud**: after Stop, the
 recording is uploaded to TinyCloud Private Transcription (a dedicated
 confidential VM that sends speech segments to Tinfoil) and the transcript is
 saved as the same Exo Local meeting, with `transcription_engine:
-"private-cloud"` in its metadata. It is **hidden in this build**:
-`src-tauri/src/cloud/origins.rs` compiles in no PTX origin
-(`PTX_UPLOAD_ORIGIN = None`), so `cloud_transcription_status` reports
-`configured: false`, the capture registry never opens a file, and the picker
-never appears. The engine shows only when a build sets that origin *and* the
-backend answers `GET /api/transcriber/private-cloud/capabilities` with 200
-(flag on, account in the cohort).
+"private-cloud"` in its metadata. `src-tauri/src/cloud/origins.rs` compiles in
+the production `ptx-batch` origin (`PTX_UPLOAD_ORIGIN`), so
+`cloud_transcription_status` reports `configured: true`. The picker shows the
+engine when the backend also answers
+`GET /api/transcriber/private-cloud/capabilities` with 200 (flag on, account
+in the cohort); with no explicit choice stored, Private cloud is the default
+until an on-device model is downloaded.
+
+The upload is native (`reqwest` in `cloud/client.rs`), not a webview fetch, so
+the PTX origin is not in the CSP `connect-src`; the webview reaches only the
+backend's `/api/transcriber/private-cloud/*` routes.
 
 Native side (`src-tauri/src/cloud/`):
 
