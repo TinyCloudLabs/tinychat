@@ -1,9 +1,0 @@
-{
-  "versions": {
-    "exo-desktop": "0.4.1",
-    "@tinychat/frontend": "0.4.1"
-  },
-  "changesets": [
-    ".changeset/pre/agent-connect-owner-check.md"
-  ]
-}
