@@ -236,3 +236,41 @@ export function transcriptCopyText(sentences: FirefliesSentence[]): string {
     .map((s) => (s.speaker_name ? `${s.speaker_name}: ${s.text}` : s.text))
     .join("\n");
 }
+
+/**
+ * Where a meeting's original audio is stored, read from its own row when the
+ * meeting is opened — the list query never selects `metadata`, which can carry
+ * a whole transcript. `stored` only for a finished upload
+ * (`metadata.audio.stored === true`); same settled/transient split as
+ * {@link TranscriptRead}.
+ */
+export type MeetingAudioRead =
+  | { status: "stored"; base: string }
+  | { status: "absent" }
+  | { status: "failed" };
+
+export async function readMeetingAudio(
+  tcw: TinyCloudWeb,
+  id: string,
+): Promise<MeetingAudioRead> {
+  const res = await tolerate(() =>
+    tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT metadata FROM connector_meeting WHERE id = ?",
+      [id],
+    ),
+  );
+  if (!res || !res.ok) return { status: "failed" };
+  const row: unknown = res.data?.rows?.[0];
+  const raw = Array.isArray(row) ? cellStr(row, 0) : null;
+  if (raw === null) return { status: "absent" };
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(raw);
+  } catch {
+    return { status: "absent" };
+  }
+  const audio = (metadata as { audio?: { stored?: unknown; base?: unknown } } | null)?.audio;
+  return audio?.stored === true && typeof audio.base === "string" && audio.base.length > 0
+    ? { status: "stored", base: audio.base }
+    : { status: "absent" };
+}
