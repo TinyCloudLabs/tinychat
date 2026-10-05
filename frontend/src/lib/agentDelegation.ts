@@ -23,6 +23,7 @@
 // custom-element registration, no collision) and never runs under bun test (the
 // real mint is stubbed via `_mint`). The DOM-bound types below are type-only.
 import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { ConnectWalletResult } from "@tinyboilerplate/client";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
@@ -251,6 +252,46 @@ export interface FreshSignInMintOptions {
   delegateDID?: string;
   path?: string;
   expiryMs?: number;
+  /** The signed-in app session's owner address (`tcw.address()`). The key picked in OpenKey must match it. */
+  sessionAddress: string | null | undefined;
+  /** Test-only seam: override the OpenKey connect step. */
+  _connect?: (config: { appName: string; host: string }) => Promise<Pick<ConnectWalletResult, "address" | "web3Provider">>;
+}
+
+/** The key picked in the Connect-agent OpenKey prompt is not the signed-in owner's key. */
+export class AgentOwnerMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentOwnerMismatchError";
+  }
+}
+
+const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
+
+/**
+ * An OpenKey account can hold several keys, each a separate TinyCloud owner with
+ * its own spaces. The agent's grants must come from the owner the app is signed
+ * in as, so refuse any other key before anything is minted. Exported for testing.
+ */
+export function assertAgentOwner(sessionAddress: string | null | undefined, connectedAddress: string): void {
+  const expected = sessionAddress?.trim() ?? "";
+  const connected = connectedAddress?.trim() ?? "";
+  if (!expected) {
+    throw new AgentOwnerMismatchError("Could not confirm which account you are signed in with. Sign in again, then connect the agent.");
+  }
+  if (expected.toLowerCase() !== connected.toLowerCase()) {
+    throw new AgentOwnerMismatchError(
+      `You picked a different OpenKey key (${shortAddress(connected)}) than the one you're signed in with (${shortAddress(expected)}). ` +
+      `To connect the agent, choose ${shortAddress(expected)} in OpenKey.`,
+    );
+  }
+}
+
+async function connectSessionOwner(options: FreshSignInMintOptions): Promise<ConnectWalletResult["web3Provider"]> {
+  const connect = options._connect ?? (await import("@tinyboilerplate/client")).connectWallet;
+  const { address, web3Provider } = await connect({ appName: options.appName, host: options.openkeyHost });
+  assertAgentOwner(options.sessionAddress, address);
+  return web3Provider;
 }
 
 /**
@@ -273,13 +314,8 @@ export interface FreshSignInMintOptions {
 export async function mintAgentDelegationViaFreshSignIn(
   options: FreshSignInMintOptions,
 ): Promise<string> {
-  const { connectWallet } = await import("@tinyboilerplate/client");
+  const web3Provider = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
-
-  const { web3Provider } = await connectWallet({
-    appName: options.appName,
-    host: options.openkeyHost,
-  });
 
   // CRITICAL: isolate this sign-in's session storage. With NO sessionStorage the
   // SDK falls back to the shared localStorage-backed BrowserSessionStorage and
@@ -341,9 +377,8 @@ export async function mintAgentDelegationViaFreshSignIn(
 export async function mintAgentSessionViaFreshSignIn(
   options: FreshSignInMintOptions & { roomId?: string },
 ): Promise<AgentSessionEnvelope> {
-  const { connectWallet } = await import("@tinyboilerplate/client");
+  const web3Provider = await connectSessionOwner(options);
   const { TinyCloudWeb, BrowserSessionStorage } = await import("@tinycloud/web-sdk");
-  const { web3Provider } = await connectWallet({ appName: options.appName, host: options.openkeyHost });
   const memory = new Map<string, string>();
   const storage: Storage = { get length() { return memory.size; }, clear: () => memory.clear(), getItem: (k) => memory.get(k) ?? null, key: (i) => Array.from(memory.keys())[i] ?? null, removeItem: (k) => { memory.delete(k); }, setItem: (k, v) => { memory.set(k, String(v)); } };
   const tcw = new TinyCloudWeb({ providers: { web3: { driver: web3Provider } }, ...(localValidationEnabled() ? { autoCreateSpace: false } : {}), ...(options.tinycloudHosts ? { tinycloudHosts: options.tinycloudHosts } : {}), manifest: AGENT_CONSENT_MANIFEST, sessionStorage: new BrowserSessionStorage({ storage }), sessionExpirationMs: SESSION_EXPIRATION_MS });
