@@ -125,9 +125,11 @@ engine when the backend also answers
 in the cohort); with no explicit choice stored, Private cloud is the default
 until an on-device model is downloaded.
 
-The upload is native (`reqwest` in `cloud/client.rs`), not a webview fetch, so
-the PTX origin is not in the CSP `connect-src`; the webview reaches only the
-backend's `/api/transcriber/private-cloud/*` routes.
+Local recording's upload is native (`reqwest` in `cloud/client.rs`), not a
+webview fetch; for it the webview reaches only the backend's
+`/api/transcriber/private-cloud/*` routes. The PTX origin is still in the CSP
+`connect-src` because Upload audio's Private engine PUTs a picked file from the
+webview (see Content-Security-Policy below).
 
 Native side (`src-tauri/src/cloud/`):
 
