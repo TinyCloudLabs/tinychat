@@ -263,7 +263,7 @@ function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
 // ── Schema bootstrap (memoized per space) ────────────────────────────
 
 const schemaReadySpaces = new Set<string>();
-const schemaInFlight = new Map<string, Promise<void>>();
+const schemaInFlight = new Map<string, Promise<SqlError | null>>();
 
 /**
  * Probe the schema read-only before creating any missing tables. Existing
@@ -279,46 +279,52 @@ async function ensureSchema(tcw: TinyCloudWeb, options: { forWrite?: boolean } =
   const memoKey = did ?? space ?? "";
   if (memoKey && schemaReadySpaces.has(memoKey)) return;
 
-  const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
-  if (inFlight) return inFlight;
-
-  const run = (async () => {
-    const db = store(tcw);
-    const tables = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
-      (table): table is string => table !== undefined,
-    );
-    const existingResult = await db.query(
-      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
-      tables,
-    );
-    if (!existingResult.ok) throw new SqlOpError(existingResult.error, "ensureSchema probe");
-    const existingRows = existingResult.data.rows as unknown as unknown[][];
-    const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
-    const missing = SCHEMA.filter((sql) => {
-      const table = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1];
-      return table !== undefined && !existing.has(table);
-    });
-    if (missing.length > 0) {
-      const result = await db.batch(missing.map((sql) => ({ sql })));
-      if (!result.ok) {
-        // A rejected, unrelated migration must not hide tables that already
-        // exist for reads. Writes stop here with the storage error instead of
-        // continuing into a missing-table SQL failure.
-        if (isStorageFullError(result.error)) {
-          if (options.forWrite) throw new SqlOpError(result.error, "ensureSchema");
-          return;
+  let run = memoKey ? schemaInFlight.get(memoKey) : undefined;
+  if (!run) {
+    run = (async (): Promise<SqlError | null> => {
+      const db = store(tcw);
+      const tables = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
+        (table): table is string => table !== undefined,
+      );
+      const existingResult = await db.query(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+        tables,
+      );
+      if (!existingResult.ok) throw new SqlOpError(existingResult.error, "ensureSchema probe");
+      const existingRows = existingResult.data.rows as unknown as unknown[][];
+      const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
+      const missing = SCHEMA.filter((sql) => {
+        const table = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1];
+        return table !== undefined && !existing.has(table);
+      });
+      if (missing.length > 0) {
+        const result = await db.batch(missing.map((sql) => ({ sql })));
+        if (!result.ok) {
+          // Reads may use existing tables when an unrelated migration fails.
+          // Return the typed storage error so each caller applies its own policy.
+          if (isStorageFullError(result.error)) return result.error;
+          throw new SqlOpError(result.error, "ensureSchema");
         }
-        throw new SqlOpError(result.error, "ensureSchema");
       }
-    }
-    if (memoKey) schemaReadySpaces.add(memoKey);
-  })();
+      if (memoKey) schemaReadySpaces.add(memoKey);
+      return null;
+    })();
 
-  if (memoKey) {
-    schemaInFlight.set(memoKey, run);
-    void run.catch(() => {}).finally(() => schemaInFlight.delete(memoKey));
+    if (memoKey) {
+      schemaInFlight.set(memoKey, run);
+      void run.then(
+        () => {
+          if (schemaInFlight.get(memoKey) === run) schemaInFlight.delete(memoKey);
+        },
+        () => {
+          if (schemaInFlight.get(memoKey) === run) schemaInFlight.delete(memoKey);
+        },
+      );
+    }
   }
-  return run;
+
+  const storageError = await run;
+  if (storageError && options.forWrite) throw new SqlOpError(storageError, "ensureSchema");
 }
 
 // ── Read helpers (rows are CELL-arrays, mapped by column order) ───────
@@ -1258,6 +1264,7 @@ export async function rewriteThreadMessages(
         notifyThreadIndex(readCache(tcw) ?? []);
         return;
       }
+      if (isStorageFullError(res.error)) throw new SqlOpError(res.error, "rewriteThreadMessages");
       lastError = res.error;
       const after = await read();
       const unchanged = after.payloads.length === current.payloads.length

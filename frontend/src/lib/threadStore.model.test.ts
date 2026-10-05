@@ -5,10 +5,12 @@ import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 import {
   appendMessage,
   createThread,
+  getSetting,
   getThread,
   getThreadModel,
   importThread,
   listThreads,
+  rewriteThreadMessages,
   setThreadModel,
 } from "./threadStore";
 import { runImportLoop } from "../chat/importLoop";
@@ -41,13 +43,16 @@ function localStorageWindow() {
 class SqlService {
   readonly sqlite = new Database(":memory:");
   beforeBatch: (() => Promise<void>) | null = null;
+  beforeQuery: ((sql: string) => Promise<void>) | null = null;
   beforeExecute: (() => Promise<void>) | null = null;
   uncertainExecute = false;
   uncertainBatch = false;
   rejectWrites = false;
+  partialStorageRejectAfter: number | null = null;
   batchCalls = 0;
   query = async (sql: string, params: unknown[] = []) => {
     try {
+      if (this.beforeQuery) await this.beforeQuery(sql);
       return { ok: true as const, data: { rows: this.sqlite.query(sql).values(...params) } };
     } catch (error) {
       return { ok: false as const, error: { code: "SQL", message: String(error) } };
@@ -70,11 +75,19 @@ class SqlService {
 
   batch = async (operations: Array<{ sql: string; params?: unknown[] }>) => {
     this.batchCalls++;
-    if (this.rejectWrites) {
-      return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
-    }
     try {
       if (this.beforeBatch) await this.beforeBatch();
+      if (this.rejectWrites) {
+        return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
+      }
+      if (this.partialStorageRejectAfter !== null) {
+        const count = this.partialStorageRejectAfter;
+        this.partialStorageRejectAfter = null;
+        for (const operation of operations.slice(0, count)) {
+          this.sqlite.query(operation.sql).run(...(operation.params ?? []));
+        }
+        return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
+      }
       this.sqlite.run("BEGIN");
       try {
         for (const operation of operations) {
@@ -112,6 +125,29 @@ function message(id: string, role: "user" | "assistant" = "user") {
 async function model(service: SqlService, id: string): Promise<string | null> {
   const rows = service.sqlite.query("SELECT model FROM threads WHERE id = ?").values(id);
   return rows.length ? String(rows[0]![0]) : null;
+}
+
+function blockSchemaProbe(service: SqlService) {
+  service.sqlite.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO settings VALUES ('theme', 'dark');
+  `);
+  let release!: () => void;
+  let signalEntered!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  service.rejectWrites = true;
+  service.beforeQuery = async (sql) => {
+    if (!/FROM sqlite_master/i.test(sql)) return;
+    service.beforeQuery = null;
+    signalEntered();
+    await held;
+  };
+  return { entered, release: () => release() };
 }
 
 describe("thread reads with partial schemas", () => {
@@ -198,6 +234,90 @@ describe("thread writes with partial schemas", () => {
       expect(result.canceled).toBe(1);
       expect(progress).toBe(2);
       expect(service.batchCalls).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      reportStorageWriteSucceeded();
+    }
+  });
+});
+
+describe("concurrent schema migration policy", () => {
+  test("a write joining a read-first migration keeps its own storage policy", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    const migration = blockSchemaProbe(service);
+    const cloud = tcw(service);
+    try {
+      const read = getSetting(cloud, "theme");
+      await migration.entered;
+      const write = importThread(cloud, {
+        id: "concurrent-read-first",
+        title: "Imported",
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        items: [],
+      });
+      const writeResult = write.then(() => null, (error: unknown) => error);
+      migration.release();
+
+      await expect(read).resolves.toBe("dark");
+      expect(await writeResult).toMatchObject({
+        code: "STORAGE_QUOTA_EXCEEDED",
+        retryable: false,
+        message: STORAGE_FULL_SAVE_MESSAGE,
+      });
+      expect(service.batchCalls).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      migration.release();
+      reportStorageWriteSucceeded();
+    }
+  });
+
+  test("a read joining an append-first migration can still read its existing table", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    const migration = blockSchemaProbe(service);
+    const cloud = tcw(service);
+    try {
+      const write = appendMessage(cloud, "concurrent-write-first", message("u1"));
+      await migration.entered;
+      const writeResult = write.then(() => null, (error: unknown) => error);
+      const read = getSetting(cloud, "theme");
+      migration.release();
+
+      expect(await writeResult).toMatchObject({
+        code: "STORAGE_QUOTA_EXCEEDED",
+        retryable: false,
+        message: STORAGE_FULL_SAVE_MESSAGE,
+      });
+      await expect(read).resolves.toBe("dark");
+      expect(service.batchCalls).toBe(1);
+      expect(isStorageReadOnly()).toBe(true);
+    } finally {
+      migration.release();
+      reportStorageWriteSucceeded();
+    }
+  });
+});
+
+describe("thread rewrite storage failures", () => {
+  test("does not retry a storage rejection after a partial guard-and-delete batch", async () => {
+    reportStorageWriteSucceeded();
+    const service = new SqlService();
+    const cloud = tcw(service);
+    await appendMessage(cloud, "rewrite-full", message("existing"));
+    service.batchCalls = 0;
+    service.partialStorageRejectAfter = 2;
+
+    try {
+      await expect(rewriteThreadMessages(cloud, "rewrite-full", async (items) => items)).rejects.toMatchObject({
+        code: "STORAGE_QUOTA_EXCEEDED",
+        retryable: false,
+        message: STORAGE_FULL_SAVE_MESSAGE,
+      });
+      expect(service.batchCalls).toBe(1);
+      expect(service.sqlite.query("SELECT COUNT(*) FROM messages WHERE thread_id = ?").values("rewrite-full")[0]![0]).toBe(0);
       expect(isStorageReadOnly()).toBe(true);
     } finally {
       reportStorageWriteSucceeded();
