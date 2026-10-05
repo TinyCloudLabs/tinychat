@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.4.0-beta.0
+
+### Minor Changes
+
+- d1544c2: Private cloud transcription relay: accept MP4/M4A, WebM and FLAC uploads, pass speaker diarization through (`diarize` create option, `diarization` capability, diarized results with `speaker_<n>` voices), and follow more of the PTX batch API (cancelled and `processing_failed` job outcomes, null result language, `transcript_expired`, `upload_capability_limit`, and a replayed key of a deleted job).
+
 ## 0.3.1
 
 ### Patch Changes
