@@ -4,8 +4,13 @@
 #   - the debug-only probe in ExoBridgeViewController logs `EXO_SMOKE {json}` with the bundled web app at
 #     capacitor://localhost, platform "ios", React mounted into #root, the VoiceNotes plugin visible to JS and
 #     its status() answering over the bridge with state "idle" and the 60-minute recording limit, and its
-#     readAudioChunk() refusing a missing recording with "not_found";
+#     readAudioChunk() refusing a missing recording with "not_found", and the web app's PWA service worker skipped;
+#   - the Debug-only Location plugin (TC-524 spike) is visible to JS and its status() reports the Debug Info.plist
+#     keys (usage strings and the location background mode);
 #   - the app is still running SMOKE_SETTLE seconds later, and left no crash report.
+# With location granted ("Always") and a simulated position set, the app also runs a location capture probe
+# (EXO_LOCATION_SMOKE=1 in its environment) and logs `EXO_LOCATION_SMOKE {json}`; its results are reported in the
+# summary but do not fail the job (simulated location delivery is not a property of the app).
 # Always writes screenshot.png, console.log (the app's stdout/stderr: Capacitor's "⚡️" lines and the WebView
 # console), unified.log (os_log of the App process), any crash reports and summary.md to <out-dir>.
 #
@@ -64,6 +69,9 @@ xcrun simctl bootstatus "$udid" -b >/dev/null || { echo "::error::simulator $udi
 log "booted; installing $app"
 xcrun simctl install "$udid" "$app" || { echo "::error::install failed"; exit 1; }
 xcrun simctl privacy "$udid" grant microphone "$bundle_id" || fail "could not grant the microphone"
+# TC-524 location probe: "Always" and a simulated position (Apple Park). Informational; see the header.
+xcrun simctl privacy "$udid" grant location-always "$bundle_id" || log "could not grant location-always"
+xcrun simctl location "$udid" set 37.3349,-122.0090 || log "could not set a simulated location"
 
 reports="$HOME/Library/Logs/DiagnosticReports"
 marker="$out/.launched"
@@ -71,7 +79,7 @@ touch "$marker"
 
 # --console-pty gives the app a terminal, so its stdout is line-buffered and lands in console.log as it happens.
 log "launching $bundle_id"
-xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$out/console.log" 2>&1 &
+SIMCTL_CHILD_EXO_LOCATION_SMOKE=1 xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$out/console.log" 2>&1 &
 launcher=$!
 
 pid=""
@@ -98,8 +106,17 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   [ -n "$probe" ] && break
 done
 
+location_probe=""
 if [ -n "$probe" ]; then
   log "probe: $probe"
+  # The location probe captures for about 15 s after the main probe; give it up to 60 s.
+  location_deadline=$((SECONDS + 60))
+  while [ -z "$location_probe" ] && [ "$SECONDS" -lt "$location_deadline" ]; do
+    sleep 2
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then break; fi
+    location_probe=$(grep -a -m1 'EXO_LOCATION_SMOKE ' "$out/console.log" 2>/dev/null | sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r')
+  done
+  log "location probe: ${location_probe:-none}"
   log "letting it run ${settle_s}s more"
   sleep "$settle_s"
 elif [ "${#failures[@]}" -eq 0 ]; then
@@ -140,6 +157,21 @@ check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes p
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
 check '.voiceNotesStatus.maxDurationMs == 3600000' "VoiceNotes reports the 60-minute recording limit"
 check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
+check '.serviceWorkerDecision == "skip:capacitor" and .serviceWorkerRegistrations == 0' "the web app's PWA service worker is not registered in the shell"
+check '.locationAvailable == true and .locationStatus.platform == "ios"' "Location plugin (Debug-only TC-524 spike) registered and answering status()"
+check '.locationStatus.declared.foreground == true and .locationStatus.declared.background == true and .locationStatus.declared.backgroundExecution == true' \
+  "Debug Info.plist has the location usage strings and the location background mode"
+# Informational (never fails the job): the capture probe.
+note() { # note <jq filter> <description>
+  if [ -n "$location_probe" ] && jq -e "$1" >/dev/null 2>&1 <<<"$location_probe"; then
+    checks+=("- [x] (info) $2")
+  else
+    checks+=("- [ ] (info) $2")
+  fi
+}
+note '.before.permission == "background"' "location authorization is Always (granted by simctl)"
+note '.started.active == true' "Location.start() began a continuous capture"
+note '.pending.samples > 0' "the native queue recorded location samples"
 loads=$(grep -a -c 'Loading app at capacitor://localhost' "$out/console.log" || true)
 [ "${loads:-0}" -le 1 ] || fail "the web app was loaded $loads times (two bridges?)"
 
@@ -152,10 +184,17 @@ loads=$(grep -a -c 'Loading app at capacitor://localhost' "$out/console.log" || 
   echo
   echo "Probe: \`${probe:-none}\`"
   echo
+  # Health spike (TC-525), informational: what HealthKit says to this unsigned build.
+  if [ -n "$probe" ] && jq -e '.healthHeader == true' >/dev/null 2>&1 <<<"$probe"; then
+    echo "Health plugin (not gated): \`$(jq -c '.health // null' <<<"$probe")\`"
+    echo
+  fi
+  echo "Location probe: \`${location_probe:-none}\`"
+  echo
   echo "Capacitor log (\`console.log\`):"
   echo
   echo '```'
-  grep -a -E '⚡️|EXO_SMOKE|STARTUP JS ERROR' "$out/console.log" | tr -d '\r' | head -40
+  grep -a -E '⚡️|EXO_SMOKE|EXO_LOCATION|STARTUP JS ERROR' "$out/console.log" | tr -d '\r' | head -60
   echo '```'
   if [ "${#failures[@]}" -gt 0 ]; then
     echo

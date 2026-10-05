@@ -97,6 +97,7 @@ function meetingCandidate(): MeetingCandidate {
 async function drainAdapter(
   deps: AdapterDeps,
   msgId = "msg-test",
+  history: Parameters<ReturnType<typeof createChatModelAdapter>["run"]>[0]["messages"] = [],
 ): Promise<{ chunks: string[]; calledUrl: string }> {
   const adapter = createChatModelAdapter(deps);
   const chunks: string[] = [];
@@ -109,7 +110,7 @@ async function drainAdapter(
   }) as typeof fetch;
 
   for await (const frame of adapter.run({
-    messages: [{ id: "user-turn", role: "user", content: [{ type: "text", text: "hi" }] }] as Parameters<typeof adapter.run>[0]["messages"],
+    messages: [...history, { id: "user-turn", role: "user", content: [{ type: "text", text: "hi" }] }] as Parameters<typeof adapter.run>[0]["messages"],
     abortSignal: new AbortController().signal,
     context: {},
     unstable_assistantMessageId: msgId,
@@ -297,7 +298,12 @@ describe("turn binding across awaited work", () => {
       deps.summarize = async () => { throw new Error("unexpected summary"); };
       const bodies: Array<Record<string, unknown>> = [];
       globalThis.fetch = (async (url, init) => { bodies.push(JSON.parse(init!.body as string)); return sseResponse(String(url)); }) as typeof fetch;
-      const running = drainAdapter(deps, `delayed-${agent}`);
+      // A prior exchange: a thread's first turn has no checkpoint to read.
+      const prior = [
+        { id: "prior-user", role: "user", content: [{ type: "text", text: "earlier" }] },
+        { id: "prior-assistant", role: "assistant", content: [{ type: "text", text: "earlier reply" }] },
+      ] as never;
+      const running = drainAdapter(deps, `delayed-${agent}`, prior);
       await enteredGate;
       deps.agentEnabledRef.current = !agent;
       release();

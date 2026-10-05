@@ -54,6 +54,10 @@
       </array>
     </dict>
 	</dict>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Exo reads the steps, sleep and heart rate you allow and saves a daily summary to your own TinyCloud space. It never uses health data for advertising.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Exo's development preview can add sample steps, sleep and heart rate to Health for testing. Exo never writes health data otherwise.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Exo records voice notes you start, and saves them to your TinyCloud space.</string>
 	<key>UIBackgroundModes</key>

@@ -7,6 +7,10 @@ on:
       - "mobile/**"
       - "frontend/src/lib/voiceNotes/**"
       - "frontend/src/chat/VoiceNotesSection.tsx"
+      - "frontend/src/lib/health/**"
+      - "frontend/src/chat/HealthSpikeSection.tsx"
+      - "frontend/src/lib/location/**"
+      - "frontend/src/chat/LocationSpikeSection.tsx"
       - ".github/workflows/mobile.yml"
       - ".github/workflows/ios-build.yml"
       - ".github/workflows/ios-testflight.yml"
@@ -122,6 +126,7 @@ jobs:
       # Boots a simulator, installs and launches the app with the mic granted, and fails unless it stays up with
       # the bundled web app mounted and the VoiceNotes plugin answering over the bridge.
       - name: Smoke test on an iOS Simulator
+        id: smoke
         timeout-minutes: 15
         run: mobile/scripts/ios-simulator-smoke.sh run mobile/ios/App/build/Build/Products/Debug-iphonesimulator/App.app "$RUNNER_TEMP/ios-smoke"
 
@@ -132,6 +137,45 @@ jobs:
           name: exo-ios-smoke-${{ github.sha }}
           if-no-files-found: warn
           path: ${{ runner.temp }}/ios-smoke
+
+      # Health spike (TC-525), never fails the job. With no Apple team there is no provisioning profile, so the question
+      # is whether an ad-hoc signed ("Sign to Run Locally") simulator build, which embeds the Debug configuration's
+      # HealthKit entitlements, can authorize HealthKit and read. Rebuilds the same Debug build signed, then
+      # mobile/scripts/ios-health-probe.sh drives the Health plugin and answers the Health sheet with AXe.
+      - name: "HealthKit spike: ad-hoc signed simulator build"
+        id: health-build
+        if: always() && steps.smoke.outcome != 'skipped'
+        continue-on-error: true
+        working-directory: mobile/ios/App
+        run: |
+          if ! xcodebuild -project App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= build >"$RUNNER_TEMP/health-build.log" 2>&1; then
+            grep -E 'error:' "$RUNNER_TEMP/health-build.log" | head -40
+            tail -40 "$RUNNER_TEMP/health-build.log"
+            exit 1
+          fi
+          grep -E 'Signing Identity|entitlements|xcent' "$RUNNER_TEMP/health-build.log" | sort -u | head -20
+
+      - name: "HealthKit spike: authorize, write samples, read 7 days"
+        if: always() && steps.health-build.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          brew install cameroncooke/axe/axe >/dev/null 2>&1 || echo "AXe unavailable: nothing will answer the Health sheet"
+          mobile/scripts/ios-health-probe.sh mobile/ios/App/build/Build/Products/Debug-iphonesimulator/App.app \
+            "$RUNNER_TEMP/ios-health" "$RUNNER_TEMP/ios-smoke/device.txt"
+
+      - name: "HealthKit spike: upload probe output"
+        if: always() && steps.health-build.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-ios-health-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ios-health
+            ${{ runner.temp }}/health-build.log
 
   # The TestFlight build (ios-build.yml) minus signing: Release archive of the production frontend, versions,
   # privacy manifest and bundle checks, then the sign job's dry run (no environment, no secrets): it downloads and

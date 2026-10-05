@@ -98,6 +98,14 @@ export class SelectionBlockedError extends Error {
 
 class SelectionAuthError extends Error {}
 
+/**
+ * Longest a finished reply waits for its user message's save before the turn
+ * fails with "Message save timed out." The save normally takes 3 SQL
+ * round-trips (~5–9s) behind any earlier write to the same thread, and every
+ * SQL call is capped at 15s, so 60s means the store is effectively down.
+ */
+export const APPEND_CONFIRM_TIMEOUT_MS = 60_000;
+
 export interface SelectionCoordinatorOptions {
   tcw: TinyCloudWeb;
   backendUrl: string;
@@ -210,10 +218,43 @@ export class ModelSelectionCoordinator implements ModelSelectionController {
       ? { status: "ready", model: origin.model } : { status: "cancelled" });
   }
 
-  async waitForAppend(origin: TurnOrigin): Promise<void> {
-    const result = await this.appends.get(origin.turnId)!.promise;
-    this.assertActive(origin);
-    if (result.status !== "ready") throw new SelectionBlockedError("Message not saved.");
+  /**
+   * Resolve once this turn's user message is durably saved. Not a pre-stream
+   * barrier: run() streams first and calls this before completing the turn, so
+   * the reply is never reported complete while its prompt is unsaved. Bounded
+   * by `timeoutMs` (each SQL call is already bounded in threadStore; this caps
+   * the queue wait plus the save's own round-trips). Rejects with the signal's
+   * reason when `signal` aborts first.
+   */
+  async waitForAppend(
+    origin: TurnOrigin,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<void> {
+    const pending = this.appends.get(origin.turnId);
+    if (!pending) throw new SelectionBlockedError("Message not saved.");
+    const { signal, timeoutMs = APPEND_CONFIRM_TIMEOUT_MS } = options;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      const result = await new Promise<ChoiceResult | "timeout">((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+        if (signal) {
+          onAbort = () => reject(signal.reason);
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+        void pending.promise.then(resolve);
+      });
+      this.assertActive(origin);
+      if (result === "timeout") throw new SelectionBlockedError("Message save timed out.");
+      if (result.status !== "ready") throw new SelectionBlockedError("Message not saved.");
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   constructor(private readonly options: SelectionCoordinatorOptions) {}

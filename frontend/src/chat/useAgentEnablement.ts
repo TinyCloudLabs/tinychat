@@ -3,11 +3,23 @@ import type React from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import {
-  clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
+  AgentSessionError, clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
   isActiveAgentBundle, mintAgentSessionViaFreshSignIn,
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
+
+/** Connect failure copy. Shows the server's stable error code, never its free-text detail. */
+export function connectErrorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === "NotAllowedError") return "Passkey sign was cancelled. Try connecting again.";
+  const code = error instanceof AgentSessionError ? error.code : null;
+  if (code === "delegation_expiry_too_long") {
+    return "The agent grant was rejected because it lasts longer than 30 days (delegation_expiry_too_long). Check that your device clock is correct, then try again.";
+  }
+  return code
+    ? `Failed to connect private agent access (${code}). Please try again.`
+    : "Failed to connect private agent access. Please try again.";
+}
 
 export type AgentCapability = "probing" | "unavailable" | "available" | "enabled";
 export interface PrivateAgentAccess { active: boolean; revision: string | null; generation: number }
@@ -129,9 +141,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
           signalChange();
           // Cancellation/mint failure leaves the old server bundle untouched.
           await refresh();
-          if (isCurrent()) update({ enableError: error instanceof DOMException && error.name === "NotAllowedError"
-            ? "Passkey sign was cancelled. Try connecting again."
-            : "Failed to connect private agent access. Please try again." });
+          if (isCurrent()) update({ enableError: connectErrorMessage(error) });
         }
       } finally { ceremony = null; update({ enabling: false }); }
     })();
@@ -142,7 +152,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     invalidate(); // Synchronous: neither old browser results nor old ceremonies can win.
     const currentOperation = operation;
     update({ capability: agentEnabledRef.current ? "available" : "unavailable", status: null,
-      revision: null, disconnecting: true, enableError: null });
+      revision: null, disconnecting: true, enableError: null, reconnectReason: null });
     signalChange();
     stopping = (async () => {
       try {
@@ -159,8 +169,18 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
     return stopping;
   };
   const onDelegationError = (code: AgentDelegationErrorCode) => {
+    // The backend reports missing access on every public-only turn. When this
+    // browser already knows access is off (never connected or disconnected),
+    // keep the Connect copy rather than announcing a reconnect.
+    const knownOff = state.capability === "available" && state.status === "none";
+    if (knownOff && (code === "delegation_required" || code === "delegation_unverified")) return;
     invalidate();
-    update({ capability: "available", status: code === "delegation_expired" ? "expired" : "stale", reconnectReason: code });
+    update({
+      capability: "available",
+      // A failed check is unknown, not stale: Settings shows "could not be verified".
+      status: code === "delegation_expired" ? "expired" : code === "delegation_unverified" ? null : "stale",
+      reconnectReason: code,
+    });
   };
   return {
     agentEnabledRef, activeThreadIdRef, privateAccessRef, refresh, onEnable, onDisconnect, onDelegationError,

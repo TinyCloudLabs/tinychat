@@ -19,6 +19,9 @@
 		E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */; };
 		E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */; };
 		E0A1C0DE0000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */; };
+		E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000007 /* HealthPlugin.swift */; };
+		E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000010 /* LocationRecorder.swift */; };
+		E0A1C0DE0000000000000013 /* LocationPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000012 /* LocationPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +39,10 @@
 		E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceNotesPlugin.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoBridgeViewController.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000007 /* HealthPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthPlugin.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000009 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000010 /* LocationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationRecorder.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000012 /* LocationPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationPlugin.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +82,10 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */,
 				E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */,
+				E0A1C0DE0000000000000007 /* HealthPlugin.swift */,
+				E0A1C0DE0000000000000010 /* LocationRecorder.swift */,
+				E0A1C0DE0000000000000012 /* LocationPlugin.swift */,
+				E0A1C0DE0000000000000009 /* App.entitlements */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -96,6 +107,7 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				E0A1C0DE000000000000000C /* Location spike Info.plist (Debug only) */,
 			);
 			buildRules = (
 			);
@@ -163,6 +175,31 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		E0A1C0DE000000000000000C /* Location spike Info.plist (Debug only) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/location-spike-info-plist.sh",
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Location spike Info.plist (Debug only)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/location-spike-info-plist.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		504EC3001FED79650016851F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -172,6 +209,9 @@
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */,
 				E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */,
+				E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */,
+				E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */,
+				E0A1C0DE0000000000000013 /* LocationPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,6 +351,7 @@
 			baseConfigurationReference = 958DCC722DB07C7200EA8C5F /* debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
@@ -323,7 +364,7 @@
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.tinycloud.exo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG EXO_HEALTH";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

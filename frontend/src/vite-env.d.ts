@@ -23,6 +23,18 @@ interface ImportMetaEnv {
    * never offered, whatever the backend says; the backend never supplies an upload origin.
    */
   readonly VITE_EXO_PTX_UPLOAD_ORIGIN?: string;
+  /**
+   * Exo mobile health spike (TC-525): "true" shows the development-only Health card in Connectors → Sources
+   * (when the app's native Health plugin exists, i.e. Android and iOS debug builds). Unset in every normal build.
+   */
+  readonly VITE_EXO_HEALTH_SPIKE?: string;
+  /**
+   * "true" shows the TC-524 location spike's dev card (Connectors → Sources) in the Exo app. Leave unset: it is a
+   * prototype, and only debug builds of the app have the location permissions it needs.
+   */
+  readonly VITE_EXO_LOCATION_SPIKE?: string;
+  /** "true" registers the PWA service worker under `vite dev` too (src/lib/pwa.ts); off by default. */
+  readonly VITE_PWA_DEV?: string;
 }
 
 interface ImportMeta {

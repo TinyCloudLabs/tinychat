@@ -241,7 +241,8 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // Separate the memory system block (kept caller-side, prepended first so it
       // lands at the least-context-rotted position) from the conversation
       // messages (which compaction may fold into a summary checkpoint).
-      const privateAccess = deps.privateAccessRef.current;
+      // Rebound only when this turn's own delegation error downgrades access.
+      let privateAccess = deps.privateAccessRef.current;
       const systemContent = privateAccess.active ? context?.system : undefined;
       const memoryBlock: ChatMessage | null =
         typeof systemContent === "string" && systemContent.length > 0
@@ -264,8 +265,11 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       let origin;
       try {
         if (abortSignal.aborted) throw new Error("Send cancelled.");
+        // Admission only: this captures the turn's model, thread and activation.
+        // The user message's SQL save (several ~2s round-trips, queued behind
+        // earlier writes to this thread) runs concurrently with the stream and
+        // is awaited before the turn completes (see the end of this run()).
         origin = await deps.selection.beginActiveTurn(turnId);
-        await deps.selection.waitForAppend(origin);
       } finally {
         abortSignal.removeEventListener("abort", cancel);
       }
@@ -374,8 +378,14 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
       // (a) Load + chain-validate the latest checkpoint (§C.8). Never crash on a
       // bad/stale checkpoint — an unreadable or invalid one just sends full
       // history and the reactive path re-compacts if needed.
+      //
+      // A valid checkpoint must cover a message in this payload, and the planner
+      // never folds the in-flight user message (MIN_TAIL), so a thread's first
+      // turn cannot have one: skip that SQL round-trip (every new chat's first
+      // message) rather than wait on a read that can only miss.
       let activeCheckpoint: CompactionCheckpoint | null = null;
-      if (canCompact && threadId) {
+      const mayHaveCheckpoint = messageIds.some((id) => id !== turnId);
+      if (canCompact && threadId && mayHaveCheckpoint) {
         try {
           const loaded = await deps.getCheckpoint(threadId);
           if (isCheckpointValid(loaded, messageIds)) activeCheckpoint = loaded;
@@ -473,6 +483,7 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         if (canvasState) publishRequestAttempt(threadId, "sent", sendPayload);
         if (agentEnabled && !meetingSystemBlock) {
           const roomId = origin.threadId;
+          const reportDelegationError = deps.onAgentDelegationError;
           try {
             deps.selection.assertActive(origin);
             for await (const text of streamAgentChat({
@@ -484,7 +495,15 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
               abortSignal,
               onUsage,
               onCompletionId,
-              onDelegationError: deps.onAgentDelegationError,
+              onDelegationError: reportDelegationError && ((code) => {
+                const before = deps.privateAccessRef.current;
+                reportDelegationError(code);
+                const after = deps.privateAccessRef.current;
+                // The server already answers this turn without private tools,
+                // so the downgrade it reports must not abort that public
+                // answer. Any other access change still ends the turn.
+                if (before === privateAccess && !after.active) privateAccess = after;
+              }),
               onToolActivity: unstable_assistantMessageId
                 ? (a) => setToolActivity(unstable_assistantMessageId, a)
                 : undefined,
@@ -563,6 +582,22 @@ export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
         if (completionId) {
           setPendingCompletion(unstable_assistantMessageId, { completionId, model: modelId });
         }
+      }
+
+      // The reply streamed without waiting for its user message's save. Finish
+      // the turn only once that save is durable, so a failed save still shows
+      // on this reply (as before, when it blocked the stream) and the composer
+      // stays locked until the turn is saved. Stop or a thread switch just ends
+      // the wait: the text is already complete, and history.append persists
+      // the reply only after the user message is saved. A status update (not a
+      // throw) keeps the streamed text, like the AgentStreamError path above.
+      try {
+        await deps.selection.waitForAppend(origin, { signal: abortSignal });
+      } catch (err) {
+        if (abortSignal.aborted) return;
+        const error = err instanceof Error ? err.message : "Message not saved.";
+        yield { status: { type: "incomplete", reason: "error", error } };
+        return;
       }
       } finally {
         deps.selection.setRunning(origin, false);

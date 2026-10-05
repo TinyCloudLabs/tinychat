@@ -7,7 +7,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        #if DEBUG
+        // TC-524 location spike (Debug only). iOS relaunches a terminated app in the background, with no scene and no
+        // WebView, to deliver a significant-change or visit event; the location manager must exist by the end of
+        // launch to receive it. Also picks up a capture that was on when the process died.
+        let relaunchedForLocation = launchOptions?[.location] != nil
+        if relaunchedForLocation || LocationRecorder.captureWasOn {
+            LocationRecorder.shared.resumeAfterLaunch(relaunchedForLocation: relaunchedForLocation)
+        }
+        #endif
         return true
     }
 

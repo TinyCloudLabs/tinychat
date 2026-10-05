@@ -296,10 +296,10 @@ jobs:
 
           const domain = process.env.PHALA_INGRESS_DOMAIN;
           const expectedCname = process.env.PHALA_GATEWAY_CNAME.replace(/\.$/, "");
-          // Older Phala custom domains use the underscore alias for the same gateway.
-          // Keep the advertised target for ingress; accept only this exact legacy alias.
-          const gatewayDomain = expectedCname.match(/^gateway\.(dstack-[a-z0-9-]+\.phala\.network)$/)?.[1];
-          const acceptedCnames = [expectedCname, ...(gatewayDomain ? [`_.${gatewayDomain}`] : [])];
+          // Only Phala's advertised target. The legacy `_.<gateway>` alias resolves for browsers but
+          // Android's resolver rejects a CNAME target whose label is `_`, which breaks the Exo app
+          // (TC-513/TC-606), so a record that drifted back to it must fail the deploy.
+          const acceptedCnames = [expectedCname];
           const expectedTxt = `${process.env.PHALA_APP_ID}:443`;
           const txtName = `_dstack-app-address.${domain}`;
 

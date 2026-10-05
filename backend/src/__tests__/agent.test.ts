@@ -34,10 +34,15 @@ function createApp(opts: {
   elizaStatus?: number;
   elizaBody?: unknown;
   elizaThrows?: boolean;
+  /** Never settles and ignores its signal (a wedged eliza-service). */
+  elizaHangs?: boolean;
 } = {}) {
   const calls: ElizaCall[] = [];
+  const signals: Array<AbortSignal | undefined> = [];
   const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    signals.push(init?.signal ?? undefined);
     if (opts.elizaThrows) throw new Error("connection refused");
+    if (opts.elizaHangs) return new Promise<Response>(() => {});
     calls.push({
       url: String(input),
       method: init?.method ?? "GET",
@@ -64,9 +69,10 @@ function createApp(opts: {
       },
       fetchImpl,
       deserializeDelegationSet: (serialized: string) => JSON.parse(serialized),
+      sessionStatusTimeoutMs: 50,
     }),
   );
-  return { app, calls };
+  return { app, calls, signals };
 }
 
 function validDelegation(overrides: Record<string, unknown> = {}) {
@@ -247,6 +253,26 @@ describe("agent delegation courier", () => {
     expect(calls).toHaveLength(1);
   });
 
+  // The browser mints 29-day grants so its clock can run ahead of this server
+  // without crossing the 30-day ceiling; a full 30 days fails on seconds of skew.
+  it("couriers a 29-day grant minted on a browser clock an hour fast", async () => {
+    const { app, calls } = createApp();
+    const browserNow = Date.now() + 60 * 60 * 1000;
+    const expiry = new Date(browserNow + 29 * DAY_MS);
+    const res = await postSession(app, v2Session({}, { overrides: { expiry: expiry.toISOString() }, jwtClaims: { exp: Math.floor(expiry.getTime() / 1_000) } }));
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects a full 30-day grant minted on a browser clock five seconds fast", async () => {
+    const { app, calls } = createApp();
+    const expiry = new Date(Date.now() + 5_000 + 30 * DAY_MS);
+    const res = await postSession(app, v2Session({}, { overrides: { expiry: expiry.toISOString() }, jwtClaims: { exp: Math.floor(expiry.getTime() / 1_000) } }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("delegation_expiry_too_long");
+    expect(calls).toHaveLength(0);
+  });
+
   it("couriers the SDK's CID-backed multi-resource transcript attenuation", async () => {
     const { app, calls } = createApp();
     const session = cidBackedV2Session();
@@ -345,6 +371,25 @@ describe("agent delegation courier", () => {
       `https://eliza.test/sessions/${encodeURIComponent(addressToEntityId(TEST_ADDRESS, TINYCHAT_AGENT_ID))}`,
     );
     expect(calls[0].method).toBe("GET");
+  });
+});
+
+describe("eliza request bounds", () => {
+  it("GET /session answers 502 when the status read does not settle in time", async () => {
+    const { app, signals } = createApp({ elizaHangs: true });
+    const started = Date.now();
+    const res = await request(app, "/api/agent/session", { method: "GET" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "eliza_unreachable" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it("leaves POST and DELETE /session unbounded (activation reaches the node; 666b5c8)", async () => {
+    const { app, signals } = createApp({ elizaBody: { status: "none", state: "disconnected", revision: "after" } });
+    await postSession(app, v2Session());
+    await request(app, "/api/agent/session", { method: "DELETE" });
+    expect(signals).toEqual([undefined, undefined]);
   });
 });
 

@@ -97,6 +97,28 @@ Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
   row says `transcription_outcome: "transcribed"` (`TRANSCRIBED_ONLY_SOURCES`):
   an untranscribed or silent note never wins "my latest meeting".
 
+## Health (spike, off by default)
+
+A HealthKit / Health Connect prototype (TC-525): a native `Health` plugin
+(`app/src/main/java/xyz/tinycloud/exo/health/`, `App/App/HealthPlugin.swift`), the JS contract
+`frontend/src/lib/health/nativeHealth.ts`, and a development-only card in Connectors → Sources that
+shows only in builds with `VITE_EXO_HEALTH_SPIKE=true`. Only Android debug builds declare health
+permissions (`app/src/debug/AndroidManifest.xml`), and only the iOS Debug configuration compiles the
+plugin and carries the HealthKit entitlements (`App/App.entitlements`). Release builds of both apps
+declare and ask for nothing. Findings, store requirements and the recommendation:
+[`docs/health-spike.md`](docs/health-spike.md).
+
+## Location (spike, debug builds only)
+
+TC-524 prototype: a native `Location` plugin (Android `location/`, iOS `LocationRecorder.swift` /
+`LocationPlugin.swift`) that records samples and OS-reported state into an on-device queue, drained into the
+user's space by `frontend/src/lib/location/`. Off by default and absent from release builds: the Android
+permissions and foreground service are in the **debug** manifest only, the iOS code is `#if DEBUG` with its
+Info.plist keys added to Debug builds by `App/location-spike-info-plist.sh`, and the developer card in Connectors
+→ Sources needs `VITE_EXO_LOCATION_SPIKE=true`. Release checks (`verify-android-release.sh`, `ios-build.yml`)
+refuse any location permission, key or code. Findings, store requirements and the recommendation:
+[`docs/location-spike.md`](docs/location-spike.md).
+
 ## Google connectors (OAuth)
 
 Google refuses OAuth inside an embedded WebView (`disallowed_useragent`), and
@@ -433,6 +455,8 @@ TinyCloud brand blue `#4473B9`:
 - iOS `AppIcon.appiconset/AppIcon-512@2x.png` (1024 px, opaque) and the
   `Splash.imageset` images used by `LaunchScreen.storyboard`.
 - The 512 px Play listing icon.
+- The web app's (PWA) manifest icons, `any` and `maskable` at 192 and 512 px,
+  and its 180 px `apple-touch-icon`, in `frontend/public/icons/`.
 
 **Exo has no designed mark yet.** The source is the TinyCloud cloud mark
 (`logo/tinycloud-icon.png` in TinyCloudLabs/docs; the desktop icons are
