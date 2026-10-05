@@ -3,7 +3,8 @@
 // network error handling, and the 200+active→enabled / 200+other→available paths.
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { createAgentAccessController, probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
+import { connectErrorMessage, createAgentAccessController, probeAgentCapability, probeAgentSession } from "./useAgentEnablement.js";
+import { AgentOwnerMismatchError } from "../lib/agentDelegation.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -239,5 +240,12 @@ describe("turn admission reports", () => {
       expect(c.getSnapshot().enableError).not.toContain("free text");
       c.dispose();
     }
+  });
+});
+
+describe("connectErrorMessage", () => {
+  it("shows the wrong-key message as is", () => {
+    const message = "You picked a different OpenKey key (0xbbbb…bbbb) than the one you're signed in with (0xaaaa…aaaa). To connect the agent, choose 0xaaaa…aaaa in OpenKey.";
+    expect(connectErrorMessage(new AgentOwnerMismatchError(message))).toBe(message);
   });
 });

@@ -3,7 +3,7 @@ import type React from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import {
-  AgentSessionError, clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
+  AgentOwnerMismatchError, AgentSessionError, clearAgentSessionCache, disconnectAgentSession, ensureAgentSession,
   isActiveAgentBundle, mintAgentSessionViaFreshSignIn,
   type AgentSessionStatus, type AgentSessionEnvelope, type AgentSessionSnapshot,
 } from "../lib/agentDelegation";
@@ -12,6 +12,7 @@ import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 /** Connect failure copy. Shows the server's stable error code, never its free-text detail. */
 export function connectErrorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "NotAllowedError") return "Passkey sign was cancelled. Try connecting again.";
+  if (error instanceof AgentOwnerMismatchError) return error.message;
   const code = error instanceof AgentSessionError ? error.code : null;
   if (code === "delegation_expiry_too_long") {
     return "The agent grant was rejected because it lasts longer than 30 days (delegation_expiry_too_long). Check that your device clock is correct, then try again.";
@@ -130,7 +131,7 @@ export function createAgentAccessController(opts: UseAgentEnablementOptions) {
             signalChange();
           },
           _mint: opts._mint ?? (() => mintAgentSessionViaFreshSignIn({ appName: opts.appName,
-            openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts,
+            openkeyHost: opts.openkeyHost, tinycloudHosts: opts.tinycloudHosts, sessionAddress: opts.tcw.address(),
             roomId: activeThreadIdRef.current ?? undefined })),
         });
         replacementPending = false;

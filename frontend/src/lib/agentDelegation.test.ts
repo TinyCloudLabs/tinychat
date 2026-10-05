@@ -6,10 +6,13 @@ import {
   AGENT_CONSENT_MANIFEST,
   AGENT_DID,
   AGENT_DELEGATION_EXPIRY_MS,
+  AgentOwnerMismatchError,
   AgentSessionError,
+  assertAgentOwner,
   clearAgentSessionCache,
   ensureAgentSession,
   mintAgentSessionDelegations,
+  mintAgentSessionViaFreshSignIn,
   TRANSCRIPT_PERMISSIONS,
 } from "./agentDelegation.js";
 
@@ -361,5 +364,53 @@ describe("access replacement contract", () => {
     globalThis.fetch = (async () => Response.json({ status: "none" })) as typeof fetch;
     await expect(ensureAgentSession({ tcw: fakeTcw(), backendUrl: "https://api.test", getToken: () => "token", force: true, _mint: async () => { mints++; return "grant"; } })).rejects.toThrow();
     expect(mints).toBe(0);
+  });
+});
+
+describe("Connect agent owner check (TC-706)", () => {
+  const SESSION = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+  const OTHER = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
+  const MISMATCH = "You picked a different OpenKey key (0xfB69…d359) than the one you're signed in with (0x5aAe…eAed). "
+    + "To connect the agent, choose 0x5aAe…eAed in OpenKey.";
+  const provider = { on() {}, removeListener() {}, request: async () => { throw new Error("no signing in tests"); } };
+  const fresh = (connected: string, sessionAddress: string | undefined = SESSION) => () => mintAgentSessionViaFreshSignIn({
+    appName: "test", openkeyHost: "https://openkey.test", sessionAddress,
+    _connect: async () => ({ address: connected, web3Provider: provider }),
+  });
+
+  it("accepts the signed-in key whatever its checksum casing", () => {
+    expect(() => assertAgentOwner(SESSION, SESSION)).not.toThrow();
+    expect(() => assertAgentOwner(SESSION, SESSION.toLowerCase())).not.toThrow();
+    expect(() => assertAgentOwner(SESSION.toLowerCase(), SESSION.toUpperCase().replace("0X", "0x"))).not.toThrow();
+  });
+
+  it("lets a matching key with different casing past the check into sign-in", async () => {
+    const error = await fresh(SESSION.toLowerCase())().catch((caught: unknown) => caught);
+    // Sign-in itself cannot run under bun test; it only matters that the owner check passed.
+    expect(error).not.toBeInstanceOf(AgentOwnerMismatchError);
+  });
+
+  it("refuses a different key with both addresses named", () => {
+    expect(() => assertAgentOwner(SESSION, OTHER)).toThrow(new AgentOwnerMismatchError(MISMATCH));
+  });
+
+  it("refuses when the session address is unknown", () => {
+    expect(() => assertAgentOwner(undefined, OTHER)).toThrow(AgentOwnerMismatchError);
+    expect(() => assertAgentOwner("", OTHER)).toThrow(AgentOwnerMismatchError);
+  });
+
+  it("refuses a different key before any delegation is minted or sent", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      return Response.json({ status: "none", revision: "instance:0" });
+    }) as typeof fetch;
+    const error = await ensureAgentSession({
+      tcw: fakeTcw(SESSION), backendUrl: "https://api.test", getToken: () => "tok", force: true,
+      _mint: fresh(OTHER),
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AgentOwnerMismatchError);
+    expect((error as Error).message).toBe(MISMATCH);
+    expect(methods).toEqual(["GET"]);
   });
 });
