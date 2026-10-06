@@ -140,7 +140,7 @@ export const shellScreens: HarnessScreen[] = [
     id: "shell-capture-scrolled",
     path: "/chat/capture",
     platform: "ios",
-    scrollTo: 'button[aria-label="Refresh transcriber meetings"]',
+    scrollTo: '[data-testid="capture-actions"]',
     render: () => <Shell />,
   },
   {

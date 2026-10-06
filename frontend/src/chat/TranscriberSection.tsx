@@ -1,18 +1,22 @@
-// The TRANSCRIBER card on Capture: paste a meeting link, a notetaker bot joins through the
-// TinyCloud Private Transcription API, and the speaker-attributed transcript comes back here.
-// Beside it: Upload audio (every platform) and Local recording (desktop only).
+// The meeting notetaker on Capture (TC-761): paste a meeting link, a TinyCloud
+// notetaker joins through the TinyCloud Private Transcription API, and the
+// speaker-attributed transcript comes back and is saved to the user's space
+// (TranscriberLibrarySyncProvider, at App level).
 //
-// `TranscriberView` is the whole rendered surface and a pure function of its props (testable with
-// react-dom/server, like MeetingsSection); `TranscriberSection` owns the client, the polling and
-// the form state. No vault, no key: a session token and the backend URL are the only inputs.
+// `TranscriberView` is the Meeting sheet's body and a pure function of its
+// props (testable with react-dom/server, like MeetingsSection);
+// `useMeetingBot` owns the client, the polling and the form state. Capture
+// calls it once and hands it to the sheet and to the In progress rows. No
+// vault, no key: a session token and the backend URL are the only inputs.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEvent } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { AudioLinesIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
+import { NOTETAKER_ROUTE, RouteLine } from "@/capture/sheetRoute";
 import { Button } from "@/components/ui/button";
-import { SectionCard } from "@/components/ui/section-card";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   createTranscriberClient,
   type TranscriberClient,
@@ -25,14 +29,6 @@ import {
 import { useTranscriberSavedState } from "./useTranscriberLibrarySync";
 import { createCalendarAutojoinClient, calendarOutcomeLabel, type CalendarAutojoinOutcome } from "@/lib/connectors/calendarAutojoinApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
-import {
-  isDesktopLocalTranscriptionAvailable,
-  LOCAL_KIND_STORAGE_KEY,
-  type TranscriberKind,
-} from "@/lib/localTranscriber";
-import { localStoragePendingUploadStore, uploadRunner } from "@/lib/audioUpload";
-import { LocalTranscriberPanel } from "./LocalTranscriber";
-import { AudioUploadPanel } from "./AudioUploadPanel";
 
 export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
   "queued",
@@ -44,6 +40,9 @@ export const ACTIVE_STATUSES: ReadonlySet<TranscriberMeetingStatus> = new Set([
 
 /** How often the list is re-read while at least one meeting is still moving. */
 export const POLL_INTERVAL_MS = 5000;
+
+/** How often calendar autojoin outcomes are re-read while the notetaker is on screen. */
+export const CALENDAR_INTERVAL_MS = 60_000;
 
 export type ListStatus = "idle" | "loading" | "ready" | "dark" | "unavailable" | "offline" | "signed-out";
 
@@ -65,17 +64,6 @@ export interface TranscriberViewProps {
   form: { url: string; botName: string; submitting: boolean; error: string | null };
   busyId: string | null;
   open: OpenTranscriptState | null;
-  /**
-   * Which transcription surface is selected. Omit it and the card renders exactly the bot form
-   * (no tcw: nothing can be saved). A surface is offered when its panel is given.
-   */
-  kind?: TranscriberKind;
-  localWorkflowActive?: boolean;
-  /** Desktop only: rendered in place of the bot form when `kind === "local"`. */
-  localPanel?: ReactNode;
-  /** Rendered in place of the bot form when `kind === "upload"`. */
-  uploadPanel?: ReactNode;
-  onKindChange?: (kind: TranscriberKind) => void;
   onUrlChange: (value: string) => void;
   onBotNameChange: (value: string) => void;
   onSubmit: () => void;
@@ -154,14 +142,9 @@ function formatClock(seconds: number): string {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
+// 48 px and 16 px text on touch (no iOS zoom on focus); compact with a mouse.
 const inputClass =
-  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60";
-
-const KIND_LABELS: Readonly<Record<TranscriberKind, string>> = {
-  "meeting-bot": "Meeting bot",
-  local: "Local recording",
-  upload: "Upload audio",
-};
+  "h-12 w-full rounded-lg border border-input bg-background px-3 text-body shadow-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 fine:h-10 fine:text-sm";
 
 export const TranscriberView: FC<TranscriberViewProps> = ({
   calendarOutcomes = [],
@@ -171,11 +154,6 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   form,
   busyId,
   open,
-  kind,
-  localWorkflowActive,
-  localPanel,
-  uploadPanel,
-  onKindChange,
   onUrlChange,
   onBotNameChange,
   onSubmit,
@@ -186,85 +164,43 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
 }) => {
   const dark = listStatus === "dark";
   const canSubmit = !dark && !form.submitting && form.url.trim().length > 0;
-  // Local and upload modes need no bot backend: the bot form/list hide behind the switch.
-  const panel = kind === "local" ? localPanel : kind === "upload" ? uploadPanel : undefined;
-  const kinds: TranscriberKind[] = [
-    "meeting-bot",
-    ...(localPanel !== undefined ? (["local"] as const) : []),
-    ...(uploadPanel !== undefined ? (["upload"] as const) : []),
-  ];
 
   return (
-    <SectionCard icon={AudioLinesIcon} title="Transcriber">
-      {kind !== undefined && onKindChange !== undefined && kinds.length > 1 && (
-        <div
-          role="tablist"
-          aria-label="Transcription source"
-          className="mb-3 inline-flex max-w-full flex-wrap rounded-md border border-border bg-muted/40 p-0.5 text-xs"
-        >
-          {kinds.map((k) => (
-            <button
-              key={k}
-              type="button"
-              role="tab"
-              aria-selected={kind === k}
-              disabled={kind === "local" && localWorkflowActive && k !== kind}
-              onClick={() => onKindChange(k)}
-              className={`rounded px-3 py-1.5 ${
-                kind === k
-                  ? "bg-background font-medium text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {KIND_LABELS[k]}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {panel !== undefined ? (
-        panel
-      ) : (
-      <>
-      <p className="text-xs text-muted-foreground">
-        Paste a meeting link and a TinyCloud notetaker joins the call. When the meeting ends the
-        speaker-attributed transcript is saved to your TinyCloud space and shows up in Meetings.
-        If the notetaker hears no one else for five minutes, it ends automatically. You can end it
-        immediately from the meeting row.
-      </p>
-
+    <div className="flex flex-col gap-6" data-testid="meeting-bot">
       {dark ? (
-        <p className="mt-3 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+        <p className="rounded-lg bg-surface-2 p-3 text-callout text-muted-foreground">
           Transcription isn&apos;t configured on this backend yet. Set{" "}
           <code className="font-mono">TRANSCRIPTION_API_URL</code> and{" "}
           <code className="font-mono">TRANSCRIPTION_API_KEY</code> to enable it.
         </p>
       ) : (
         <form
-          className="mt-3 flex flex-col gap-2"
+          className="flex flex-col gap-4"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
             onSubmit();
           }}
         >
-          <label htmlFor="transcriber-meeting-url" className="sr-only">
-            Meeting link
-          </label>
-          <input
-            id="transcriber-meeting-url"
-            type="url"
-            inputMode="url"
-            autoComplete="off"
-            spellCheck={false}
-            value={form.url}
-            disabled={form.submitting}
-            onChange={(e) => onUrlChange(e.target.value)}
-            placeholder="https://meet.google.com/abc-defg-hij"
-            className={inputClass}
-          />
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <label htmlFor="transcriber-bot-name" className="sr-only">
-              Bot name
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="transcriber-meeting-url" className="text-meta font-semibold">
+              Meeting link
+            </label>
+            <input
+              id="transcriber-meeting-url"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              value={form.url}
+              disabled={form.submitting}
+              onChange={(e) => onUrlChange(e.target.value)}
+              placeholder="https://meet.google.com/abc-defg-hij"
+              className={inputClass}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="transcriber-bot-name" className="text-meta font-semibold">
+              Notetaker name (optional)
             </label>
             <input
               id="transcriber-bot-name"
@@ -273,75 +209,76 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               value={form.botName}
               disabled={form.submitting}
               onChange={(e) => onBotNameChange(e.target.value)}
-              placeholder="Bot name (optional)"
-              className={`${inputClass} sm:max-w-[16rem]`}
+              placeholder="TinyCloud Private Notetaker"
+              className={inputClass}
             />
-            <Button
-              type="submit"
-              size="sm"
-              disabled={!canSubmit}
-              aria-label="Send bot to meeting"
-              className="h-9 gap-1.5"
-            >
-              {form.submitting && <Loader2Icon className="size-4 animate-spin" />}
-              <span>{form.submitting ? "Sending bot…" : "Send bot"}</span>
-            </Button>
+          </div>
+          <div className="flex flex-col gap-2">
+            <RouteLine nodes={NOTETAKER_ROUTE} />
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <p className="min-w-0 text-callout text-muted-foreground">The transcript is saved to your space and shows up in Library.</p>
+              <HowItWorksLink section="notetaker" />
+            </div>
           </div>
           {form.error !== null && (
-            <p role="alert" className="text-xs text-destructive">
+            <p role="alert" className="text-callout text-destructive">
               {form.error}
             </p>
           )}
+          <Button type="submit" size="lg" disabled={!canSubmit} aria-label="Send notetaker to meeting" className="w-full gap-1.5">
+            {form.submitting && <Loader2Icon className="size-4 animate-spin" />}
+            <span>{form.submitting ? "Sending notetaker…" : "Send notetaker"}</span>
+          </Button>
         </form>
       )}
 
       {!dark && (
-        <div className="mt-4">
+        <section aria-labelledby="transcriber-sessions" className="flex flex-col">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-xs font-medium text-muted-foreground">Meetings</h3>
+            <div className="flex items-center gap-0.5">
+              <h3 id="transcriber-sessions" className="text-headline">
+                Sessions
+              </h3>
+              <InfoTip label="About notetaker sessions">
+                A notetaker leaves after five minutes with no one else in the call. You can end it from its row.
+              </InfoTip>
+            </div>
             <Button
               type="button"
-              variant="outline"
-              size="sm"
+              variant="ghost"
+              size="icon"
               onClick={onRefresh}
               aria-label="Refresh transcriber meetings"
-              className="h-8 gap-1.5 px-2"
+              className="text-muted-foreground"
             >
               <RefreshCwIcon className={`size-4 ${listStatus === "loading" ? "animate-spin" : ""}`} />
-              <span>Refresh</span>
             </Button>
           </div>
 
           {(listStatus === "idle" || listStatus === "loading") && meetings.length === 0 && (
-            <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <p className="mt-1 flex items-center gap-2 text-callout text-muted-foreground">
               <Loader2Icon className="size-4 animate-spin" />
               Loading…
             </p>
           )}
           {listStatus === "unavailable" && (
-            <p className="mt-2 text-xs text-muted-foreground">
+            <p className="mt-1 text-callout text-muted-foreground">
               The transcriber is temporarily unavailable. Nothing is lost — try again in a moment.
             </p>
           )}
           {listStatus === "offline" && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              You appear to be offline, so this list may be incomplete.
-            </p>
+            <p className="mt-1 text-callout text-muted-foreground">You appear to be offline, so this list may be incomplete.</p>
           )}
           {listStatus === "signed-out" && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Your session expired. Sign in again to see your meetings.
-            </p>
+            <p className="mt-1 text-callout text-muted-foreground">Your session expired. Sign in again to see your meetings.</p>
           )}
           {listStatus === "ready" && meetings.length === 0 && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              No meetings yet. Paste a link above to send the notetaker to one.
-            </p>
+            <p className="mt-1 text-callout text-muted-foreground">No meetings yet. Paste a link above to send the notetaker to one.</p>
           )}
 
-          {calendarOutcomes.length > 0 && <div className="mt-3 rounded-md border border-border p-3">
-            <h3 className="text-xs font-medium">Calendar autojoin outcomes</h3>
-            <ul className="mt-2 space-y-2 text-xs">
+          {calendarOutcomes.length > 0 && <div className="mt-3 rounded-lg border border-border p-3">
+            <h4 className="text-meta font-semibold">Calendar autojoin outcomes</h4>
+            <ul className="mt-2 space-y-2 text-meta">
               {calendarOutcomes.map((outcome) => <li key={outcome.id}>
                 <span className="font-medium">{outcome.title || "Calendar meeting"}</span>
                 <span className="text-muted-foreground"> · {formatWhen(new Date(outcome.start).toISOString())}</span>
@@ -350,9 +287,9 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
             </ul>
           </div>}
           {meetings.length > 0 && (
-            <ul className="mt-2 flex flex-col divide-y divide-border">
+            <ul className="mt-1 flex flex-col divide-y divide-border">
               {meetings.map((row) => (
-                <li key={row.id} className="py-2">
+                <li key={row.id} className="py-2.5">
                   {"unavailable" in row ? (
                     <UnavailableRow id={row.id} busy={busyId === row.id} onRemove={onRemove} />
                   ) : (
@@ -370,11 +307,9 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               ))}
             </ul>
           )}
-        </div>
+        </section>
       )}
-      </>
-      )}
-    </SectionCard>
+    </div>
   );
 };
 
@@ -393,7 +328,6 @@ function UnavailableRow(props: { id: string; busy: boolean; onRemove: (id: strin
         size="sm"
         disabled={props.busy}
         onClick={() => props.onRemove(props.id)}
-        className="h-8 px-2"
       >
         Remove
       </Button>
@@ -422,11 +356,13 @@ function MeetingRow(props: {
             href={meeting.meeting_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="block truncate text-sm font-medium hover:underline"
+            className="flex min-h-11 items-center text-callout font-medium hover:underline fine:min-h-0"
           >
-            {meeting.metadata?.source === "google-calendar-autojoin" ? transcriberMeetingTitle(meeting) : meetingTitle(meeting.meeting_url)}
+            <span className="truncate">
+              {meeting.metadata?.source === "google-calendar-autojoin" ? transcriberMeetingTitle(meeting) : meetingTitle(meeting.meeting_url)}
+            </span>
           </a>
-          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-meta text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">
               <span
                 role="img"
@@ -457,10 +393,10 @@ function MeetingRow(props: {
               disabled={busy}
               onClick={() => props.onStop(meeting.id)}
               aria-label="End meeting and transcribe now"
-              className="h-8 gap-1.5 px-2"
+              className="gap-1.5"
             >
               {busy && <Loader2Icon className="size-4 animate-spin" />}
-              <span>{busy ? "Ending & transcribing…" : "End meeting & transcribe now"}</span>
+              <span>{busy ? "Ending…" : "End"}</span>
             </Button>
           )}
           {meeting.status === "completed" && (
@@ -470,7 +406,6 @@ function MeetingRow(props: {
               size="sm"
               aria-expanded={open !== null}
               onClick={() => props.onToggleTranscript(meeting.id)}
-              className="h-8 px-2"
             >
               {open !== null ? "Hide" : "Transcript"}
             </Button>
@@ -482,7 +417,7 @@ function MeetingRow(props: {
               size="sm"
               disabled={busy}
               onClick={() => props.onRemove(meeting.id)}
-              className="h-8 px-2 text-muted-foreground"
+              className="text-muted-foreground"
             >
               Remove
             </Button>
@@ -603,25 +538,6 @@ function TranscriptPanel({ open }: { open: OpenTranscriptState }) {
     </div>
   );
 }
-
-export interface TranscriberSectionProps {
-  backendUrl: string;
-  sessionStore: SessionStore;
-  /**
-   * The user's session client. When present, a completed meeting's transcript is copied into
-   * the user's own space (connector_meeting row + KV body, like Fireflies) as soon as it is seen.
-   */
-  tcw?: TinyCloudWeb;
-  /** Injectable for tests; defaults to the real client. */
-  client?: TranscriberClient;
-  /**
-   * On screen. Capture keeps this card mounted while hidden (a desktop local
-   * recording survives navigation), so the list and calendar reads run only
-   * while it shows, and each return re-reads them, as a fresh mount did.
-   */
-  active?: boolean;
-}
-
 function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
   switch (result.status) {
     case "ok":
@@ -663,13 +579,73 @@ export function describeFailure<T>(result: TranscriberResult<T>): string {
   }
 }
 
-export const TranscriberSection: FC<TranscriberSectionProps> = ({
-  backendUrl,
-  sessionStore,
-  tcw,
-  client,
-  active = true,
-}) => {
+export interface MeetingBotOptions {
+  backendUrl: string;
+  sessionStore: SessionStore;
+  /** Injectable for tests; defaults to the real client. */
+  client?: TranscriberClient;
+  /**
+   * On screen. Capture stays mounted while hidden, so the list and calendar
+   * reads, and the polling, run only while it shows; each return re-reads
+   * them, as a fresh mount did.
+   */
+  active: boolean;
+}
+
+/** The notetaker's state and actions: one per app, from Capture. */
+export interface MeetingBot {
+  listStatus: ListStatus;
+  meetings: TranscriberListRow[];
+  saved: Readonly<Record<string, SaveState>>;
+  form: TranscriberViewProps["form"];
+  busyId: string | null;
+  open: OpenTranscriptState | null;
+  calendarOutcomes: CalendarAutojoinOutcome[];
+  actions: {
+    setUrl: (value: string) => void;
+    setBotName: (value: string) => void;
+    submit: () => void;
+    refresh: () => void;
+    stop: (id: string) => void;
+    toggleTranscript: (id: string) => void;
+    remove: (id: string) => void;
+  };
+}
+
+/**
+ * Which timers run: none while off screen. The calendar refresh runs while on
+ * screen; the list poll only while a meeting is still moving (a settled list
+ * costs nothing) and the backend has a transcriber.
+ */
+export function meetingBotTimers(input: { active: boolean; anyActive: boolean; listStatus: ListStatus }): { calendar: boolean; poll: boolean } {
+  return { calendar: input.active, poll: input.active && input.anyActive && input.listStatus !== "dark" };
+}
+
+/** The meetings that are still moving (the In progress rows). */
+export function activeMeetings(meetings: readonly TranscriberListRow[]): TranscriberMeeting[] {
+  return meetings.filter((m): m is TranscriberMeeting => !("unavailable" in m) && ACTIVE_STATUSES.has(m.status));
+}
+
+export function meetingBotViewProps(bot: MeetingBot): TranscriberViewProps {
+  return {
+    calendarOutcomes: bot.calendarOutcomes,
+    listStatus: bot.listStatus,
+    meetings: bot.meetings,
+    saved: bot.saved,
+    form: bot.form,
+    busyId: bot.busyId,
+    open: bot.open,
+    onUrlChange: bot.actions.setUrl,
+    onBotNameChange: bot.actions.setBotName,
+    onSubmit: bot.actions.submit,
+    onRefresh: bot.actions.refresh,
+    onStop: bot.actions.stop,
+    onToggleTranscript: bot.actions.toggleTranscript,
+    onRemove: bot.actions.remove,
+  };
+}
+
+export function useMeetingBot({ backendUrl, sessionStore, client, active }: MeetingBotOptions): MeetingBot {
   const apiRef = useRef<TranscriberClient | null>(null);
   if (apiRef.current === null) {
     apiRef.current = client ?? createTranscriberClient(backendUrl, { sessionStore });
@@ -677,17 +653,6 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const api = apiRef.current;
   const calendar = useMemo(() => createCalendarAutojoinClient(backendUrl, sessionStore), [backendUrl, sessionStore]);
   const [calendarOutcomes, setCalendarOutcomes] = useState<CalendarAutojoinOutcome[]>([]);
-  useEffect(() => {
-    if (!active) return;
-    let current = true;
-    const refresh = async () => {
-      try { const status = await calendar.status(); if (current) setCalendarOutcomes(status.outcomes); }
-      catch { /* The connector displays status errors; manual recordings remain usable. */ }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 60_000);
-    return () => { current = false; window.clearInterval(timer); };
-  }, [calendar, active]);
 
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [meetings, setMeetings] = useState<TranscriberListRow[]>([]);
@@ -699,34 +664,20 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const [open, setOpen] = useState<OpenTranscriptState | null>(null);
   const saved = useTranscriberSavedState();
 
-  // Connectors only persists meetings with a signed-in space. Do not expose a
-  // recording or upload path that would discard its transcript when no tcw is present.
-  // Local recording is desktop only; Upload audio is offered on every platform.
-  const localAvailable = isDesktopLocalTranscriptionAvailable() && tcw !== undefined;
-  const uploadAvailable = tcw !== undefined;
-  const [kind, setKind] = useState<TranscriberKind>(() => {
-    // An upload still running (or this account's, interrupted by a reload) opens its own tab.
-    if (tcw !== undefined && (uploadRunner.snapshot() !== null || localStoragePendingUploadStore(tcw.did).read() !== null)) return "upload";
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem(LOCAL_KIND_STORAGE_KEY);
-    } catch {
-      // best-effort preference
-    }
-    if (stored === "local" && localAvailable) return "local";
-    if (stored === "upload" && uploadAvailable) return "upload";
-    return "meeting-bot";
-  });
-  const [localWorkflowActive, setLocalWorkflowActive] = useState(false);
-  const onKindChange = useCallback((next: TranscriberKind) => {
-    if (localWorkflowActive) return;
-    setKind(next);
-    try {
-      localStorage.setItem(LOCAL_KIND_STORAGE_KEY, next);
-    } catch {
-      // best-effort preference; ignore storage failures
-    }
-  }, [localWorkflowActive]);
+  const anyActive = activeMeetings(meetings).length > 0;
+  const timers = meetingBotTimers({ active, anyActive, listStatus });
+
+  useEffect(() => {
+    if (!timers.calendar) return;
+    let current = true;
+    const refresh = async () => {
+      try { const status = await calendar.status(); if (current) setCalendarOutcomes(status.outcomes); }
+      catch { /* The connector displays status errors; manual recordings remain usable. */ }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), CALENDAR_INTERVAL_MS);
+    return () => { current = false; window.clearInterval(timer); };
+  }, [calendar, timers.calendar]);
 
   const load = useCallback(async () => {
     setListStatus((s) => (s === "ready" ? s : "loading"));
@@ -739,16 +690,13 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     if (active) void load();
   }, [load, active]);
 
-  // Poll only while something is still moving and the card is on screen; a
-  // settled list costs nothing.
-  const anyActive = meetings.some((m) => !("unavailable" in m) && ACTIVE_STATUSES.has(m.status));
   useEffect(() => {
-    if (!active || !anyActive || listStatus === "dark") return;
+    if (!timers.poll) return;
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [active, anyActive, listStatus, load]);
+  }, [timers.poll, load]);
 
-  const onSubmit = useCallback(() => {
+  const submit = useCallback(() => {
     const trimmed = url.trim();
     if (trimmed.length === 0 || submitting) return;
     setSubmitting(true);
@@ -769,7 +717,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     })();
   }, [api, botName, submitting, url]);
 
-  const onStop = useCallback(
+  const stop = useCallback(
     (id: string) => {
       setBusyId(id);
       void (async () => {
@@ -786,7 +734,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     [api, load],
   );
 
-  const onRemove = useCallback(
+  const remove = useCallback(
     (id: string) => {
       setBusyId(id);
       void (async () => {
@@ -801,7 +749,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     [api],
   );
 
-  const onToggleTranscript = useCallback(
+  const toggleTranscript = useCallback(
     (id: string) => {
       if (open !== null && open.id === id) {
         setOpen(null);
@@ -824,42 +772,20 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
     [api, open],
   );
 
-  return (
-    <TranscriberView
-      calendarOutcomes={calendarOutcomes}
-      listStatus={listStatus}
-      meetings={meetings}
-      saved={saved}
-      form={{ url, botName, submitting, error: formError }}
-      busyId={busyId}
-      open={open}
-      {...(tcw
-        ? {
-            kind,
-            localWorkflowActive,
-            ...(localAvailable
-              ? {
-                  localPanel: (
-                    <LocalTranscriberPanel
-                      tcw={tcw}
-                      backendUrl={backendUrl}
-                      sessionStore={sessionStore}
-                      onWorkflowActiveChange={setLocalWorkflowActive}
-                    />
-                  ),
-                }
-              : {}),
-            uploadPanel: <AudioUploadPanel tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />,
-            onKindChange,
-          }
-        : {})}
-      onUrlChange={setUrl}
-      onBotNameChange={setBotName}
-      onSubmit={onSubmit}
-      onRefresh={() => void load()}
-      onStop={onStop}
-      onToggleTranscript={onToggleTranscript}
-      onRemove={onRemove}
-    />
+  const refresh = useCallback(() => void load(), [load]);
+  const actions = useMemo(
+    () => ({ setUrl, setBotName, submit, refresh, stop, toggleTranscript, remove }),
+    [submit, refresh, stop, toggleTranscript, remove],
   );
-};
+
+  return {
+    listStatus,
+    meetings,
+    saved,
+    form: { url, botName, submitting, error: formError },
+    busyId,
+    open,
+    calendarOutcomes,
+    actions,
+  };
+}

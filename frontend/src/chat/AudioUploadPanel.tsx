@@ -1,22 +1,29 @@
-// UPLOAD AUDIO panel — the Transcriber card's third surface, on every platform.
+// UPLOAD AUDIO: the body of Capture's Upload sheet, on every platform.
 //
 // `AudioUploadView` is a pure function of its props (asserted with
 // react-dom/server in tests); `AudioUploadPanel` checks which engines are
 // available, holds the picked file and the per-upload choices, and drives the
-// app-wide upload runner (lib/audioUpload.ts), which outlives this view.
+// app-wide upload runner (lib/audioUpload.ts), which outlives this view. An
+// interrupted upload resumes at launch (capture/upload/UploadResumer), not
+// here; this view shows it, or offers Continue when it waits for the user.
+//
+// The route control says where the file goes in one line, and How it works
+// has the rest. The first private cloud upload on a device says, in one
+// sentence, what Private cloud does before it sends anything.
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type FC } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type FC } from "react";
 import { useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Loader2Icon } from "lucide-react";
 
+import { continuePausedUpload, pausedUpload } from "@/capture/upload/pausedUpload";
+import { useUploadDeps } from "@/capture/upload/useUploadDeps";
+import { RouteLine, uploadRoute } from "@/capture/sheetRoute";
 import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
-  ASSEMBLYAI_TERMS_URL,
-  AssemblyAiError,
-  createAssemblyAiClient,
-  createHostedAssemblyAiClient,
   readAssemblyAiKey,
   readAssemblyAiKeyHint,
   readAssemblyAiKeyMode,
@@ -29,19 +36,14 @@ import {
   privateCloudContentType,
   readDefaultUploadEngine,
   UPLOAD_ACCEPT,
-  UPLOAD_ENGINE_LABELS,
   uploadRunner,
-  type UploadDeps,
   type UploadEngine,
   type UploadState,
 } from "@/lib/audioUpload";
 import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
-import { createLocalTranscriptSaver } from "@/lib/localTranscriber";
-import { scheduledSpace } from "@/lib/spaceQueue";
-import { resumeUnlessLocked } from "@/lib/uploadResume";
-import { buildPtxUploadOrigin, createPrivateCloudApi, createPrivateCloudJob, type PrivateCloudCapabilities } from "@/lib/privateCloud";
+import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
+import { PATHS } from "@/shell/routes";
 import { FilePicker } from "./FilePicker";
-import { PrivateCloudDisclosure } from "./PrivateCloudDisclosure";
 
 /** Whether an engine can take a new upload, and if not, why (one line). */
 export type EngineStatus =
@@ -51,6 +53,19 @@ export type EngineStatus =
 
 /** Private cloud's and TinyCloud's AssemblyAI account's size limit (C1); capabilities may lower it. */
 const PRIVATE_CLOUD_MAX_BYTES = 120_960_000;
+
+/** This device agreed to send uploads to private cloud (the one-sentence consent, asked once). */
+export const UPLOAD_PRIVATE_CONSENT_KEY = "exo.upload.privateCloudConsent";
+
+export const ROUTE_LABELS: Readonly<Record<UploadEngine, string>> = {
+  "private-cloud": "Private cloud",
+  assemblyai: "AssemblyAI",
+};
+
+const ROUTE_OPTIONS = [
+  { value: "private-cloud", label: ROUTE_LABELS["private-cloud"] },
+  { value: "assemblyai", label: ROUTE_LABELS.assemblyai },
+] as const;
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -81,52 +96,20 @@ export function fileProblem(
   return null;
 }
 
-const PrivateUploadDisclosure: FC = () => (
-  <PrivateCloudDisclosure
-    intro={
-      <>
-        This file (up to 2 hours) is uploaded over an encrypted connection to{" "}
-        <strong>TinyCloud Private Transcription</strong>, a dedicated confidential virtual machine on Phala Cloud. It
-        sends short speech segments to <strong>Tinfoil</strong> for speech-to-text.
-      </>
-    }
-    originalStays="A copy of the original file is kept in your TinyCloud space, next to its transcript."
-  />
-);
+/** The route in one line; How it works has the rest. Never more than the mechanism (C10). */
+export function routeText(engine: UploadEngine, assemblyAiMode: AssemblyAiKeyMode): string {
+  if (engine === "private-cloud") return "Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.";
+  return assemblyAiMode === "hosted"
+    ? "Sent through Exo's server to AssemblyAI under TinyCloud's account, then deleted there."
+    : "Sent from this device to AssemblyAI with your key, then deleted there.";
+}
 
-/** C10: the honest route for each AssemblyAI account; nothing "verified" or "end-to-end". */
-const AssemblyAiDisclosure: FC<{ mode: AssemblyAiKeyMode }> = ({ mode }) =>
-  mode === "hosted" ? (
-    <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
-      <p>
-        Your file goes to Exo&apos;s server (a confidential VM on Phala Cloud), which sends it to{" "}
-        <strong>AssemblyAI</strong> under TinyCloud&apos;s account and{" "}
-        <a href={ASSEMBLYAI_TERMS_URL} target="_blank" rel="noopener noreferrer" className="underline">
-          AssemblyAI&apos;s terms
-        </a>
-        . AssemblyAI is not part of TinyCloud&apos;s private transcription.
-      </p>
-      <p>Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space.</p>
-    </div>
-  ) : (
-    <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
-      <p>
-        This file goes from this device to <strong>AssemblyAI</strong> under your own API key and{" "}
-        <a href={ASSEMBLYAI_TERMS_URL} target="_blank" rel="noopener noreferrer" className="underline">
-          AssemblyAI&apos;s terms
-        </a>
-        . The file does not pass through TinyChat&apos;s server, and AssemblyAI is not part of TinyCloud&apos;s
-        private transcription.
-      </p>
-      <p>
-        After the transcript is saved to your TinyCloud space, Exo deletes the copy at AssemblyAI, including the
-        uploaded file. To do that, Exo&apos;s server forwards your key to AssemblyAI once; it never stores or logs it.
-      </p>
-    </div>
-  );
+/** The one-sentence consent before a device's first private cloud upload. */
+export const PRIVATE_CONSENT_TEXT =
+  "Your file goes over an encrypted connection to TinyCloud Private Transcription, which sends short speech segments to Tinfoil for speech-to-text.";
 
 function stageText(job: UploadState): string {
-  const engine = UPLOAD_ENGINE_LABELS[job.engine];
+  const engine = ROUTE_LABELS[job.engine];
   switch (job.stage) {
     case "preparing":
       return "Preparing the file…";
@@ -142,6 +125,20 @@ function stageText(job: UploadState): string {
   }
 }
 
+/** One status line for an upload, for its In progress row. */
+export function uploadStatusText(job: UploadState): string {
+  switch (job.stage) {
+    case "saved":
+      return "Saved to your space";
+    case "failed":
+      return "Didn't finish";
+    case "elsewhere":
+      return "Running in another window";
+    default:
+      return stageText(job);
+  }
+}
+
 function audioText(job: UploadState): string | null {
   const saved = job.stage === "saved";
   switch (job.audio.stage) {
@@ -150,7 +147,7 @@ function audioText(job: UploadState): string | null {
         ? "Storing the original audio in your space…"
         : `Storing the original audio in your space… ${job.audio.pct}%`;
     case "stored":
-      return "Original audio stored in your TinyCloud space.";
+      return saved ? null : "Original audio stored in your TinyCloud space.";
     case "quota":
       return saved
         ? "The original audio wasn't stored: your TinyCloud storage is full. The transcript was saved without it."
@@ -178,6 +175,8 @@ export interface AudioUploadViewProps {
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
   /** Whose AssemblyAI account uploads to AssemblyAI use (Settings → Transcription). */
   assemblyAiMode?: AssemblyAiKeyMode;
+  /** This device has agreed to private cloud uploads; until then the consent sentence shows. */
+  privateConsent?: boolean;
   /** The checkbox as the user left it. */
   diarize: boolean;
   /** Why speaker identification can't be used with this engine, or null. */
@@ -192,6 +191,7 @@ export interface AudioUploadViewProps {
   onDismiss: () => void;
   onOpenSettings: () => void;
   onRecheck: () => void;
+  onOpenLibrary?: () => void;
 }
 
 export const AudioUploadView: FC<AudioUploadViewProps> = ({
@@ -202,6 +202,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   engine,
   engines,
   assemblyAiMode = "hosted",
+  privateConsent = true,
   diarize,
   diarizeUnavailable,
   fileProblem: problem,
@@ -213,196 +214,193 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onDismiss,
   onOpenSettings,
   onRecheck,
+  onOpenLibrary,
 }) => {
   if (job === null && paused !== null) {
     return (
-      <div className="mt-3 flex flex-col gap-2" data-testid="upload-paused">
-        <p className="truncate text-sm font-medium" title={paused.fileName}>
+      <div className="flex flex-col gap-3" data-testid="upload-paused">
+        <p className="truncate text-headline" title={paused.fileName}>
           {paused.fileName}
-          <span className="font-normal text-muted-foreground"> · {UPLOAD_ENGINE_LABELS.assemblyai}</span>
         </p>
-        <p className="text-xs text-muted-foreground" role="status">
+        <p className="text-callout text-muted-foreground" role="status">
           Upload paused. This upload uses your own AssemblyAI key. Continue to unlock it and finish.
         </p>
-        <div>
-          <Button type="button" size="sm" onClick={onContinue} className="h-9">
-            Continue
-          </Button>
-        </div>
+        <Button type="button" size="lg" onClick={onContinue} className="w-full">
+          Continue
+        </Button>
       </div>
     );
   }
   if (job !== null && job.stage === "elsewhere") {
     return (
-      <div className="mt-3 flex flex-col gap-2">
-        <p className="text-xs text-muted-foreground" role="status">
+      <div className="flex flex-col gap-3">
+        <p className="text-callout text-muted-foreground" role="status">
           {job.fileName ? <>&ldquo;{job.fileName}&rdquo; is </> : "An upload is "}
-          being transcribed in another Exo tab or window. It continues there; this one can check again once it is
-          closed or finished.
+          being transcribed in another Exo tab or window. It continues there.
         </p>
-        <div>
-          <Button type="button" size="sm" variant="outline" onClick={onRetry} className="h-9">
-            Check again
-          </Button>
-        </div>
+        <Button type="button" variant="outline" onClick={onRetry} className="w-full">
+          Check again
+        </Button>
       </div>
     );
   }
   if (job !== null) {
     const busy = job.stage !== "saved" && job.stage !== "failed";
+    const saved = job.stage === "saved";
     const audio = audioText(job);
     return (
-      <div className="mt-3 flex flex-col gap-2">
-        <p className="truncate text-sm font-medium" title={job.fileName}>
-          {job.fileName}
-          <span className="font-normal text-muted-foreground"> · {UPLOAD_ENGINE_LABELS[job.engine]}</span>
-        </p>
+      <div className="flex flex-col gap-3" data-testid="upload-job" data-stage={job.stage}>
+        {saved ? (
+          <div className="flex flex-col gap-0.5">
+            <h3 className="text-headline" role="status">
+              Saved to your TinyCloud space
+            </h3>
+            <p className="truncate text-meta text-muted-foreground" title={job.fileName}>
+              {job.savedTitle ?? "Uploaded audio"} · {ROUTE_LABELS[job.engine]}
+            </p>
+          </div>
+        ) : (
+          <p className="truncate text-headline" title={job.fileName}>
+            {job.fileName}
+          </p>
+        )}
+        <RouteLine nodes={uploadRoute(job.engine, assemblyAiMode)} landed={saved} />
         {busy && (
-          <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
-            <Loader2Icon className="size-4 animate-spin" />
+          <p className="flex items-center gap-2 text-callout text-muted-foreground" role="status">
+            <Loader2Icon className="size-4 shrink-0 animate-spin" />
             {stageText(job)}
           </p>
         )}
-        {job.stage === "saved" && (
-          <p className="text-xs text-muted-foreground" role="status">
-            Saved to Library as {job.savedTitle !== null ? <>&ldquo;{job.savedTitle}&rdquo;</> : "Uploaded audio"}.
-          </p>
-        )}
-        {audio !== null && <p className="text-xs text-muted-foreground">{audio}</p>}
-        {job.stage === "saved" && job.cleanupPending && (
-          <p className="text-xs text-muted-foreground">
+        {audio !== null && <p className="text-meta text-muted-foreground">{audio}</p>}
+        {saved && job.cleanupPending && (
+          <p className="text-meta text-muted-foreground">
             {job.engine === "assemblyai"
               ? "AssemblyAI still has a copy of this transcript and file: deleting it didn't work yet."
               : "Private transcription still has a copy of this transcript: deleting it didn't work yet."}
           </p>
         )}
-        {job.stage === "saved" && job.cleanupPending && job.error !== null && (
-          <p role="alert" className="text-xs text-destructive">
+        {saved && job.cleanupPending && job.error !== null && (
+          <p role="alert" className="text-meta text-destructive">
             {job.error.message}
           </p>
         )}
         {job.stage === "failed" && job.error !== null && (
           <>
-            <p role="alert" className="text-xs text-destructive">
+            <p role="alert" className="text-callout text-destructive">
               {job.error.message}
             </p>
-            {job.error.reference !== null && (
-              <p className="text-xs text-muted-foreground">Reference: {job.error.reference}</p>
-            )}
+            {job.error.reference !== null && <p className="text-meta text-muted-foreground">Reference: {job.error.reference}</p>}
           </>
         )}
-        <div className="flex flex-wrap items-center gap-2">
-          {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
-            <Button type="button" size="sm" onClick={onRetry} className="h-9">
-              Retry
+        {!busy && (
+          <div className="flex flex-wrap justify-end gap-2">
+            {job.stage === "failed" && job.error?.retry === true && !job.cleanupPending && (
+              <Button type="button" onClick={onRetry}>
+                Retry
+              </Button>
+            )}
+            {job.cleanupPending && (
+              <Button type="button" onClick={onRetry}>
+                Retry deleting
+              </Button>
+            )}
+            {saved && onOpenLibrary && !job.cleanupPending && (
+              <Button type="button" variant="outline" onClick={onOpenLibrary}>
+                Open Library
+              </Button>
+            )}
+            <Button type="button" variant={saved && !job.cleanupPending ? "default" : "outline"} onClick={onDismiss}>
+              {saved ? "Upload another file" : "Discard"}
             </Button>
-          )}
-          {job.cleanupPending && !busy && (
-            <Button type="button" size="sm" onClick={onRetry} className="h-9">
-              Retry deleting
-            </Button>
-          )}
-          {!busy && (
-            <Button type="button" size="sm" variant="outline" onClick={onDismiss} className="h-9">
-              {job.stage === "saved" ? "Upload another file" : "Discard"}
-            </Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     );
   }
 
   const status = engines[engine];
   const canTranscribe = file !== null && problem === null && status.state === "available";
+  const asking = engine === "private-cloud" && status.state === "available" && !privateConsent;
   return (
-    <div className="mt-3 flex flex-col gap-3">
-      <p className="text-xs text-muted-foreground">
-        Transcribe a recording you already have. The transcript and a copy of the original file are saved to your
-        TinyCloud space and show up in Library.
-      </p>
-
-      <FilePicker
-        accept={c1Only(engine, assemblyAiMode) ? PRIVATE_CLOUD_ACCEPT : UPLOAD_ACCEPT}
-        label={file === null ? "Click or drop an audio file" : "Click or drop another file"}
-        hint={c1Only(engine, assemblyAiMode) ? "MP3, WAV, OGG, M4A/MP4, WebM or FLAC · up to 2 hours" : "Most audio and video files"}
-        onFile={onFile}
-      />
-      {file !== null && (
-        <p className="truncate text-sm" title={file.name}>
-          {file.name} <span className="text-xs text-muted-foreground">· {formatBytes(file.size)}</span>
-        </p>
-      )}
-
+    <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <div role="radiogroup" aria-label="Transcription engine" className="inline-flex w-fit rounded-md border p-0.5">
-          {(["private-cloud", "assemblyai"] as const).map((e) => (
-            <button
-              key={e}
-              type="button"
-              role="radio"
-              aria-checked={engine === e}
-              onClick={() => onEngineChange(e)}
-              className={`rounded px-3 py-1 text-xs ${engine === e ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
-            >
-              {UPLOAD_ENGINE_LABELS[e]}
-            </button>
-          ))}
-        </div>
-        {status.state === "checking" && (
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2Icon className="size-3.5 animate-spin" />
-            {engine === "private-cloud" ? "Checking private transcription…" : "Checking TinyCloud's AssemblyAI account…"}
+        <FilePicker
+          accept={c1Only(engine, assemblyAiMode) ? PRIVATE_CLOUD_ACCEPT : UPLOAD_ACCEPT}
+          label={file === null ? "Choose an audio file" : "Choose another file"}
+          hint={c1Only(engine, assemblyAiMode) ? "MP3, WAV, OGG, M4A/MP4, WebM or FLAC · up to 2 hours" : "Most audio and video files"}
+          onFile={onFile}
+        />
+        {file !== null && (
+          <p className="truncate text-callout" title={file.name}>
+            {file.name} <span className="text-meta text-muted-foreground">· {formatBytes(file.size)}</span>
           </p>
         )}
-        {status.state === "unavailable" && (
-          <p className="text-xs text-muted-foreground">
-            {status.reason}
-            {status.action === "settings" && (
-              <>
-                {" "}
-                <button type="button" onClick={onOpenSettings} className="underline">
-                  Open Settings
-                </button>
-              </>
-            )}
-            {status.action === "recheck" && (
-              <>
-                {" "}
-                <button type="button" onClick={onRecheck} className="underline">
-                  Check again
-                </button>
-              </>
-            )}
-          </p>
-        )}
-        {status.state === "available" && (engine === "private-cloud" ? <PrivateUploadDisclosure /> : <AssemblyAiDisclosure mode={assemblyAiMode} />)}
       </div>
 
+      <section aria-label="Transcription" className="flex flex-col gap-3">
+        <h3 className="text-headline">Transcription</h3>
+        <SegmentedControl<UploadEngine> aria-label="Transcription" value={engine} onValueChange={onEngineChange} options={ROUTE_OPTIONS} />
+        <RouteLine nodes={uploadRoute(engine, assemblyAiMode)} />
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {status.state === "checking" && (
+            <p className="flex items-center gap-2 text-callout text-muted-foreground">
+              <Loader2Icon className="size-3.5 animate-spin" />
+              {engine === "private-cloud" ? "Checking private transcription…" : "Checking TinyCloud's AssemblyAI account…"}
+            </p>
+          )}
+          {status.state === "unavailable" && (
+            <p className="min-w-0 text-callout text-muted-foreground">
+              {status.reason}
+              {status.action === "settings" && (
+                <>
+                  {" "}
+                  <button type="button" onClick={onOpenSettings} className="font-medium text-foreground underline underline-offset-4" data-inline-link>
+                    Open Settings
+                  </button>
+                </>
+              )}
+              {status.action === "recheck" && (
+                <>
+                  {" "}
+                  <button type="button" onClick={onRecheck} className="font-medium text-foreground underline underline-offset-4" data-inline-link>
+                    Check again
+                  </button>
+                </>
+              )}
+            </p>
+          )}
+          {status.state === "available" && (
+            <p className="min-w-0 text-callout text-muted-foreground" data-testid={asking ? "upload-private-consent" : "upload-route-line"}>
+              {asking ? PRIVATE_CONSENT_TEXT : routeText(engine, assemblyAiMode)}
+            </p>
+          )}
+          <HowItWorksLink section="uploads" />
+        </div>
+      </section>
+
       <div className="flex flex-col gap-1">
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex min-h-11 items-center gap-3 text-callout">
           <input
             type="checkbox"
             checked={diarize && diarizeUnavailable === null}
             disabled={diarizeUnavailable !== null}
             onChange={(e) => onDiarizeChange(e.target.checked)}
-            className="size-4"
+            className="size-4 accent-primary"
           />
           Identify speakers (diarization)
         </label>
-        {diarizeUnavailable !== null && <p className="text-xs text-muted-foreground">{diarizeUnavailable}</p>}
+        {diarizeUnavailable !== null && <p className="text-meta text-muted-foreground">{diarizeUnavailable}</p>}
       </div>
 
       {problem !== null && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-callout text-destructive">
           {problem}
         </p>
       )}
 
-      <div>
-        <Button type="button" size="sm" disabled={!canTranscribe} onClick={onTranscribe} className="h-9">
-          Transcribe
-        </Button>
-      </div>
+      <Button type="button" size="lg" disabled={!canTranscribe} onClick={onTranscribe} className="w-full" data-testid="upload-transcribe">
+        Transcribe
+      </Button>
     </div>
   );
 };
@@ -429,61 +427,34 @@ export function assemblyAiStatus(
       };
 }
 
+function readPrivateConsent(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(UPLOAD_PRIVATE_CONSENT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export interface AudioUploadPanelProps {
   tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
+  /** The sheet closes (after Open Library). */
+  onDone?: () => void;
 }
 
 /** Stateful owner: engine availability, the picked file and choices, and the app-wide upload runner. */
-export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, sessionStore }) => {
+export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, sessionStore, onDone }) => {
   const navigate = useNavigate();
-  const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot);
-  const origin = useMemo(() => buildPtxUploadOrigin(), []);
-  const api = useMemo(() => createPrivateCloudApi(backendUrl, { sessionStore }), [backendUrl, sessionStore]);
-  const hosted = useMemo(() => createHostedAssemblyAiClient({ backendUrl, sessionStore }), [backendUrl, sessionStore]);
-  // The upload's storage calls take turns with the Library's reads on this
-  // space (lib/spaceQueue.ts); the vault (secrets) is not storage and is not queued.
-  const space = scheduledSpace(tcw);
-  const save = useMemo(() => createLocalTranscriptSaver(space), [space]);
-
-  const deps = useMemo<UploadDeps>(
-    () => ({
-      tcw: space,
-      // Not gated on capabilities: a job started earlier must still resume; the relay itself refuses new ones.
-      privateCloud:
-        origin !== null
-          ? { api, origin, create: (request) => createPrivateCloudJob(backendUrl, { sessionStore }, request) }
-          : null,
-      // Exactly the account the job was started with: a job never moves between TinyCloud's and the user's.
-      assemblyAiClient: async (mode) => {
-        if (mode === "hosted") return hosted;
-        const read = await readAssemblyAiKey(tcw);
-        if (!read.ok) throw new Error(read.message);
-        if (read.data === null) throw new AssemblyAiError("invalid-key", "No AssemblyAI API key is saved. Add one in Settings → Transcription.");
-        return createAssemblyAiClient(read.data, { backend: { url: backendUrl, sessionStore } });
-      },
-      save,
-    }),
-    [tcw, space, origin, api, hosted, save, backendUrl, sessionStore],
-  );
-
-  // A job a reload interrupted picks up where it was, unless that would unlock
-  // the vault (an own-key AssemblyAI job with the vault locked): nothing unlocks
-  // on mount, so that one waits for Continue and the prompt follows the tap.
-  const [paused, setPaused] = useState<{ fileName: string } | null>(null);
-  useEffect(() => {
-    const stored = resumeUnlessLocked(uploadRunner, deps, isSecretsUnlocked(tcw));
-    setPaused(stored === null ? null : { fileName: stored.file.name });
-  }, [deps, tcw]);
-  const onContinue = useCallback(() => {
-    setPaused(null);
-    uploadRunner.resume(deps);
-  }, [deps]);
+  const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
+  const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  const { deps, origin, api, hosted } = useUploadDeps(tcw, backendUrl, sessionStore);
+  const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);
 
   const [file, setFile] = useState<File | null>(null);
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
   const [diarize, setDiarize] = useState(true);
+  const [privateConsent, setPrivateConsent] = useState(readPrivateConsent);
 
   // Private: this build needs a PTX origin, and the backend must answer 200 for this account.
   const [caps, setCaps] = useState<{ state: "checking" } | { state: "ok"; caps: PrivateCloudCapabilities } | { state: "absent" | "failed" }>(
@@ -560,9 +531,18 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
 
   const onTranscribe = useCallback(() => {
     if (file === null) return;
+    // Transcribe under the consent sentence is the agreement; it is asked once per device.
+    if (engine === "private-cloud" && !privateConsent) {
+      try {
+        localStorage.setItem(UPLOAD_PRIVATE_CONSENT_KEY, "1");
+      } catch {
+        // best effort: the sentence shows again next time
+      }
+      setPrivateConsent(true);
+    }
     uploadRunner.start(deps, { file, engine, diarize: diarize && diarizeUnavailable === null, assemblyAiMode });
     setFile(null);
-  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode]);
+  }, [deps, file, engine, diarize, diarizeUnavailable, assemblyAiMode, privateConsent]);
 
   return (
     <AudioUploadView
@@ -573,6 +553,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       engine={engine}
       engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}
       assemblyAiMode={assemblyAiMode}
+      privateConsent={privateConsent}
       diarize={diarize}
       diarizeUnavailable={diarizeUnavailable}
       fileProblem={fileProblem(file, engine, maxBytes, assemblyAiMode)}
@@ -584,6 +565,10 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       onDismiss={() => void uploadRunner.dismiss(deps)}
       onOpenSettings={() => navigate("/chat/settings")}
       onRecheck={() => setCapsRound((n) => n + 1)}
+      onOpenLibrary={() => {
+        onDone?.();
+        navigate(PATHS.library);
+      }}
     />
   );
 };

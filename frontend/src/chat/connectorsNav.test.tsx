@@ -100,7 +100,8 @@ describe("Connectors page composition under the new IA", () => {
     expect(page).not.toContain("VoiceNotesSection");
     expect(page).not.toContain("meetingsSlot");
     const capture = read("../capture/CaptureSurface.tsx");
-    expect(capture).toContain("<TranscriberSection");
+    expect(capture).toContain("<UploadSheet");
+    expect(capture).toContain("<MeetingSheet");
     expect(capture).toContain("<LibraryPage");
     expect(capture).toContain("<VoiceNotesSection");
   });

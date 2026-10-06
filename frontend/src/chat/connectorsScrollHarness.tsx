@@ -3,8 +3,8 @@
 // (/chat/connectors, /chat/capture, /chat/settings). Every backend call the
 // cards make fails or finds nothing (the harness server answers /api/* with
 // 401, and the empty-space stub answers TinyCloud), which leaves each card in
-// its signed-in-but-empty state: Capture's Transcriber shows its Meeting bot /
-// Upload audio tabs and the meeting-link form with its `sr-only` labels.
+// its signed-in-but-empty state: Capture shows its Upload and Meeting actions,
+// whose sheets the test opens and closes.
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 

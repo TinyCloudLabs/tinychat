@@ -112,12 +112,16 @@ describe("resumeUnlessLocked, with the real runner", () => {
   });
 });
 
-describe("the upload panel resumes only behind the guard", () => {
-  const panel = readFileSync(join(import.meta.dir, "../chat/AudioUploadPanel.tsx"), "utf8");
-  const guard = readFileSync(join(import.meta.dir, "uploadResume.ts"), "utf8");
+describe("uploads resume only behind the guard", () => {
+  const read = (path: string) => readFileSync(join(import.meta.dir, path), "utf8");
+  const resumer = read("../capture/upload/UploadResumer.tsx");
+  const paused = read("../capture/upload/pausedUpload.ts");
+  const deps = read("../capture/upload/useUploadDeps.ts");
+  const guard = read("uploadResume.ts");
 
-  test("the mount effect goes through resumeUnlessLocked with the vault's state", () => {
-    expect(panel).toContain("resumeUnlessLocked(uploadRunner, deps, isSecretsUnlocked(tcw))");
+  test("the launch resume goes through resumeUnlessLocked with the vault's state", () => {
+    expect(resumer).toContain("resumeOnLaunch(uploadRunner, deps, isSecretsUnlocked(tcw))");
+    expect(resumer).toContain("const stored = resumeUnlessLocked(runner, deps, secretsUnlocked);");
     // runner.resume( in the guard comes only after resumeNeedsUnlock( decided.
     const body = guard.slice(guard.indexOf("export function resumeUnlessLocked("));
     expect(body.indexOf("if (resumeNeedsUnlock(")).toBeGreaterThan(-1);
@@ -125,16 +129,28 @@ describe("the upload panel resumes only behind the guard", () => {
   });
 
   test("the only direct resume is Continue, from the user's tap", () => {
-    const direct = [...panel.matchAll(/uploadRunner\.resume\(/g)].map((m) => m.index!);
+    for (const path of [
+      "../capture/upload/UploadResumer.tsx",
+      "../capture/upload/UploadSheet.tsx",
+      "../capture/CaptureSurface.tsx",
+      "../capture/InProgressRows.tsx",
+      "../chat/AudioUploadPanel.tsx",
+    ]) {
+      expect(read(path)).not.toContain("uploadRunner.resume(");
+    }
+    const direct = [...paused.matchAll(/uploadRunner\.resume\(/g)].map((m) => m.index!);
     expect(direct).toHaveLength(1);
-    const handler = panel.slice(panel.lastIndexOf("const onContinue = useCallback(", direct[0]!), direct[0]!);
-    expect(handler).toContain("const onContinue = useCallback(");
-    expect(panel).toContain("onContinue={onContinue}");
+    const handler = paused.slice(paused.lastIndexOf("export function continuePausedUpload(", direct[0]!), direct[0]!);
+    expect(handler).toContain("export function continuePausedUpload(");
+    // Continue is wired to taps only: the sheet's button and the In progress row's.
+    expect(read("../chat/AudioUploadPanel.tsx")).toContain("const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);");
+    expect(read("../capture/CaptureSurface.tsx")).toContain("onContinue={() => continuePausedUpload(uploadDeps)}");
   });
 
   test("the upload's storage calls are queued with the Library's (lib/spaceQueue.ts)", () => {
-    expect(panel).toContain("const space = scheduledSpace(tcw);");
-    expect(panel).toContain("createLocalTranscriptSaver(space)");
-    expect(panel).toContain("tcw: space,");
+    expect(deps).toContain("const space = scheduledSpace(tcw);");
+    expect(deps).toContain("save: createLocalTranscriptSaver(space)");
+    expect(deps).toContain("tcw: space,");
+    expect(read("../chat/AudioUploadPanel.tsx")).toContain("useUploadDeps(tcw, backendUrl, sessionStore)");
   });
 });

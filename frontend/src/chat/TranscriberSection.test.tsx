@@ -1,5 +1,5 @@
-// The TRANSCRIBER card in Settings. `TranscriberView` is a pure function of its props, so every
-// product rule is asserted against real markup via react-dom/server (same call as
+// The meeting notetaker (Capture's Meeting sheet). `TranscriberView` is a pure function of its
+// props, so every product rule is asserted against real markup via react-dom/server (same call as
 // MeetingsSection.test.tsx: no DOM harness in this workspace). The client is asserted against
 // an injected fetch. Rules:
 //   1. dark (backend has no transcriber) says so and hides the form — never a blank card;
@@ -7,12 +7,13 @@
 //   3. active meetings can end and transcribe now, completed ones show Transcript, terminal ones show Remove;
 //   4. a transcript renders speaker-attributed segments;
 //   5. the client sends bearer + CSRF header, maps 202 to pending and list-404 to feature-dark;
-//   6. Settings mounts the section with the session and backend URL only.
+//   6. Capture owns the one useMeetingBot and hands it to the Meeting sheet and the In progress rows.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 
 import {
   TranscriberView,
@@ -74,13 +75,17 @@ function render(patch: Partial<TranscriberViewProps> = {}): string {
     onRemove: noop,
     ...patch,
   };
-  return renderToStaticMarkup(<TranscriberView {...props} />);
+  return renderToStaticMarkup(
+    <MemoryRouter>
+      <TranscriberView {...props} />
+    </MemoryRouter>,
+  );
 }
 
 describe("TranscriberView", () => {
   test("dark says the backend is not configured and hides the form", () => {
     const html = render({ listStatus: "dark" });
-    expect(html).toContain("Transcriber");
+    expect(html).toContain('data-testid="meeting-bot"');
     expect(html).toContain("isn&#x27;t configured");
     expect(html).toContain("TRANSCRIPTION_API_URL");
     expect(html).not.toContain("transcriber-meeting-url");
@@ -89,9 +94,18 @@ describe("TranscriberView", () => {
   test("ready + empty shows the form and an empty-state hint", () => {
     const html = render();
     expect(html).toContain('id="transcriber-meeting-url"');
-    expect(html).toContain("Send bot");
-    expect(html).toContain("hears no one else for five minutes");
-    expect(html).toContain("end it immediately");
+    expect(html).toContain("Send notetaker");
+    // Visible labels, and 16 px fields on touch (no iOS zoom on focus).
+    expect(html).toContain(">Meeting link</label>");
+    expect(html).toContain(">Notetaker name (optional)</label>");
+    expect(html).toMatch(/id="transcriber-meeting-url"[^>]*class="[^"]*\btext-body\b[^"]*fine:text-sm/);
+    // The route, one line, and How it works for the rest; the five-minute rule is a one-line hint.
+    expect(html).toContain('aria-label="Where your audio goes"');
+    expect(html).toContain("Meeting</span>");
+    expect(html).toContain("TinyCloud notetaker");
+    expect(html).toContain("shows up in Library");
+    expect(html).toContain('href="/chat/about#notetaker"');
+    expect(html).toContain('aria-label="About notetaker sessions"');
     expect(html).toContain("No meetings yet");
   });
 
@@ -116,18 +130,19 @@ describe("TranscriberView", () => {
   test("row actions follow the status: end and transcribe while active, Transcript when completed, Remove when settled", () => {
     const active = render({ meetings: [meeting({ status: "in_progress" })] });
     expect(active).toContain("In meeting");
-    expect(active).toContain("End meeting &amp; transcribe now");
+    expect(active).toContain('aria-label="End meeting and transcribe now"');
+    expect(active).toContain("<span>End</span>");
     expect(active).not.toContain(">Remove<");
     expect(active).not.toContain(">Transcript<");
 
     const processing = render({ meetings: [meeting({ status: "processing" })] });
     expect(processing).toContain("Transcribing");
-    expect(processing).not.toContain("End meeting &amp; transcribe now");
+    expect(processing).not.toContain("End meeting and transcribe now");
 
     const done = render({ meetings: [meeting({ status: "completed" })] });
     expect(done).toContain(">Transcript<");
     expect(done).toContain(">Remove<");
-    expect(done).not.toContain("End meeting &amp; transcribe now");
+    expect(done).not.toContain("End meeting and transcribe now");
 
     const failed = render({
       meetings: [
@@ -147,7 +162,7 @@ describe("TranscriberView", () => {
       meetings: [meeting({ status: "in_progress" })],
       busyId: "mtg_1",
     });
-    expect(html).toContain("Ending &amp; transcribing…");
+    expect(html).toContain("Ending…");
     expect(html).toContain("animate-spin");
     expect(html).toContain("disabled");
   });
@@ -226,7 +241,8 @@ describe("TranscriberView", () => {
     expect(render({ meetings: [meeting({ status: "completed" })], saved: { mtg_1: "error" } })).toContain(
       "Could not save to your space",
     );
-    expect(render({ meetings: [meeting({ status: "completed" })] })).not.toContain("your space");
+    const unsaved = render({ meetings: [meeting({ status: "completed" })] });
+    expect(unsaved.slice(unsaved.indexOf('id="transcriber-sessions"'))).not.toContain("your space");
   });
 
   test("a pending transcript is told as still being prepared", () => {
@@ -266,51 +282,18 @@ describe("TranscriberView", () => {
   });
 });
 
-describe("TranscriberView local mode", () => {
-  test("without a kind prop the card renders exactly the bot path (web)", () => {
+describe("TranscriberView in the Meeting sheet", () => {
+  test("the view is only the notetaker: no source tabs and no upload or local panels (they have their own places)", () => {
     const html = render();
+    expect(html).not.toContain('role="tablist"');
     expect(html).not.toContain("Meeting bot");
     expect(html).not.toContain("Local recording");
-    expect(html).not.toContain('role="tablist"');
+    expect(html).not.toContain("Upload audio");
     expect(html).toContain('id="transcriber-meeting-url"');
-  });
-
-  test("with kind props the segmented control renders and meeting-bot shows the bot form", () => {
-    const html = render({
-      kind: "meeting-bot",
-      localPanel: <div data-testid="local-panel">local panel</div>,
-      onKindChange: noop,
-    });
-    expect(html).toContain('role="tablist"');
-    expect(html).toContain("Meeting bot");
-    expect(html).toContain("Local recording");
-    expect(html).toContain('id="transcriber-meeting-url"');
-    expect(html).not.toContain("local panel");
-  });
-
-  test("kind local renders the local panel instead of the bot form and list", () => {
-    const html = render({
-      kind: "local",
-      localPanel: <div data-testid="local-panel">local panel</div>,
-      onKindChange: noop,
-      // even a dark/unreachable backend must not hide local capture
-      listStatus: "dark",
-    });
-    expect(html).toContain('role="tablist"');
-    expect(html).toContain("local panel");
-    expect(html).not.toContain('id="transcriber-meeting-url"');
-    expect(html).not.toContain("No meetings yet");
-  });
-
-  test("cannot switch away while a local recording workflow is active", () => {
-    const html = render({
-      kind: "local",
-      localWorkflowActive: true,
-      localPanel: <div>recording</div>,
-      onKindChange: noop,
-    });
-    expect(html).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
-    expect(html).toContain("recording");
+    const source = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
+    expect(source).not.toContain("uploadPanel");
+    expect(source).not.toContain("localPanel");
+    expect(source).not.toContain("onKindChange");
   });
 });
 
@@ -384,13 +367,11 @@ describe("LocalTranscriberView", () => {
     expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
     expect(localRetryAction("transcribe-failed")).toBe("transcribe");
     expect(isLocalWorkflowActive("transcribe-failed")).toBe(true);
-    const card = render({
-      kind: "local",
-      localWorkflowActive: isLocalWorkflowActive("transcribe-failed"),
-      localPanel: <div>awaiting transcription</div>,
-      onKindChange: noop,
-    });
-    expect(card).toMatch(/role="tab"[^>]*disabled=""[^>]*>Meeting bot/);
+    // The kept recording can't be left behind: the local recorder has its own
+    // card on Capture, mounted in a fixed place whatever else is open (there
+    // are no source tabs to switch away from any more).
+    const capture = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");
+    expect(capture).toContain("{localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}");
     // Discard belongs to the kept recording only.
     for (const state of ["stop-failed", "save-failed", "error"] as const) {
       expect(renderLocal({ state })).not.toContain("Discard recording");
@@ -546,13 +527,16 @@ describe("transcriber client", () => {
 });
 
 describe("Capture wiring", () => {
-  test("CaptureSurface mounts TranscriberSection with the session, backend URL and the user's tcw", () => {
+  test("CaptureSurface calls useMeetingBot once and passes it to the Meeting sheet and the In progress rows", () => {
     const src = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");
-    expect(src).toContain('import { TranscriberSection } from "@/chat/TranscriberSection";');
-    expect(src).toMatch(
-      /<TranscriberSection[\s\S]{0,180}backendUrl=\{backendUrl\}[\s\S]{0,180}sessionStore=\{sessionStore\}[\s\S]{0,180}tcw=\{tcw\}/,
-    );
-    // The section never touches connector secrets or a provider key: the backend proxy holds
+    expect(src.match(/useMeetingBot\(/g)).toHaveLength(1);
+    expect(src).toContain("const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });");
+    expect(src).toContain("<MeetingSheet open={sheet === \"meeting\"} onOpenChange={sheetChange(\"meeting\")} bot={bot} />");
+    expect(src).toContain("meetings={activeMeetings(bot.meetings)}");
+    expect(src).toContain("onEnd={bot.actions.stop}");
+    // The Meeting action is hidden when the backend has no notetaker.
+    expect(src).toContain('bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") }');
+    // The notetaker never touches connector secrets or a provider key: the backend proxy holds
     // the transcription key, and the user's space is written through the shared connector store.
     const section = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
     expect(section).not.toContain("connectorSecrets");
