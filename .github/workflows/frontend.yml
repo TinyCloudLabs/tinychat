@@ -8,8 +8,8 @@ name: Frontend
 # errors in backend/ and artifacts/.
 #
 # WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here.
-# The model-router browser suite is left out until its three failures on main
-# (since #107, stream before save) are resolved.
+# The model-router browser suite stays out until TC-768 resolves its three
+# failures on main (since #107, stream before save).
 
 on:
   pull_request:
@@ -47,6 +47,9 @@ jobs:
 
       - name: Build workspace packages
         run: bun run build:packages
+
+      - name: Build the frontend (tsc and vite)
+        run: bun run build:frontend
 
       - name: Frontend tests
         run: bun run --cwd frontend test

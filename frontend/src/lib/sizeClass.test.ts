@@ -66,6 +66,12 @@ function fakeWindow(width: number, height: number, options: { coarse: boolean })
       window.innerHeight = h;
       window.dispatchEvent(new Event("resize"));
     },
+    /** The device turns: new dimensions, then orientationchange (no resize). */
+    rotate(w: number, h: number) {
+      window.innerWidth = w;
+      window.innerHeight = h;
+      window.dispatchEvent(new Event("orientationchange"));
+    },
     focusField() {
       document.activeElement = field;
     },
@@ -117,6 +123,22 @@ describe("the keyboard latch", () => {
     tablet.focusField();
     tablet.resize(820, 1180);
     expect(tablet.published()).toEqual({ size: "medium", land: false });
+    stop();
+  });
+
+  test("an orientation change is never latched, even when the width it reports is unchanged", () => {
+    // Typing on a touch screen 900 wide: a height-only resize is the keyboard
+    // and holds the class, but the same change arriving as a rotation re-evaluates.
+    const device = fakeWindow(900, 1200, { coarse: true });
+    const stop = initSizeClass(device.window);
+    expect(device.published()).toEqual({ size: "medium", land: false });
+    device.focusField();
+    device.resize(900, 450);
+    expect(device.published()).toEqual({ size: "medium", land: false });
+    device.rotate(900, 450);
+    expect(device.published()).toEqual({ size: "compact", land: true });
+    device.rotate(900, 1200);
+    expect(device.published()).toEqual({ size: "medium", land: false });
     stop();
   });
 

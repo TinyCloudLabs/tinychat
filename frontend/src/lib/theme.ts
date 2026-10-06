@@ -5,9 +5,9 @@
 // with the same rules as this module (theme.test.ts runs both on the same
 // inputs). main.tsx calls initTheme() to keep it applied afterwards.
 import { useSyncExternalStore } from "react";
-import { SystemBars, SystemBarsStyle } from "@capacitor/core";
+import { SystemBars, SystemBarsStyle, type SystemBarsStyleOptions } from "@capacitor/core";
 
-import { appPlatform } from "./platform";
+import { appPlatform, type AppPlatform } from "./platform";
 
 export type ThemeChoice = "system" | "light" | "dark";
 export type Theme = "light" | "dark";
@@ -44,8 +44,17 @@ export function readThemeChoice(storage: Pick<Storage, "getItem"> | null = brows
   return stored === "light" || stored === "dark" ? stored : "system";
 }
 
+/**
+ * Stores the choice. Storage that is disabled or full keeps it from
+ * persisting, never from applying: the caller has applied it already, and it
+ * holds until the app is closed.
+ */
 export function writeThemeChoice(choice: ThemeChoice, storage: Pick<Storage, "setItem"> | null = browserStorage()): void {
-  storage?.setItem(THEME_CHOICE_KEY, choice);
+  try {
+    storage?.setItem(THEME_CHOICE_KEY, choice);
+  } catch (error) {
+    console.warn("Could not store the theme choice; it applies until the app is closed", error);
+  }
 }
 
 export function resolveTheme(choice: ThemeChoice, systemDark: boolean): Theme {
@@ -56,22 +65,37 @@ function systemPrefersDark(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(SYSTEM_DARK).matches;
 }
 
+/** The phone app's status and navigation bars: where the app runs, and how to style them. */
+export interface SystemBarsTarget {
+  platform: AppPlatform;
+  setStyle: (options: SystemBarsStyleOptions) => Promise<void>;
+}
+
+const capacitorSystemBars = (): SystemBarsTarget => ({
+  platform: appPlatform(),
+  setStyle: (options) => SystemBars.setStyle(options),
+});
+
 /**
  * Shows a theme: the `dark` class, the theme-color metas and, in the phone app,
  * the status and navigation bar content. index.html has one meta per system
  * scheme; a chosen theme sets both, System gives each its own scheme's colour.
  */
-export function applyTheme(choice: ThemeChoice, systemDark: boolean, doc: Document = document): Theme {
+export function applyTheme(
+  choice: ThemeChoice,
+  systemDark: boolean,
+  doc: Document = document,
+  systemBars: SystemBarsTarget = capacitorSystemBars(),
+): Theme {
   const theme = resolveTheme(choice, systemDark);
   doc.documentElement.classList.toggle("dark", theme === "dark");
   for (const meta of doc.querySelectorAll('meta[name="theme-color"]')) {
     const own: Theme = meta.getAttribute("media")?.includes("dark") ? "dark" : "light";
     meta.setAttribute("content", THEME_COLOR[choice === "system" ? own : theme]);
   }
-  const platform = appPlatform();
-  if (platform === "ios" || platform === "android") {
+  if (systemBars.platform === "ios" || systemBars.platform === "android") {
     // Dark = light bar content, for a dark page.
-    SystemBars.setStyle({ style: theme === "dark" ? SystemBarsStyle.Dark : SystemBarsStyle.Light }).catch((error: unknown) => {
+    systemBars.setStyle({ style: theme === "dark" ? SystemBarsStyle.Dark : SystemBarsStyle.Light }).catch((error: unknown) => {
       console.warn("Could not set the system bar style", error);
     });
   }

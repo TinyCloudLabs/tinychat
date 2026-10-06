@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { SystemBarsStyle, type SystemBarsStyleOptions } from "@capacitor/core";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -15,11 +16,13 @@ import {
   readThemeChoice,
   resolveTheme,
   setThemeChoice,
+  writeThemeChoice,
+  type SystemBarsTarget,
   type ThemeChoice,
 } from "./theme";
 
-/** localStorage with a record of every write. */
-function fakeStorage(initial: Record<string, string> = {}, options: { throws?: boolean } = {}) {
+/** localStorage with a record of every write. `throws`: disabled storage; `writeThrows`: full or read-only storage. */
+function fakeStorage(initial: Record<string, string> = {}, options: { throws?: boolean; writeThrows?: boolean } = {}) {
   const values = new Map(Object.entries(initial));
   const writes: Array<[string, string]> = [];
   return {
@@ -30,6 +33,7 @@ function fakeStorage(initial: Record<string, string> = {}, options: { throws?: b
     },
     setItem(key: string, value: string) {
       if (options.throws) throw new Error("storage disabled");
+      if (options.writeThrows) throw new Error("QuotaExceededError");
       writes.push([key, value]);
       values.set(key, value);
     },
@@ -193,6 +197,65 @@ describe("nothing is written on mount", () => {
     expect(browser.state().dark).toBe(false);
     expect(browser.state().metas).toEqual(shippedMetas.map((meta) => `${meta.media} ${meta.content}`));
     stop();
+  });
+
+  test("when storage refuses the write, the choice still applies for this session", () => {
+    const storage = fakeStorage({}, { writeThrows: true });
+    const browser = fakeBrowser({ systemDark: false, width: 390, height: 844 });
+    setGlobal("localStorage", storage);
+    setGlobal("window", browser.window);
+    setGlobal("document", browser.document);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    restoreGlobals.push(() => warn.mockRestore());
+    expect(() => writeThemeChoice("light", storage)).not.toThrow();
+
+    const stop = initTheme(browser.window as unknown as Window);
+    expect(() => setThemeChoice("dark")).not.toThrow();
+    expect(browser.state().dark).toBe(true);
+    // Held in memory: the device changing scheme does not take it back.
+    browser.setSystemDark(true);
+    browser.setSystemDark(false);
+    expect(browser.state().dark).toBe(true);
+    expect(storage.writes).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    stop();
+  });
+});
+
+describe("the phone app's system bars", () => {
+  const recorder = (platform: SystemBarsTarget["platform"]) => {
+    const styles: string[] = [];
+    const target: SystemBarsTarget = {
+      platform,
+      setStyle: async (options: SystemBarsStyleOptions) => {
+        styles.push(options.style);
+      },
+    };
+    return { styles, target };
+  };
+
+  test("follow the theme on iOS and Android: light bar content at Night, dark by Day", () => {
+    for (const platform of ["ios", "android"] as const) {
+      const bars = recorder(platform);
+      const doc = fakeBrowser({ systemDark: false, width: 390, height: 844 }).document as unknown as Document;
+      applyTheme("dark", false, doc, bars.target);
+      applyTheme("light", true, doc, bars.target);
+      applyTheme("system", true, doc, bars.target);
+      applyTheme("system", false, doc, bars.target);
+      expect(bars.styles).toEqual([SystemBarsStyle.Dark, SystemBarsStyle.Light, SystemBarsStyle.Dark, SystemBarsStyle.Light]);
+      // Capacitor's DARK is light content for a dark page.
+      expect(bars.styles).toEqual(["DARK", "LIGHT", "DARK", "LIGHT"]);
+    }
+  });
+
+  test("are left alone on the web and in the desktop app", () => {
+    for (const platform of ["web", "tauri"] as const) {
+      const bars = recorder(platform);
+      const doc = fakeBrowser({ systemDark: false, width: 390, height: 844 }).document as unknown as Document;
+      applyTheme("dark", false, doc, bars.target);
+      applyTheme("light", false, doc, bars.target);
+      expect(bars.styles).toEqual([]);
+    }
   });
 });
 

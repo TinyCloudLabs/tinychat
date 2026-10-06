@@ -20,6 +20,8 @@ const SheetOverlay = React.forwardRef<
     ref={ref}
     className={cn(
       "fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:duration-350 data-[state=closed]:duration-250 md:hidden",
+      // Reduced motion: the same fade, in 150ms.
+      "motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
       className,
     )}
     {...props}

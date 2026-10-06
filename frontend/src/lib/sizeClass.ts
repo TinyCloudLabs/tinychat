@@ -47,8 +47,9 @@ function publish(next: SizeClassState, root: Element) {
 /**
  * Starts tracking the window. The keyboard latch: on a touch screen, while a
  * text field has focus, a resize that keeps the width is the keyboard, so the
- * class holds. Rotation changes the width and always re-evaluates. Leaving the
- * field re-evaluates, once the keyboard has gone.
+ * class holds. Rotation is never latched: an orientation change always
+ * re-evaluates, even if the width it reports is unchanged. Leaving the field
+ * re-evaluates, once the keyboard has gone.
  */
 export function initSizeClass(win: Window = window): () => void {
   const doc = win.document;
@@ -76,11 +77,11 @@ export function initSizeClass(win: Window = window): () => void {
 
   evaluate();
   win.addEventListener("resize", onResize);
-  win.addEventListener("orientationchange", onResize);
+  win.addEventListener("orientationchange", evaluate);
   doc.addEventListener("focusout", onFocusOut);
   return () => {
     win.removeEventListener("resize", onResize);
-    win.removeEventListener("orientationchange", onResize);
+    win.removeEventListener("orientationchange", evaluate);
     doc.removeEventListener("focusout", onFocusOut);
   };
 }

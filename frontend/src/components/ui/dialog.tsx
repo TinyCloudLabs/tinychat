@@ -20,6 +20,8 @@ const DialogOverlay = React.forwardRef<
     ref={ref}
     className={cn(
       "fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:duration-250 data-[state=closed]:duration-150",
+      // Reduced motion: the same fade, in 150ms.
+      "motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
       className,
     )}
     {...props}
@@ -43,7 +45,9 @@ const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         "fixed left-1/2 top-1/2 z-50 grid max-h-[min(90dvh,calc(var(--tc-app-height,100dvh)-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-[calc(100%-1rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto bg-popover p-6 text-popover-foreground shadow-float outline-none rounded-lg",
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-[0.97] data-[state=closed]:zoom-out-[0.97] motion-reduce:data-[state=open]:zoom-in-100 motion-reduce:data-[state=closed]:zoom-out-100 data-[state=open]:duration-250 data-[state=open]:ease-smooth data-[state=closed]:duration-150 data-[state=closed]:ease-exit data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-1/2 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-1/2",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-[0.97] data-[state=closed]:zoom-out-[0.97] data-[state=open]:duration-250 data-[state=open]:ease-smooth data-[state=closed]:duration-150 data-[state=closed]:ease-exit data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-1/2 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-1/2",
+        // Reduced motion: a 150ms fade in place, no zoom.
+        "motion-reduce:data-[state=open]:zoom-in-100 motion-reduce:data-[state=closed]:zoom-out-100 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
         "focus-visible:ring-2 focus-visible:ring-ring/50",
         className,
       )}
