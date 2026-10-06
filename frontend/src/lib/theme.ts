@@ -22,7 +22,7 @@ export const THEME_CHOICE_KEY = "xyz.tinycloud.tinychat:theme-choice";
 export const LEGACY_THEME_KEY = "xyz.tinycloud.tinychat:theme";
 
 /** Each theme's --background (index.css), for the browser and PWA chrome: index.html's metas and the manifest. */
-export const THEME_COLOR: Record<Theme, string> = { light: "#F6F7F9", dark: "#060B18" };
+export const THEME_COLOR: Record<Theme, string> = { light: "#FFFFFF", dark: "#09090B" };
 
 const SYSTEM_DARK = "(prefers-color-scheme: dark)";
 

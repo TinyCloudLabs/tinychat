@@ -9,7 +9,7 @@ export function SectionCard(props: {
 }) {
   const Icon = props.icon;
   return (
-    <section className="rounded-lg border border-border bg-card p-4 dark:border-transparent">
+    <section className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center gap-2">
         <Icon className="size-4 text-muted-foreground" />
         <h2 className="text-sm font-semibold tracking-tight">{props.title}</h2>

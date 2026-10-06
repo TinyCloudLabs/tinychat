@@ -53,7 +53,7 @@ function Palette() {
       {SURFACES.map((surface) => {
         const bg = token(surface.name);
         return (
-          <div key={surface.name} className={cn("rounded-lg border border-border p-3 dark:border-transparent", surface.className)}>
+          <div key={surface.name} className={cn("rounded-lg border border-border p-3", surface.className)}>
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-callout font-semibold">{surface.label}</span>
               <span className="tnum text-meta text-muted-foreground">{toHex(bg)}</span>
@@ -242,9 +242,9 @@ function FocusRings() {
 function Surfaces() {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <div className="rounded-lg border border-border bg-card p-4 dark:border-transparent">
+      <div className="rounded-lg border border-border bg-card p-4">
         <div className="text-callout font-semibold">Card</div>
-        <p className="mt-1 text-meta text-muted-foreground">Tone only at Night; a hairline by Day.</p>
+        <p className="mt-1 text-meta text-muted-foreground">A hairline edge in both themes.</p>
       </div>
       <div className="rounded-lg bg-popover p-4 text-popover-foreground shadow-float">
         <div className="text-callout font-semibold">Popover</div>
