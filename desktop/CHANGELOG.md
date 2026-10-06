@@ -1,5 +1,11 @@
 # exo-desktop
 
+## 0.6.0-beta.5
+
+### Patch Changes
+
+- 56ff56b: Download Whisper models from Hugging Face. The old model host started refusing the Whisper Large Turbo download (403 Forbidden), so "Download model" failed for that model (TC-769).
+
 ## 0.6.0-beta.4
 
 No changes in this release.
