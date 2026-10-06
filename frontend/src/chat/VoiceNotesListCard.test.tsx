@@ -1,33 +1,24 @@
-// The VOICE NOTES card. `VoiceNotesView` is a pure function of its props, so the product rules
-// are asserted against real markup via react-dom/server (no DOM harness in this workspace):
-//   1. idle says the microphone is off and offers Record;
-//   2. recording shows the elapsed time and Stop;
-//   3. what the OS reports is told, never hidden: silenced and no-signal read as warnings;
-//   4. a load failure is not rendered as "no voice notes";
-//   5. notes still only on the phone are told, with a way to save them;
-//   6. outside the native app the section renders nothing;
-//   7. transcription is offered only when available to this build AND account, and only after the
+// The Voice notes list on Capture. `VoiceNotesListView` is a pure function of its
+// props, so the product rules are asserted against real markup via
+// react-dom/server (moved from the old Voice notes card's tests, TC-761):
+//   1. a load failure is not rendered as "no voice notes";
+//   2. outside the native app the card renders nothing;
+//   3. transcription is offered only when available to this build AND account, and only after the
 //      one-time private cloud consent; a hidden or still-checking engine shows nothing at all;
-//   8. each note shows its transcript, its progress, or its failure (with Retry when it can help);
-//   9. a recording near its length limit shows the limit, and one stopped there says so (TC-517).
-
+//   4. each note shows its transcript, its progress, or its failure (with Retry when it can help).
+// Notes still only on the phone, and a stop at the limit, are In progress rows (InProgressRows.test).
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import {
-  VoiceNotesSection,
-  VoiceNotesView,
-  formatDuration,
-  formatLimit,
-  limitNoticeText,
-  micStatusText,
-  transcriptionProps,
-  type VoiceNoteTranscriptionProps,
-  type VoiceNotesViewProps,
-} from "./VoiceNotesSection";
+import { StaticRecorderProvider } from "@/capture/recorder/RecorderProvider";
+import { transcriptionProps, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+import { aboutHref } from "@/lib/about";
 import type { VoiceNoteListItem } from "@/lib/voiceNotes/voiceNoteStore";
 import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { VoiceNotesListCard, VoiceNotesListView, type VoiceNotesListViewProps } from "./VoiceNotesListCard";
 
 const noop = () => {};
 
@@ -57,54 +48,17 @@ function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceN
   };
 }
 
-function render(patch: Partial<VoiceNotesViewProps> = {}): string {
+function render(patch: Partial<VoiceNotesListViewProps> = {}): string {
   return renderToStaticMarkup(
-    <VoiceNotesView
-      phase="idle"
-      mic={{ state: "idle", reason: null }}
-      elapsedMs={0}
-      level={0}
-      error={null}
-      notes={[]}
-      notesStatus="ready"
-      playing={null}
-      pendingCount={0}
-      retrying={false}
-      onRecord={noop}
-      onStop={noop}
-      onPlay={noop}
-      onRetry={noop}
-      {...patch}
-    />,
+    <MemoryRouter>
+      <VoiceNotesListView notes={[]} notesStatus="ready" playing={null} onPlay={noop} {...patch} />
+    </MemoryRouter>,
   );
 }
 
-describe("VoiceNotesView", () => {
-  test("idle offers Record and says the microphone is off", () => {
-    const html = render();
-    expect(html).toContain('data-testid="voice-note-record"');
-    expect(html).not.toContain('data-testid="voice-note-stop"');
-    expect(html).toContain("Not recording. The microphone is off.");
-    expect(html).toContain("No voice notes yet.");
-  });
-
-  test("recording shows elapsed time and Stop", () => {
-    const html = render({ phase: "recording", mic: { state: "recording", reason: null }, elapsedMs: 65_000 });
-    expect(html).toContain('data-testid="voice-note-stop"');
-    expect(html).toContain('data-mic-state="recording"');
-    expect(html).toContain("Recording 1:05");
-  });
-
-  test("an OS-silenced capture is a visible warning, not a normal recording", () => {
-    const html = render({ phase: "recording", mic: { state: "silenced", reason: "os_silenced" }, elapsedMs: 3_000 });
-    expect(html).toContain('data-mic-state="silenced"');
-    expect(html).toContain("the system is blocking the microphone");
-  });
-
-  test("zero input level while live says no sound is arriving", () => {
-    const html = render({ phase: "recording", mic: { state: "recording", reason: "no_signal" }, elapsedMs: 3_000 });
-    expect(html).toContain('data-mic-reason="no_signal"');
-    expect(html).toContain("no sound is reaching the microphone");
+describe("VoiceNotesListView", () => {
+  test("no notes yet, said plainly", () => {
+    expect(render()).toContain("No voice notes yet.");
   });
 
   test("a failed list load is told, never shown as an empty list", () => {
@@ -114,12 +68,10 @@ describe("VoiceNotesView", () => {
   });
 
   test("saved notes list with duration, and the open one gets a player", () => {
-    const html = render({
-      notes: [note()],
-      playing: { sourceId: "rec-1", src: "blob:capacitor://localhost/0f1e" },
-    });
+    const html = render({ notes: [note()], playing: { sourceId: "rec-1", src: "blob:capacitor://localhost/0f1e" } });
     expect(html).toContain('data-source-id="rec-1"');
     expect(html).toContain("0:12");
+    expect(html).toContain('aria-label="Play voice note"');
     expect(html).toContain('data-testid="voice-note-player"');
     expect(html).toContain('src="blob:capacitor://localhost/0f1e"');
   });
@@ -131,75 +83,24 @@ describe("VoiceNotesView", () => {
   });
 });
 
-describe("the recording length limit (TC-517)", () => {
-  const HOUR = 60 * 60 * 1000;
-
-  test("the card says how long a note can be", () => {
-    expect(render()).toContain("up to 60 minutes");
-  });
-
-  test("the limit shows only in the last five minutes", () => {
-    const recording = { state: "recording", reason: null } as const;
-    expect(micStatusText("recording", recording, 54 * 60_000, HOUR)).toBe("Recording 54:00");
-    expect(micStatusText("recording", recording, 55 * 60_000, HOUR)).toBe("Recording 55:00 of 60:00");
-    expect(micStatusText("recording", { state: "silenced", reason: "os_silenced" }, 59 * 60_000, HOUR)).toContain("Recording 59:00 of 60:00, but");
-    expect(render({ phase: "recording", mic: recording, elapsedMs: 58 * 60_000 + 5_000, maxDurationMs: HOUR })).toContain("Recording 58:05 of 60:00");
-  });
-
-  test("a note stopped at the limit says so once the card is idle again", () => {
-    expect(limitNoticeText(HOUR)).toBe("Stopped at the 60-minute limit.");
-    expect(formatLimit(15_000)).toBe("15-second");
-    expect(formatLimit(90_000)).toBe("90-second");
-    const idle = render({ limitNotice: limitNoticeText(HOUR) });
-    expect(idle).toContain('data-testid="voice-note-limit"');
-    expect(idle).toContain("Stopped at the 60-minute limit.");
-    // While it saves the status line says so, and the notice is already there.
-    expect(render({ phase: "saving", limitNotice: limitNoticeText(HOUR) })).toContain("Stopped at the 60-minute limit.");
-    // A long note's save shows how much is stored.
-    expect(render({ phase: "saving", savePercent: 40 })).toContain("Saving to your TinyCloud space… 40%");
-    // A new recording clears it (the controller resets it), and it never shows while recording.
-    expect(render({ phase: "recording", mic: { state: "recording", reason: null }, limitNotice: "x" })).not.toContain('data-testid="voice-note-limit"');
-  });
-});
-
-describe("VoiceNotesView pending saves", () => {
-  test("nothing pending shows no banner", () => {
-    expect(render()).not.toContain('data-testid="voice-note-pending"');
-  });
-
-  test("notes left on the phone are told, with Save now", () => {
-    const one = render({ pendingCount: 1 });
-    expect(one).toContain("1 note is on this phone but not yet in your");
-    expect(one).toContain('data-testid="voice-note-retry"');
-    expect(render({ pendingCount: 3 })).toContain("3 notes are on this phone");
-  });
-
-  test("Save now is disabled while a retry runs", () => {
-    expect(render({ pendingCount: 1, retrying: true })).toMatch(/<button[^>]*disabled[^>]*data-testid="voice-note-retry"/);
-  });
-});
-
-describe("formatDuration", () => {
-  test("minutes and zero-padded seconds", () => {
-    expect(formatDuration(0)).toBe("0:00");
-    expect(formatDuration(9_999)).toBe("0:09");
-    expect(formatDuration(600_000)).toBe("10:00");
-  });
-});
-
-describe("VoiceNotesSection", () => {
+describe("VoiceNotesListCard", () => {
   test("renders nothing outside the Exo mobile app", () => {
-    expect(renderToStaticMarkup(<VoiceNotesSection tcw={{} as TinyCloudWeb} />)).toBe("");
+    const html = renderToStaticMarkup(
+      <StaticRecorderProvider value={{ available: false }}>
+        <VoiceNotesListCard tcw={{} as TinyCloudWeb} backendUrl="http://127.0.0.1" sessionStore={{} as SessionStore} />
+      </StaticRecorderProvider>,
+    );
+    expect(html).toBe("");
   });
 });
 
-describe("VoiceNotesView transcription", () => {
+describe("VoiceNotesListView transcription", () => {
   const TRANSCRIBE_UI = [
     'data-testid="voice-note-transcribe"',
     'data-testid="voice-note-transcription-consent"',
-    'data-testid="voice-note-transcription-on"',
-    'data-testid="voice-note-transcription-unavailable"',
+    'data-testid="transcription-route"',
     "private cloud",
+    "Private cloud",
   ];
   const offersNothing = (html: string) => {
     for (const marker of TRANSCRIBE_UI) expect(html).not.toContain(marker);
@@ -212,20 +113,20 @@ describe("VoiceNotesView transcription", () => {
     // A failed check is told only to someone who already chose private cloud.
     offersNothing(render({ notes: [note()], transcription: transcription({ availability: "failed", consented: false }) }));
     const failed = render({ notes: [note()], transcription: transcription({ availability: "failed", consented: true }) });
-    expect(failed).toContain('data-testid="voice-note-transcription-unavailable"');
+    expect(failed).toContain("Private cloud is unavailable right now.");
+    expect(failed).toContain('data-testid="voice-note-transcription-recheck"');
     expect(failed).not.toContain('data-testid="voice-note-transcribe"');
   });
 
-  test("available but not consented: the disclosure and Use private cloud, no per-note Transcribe yet", () => {
+  test("available but not consented: the route control with Off chosen, and How it works; no disclosure, no per-note Transcribe yet", () => {
     const html = render({ notes: [note()], transcription: transcription({ consented: false }) });
-    expect(html).toContain('data-testid="voice-note-transcription-consent"');
-    expect(html).toContain("TinyCloud Private Transcription");
-    expect(html).toContain("Tinfoil");
-    expect(html).toContain("It never receives your audio.");
-    expect(html).toContain("notes up to 10 minutes");
-    expect(html).toContain("The voice note&#x27;s audio stays in your TinyCloud space");
+    expect(html).toContain(">Transcription</h3>");
+    expect(html).toContain('data-route="off"');
+    expect(html.match(/role="radio"/g)).toHaveLength(2);
+    expect(html).toContain(`href="${aboutHref("transcription")}"`);
+    // The full disclosure lives on How it works, not in the card.
+    expect(html).not.toContain("Tinfoil");
     expect(html).not.toMatch(/verified|attested|end-to-end/i);
-    expect(html).toContain('data-testid="voice-note-transcription-enable"');
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });
 
@@ -234,7 +135,8 @@ describe("VoiceNotesView transcription", () => {
       notes: [note(), note({ id: "row-2", sourceId: "rec-long", durationSecs: 900 })],
       transcription: transcription(),
     });
-    expect(html).toContain('data-testid="voice-note-transcription-on"');
+    expect(html).toContain('data-route="private-cloud"');
+    expect(html).toContain("Private cloud transcribes notes up to 10 minutes.");
     expect(html.match(/data-testid="voice-note-transcribe"/g)).toHaveLength(1);
     expect(html).toContain('data-testid="voice-note-too-long"');
     expect(html).toContain("Notes up to 10 minutes can be transcribed from the phone.");

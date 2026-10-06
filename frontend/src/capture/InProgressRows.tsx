@@ -1,9 +1,10 @@
 // In progress on Capture (TC-761): the upload the runner holds (running,
 // failed, saved until dismissed, or paused for the user's key), and the
-// notetaker sessions still moving. A row opens its sheet; End and Continue
-// sit beside the row, never inside it. The recorder's and Library's rows join
-// these later (PR4, PR6).
-import { FileAudioIcon, Loader2Icon, VideoIcon } from "lucide-react";
+// notetaker sessions still moving, and the voice notes still only on this
+// phone (with Save now) or stopped at the limit. A row opens its sheet; End,
+// Continue and Save now sit beside the row, never inside it. The Library's
+// rows join these later (PR6).
+import { FileAudioIcon, Loader2Icon, MicIcon, VideoIcon } from "lucide-react";
 
 import { uploadStatusText } from "@/chat/AudioUploadPanel";
 import { ACTIVE_STATUSES, meetingTitle, statusLabel } from "@/chat/TranscriberSection";
@@ -13,12 +14,25 @@ import type { TranscriberMeeting } from "@/lib/transcriberApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
 import type { PausedUpload } from "./upload/pausedUpload";
 
+/** The recorder's part of In progress (the phone app). */
+export interface VoiceInProgress {
+  /** Notes still only on this phone. */
+  pendingCount: number;
+  /** A save of them is running. */
+  saving: boolean;
+  lastError: string | null;
+  /** The last recording stopped itself at the limit. */
+  limitNotice: string | null;
+  onSaveNow: () => void;
+}
+
 export interface InProgressRowsViewProps {
   upload: UploadState | null;
   paused: PausedUpload | null;
   /** The notetaker sessions still moving. */
   meetings: readonly TranscriberMeeting[];
   busyId: string | null;
+  voice?: VoiceInProgress;
   onOpenUpload: () => void;
   onContinue: () => void;
   onOpenMeeting: () => void;
@@ -44,9 +58,11 @@ function RowText(props: { title: string; meta: string; spinning?: boolean }) {
 }
 
 export function InProgressRowsView(props: InProgressRowsViewProps) {
-  const { upload, paused, meetings } = props;
+  const { upload, paused, meetings, voice } = props;
   const showPaused = upload === null && paused !== null;
-  if (upload === null && !showPaused && meetings.length === 0) return null;
+  const voicePending = voice !== undefined && voice.pendingCount > 0;
+  const voiceLimit = voice?.limitNotice ?? null;
+  if (upload === null && !showPaused && meetings.length === 0 && !voicePending && !voiceLimit) return null;
   const uploadBusy = upload !== null && upload.stage !== "saved" && upload.stage !== "failed" && upload.stage !== "elsewhere";
   return (
     <section aria-labelledby="in-progress-title" data-testid="in-progress">
@@ -71,6 +87,34 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
             <Button type="button" size="sm" onClick={props.onContinue}>
               Continue
             </Button>
+          </li>
+        )}
+        {voice && voicePending && (
+          <li className={ROW} data-testid="voice-note-pending">
+            <span className="flex min-h-14 min-w-[12rem] flex-1 items-center gap-3 px-1">
+              <MicIcon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <RowText
+                title={voice.pendingCount === 1 ? "1 voice note on this phone" : `${voice.pendingCount} voice notes on this phone`}
+                meta={voice.lastError ?? "Not in your space yet"}
+                spinning={voice.saving}
+              />
+            </span>
+            <Button type="button" size="sm" onClick={voice.onSaveNow} disabled={voice.saving} data-testid="voice-note-retry">
+              Save now
+            </Button>
+          </li>
+        )}
+        {voiceLimit && (
+          <li className={ROW}>
+            <span className="flex min-h-14 min-w-[12rem] flex-1 items-center gap-3 px-1">
+              <MicIcon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="flex min-w-0 flex-col">
+                <span className="text-callout font-semibold">Voice note</span>
+                <span className="text-meta text-warning [overflow-wrap:anywhere]" data-testid="voice-note-limit">
+                  {voiceLimit}
+                </span>
+              </span>
+            </span>
           </li>
         )}
         {meetings.map((meeting) => {

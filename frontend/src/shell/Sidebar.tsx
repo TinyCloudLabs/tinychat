@@ -1,7 +1,7 @@
 // The sidebar, from 1024 px (TC-761): the three destinations as full rows on
 // the chrome surface, and Settings at the foot. The live recording card joins
 // the foot above Settings (PR4).
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon, type LucideIcon } from "lucide-react";
 
@@ -36,9 +36,12 @@ export function Sidebar({
   replace,
   onReselect,
   settings,
+  live = null,
 }: NavProps & {
   /** Settings is reachable (it is null in local validation). */
   settings: boolean;
+  /** The minimised recorder's card, above Settings. */
+  live?: ReactNode;
 }) {
   const { pathname } = useLocation();
   const onSettings = current === null;
@@ -72,8 +75,9 @@ export function Sidebar({
           );
         })}
       </ul>
+      <div className="mt-auto">{live}</div>
       {settings && (
-        <div className="mt-auto border-t border-border/70 pt-2">
+        <div className="mt-2 border-t border-border/70 pt-2">
           <Link
             to={PATHS.settings}
             aria-current={onSettings ? "page" : undefined}

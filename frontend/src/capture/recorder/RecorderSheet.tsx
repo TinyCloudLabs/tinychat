@@ -5,11 +5,14 @@
 // the recording; the island takes over.
 //
 // RecorderSheetView is a pure function of the recorder's value; RecorderSheet
-// puts it in a full-height sheet on a phone and a 560px dialog on wider screens.
+// puts it in a full-height bottom sheet on a phone and a 560px dialog on wider
+// screens.
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { AlertCircleIcon, CheckIcon, ChevronDownIcon, Loader2Icon, MicIcon, MicOffIcon, SquareIcon } from "lucide-react";
 
+import { BottomSheet } from "@/components/ui/bottom-sheet";
 import { Button } from "@/components/ui/button";
+import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 import { LevelTrace } from "./LevelTrace";
 import { useRecorder, type RecorderValue } from "./RecorderProvider";
@@ -169,39 +172,45 @@ export function RecorderSheetView({ recorder, onOpenNote, consentAsking }: Recor
   );
 }
 
-/** The recorder in its sheet (compact) or dialog (wide), open while `sheetOpen`. */
+/**
+ * The recorder in a full-height bottom sheet on a phone (drag down, the scrim,
+ * Escape or Android Back minimise it) and a 560px dialog on wider screens,
+ * open while `sheetOpen`. Closing it never stops the recording.
+ */
 export function RecorderSheet(props: { onOpenNote?: (id: string) => void; consentAsking?: boolean }) {
   const recorder = useRecorder();
+  const { size } = useSizeClass();
+  const onOpenChange = (open: boolean) => {
+    if (!open) recorder.minimiseSheet();
+  };
+  const view = <RecorderSheetView recorder={recorder} onOpenNote={props.onOpenNote} consentAsking={props.consentAsking} />;
+  if (size === "compact") {
+    return (
+      <BottomSheet open={recorder.sheetOpen} onOpenChange={onOpenChange} height="full" title="Voice note recorder" bare contentProps={{ "data-testid": "recorder-sheet" }}>
+        <div className="flex min-h-0 flex-1 flex-col">{view}</div>
+      </BottomSheet>
+    );
+  }
   return (
-    <DialogPrimitive.Root
-      open={recorder.sheetOpen}
-      onOpenChange={(open) => {
-        if (!open) recorder.minimiseSheet();
-      }}
-    >
+    <DialogPrimitive.Root open={recorder.sheetOpen} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:duration-350 data-[state=closed]:duration-250 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:duration-250 data-[state=closed]:duration-150 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
+          data-testid="recorder-sheet"
           // Focus the recorder itself, not its first control (a ring on Minimise reads as a selection).
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             (event.currentTarget as HTMLElement).focus();
           }}
           className={cn(
-            "fixed z-50 flex flex-col bg-card text-card-foreground shadow-float outline-none",
-            "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:duration-350 data-[state=open]:ease-drawer data-[state=closed]:duration-250 data-[state=closed]:ease-exit",
-            // Compact: a full-height sheet from the bottom.
-            "inset-x-0 bottom-0 top-[max(0.75rem,env(safe-area-inset-top))] rounded-t-sheet data-[state=open]:slide-in-from-bottom data-[state=closed]:slide-out-to-bottom",
-            // A phone on its side: the whole screen.
-            "land:top-0 land:rounded-none",
-            // Wide: a 560px dialog with the same composition.
-            "wide:inset-auto wide:left-1/2 wide:top-1/2 wide:h-[min(46rem,calc(100dvh-4rem))] wide:w-[min(35rem,calc(100vw-2rem))] wide:-translate-x-1/2 wide:-translate-y-1/2 wide:rounded-xl wide:data-[state=open]:fade-in-0 wide:data-[state=open]:zoom-in-[0.97] wide:data-[state=open]:slide-in-from-bottom-0",
-            "motion-reduce:data-[state=open]:slide-in-from-bottom-0 motion-reduce:data-[state=closed]:slide-out-to-bottom-0 motion-reduce:data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:fade-out-0 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
+            "fixed left-1/2 top-1/2 z-50 flex h-[min(46rem,calc(100dvh-4rem))] w-[min(35rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-card text-card-foreground shadow-float outline-none",
+            "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-[0.97] data-[state=closed]:zoom-out-[0.97] data-[state=open]:duration-250 data-[state=open]:ease-smooth data-[state=closed]:duration-150 data-[state=closed]:ease-exit",
+            "motion-reduce:data-[state=open]:zoom-in-100 motion-reduce:data-[state=closed]:zoom-out-100 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
           )}
         >
           <DialogPrimitive.Title className="sr-only">Voice note recorder</DialogPrimitive.Title>
-          <RecorderSheetView recorder={recorder} onOpenNote={props.onOpenNote} consentAsking={props.consentAsking} />
+          {view}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

@@ -69,6 +69,8 @@ export function islandShown(value: Pick<RecorderValue, "phase" | "outcome" | "sh
 
 export interface RecorderProviderProps {
   tcw: TinyCloudWeb;
+  /** False turns the recorder off for this session (local validation). */
+  enabled?: boolean;
   backendUrl?: string;
   sessionStore?: SessionStore;
   /** A recording landed in the space. */
@@ -76,8 +78,8 @@ export interface RecorderProviderProps {
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, backendUrl, sessionStore, onSaved, children }: RecorderProviderProps) {
-  const recorder = useVoiceNoteRecorder({ tcw, backendUrl, sessionStore, onSaved });
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, children }: RecorderProviderProps) {
+  const recorder = useVoiceNoteRecorder({ tcw, enabled, backendUrl, sessionStore, onSaved });
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [announcement, setAnnouncement] = useState("");

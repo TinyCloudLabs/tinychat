@@ -1,7 +1,7 @@
-// The voice-note recorder's controller: the Voice notes card's controller
-// (VoiceNotesSection.tsx) moved onto recorderReducer, without the notes list,
-// playback or the mount-time retry of pending saves (PendingVoiceNotesSaver
-// stays the only saver at startup). RecorderProvider calls it exactly once;
+// The voice-note recorder's controller: the old Voice notes card's controller
+// moved onto recorderReducer, without the notes list and playback (now
+// VoiceNotesListCard) or the mount-time retry of pending saves
+// (PendingVoiceNotesSaver stays the only saver at startup). RecorderProvider calls it exactly once;
 // every recorder view reads it through useRecorder().
 //
 // It owns the plugin's three listeners (micState, level, autoStopped), picks a
@@ -39,6 +39,8 @@ import {
 
 export interface VoiceNoteRecorderOptions {
   tcw: TinyCloudWeb;
+  /** False turns the recorder off for this session (local validation). Read once. */
+  enabled?: boolean;
   backendUrl?: string;
   sessionStore?: SessionStore;
   /** A recording landed in the space (by Stop, the limit, or a pending save). */
@@ -60,8 +62,8 @@ export interface VoiceNoteRecorder {
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
-export function useVoiceNoteRecorder({ tcw, backendUrl, sessionStore, onSaved }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
-  const [available] = useState(nativeVoiceNotesAvailable);
+export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
+  const [available] = useState(() => enabled && nativeVoiceNotesAvailable());
   const [state, setState] = useState(initialRecorderState);
   // The reducer runs here, synchronously, so a second tap in the same frame
   // sees the phase the first one set (Stop must never call stop() twice).

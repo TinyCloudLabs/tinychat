@@ -13,7 +13,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FC, type FormEv
 import type { SessionStore } from "@tinyboilerplate/client";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
-import { NOTETAKER_ROUTE, RouteLine } from "@/capture/sheetRoute";
+import { RouteLine } from "@/capture/recorder/RouteLine";
+import { NOTETAKER_ROUTE } from "@/capture/sheetRoute";
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { InfoTip } from "@/components/ui/info-tip";

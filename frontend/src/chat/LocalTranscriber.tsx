@@ -11,6 +11,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { Loader2Icon, MicIcon, SquareIcon } from "lucide-react";
 
+import { liveCapture } from "@/capture/recorder/liveCapture";
 import { Button } from "@/components/ui/button";
 import {
   createPrivateCloudApi,
@@ -658,6 +659,16 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   const [retryable, setRetryable] = useState(true);
   const [onDeviceOffer, setOnDeviceOffer] = useState(false);
   const [modelReady, setModelReady] = useState(false);
+
+  // The Live Edge, held still (this recorder reports no level), while this Mac's microphone records.
+  const capturing = state === "recording";
+  useEffect(() => {
+    if (!capturing) return;
+    liveCapture.set({ source: "desktop-local", warning: false, startedAt: null });
+    return () => {
+      if (liveCapture.get()?.source === "desktop-local") liveCapture.set(null);
+    };
+  }, [capturing]);
   const [noteText, setNoteText] = useState<string | null>(null);
   const [nearCloudLimit, setNearCloudLimit] = useState(false);
   // The private cloud transcript being saved, deleted from PTX once saved.

@@ -97,13 +97,13 @@ describe("Connectors page composition under the new IA", () => {
     expect(page).toContain("<ConnectorsCard");
     expect(page).not.toContain("<TranscriberSection");
     expect(page).not.toContain("<LibraryPage");
-    expect(page).not.toContain("VoiceNotesSection");
+    expect(page).not.toContain("VoiceNotesListCard");
     expect(page).not.toContain("meetingsSlot");
     const capture = read("../capture/CaptureSurface.tsx");
     expect(capture).toContain("<UploadSheet");
     expect(capture).toContain("<MeetingSheet");
     expect(capture).toContain("<LibraryPage");
-    expect(capture).toContain("<VoiceNotesSection");
+    expect(capture).toContain("<VoiceNotesListCard");
   });
 
   test("Library keeps BOTH meeting data paths", () => {

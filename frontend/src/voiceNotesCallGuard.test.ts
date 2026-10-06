@@ -2,8 +2,7 @@
 // plugin (listen, start, stop, delete audio). A second caller would mean a
 // second recorder racing the first for the microphone and its saves. The
 // redesign's recorder (TC-761) moved the controller to useVoiceNoteRecorder
-// and the saves to recorderSaves; the Voice notes card keeps its own controller
-// until it is split (PR4, with the app wiring), then leaves this list.
+// and the saves to recorderSaves.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -14,7 +13,6 @@ const ALLOWED = [
   "lib/voiceNotes/recorderSaves.ts",
   "chat/OfflineVoiceNotes.tsx",
   "lib/voiceNotes/nativeVoiceNotes.ts",
-  "chat/VoiceNotesSection.tsx",
 ];
 const PLUGIN_CALL = /VoiceNotes\.(addListener|start|stop|deleteAudio)\(/;
 

@@ -26,8 +26,10 @@ export function BootSurface(props: {
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
   return (
-    <div className="flex h-full items-center justify-center p-6">
-      <div className="flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
+    // Centred while it fits; scrolls (from the top) when it does not, as with
+    // the offline recorder on a phone on its side.
+    <div className="flex h-full overflow-y-auto p-6">
+      <div className="m-auto flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
         <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
           T
         </span>

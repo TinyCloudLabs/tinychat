@@ -19,7 +19,8 @@ import { Loader2Icon } from "lucide-react";
 
 import { continuePausedUpload, pausedUpload } from "@/capture/upload/pausedUpload";
 import { useUploadDeps } from "@/capture/upload/useUploadDeps";
-import { RouteLine, uploadRoute } from "@/capture/sheetRoute";
+import { RouteLine } from "@/capture/recorder/RouteLine";
+import { uploadRoute } from "@/capture/sheetRoute";
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { ResponsiveSheetBody, ResponsiveSheetFooter } from "@/components/ui/responsive-sheet";

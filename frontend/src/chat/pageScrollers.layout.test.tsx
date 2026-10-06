@@ -14,6 +14,7 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CaptureSurface } from "../capture/CaptureSurface";
+import { StaticRecorderProvider } from "../capture/recorder/RecorderProvider";
 import { screenFor } from "../shell/routes";
 import { ConnectorsPage } from "./ConnectorsPage";
 
@@ -44,7 +45,10 @@ describe("page scroller layout", () => {
     test(`Capture at ${path}: each pane is its own relative scroller`, () => {
       const markup = renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
-          <CaptureSurface tcw={tcw} backendUrl="http://127.0.0.1" sessionStore={sessionStore} active screen={screenFor(path)} />
+          {/* Capture's Record and list read the one recorder; on the web there is none. */}
+          <StaticRecorderProvider value={{ available: false }}>
+            <CaptureSurface tcw={tcw} backendUrl="http://127.0.0.1" sessionStore={sessionStore} active screen={screenFor(path)} />
+          </StaticRecorderProvider>
         </MemoryRouter>,
       );
       // The surface is the containing block for both panes; home and Library

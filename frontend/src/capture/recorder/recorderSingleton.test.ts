@@ -29,3 +29,21 @@ test("the save singletons are defined only in recorderSaves.ts", () => {
     expect(files.filter((file) => definition.test(file.text)).map((file) => file.path)).toEqual(["lib/voiceNotes/recorderSaves.ts"]);
   }
 });
+
+test("App mounts RecorderProvider exactly once, in the ready branch, and no handoff state", () => {
+  const app = readFileSync(join(SRC, "App.tsx"), "utf8");
+  expect(app.match(/<RecorderProvider\b/g)).toHaveLength(1);
+  const ready = app.slice(app.indexOf(") : isReady && tcw ? ("), app.indexOf("<BootSurface"));
+  expect(ready).toContain("<RecorderProvider");
+  expect(ready).toContain("<RecorderShell");
+  expect(app).not.toContain("voiceNoteOpen");
+  expect(app).not.toContain("QuickVoiceNote");
+  expect(app.match(/<LiveEdge \/>/g)).toHaveLength(1);
+});
+
+test("the offline recorder is only ever in the BootSurface slot, never beside the provider", () => {
+  const app = readFileSync(join(SRC, "App.tsx"), "utf8");
+  expect(app.match(/<OfflineVoiceNotes\b/g)).toHaveLength(1);
+  const boot = app.slice(app.indexOf("<BootSurface"), app.indexOf("/>", app.indexOf("<OfflineVoiceNotes")) + 2);
+  expect(boot).toContain("<OfflineVoiceNotes />");
+});

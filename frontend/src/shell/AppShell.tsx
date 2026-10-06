@@ -41,6 +41,10 @@ export interface AppShellProps {
   about?: ReactNode | null;
   /** The minimised recorder, in its own row above the tab bar (PR4). */
   island?: ReactNode;
+  /** The minimised recorder in the rail, above Settings (PR4). */
+  railLive?: ReactNode;
+  /** The minimised recorder in the sidebar's foot, above Settings (PR4). */
+  sidebarLive?: ReactNode;
 }
 
 type Shown = Destination | "settings" | "about";
@@ -88,6 +92,8 @@ export function AppShellView({
   settings,
   about = null,
   island = null,
+  railLive = null,
+  sidebarLive = null,
   sizeClass,
   captureMounted,
   mainRef,
@@ -109,12 +115,12 @@ export function AppShellView({
     <div className={cn("grid h-full min-h-0", GRID[nav])}>
       {nav === "sidebar" ? (
         <div className="row-span-2 min-h-0">
-          <Sidebar {...navProps} settings={settings !== null} />
+          <Sidebar {...navProps} settings={settings !== null} live={sidebarLive} />
         </div>
       ) : null}
       {nav === "rail" ? (
         <div className="row-span-2 min-h-0">
-          <NavRail {...navProps} settings={settings !== null} />
+          <NavRail {...navProps} settings={settings !== null} live={railLive} />
         </div>
       ) : null}
       <main
