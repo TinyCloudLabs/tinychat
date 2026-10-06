@@ -9,6 +9,7 @@ import {
   useState,
   useSyncExternalStore,
   type FC,
+  type ReactNode,
 } from "react";
 import {
   ActionBarPrimitive,
@@ -77,9 +78,11 @@ interface ThreadProps {
   onRetrySelection: () => void;
   onReload: () => void;
   canvasEnabled?: boolean;
+  /** The composer's toolbar, beside Send: the model chip and the usage chip. */
+  composerToolbar?: ReactNode;
 }
 
-export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false }) => {
+export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onReload, canvasEnabled = false, composerToolbar }) => {
   const threadId = useAuiState((s) => s.threadListItem.remoteId ?? s.threadListItem.id) as string | undefined;
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const threadRuntime = useThreadRuntime();
@@ -99,7 +102,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
               <Button type="button" variant={surface === "canvas" ? "default" : "outline"} size="sm" aria-pressed={surface === "canvas"} onClick={() => setSurface("canvas")}>Canvas</Button>
             </div>
           )}
-          <ThreadPrimitive.Viewport className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
+          <ThreadPrimitive.Viewport data-scroll-root className="relative flex flex-1 flex-col items-center overflow-y-auto scroll-smooth px-4">
             {surface === "canvas" ? (
               <div className="h-full w-full">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading canvas…</div>}>
@@ -118,7 +121,7 @@ export const Thread: FC<ThreadProps> = ({ tcw, selection, onRetrySelection, onRe
                 <ThreadBody />
               </div>}
 
-            <Composer selection={selection} />
+            <Composer selection={selection} toolbar={composerToolbar} />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
       </ShareThreadProvider>
@@ -439,7 +442,8 @@ const ThreadWelcome: FC = () => {
     <ThreadPrimitive.Empty>
       <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
         <div className="flex flex-col items-center gap-2">
-          <h1 className="font-display text-title-2">TinyCloud Chat</h1>
+          {/* The chat header's title is the screen's h1. */}
+          <h2 className="font-display text-title-2">TinyCloud Chat</h2>
           <p className="max-w-sm text-sm text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
@@ -484,46 +488,53 @@ const WELCOME_SUGGESTIONS = [
   },
 ];
 
-const Composer: FC<{ selection: SelectionView }> = ({ selection }) => {
+// The composer is an input group: the message on top, and a toolbar row with
+// the model and usage chips and Send. Its bottom padding follows the shell:
+// above the tab bar it needs no safe area (the bar has it), over the keyboard
+// it tightens to 8 px, and at the screen's edge it clears the home indicator.
+const Composer: FC<{ selection: SelectionView; toolbar?: ReactNode }> = ({ selection, toolbar }) => {
   return (
-    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+    <div className="sticky bottom-0 z-10 w-full max-w-[46rem] bg-gradient-to-t from-background via-background to-transparent pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 [html[data-keyboard=open]_&]:pb-2 [html[data-nav=tabbar]:not([data-keyboard=open])_&]:pb-3">
       <div className="relative">
         <ScrollToBottom />
       </div>
-      <ComposerPrimitive.Root className="flex items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md">
+      <ComposerPrimitive.Root className="flex flex-col rounded-2xl border border-input bg-card shadow-sm transition-shadow focus-within:border-ring focus-within:shadow-md">
         <ComposerPrimitive.Input
           autoFocus
           rows={1}
           placeholder="Message TinyCloud Chat…"
           disabled={!selection.canSend}
-          // text-base (16px) on mobile prevents iOS Safari from auto-zooming
-          // the page when the field gains focus; desktop keeps the compact 14px.
-          className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
+          // Always 16px: smaller text makes iOS zoom the page when the field
+          // gains focus, and the composer reads the same on every device.
+          className="max-h-40 min-h-11 resize-none bg-transparent px-4 pb-1 pt-3 text-body outline-none placeholder:text-muted-foreground"
         />
-        <ThreadPrimitive.If running={false}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip={selection.canSend ? "Send" : (selection.message ?? "Choose a model before sending")}
-              side="top"
-              type="submit"
-              disabled={!selection.canSend}
-              className="size-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 md:size-9"
-            >
-              <SendHorizontalIcon className="size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </ThreadPrimitive.If>
-        <ThreadPrimitive.If running>
-          <ComposerPrimitive.Cancel asChild>
-            <TooltipIconButton
-              tooltip="Stop"
-              side="top"
-              className="size-11 rounded-full border border-input text-foreground hover:bg-accent md:size-9"
-            >
-              <Square className="size-4 fill-current" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Cancel>
-        </ThreadPrimitive.If>
+        <div className="flex items-center gap-2 p-1.5 pl-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">{toolbar}</div>
+          <ThreadPrimitive.If running={false}>
+            <ComposerPrimitive.Send asChild>
+              <TooltipIconButton
+                tooltip={selection.canSend ? "Send" : (selection.message ?? "Choose a model before sending")}
+                side="top"
+                type="submit"
+                disabled={!selection.canSend}
+                className="size-11 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 fine:size-9"
+              >
+                <SendHorizontalIcon className="size-4" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          </ThreadPrimitive.If>
+          <ThreadPrimitive.If running>
+            <ComposerPrimitive.Cancel asChild>
+              <TooltipIconButton
+                tooltip="Stop"
+                side="top"
+                className="size-11 shrink-0 rounded-full border border-input text-foreground hover:bg-accent fine:size-9"
+              >
+                <Square className="size-4 fill-current" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Cancel>
+          </ThreadPrimitive.If>
+        </div>
       </ComposerPrimitive.Root>
     </div>
   );

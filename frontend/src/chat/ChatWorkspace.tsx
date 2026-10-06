@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -16,14 +16,14 @@ import {
   getCachedRates,
   type BillingStatus,
 } from "../lib/billingApi";
-import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
-import { badgePillLabel, connectorsAriaLabel } from "./useBackgroundDrain";
+import { useSizeClass } from "@/lib/sizeClass";
 import { createConnectorMeetingsClient } from "../lib/connectors/meetingsApi";
 import { createBrowserMeetingTurnRetriever } from "../lib/meetingChat/retriever";
 import { createMeetingMessageRegistry } from "./pendingHandoff";
-import { PlugIcon } from "lucide-react";
 import type { ModelSelectionController, SelectionView } from "./modelSelection";
+import { ChatHeader } from "./ChatHeader";
+import { ChatsPaneHeader, ChatsSheet } from "./ChatsSheet";
+import { ModelVerificationIndicator } from "./ModelVerificationIndicator";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { promotedCanvasForTurn } from "../lib/conversationCanvasStore";
 
@@ -38,13 +38,15 @@ export function ChatWorkspace(props: {
   onSelectionAuthFailure: () => void;
   onMemoryUpdated: (doc: string | null) => void;
   contextTokensFor: (modelId: string) => number;
-  sidebarOpen: boolean;
-  setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  showConnectors: boolean;
-  pendingMeetings: number;
-  onToggleConnectors: () => void;
-  onOpenChat: () => void;
-  connectorsSurface: React.ReactNode;
+  /** The composer's toolbar: the model chip and the usage chip (App owns both). */
+  composerToolbar?: ReactNode;
+  /** The phone app's voice note bar, under the header while it is open. */
+  voiceNoteBar?: ReactNode;
+  /** The header's voice note button (phone app only); absent hides it. */
+  onVoiceNote?: () => void;
+  voiceNoteOpen?: boolean;
+  /** Settings is reachable from the Chats sheet (it is not in local validation). */
+  settings: boolean;
   billingStatus: BillingStatus | null;
 }) {
   const {
@@ -148,77 +150,44 @@ export function ChatWorkspace(props: {
   );
 
   const runtime = useChatRuntime(deps);
-  const closeSidebar = useCallback(
-    () => props.setSidebarOpen(false),
-    [props.setSidebarOpen],
-  );
-  const handleChatNavigate = useCallback(() => {
-    closeSidebar();
-    if (props.showConnectors) props.onOpenChat();
-  }, [closeSidebar, props.showConnectors, props.onOpenChat]);
-  const handleConnectorsNavigate = useCallback(() => {
-    closeSidebar();
-    props.onToggleConnectors();
-  }, [closeSidebar, props.onToggleConnectors]);
-  const { showConnectors, pendingMeetings } = props;
-  const connectorsNavigation = (
-    <Button
-      variant="ghost"
-      size="sm"
-      aria-label={connectorsAriaLabel(showConnectors, pendingMeetings)}
-      aria-pressed={showConnectors}
-      onClick={handleConnectorsNavigate}
-      className={`relative min-h-11 w-full justify-start gap-2 px-3 py-2 text-sm font-medium md:min-h-0 ${
-        showConnectors ? "bg-accent text-accent-foreground" : ""
-      }`}
-    >
-      <PlugIcon className="size-4" />
-      Connectors
-      {pendingMeetings > 0 && (
-        <span
-          aria-hidden="true"
-          className="absolute right-3 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"
-        >
-          {badgePillLabel(pendingMeetings)}
-        </span>
-      )}
-    </Button>
-  );
+  // The Chats sheet (phones and tablets). A remount (an import's refresh)
+  // starts it closed, and it closes itself once the Chats column shows.
+  const [chatsOpen, setChatsOpen] = useState(false);
+  const openChats = useCallback(() => setChatsOpen(true), []);
+  const { size } = useSizeClass();
+  const wide = size !== "compact";
+  const model = props.selectionView.model;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="grid h-full grid-cols-1 md:grid-cols-[260px_1fr]">
-        <aside className="hidden min-h-0 border-r border-border bg-muted/40 md:block">
-          <ThreadList
-            navigation={connectorsNavigation}
-            onNavigate={handleChatNavigate}
-          />
+      <div className="grid h-full grid-cols-1 expanded:grid-cols-[272px_minmax(0,1fr)]">
+        {/* The Chats column, always on screen from the expanded class. */}
+        <aside className="hidden min-h-0 flex-col border-r border-border/70 expanded:flex">
+          <ChatsPaneHeader title={<h2 className="font-display text-title-2">Chats</h2>} placement="column" />
+          <ThreadList />
         </aside>
-        <section className="min-h-0">
-          <div className={showConnectors ? "hidden" : "h-full"}>
+        <section className="flex min-h-0 min-w-0 flex-col">
+          <ChatHeader
+            onOpenChats={size === "expanded" ? undefined : openChats}
+            onVoiceNote={props.onVoiceNote}
+            voiceNoteOpen={props.voiceNoteOpen}
+            newChat={size !== "expanded"}
+            verification={wide && model ? <ModelVerificationIndicator model={model} /> : undefined}
+          />
+          {props.voiceNoteBar}
+          <div className="min-h-0 flex-1">
             <Thread
               tcw={props.tcw}
               selection={props.selectionView}
               onRetrySelection={() => props.selectionControllerRef.current?.retry()}
               onReload={() => props.selectionControllerRef.current?.reload()}
               canvasEnabled={conversationCanvas.enabled}
+              composerToolbar={props.composerToolbar}
             />
           </div>
-          {showConnectors && props.connectorsSurface}
         </section>
       </div>
-      <Sheet open={props.sidebarOpen} onOpenChange={props.setSidebarOpen}>
-        <SheetContent className="md:hidden">
-          <SheetTitle className="sr-only">Chats</SheetTitle>
-          <SheetDescription className="sr-only">
-            List of your saved chats
-          </SheetDescription>
-          <ThreadList
-            navigation={connectorsNavigation}
-            onNavigate={handleChatNavigate}
-          />
-        </SheetContent>
-      </Sheet>
+      <ChatsSheet open={chatsOpen} onOpenChange={setChatsOpen} settings={props.settings} />
       {/* C3: first-time enablement + expired-delegation reconnect affordance —
           chat views only (isChatViewPath). */}
       <ChatViewAgentEnablementBanner />

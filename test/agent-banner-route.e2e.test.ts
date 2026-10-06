@@ -1,6 +1,7 @@
 // Rendered navigation: the C3 agent access banner shows on the chat view and
-// disappears on client-side navigation to Connectors (Sources, Library),
-// Settings, the legacy /chat/meetings redirect and unknown /chat/* links —
+// disappears on client-side navigation to Capture (and its Library and notes),
+// Connectors, Settings, the legacy /chat/meetings and /chat/connectors/library
+// redirects and unknown /chat/* links —
 // while the shared AgentAccessProvider stays mounted (same controller, no
 // re-probe), so returning to chat shows it again with state intact.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -71,6 +72,9 @@ describe.serial("agent access banner across chat navigation", () => {
     expect(await page.getByRole("button", { name: "Connect agent" }).count()).toBe(1);
 
     for (const path of [
+      "/chat/capture",
+      "/chat/capture/library",
+      "/chat/capture/library/x",
       "/chat/connectors",
       "/chat/connectors/library",
       "/chat/settings",
@@ -93,7 +97,7 @@ describe.serial("agent access banner across chat navigation", () => {
   });
 
   test("a cold load of a non-chat address never renders the banner", async () => {
-    for (const path of ["/chat/connectors", "/chat/meetings", "/chat/foo"]) {
+    for (const path of ["/chat/capture", "/chat/capture/library/x", "/chat/connectors", "/chat/meetings", "/chat/foo"]) {
       const page = await openAt(path);
       expect(await bannerCount(page)).toBe(0);
       await page.close();

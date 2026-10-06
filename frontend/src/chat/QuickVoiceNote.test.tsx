@@ -154,25 +154,32 @@ describe("QuickVoiceNote", () => {
 describe("App wiring of the one-tap voice note", () => {
   const app = read("../App.tsx");
 
-  test("offered only in the native app, signed in, and never next to the Voice notes card", () => {
+  test("offered only in the native app, signed in, on Chat only (never next to the Voice notes card)", () => {
     expect(app).toContain("const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);");
     expect(app).toContain(
-      "voiceNotesInApp && isReady && !LOCAL_VALIDATION && !showConnectors && !shareToken;",
+      'voiceNotesInApp && isReady && !LOCAL_VALIDATION && screen.destination === "chat" && !shareToken;',
     );
-    // Leaving for Connectors (or signing out) closes it, so a return never starts a new recording.
+    // Leaving Chat (or signing out) closes it, so a return never starts a new recording.
     expect(app).toContain("if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);");
     expect(app).toContain("{voiceNoteOpen && quickVoiceNoteAvailable && tcw && (");
   });
 
-  test("a labelled header button opens the bar under the header", () => {
-    const button = app.slice(app.indexOf("{quickVoiceNoteAvailable && ("), app.indexOf("</header>"));
+  test("the chat header's labelled button opens the bar under the header", () => {
+    // The button is ChatHeader's; App hands it the opener only where the bar is offered.
+    const header = read("ChatHeader.tsx");
+    const button = header.slice(header.indexOf("{onVoiceNote && ("), header.indexOf("</Button>", header.indexOf("{onVoiceNote && (")));
     expect(button).toContain('aria-label="Record a voice note"');
-    expect(button).toContain("Voice note");
+    expect(button).toContain('data-testid="header-voice-note"');
+    expect(button).toContain("onClick={onVoiceNote}");
     // The header button records; it never turns a "show the running recording" bar into a new one.
-    expect(button).toContain('onClick={() => setVoiceNoteOpen((open) => open || "record")}');
+    expect(app).toContain('onVoiceNote={quickVoiceNoteAvailable ? () => setVoiceNoteOpen((open) => open || "record") : undefined}');
     expect(app).toContain('autoStart={voiceNoteOpen === "record"}');
-    const afterHeader = app.slice(app.indexOf("</header>"), app.indexOf("<main"));
-    expect(afterHeader).toContain("<QuickVoiceNote");
-    expect(afterHeader).toContain("onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}");
+    // The bar renders under the chat header: ChatWorkspace's voiceNoteBar slot.
+    const bar = app.slice(app.indexOf("voiceNoteBar={"), app.indexOf("onVoiceNote={"));
+    expect(bar).toContain("<QuickVoiceNote");
+    expect(bar).toContain("onOpenLibrary={() => navigate(PATHS.library)}");
+    const workspace = read("ChatWorkspace.tsx");
+    expect(workspace.indexOf("<ChatHeader")).toBeLessThan(workspace.indexOf("{props.voiceNoteBar}"));
+    expect(workspace.indexOf("{props.voiceNoteBar}")).toBeLessThan(workspace.indexOf("<Thread\n"));
   });
 });

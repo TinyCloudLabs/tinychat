@@ -507,7 +507,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       )}
       {(recording || state === "stop-failed") && (
         <p className="text-xs text-muted-foreground">
-          Keep this view open while recording. Leaving it stops capture without saving a transcript.
+          Keep this window open while recording.
         </p>
       )}
       {statusText !== null && (

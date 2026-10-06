@@ -41,16 +41,22 @@ describe("AgentEnablementBanner layout", () => {
       expect(region).toEqual(
         expect.arrayContaining(["sm:left-1/2", "sm:right-auto", "sm:-translate-x-1/2"]),
       );
-      // Clear of the home indicator / gesture bar; 6rem (bottom-24) on desktop.
-      expect(region).toContain("bottom-[calc(6rem+env(safe-area-inset-bottom))]");
+      // 8rem above whatever covers the bottom: the tab bar (and the recording
+      // island) on a phone, else the home indicator / gesture bar (index.css),
+      // which clears the composer and its toolbar row. Under the composer's
+      // menus (its z-10 layer) and sheets.
+      expect(region).toContain("bottom-[calc(var(--tc-bottom-chrome)+8rem)]");
+      expect(region).toContain("z-[5]");
 
       const card = classList(markup, "rounded-lg");
       expect(card).toContain("flex-col");
       expect(card).not.toContain("items-center");
       expect(card).toEqual(expect.arrayContaining(["sm:flex-row", "sm:items-center"]));
 
+      // 44px wherever the pointer is a finger (a tablet too); compact with a mouse.
       const button = classList(markup, "<button");
-      expect(button).toEqual(expect.arrayContaining(["min-h-11", "sm:min-h-0"]));
+      expect(button).toEqual(expect.arrayContaining(["min-h-11", "fine:min-h-0"]));
+      expect(button).not.toContain("sm:min-h-0");
     });
   }
 
@@ -60,7 +66,7 @@ describe("AgentEnablementBanner layout", () => {
     );
     const toast = classList(markup, 'role="status"');
     expect(toast).toEqual(expect.arrayContaining(["fixed", "left-1/2", "-translate-x-1/2"]));
-    expect(toast).toContain("bottom-[calc(6rem+env(safe-area-inset-bottom))]");
+    expect(toast).toContain("bottom-[calc(var(--tc-bottom-chrome)+8rem)]");
     expect(markup).toContain("Agent tools active.");
   });
 });

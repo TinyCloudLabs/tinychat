@@ -67,6 +67,9 @@ jobs:
       - name: Agent banner across navigation (Chromium)
         run: bun run --cwd test agent-banner:browser
 
+      - name: Shell invariants (Chromium)
+        run: bun run --cwd test shell-invariants:browser
+
       - name: Exo UI screens (Chromium)
         run: EXO_UI_ENGINE=chromium bun run --cwd test exo-ui:screens
 

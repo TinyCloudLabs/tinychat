@@ -21,6 +21,14 @@ describe("isChatViewPath", () => {
     expect(isChatViewPath(`${CONNECTORS_LIBRARY_PATH}/`)).toBe(false);
   });
 
+  test("Capture, its Library and a note are not chat views", () => {
+    expect(isChatViewPath("/chat/capture")).toBe(false);
+    expect(isChatViewPath("/chat/capture/")).toBe(false);
+    expect(isChatViewPath("/chat/capture/library")).toBe(false);
+    expect(isChatViewPath("/chat/capture/library/")).toBe(false);
+    expect(isChatViewPath("/chat/capture/library/7f3a")).toBe(false);
+  });
+
   test("Settings is not a chat view, trailing slash included", () => {
     expect(isChatViewPath("/chat/settings")).toBe(false);
     expect(isChatViewPath("/chat/settings/")).toBe(false);

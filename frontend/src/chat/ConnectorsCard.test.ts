@@ -11,6 +11,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { navItems } from "../shell/navItems";
+import { PATHS } from "../shell/routes";
+
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import {
   consentCopyText,
@@ -66,34 +69,31 @@ describe("Connectors page composition", () => {
     expect(usage).toContain("sessionStore={sessionStore}");
   });
 
-  test("Connectors is a first-class route and Settings no longer owns connector UI", () => {
+  test("Connectors is a first-class destination and Settings no longer owns connector UI", () => {
     const app = read("../App.tsx");
     const settings = read("SettingsPage.tsx");
 
-    // Connectors is a SUBTREE now (Sources | Library), so the route match and
-    // the sidebar target moved to connectorsNav's constants — see
-    // connectorsNav.test.tsx for the IA's own assertions.
-    expect(app).toContain("const showConnectors = !LOCAL_VALIDATION && /\\/chat\\/connectors(");
-    expect(app).toContain("navigate(CONNECTORS_SOURCES_PATH)");
-    expect(app).toContain("<ConnectorsPage");
+    // The shell owns the address and the navigation item (shell/routes.ts,
+    // shell/navItems.ts — see their tests); App hands the shell the page.
+    const connectors = navItems(0).find((item) => item.id === "connectors");
+    expect(PATHS.connectors).toBe("/chat/connectors");
+    expect(connectors?.href).toBe(PATHS.connectors);
+    expect(app).toContain("connectors={LOCAL_VALIDATION ? null : <ConnectorsPage");
     expect(settings).not.toContain("ConnectorsCard");
     expect(settings).not.toContain("TranscriberSection");
     expect(settings).not.toContain("meetingsSlot");
   });
 
-  test("Connectors navigation lives in the persistent chat sidebar", () => {
-    const app = read("../App.tsx");
-    const workspace = read("ChatWorkspace.tsx");
+  test("Connectors navigation lives in the app shell", () => {
     const threadList = read("ThreadList.tsx");
-    const header = app.slice(app.indexOf("<header"), app.indexOf("</header>"));
+    const shell = read("../shell/AppShell.tsx");
 
-    expect(header).not.toContain("connectorsAriaLabel");
-    expect(threadList).toContain('aria-label="Workspace navigation"');
-    expect(threadList.indexOf("{navigation}")).toBeLessThan(
-      threadList.indexOf("<ThreadListPrimitive.New"),
-    );
-    expect(app).toContain("connectorsSurface={LOCAL_VALIDATION ? null : <ConnectorsPage");
-    expect(workspace).toContain('showConnectors ? "hidden" : "h-full"');
+    // The chat list carries chats only; the destinations are the shell's.
+    expect(threadList).not.toContain("{navigation}");
+    expect(threadList).not.toContain("connectorsAriaLabel");
+    // Chat stays mounted: the shell hides its slot when another surface shows.
+    expect(shell).toContain('<div data-surface="chat" className={surface("chat")}>');
+    expect(shell).toContain('const surface = (name: Shown) => (shown === name ? "h-full" : "hidden");');
   });
 
   test("the card builds BOTH typed clients from those props — no new globals", () => {

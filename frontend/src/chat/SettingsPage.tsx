@@ -2,7 +2,6 @@ import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
 import {
-  ArrowLeftIcon,
   BrainIcon,
   CreditCardIcon,
   DatabaseIcon,
@@ -25,6 +24,8 @@ import { useBackendAttestation } from "../lib/useBackendAttestation";
 import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
+import { useSizeClass } from "../lib/sizeClass";
+import { PageHeader } from "../shell/PageHeader";
 
 interface SettingsPageProps {
   address: string | null;
@@ -71,6 +72,7 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const agentAccess = useAgentAccess();
   const conversationCanvas = useConversationCanvasFeature(tcw, billingStatus);
+  const compact = useSizeClass().size === "compact";
   const usage = billingStatus?.usage;
   const hasLimit = !!usage && usage.limit > 0;
   const pct = hasLimit
@@ -82,21 +84,11 @@ export function SettingsPage({
     // `relative`: the containing block for sr-only/absolute descendants, so they
     // scroll and clip with this pane instead of stretching the document (see
     // ConnectorsPage).
-    <div className="relative h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            aria-label="Back to chat"
-            onClick={onBack}
-            className="h-11 gap-1.5 px-2 md:h-8 sm:px-3"
-          >
-            <ArrowLeftIcon className="size-4" />
-            <span className="hidden sm:inline">Back to chat</span>
-          </Button>
-          <h1 className="font-display text-title-2">Settings</h1>
-        </div>
+    <div className="relative h-full overflow-y-auto" data-scroll-root>
+      {/* Pushed over the app on a phone (Back, no tab bar); a pane beside the
+          navigation on wider screens, so no Back there. */}
+      <PageHeader title="Settings" back={compact ? onBack : undefined} className="mx-auto w-full max-w-2xl px-4 sm:px-6" />
+      <div className="mx-auto w-full max-w-2xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2 sm:px-6">
         <div className="flex flex-col gap-4">
           <SectionCard icon={UserIcon} title="Account">
             <div className="flex items-center gap-2 text-xs">

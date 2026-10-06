@@ -25,7 +25,10 @@ import {
 import { MeetingAudioPlayer } from "./MeetingAudioPlayer";
 
 interface MeetingsPageProps {
+  /** Capture hands the Library its per-space queue (lib/spaceQueue.ts), so these reads take turns with an upload's. */
   tcw: TinyCloudWeb;
+  /** Each change re-reads the list (entering the Library, a capture landing); the rows on screen stay until it answers. */
+  listSignal?: number;
 }
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
@@ -45,12 +48,12 @@ const COPIED_DURATION = 1500;
  * Rows are keyed by their `connector_meeting.id` (a UUID), not by `sourceId`:
  * source ids are only unique WITHIN a connector, and the list now spans several.
  *
- * This renders INSIDE Connectors → Library → Meetings, so it owns no page
- * chrome of its own: the header, the scroll container and the way back to a
- * thread all belong to the Connectors workspace around it. The loading, empty,
- * read and copy behaviour below is unchanged — only its placement moved.
+ * This renders INSIDE Capture → Library → Meetings, so it owns no page
+ * chrome of its own: the header, the scroll container and the way back belong
+ * to the Library around it. The loading, empty, read and copy behaviour below
+ * is unchanged — only its placement moved.
  */
-export function MeetingsPage({ tcw }: MeetingsPageProps) {
+export function MeetingsPage({ tcw, listSignal = 0 }: MeetingsPageProps) {
   const [phase, setPhase] = useState<"loading" | "ready">("loading");
   const [meetings, setMeetings] = useState<MeetingListItem[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -94,7 +97,7 @@ export function MeetingsPage({ tcw }: MeetingsPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [tcw]);
+  }, [tcw, listSignal]);
 
   const resetCopy = useCallback(() => {
     if (copyTimerRef.current) {

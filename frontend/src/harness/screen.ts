@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import type { AppPlatform } from "@/lib/platform";
+
 /** One capture target of the exo-ui screenshot harness (test/exo-ui-screens.e2e.test.ts). */
 export interface HarnessScreen {
   /** `<group>-<name>`, used in the URL (?screen=) and the file names. */
@@ -18,5 +20,9 @@ export interface HarnessScreen {
   path?: string;
   /** A selector scrolled into view (inside its pane) before the capture, for a part of a long page. */
   scrollTo?: string;
+  /** Where it runs (default `web`). The phone app also gets the fake voice-notes plugin. */
+  platform?: AppPlatform;
+  /** The capture waits until this selector matches (an opened sheet, a loaded model), up to 5 s. */
+  readyWhen?: string;
   render: () => ReactNode;
 }

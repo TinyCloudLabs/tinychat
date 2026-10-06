@@ -1,7 +1,7 @@
-// The surfaces as they are today, re-tokened: the real SettingsPage (with
-// Appearance) and ConnectorsPage, in a shell with the chat layout (a header,
-// the sidebar from md, a pane that scrolls on its own). They stay until the new
-// shell and screens replace them.
+// The real SettingsPage (with Appearance) and ConnectorsPage inside the frame
+// the app had before the shell (a header, the sidebar from md, a pane that
+// scrolls on its own). The shell group shows them in the real AppShell; these
+// stay so a capture can be compared with the PRs before it.
 import type { ReactNode } from "react";
 import { PanelLeftIcon } from "lucide-react";
 
@@ -95,7 +95,7 @@ export const legacyScreens: HarnessScreen[] = [
     path: "/chat/connectors",
     render: () => (
       <LegacyShell>
-        <ConnectorsPage tcw={harnessTcw} backendUrl={window.location.origin} sessionStore={harnessSessionStore} tab="sources" />
+        <ConnectorsPage tcw={harnessTcw} backendUrl={window.location.origin} sessionStore={harnessSessionStore} />
       </LegacyShell>
     ),
   },

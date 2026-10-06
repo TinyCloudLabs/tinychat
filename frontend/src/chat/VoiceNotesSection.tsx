@@ -1,4 +1,4 @@
-// The VOICE NOTES card in Connectors → Sources, shown only inside the Exo
+// The VOICE NOTES card on Capture, shown only inside the Exo
 // mobile app (the native plugin is the capture engine). Record on the device,
 // save to the user's TinyCloud space, play back from the space, and (when
 // private cloud transcription is available to this build and account)

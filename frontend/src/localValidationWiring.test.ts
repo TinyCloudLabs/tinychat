@@ -18,8 +18,10 @@ test("local login isolates both fresh and restored sessions before mounting cons
     expect(source).toContain(`{!LOCAL_VALIDATION && state === "ready" && tcw && (\n        <${component}`);
   }
   expect(source).toContain("const showSettings = !LOCAL_VALIDATION &&");
-  expect(source).toContain("const showConnectors = !LOCAL_VALIDATION &&");
-  expect(source).toContain("connectorsSurface={LOCAL_VALIDATION ? null :");
+  // Local validation gets Chat only: the shell has no other surface to show.
+  expect(source).toContain("capture={LOCAL_VALIDATION ? null :");
+  expect(source).toContain("connectors={LOCAL_VALIDATION ? null :");
+  expect(source).toContain("settings={LOCAL_VALIDATION ? null :");
 });
 
 test("fresh agent consent sessions apply local guards before signing in", () => {

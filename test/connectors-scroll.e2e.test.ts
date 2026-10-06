@@ -1,10 +1,11 @@
-// Rendered layout: the Connectors and Settings pages scroll inside their own
-// pane. The app shell (header, sidebar) stays fixed to the viewport, the
-// document never grows taller than the window, and switching Transcriber tabs
-// never moves the document. Before the fix, sr-only/absolute descendants (e.g.
-// the meeting-link form labels on Connectors) were positioned against the
-// initial containing block, escaped the scroller and stretched the document
-// (Exo 0.5.0 at 1280x800).
+// Rendered layout: Connectors, Capture and Settings scroll inside their own
+// pane. The app shell (the sidebar, the page's header) stays fixed to the
+// viewport, the document never grows taller than the window, and switching
+// Transcriber tabs on Capture never moves the document. Before the fix,
+// sr-only/absolute descendants (e.g. the meeting-link form labels) were
+// positioned against the initial containing block, escaped the scroller and
+// stretched the document (Exo 0.5.0 at 1280x800). The harness renders the real
+// AppShell (TC-761).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
 import { webkit, chromium, type Browser, type BrowserType, type Page } from "playwright";
@@ -21,9 +22,11 @@ beforeAll(async () => {
     target: "browser",
     minify: false,
     define: { "import.meta.env": "{}" },
+    // index.css's @font-face URLs point into frontend/public; nothing here needs the font.
+    external: ["/fonts/*"],
   });
   if (!built.success) throw new Error(built.logs.join("\n"));
-  bundle = await built.outputs[0]!.text();
+  bundle = await built.outputs.find((output) => output.kind === "entry-point")!.text();
 
   // The app's own stylesheet, compiled with its Tailwind config.
   const requireFromFrontend = createRequire(`${frontend}package.json`);
@@ -47,7 +50,7 @@ function startServer() {
       if (url.pathname === "/app.css") return new Response(css, { headers: { "content-type": "text/css" } });
       if (url.pathname.startsWith("/api/")) return new Response("unauthorized", { status: 401 });
       return new Response(
-        '<!doctype html><html class="dark"><head><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/bundle.js"></script></body></html>',
+        '<!doctype html><html class="dark" data-size="expanded"><head><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/bundle.js"></script></body></html>',
         { headers: { "content-type": "text/html" } },
       );
     },
@@ -55,13 +58,19 @@ function startServer() {
 }
 
 const geometry = (page: Page) =>
-  page.evaluate(() => ({
-    documentHeight: document.documentElement.scrollHeight,
-    viewportHeight: window.innerHeight,
-    scrollY: window.scrollY,
-    headerTop: document.querySelector("[data-testid=shell-header]")!.getBoundingClientRect().top,
-    sidebarBottom: document.querySelector("[data-testid=shell-sidebar]")!.getBoundingClientRect().bottom,
-  }));
+  page.evaluate(() => {
+    // The header of the surface on screen (the hidden ones have no box).
+    const header = [...document.querySelectorAll<HTMLElement>("main [data-surface] header")].find(
+      (element) => element.getClientRects().length > 0,
+    )!;
+    return {
+      documentHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      scrollY: window.scrollY,
+      headerTop: header.getBoundingClientRect().top,
+      sidebarBottom: document.querySelector("[data-testid=sidebar]")!.getBoundingClientRect().bottom,
+    };
+  });
 
 function expectShellPinned(g: Awaited<ReturnType<typeof geometry>>) {
   expect(g.documentHeight).toBe(g.viewportHeight);
@@ -92,7 +101,7 @@ describe.serial(`App pane scroll containment (${name}, 1280x800)`, () => {
 
   async function wheelBoth(page: Page) {
     // Wheel over the sidebar: nothing below it can scroll the document.
-    await page.mouse.move(130, 400);
+    await page.mouse.move(110, 400);
     await page.mouse.wheel(0, 2000);
     await page.waitForTimeout(200);
     expectShellPinned(await geometry(page));
@@ -103,9 +112,19 @@ describe.serial(`App pane scroll containment (${name}, 1280x800)`, () => {
     expectShellPinned(await geometry(page));
   }
 
-  test("Connectors: only the content pane scrolls; tab switches never move the document", async () => {
+  test("Connectors: only the content pane scrolls", async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(`http://127.0.0.1:${server.port}/chat/connectors`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Connectors", exact: true }).waitFor();
+    await page.waitForTimeout(500);
+    expectShellPinned(await geometry(page));
+    await wheelBoth(page);
+    await page.close();
+  }, 30_000);
+
+  test("Capture: only the content pane scrolls; Transcriber tab switches never move the document", async () => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.goto(`http://127.0.0.1:${server.port}/chat/capture`, { waitUntil: "domcontentloaded" });
     await page.getByLabel("Meeting link").waitFor({ state: "attached" });
     expectShellPinned(await geometry(page));
     await wheelBoth(page);
@@ -125,7 +144,7 @@ describe.serial(`App pane scroll containment (${name}, 1280x800)`, () => {
   test("Settings: only the content pane scrolls", async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(`http://127.0.0.1:${server.port}/chat/settings`, { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Back to chat" }).waitFor();
+    await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
     await page.waitForTimeout(500);
     expectShellPinned(await geometry(page));
     await wheelBoth(page);

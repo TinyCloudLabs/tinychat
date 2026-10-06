@@ -1,4 +1,4 @@
-// The TRANSCRIBER card in Connectors: paste a meeting link, a notetaker bot joins through the
+// The TRANSCRIBER card on Capture: paste a meeting link, a notetaker bot joins through the
 // TinyCloud Private Transcription API, and the speaker-attributed transcript comes back here.
 // Beside it: Upload audio (every platform) and Local recording (desktop only).
 //
@@ -614,7 +614,12 @@ export interface TranscriberSectionProps {
   tcw?: TinyCloudWeb;
   /** Injectable for tests; defaults to the real client. */
   client?: TranscriberClient;
-
+  /**
+   * On screen. Capture keeps this card mounted while hidden (a desktop local
+   * recording survives navigation), so the list and calendar reads run only
+   * while it shows, and each return re-reads them, as a fresh mount did.
+   */
+  active?: boolean;
 }
 
 function listStatusOf<T>(result: TranscriberResult<T>): ListStatus {
@@ -663,6 +668,7 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   sessionStore,
   tcw,
   client,
+  active = true,
 }) => {
   const apiRef = useRef<TranscriberClient | null>(null);
   if (apiRef.current === null) {
@@ -672,15 +678,16 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   const calendar = useMemo(() => createCalendarAutojoinClient(backendUrl, sessionStore), [backendUrl, sessionStore]);
   const [calendarOutcomes, setCalendarOutcomes] = useState<CalendarAutojoinOutcome[]>([]);
   useEffect(() => {
-    let active = true;
+    if (!active) return;
+    let current = true;
     const refresh = async () => {
-      try { const status = await calendar.status(); if (active) setCalendarOutcomes(status.outcomes); }
+      try { const status = await calendar.status(); if (current) setCalendarOutcomes(status.outcomes); }
       catch { /* The connector displays status errors; manual recordings remain usable. */ }
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 60_000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [calendar]);
+    return () => { current = false; window.clearInterval(timer); };
+  }, [calendar, active]);
 
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
   const [meetings, setMeetings] = useState<TranscriberListRow[]>([]);
@@ -729,16 +736,17 @@ export const TranscriberSection: FC<TranscriberSectionProps> = ({
   }, [api]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active) void load();
+  }, [load, active]);
 
-  // Poll only while something is still moving; a settled list costs nothing.
+  // Poll only while something is still moving and the card is on screen; a
+  // settled list costs nothing.
   const anyActive = meetings.some((m) => !("unavailable" in m) && ACTIVE_STATUSES.has(m.status));
   useEffect(() => {
-    if (!anyActive || listStatus === "dark") return;
+    if (!active || !anyActive || listStatus === "dark") return;
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [anyActive, listStatus, load]);
+  }, [active, anyActive, listStatus, load]);
 
   const onSubmit = useCallback(() => {
     const trimmed = url.trim();

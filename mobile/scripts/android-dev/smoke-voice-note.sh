@@ -18,9 +18,9 @@ clip=${1:-$EXO_STATE/speech.wav}
 $ADB shell pm grant xyz.tinycloud.exo android.permission.RECORD_AUDIO
 $ADB shell pm grant xyz.tinycloud.exo android.permission.POST_NOTIFICATIONS 2>/dev/null || true
 
-# Open Connectors → Sources and wait for the voice notes list to load.
+# Open Capture (the Voice notes card's home since TC-761) and wait for the voice notes list to load.
 ready=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++;
-  if (location.pathname !== "/chat/connectors" && n % 10 === 1) { history.pushState({}, "", "/chat/connectors"); dispatchEvent(new PopStateEvent("popstate")); }
+  if (location.pathname !== "/chat/capture" && n % 10 === 1) { history.pushState({}, "", "/chat/capture"); dispatchEvent(new PopStateEvent("popstate")); }
   const card = document.querySelector("[data-testid=voice-note-record]"), busy = document.querySelector("[data-testid=voice-note-stop]");
   if (((card || busy) && !/Loading your voice notes/.test(document.body.textContent)) || n > 400) { clearInterval(t);
     r(JSON.stringify({ ok: !!card, recording: !!busy, items: document.querySelectorAll("[data-testid=voice-note-item]").length, signedOut: /Sign in to start/.test(document.body.textContent) })); } }, 300); })')

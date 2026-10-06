@@ -26,7 +26,7 @@ export function BootSurface(props: {
 
   return (
     <div className="flex h-full items-center justify-center p-6">
-      <div className="flex max-w-sm flex-col items-center gap-5 text-center">
+      <div className="flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
         <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
           T
         </span>
@@ -35,7 +35,7 @@ export function BootSurface(props: {
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
         {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
-          <Button onClick={props.onAction} className="h-11 px-6 md:h-9 md:px-4">
+          <Button onClick={props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">
             {props.state === "unauthenticated" ? "Sign in" : "Try again"}
           </Button>
         )}

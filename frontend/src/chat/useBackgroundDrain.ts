@@ -504,15 +504,14 @@ export function badgePendingCount(record: BackgroundDrainRecord | null): number 
 }
 
 /**
- * The Connectors button's accessible name, with the count folded in.
+ * The Connectors navigation item's accessible name, with the count folded in.
  *
- * Generic copy only — a provider name in the header would leak which service a
- * user connected to anyone reading the screen (or the accessibility tree). When
- * there is nothing to say the label is byte-identical to what it has always
- * been.
+ * Generic copy only — a provider name in the navigation would leak which
+ * service a user connected to anyone reading the screen (or the accessibility
+ * tree). When there is nothing to say the label is just "Connectors". The item
+ * is a link now, so it never turns into a close control.
  */
-export function connectorsAriaLabel(showConnectors: boolean, count: number): string {
-  if (showConnectors) return "Close connectors";
+export function connectorsAriaLabel(count: number): string {
   if (count <= 0) return "Connectors";
   return `Connectors — ${count} ${count === 1 ? "meeting" : "meetings"} waiting`;
 }
