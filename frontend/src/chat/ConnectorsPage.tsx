@@ -57,7 +57,11 @@ export function ConnectorsPage({
   meetingsSlot,
 }: ConnectorsPageProps) {
   return (
-    <div className="h-full overflow-y-auto">
+    // `relative` makes this scroller the containing block for absolutely
+    // positioned descendants (the `sr-only` form labels). Without it they
+    // resolve against the initial containing block, escape the scroller and
+    // stretch the document, so the whole app shell scrolls.
+    <div className="relative h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-2xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
         {/* One stable page header across both tabs — the tab strip below is
             what changes, not the identity of the page. */}
