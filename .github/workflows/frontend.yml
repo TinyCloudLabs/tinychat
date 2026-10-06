@@ -70,8 +70,11 @@ jobs:
       - name: Shell invariants (Chromium)
         run: bun run --cwd test shell-invariants:browser
 
+      # Four viewports: phone, landscape phone, desktop and 200% text on a
+      # phone (where Linux fonts have caught clipping macOS hides). The full
+      # nine-viewport matrix, WebKit included, runs locally.
       - name: Exo UI screens (Chromium)
-        run: EXO_UI_ENGINE=chromium bun run --cwd test exo-ui:screens
+        run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone,phone-land,desktop,text200-phone bun run --cwd test exo-ui:screens
 
       - name: Upload the Exo UI screenshots
         if: ${{ !cancelled() }}
