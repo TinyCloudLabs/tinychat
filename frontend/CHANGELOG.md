@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.0
+
+### Minor Changes
+
+- c81e6bc: Exo's new look: navy Night and paper Day themes (following your system), Literata display type, motion tokens.
+
 ## 0.5.1
 
 ### Patch Changes
