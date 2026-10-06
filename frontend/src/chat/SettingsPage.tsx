@@ -79,7 +79,10 @@ export function SettingsPage({
   const near = pct >= 90;
   const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
   return (
-    <div className="h-full overflow-y-auto">
+    // `relative`: the containing block for sr-only/absolute descendants, so they
+    // scroll and clip with this pane instead of stretching the document (see
+    // ConnectorsPage).
+    <div className="relative h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-2xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <Button
