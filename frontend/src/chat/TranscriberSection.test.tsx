@@ -413,18 +413,18 @@ describe("LocalTranscriberView", () => {
     expect(isLocalWorkflowActive("partial-recording")).toBe(true);
   });
 
-  test("a recording kept from before Exo closed offers Transcribe recording and Discard recording", () => {
+  test("a kept recording whose transcript was never saved offers Transcribe recording and Discard recording", () => {
     const html = renderLocal({
       state: "kept-recording",
-      statusText: 'Exo closed before "Local recording Oct 5, 9:00 AM" was transcribed. The recording was kept on this Mac.',
+      statusText: '"Local recording Oct 5, 9:00 AM" stopped, but its transcript was never saved. The recording was kept on this Mac.',
     });
     expect(html).toContain(">Transcribe recording</button>");
     expect(html).toContain(">Discard recording</button>");
-    expect(html).toContain("Exo closed before");
+    expect(html).toContain("its transcript was never saved");
     expect(html).toContain("discarding leaves its audio file on this Mac.");
     expect(html).not.toContain("Start recording");
     expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
-    expect(localFailureState(new KeptRecordingError("Exo closed before it was transcribed"))).toBe("kept-recording");
+    expect(localFailureState(new KeptRecordingError("Its transcript was never saved"))).toBe("kept-recording");
     expect(localRetryAction("kept-recording")).toBe("transcribe");
     expect(isLocalWorkflowActive("kept-recording")).toBe(true);
     // Transcribe found its audio file gone: only Discard.
@@ -435,6 +435,10 @@ describe("LocalTranscriberView", () => {
     });
     expect(gone).toContain(">Discard recording</button>");
     expect(gone).not.toContain("Retry transcription");
+    // A failed save no longer claims leaving discards the recording: it is offered again.
+    const saveFailed = renderLocal({ state: "save-failed", statusText: "kv write failed" });
+    expect(saveFailed).toContain("If you leave this view first, Exo offers the");
+    expect(saveFailed).not.toContain("discards it");
   });
 
   test("a rejected start, stop or transcription retry lands in its own failed state", () => {

@@ -258,7 +258,8 @@ function setup(opts: { configured?: boolean; capabilities?: PrivateCloudApi["cap
   let attempt = 0;
   const t = createLocalTranscriber(b.bridge, {
     timeouts: { captureReadyMs: 50 },
-    kept,
+    account: () => "did:pkh:eip155:1:0xA",
+    kept: () => kept,
     cloud: {
       api: a.api,
       native: n.native,

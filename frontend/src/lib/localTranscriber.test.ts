@@ -36,7 +36,11 @@
 //   - a stopped on-device recording is persisted before it is transcribed and
 //     outlives a quit or crash: a relaunch offers it (Transcribe through
 //     retryTranscription, or Discard) until its transcript is saved or it is
-//     discarded, and one whose audio file is gone can only be discarded.
+//     discarded, and one whose audio file is gone can only be discarded;
+//   - kept recordings belong to the signed-in account: another account is
+//     never offered one (nor adopts a closed view's job), and is not blocked;
+//   - closing the view mid-recording keeps the recording (complete or
+//     partial), and one whose transcript is being saved is not offered.
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
@@ -1099,31 +1103,43 @@ function sqliteStore() {
   return { tcw, sqlite, kv, failNextKvPut: () => { failingKvPuts++; } };
 }
 
-function memoryKept(): KeptRecordingStore & { value: KeptLocalRecording | null } {
-  const store = {
-    value: null as KeptLocalRecording | null,
-    read: () => store.value,
-    write: (r: KeptLocalRecording) => {
-      store.value = { ...r };
+const ACCOUNT_A = "did:pkh:eip155:1:0xA";
+const ACCOUNT_B = "did:pkh:eip155:1:0xB";
+
+/** Kept recordings per account DID, like the localStorage store; `value` is account A's. */
+function memoryKept() {
+  const records = new Map<string, KeptLocalRecording>();
+  const forAccount = (did: string): KeptRecordingStore => ({
+    read: () => records.get(did) ?? null,
+    write: (r) => void records.set(did, { ...r }),
+    clear: () => void records.delete(did),
+  });
+  return {
+    records,
+    forAccount,
+    get value() {
+      return records.get(ACCOUNT_A) ?? null;
     },
-    clear: () => {
-      store.value = null;
-    },
+    write: (r: KeptLocalRecording) => forAccount(ACCOUNT_A).write(r),
   };
-  return store;
+}
+
+/** Options for a transcriber signed in as `account` (a getter, so a test can switch accounts). */
+function keptOptions(kept: ReturnType<typeof memoryKept>, account: () => string = () => ACCOUNT_A) {
+  return { kept: kept.forAccount, account };
 }
 
 /** A fresh process: a new native identity (no in-memory jobs) sharing only the persisted store. */
-function relaunch(kept: KeptRecordingStore) {
+function relaunch(kept: ReturnType<typeof memoryKept>, account = ACCOUNT_A) {
   const bridge = makeBridge({ modelDownloaded: true });
-  return { bridge, t: createLocalTranscriber(bridge, { kept }) };
+  return { bridge, t: createLocalTranscriber(bridge, keptOptions(kept, () => account)) };
 }
 
 describe("kept on-device recordings across a relaunch", () => {
   test("a recording stopped before Exo quit is offered on relaunch, and Transcribe saves it as an Exo Local meeting", async () => {
     const kept = memoryKept();
     const before = makeBridge({ modelDownloaded: true });
-    const t = createLocalTranscriber(before, { kept });
+    const t = createLocalTranscriber(before, keptOptions(kept));
     const { sessionId } = await t.start({ model: "QuantizedBaseEn", language: "en" });
     void t.stop().catch(() => {});
     await tick();
@@ -1145,7 +1161,7 @@ describe("kept on-device recordings across a relaunch", () => {
     const offered = await after.t.resumeKeptRecording()!.catch((e: unknown) => e);
     expect(offered).toBeInstanceOf(KeptRecordingError);
     expect((offered as KeptRecordingError).retryable).toBe(true);
-    expect((offered as Error).message).toContain("Exo closed before");
+    expect((offered as Error).message).toContain("stopped, but its transcript was never saved");
     // Offered once: the job now belongs to this view.
     expect(after.t.resumeKeptRecording()).toBeNull();
     expect(startTranscriptionCalls(after.bridge)).toBe(0);
@@ -1175,7 +1191,7 @@ describe("kept on-device recordings across a relaunch", () => {
   test("a relaunch after the transcript was saved offers nothing", async () => {
     const kept = memoryKept();
     const bridge = makeBridge({ modelDownloaded: true });
-    const t = createLocalTranscriber(bridge, { kept });
+    const t = createLocalTranscriber(bridge, keptOptions(kept));
     const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
     const result = (await stopWith(bridge, t, sessionId, completedEvent(sessionId))) as OnDeviceTranscriptResult;
     t.finishOnDeviceTranscript(result);
@@ -1189,7 +1205,7 @@ describe("kept on-device recordings across a relaunch", () => {
   test("Discard forgets the kept recording, without transcribing it", async () => {
     const kept = memoryKept();
     const bridge = makeBridge({ modelDownloaded: true });
-    const t = createLocalTranscriber(bridge, { kept });
+    const t = createLocalTranscriber(bridge, keptOptions(kept));
     const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
     await expect(stopWith(bridge, t, sessionId, failedTranscription(sessionId, "stalled"))).rejects.toBeInstanceOf(
       TranscriptionFailedError,
@@ -1208,7 +1224,7 @@ describe("kept on-device recordings across a relaunch", () => {
   test("a partial recording is kept across a relaunch too", async () => {
     const kept = memoryKept();
     const bridge = makeBridge({ modelDownloaded: true });
-    const t = createLocalTranscriber(bridge, { kept });
+    const t = createLocalTranscriber(bridge, keptOptions(kept));
     const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
     const stopping = t.stop();
     await tick();
@@ -1268,22 +1284,156 @@ describe("kept on-device recordings across a relaunch", () => {
         model: "QuantizedSmallEn",
         language: "en",
       };
-      localStorageKeptRecordingStore.write(record);
-      expect(JSON.parse(items.get(LOCAL_KEPT_RECORDING_KEY)!)).toEqual(record);
-      expect(localStorageKeptRecordingStore.read()).toEqual(record);
+      const a = localStorageKeptRecordingStore(ACCOUNT_A);
+      const key = `${LOCAL_KEPT_RECORDING_KEY}:${ACCOUNT_A}`;
+      a.write(record);
+      expect(JSON.parse(items.get(key)!)).toEqual(record);
+      expect(a.read()).toEqual(record);
+      // Keyed by account: another account neither sees nor clears it.
+      const b = localStorageKeptRecordingStore(ACCOUNT_B);
+      expect(b.read()).toBeNull();
+      b.clear();
+      expect(a.read()).toEqual(record);
       // An unknown model falls back to the default rather than losing the recording.
-      items.set(LOCAL_KEPT_RECORDING_KEY, JSON.stringify({ ...record, model: "Retired" }));
-      expect(localStorageKeptRecordingStore.read()?.model).toBe("QuantizedTinyEn");
+      items.set(key, JSON.stringify({ ...record, model: "Retired" }));
+      expect(a.read()?.model).toBe("QuantizedTinyEn");
       for (const raw of ["not json", "null", JSON.stringify({ ...record, audioPath: "" })]) {
-        items.set(LOCAL_KEPT_RECORDING_KEY, raw);
-        expect(localStorageKeptRecordingStore.read()).toBeNull();
+        items.set(key, raw);
+        expect(a.read()).toBeNull();
       }
-      localStorageKeptRecordingStore.clear();
-      expect(items.has(LOCAL_KEPT_RECORDING_KEY)).toBe(false);
+      a.clear();
+      expect(items.has(key)).toBe(false);
     } finally {
       if (original) Object.defineProperty(globalThis, "localStorage", original);
       else delete (globalThis as { localStorage?: unknown }).localStorage;
     }
+  });
+});
+
+describe("kept on-device recordings: accounts, closed views and saves in flight", () => {
+  test("another account is never offered a kept recording, nor blocked by it; its owner is offered it on return", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    let signedIn = ACCOUNT_A;
+    const opts = keptOptions(kept, () => signedIn);
+    const a = createLocalTranscriber(bridge, opts);
+    const { sessionId } = await a.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(stopWith(bridge, a, sessionId, failedTranscription(sessionId, "stalled"))).rejects.toBeInstanceOf(
+      TranscriptionFailedError,
+    );
+    await a.stopCaptureOnUnmount();
+
+    // Sign out, sign in as B, same launch: A's failed job is still in memory.
+    signedIn = ACCOUNT_B;
+    const b = createLocalTranscriber(bridge, opts);
+    expect(b.adoptTranscription()).toBeNull();
+    expect(b.resumeKeptRecording()).toBeNull();
+    const second = await b.start({ model: "QuantizedTinyEn", language: "en" });
+    const result = (await stopWith(bridge, b, second.sessionId, completedEvent(second.sessionId))) as OnDeviceTranscriptResult;
+    b.finishOnDeviceTranscript(result);
+    expect(kept.records.get(ACCOUNT_B)).toBeUndefined();
+    // B never overwrote or cleared A's.
+    expect(kept.value?.sessionId).toBe(sessionId);
+    await b.stopCaptureOnUnmount();
+
+    signedIn = ACCOUNT_A;
+    const back = createLocalTranscriber(bridge, opts);
+    await expect(back.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+    const transcribing = back.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(transcribing).resolves.toMatchObject({ sessionId });
+  });
+
+  test("another account is not offered a recording kept across a relaunch either", async () => {
+    const kept = memoryKept();
+    kept.write({
+      sessionId: "sess-a",
+      startedAt: "2026-10-05T09:00:00.000Z",
+      audioPath: "/vault/sessions/sess-a/audio.mp3",
+      model: "QuantizedTinyEn",
+      language: "en",
+    });
+    const b = relaunch(kept, ACCOUNT_B);
+    expect(b.t.resumeKeptRecording()).toBeNull();
+    await expect(b.t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    await expect(relaunch(kept, ACCOUNT_A).t.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+  });
+
+  test("without an account nothing is kept across a relaunch", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, { kept: kept.forAccount });
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(stopWith(bridge, t, sessionId, failedTranscription(sessionId, "stalled"))).rejects.toBeInstanceOf(
+      TranscriptionFailedError,
+    );
+    expect(kept.records.size).toBe(0);
+  });
+
+  test("closing the view while recording keeps the recording; the next view offers it and Transcribe saves it", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge, keptOptions(kept));
+    const { sessionId } = await closed.start({ model: "QuantizedSmallEn", language: "en" });
+    const closing = closed.stopCaptureOnUnmount();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await closing;
+    expect(kept.value).toMatchObject({ sessionId, audioPath: "/vault/sessions/x/audio.mp3", model: "QuantizedSmallEn" });
+    expect(startTranscriptionCalls(bridge)).toBe(0);
+
+    const next = createLocalTranscriber(bridge, keptOptions(kept));
+    await expect(next.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+    const transcribing = next.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    const result = (await transcribing) as OnDeviceTranscriptResult;
+    expect(result).toMatchObject({ sessionId, model: "QuantizedSmallEn" });
+    next.finishOnDeviceTranscript(result);
+    expect(kept.value).toBeNull();
+  });
+
+  test("closing the view keeps a partial recording too, but nothing when capture left no audio file", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const partial = createLocalTranscriber(bridge, keptOptions(kept));
+    const first = await partial.start({ model: "QuantizedTinyEn", language: "en" });
+    const closing = partial.stopCaptureOnUnmount();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(first.sessionId, { error: "ActorFailed(mic stream closed)" }));
+    await closing;
+    expect(kept.value?.sessionId).toBe(first.sessionId);
+    kept.records.clear();
+
+    const empty = createLocalTranscriber(bridge, keptOptions(kept));
+    const second = await empty.start({ model: "QuantizedTinyEn", language: "en" });
+    const closingEmpty = empty.stopCaptureOnUnmount();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(second.sessionId, { audio_path: null, error: "no input" }));
+    await closingEmpty;
+    expect(kept.value).toBeNull();
+  });
+
+  test("a recording whose transcript is being saved is not offered as kept; a failed save offers it again", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, keptOptions(kept));
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const result = (await stopWith(bridge, t, sessionId, completedEvent(sessionId))) as OnDeviceTranscriptResult;
+    let failSave!: (err: Error) => void;
+    const saving = new Promise<void>((_, reject) => {
+      failSave = reject;
+    });
+    t.savingOnDeviceTranscript(result, saving);
+    await t.stopCaptureOnUnmount();
+
+    // The view closed mid-save: the next one does not offer what is being saved.
+    const next = createLocalTranscriber(bridge, keptOptions(kept));
+    expect(next.resumeKeptRecording()).toBeNull();
+    failSave(new Error("TinyCloud unavailable"));
+    await saving.catch(() => {});
+    await expect(next.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
   });
 });
 
