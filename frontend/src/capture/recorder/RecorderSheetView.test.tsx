@@ -89,6 +89,8 @@ describe("RecorderSheetView", () => {
     const html = render({ phase: "saving", savePercent: 42 });
     expect(html).toContain("Saving to your space · 42%");
     expect(disabled(stopButton(html))).toBe(true);
+    // Disabled, it reads as a neutral status bar at full contrast, not a faded live one.
+    expect(stopButton(html)).toContain("disabled:bg-surface-2 disabled:text-foreground disabled:opacity-100");
     expect(html).toContain("Saving…");
   });
 

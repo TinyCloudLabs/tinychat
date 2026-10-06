@@ -1,15 +1,16 @@
 // One recorder controller: only these files may drive the native VoiceNotes
 // plugin (listen, start, stop, delete audio). A second caller would mean a
 // second recorder racing the first for the microphone and its saves. The
-// redesign's recorder (TC-761) moved the controller to useVoiceNoteRecorder
-// and the saves to recorderSaves.
+// redesign's recorder (TC-761) moved the controller to
+// voiceNoteRecorderController (wrapped by useVoiceNoteRecorder) and the saves
+// to recorderSaves.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const SRC = new URL(".", import.meta.url).pathname;
 const ALLOWED = [
-  "capture/recorder/useVoiceNoteRecorder.ts",
+  "capture/recorder/voiceNoteRecorderController.ts",
   "lib/voiceNotes/recorderSaves.ts",
   "chat/OfflineVoiceNotes.tsx",
   "lib/voiceNotes/nativeVoiceNotes.ts",
@@ -32,6 +33,6 @@ test("only the recorder's own files call the VoiceNotes plugin", () => {
   expect(callers.filter((path) => !ALLOWED.includes(path))).toEqual([]);
   // The guard still sees the callers it exists for.
   expect(callers).toEqual(
-    expect.arrayContaining(["capture/recorder/useVoiceNoteRecorder.ts", "lib/voiceNotes/recorderSaves.ts", "chat/OfflineVoiceNotes.tsx"]),
+    expect.arrayContaining(["capture/recorder/voiceNoteRecorderController.ts", "lib/voiceNotes/recorderSaves.ts", "chat/OfflineVoiceNotes.tsx"]),
   );
 });

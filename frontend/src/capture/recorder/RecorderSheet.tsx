@@ -155,7 +155,8 @@ export function RecorderSheetView({ recorder, onOpenNote, consentAsking }: Recor
               variant="live"
               onClick={recorder.stop}
               disabled={!live}
-              className="h-14 w-full justify-start gap-3 rounded-xl px-5 text-body font-semibold land:col-start-2 land:row-start-2"
+              // Starting and saving: a neutral status bar at full contrast, not a faded live one.
+              className="h-14 w-full justify-start gap-3 rounded-xl px-5 text-body font-semibold disabled:bg-surface-2 disabled:text-foreground disabled:opacity-100 land:col-start-2 land:row-start-2"
               data-testid="voice-note-stop"
             >
               {saving || phase === "starting" ? (

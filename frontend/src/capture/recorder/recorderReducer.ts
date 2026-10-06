@@ -25,6 +25,8 @@ export interface RecorderState {
   /** How the last recording ended; drives the receipt until dismissed. */
   outcome: "saved" | "failed" | null;
   lastSaved: { id: string; durationMs: number; at: number } | null;
+  /** The recording behind a "Kept on this phone" receipt, so a later Save now can land it. */
+  failedRecording: { id: string; durationMs: number } | null;
   /**
    * The limit stopped the recording and its save is running: a Stop that lost
    * that race (`not_recording`) must not reset the recorder under it.
@@ -45,7 +47,7 @@ export type RecorderEvent =
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
   | { type: "SAVED"; id: string; durationMs: number; at: number }
-  | { type: "SAVE_FAILED"; error: string }
+  | { type: "SAVE_FAILED"; error: string; recording: { id: string; durationMs: number } | null }
   /** The recorder stopped itself at its limit; `captured` is false when it recorded nothing. */
   | { type: "AUTO_STOPPED"; notice: string; captured: boolean }
   /** Back to idle without an outcome (the recording is being saved elsewhere). */
@@ -66,6 +68,7 @@ export const initialRecorderState: RecorderState = {
   error: null,
   outcome: null,
   lastSaved: null,
+  failedRecording: null,
   autoSaving: false,
 };
 
@@ -78,7 +81,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
   switch (event.type) {
     case "START_REQUESTED":
       if (state.phase !== "idle") return state;
-      return { ...state, phase: "starting", error: null, limitNotice: null, outcome: null, savePercent: null };
+      return { ...state, phase: "starting", error: null, limitNotice: null, outcome: null, failedRecording: null, savePercent: null };
     case "STARTED":
       if (state.phase !== "starting") return state;
       return {
@@ -116,14 +119,17 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       if (state.phase !== "stopping" && state.phase !== "saving") return state;
       return { ...state, phase: "saving", savePercent: event.percent };
     case "SAVED":
+      // Never over a recording under way (a pending save landing elsewhere).
+      if (state.phase === "starting" || state.phase === "recording") return state;
       return {
         ...toIdle(state),
         outcome: "saved",
         error: null,
+        failedRecording: null,
         lastSaved: { id: event.id, durationMs: event.durationMs, at: event.at },
       };
     case "SAVE_FAILED":
-      return { ...toIdle(state), outcome: "failed", error: event.error };
+      return { ...toIdle(state), outcome: "failed", error: event.error, failedRecording: event.recording };
     case "AUTO_STOPPED":
       if (!event.captured) {
         const failed = { ...state, limitNotice: event.notice, error: `${event.notice} The recording captured no audio.` };
@@ -133,6 +139,6 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "RESET":
       return toIdle(state);
     case "DISMISSED":
-      return { ...state, outcome: null, error: null };
+      return { ...state, outcome: null, error: null, failedRecording: null };
   }
 }

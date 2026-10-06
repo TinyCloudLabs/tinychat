@@ -6,7 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { HeaderLiveChipView } from "./HeaderLiveChip";
 import { IslandView, islandState } from "./Island";
 import { RailLiveButtonView } from "./RailLiveButton";
-import { islandShown, type RecorderValue } from "./RecorderProvider";
+import { RecordButton } from "./RecordButton";
+import { islandShown, StaticRecorderProvider, type RecorderValue } from "./RecorderProvider";
 import { SidebarLiveCardView } from "./SidebarLiveCard";
 
 const noop = () => {};
@@ -103,5 +104,33 @@ describe("the other live controls", () => {
     expect(html).toContain("hidden");
     expect(html).toContain("[html[data-keyboard=open]_&amp;]:inline-flex");
     expect(html).toContain('aria-label="Recording. Open recorder"');
+  });
+});
+
+describe("Record while a receipt is showing", () => {
+  const render = (patch: Partial<RecorderValue>, variant: "icon" | "action") =>
+    renderToStaticMarkup(
+      <StaticRecorderProvider value={value({ phase: "idle", startedAt: null, ...patch })}>
+        <RecordButton variant={variant} />
+      </StaticRecorderProvider>,
+    );
+
+  test("idle: Capture's Record and the header mic record", () => {
+    expect(render({}, "action")).toContain('data-testid="voice-note-record"');
+    expect(render({}, "action")).toContain('aria-label="Record a voice note"');
+    expect(render({}, "icon")).toContain('aria-label="Record a voice note"');
+  });
+
+  test("a saved or failed receipt, or a recording under way: both open the recorder instead", () => {
+    for (const patch of [{ outcome: "saved" as const }, { outcome: "failed" as const }, { phase: "recording" as const }]) {
+      const action = render(patch, "action");
+      expect(action).toContain('aria-label="Open recorder"');
+      expect(action).not.toContain('data-testid="voice-note-record"');
+      expect(render(patch, "icon")).toContain('aria-label="Open recorder"');
+    }
+  });
+
+  test("nothing outside the phone app", () => {
+    expect(render({ available: false }, "action")).toBe("");
   });
 });

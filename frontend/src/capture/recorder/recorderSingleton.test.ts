@@ -24,6 +24,13 @@ test("useVoiceNoteRecorder is called only by RecorderProvider", () => {
   expect(provider.match(/\buseVoiceNoteRecorder\(/g)).toHaveLength(1);
 });
 
+test("the controller is created only by useVoiceNoteRecorder", () => {
+  const creators = files.filter(
+    (file) => /\bcreateVoiceNoteRecorderController\(/.test(file.text) && !file.path.endsWith("voiceNoteRecorderController.ts"),
+  );
+  expect(creators.map((file) => file.path)).toEqual(["capture/recorder/useVoiceNoteRecorder.ts"]);
+});
+
 test("the save singletons are defined only in recorderSaves.ts", () => {
   for (const definition of [/function savePendingRecordings\(/, /function saveRecording\(/, /const savesInFlight = /, /const savedThisSession = /, /let pendingRunInFlight/]) {
     expect(files.filter((file) => definition.test(file.text)).map((file) => file.path)).toEqual(["lib/voiceNotes/recorderSaves.ts"]);

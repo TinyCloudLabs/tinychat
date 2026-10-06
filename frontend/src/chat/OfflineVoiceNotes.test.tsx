@@ -179,8 +179,8 @@ describe("App wiring of offline voice notes", () => {
     expect(app).not.toContain("voiceNoteOpen");
     expect(app).not.toContain("offlineRecordingRef");
     expect(app).toContain("<OfflineVoiceNotes />");
-    const hook = read("../capture/recorder/useVoiceNoteRecorder.ts");
-    expect(hook).toContain("void VoiceNotes.status().then((status) => {");
-    expect(hook).toContain('type: "PICKED_UP",');
+    const controller = read("../capture/recorder/voiceNoteRecorderController.ts");
+    expect(controller).toContain("void VoiceNotes.status().then((status) => {");
+    expect(controller).toContain('type: "PICKED_UP",');
   });
 });

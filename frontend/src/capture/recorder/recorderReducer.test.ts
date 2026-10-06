@@ -77,7 +77,7 @@ describe("recorderReducer", () => {
   });
 
   test("a failed save keeps the note on the phone and says so", () => {
-    const failed = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: 10 }, { type: "SAVE_FAILED", error: "offline" }], recording());
+    const failed = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: 10 }, { type: "SAVE_FAILED", error: "offline", recording: { id: "rec-1", durationMs: 42_000 } }], recording());
     expect(failed).toMatchObject({ phase: "idle", outcome: "failed", error: "offline" });
     expect(recorderReducer(failed, { type: "DISMISSED" })).toMatchObject({ outcome: null, error: null });
   });
