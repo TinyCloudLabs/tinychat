@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.7
+
+### Minor Changes
+
+- f5f20ac: Record from Capture or the chat header. A focused recorder shows where your audio goes, minimises to a live island that follows you, and shows a receipt when your note lands in your space.
+
 ## 0.6.0-beta.6
 
 ### Minor Changes
