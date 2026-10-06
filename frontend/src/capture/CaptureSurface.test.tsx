@@ -76,7 +76,7 @@ describe("CaptureSurface", () => {
     expect(source.match(/<RecordButton\b/g)).toHaveLength(1);
     expect(source).toContain('record={<RecordButton variant="action" />}');
     // The recorder's notes on the phone and its limit notice are In progress rows.
-    expect(source).toContain("pendingCount: recorder.pending.count,");
+    expect(source).toContain("listing: recorder.pending.listing,");
     // App and the harness hand `active` from the screen's destination.
     const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
     expect(app).toContain('active={screen.destination === "capture"}');

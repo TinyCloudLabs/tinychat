@@ -20,7 +20,7 @@ import {
 import { errorCode, messageOf, pendingStore, saveRecording, savePendingRecordings } from "@/lib/voiceNotes/recorderSaves";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { limitNoticeText } from "./recorderCopy";
-import { initialRecorderState, recorderReducer, type RecorderEvent, type RecorderState } from "./recorderReducer";
+import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderEvent, type RecorderState } from "./recorderReducer";
 
 export interface VoiceNoteRecorderControllerOptions {
   tcw: TinyCloudWeb;
@@ -99,9 +99,25 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     }
   };
 
+  /**
+   * Save another recording than the one on screen (a retained auto-stop from before
+   * a reload) without touching the recorder's state: it lands, or stays on the phone
+   * and is counted there.
+   */
+  const saveInBackground = async (recording: VoiceNoteRecording) => {
+    const outcome = await saveRecording(tcw, recording);
+    if (outcome.kind === "saved") landed(recording, outcome.audio ?? undefined);
+    if (outcome.kind === "failed") void pendingStore.refresh(outcome.failure);
+    else if (outcome.kind !== "in-flight") void pendingStore.refresh(outcome.cleanupError ?? undefined);
+  };
+
   const onAutoStopped = (event: VoiceNoteAutoStopEvent) => {
-    send({ type: "AUTO_STOPPED", notice: limitNoticeText(event.maxDurationMs), captured: event.recording !== null });
     const recording = event.recording;
+    if (!autoStopIsCurrent(state, recording?.id ?? null)) {
+      if (recording) void saveInBackground(recording);
+      return;
+    }
+    send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: limitNoticeText(event.maxDurationMs), captured: recording !== null });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -130,25 +146,35 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
       ];
-      // A WebView reload mid-recording (or a recording started offline) leaves the native recorder running.
-      void VoiceNotes.status().then((status) => {
-        if (!attached || status.state === "idle") return;
-        send({
-          type: "PICKED_UP",
-          id: status.id,
-          startedAt: Date.now() - status.elapsedMs,
-          maxDurationMs: status.maxDurationMs,
-          mic: { state: status.state, reason: status.reason },
+      // Once the listeners are in (the shell hands them its retained events as they
+      // attach), ask what is running: a WebView reload mid-recording, or a recording
+      // started offline, leaves the native recorder running. Record waits for both.
+      void Promise.all(handles)
+        .then(() => VoiceNotes.status())
+        .then(
+          (status) => {
+            if (!attached || status.state === "idle") return;
+            send({
+              type: "PICKED_UP",
+              id: status.id,
+              startedAt: Date.now() - status.elapsedMs,
+              maxDurationMs: status.maxDurationMs,
+              mic: { state: status.state, reason: status.reason },
+            });
+          },
+          (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
+        )
+        .finally(() => {
+          if (attached) send({ type: "RECONCILED" });
         });
-      });
       return () => {
         attached = false;
         for (const handle of handles) void handle.then((h) => h.remove());
       };
     },
     async record() {
-      // Never over a recording, and never over a receipt still being shown.
-      if (!available || state.phase !== "idle" || state.outcome !== null) return;
+      // Never before the recorder is reconciled, over a recording, or over a receipt still being shown.
+      if (!available || !state.ready || state.phase !== "idle" || state.outcome !== null) return;
       send({ type: "START_REQUESTED" });
       const requested = voiceNoteMaxDurationMs();
       try {

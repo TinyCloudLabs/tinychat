@@ -4,20 +4,21 @@
 // phone (with Save now) or stopped at the limit. A row opens its sheet; End,
 // Continue and Save now sit beside the row, never inside it. The Library's
 // rows join these later (PR6).
-import { FileAudioIcon, Loader2Icon, MicIcon, VideoIcon } from "lucide-react";
+import { AlertCircleIcon, FileAudioIcon, Loader2Icon, MicIcon, VideoIcon } from "lucide-react";
 
 import { uploadStatusText } from "@/chat/AudioUploadPanel";
 import { ACTIVE_STATUSES, meetingTitle, statusLabel } from "@/chat/TranscriberSection";
 import { Button } from "@/components/ui/button";
 import type { UploadState } from "@/lib/audioUpload";
+import type { PendingListing } from "@/lib/voiceNotes/recorderSaves";
 import type { TranscriberMeeting } from "@/lib/transcriberApi";
 import { transcriberMeetingTitle } from "@/lib/transcriberSave";
 import type { PausedUpload } from "./upload/pausedUpload";
 
 /** The recorder's part of In progress (the phone app). */
 export interface VoiceInProgress {
-  /** Notes still only on this phone. */
-  pendingCount: number;
+  /** What the phone last listed as still only on it (unknown, a count, or a listing that failed). */
+  listing: PendingListing;
   /** A save of them is running. */
   saving: boolean;
   lastError: string | null;
@@ -60,9 +61,12 @@ function RowText(props: { title: string; meta: string; spinning?: boolean }) {
 export function InProgressRowsView(props: InProgressRowsViewProps) {
   const { upload, paused, meetings, voice } = props;
   const showPaused = upload === null && paused !== null;
-  const voicePending = voice !== undefined && voice.pendingCount > 0;
+  const voiceCount = voice?.listing.state === "ok" ? voice.listing.count : 0;
+  const voicePending = voiceCount > 0;
+  // A listing that failed is never shown as "nothing pending": it gets its own row with Try again.
+  const voiceListFailed = voice?.listing.state === "error" ? voice.listing.message : null;
   const voiceLimit = voice?.limitNotice ?? null;
-  if (upload === null && !showPaused && meetings.length === 0 && !voicePending && !voiceLimit) return null;
+  if (upload === null && !showPaused && meetings.length === 0 && !voicePending && !voiceListFailed && !voiceLimit) return null;
   const uploadBusy = upload !== null && upload.stage !== "saved" && upload.stage !== "failed" && upload.stage !== "elsewhere";
   return (
     <section aria-labelledby="in-progress-title" data-testid="in-progress">
@@ -94,13 +98,24 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
             <span className="flex min-h-14 min-w-[12rem] flex-1 items-center gap-3 px-1">
               <MicIcon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
               <RowText
-                title={voice.pendingCount === 1 ? "1 voice note on this phone" : `${voice.pendingCount} voice notes on this phone`}
+                title={voiceCount === 1 ? "1 voice note on this phone" : `${voiceCount} voice notes on this phone`}
                 meta={voice.lastError ?? "Not in your space yet"}
                 spinning={voice.saving}
               />
             </span>
             <Button type="button" size="sm" onClick={voice.onSaveNow} disabled={voice.saving} data-testid="voice-note-retry">
               Save now
+            </Button>
+          </li>
+        )}
+        {voice && voiceListFailed && (
+          <li className={ROW} data-testid="voice-note-list-failed">
+            <span className="flex min-h-14 min-w-[12rem] flex-1 items-center gap-3 px-1">
+              <AlertCircleIcon className="size-5 shrink-0 text-warning" aria-hidden="true" />
+              <RowText title="Couldn't check this phone for unsaved notes" meta={voiceListFailed} spinning={voice.saving} />
+            </span>
+            <Button type="button" size="sm" variant="outline" onClick={voice.onSaveNow} disabled={voice.saving} data-testid="voice-note-list-retry">
+              Try again
             </Button>
           </li>
         )}

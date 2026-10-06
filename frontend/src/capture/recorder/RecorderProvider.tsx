@@ -25,6 +25,8 @@ export const RECEIPT_MS = 3000;
 
 export interface RecorderValue {
   available: boolean;
+  /** The recorder has heard status() and its retained events; Record waits until then. */
+  ready: boolean;
   phase: RecorderPhase;
   mic: RecorderMic;
   /** Views tick their own timers from this (useElapsed); the provider never ticks. */
@@ -141,6 +143,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const value = useMemo<RecorderValue>(
     () => ({
       available: recorder.available,
+      ready: state.ready,
       phase: state.phase,
       mic: state.mic,
       startedAt: state.startedAt,
@@ -187,7 +190,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   );
 }
 
-const NO_PENDING: PendingSnapshot = { count: 0, running: false, lastError: null };
+const NO_PENDING: PendingSnapshot = { listing: { state: "ok", count: 0 }, running: false, lastError: null };
 const noop = () => {};
 
 /**
@@ -199,6 +202,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
   const value = useMemo<RecorderValue>(
     () => ({
       available: true,
+      ready: true,
       phase: "idle",
       mic: { state: "idle", reason: null },
       startedAt: null,

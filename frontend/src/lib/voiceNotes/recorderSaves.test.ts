@@ -16,6 +16,21 @@ mock.module("./voiceNoteStore", () => ({
 }));
 const saves = await import("./recorderSaves");
 
+/** A fresh copy of the module, as after a WebView reload: its in-memory guards and store are new. */
+let instances = 0;
+const reloaded = () => import(`./recorderSaves.ts?reload=${++instances}`) as Promise<typeof saves>;
+
+/** localStorage for one test (bun has none), as the WebView keeps it across reloads. */
+function withStorage(): Map<string, string> {
+  const items = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  };
+  return items;
+}
+
 const tcw = {} as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
@@ -68,6 +83,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   fakeVoiceNoteStore.save = null;
+  delete (globalThis as { localStorage?: unknown }).localStorage;
 });
 
 describe("savePendingRecordings", () => {
@@ -97,7 +113,11 @@ describe("savePendingRecordings", () => {
     expect(run.saved).toEqual([]);
     expect(run.left.map((r) => r.id)).toEqual(["a", "b"]);
     expect(run.lastError).toBe("The network connection was lost.");
-    expect(saves.pendingStore.snapshot()).toMatchObject({ count: 2, running: false, lastError: "The network connection was lost." });
+    expect(saves.pendingStore.snapshot()).toMatchObject({
+      listing: { state: "ok", count: 2 },
+      running: false,
+      lastError: "The network connection was lost.",
+    });
   });
 
   test("saved, but the phone keeps its copy twice: never hidden, never uploaded again, removed on the third try", async () => {
@@ -109,19 +129,19 @@ describe("savePendingRecordings", () => {
     const first = await saves.savePendingRecordings(tcw);
     expect(first.saved.map((r) => r.id)).toEqual(["kept"]);
     expect(first.lastError).toContain("Saved to your space, but this phone kept its copy");
-    expect(saves.pendingStore.snapshot().count).toBe(1);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
 
     // Save now: only the copy is left to remove; it fails again and is still counted, not re-saved.
     const second = await saves.savePendingRecordings(tcw);
     expect(second.saved).toEqual([]);
     expect(second.left).toEqual([]);
     expect(second.lastError).toContain("this phone kept its copy");
-    expect(saves.pendingStore.snapshot().count).toBe(1);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
 
     // The third time the copy goes, and the count follows the phone.
     const third = await saves.savePendingRecordings(tcw);
     expect(third.lastError).toBeNull();
-    expect(saves.pendingStore.snapshot().count).toBe(0);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
     expect(saveCalls).toBe(1);
     expect(phone.deletes).toBe(3);
   });
@@ -141,15 +161,55 @@ describe("saveRecording", () => {
   });
 });
 
+describe("after a reload", () => {
+  test("saved, the delete failed, then a reload: the next run removes the copy only, never saves it again", async () => {
+    const storage = withStorage();
+    const before = await reloaded();
+    const note = recording("reload", 1);
+    phone.pending = [note];
+    phone.deleteFailures = 1;
+    const first = await before.savePendingRecordings(tcw);
+    expect(first.saved.map((r) => r.id)).toEqual(["reload"]);
+    expect(saveCalls).toBe(1);
+    // The phone kept its copy; the note is marked as in the space, durably.
+    expect(phone.pending.map((r) => r.id)).toEqual(["reload"]);
+    expect(JSON.parse(storage.get(saves.VOICE_NOTE_CLOUD_SAVED_KEY)!)).toEqual(["reload"]);
+
+    // A fresh module: its in-memory guards are gone; the phone and localStorage are not.
+    const after = await reloaded();
+    const second = await after.savePendingRecordings(tcw);
+    expect(saveCalls).toBe(1);
+    expect(second.saved).toEqual([]);
+    expect(second.left).toEqual([]);
+    expect(phone.pending).toEqual([]);
+    expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(false);
+    expect(after.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+  });
+
+  test("a cold start whose listing fails says so, never \"nothing pending\"", async () => {
+    const cold = await reloaded();
+    expect(cold.pendingStore.snapshot().listing).toEqual({ state: "unknown" });
+    __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
+    const run = await cold.savePendingRecordings(tcw);
+    expect(run).toEqual({ total: 0, left: [], saved: [], lastError: "Could not check this phone for unsaved notes: no bridge" });
+    expect(cold.pendingStore.snapshot()).toEqual({
+      listing: { state: "error", message: "Could not check this phone for unsaved notes: no bridge" },
+      running: false,
+      lastError: null,
+    });
+    expect(cold.pendingCount(cold.pendingStore.snapshot())).toBe(0);
+  });
+});
+
 describe("pendingStore", () => {
-  test("refresh counts what is on the phone; a listing that fails is told, never zeroed", async () => {
+  test("refresh lists the phone; a listing that fails is an error state, never a cached count", async () => {
     phone.pending = [recording("a", 1), recording("b", 2)];
     await saves.pendingStore.refresh(null);
     const snapshot = saves.pendingStore.snapshot();
-    expect(snapshot.count).toBe(2);
+    expect(snapshot.listing).toEqual({ state: "ok", count: 2 });
     expect(saves.pendingStore.snapshot()).toBe(snapshot);
     __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
     await saves.pendingStore.refresh(null);
-    expect(saves.pendingStore.snapshot()).toMatchObject({ count: 2, lastError: "Could not list the notes on this phone: no bridge" });
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this phone for unsaved notes: no bridge" });
   });
 });

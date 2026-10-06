@@ -5,8 +5,9 @@
 // module; a second set would save a recording twice.
 //
 // `pendingStore` is what the recorder views show about recordings still only
-// on this phone: how many, whether a save of them is running, and the last
-// failure. `savePendingRecordings` publishes to it when it starts and ends.
+// on this phone: what the phone last listed (unknown, a count, or a listing
+// that failed), whether a save of them is running, and the last failure.
+// `savePendingRecordings` publishes to it when it starts and ends.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -35,10 +36,46 @@ export function errorCode(error: unknown): string | null {
 /** Recordings being uploaded right now, across mounts (StrictMode mounts effects twice). */
 const savesInFlight = new Set<string>();
 /**
- * Recordings this app session saved: a late "autoStopped" event or a pending retry
- * that still lists one must not save it again (its device copy may already be gone).
+ * Recordings this app session saved and removed from the phone: a late "autoStopped"
+ * event or a pending retry that still lists one must not save it again.
  */
 const savedThisSession = new Set<string>();
+
+/**
+ * Recordings in the space whose device copy is not yet removed, kept across reloads
+ * (localStorage): a pending run only removes their copy, never saves them again.
+ * Marked before the copy is deleted, cleared once it is.
+ */
+export const VOICE_NOTE_CLOUD_SAVED_KEY = "exo.voiceNotes.cloudSaved";
+
+function cloudSavedStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function loadCloudSaved(): Set<string> {
+  const raw = cloudSavedStorage()?.getItem(VOICE_NOTE_CLOUD_SAVED_KEY);
+  if (!raw) return new Set();
+  try {
+    const ids: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
+  } catch (caught) {
+    console.warn("[VoiceNotes] The saved-notes marker could not be read", caught);
+    return new Set();
+  }
+}
+
+const cloudSaved = loadCloudSaved();
+
+function persistCloudSaved(): void {
+  const storage = cloudSavedStorage();
+  if (!storage) return;
+  if (cloudSaved.size === 0) storage.removeItem(VOICE_NOTE_CLOUD_SAVED_KEY);
+  else storage.setItem(VOICE_NOTE_CLOUD_SAVED_KEY, JSON.stringify([...cloudSaved]));
+}
 
 /**
  * What saving one recording came to. Saving to the space and removing the
@@ -66,14 +103,19 @@ function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-/** Remove a saved recording's device copy; the error message when the phone kept it. */
+/**
+ * Remove a saved recording's device copy; the error message when the phone kept it.
+ * The durable marker goes only once the copy is gone.
+ */
 async function removeDeviceCopy(id: string): Promise<string | null> {
   try {
     await VoiceNotes.deleteAudio({ id });
-    return null;
   } catch (caught) {
     return `Saved to your space, but this phone kept its copy: ${messageOf(caught)}`;
   }
+  savedThisSession.add(id);
+  if (cloudSaved.delete(id)) persistCloudSaved();
+  return null;
 }
 
 /**
@@ -89,8 +131,10 @@ export async function saveRecording(
   onProgress?: (storedBytes: number, totalBytes: number) => void,
 ): Promise<SaveOutcome> {
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
-  // Saved earlier in this session (a late "autoStopped" event, or a copy the phone kept).
-  if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: await removeDeviceCopy(recording.id) };
+  // In the space, with its copy still on the phone (this session or an earlier one): remove the copy only.
+  if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: await removeDeviceCopy(recording.id) };
+  // Saved and removed earlier in this session (a late "autoStopped" event).
+  if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   savesInFlight.add(recording.id);
   try {
     const native = nativeRecordingSource(recording);
@@ -108,7 +152,9 @@ export async function saveRecording(
       : native;
     const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress });
     if (!saved.ok) return { kind: "failed", failure: saved.error.message };
-    savedThisSession.add(recording.id);
+    // Durable before the copy is deleted: a reload in between, or a delete that fails, never saves it twice.
+    cloudSaved.add(recording.id);
+    persistCloudSaved();
     const cleanupError = await removeDeviceCopy(recording.id);
     const whole = keep && kept.reduce((n, c) => n + c.byteLength, 0) === native.size;
     return {
@@ -144,7 +190,15 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   if (pendingRunInFlight) return pendingRunInFlight;
   publishPending({ running: true });
   pendingRunInFlight = (async () => {
-    const { recordings } = await VoiceNotes.listPending();
+    let recordings: VoiceNoteRecording[];
+    try {
+      ({ recordings } = await VoiceNotes.listPending());
+    } catch (caught) {
+      // Nothing is known about the phone: told as such, never as "nothing pending".
+      const message = listingFailure(caught);
+      publishPending({ listing: { state: "error", message } });
+      return { total: 0, left: [], saved: [], lastError: message };
+    }
     const left: VoiceNoteRecording[] = [];
     const saved: VoiceNoteRecording[] = [];
     let lastError: string | null = null;
@@ -169,15 +223,23 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   return pendingRunInFlight;
 }
 
+/** What the phone last listed as pending: not yet asked, a count, or a listing that failed. */
+export type PendingListing = { state: "unknown" } | { state: "ok"; count: number } | { state: "error"; message: string };
+
 /** Recordings still only on this phone, as the recorder views show them. */
 export interface PendingSnapshot {
-  count: number;
+  listing: PendingListing;
   /** A save of them is running (savePendingRecordings). */
   running: boolean;
   lastError: string | null;
 }
 
-let pendingSnapshot: PendingSnapshot = { count: 0, running: false, lastError: null };
+/** How many notes the phone holds, as far as is known (0 when unknown or the listing failed). */
+export function pendingCount(snapshot: Pick<PendingSnapshot, "listing">): number {
+  return snapshot.listing.state === "ok" ? snapshot.listing.count : 0;
+}
+
+let pendingSnapshot: PendingSnapshot = { listing: { state: "unknown" }, running: false, lastError: null };
 const pendingListeners = new Set<() => void>();
 
 function publishPending(patch: Partial<PendingSnapshot>): void {
@@ -202,12 +264,16 @@ export const pendingStore = {
   },
 };
 
-/** The pending count is always what the phone lists; a listing that fails is told, never zeroed. */
+function listingFailure(caught: unknown): string {
+  return `Could not check this phone for unsaved notes: ${messageOf(caught)}`;
+}
+
+/** The pending count is always what the phone lists; a listing that fails is an error state, never zero. */
 async function relistPending(lastError: string | null): Promise<void> {
   try {
     const { recordings } = await VoiceNotes.listPending();
-    publishPending({ count: recordings.length, lastError });
+    publishPending({ listing: { state: "ok", count: recordings.length }, lastError });
   } catch (caught) {
-    publishPending({ lastError: `Could not list the notes on this phone: ${messageOf(caught)}` });
+    publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError });
   }
 }

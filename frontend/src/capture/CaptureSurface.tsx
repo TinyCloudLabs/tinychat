@@ -148,7 +148,7 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
             voice={
               recorder.available
                 ? {
-                    pendingCount: recorder.pending.count,
+                    listing: recorder.pending.listing,
                     saving: recorder.pending.running,
                     lastError: recorder.pending.lastError,
                     limitNotice: recorder.phase === "recording" ? null : recorder.limitNotice,

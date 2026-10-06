@@ -17,6 +17,7 @@ const off = () => noop;
 function value(patch: Partial<RecorderValue> = {}): RecorderValue {
   return {
     available: true,
+    ready: true,
     phase: "recording",
     mic: { state: "recording", reason: null },
     startedAt: Date.now() - 42_000,
@@ -26,7 +27,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     error: null,
     outcome: null,
     lastSaved: null,
-    pending: { count: 0, running: false, lastError: null },
+    pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
     transcription: undefined,
     sheetOpen: true,
     record: noop,

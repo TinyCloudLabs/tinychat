@@ -90,7 +90,7 @@ describe("recorderReducer", () => {
 
   test("AUTO_STOPPED during stopping: the limit's save takes over and a late not_recording cannot reset it", () => {
     const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED" });
-    const auto = recorderReducer(stopping, { type: "AUTO_STOPPED", notice: "Stopped at the 60-minute limit.", captured: true });
+    const auto = recorderReducer(stopping, { type: "AUTO_STOPPED", id: "rec-1", notice: "Stopped at the 60-minute limit.", captured: true });
     expect(auto).toMatchObject({ phase: "saving", autoSaving: true, limitNotice: "Stopped at the 60-minute limit." });
     expect(recorderReducer(auto, { type: "STOP_FAILED", error: null })).toBe(auto);
     const saved = recorderReducer(auto, { type: "SAVED", id: "rec-1", durationMs: 3_600_000, at: 1 });
@@ -98,13 +98,29 @@ describe("recorderReducer", () => {
   });
 
   test("AUTO_STOPPED while recording or idle saves; with nothing captured it says so", () => {
-    expect(recorderReducer(recording(), { type: "AUTO_STOPPED", notice: "n", captured: true }).phase).toBe("saving");
-    expect(recorderReducer(initialRecorderState, { type: "AUTO_STOPPED", notice: "n", captured: true }).phase).toBe("saving");
-    expect(recorderReducer(recording(), { type: "AUTO_STOPPED", notice: "Stopped at the 60-minute limit.", captured: false })).toMatchObject({
+    expect(recorderReducer(recording(), { type: "AUTO_STOPPED", id: "rec-1", notice: "n", captured: true }).phase).toBe("saving");
+    expect(recorderReducer(initialRecorderState, { type: "AUTO_STOPPED", id: "rec-1", notice: "n", captured: true }).phase).toBe("saving");
+    expect(recorderReducer(recording(), { type: "AUTO_STOPPED", id: null, notice: "Stopped at the 60-minute limit.", captured: false })).toMatchObject({
       phase: "idle",
       limitNotice: "Stopped at the 60-minute limit.",
       error: "Stopped at the 60-minute limit. The recording captured no audio.",
     });
+  });
+
+  test("another recording's auto-stop or save result never touches the one on screen", () => {
+    const live = recording();
+    expect(recorderReducer(live, { type: "AUTO_STOPPED", id: "rec-old", notice: "n", captured: true })).toBe(live);
+    expect(recorderReducer(live, { type: "SAVED", id: "rec-old", durationMs: 1, at: 1 })).toBe(live);
+    const starting = recorderReducer(initialRecorderState, { type: "START_REQUESTED" });
+    expect(recorderReducer(starting, { type: "AUTO_STOPPED", id: "rec-old", notice: "n", captured: true })).toBe(starting);
+    const saving = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: 10 }], live);
+    expect(recorderReducer(saving, { type: "SAVE_FAILED", error: "x", recording: { id: "rec-old", durationMs: 1 } })).toBe(saving);
+    expect(recorderReducer(saving, { type: "SAVED", id: "rec-old", durationMs: 1, at: 1 })).toBe(saving);
+  });
+
+  test("Record waits until status() and the retained events are heard", () => {
+    expect(initialRecorderState.ready).toBe(false);
+    expect(recorderReducer(initialRecorderState, { type: "RECONCILED" }).ready).toBe(true);
   });
 
   test("RESET returns to idle keeping what the user still has to read", () => {
