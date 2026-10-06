@@ -68,10 +68,15 @@ describe("CaptureSurface", () => {
     expect(pane(markup, "capture-home").after).toContain('data-testid="capture-actions"');
   });
 
-  test("Record and the Voice notes list exist only while Capture is on screen", () => {
+  test("Record sits in the actions row; the Voice notes list exists only while Capture is on screen", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
     expect(source.match(/<VoiceNotesListCard/g)).toHaveLength(1);
-    expect(source).toMatch(/\{active && \(\s*<>\s*<RecordButton variant="bar" \/>\s*<VoiceNotesListCard/);
+    expect(source).toMatch(/\{active && <VoiceNotesListCard /);
+    // One Record: the actions row's slot, between Upload and Meeting.
+    expect(source.match(/<RecordButton\b/g)).toHaveLength(1);
+    expect(source).toContain('record={<RecordButton variant="action" />}');
+    // The recorder's notes on the phone and its limit notice are In progress rows.
+    expect(source).toContain("pendingCount: recorder.pending.count,");
     // App and the harness hand `active` from the screen's destination.
     const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
     expect(app).toContain('active={screen.destination === "capture"}');
