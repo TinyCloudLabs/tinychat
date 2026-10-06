@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.1
+
+### Patch Changes
+
+- be3e182: Internal: split App.tsx into chat and shell modules.
+
 ## 0.6.0-beta.0
 
 ### Minor Changes
