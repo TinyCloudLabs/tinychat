@@ -5,9 +5,12 @@ import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
 import type { FirefliesSentence } from "./firefliesClient.js";
 import {
   EXPLORER_MEETING_SOURCES,
+  findMeetingId,
   listMeetings,
+  listMeetingsRead,
   meetingSourceLabel,
   readMeetingAudio,
+  readMeetingMetadata,
   readTranscript,
   transcriptCopyText,
   type MeetingAudioRead,
@@ -112,6 +115,7 @@ describe("listMeetings", () => {
         sourceId: "src-1",
         title: "Standup",
         startedAt: "2026-08-01T10:00:00.000Z",
+        durationSecs: null,
       },
       {
         id: "row-2",
@@ -119,6 +123,7 @@ describe("listMeetings", () => {
         sourceId: "src-2",
         title: "Retro",
         startedAt: "2026-07-30T10:00:00.000Z",
+        durationSecs: null,
       },
     ]);
   });
@@ -187,7 +192,7 @@ describe("listMeetings", () => {
       sql: { ok: true, data: { rows: [["row-1", "fireflies", "src-1", null, 1723600000]] } },
     });
     expect(await listMeetings(tcw)).toEqual([
-      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null },
+      { id: "row-1", source: "fireflies", sourceId: "src-1", title: null, startedAt: null, durationSecs: null },
     ]);
   });
 
@@ -217,6 +222,7 @@ describe("listMeetings", () => {
         sourceId: "conf-7",
         title: "Keeper",
         startedAt: null,
+        durationSecs: null,
       },
     ]);
   });
@@ -234,6 +240,82 @@ describe("listMeetings", () => {
 
   it("returns [] when resolving the db throws synchronously", async () => {
     await expect(listMeetings(throwingTcw("sync"))).resolves.toEqual([]);
+  });
+});
+
+describe("listMeetingsRead", () => {
+  it("reads duration_secs, and only a number counts", async () => {
+    const { tcw, sqlCalls } = fakeTcw({
+      sql: {
+        ok: true,
+        data: {
+          rows: [
+            ["row-1", "exo-voice-note", "rec-1", "Voice note", "2026-10-06T09:28:00.000Z", 42],
+            ["row-2", "fireflies", "src-2", "Standup", "2026-10-05T14:00:00.000Z", "1880"],
+          ],
+        },
+      },
+    });
+    const read = await listMeetingsRead(tcw);
+    expect(read.status).toBe("ok");
+    expect(read.status === "ok" && read.meetings.map((m) => m.durationSecs)).toEqual([42, null]);
+    expect(sqlCalls[0].sql).toContain("duration_secs");
+  });
+
+  it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {
+    for (const error of [
+      { code: "STORE_ERROR", message: "no such table: connector_meeting" },
+      { code: "SQL_DB_NOT_FOUND", message: "no database" },
+    ]) {
+      expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error } }).tcw)).toEqual({ status: "ok", meetings: [] });
+    }
+    // An expired session: an error the Library shows (with Try again), never an empty Library.
+    for (const error of [
+      { code: "SQL_ERROR", message: "boom" },
+      { code: "AUTH_UNAUTHORIZED", message: "unauthorized" },
+    ]) {
+      expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error } }).tcw)).toEqual({ status: "failed" });
+    }
+    expect(await listMeetingsRead(throwingTcw())).toEqual({ status: "failed" });
+    expect(await listMeetingsRead(throwingTcw("sync"))).toEqual({ status: "failed" });
+  });
+});
+
+describe("findMeetingId", () => {
+  it("finds a row's id by source and source id, in one read", async () => {
+    const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [["row-9"]] } } });
+    expect(await findMeetingId(tcw, "exo-voice-note", "rec-1")).toEqual({ status: "ok", id: "row-9" });
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0].params).toEqual(["exo-voice-note", "rec-1"]);
+    expect(sqlCalls[0].sql).toContain("WHERE source = ? AND source_id = ?");
+  });
+
+  it("no row (or no table yet) is absent; a store error or a throwing transport is failed", async () => {
+    expect(await findMeetingId(fakeTcw({ sql: { ok: true, data: { rows: [] } } }).tcw, "exo-voice-note", "rec-1")).toEqual({ status: "absent" });
+    expect(
+      await findMeetingId(fakeTcw({ sql: { ok: false, error: { code: "STORE_ERROR", message: "no such table: connector_meeting" } } }).tcw, "s", "x"),
+    ).toEqual({ status: "absent" });
+    expect(await findMeetingId(fakeTcw({ sql: { ok: false, error: { code: "SQL_ERROR", message: "boom" } } }).tcw, "s", "x")).toEqual({
+      status: "failed",
+    });
+    expect(await findMeetingId(throwingTcw(), "s", "x")).toEqual({ status: "failed" });
+  });
+});
+
+describe("readMeetingMetadata", () => {
+  it("reads the row's metadata object; no row or a non-object is absent; a rejected query is failed", async () => {
+    const meta = { capture: "upload", transcript_provider: "assemblyai", assemblyai_account: "own" };
+    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [[JSON.stringify(meta)]] } } }).tcw, "m-1")).toEqual({
+      status: "ok",
+      metadata: meta,
+    });
+    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [] } } }).tcw, "m-1")).toEqual({ status: "absent" });
+    expect(await readMeetingMetadata(fakeTcw({ sql: { ok: true, data: { rows: [["[1,2]"]] } } }).tcw, "m-1")).toEqual({
+      status: "absent",
+    });
+    expect(
+      await readMeetingMetadata(fakeTcw({ sql: { ok: false, error: { code: "SQL_ERROR", message: "boom" } } }).tcw, "m-1"),
+    ).toEqual({ status: "failed" });
   });
 });
 

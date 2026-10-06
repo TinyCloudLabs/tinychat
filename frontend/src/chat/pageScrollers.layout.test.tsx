@@ -41,7 +41,8 @@ describe("page scroller layout", () => {
     expect(rootClasses(markup)).toEqual(expect.arrayContaining(["relative", "h-full", "overflow-y-auto"]));
   });
 
-  for (const path of ["/chat/capture", "/chat/capture/library"]) {
+  // Home, the Library (LibraryScreen) and a note (NoteDetail): one scroller each on a phone.
+  for (const path of ["/chat/capture", "/chat/capture/library", "/chat/capture/library/row-1"]) {
     test(`Capture at ${path}: each pane is its own relative scroller`, () => {
       const markup = renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
@@ -51,11 +52,11 @@ describe("page scroller layout", () => {
           </StaticRecorderProvider>
         </MemoryRouter>,
       );
-      // The surface is the containing block for both panes; home and Library
-      // each scroll on their own (so each keeps its scroll), one hidden.
+      // Home, the Library and the note each scroll on their own (so each keeps
+      // its scroll); only the one on screen is not hidden.
       expect(rootClasses(markup)).toEqual(expect.arrayContaining(["relative", "h-full"]));
       const panes = scrollers(markup);
-      expect(panes).toHaveLength(2);
+      expect(panes).toHaveLength(3);
       const shown = panes.filter((classes) => !classes.includes("hidden"));
       expect(shown).toHaveLength(1);
       expect(shown[0]).toEqual(expect.arrayContaining(["relative", "h-full", "overflow-y-auto"]));

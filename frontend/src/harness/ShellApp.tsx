@@ -7,14 +7,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CaptureSurface } from "@/capture/CaptureSurface";
 import { captureEvents } from "@/capture/captureEvents";
 import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
 import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RecordButton } from "@/capture/recorder/RecordButton";
-import { RecorderProvider } from "@/capture/recorder/RecorderProvider";
+import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { RecorderShell } from "@/capture/recorder/RecorderShell";
+import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
 import { ConnectorsPage } from "@/chat/ConnectorsPage";
@@ -32,7 +34,7 @@ import { useSizeClass } from "@/lib/sizeClass";
 import { useVisualViewportFit } from "@/lib/useVisualViewport";
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { BootSurface } from "@/shell/BootSurface";
-import { PATHS, homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
+import { homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "./stubs";
 
@@ -62,13 +64,19 @@ export interface ShellAppProps {
   state: AppState;
   /** Wraps each surface (the shell invariants count mounts with it). */
   probe?: (id: string, node: ReactNode) => ReactNode;
+  /** The space Capture reads (the screens' Library fixtures); the empty space otherwise. */
+  captureTcw?: TinyCloudWeb;
+  /** A fixed recorder state in place of the real controller (the screens' recorder fixtures). */
+  recorder?: Partial<RecorderValue>;
 }
 
-export function ShellApp({ platform, shim, state, probe = (_id, node) => node }: ShellAppProps) {
+export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder }: ShellAppProps) {
   useVisualViewportFit();
   const location = useLocation();
   const navigate = useNavigate();
   const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  // As App: the recorder's Open goes to the Library, then the note just saved.
+  const openSavedNote = useOpenSavedNote(harnessTcw);
   const { size } = useSizeClass();
   const [selectionView, setSelectionView] = useState<SelectionView>(EMPTY_VIEW);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
@@ -87,6 +95,88 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
     navigate(state === "ready" ? legacy.to : homePath(platform), { replace: true });
   }, [legacy, settled, state, platform, navigate]);
 
+  const recorderShell = (
+    <RecorderShell
+      onOpenNote={openSavedNote}
+      screen={screen}
+      platform={platform}
+      pendingMeetings={0}
+      chat={probe(
+        "chat",
+        <ChatWorkspace
+          tcw={shim.tcw}
+          sessionStore={shim.sessionStore}
+          backendUrl={backendUrl}
+          selectionControllerRef={selectionControllerRef}
+          selectionView={selectionView}
+          memoryRef={memoryRef}
+          onSelectionView={setSelectionView}
+          onSelectionAuthFailure={() => {}}
+          onMemoryUpdated={() => {}}
+          contextTokensFor={contextTokensFor}
+          composerToolbar={
+            <ModelPicker
+              model={selectionView.model}
+              models={MODELS}
+              disabled={!selectionView.canPick}
+              status={selectionView.message}
+              onPick={(id) => selectionControllerRef.current?.pick(id)}
+              presentation={size === "compact" ? "sheet" : "popover"}
+            />
+          }
+          headerRecorder={
+            <>
+              <HeaderLiveChip />
+              <RecordButton variant="icon" />
+            </>
+          }
+          settings
+          billingStatus={null}
+        />,
+      )}
+      capture={probe(
+        "capture",
+        <CaptureSurface
+          tcw={captureTcw}
+          backendUrl={backendUrl}
+          sessionStore={harnessSessionStore}
+          active={screen.destination === "capture"}
+          screen={screen}
+          meetingsSlot={<MeetingsSection backendUrl={backendUrl} sessionStore={harnessSessionStore} />}
+        />,
+      )}
+      connectors={probe(
+        "connectors",
+        <ConnectorsPage tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore} />,
+      )}
+      settings={probe(
+        "settings",
+        <SettingsPage
+          address={HARNESS_ADDRESS}
+          did={HARNESS_DID}
+          spaceId="harness-space"
+          state="ready"
+          error={null}
+          onSignOut={() => {}}
+          signingOut={false}
+          paywallEnabled={false}
+          onBack={() => navigate(-1)}
+          tcw={harnessTcw}
+          memoryRef={memoryRef}
+          onMemoryUpdated={() => {}}
+          onImported={() => {}}
+          billingStatus={null}
+          billingTierName={null}
+          onManagePlan={() => {}}
+          onOpenRates={() => {}}
+          backendUrl={backendUrl}
+          sessionStore={harnessSessionStore}
+        />,
+      )}
+      about={probe("about", <AboutPage onBack={() => navigate(-1)} />)}
+    />
+  );
+
   return (
     <div className="flex flex-col bg-background text-foreground" style={{ height: "var(--tc-app-height, 100dvh)" }}>
       <div className="min-h-0 flex-1">
@@ -99,92 +189,18 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
             openkeyHost={backendUrl}
           >
             <TranscriberLibrarySyncProvider enabled={false} tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore}>
-              <RecorderProvider
-                tcw={harnessTcw}
-                backendUrl={backendUrl}
-                sessionStore={harnessSessionStore}
-                onSaved={() => captureEvents.emit("library-changed")}
-              >
-              <RecorderShell
-                onOpenNote={() => navigate(PATHS.library)}
-                screen={screen}
-                platform={platform}
-                pendingMeetings={0}
-                chat={probe(
-                  "chat",
-                  <ChatWorkspace
-                    tcw={shim.tcw}
-                    sessionStore={shim.sessionStore}
-                    backendUrl={backendUrl}
-                    selectionControllerRef={selectionControllerRef}
-                    selectionView={selectionView}
-                    memoryRef={memoryRef}
-                    onSelectionView={setSelectionView}
-                    onSelectionAuthFailure={() => {}}
-                    onMemoryUpdated={() => {}}
-                    contextTokensFor={contextTokensFor}
-                    composerToolbar={
-                      <ModelPicker
-                        model={selectionView.model}
-                        models={MODELS}
-                        disabled={!selectionView.canPick}
-                        status={selectionView.message}
-                        onPick={(id) => selectionControllerRef.current?.pick(id)}
-                        presentation={size === "compact" ? "sheet" : "popover"}
-                      />
-                    }
-                    headerRecorder={
-                      <>
-                        <HeaderLiveChip />
-                        <RecordButton variant="icon" />
-                      </>
-                    }
-                    settings
-                    billingStatus={null}
-                  />,
-                )}
-                capture={probe(
-                  "capture",
-                  <CaptureSurface
-                    tcw={harnessTcw}
-                    backendUrl={backendUrl}
-                    sessionStore={harnessSessionStore}
-                    active={screen.destination === "capture"}
-                    screen={screen}
-                    meetingsSlot={<MeetingsSection backendUrl={backendUrl} sessionStore={harnessSessionStore} />}
-                  />,
-                )}
-                connectors={probe(
-                  "connectors",
-                  <ConnectorsPage tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore} />,
-                )}
-                settings={probe(
-                  "settings",
-                  <SettingsPage
-                    address={HARNESS_ADDRESS}
-                    did={HARNESS_DID}
-                    spaceId="harness-space"
-                    state="ready"
-                    error={null}
-                    onSignOut={() => {}}
-                    signingOut={false}
-                    paywallEnabled={false}
-                    onBack={() => navigate(-1)}
-                    tcw={harnessTcw}
-                    memoryRef={memoryRef}
-                    onMemoryUpdated={() => {}}
-                    onImported={() => {}}
-                    billingStatus={null}
-                    billingTierName={null}
-                    onManagePlan={() => {}}
-                    onOpenRates={() => {}}
-                    backendUrl={backendUrl}
-                    sessionStore={harnessSessionStore}
-                  />,
-                )}
-                about={probe("about", <AboutPage onBack={() => navigate(-1)} />)}
-              />
-              </RecorderProvider>
+              {recorder ? (
+                <StaticRecorderProvider value={recorder}>{recorderShell}</StaticRecorderProvider>
+              ) : (
+                <RecorderProvider
+                  tcw={harnessTcw}
+                  backendUrl={backendUrl}
+                  sessionStore={harnessSessionStore}
+                  onSaved={() => captureEvents.emit("library-changed")}
+                >
+                  {recorderShell}
+                </RecorderProvider>
+              )}
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (

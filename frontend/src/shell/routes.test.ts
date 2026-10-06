@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  CONNECTORS_LIBRARY_PATH,
+  CONNECTORS_SOURCES_PATH,
   DESTINATION_ROOTS,
   LEGACY_REDIRECTS,
   PATHS,
@@ -122,6 +124,15 @@ describe("home", () => {
   });
 });
 
+// Moved from connectorsNav.test.tsx with the constants (TC-761, PR6).
+describe("the old Connectors addresses", () => {
+  test("are kept as constants, and the Library one forwards to Capture → Library", () => {
+    expect(CONNECTORS_SOURCES_PATH).toBe(PATHS.connectors);
+    expect(CONNECTORS_LIBRARY_PATH).toBe("/chat/connectors/library");
+    expect(legacyRedirectFor(CONNECTORS_LIBRARY_PATH)?.to).toBe(PATHS.library);
+  });
+});
+
 describe("signed out", () => {
   test("Settings and Connectors send a settled signed-out user home; Capture and Chat never redirect", () => {
     expect(redirectsWhenSignedOut(screenFor(PATHS.settings))).toBe(true);
@@ -136,7 +147,7 @@ describe("signed out", () => {
 });
 
 // App.tsx pulls in DOM-only SDKs at module load, so its wiring is asserted
-// against the source (as connectorsNav.test.tsx did before the shell).
+// against the source.
 describe("App routes through shell/routes.ts", () => {
   const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
 
@@ -145,8 +156,9 @@ describe("App routes through shell/routes.ts", () => {
     expect(app).not.toContain('location.pathname.endsWith("/chat/settings")');
     expect(app).not.toContain('location.pathname.endsWith("/chat/meetings")');
     expect(app).not.toContain("connectorsTabFor");
-    // The recorder's Open (receipt and island) goes to the Library until note detail lands.
-    expect(app).toContain("onOpenNote={() => navigate(PATHS.library)}");
+    // The recorder's Open (receipt and island): the Library, then the note just saved.
+    expect(app).toContain("const openSavedNote = useOpenSavedNote(tcw);");
+    expect(app).toContain("onOpenNote={openSavedNote}");
   });
 
   test("How it works is mounted in the shell's about slot, with the same Back as Settings", () => {

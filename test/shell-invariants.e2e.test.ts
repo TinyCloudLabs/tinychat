@@ -15,6 +15,8 @@
 //      or Escape.
 //   7. Discard asks in place, with focus on Keep, and turns back after 5 s;
 //      confirmed, it stops and deletes the recording and closes the recorder.
+//   8. A note stays open across size classes: Capture's panes are the same
+//      elements (the fixed tree), and nothing remounts.
 //
 // SHELL_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -443,11 +445,47 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
+  test("a note open across resizes: the same panes and the same note, nothing remounts", async () => {
+    const { page, errors } = await open("/chat/capture/library/meeting-weekly");
+    const PANES = ["capture-list-pane", "capture-home", "capture-library", "capture-detail", "note-detail"];
+    const note = page.locator('[data-testid="note-detail"][data-note-id="meeting-weekly"]');
+    await note.waitFor();
+    await page.getByText("We agreed to ship the beta").waitFor();
+    // Tag each pane's element; a remount or a re-parent would drop the tag.
+    await page.evaluate((ids) => {
+      for (const id of ids) (document.querySelector(`[data-testid="${id}"]`) as HTMLElement & { __pane?: string }).__pane = id;
+    }, PANES);
+    const samePanes = () =>
+      page.evaluate(
+        (ids) => ids.every((id) => (document.querySelector(`[data-testid="${id}"]`) as (HTMLElement & { __pane?: string }) | null)?.__pane === id),
+        PANES,
+      );
+    const listBeside = () =>
+      page.evaluate(() => {
+        const list = document.querySelector<HTMLElement>('[data-testid="capture-list-pane"]')!.getBoundingClientRect();
+        const detail = document.querySelector<HTMLElement>('[data-testid="capture-detail"]')!.getBoundingClientRect();
+        return list.width > 0 && detail.width > 0 && list.right <= detail.left + 1;
+      });
+
+    for (const [width, height, wide] of [[1024, 768, true], [390, 844, false], [820, 1180, true], [390, 844, false]] as const) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await note.waitFor();
+      expect(await samePanes()).toBe(true);
+      expect(await listBeside()).toBe(wide);
+      expect(await page.getByText("We agreed to ship the beta").isVisible()).toBe(true);
+    }
+    expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/capture/library/meeting-weekly");
+    expect((await mounts(page)).capture).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
   test("retired addresses end on the Library", async () => {
     for (const path of ["/chat/connectors/library", "/chat/meetings"]) {
       const { page, errors } = await open(path);
       await page.waitForFunction(() => window.location.pathname === "/chat/capture/library");
-      await page.getByRole("heading", { name: "Meetings", exact: true }).waitFor();
+      await page.getByRole("heading", { name: "Library", exact: true }).waitFor();
       expect(errors).toEqual([]);
       await page.close();
     }

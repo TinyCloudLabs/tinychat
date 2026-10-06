@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { isChatViewPath } from "./chatViewPath";
-import { CONNECTORS_LIBRARY_PATH, CONNECTORS_SOURCES_PATH } from "./connectorsNav";
+import { CONNECTORS_LIBRARY_PATH, CONNECTORS_SOURCES_PATH } from "../shell/routes";
 
 describe("isChatViewPath", () => {
   test("the chat view is /chat, with or without one trailing slash", () => {

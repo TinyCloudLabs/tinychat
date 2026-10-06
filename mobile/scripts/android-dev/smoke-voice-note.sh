@@ -18,17 +18,21 @@ clip=${1:-$EXO_STATE/speech.wav}
 $ADB shell pm grant xyz.tinycloud.exo android.permission.RECORD_AUDIO
 $ADB shell pm grant xyz.tinycloud.exo android.permission.POST_NOTIFICATIONS 2>/dev/null || true
 
-# Open Capture (the Voice notes card's home since TC-761) and wait for the voice notes list to load.
+# Open Capture and wait for the Library's list to load (it stays mounted beside the home, so its
+# voice-note rows are counted from there, newest first).
+LIST='[data-testid=library-list] [data-testid=voice-note-item]'
 ready=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++;
   if (location.pathname !== "/chat/capture" && n % 10 === 1) { history.pushState({}, "", "/chat/capture"); dispatchEvent(new PopStateEvent("popstate")); }
   const card = document.querySelector("[data-testid=voice-note-record]"), busy = document.querySelector("[data-testid=voice-note-stop]");
-  if (((card || busy) && !/Loading your voice notes/.test(document.body.textContent)) || n > 400) { clearInterval(t);
-    r(JSON.stringify({ ok: !!card, recording: !!busy, items: document.querySelectorAll("[data-testid=voice-note-item]").length, signedOut: /Sign in to start/.test(document.body.textContent) })); } }, 300); })')
+  const listed = document.querySelector("[data-testid=library-list][data-state=ready]");
+  if (((card || busy) && listed) || n > 400) { clearInterval(t); const items = document.querySelectorAll("'"$LIST"'");
+    r(JSON.stringify({ ok: !!card, recording: !!busy, items: items.length, newest: items[0]?.dataset.sourceId ?? null, signedOut: /Sign in to start/.test(document.body.textContent) })); } }, 300); })')
 # A cold start reads several TinyCloud tables one call at a time (2-4 s each), so allow ~2 minutes.
 echo "$ready" | json '["ok"]' >/dev/null 2>&1 || fail "unexpected page state: $ready"
 [ "$(echo "$ready" | json '["recording"]')" = "False" ] || fail "a recording is already in progress; stop it in the app first"
-[ "$(echo "$ready" | json '["ok"]')" = "True" ] || fail "voice notes card not reachable (signed out? $ready)"
+[ "$(echo "$ready" | json '["ok"]')" = "True" ] || fail "Capture's Record not reachable (signed out? $ready)"
 before=$(echo "$ready" | json '["items"]')
+newest_before=$(echo "$ready" | json '["newest"]')
 
 limit_ms=${SMOKE_LIMIT_MS:-}
 if [ -n "$limit_ms" ]; then
@@ -43,20 +47,26 @@ state=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++; co
 "$here/inject-audio.sh" "$clip"
 # With SMOKE_LIMIT_MS the recorder stops itself at the limit; otherwise press Stop.
 [ -n "$limit_ms" ] || cdp 'document.querySelector("[data-testid=voice-note-stop]").click(), "ok"' >/dev/null
-saved=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++; const items = document.querySelectorAll("[data-testid=voice-note-item]");
+saved=$(cdp 'new Promise(r => { let n = 0; const t = setInterval(() => { n++; const items = document.querySelectorAll("'"$LIST"'");
   const pending = document.querySelector("[data-testid=voice-note-pending]"); const alert = [...document.querySelectorAll("[role=alert]")].map(a => a.textContent).find(t => /saving|voice note/i.test(t));
-  if (items.length > '"$before"' || pending || alert || n > 400) { clearInterval(t);
-    r(JSON.stringify({ items: items.length, pending: !!pending, alert: alert ?? null, newest: items[0]?.dataset.sourceId ?? null,
+  const newest = items[0]?.dataset.sourceId ?? null;
+  if ((items.length > '"$before"' && newest !== "'"$newest_before"'") || pending || alert || n > 400) { clearInterval(t);
+    r(JSON.stringify({ items: items.length, pending: !!pending, alert: alert ?? null, newest,
       limit: document.querySelector("[data-testid=voice-note-limit]")?.textContent ?? null })); } }, 300); })')
 [ "$(echo "$saved" | json '["items"]')" -gt "$before" ] || fail "note not saved: $saved"
+[ "$(echo "$saved" | json '["newest"]')" != "$newest_before" ] || fail "the newest note is not the new one: $saved"
 if [ -n "$limit_ms" ]; then
   echo "$saved" | json '["limit"]' | grep -q '^Stopped at the .* limit\.$' || fail "no limit notice after the auto-stop: $saved"
 fi
 
-# Read the stored audio back through the app's player (it is loaded from TinyCloud KV, part by part,
-# into an object URL) and measure it: the page fetches its blob: URL and hands back base64.
-b64=$(cdp 'new Promise(r => { document.querySelector("[data-testid=voice-note-item] button[aria-label=\"Play voice note\"]").click();
-  let n = 0; const t = setInterval(async () => { n++; const a = document.querySelector("[data-testid=voice-note-player]");
+# Read the stored audio back through the app's player: open the newest note, Play audio (it is
+# loaded from TinyCloud KV, part by part, into an object URL), then the page fetches its blob: URL
+# and hands back base64.
+b64=$(cdp 'new Promise(r => { document.querySelector("'"$LIST"' a").click();
+  let n = 0, played = false; const t = setInterval(async () => { n++;
+  const play = document.querySelector("[data-testid=note-audio-play]");
+  if (!played && play) { play.click(); played = true; }
+  const a = document.querySelector("[data-testid=note-audio-player]");
   if (!a?.src && n <= 150) return; clearInterval(t); if (!a?.src) return r("");
   const bytes = new Uint8Array(await (await fetch(a.src)).arrayBuffer()); let s = "";
   for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode(...bytes.subarray(i, i + 32768));

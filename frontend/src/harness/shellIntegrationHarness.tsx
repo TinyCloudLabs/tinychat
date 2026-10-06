@@ -14,6 +14,7 @@ import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { screenFor } from "@/shell/routes";
 import { useBack } from "@/shell/useAndroidBack";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { libraryTcw } from "./fixtures/library";
 import { MountProbe } from "./MountProbe";
 import { createRuntimeShim } from "./runtimeShim";
 import { ShellApp } from "./ShellApp";
@@ -37,6 +38,8 @@ initSizeClass();
 const fake = createFakeVoiceNotes();
 __setVoiceNotesForTests(fake.plugin, { available: true });
 const shim = createRuntimeShim();
+// Capture reads a space with captures in it, so a note can be opened.
+const captureTcw = libraryTcw();
 let minimized = 0;
 
 function Controls({ onState }: { onState: (state: AppState) => void }) {
@@ -70,6 +73,7 @@ function Harness() {
         platform="android"
         shim={shim}
         state={state}
+        captureTcw={captureTcw}
         probe={(id, node) => <MountProbe id={id}>{node}</MountProbe>}
       />
       <Controls onState={setState} />

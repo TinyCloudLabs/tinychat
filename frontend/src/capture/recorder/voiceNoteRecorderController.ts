@@ -1,9 +1,9 @@
 // The voice-note recorder's controller, without React: the old Voice notes
 // card's controller moved onto recorderReducer, without the notes list and
-// playback (VoiceNotesListCard) or the mount-time retry of pending saves
-// (PendingVoiceNotesSaver stays the only saver at startup). useVoiceNoteRecorder
-// wraps it for RecorderProvider, which mounts it exactly once; the tests drive
-// it directly against the fake plugin.
+// playback (the Library and a note's detail, capture/library) or the
+// mount-time retry of pending saves (PendingVoiceNotesSaver stays the only
+// saver at startup). useVoiceNoteRecorder wraps it for RecorderProvider, which
+// mounts it exactly once; the tests drive it directly against the fake plugin.
 //
 // It owns the plugin's three listeners (micState, level, autoStopped), picks a
 // running recording back up after a WebView reload (status()), saves a stopped

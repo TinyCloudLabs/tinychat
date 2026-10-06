@@ -50,6 +50,7 @@ describe("Capture's notetaker", () => {
   test("Capture passes whether its home is on screen", () => {
     const capture = readFileSync(join(import.meta.dir, "../CaptureSurface.tsx"), "utf8");
     expect(capture).toContain("useMeetingBot({ backendUrl, sessionStore, active: homeShown })");
-    expect(capture).toContain("const homeShown = active && !libraryShown;");
+    // On a phone the home shares Capture with the Library and a note; from medium up it is always beside them.
+    expect(capture).toContain("const homeShown = active && (wide || (!libraryScreen && !noteScreen));");
   });
 });

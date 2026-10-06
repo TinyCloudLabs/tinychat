@@ -380,6 +380,8 @@ export interface LoadAudioOptions {
   /** Refuse (VOICE_NOTE_AUDIO_TOO_LARGE) a note larger than this before downloading it. */
   maxBytes?: number;
   onProgress?: (loadedBytes: number, totalBytes: number) => void;
+  /** Stops the read between parts (the note's player was closed). */
+  signal?: AbortSignal;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
 }
@@ -437,6 +439,7 @@ export async function loadVoiceNoteAudioBlob(
   const stored = await readStoredAudio(tcw, sourceId, opts);
   if (!stored.ok) return stored;
   if (stored.data) return { ok: true, data: stored.data };
+  if (opts.signal?.aborted) return audioFailure("loadVoiceNoteAudio", new DOMException("The read was cancelled.", "AbortError"));
   const legacy = await readLegacyAudio(tcw, sourceId);
   if (!legacy.ok) return legacy;
   const bytes = base64ToBytes(legacy.data.base64);
