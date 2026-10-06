@@ -10,6 +10,7 @@ import { useLocation } from "react-router-dom";
 import { useAgentAccess, type AgentCapability, type UseAgentEnablementResult } from "./useAgentEnablement";
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import { isChatViewPath } from "./chatViewPath";
+import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
 
 interface AgentEnablementBannerProps {
   capability: AgentCapability;
@@ -18,6 +19,8 @@ interface AgentEnablementBannerProps {
   onEnable: () => Promise<void>;
   reconnectReason: AgentDelegationErrorCode | "delegation_stale" | null;
   silentlyEnabled?: boolean;
+  /** Defaults to the shell: false in the Tauri desktop app, where OpenKey offers no passkeys. */
+  passkeysSupported?: boolean;
 }
 
 export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
@@ -27,6 +30,7 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
   onEnable,
   reconnectReason,
   silentlyEnabled,
+  passkeysSupported = openkeyPasskeysSupported(),
 }) => {
   if (capability === "probing" || capability === "unavailable") return null;
 
@@ -95,7 +99,9 @@ export const AgentEnablementBanner: FC<AgentEnablementBannerProps> = ({
                   ? "That reply couldn't use your meetings. Reconnect if this keeps happening."
                   : reconnecting
                     ? "Reconnect to let the agent read your private meeting transcripts again."
-                    : "You'll be prompted to sign with your passkey once to authorize access."}
+                    : passkeysSupported
+                      ? "You'll be prompted to sign with your passkey once to authorize access."
+                      : "You'll be prompted to sign in with OpenKey once to authorize access."}
               </span>
             </div>
             <button

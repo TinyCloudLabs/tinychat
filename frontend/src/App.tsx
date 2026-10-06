@@ -28,6 +28,7 @@ import {
 } from "@tinyboilerplate/core";
 import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { uploadRunner } from "./lib/audioUpload";
+import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
 import { useChatRuntime } from "./chat/runtime";
 import { Thread } from "./chat/Thread";
@@ -588,6 +589,7 @@ export function App() {
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
+        passkeysSupported: openkeyPasskeysSupported(),
       });
       openkeyRef.current = openkey;
       setAddress(connectedAddress);
@@ -646,7 +648,7 @@ export function App() {
     try {
       const openKeyOutcome = await signOutOpenKeySession(
         openkeyRef.current,
-        () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST }),
+        () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
       );
       // OpenKey clears this client's local auth before showing its widget, even
       // when the user cancels. Never retain that spent client for another flow.

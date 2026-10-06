@@ -24,6 +24,7 @@
 // real mint is stubbed via `_mint`). The DOM-bound types below are type-only.
 import type { Delegation, Manifest, PermissionEntry, PortableDelegation, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { ConnectWalletResult } from "@tinyboilerplate/client";
+import { openkeyPasskeysSupported } from "./openkeyPasskeys.js";
 import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 import { localValidationEnabled, prepareLocalSignIn } from "./localValidation";
 
@@ -255,7 +256,7 @@ export interface FreshSignInMintOptions {
   /** The signed-in app session's owner address (`tcw.address()`). The key picked in OpenKey must match it. */
   sessionAddress: string | null | undefined;
   /** Test-only seam: override the OpenKey connect step. */
-  _connect?: (config: { appName: string; host: string }) => Promise<Pick<ConnectWalletResult, "address" | "web3Provider">>;
+  _connect?: (config: { appName: string; host: string; passkeysSupported: boolean }) => Promise<Pick<ConnectWalletResult, "address" | "web3Provider">>;
 }
 
 /** The key picked in the Connect-agent OpenKey prompt is not the signed-in owner's key. */
@@ -289,7 +290,11 @@ export function assertAgentOwner(sessionAddress: string | null | undefined, conn
 
 async function connectSessionOwner(options: FreshSignInMintOptions): Promise<ConnectWalletResult["web3Provider"]> {
   const connect = options._connect ?? (await import("@tinyboilerplate/client")).connectWallet;
-  const { address, web3Provider } = await connect({ appName: options.appName, host: options.openkeyHost });
+  const { address, web3Provider } = await connect({
+    appName: options.appName,
+    host: options.openkeyHost,
+    passkeysSupported: openkeyPasskeysSupported(),
+  });
   assertAgentOwner(options.sessionAddress, address);
   return web3Provider;
 }
