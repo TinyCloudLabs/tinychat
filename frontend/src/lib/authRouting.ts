@@ -12,10 +12,10 @@
 // Everything else is still deciding, and a still-deciding app must keep the
 // address it was given.
 
-import type { AppState } from "../App";
+import type { AppState } from "./appState";
 
 // A total map rather than a comparison chain, so adding an AppState is a type
-// error here until it is classified — the same shape as `stateLabel` in App.
+// error here until it is classified — the same shape as `stateLabel` in appState.ts.
 const SETTLED_SIGNED_OUT: Record<AppState, boolean> = {
   // Restoring a persisted session — the cold-reload window.
   booting: false,

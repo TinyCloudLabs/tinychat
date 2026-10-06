@@ -19,7 +19,7 @@ import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
 import { ImportDialog } from "./ImportDialog";
-import { stateLabel, type AppState } from "../App";
+import { stateLabel, type AppState } from "../lib/appState";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
 import { useBackendAttestation } from "../lib/useBackendAttestation";
 import { BackendAttestationDetails } from "./BackendAttestationDetails";
