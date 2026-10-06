@@ -4,12 +4,14 @@
 //     Chat     /chat
 //     Connectors /chat/connectors
 //     Settings /chat/settings (global, behind the gear)
+//     How it works /chat/about (global, from Settings and the screens' hints)
 //
 // The App stays mounted at /chat/* and reads which screen to show from the
 // pathname, so tab switches toggle visibility instead of swapping routes (the
 // chat runtime, drafts and streams survive). Nothing here touches a session or
 // storage, which is what makes the whole map directly testable.
 
+import { ABOUT_PATH } from "../lib/about";
 import type { AppPlatform } from "../lib/platform";
 import type { SizeClass } from "../lib/sizeClass";
 
@@ -19,16 +21,17 @@ export const PATHS = {
   library: "/chat/capture/library",
   connectors: "/chat/connectors",
   settings: "/chat/settings",
+  about: ABOUT_PATH,
 } as const;
 
 /** The three places the navigation leads to, at every size. Settings is global, not one of them. */
 export type Destination = "capture" | "chat" | "connectors";
 
-export type ScreenId = "chat" | "capture" | "library" | "note" | "connectors" | "settings";
+export type ScreenId = "chat" | "capture" | "library" | "note" | "connectors" | "settings" | "about";
 
 export interface Screen {
   id: ScreenId;
-  /** Which navigation item is current; null on Settings. */
+  /** Which navigation item is current; null on Settings and How it works. */
   destination: Destination | null;
   /** The `connector_meeting.id` of an open note (decoded), else null. */
   noteId: string | null;
@@ -68,6 +71,7 @@ export function screenFor(pathname: string): Screen {
   const legacy = legacyRedirectFor(pathname);
   const path = legacy ? legacy.to : trim(pathname);
   if (path === PATHS.settings) return { id: "settings", destination: null, noteId: null };
+  if (path === PATHS.about) return { id: "about", destination: null, noteId: null };
   if (path === PATHS.connectors || path.startsWith(`${PATHS.connectors}/`)) {
     return { id: "connectors", destination: "connectors", noteId: null };
   }
@@ -101,20 +105,20 @@ export const DESTINATION_ROOTS: Readonly<Record<Destination, string>> = {
 
 /**
  * Whether a screen is stacked over a root, so Back returns to its parent.
- * Settings is pushed at every size. The Library (and a note, which shows the
+ * Settings and How it works are pushed at every size. The Library (and a note, which shows the
  * Library until note detail arrives) is pushed at every size for now; on wide
  * screens it becomes a pane beside Capture once the list and detail panes land
  * (PR6), which is why the size class is part of the question.
  */
 export function isPushed(screen: Screen, _size: SizeClass): boolean {
-  return screen.id === "settings" || screen.id === "library" || screen.id === "note";
+  return screen.id === "settings" || screen.id === "about" || screen.id === "library" || screen.id === "note";
 }
 
-/** Where Back goes from a pushed screen with no history; null means the home path (Settings). */
+/** Where Back goes from a pushed screen with no history; null means the home path (Settings, How it works). */
 export function parentPath(screen: Screen): string | null {
   if (screen.id === "note") return PATHS.library;
   if (screen.id === "library") return PATHS.capture;
-  if (screen.id === "settings") return null;
+  if (screen.id === "settings" || screen.id === "about") return null;
   return screen.destination ? DESTINATION_ROOTS[screen.destination] : null;
 }
 
@@ -131,7 +135,8 @@ export function homePath(platform: AppPlatform): string {
  * Whether a screen sends a settled signed-out user home. Settings and
  * Connectors only exist signed in. Capture never redirects: the sign-in surface
  * renders in place, so the phone app lands on Capture after signing in and a
- * note's address survives a cold sign-in.
+ * note's address survives a cold sign-in. How it works holds no account data,
+ * so it keeps its address the same way and shows once the user signs in.
  */
 export function redirectsWhenSignedOut(screen: Screen): boolean {
   return screen.id === "settings" || screen.id === "connectors";

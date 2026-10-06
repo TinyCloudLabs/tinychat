@@ -35,6 +35,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CopyIcon, Loader2Icon, RadioIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
+import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import {
   BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
@@ -66,8 +68,17 @@ import {
   syncQueuedMeetings,
   type BackgroundSyncDeps,
   type BackgroundSyncState,
+  type BackgroundSyncStatus,
   type QueueNotice,
 } from "./backgroundSyncState";
+
+/** The status label's dot: "On" in primary, a problem in warning, everything else neutral. */
+const STATUS_TONE: Readonly<Record<BackgroundSyncStatus["tone"], StatusTone>> = {
+  ok: "primary",
+  warn: "warning",
+  off: "neutral",
+  muted: "neutral",
+};
 import {
   enqueueDrainWork,
   publishBackgroundDrainConnectorState,
@@ -332,20 +343,21 @@ export function BackgroundSyncView({
         <div className="flex min-w-0 items-start gap-2">
           <RadioIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">
+            <p className="flex items-center text-sm font-medium text-foreground">
               Background notifications
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Optional. {connectorName} tells us the moment a meeting is ready.
+              <InfoTip label="About background notifications" className="-my-3 fine:-my-1">
+                Optional. {connectorName} tells us the moment a meeting is ready.
+              </InfoTip>
             </p>
           </div>
         </div>
-        <span
+        <StatusDot
+          tone={STATUS_TONE[status.tone]}
           data-status-label={status.label}
-          className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          className="shrink-0 text-xs font-medium text-muted-foreground"
         >
           {status.label}
-        </span>
+        </StatusDot>
       </div>
 
       {state.phase === "signed-out" && (
@@ -623,11 +635,11 @@ const RevealField: FC<{
   onCopy: (value: string, label: string) => void;
 }> = ({ label, value, copyLabel, onCopy }) => (
   <div className="flex flex-col gap-1">
-    <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+    <span className="text-xs font-medium text-muted-foreground">
       {label}
     </span>
     <div className="flex items-start gap-2">
-      <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1 text-[11px] text-foreground">
+      <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1 text-xs text-foreground">
         {value}
       </code>
       <Button

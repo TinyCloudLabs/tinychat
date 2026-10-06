@@ -59,6 +59,7 @@ import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync";
 import { CalendarAutojoinSection } from "./CalendarAutojoinSection";
 import { SectionCard } from "@/components/ui/section-card";
+import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 
 interface ConnectorsCardProps {
   tcw: TinyCloudWeb;
@@ -460,12 +461,10 @@ export function ConnectorsCard({
   return (
     <SectionCard icon={PlugZapIcon} title={title}>
       <div className="flex flex-col gap-3">
-        <p className="text-xs text-muted-foreground">
-          Connect external sources. Synced data is stored in your space.
-        </p>
-        <ul className="flex flex-col gap-2">
+        {/* One group: the rows share the card, divided by hairlines. */}
+        <ul className="-mx-4 -mb-4 divide-y divide-border border-t border-border">
           {CONNECTORS.map((d) => (
-            <li key={d.id}>
+            <li key={d.id} className="px-4">
               <ConnectorRow
                 descriptor={d}
                 state={rows[d.id]}
@@ -498,7 +497,7 @@ export function ConnectorsCard({
         {import.meta.env.DEV && gmeetDiagnostics && (
           <pre
             data-testid="gmeet-count-only-diagnostics"
-            className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-2 text-[10px] text-muted-foreground"
+            className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground"
           >
             {JSON.stringify(gmeetDiagnostics, null, 2)}
           </pre>
@@ -567,9 +566,8 @@ const ConnectorRow: FC<{
 }) => {
   const comingSoon = d.status === "coming-soon";
   const connected = state.connection?.status === "connected";
-  const containerCls =
-    "flex flex-col gap-2 rounded-md border border-border bg-background p-3" +
-    (comingSoon ? " opacity-60" : "");
+  const containerCls = "flex flex-col gap-2 py-3" + (comingSoon ? " opacity-60" : "");
+  const status = rowStatus(comingSoon, state);
   // role="group" + aria-label carries the "coming soon" status to screen
   // readers; aria-disabled on a plain <div> has no semantic effect.
   const groupProps = comingSoon
@@ -586,15 +584,13 @@ const ConnectorRow: FC<{
             aria-hidden
           />
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{d.name}</span>
-              {comingSoon && (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Coming soon
-                </span>
-              )}
-            </div>
+            <span className="text-sm font-medium text-foreground">{d.name}</span>
             <p className="mt-0.5 text-xs text-muted-foreground">{d.description}</p>
+            {status && (
+              <StatusDot tone={status.tone} data-row-status={status.label} className="mt-1 text-xs text-muted-foreground">
+                {status.label}
+              </StatusDot>
+            )}
           </div>
         </div>
         {!comingSoon && (
@@ -727,6 +723,19 @@ const ConnectedStatusLine: FC<{ connection: ConnectorConnection }> = ({
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * The row's status, as a dot plus text. Nothing until the persisted connection
+ * has loaded (the action area shows a placeholder then).
+ */
+function rowStatus(comingSoon: boolean, state: RowState): { tone: StatusTone; label: string } | null {
+  if (comingSoon) return { tone: "neutral", label: "Coming soon" };
+  if (!state.loaded) return null;
+  if (state.connection?.status !== "connected") return { tone: "neutral", label: "Not connected" };
+  if (state.connection.lastSyncStatus === "error") return { tone: "destructive", label: "Last sync failed" };
+  if (state.connection.lastSyncStatus === "partial") return { tone: "warning", label: "Last sync incomplete" };
+  return { tone: "primary", label: "Connected" };
+}
 
 function syncButtonLabel(state: RowState): string {
   if (!state.syncing) return "Sync now";

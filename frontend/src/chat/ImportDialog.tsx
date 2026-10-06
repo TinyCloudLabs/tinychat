@@ -264,7 +264,7 @@ export const ImportDialog: FC<ImportDialogProps> = ({ tcw, onImported }) => {
       <DialogTrigger asChild>
         <button
           type="button"
-          className="flex min-h-[2.75rem] items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent md:min-h-0"
+          className="flex min-h-[2.75rem] items-center justify-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent fine:min-h-0"
         >
           <UploadIcon className="size-4" />
           Import

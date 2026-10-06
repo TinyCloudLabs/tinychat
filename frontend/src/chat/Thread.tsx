@@ -38,6 +38,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import {
   Dialog,
   DialogContent,
@@ -314,7 +315,8 @@ const ShareThreadProvider: FC<{ tcw: TinyCloudWeb; children: React.ReactNode }> 
                 max={365}
                 value={durationDays}
                 onChange={(event) => setDurationDays(Number(event.currentTarget.value) || 7)}
-                className="h-9 w-20 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                // 16 px and 44 px on touch (no iOS focus zoom); compact with a mouse.
+                className="h-11 w-20 rounded-md border border-input bg-background px-3 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring fine:h-9 fine:text-sm"
               />
               <span className="text-muted-foreground">days</span>
             </label>
@@ -444,9 +446,10 @@ const ThreadWelcome: FC = () => {
         <div className="flex flex-col items-center gap-2">
           {/* The chat header's title is the screen's h1. */}
           <h2 className="font-display text-title-2">TinyCloud Chat</h2>
-          <p className="max-w-sm text-sm text-muted-foreground">
+          <p className="max-w-sm text-callout text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
+          <HowItWorksLink section="your-data" />
         </div>
         <div className="grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
           {WELCOME_SUGGESTIONS.map((s) => (
@@ -552,7 +555,7 @@ const UserMessage: FC = () => (
 const AssistantMessage: FC = () => (
   <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
     <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-      <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+      <span className="flex size-5 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
         T
       </span>
       <span>TinyCloud Chat</span>

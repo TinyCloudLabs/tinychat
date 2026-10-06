@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { useNavKind } from "@/shell/navItems";
 import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
 import { ConnectorsCard } from "./ConnectorsCard";
@@ -41,10 +42,12 @@ export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPage
     <div className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title="Connectors" trailing={nav === "tabbar" ? <SettingsGear /> : undefined} className={PAGE_COLUMN} />
       <div className={`${PAGE_COLUMN} pb-[max(1.5rem,env(safe-area-inset-bottom))]`}>
-        <p className="mb-4 mt-1 text-sm leading-relaxed text-muted-foreground">
-          Bring meeting notes and transcripts into your private space. You
-          choose each source, when it syncs, and when its access ends.
-        </p>
+        {/* One line; what each source can reach, autojoin and background
+            notifications are How it works → Connectors. */}
+        <div className="mb-4 mt-1 flex flex-wrap items-center gap-x-3">
+          <p className="text-callout text-muted-foreground">Bring meeting notes into your private space.</p>
+          <HowItWorksLink section="connectors" />
+        </div>
         <div className="flex flex-col gap-4">
           {HealthSpikeSection && (
             <Suspense fallback={null}>

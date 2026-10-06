@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { InfoTip } from "@/components/ui/info-tip";
+import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import { calendarOutcomeLabel, createCalendarAutojoinClient, type CalendarAutojoinStatus } from "@/lib/connectors/calendarAutojoinApi";
 
 type CalendarAutojoinUpdate = Partial<{
@@ -77,19 +80,29 @@ export function CalendarAutojoinSection(props: {
   }, [api, props.revision]);
   const label = status?.state === "on" ? "On" : status?.state === "needs_reconnect" ? "Needs reconnect"
     : status?.state === "error" || error ? "Error" : status ? "Off" : "Loading…";
+  const tone: StatusTone = label === "On" ? "primary" : label === "Needs reconnect" ? "warning" : label === "Error" ? "destructive" : "neutral";
+  // A short label and a one-line hint; when it joins, what it can reach and
+  // what turning it off removes are How it works → Connectors.
   return <div className="mt-3 border-t border-border pt-3 text-xs">
     <div className="flex items-center justify-between gap-2">
-      <div><span className="font-medium">Calendar autojoin</span><span className="ml-2 text-muted-foreground" role="status">{label}</span></div>
+      <div className="flex flex-wrap items-center gap-x-2">
+        <span className="flex items-center font-medium">
+          Calendar autojoin
+          <InfoTip label="About calendar autojoin" className="-my-3 fine:-my-1">
+            A notetaker joins your confirmed Google Meet events, even while TinyChat is closed.
+          </InfoTip>
+        </span>
+        <StatusDot tone={tone} className="text-muted-foreground" role="status">{label}</StatusDot>
+      </div>
       <Button size="sm" variant="outline" role="switch" aria-label="Calendar autojoin" aria-checked={status?.enabled ?? false}
         disabled={busy || !status} onClick={() => status?.enabled ? void actions.current?.disable() : props.onEnable()}>
         {busy ? "Turning off…" : status?.enabled ? "Turn off" : status?.state === "needs_reconnect" ? "Reconnect" : "Turn on"}
       </Button>
     </div>
-    <p className="mt-2 text-muted-foreground">A notetaker joins confirmed Google Meet events on your primary calendar when you organize or accept them, from one minute before start until five minutes after start or the event ends. The host still needs to admit it.</p>
-    <p className="mt-1 text-muted-foreground">Works while TinyChat is closed. Recordings import when you return and unlock your space. Turning off removes the server’s saved Google token and requests stops for active autojoined bots; Google’s granted permissions and your browser importer remain.</p>
-    <p className="mt-1 text-muted-foreground">Last successful scan: {status?.lastScanAt ? new Date(status.lastScanAt).toLocaleString() : "None yet"}</p>
+    <p className="mt-2 text-muted-foreground">Last successful scan: {status?.lastScanAt ? new Date(status.lastScanAt).toLocaleString() : "None yet"}</p>
     {status?.state === "needs_reconnect" && <p className="mt-1 text-muted-foreground">Reconnect Google with renewed consent to resume unattended joining.</p>}
     {status?.state === "error" && <p className="mt-1 text-destructive">{status.errorCode ? calendarOutcomeLabel(status.errorCode) : "Calendar scanning is paused. It will retry automatically."}</p>}
     {error && <p role="alert" className="mt-1 text-destructive">{error}</p>}
+    <HowItWorksLink section="connectors" />
   </div>;
 }

@@ -17,6 +17,7 @@ const SLOTS = {
   capture: <p>capture-slot</p>,
   connectors: <p>connectors-slot</p>,
   settings: <p>settings-slot</p>,
+  about: <p>about-slot</p>,
 };
 
 const SIZES: Array<[string, SizeClassState]> = [
@@ -59,7 +60,7 @@ describe("the fixed tree", () => {
       const markup = view(PATHS.chat, sizeClass, true);
       expect(markup.match(/<main/g)).toHaveLength(1);
       const order = [...markup.matchAll(/data-surface="([a-z]+)"/g)].map((m) => m[1]);
-      expect(order).toEqual(["chat", "capture", "connectors", "settings"]);
+      expect(order).toEqual(["chat", "capture", "connectors", "settings", "about"]);
     }
   });
 
@@ -90,8 +91,9 @@ describe("the fixed tree", () => {
       '<div data-surface="capture"',
       '<div data-surface="connectors"',
       '<div data-surface="settings"',
+      '<div data-surface="about"',
       "{island ? (",
-      '{nav === "tabbar" && shown !== "settings" ? (',
+      '{nav === "tabbar" && !globalScreen ? (',
     ];
     const positions = slots.map((slot) => render.indexOf(slot));
     for (const position of positions) expect(position).toBeGreaterThan(-1);
@@ -128,12 +130,27 @@ describe("mounting", () => {
     );
   });
 
-  test("Connectors and Settings are mounted only while shown", () => {
+  test("Connectors, Settings and How it works are mounted only while shown", () => {
     const onChat = view(PATHS.chat, SIZES[3]![1], true);
     expect(onChat).not.toContain("connectors-slot");
     expect(onChat).not.toContain("settings-slot");
+    expect(onChat).not.toContain("about-slot");
     expect(surface(view(PATHS.connectors, SIZES[3]![1], true), "connectors").body).toContain("connectors-slot");
     expect(surface(view(PATHS.settings, SIZES[3]![1], true), "settings").body).toContain("settings-slot");
+    expect(surface(view(PATHS.about, SIZES[3]![1], true), "about").body).toContain("about-slot");
+    expect(view(PATHS.settings, SIZES[3]![1], true)).not.toContain("about-slot");
+  });
+
+  test("How it works is pushed like Settings: no tab bar on a phone; wide, it sits under Settings", () => {
+    expect(view(PATHS.about, SIZES[0]![1], true)).not.toContain('data-testid="tab-bar"');
+    expect(view(PATHS.about, SIZES[0]![1], true)).toContain("about-slot");
+    const wide = view(PATHS.about, SIZES[3]![1], true);
+    expect(wide).toContain('data-testid="sidebar"');
+    // No destination is current; the Settings row is, as on Settings itself.
+    expect(wide.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(wide).toMatch(/aria-current="page"[^>]*href="\/chat\/settings"/);
+    // Without its slot (none passed) the address falls back to Chat.
+    expect(shownSurface(screenFor(PATHS.about), { capture: null, connectors: null, settings: null })).toBe("chat");
   });
 
   test("Settings on a phone held upright has no tab bar; on wide screens the navigation stays", () => {

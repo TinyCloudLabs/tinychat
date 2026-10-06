@@ -16,6 +16,8 @@ import { useAgentAccess, type AgentCapability, type UseAgentEnablementResult } f
 import type { AgentDelegationErrorCode } from "../lib/agentChatApi";
 import { isChatViewPath } from "./chatViewPath";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
+import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 
 interface AgentEnablementBannerProps {
   capability: AgentCapability;
@@ -147,31 +149,35 @@ export function ChatViewAgentEnablementBanner() {
 }
 
 
-/** Settings retains these controls even while access is already connected. */
+/**
+ * Settings retains these controls even while access is already connected. What
+ * access covers is a one-line InfoTip on the card's title (SettingsPage) and
+ * the agent-access section of How it works.
+ */
 export function AgentAccessControls(props: UseAgentEnablementResult) {
   const connected = props.capability === "enabled";
   const unknown = props.status === null;
   const unverified = unknown && props.reconnectReason === "delegation_unverified";
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">Controls private agent memory and meeting access. Public web search stays available.</p>
       <p role="status" className="text-xs font-medium">
         {props.disconnecting ? "Disconnecting…" : connected ? "Connected"
           : unverified ? "Access could not be verified" : unknown ? "Access status unknown" : "Disconnected"}
       </p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => void props.onEnable()}
+        <Button type="button" size="sm" onClick={() => void props.onEnable()}
           disabled={props.enabling || props.disconnecting || props.capability === "probing"}
-          className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">
+          className="font-semibold">
           {props.enabling ? "Connecting…" : connected || props.reconnectReason ? "Reconnect agent" : "Connect agent"}
-        </button>
-        {(connected || props.disconnecting || unknown) && <button type="button" onClick={() => void props.onDisconnect()}
+        </Button>
+        {(connected || props.disconnecting || unknown) && <Button type="button" size="sm" variant="outline" onClick={() => void props.onDisconnect()}
           disabled={props.disconnecting || props.capability === "probing"}
-          className="rounded-md border border-border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50">
+          className="font-semibold">
           {props.disconnecting ? "Disconnecting…" : unknown && !unverified ? "Retry disconnect" : "Disconnect agent"}
-        </button>}
+        </Button>}
       </div>
       {props.enableError && <p role="alert" className="text-xs text-destructive">{props.enableError}</p>}
+      <HowItWorksLink section="agent-access" />
     </div>
   );
 }

@@ -151,6 +151,21 @@ export const shellScreens: HarnessScreen[] = [
     scrollTo: "section:has(> div > svg.lucide-sun)",
     render: () => <Shell />,
   },
+  // How it works, from the top and opened at a section (a HowItWorksLink's anchor).
+  {
+    ...SHELL,
+    id: "shell-about",
+    path: "/chat/about",
+    platform: "ios",
+    render: () => <Shell />,
+  },
+  {
+    ...SHELL,
+    id: "shell-about-section",
+    path: "/chat/about#connectors",
+    platform: "ios",
+    render: () => <Shell />,
+  },
   {
     ...SHELL,
     id: "shell-boot-signed-out",

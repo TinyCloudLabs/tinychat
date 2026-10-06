@@ -63,6 +63,7 @@ import {
 } from "./lib/billingConfigPolicy";
 import { Button } from "@/components/ui/button";
 import { SettingsPage } from "./chat/SettingsPage";
+import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { AppShell } from "./shell/AppShell";
@@ -901,6 +902,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
               />}
+              about={<AboutPage onBack={onBack} />}
             />
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>

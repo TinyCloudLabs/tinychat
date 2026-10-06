@@ -10,7 +10,8 @@
 // Mounting. Chat is always mounted and hidden when another surface shows
 // (streams, drafts and the open thread survive). Capture mounts on its first
 // visit and is then kept, hidden (its scroll, the Library and a desktop local
-// recording survive). Connectors and Settings mount only while shown.
+// recording survive). Connectors, Settings and How it works mount only while
+// shown.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -36,15 +37,21 @@ export interface AppShellProps {
   capture: ReactNode | null;
   connectors: ReactNode | null;
   settings: ReactNode | null;
+  /** How it works (/chat/about); it exists wherever Chat does. */
+  about?: ReactNode | null;
   /** The minimised recorder, in its own row above the tab bar (PR4). */
   island?: ReactNode;
 }
 
-type Shown = Destination | "settings";
+type Shown = Destination | "settings" | "about";
 
 /** What fills <main>: the screen's surface, or Chat when that surface does not exist. */
-export function shownSurface(screen: Screen, slots: Pick<AppShellProps, "capture" | "connectors" | "settings">): Shown {
+export function shownSurface(
+  screen: Screen,
+  slots: Pick<AppShellProps, "capture" | "connectors" | "settings" | "about">,
+): Shown {
   if (screen.id === "settings") return slots.settings ? "settings" : "chat";
+  if (screen.id === "about") return slots.about ? "about" : "chat";
   if (screen.destination === "capture") return slots.capture ? "capture" : "chat";
   if (screen.destination === "connectors") return slots.connectors ? "connectors" : "chat";
   return "chat";
@@ -79,6 +86,7 @@ export function AppShellView({
   capture,
   connectors,
   settings,
+  about = null,
   island = null,
   sizeClass,
   captureMounted,
@@ -86,8 +94,10 @@ export function AppShellView({
   onReselect = () => {},
 }: AppShellViewProps) {
   const nav = shellNavKind(sizeClass, { capture, connectors });
-  const shown = shownSurface(screen, { capture, connectors, settings });
-  const current: Destination | null = shown === "settings" ? null : shown;
+  const shown = shownSurface(screen, { capture, connectors, settings, about });
+  // Settings and How it works are global: no navigation item is current.
+  const globalScreen = shown === "settings" || shown === "about";
+  const current: Destination | null = globalScreen ? null : shown;
   const items = navItems(pendingMeetings).filter(
     (item) => (item.id !== "capture" || capture !== null) && (item.id !== "connectors" || connectors !== null),
   );
@@ -126,11 +136,14 @@ export function AppShellView({
         <div data-surface="settings" className={surface("settings")}>
           {shown === "settings" ? settings : null}
         </div>
+        <div data-surface="about" className={surface("about")}>
+          {shown === "about" ? about : null}
+        </div>
       </main>
       {island ? (
         <div className={cn("row-start-2 [html[data-keyboard=open]_&]:hidden", beside ? "col-start-2" : "col-start-1")}>{island}</div>
       ) : null}
-      {nav === "tabbar" && shown !== "settings" ? (
+      {nav === "tabbar" && !globalScreen ? (
         <div className="row-start-3">
           <TabBar {...navProps} />
         </div>
@@ -176,11 +189,15 @@ export function AppShell(props: AppShellProps) {
 
   // After the user moves to another screen, focus its heading, so assistive
   // tech announces where they are. Never on first mount (the composer may own
-  // focus), and StrictMode's second effect run sees the same screen.
+  // focus), and StrictMode's second effect run sees the same screen. A surface
+  // that already placed focus keeps it (How it works focuses the section a
+  // link pointed at; its effect runs before this one).
   const focusedScreen = useRef(props.screen.id);
   useEffect(() => {
     if (focusedScreen.current === props.screen.id) return;
     focusedScreen.current = props.screen.id;
+    const surfaceElement = mainRef.current?.querySelector(`[data-surface="${shown}"]`);
+    if (surfaceElement?.contains(document.activeElement)) return;
     const headings = mainRef.current?.querySelectorAll<HTMLElement>(`[data-surface="${shown}"] h1`) ?? [];
     for (const heading of headings) {
       if (heading.getClientRects().length === 0) continue;

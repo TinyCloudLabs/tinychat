@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup, renderToStaticMarkup as renderStatic } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 
 import { AgentAccessControls, AgentEnablementBanner } from "./AgentEnablementBanner";
 
@@ -70,6 +71,8 @@ describe("AgentEnablementBanner", () => {
 
 
 describe("Settings agent controls", () => {
+  // The controls link to How it works, so they render inside a router, as in the app.
+  const renderToStaticMarkup = (node: React.ReactElement) => renderStatic(<MemoryRouter>{node}</MemoryRouter>);
   const props = {
     capability: "enabled" as const, status: "active" as const, revision: "r",
     enableError: null, enabling: false, disconnecting: false, reconnectReason: null,
@@ -78,7 +81,13 @@ describe("Settings agent controls", () => {
   it("shows both reconnect and disconnect while connected", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} />);
     expect(html).toContain("Reconnect agent"); expect(html).toContain("Disconnect agent");
-    expect(html).toContain("Public web search stays available.");
+    // What access covers moved off the controls: a one-line InfoTip on the
+    // Settings card's title, and How it works → Agent access.
+    expect(html).toContain('href="/chat/about#agent-access"');
+    const settings = readFileSync(join(import.meta.dir, "SettingsPage.tsx"), "utf8");
+    const card = settings.slice(settings.indexOf('title="Agent access"'), settings.indexOf("<AgentAccessControls"));
+    expect(card).toContain("<InfoTip");
+    expect(card).toContain("Public web search stays available.");
   });
   it("shows Connect after confirmed disconnection and keeps failures distinct", () => {
     const html = renderToStaticMarkup(<AgentAccessControls {...props} capability="available" status="none" />);
