@@ -115,11 +115,19 @@ optional = true
 # `whisper-local-model` is vendored because the pinned rev downloads models from
 # a retired S3 bucket (403 for Large Turbo); it points them at Hugging Face.
 # See vendor/anarlog-whisper-local-model/PROVENANCE.md.
+# `model-downloader` is vendored so a model download retries transient
+# failures, resumes from its partial file, and falls back to a second host;
+# `local-model` passes the Whisper fallback URL to it, and `file` retries a
+# failed ranged chunk instead of failing the whole download. See
+# vendor/anarlog-model-downloader/PROVENANCE.md and vendor/anarlog-file/PROVENANCE.md.
 [patch."https://github.com/fastrepl/anarlog"]
 storage = { path = "../vendor/anarlog-storage" }
 transcribe-whisper-local = { path = "../vendor/anarlog-transcribe-whisper-local" }
 whisper-local = { path = "../vendor/anarlog-whisper-local" }
 whisper-local-model = { path = "../vendor/anarlog-whisper-local-model" }
+model-downloader = { path = "../vendor/anarlog-model-downloader" }
+local-model = { path = "../vendor/anarlog-local-model" }
+file = { path = "../vendor/anarlog-file" }
 audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
 
 # The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build

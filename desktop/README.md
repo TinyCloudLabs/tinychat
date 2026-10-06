@@ -85,6 +85,24 @@ Whisper models download on first use from Hugging Face
 `model-downloader`) into
 `models/stt/` under the app-data dir. Recordings land in `sessions/<id>/`.
 
+Model downloads are resumable (vendored `model-downloader`, `file` and
+`local-model`; see `vendor/anarlog-model-downloader/PROVENANCE.md`):
+
+- A failed ranged chunk is retried on its own. A failed or stalled attempt
+  (no data for 60 s) is retried with exponential backoff, resuming from the
+  partial file `models/stt/<file>.part`.
+- When Hugging Face refuses the file (403, 404) or keeps failing, the
+  download continues from the same partial file on
+  `models.anarlog.so/v0/ggerganov/whisper.cpp/main/<file>`, which serves
+  byte-identical files. The CRC32 checksum still gates installation; a
+  mismatch deletes the partial file.
+- A download that still fails keeps its partial file, so **Download** resumes
+  it. Clicking **Download** while one is running joins it rather than
+  restarting it.
+- The Local recording panel fails a download only when it reports no progress
+  for 15 minutes, never because it is slow; the native download keeps running
+  if the panel gives up.
+
 Long recordings: the vendored `transcribe-whisper-local`
 (`desktop/vendor/anarlog-transcribe-whisper-local`, see its `PROVENANCE.md`,
 with small progress hooks in the vendored `audio-chunking` and

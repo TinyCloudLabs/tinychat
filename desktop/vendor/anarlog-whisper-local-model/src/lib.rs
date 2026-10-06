@@ -79,6 +79,16 @@ impl WhisperModel {
         }
     }
 
+    /// Mirror of `model_url()` on anarlog's own model host, which serves
+    /// byte-identical files under the same names. The downloader falls back to
+    /// it when the primary host fails; size and checksum checks still apply.
+    pub fn fallback_model_url(&self) -> String {
+        format!(
+            "https://models.anarlog.so/v0/ggerganov/whisper.cpp/main/{}",
+            self.file_name()
+        )
+    }
+
     pub fn description(&self) -> String {
         let mb = self.model_size_bytes() / (1024 * 1024);
         if mb >= 1024 {

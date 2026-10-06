@@ -356,8 +356,10 @@ export interface LocalTranscriberTimeouts {
   captureStopMs: number;
   /** start_transcription plus its terminal event. */
   transcribeMs: number;
-  /** download_model plus its terminal event. */
-  modelDownloadMs: number;
+  /** download_model plus its terminal event, as an idle timeout: the wait
+   *  fails only when no progress event arrives for this long, so a slow but
+   *  moving download of Large Turbo (~874 MB) is never cut off. */
+  modelDownloadStallMs: number;
   /** Private cloud: native's capture handle after the `stopped` event. */
   captureReadyMs: number;
 }
@@ -370,7 +372,10 @@ const DEFAULT_TIMEOUTS: LocalTranscriberTimeouts = {
   captureStartMs: 60_000,
   captureStopMs: 2 * 60_000,
   transcribeMs: 30 * 60_000,
-  modelDownloadMs: 30 * 60_000,
+  // Native retries a stalled or failed download (60 s stall timeout, backoff,
+  // then the fallback host) and always ends with `completed` or `failed`
+  // within ~11 min of no progress; this is the backstop above that.
+  modelDownloadStallMs: 15 * 60_000,
   captureReadyMs: 10_000,
 };
 
@@ -515,6 +520,27 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number, label: string): Pro
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** Like withTimeout, but the clock restarts on every `touch()`: rejects only
+ *  after `idleMs` with no touch. */
+function withIdleTimeout<T>(work: (touch: () => void) => Promise<T>, idleMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
+  let expire!: (err: Error) => void;
+  const timeout = new Promise<never>((_, reject) => {
+    expire = reject;
+  });
+  const touch = () => {
+    if (settled) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => expire(new LocalTimeoutError(`Timed out waiting for ${label}`)), idleMs);
+  };
+  touch();
+  return Promise.race([work(touch), timeout]).finally(() => {
+    settled = true;
+    clearTimeout(timer);
+  });
+}
+
 /**
  * Registers the listener, then runs the command and waits for its matching
  * terminal event. One timer covers all three, so neither a registration nor a
@@ -527,12 +553,16 @@ async function invokeAndWaitForEvent<T>(
   label: string,
   invoke: () => Promise<void>,
   onEvent?: (payload: T) => void,
+  /** Makes `timeoutMs` an idle timeout, restarted by each event this accepts. */
+  isProgress?: (payload: T) => boolean,
 ): Promise<T> {
   let resolveEvent!: (payload: T) => void;
   const event = new Promise<T>((resolve) => {
     resolveEvent = resolve;
   });
+  let touch = ignore;
   const subscription = subscribe((e) => {
+    if (isProgress?.(e.payload)) touch();
     onEvent?.(e.payload);
     if (match(e.payload)) resolveEvent(e.payload);
   });
@@ -546,7 +576,16 @@ async function invokeAndWaitForEvent<T>(
     return payload;
   };
   try {
-    return await withTimeout(run(), timeoutMs, label);
+    return await (isProgress
+      ? withIdleTimeout(
+          (t) => {
+            touch = t;
+            return run();
+          },
+          timeoutMs,
+          label,
+        )
+      : withTimeout(run(), timeoutMs, label));
   } finally {
     abandoned = true;
     // Also releases a registration that lands after the timeout.
@@ -1419,13 +1458,17 @@ export function createLocalTranscriber(
         onProgress?.(100);
         return;
       }
-      // download_model returns as soon as the task is spawned. Wait for its
-      // terminal event, with the listener registered before the command runs.
+      // download_model returns as soon as the task is spawned, or at once when
+      // a download of this model is already running (it joins that one rather
+      // than restarting it). Wait for its terminal event, with the listener
+      // registered before the command runs, failing only if progress stalls.
+      // Giving up leaves the native download running; it keeps its partial
+      // file, so asking again re-attaches or resumes instead of starting over.
       const done = await invokeAndWaitForEvent<DownloadProgressPayload>(
         (cb) => b.localStt.events.downloadProgressPayload.listen(cb),
         (p) => p.model === m && (p.status === "completed" || (typeof p.status === "object" && "failed" in p.status)),
-        timeouts.modelDownloadMs,
-        "model download",
+        timeouts.modelDownloadStallMs,
+        "the model download to make progress",
         async () => {
           const r = await b.localStt.downloadModel(m);
           if (r.status === "error") throw new Error(`download_model: ${r.error}`);
@@ -1435,6 +1478,7 @@ export function createLocalTranscriber(
           if (typeof p.status === "object" && "downloading" in p.status) onProgress?.(p.status.downloading);
           if (p.status === "completed") onProgress?.(100);
         },
+        (p) => p.model === m,
       );
       if (typeof done.status === "object" && "failed" in done.status) {
         throw new Error(`Model download failed: ${done.status.failed}`);
