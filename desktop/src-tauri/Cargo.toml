@@ -1,6 +1,6 @@
 [package]
 name = "exo-desktop"
-version = "0.6.0-beta.7"
+version = "0.6.0-beta.8"
 description = "Exo — TinyCloud chat desktop app (exo.tinycloud.xyz)"
 edition = "2021"
 publish = false
