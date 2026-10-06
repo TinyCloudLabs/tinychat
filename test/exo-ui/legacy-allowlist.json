@@ -1,0 +1,128 @@
+[
+  {
+    "screen": "legacy-connectors",
+    "selector": "button[aria-label=\"Toggle theme\"]",
+    "check": "touch-target",
+    "reason": "The legacy header's theme toggle is 32px (size-8). The header goes in PR3; Settings → Appearance replaces it.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "nav[aria-label=\"Connectors sections\"] a",
+    "check": "touch-target",
+    "reason": "The Sources and Library tabs drop to md:min-h-0 on touch tablets and phones in landscape (connectorsNav). PR3 moves Library to Capture.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "[role=tablist][aria-label=\"Transcription source\"] > [role=tab]",
+    "check": "touch-target",
+    "reason": "The Transcriber's kind tabs are 28px (TranscriberSection). PR7 replaces them with the Upload and Meeting sheets.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "touch-target",
+    "reason": "The meeting link and bot name fields are 36px (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "#transcriber-meeting-url, #transcriber-bot-name",
+    "check": "input-size",
+    "reason": "The meeting link and bot name fields are 14px, so iOS zooms into them (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
+    "check": "touch-target",
+    "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-connectors",
+    "selector": ".text-\\[10px\\]",
+    "check": "text-size",
+    "reason": "The Coming soon badge is 10px (ConnectorsCard). PR8 restyles the connector rows.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button[aria-label=\"Toggle theme\"]",
+    "check": "touch-target",
+    "reason": "The legacy header's theme toggle is 32px (size-8). The header goes in PR3; Settings → Appearance replaces it.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button[aria-label=\"Back to chat\"]",
+    "check": "touch-target",
+    "reason": "The icon-only Back button is 34px wide on phones (SettingsPage). PR3 gives Settings a PageHeader.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "span.truncate.font-mono",
+    "check": "clipped-text",
+    "reason": "Account rows truncate the address and DID on purpose (SettingsPage AccountRow). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "div.space-y-3 > div.flex-wrap > button",
+    "check": "touch-target",
+    "reason": "Connect and Disconnect agent are 34px raw buttons (AgentAccessControls). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "#agent-setup-prompt + div a",
+    "check": "touch-target",
+    "reason": "Setup details is a 16px inline link beside Copy prompt (AgentSetupCard). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "#agent-setup-prompt, textarea[aria-label=\"Memory document\"]",
+    "check": "input-size",
+    "reason": "The read-only agent prompt is 12px (AgentSetupCard); the memory editor is 12px from sm up (MemoryPanel). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "[role=radiogroup][aria-label=\"Default transcription engine\"] > [role=radio], [role=radiogroup][aria-label=\"AssemblyAI account\"] > [role=radio]",
+    "check": "touch-target",
+    "reason": "TranscriptionSettings' own 24px segments. PR8 moves them to the segmented control.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button[aria-label=\"Recheck backend attestation\"]",
+    "check": "touch-target",
+    "reason": "An explicit h-8 (SettingsPage BackendAttestationPanel). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button[role=switch]",
+    "check": "touch-target",
+    "reason": "The Conversation Canvas switch is 44x24 (SettingsPage). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": "button.md\\:h-8, button.md\\:min-h-0",
+    "check": "touch-target",
+    "reason": "Memory's Clear, Reset and Save and the Import button drop to md:h-8 or md:min-h-0 on touch tablets and phones in landscape (MemoryPanel, ImportDialog). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  },
+  {
+    "screen": "legacy-settings",
+    "selector": ".text-\\[10px\\], .text-\\[10px\\] *",
+    "check": "text-size",
+    "reason": "Memory's character count, empty note and ⌘↵ hint are 10px (MemoryPanel). PR8 regroups Settings.",
+    "removeIn": "PR8"
+  }
+]

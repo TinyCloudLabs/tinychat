@@ -2,50 +2,144 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Literata, for display roles only (font-display), vendored from
+   @fontsource-variable/literata 5.3.0: latin and latin-ext, each with the opsz
+   (7-72) and wght (200-900) axes. Licence: public/fonts/literata/OFL.txt. Other
+   scripts fall back to the system serif. index.html preloads the latin file. */
+@font-face {
+  font-family: "Literata Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 900;
+  src: url("/fonts/literata/literata-5.3.0-latin-ext-opsz.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Literata Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 900;
+  src: url("/fonts/literata/literata-5.3.0-latin-opsz.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @layer base {
+  /* Exo's palette, built from the mark: a navy outline, a cream cloud, a blue
+     ground. Day is cool paper with navy ink; Night is a navy ground with the
+     mark's cream as ink. `primary` (Exo blue) is for go actions, selection,
+     links and focus; `live` (ember) only for a live microphone; `warning` for
+     mic problems and connectors that need attention. `--border` is decorative;
+     `--input` is the edge of a control (3:1). designTokens.test.ts checks every
+     pair's contrast from these values. */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --background: 225 20% 97%;
+    --foreground: 228 34% 15%;
+    --chrome: 0 0% 100%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 228 34% 15%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
+    --popover-foreground: 228 34% 15%;
+    --surface-2: 225 16% 93%;
+    --primary: 216 50% 43%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 225 16% 93%;
+    --secondary-foreground: 228 34% 15%;
+    --muted: 225 16% 93%;
+    --muted-foreground: 226 12% 40%;
+    --accent: 225 16% 93%;
+    --accent-foreground: 228 34% 15%;
+    --live: 25 98.2% 34.9%;
+    --live-foreground: 0 0% 100%;
+    --warning: 34 92% 29%;
+    --destructive: 352 68% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 225 14% 88%;
+    --input: 226 10% 55%;
+    --ring: 216 50% 43%;
     --radius: 0.75rem;
+    --shadow-float: 0 6px 16px -6px rgb(25 30 51 / 0.22);
+    /* The selected-state tint (primary over the surface; bg-selected) and the
+       text-selection tint. */
+    --selected-alpha: 0.12;
+    --selection-alpha: 0.2;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 5.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 5.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 50%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --background: 225 59.2% 5.9%;
+    --foreground: 66 58.5% 83.9%;
+    --chrome: 223 50.4% 7.7%;
+    --card: 223 42% 9.8%;
+    --card-foreground: 66 58.5% 83.9%;
+    --popover: 223 27.3% 17.7%;
+    --popover-foreground: 66 58.5% 83.9%;
+    --surface-2: 223 32.6% 13.8%;
+    --primary: 217 74.2% 77.1%;
+    --primary-foreground: 225 59.2% 5.9%;
+    --secondary: 223 32.6% 13.8%;
+    --secondary-foreground: 66 58.5% 83.9%;
+    --muted: 223 32.6% 13.8%;
+    --muted-foreground: 52 13.4% 66.4%;
+    --accent: 223 32.6% 13.8%;
+    --accent-foreground: 66 58.5% 83.9%;
+    --live: 26 79.7% 63.3%;
+    --live-foreground: 225 59.2% 5.9%;
+    --warning: 42 87.1% 63.6%;
+    --destructive: 354 85.9% 70.3%;
+    --destructive-foreground: 225 59.2% 5.9%;
+    --border: 222 20.9% 22.8%;
+    --input: 221 11.1% 47.6%;
+    --ring: 217 74.2% 77.1%;
+    --shadow-float: 0 6px 16px -6px rgb(0 0 0 / 0.55);
+    --selected-alpha: 0.2;
+    --selection-alpha: 0.3;
+  }
+
+  /* Higher contrast: secondary text becomes ink, hairlines become control edges. */
+  @media (prefers-contrast: more) {
+    :root,
+    .dark {
+      --muted-foreground: var(--foreground);
+      --border: var(--input);
+    }
+  }
+
+  :root {
+    color-scheme: light;
+    /* Motion, from transitions.dev's scale. Closes are faster than opens and
+       accelerate away; nothing waits on a close. */
+    --dur-press: 100ms;
+    --dur-quick: 150ms;
+    --dur-fast: 250ms;
+    --dur-medium: 350ms;
+    --dur-focal: 500ms;
+    --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+    /* Button heights (components/ui/button.tsx): 44px on touch, denser with a
+       mouse. A variable rather than a fine: class, so a caller's own h-* or
+       size-* still replaces it through cn(). */
+    --tc-control-height: 2.75rem;
+    --tc-control-height-sm: 2.75rem;
+    /* What covers the bottom of the screen: the safe area, plus the tab bar and
+       the recording island once the shell sets data-nav and data-island. */
+    --tc-bottom-chrome: env(safe-area-inset-bottom);
+  }
+  .dark {
+    color-scheme: dark;
+  }
+  @media (pointer: fine) {
+    :root {
+      --tc-control-height: 2.25rem;
+      --tc-control-height-sm: 2rem;
+    }
+  }
+  html[data-nav="tabbar"]:not([data-keyboard="open"]) {
+    --tc-bottom-chrome: calc(3.5rem + env(safe-area-inset-bottom));
+  }
+  html[data-nav="tabbar"][data-island]:not([data-keyboard="open"]) {
+    --tc-bottom-chrome: calc(3.5rem + 4rem + env(safe-area-inset-bottom));
   }
 }
 
@@ -58,8 +152,89 @@
   #root {
     height: 100%;
   }
+  html,
+  body {
+    overscroll-behavior: none;
+  }
   body {
     @apply bg-background text-foreground antialiased;
+    caret-color: hsl(var(--primary));
+    accent-color: hsl(var(--primary));
+  }
+  /* Cream on navy reads a touch tight. Line heights are the same in both themes. */
+  .dark body {
+    letter-spacing: 0.005em;
+  }
+  ::selection {
+    background-color: hsl(var(--primary) / var(--selection-alpha));
+    color: hsl(var(--foreground));
+  }
+  /* One focus ring: 2px of --ring, 2px clear of the control. Components that
+     draw their own ring (focus-visible:ring-*) turn the outline off. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+  /* lucide-react draws at stroke 2. Zero specificity, so a utility can raise it
+     (the active tab and rail icon use 2.25). */
+  :where(svg.lucide) {
+    stroke-width: 1.75;
+  }
+  /* No long-press callout on controls. Never on transcripts or other text. */
+  :where(button, [role="button"], [role="radio"], [role="tab"], nav a) {
+    -webkit-touch-callout: none;
+  }
+}
+
+@layer utilities {
+  /* Tabular, lining figures for numbers that change in place. */
+  .tnum {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  /* Drops the grey iOS tap flash. Only for controls that draw their own
+     :active state, so every tap still answers. */
+  .tap-transparent {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Forced colours drop the tints. The selected segment keeps its edge, in the
+   system highlight; the Live Edge (PR4) is decoration over a state the status
+   text already carries. */
+@media (forced-colors: active) {
+  [data-segmented-thumb] {
+    border-color: Highlight;
+  }
+  .live-edge {
+    display: none;
+  }
+}
+
+/* vaul, for the bottom sheet (PR3). Its stylesheet is injected after this one,
+   so each selector here carries one more element than vaul's own. Opening takes
+   350ms on the drawer curve; closing takes 250ms and accelerates away. */
+html [data-vaul-drawer][data-state="open"],
+html [data-vaul-overlay][data-state="open"] {
+  animation-duration: var(--dur-medium);
+  animation-timing-function: var(--ease-drawer);
+}
+html [data-vaul-drawer][data-state="closed"],
+html [data-vaul-overlay][data-state="closed"] {
+  animation-duration: var(--dur-fast);
+  animation-timing-function: var(--ease-exit);
+}
+/* vaul ships no reduced-motion rule: fade with its own keyframes instead of sliding. */
+@media (prefers-reduced-motion: reduce) {
+  html [data-vaul-drawer][data-vaul-snap-points][data-vaul-drawer-direction][data-state="open"] {
+    animation-name: fadeIn;
+    animation-duration: var(--dur-quick);
+  }
+  html [data-vaul-drawer][data-vaul-snap-points][data-vaul-drawer-direction][data-state="closed"] {
+    animation-name: fadeOut;
+    animation-duration: var(--dur-quick);
+  }
+  html [data-vaul-overlay][data-state] {
+    animation-duration: var(--dur-quick);
   }
 }
 

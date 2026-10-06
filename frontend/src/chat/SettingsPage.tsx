@@ -17,7 +17,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { AppearanceControl } from "./AppearanceControl";
 import { ImportDialog } from "./ImportDialog";
 import { stateLabel, type AppState } from "../App";
 import { formatCredits, type BillingStatus } from "../lib/billingApi";
@@ -95,7 +95,7 @@ export function SettingsPage({
             <ArrowLeftIcon className="size-4" />
             <span className="hidden sm:inline">Back to chat</span>
           </Button>
-          <h1 className="text-base font-semibold tracking-tight">Settings</h1>
+          <h1 className="font-display text-title-2">Settings</h1>
         </div>
         <div className="flex flex-col gap-4">
           <SectionCard icon={UserIcon} title="Account">
@@ -215,10 +215,7 @@ export function SettingsPage({
             </SectionCard>
           )}
           <SectionCard icon={SunIcon} title="Appearance">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs text-muted-foreground">Theme</span>
-              <ThemeToggle />
-            </div>
+            <AppearanceControl />
           </SectionCard>
           {conversationCanvas.eligible && (
             <SectionCard icon={DatabaseIcon} title="Experimental Features">

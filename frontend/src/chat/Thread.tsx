@@ -439,7 +439,7 @@ const ThreadWelcome: FC = () => {
     <ThreadPrimitive.Empty>
       <div className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-16 text-center">
         <div className="flex flex-col items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">TinyCloud Chat</h1>
+          <h1 className="font-display text-title-2">TinyCloud Chat</h1>
           <p className="max-w-sm text-sm text-muted-foreground">
             Your conversations are private and stored in your TinyCloud space.
           </p>
