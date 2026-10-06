@@ -41,7 +41,7 @@ describe("RootRoute", () => {
 });
 
 // main.tsx calls createRoot on import, so its wiring is asserted against the
-// source, as connectorsNav.test.tsx does for App.tsx.
+// source, as ConnectorsPage.test.tsx does for App.tsx.
 describe("main.tsx routes / through RootRoute", () => {
   const main = readFileSync(join(import.meta.dir, "..", "main.tsx"), "utf8");
 

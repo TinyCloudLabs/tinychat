@@ -110,7 +110,7 @@ describe("Settings agent controls", () => {
 
 // App.tsx pulls in @tinycloud/web-sdk, which a bun test process cannot
 // evaluate, so its wiring is asserted against the source (as
-// connectorsNav.test.tsx does). The route gate itself is unit-tested in
+// ConnectorsPage.test.tsx does). The route gate itself is unit-tested in
 // chatViewPath.test.ts and exercised on real navigation in
 // test/agent-banner-route.e2e.test.ts.
 describe("App mounts the banner through the chat-view gate", () => {

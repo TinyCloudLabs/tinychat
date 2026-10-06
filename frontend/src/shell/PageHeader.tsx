@@ -121,7 +121,8 @@ export function PageHeader({ title, largeTitle = true, back, leading, trailing, 
       </header>
       {pushed && largeTitle && (
         <div aria-hidden className={cn("land:hidden", className)}>
-          <p className={cn("truncate pb-1 pt-1 font-display text-title-1", LARGE_TITLE_FIT)}>{title}</p>
+          {/* Wraps (a note's title is the user's own words); one word is unchanged. */}
+          <p className={cn("line-clamp-3 pb-1 pt-1 font-display text-title-1 [overflow-wrap:anywhere]", LARGE_TITLE_FIT)}>{title}</p>
         </div>
       )}
       {/* Collapses the header once it passes under the row: right after a

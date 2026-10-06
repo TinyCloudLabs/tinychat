@@ -2,8 +2,8 @@
 // failed, saved until dismissed, or paused for the user's key), and the
 // notetaker sessions still moving, and the voice notes still only on this
 // phone (with Save now) or stopped at the limit. A row opens its sheet; End,
-// Continue and Save now sit beside the row, never inside it. The Library's
-// rows join these later (PR6).
+// Continue and Save now sit beside the row, never inside it. What has landed
+// is under Recent and in the Library.
 import { AlertCircleIcon, FileAudioIcon, Loader2Icon, MicIcon, VideoIcon } from "lucide-react";
 
 import { uploadStatusText } from "@/chat/AudioUploadPanel";
@@ -58,6 +58,18 @@ function RowText(props: { title: string; meta: string; spinning?: boolean }) {
   );
 }
 
+/**
+ * Whether there is anything in progress to show (the rows render nothing
+ * otherwise). A phone listing that failed counts: it has its recovery row.
+ */
+export function inProgressShown(props: Pick<InProgressRowsViewProps, "upload" | "paused" | "meetings" | "voice">): boolean {
+  const { upload, paused, meetings, voice } = props;
+  const voiceShown =
+    voice !== undefined &&
+    ((voice.listing.state === "ok" && voice.listing.count > 0) || voice.listing.state === "error" || !!voice.limitNotice);
+  return upload !== null || paused !== null || meetings.length > 0 || voiceShown;
+}
+
 export function InProgressRowsView(props: InProgressRowsViewProps) {
   const { upload, paused, meetings, voice } = props;
   const showPaused = upload === null && paused !== null;
@@ -66,7 +78,7 @@ export function InProgressRowsView(props: InProgressRowsViewProps) {
   // A listing that failed is never shown as "nothing pending": it gets its own row with Try again.
   const voiceListFailed = voice?.listing.state === "error" ? voice.listing.message : null;
   const voiceLimit = voice?.limitNotice ?? null;
-  if (upload === null && !showPaused && meetings.length === 0 && !voicePending && !voiceListFailed && !voiceLimit) return null;
+  if (!inProgressShown(props)) return null;
   const uploadBusy = upload !== null && upload.stage !== "saved" && upload.stage !== "failed" && upload.stage !== "elsewhere";
   return (
     <section aria-labelledby="in-progress-title" data-testid="in-progress">

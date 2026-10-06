@@ -18,7 +18,9 @@ import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
+import { captureScreens } from "./screens/capture";
 import { legacyScreens } from "./screens/legacy";
+import { libraryScreens } from "./screens/library";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { sheetsScreens } from "./screens/sheets";
@@ -33,7 +35,15 @@ declare global {
   }
 }
 
-const SCREENS: HarnessScreen[] = [...primitivesScreens, ...legacyScreens, ...shellScreens, ...sheetsScreens, ...recorderScreens];
+const SCREENS: HarnessScreen[] = [
+  ...primitivesScreens,
+  ...legacyScreens,
+  ...shellScreens,
+  ...sheetsScreens,
+  ...recorderScreens,
+  ...captureScreens,
+  ...libraryScreens,
+];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 
 // Hermetic: nothing leaves the machine. A call to another host (the model's

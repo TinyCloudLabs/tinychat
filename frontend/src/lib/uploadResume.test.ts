@@ -144,7 +144,7 @@ describe("uploads resume only behind the guard", () => {
     expect(handler).toContain("export function continuePausedUpload(");
     // Continue is wired to taps only: the sheet's button and the In progress row's.
     expect(read("../chat/AudioUploadPanel.tsx")).toContain("const onContinue = useCallback(() => continuePausedUpload(deps), [deps]);");
-    expect(read("../capture/CaptureSurface.tsx")).toContain("onContinue={() => continuePausedUpload(uploadDeps)}");
+    expect(read("../capture/CaptureSurface.tsx")).toContain("onContinue: () => continuePausedUpload(uploadDeps),");
   });
 
   test("the upload's storage calls are queued with the Library's (lib/spaceQueue.ts)", () => {

@@ -411,6 +411,10 @@ describe.skipIf(config === null)(
         await page.getByRole("link", { name: "Capture", exact: true }).click();
         await page.getByRole("link", { name: "Library", exact: true }).click();
         await page
+          .getByRole("heading", { name: "Library", exact: true })
+          .waitFor({ state: "visible", timeout: 60_000 });
+        // The cohort archive (MeetingsSection) renders under the Library's own list.
+        await page
           .getByRole("heading", { name: "Meetings", exact: true })
           .waitFor({ state: "visible", timeout: 60_000 });
 

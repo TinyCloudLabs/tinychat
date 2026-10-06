@@ -9,7 +9,7 @@
 //      the card's single-flight retry (`savePendingVoiceNotes`, plain logic with fakes), and a
 //      recording still running is shown in the chat screen's bar, never restarted.
 // App's wiring is pinned against the source (App pulls in @tinycloud/web-sdk, which a bun test
-// process cannot evaluate), as in connectorsNav.test.tsx.
+// process cannot evaluate), as in ConnectorsPage.test.tsx.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";

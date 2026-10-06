@@ -37,6 +37,11 @@ export interface Screen {
   noteId: string | null;
 }
 
+/** Connectors, one page (its address before the shell, kept for the links that name it). */
+export const CONNECTORS_SOURCES_PATH = PATHS.connectors;
+/** Library's address while it was a Connectors tab; a legacy address that forwards to Capture → Library. */
+export const CONNECTORS_LIBRARY_PATH = "/chat/connectors/library";
+
 /** The address of one note in the Library (the id is URL-encoded). */
 export function notePath(id: string): string {
   return `${PATHS.library}/${encodeURIComponent(id)}`;
@@ -49,7 +54,7 @@ export function notePath(id: string): string {
  */
 export const LEGACY_REDIRECTS: ReadonlyArray<{ from: string; to: string }> = [
   // Library was a Connectors tab before Capture existed.
-  { from: "/chat/connectors/library", to: PATHS.library },
+  { from: CONNECTORS_LIBRARY_PATH, to: PATHS.library },
   // The standalone Meetings page, retired before that.
   { from: "/chat/meetings", to: PATHS.library },
 ];
@@ -105,10 +110,10 @@ export const DESTINATION_ROOTS: Readonly<Record<Destination, string>> = {
 
 /**
  * Whether a screen is stacked over a root, so Back returns to its parent.
- * Settings and How it works are pushed at every size. The Library (and a note, which shows the
- * Library until note detail arrives) is pushed at every size for now; on wide
- * screens it becomes a pane beside Capture once the list and detail panes land
- * (PR6), which is why the size class is part of the question.
+ * Settings and How it works are pushed at every size. So are the Library and a
+ * note: on a phone each is a screen of its own, and from medium up, where they
+ * are panes beside Capture's home, Back still closes the open note (then
+ * leaves the Library) before it minimises the app.
  */
 export function isPushed(screen: Screen, _size: SizeClass): boolean {
   return screen.id === "settings" || screen.id === "about" || screen.id === "library" || screen.id === "note";

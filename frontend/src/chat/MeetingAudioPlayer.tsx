@@ -22,8 +22,8 @@ type PlayerState =
   | { phase: "failed" };
 
 /**
- * The original audio of one meeting, fetched only when the user asks for it:
- * a stored file can be tens of megabytes, so opening a meeting never reads it.
+ * The original audio of one note, fetched only when the user asks for it:
+ * a stored file can be tens of megabytes, so opening a note never reads it.
  * Unmounting (closing the meeting) aborts an in-flight read and releases the
  * object URL.
  */
@@ -64,31 +64,27 @@ export function MeetingAudioPlayer({ load }: MeetingAudioPlayerProps) {
   }, [load]);
 
   if (state.phase === "ready") {
-    return <audio controls autoPlay src={state.url} className="h-10 w-full" />;
+    return <audio controls autoPlay src={state.url} className="h-11 w-full" data-testid="note-audio-player" />;
   }
   if (state.phase === "loading") {
     return (
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
-        <Loader2Icon className="size-3.5 animate-spin" aria-hidden />
-        Loading audio…{state.percent === null ? "" : ` ${state.percent}%`}
+      <p className="flex min-h-11 items-center gap-1.5 text-callout text-muted-foreground" role="status">
+        <Loader2Icon className="size-4 animate-spin" aria-hidden />
+        <span className="tnum">Loading audio…{state.percent === null ? "" : ` ${state.percent}%`}</span>
       </p>
     );
   }
   if (state.phase === "missing") {
-    return (
-      <p className="text-xs text-muted-foreground">
-        The audio for this meeting is no longer stored.
-      </p>
-    );
+    return <p className="text-callout text-muted-foreground">The audio is no longer stored.</p>;
   }
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Button type="button" size="sm" variant="outline" onClick={() => void onPlay()} className="gap-1.5">
-        <PlayIcon className="size-4" aria-hidden />
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <Button type="button" variant="outline" onClick={() => void onPlay()} data-testid="note-audio-play">
+        <PlayIcon aria-hidden />
         <span>{state.phase === "failed" ? "Try again" : "Play audio"}</span>
       </Button>
       {state.phase === "failed" && (
-        <p role="alert" className="text-xs text-muted-foreground">
+        <p role="alert" className="text-callout text-muted-foreground">
           Couldn&apos;t load the audio just now.
         </p>
       )}

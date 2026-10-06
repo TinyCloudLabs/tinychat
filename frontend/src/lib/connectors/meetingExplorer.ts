@@ -85,6 +85,8 @@ export interface MeetingListItem {
   sourceId: string;
   title: string | null;
   startedAt: string | null;
+  /** `connector_meeting.duration_secs`; null when the source did not say. */
+  durationSecs: number | null;
 }
 
 /**
@@ -111,30 +113,57 @@ function cellStr(row: unknown[], idx: number): string | null {
 }
 
 /**
+ * The list read with "nothing stored" kept apart from "the read did not land"
+ * (the Library offers Try again for the second). A connectors db or table that
+ * does not exist yet, or a session predating the connectors permissions, is
+ * an ordinary empty list, as in connectorStore.getConnection.
+ */
+export type MeetingListRead = { status: "ok"; meetings: MeetingListItem[] } | { status: "failed" };
+
+function notStoredYet(res: unknown): boolean {
+  const code = errorCode(res);
+  const err = (res as { error?: { message?: unknown } } | null)?.error;
+  const message = typeof err?.message === "string" ? err.message.toLowerCase() : "";
+  return (
+    code === "AUTH_UNAUTHORIZED"
+    || /NOT_FOUND/i.test(code)
+    || message.includes("unauthorized")
+    || message.includes("not authorized")
+    || message.includes("no such table")
+  );
+}
+
+/** Rows come back POSITIONAL; anything that is not a finite number reads as absent. */
+function cellNum(row: unknown[], idx: number): number | null {
+  const v = row[idx];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
  * Meetings stored for `sources`, newest first ACROSS the whole set — one query,
  * one merged list, ordered by `started_at` over the union rather than grouped
- * by connector. A failed read (including the table not existing) is
- * indistinguishable from "no meetings" on purpose.
+ * by connector.
  *
  * An empty `sources` runs no query at all: `source IN ()` is not valid SQL, and
  * "browse nothing" already has an answer.
  */
-export async function listMeetings(
+export async function listMeetingsRead(
   tcw: TinyCloudWeb,
   sources: readonly string[] = EXPLORER_MEETING_SOURCES,
-): Promise<MeetingListItem[]> {
-  if (sources.length === 0) return [];
+): Promise<MeetingListRead> {
+  if (sources.length === 0) return { status: "ok", meetings: [] };
   const placeholders = sources.map(() => "?").join(", ");
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
-      `SELECT id, source, source_id, title, started_at FROM connector_meeting
+      `SELECT id, source, source_id, title, started_at, duration_secs FROM connector_meeting
        WHERE source IN (${placeholders}) ORDER BY started_at DESC`,
       [...sources],
     ),
   );
-  if (!res || !res.ok) return [];
+  if (!res) return { status: "failed" };
+  if (!res.ok) return notStoredYet(res) ? { status: "ok", meetings: [] } : { status: "failed" };
   const rows: unknown = res.data?.rows;
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(rows)) return { status: "ok", meetings: [] };
 
   const meetings: MeetingListItem[] = [];
   for (const row of rows as unknown[][]) {
@@ -152,9 +181,23 @@ export async function listMeetings(
       sourceId,
       title: cellStr(row, 3),
       startedAt: cellStr(row, 4),
+      durationSecs: cellNum(row, 5),
     });
   }
-  return meetings;
+  return { status: "ok", meetings };
+}
+
+/**
+ * The same list, with every failure read as "no meetings" (including the
+ * table not existing): the tolerant answer for callers that have no failed
+ * state to show.
+ */
+export async function listMeetings(
+  tcw: TinyCloudWeb,
+  sources: readonly string[] = EXPLORER_MEETING_SOURCES,
+): Promise<MeetingListItem[]> {
+  const read = await listMeetingsRead(tcw, sources);
+  return read.status === "ok" ? read.meetings : [];
 }
 
 /**
@@ -241,21 +284,21 @@ export function transcriptCopyText(sentences: FirefliesSentence[]): string {
 }
 
 /**
- * Where a meeting's original audio is stored, read from its own row when the
- * meeting is opened — the list query never selects `metadata`, which can carry
- * a whole transcript. `stored` only for a finished upload
- * (`metadata.audio.stored === true`); same settled/transient split as
- * {@link TranscriptRead}.
+ * One meeting's own row metadata (provenance, the stored audio's place, a
+ * voice note's transcript outcome), read when the meeting is opened — the list
+ * query never selects `metadata`, which can carry a whole transcript. Same
+ * settled/transient split as {@link TranscriptRead}: no row, or metadata that
+ * is not a JSON object, is `absent`.
  */
-export type MeetingAudioRead =
-  | { status: "stored"; base: string }
+export type MeetingMetadataRead =
+  | { status: "ok"; metadata: Record<string, unknown> }
   | { status: "absent" }
   | { status: "failed" };
 
-export async function readMeetingAudio(
+export async function readMeetingMetadata(
   tcw: TinyCloudWeb,
   id: string,
-): Promise<MeetingAudioRead> {
+): Promise<MeetingMetadataRead> {
   const res = await tolerate(() =>
     tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
       "SELECT metadata FROM connector_meeting WHERE id = ?",
@@ -272,8 +315,34 @@ export async function readMeetingAudio(
   } catch {
     return { status: "absent" };
   }
+  return metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)
+    ? { status: "ok", metadata: metadata as Record<string, unknown> }
+    : { status: "absent" };
+}
+
+/**
+ * Where a meeting's original audio is stored. `stored` only for a finished
+ * upload (`metadata.audio.stored === true`); same settled/transient split as
+ * {@link TranscriptRead}.
+ */
+export type MeetingAudioRead =
+  | { status: "stored"; base: string }
+  | { status: "absent" }
+  | { status: "failed" };
+
+/** The stored audio a row's metadata points at, if any. */
+export function meetingAudioFrom(metadata: Record<string, unknown> | null): MeetingAudioRead {
   const audio = (metadata as { audio?: { stored?: unknown; base?: unknown } } | null)?.audio;
   return audio?.stored === true && typeof audio.base === "string" && audio.base.length > 0
     ? { status: "stored", base: audio.base }
     : { status: "absent" };
+}
+
+export async function readMeetingAudio(
+  tcw: TinyCloudWeb,
+  id: string,
+): Promise<MeetingAudioRead> {
+  const read = await readMeetingMetadata(tcw, id);
+  if (read.status === "failed") return { status: "failed" };
+  return meetingAudioFrom(read.status === "ok" ? read.metadata : null);
 }

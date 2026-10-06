@@ -532,8 +532,10 @@ describe("Capture wiring", () => {
     expect(src.match(/useMeetingBot\(/g)).toHaveLength(1);
     expect(src).toContain("const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });");
     expect(src).toContain("<MeetingSheet open={sheet === \"meeting\"} onOpenChange={sheetChange(\"meeting\")} bot={bot} />");
-    expect(src).toContain("meetings={activeMeetings(bot.meetings)}");
-    expect(src).toContain("onEnd={bot.actions.stop}");
+    // The In progress rows' props (CaptureHomeView renders them).
+    expect(src).toContain("meetings: activeMeetings(bot.meetings),");
+    expect(src).toContain("onEnd: bot.actions.stop,");
+    expect(src).toContain("inProgress={inProgress}");
     // The Meeting action is hidden when the backend has no notetaker.
     expect(src).toContain('bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") }');
     // The notetaker never touches connector secrets or a provider key: the backend proxy holds
