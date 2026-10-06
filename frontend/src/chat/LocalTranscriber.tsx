@@ -470,7 +470,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       </div>
 
       {state === "saved" && (
-        <p className="text-xs text-muted-foreground">Saved to Meetings as Exo Local.</p>
+        <p className="text-xs text-muted-foreground">Saved to Library as Exo Local.</p>
       )}
       {state === "save-failed" && (
         <p className="text-xs text-muted-foreground">
@@ -593,8 +593,8 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       recoveredCount.current += 1;
       setRecoveredNote(
         recoveredCount.current === 1
-          ? "Saved an earlier private cloud transcript to Meetings."
-          : `Saved ${recoveredCount.current} earlier private cloud transcripts to Meetings.`,
+          ? "Saved an earlier private cloud transcript to Library."
+          : `Saved ${recoveredCount.current} earlier private cloud transcripts to Library.`,
       );
       await owner.finishCloudTranscript(result);
     });

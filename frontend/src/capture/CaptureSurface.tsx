@@ -1,12 +1,15 @@
 // Capture (TC-761): the first of Exo's three destinations, and the phone app's
-// landing. It gathers the capture tools that used to live in Connectors, as
-// they are, until the new Capture home replaces them (PR4, PR6, PR7):
+// landing. It gathers the capture tools that used to live in Connectors:
 //
+//   Record on this Mac (desktop app), at the top, in a fixed place in the
+//     tree: Capture stays mounted while hidden, so a local recording survives
+//     navigation;
 //   the Voice notes card (phone app), mounted only while Capture shows, so it
 //     never coexists with the chat screen's voice note bar (one recorder view);
-//   the Transcriber card (Upload audio, the meeting notetaker, desktop Local
-//     recording), kept mounted while hidden so a local recording survives
-//     navigation; its reads pause while it is off screen;
+//   In progress: the upload and the notetaker sessions still moving;
+//   the actions: Upload and Meeting open their sheets. The notetaker's state
+//     comes from one useMeetingBot, here, for both the sheet and the rows; its
+//     reads and polling run only while the home shows;
 //   the Library (/chat/capture/library), kept mounted and hidden beside the
 //     home, re-listing when it is entered and when something new lands.
 //
@@ -19,16 +22,24 @@ import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { uploadRunner } from "@/lib/audioUpload";
+import { isDesktopLocalTranscriptionAvailable } from "@/lib/localTranscriber";
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { LibraryPage } from "@/chat/LibraryPage";
-import { TranscriberSection } from "@/chat/TranscriberSection";
+import { activeMeetings, useMeetingBot } from "@/chat/TranscriberSection";
 import { useTranscriberSavedState } from "@/chat/useTranscriberLibrarySync";
 import { VoiceNotesSection } from "@/chat/VoiceNotesSection";
 import { useNavKind } from "@/shell/navItems";
 import { goUp } from "@/shell/navigation";
 import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
 import { PATHS, type Screen } from "@/shell/routes";
+import { CaptureActions } from "./CaptureActions";
 import { captureEvents } from "./captureEvents";
+import { LocalRecorderCard } from "./desktop/LocalRecorderCard";
+import { InProgressRowsView } from "./InProgressRows";
+import { MeetingSheet } from "./meeting/MeetingSheet";
+import { continuePausedUpload, pausedUpload } from "./upload/pausedUpload";
+import { UploadSheet } from "./upload/UploadSheet";
+import { useUploadDeps } from "./upload/useUploadDeps";
 
 export interface CaptureSurfaceProps {
   tcw: TinyCloudWeb;
@@ -45,6 +56,8 @@ export interface CaptureSurfaceProps {
 const emitLibraryChanged = () => captureEvents.emit("library-changed");
 
 const PANE = "relative h-full overflow-y-auto";
+
+type Sheet = "upload" | "meeting";
 
 export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot }: CaptureSurfaceProps) {
   const navigate = useNavigate();
@@ -88,9 +101,22 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
     lastSavedCount.current = savedCount;
   }, [savedCount]);
 
+  // The notetaker: one per app, for the Meeting sheet and the In progress rows.
+  const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });
+  const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
+  const { deps: uploadDeps } = useUploadDeps(tcw, backendUrl, sessionStore);
+  const [sheet, setSheet] = useState<Sheet | null>(null);
+  // A sheet belongs to the home: leaving it (another destination, the
+  // Library, a How it works link) closes it.
+  useEffect(() => {
+    if (!homeShown) setSheet(null);
+  }, [homeShown]);
+  const sheetChange = (which: Sheet) => (open: boolean) => setSheet(open ? which : null);
+  const localRecorder = isDesktopLocalTranscriptionAvailable();
+
   return (
     <div className="relative h-full" data-testid="capture-surface">
-      <div className={libraryShown ? "hidden" : PANE} data-scroll-root data-testid="capture-home">
+      <div className={libraryShown ? "hidden" : `${PANE} flex flex-col`} data-scroll-root data-testid="capture-home">
         <PageHeader
           title="Capture"
           className={PAGE_COLUMN}
@@ -106,11 +132,28 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
             </>
           }
         />
-        <div className={`${PAGE_COLUMN} flex flex-col gap-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-2`}>
+        <div className={`${PAGE_COLUMN} flex flex-1 flex-col gap-6 pb-4 pt-2`}>
+          {localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}
           {active && (
             <VoiceNotesSection tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} onSaved={emitLibraryChanged} />
           )}
-          <TranscriberSection backendUrl={backendUrl} sessionStore={sessionStore} tcw={tcw} active={homeShown} />
+          <InProgressRowsView
+            upload={upload}
+            paused={paused}
+            meetings={activeMeetings(bot.meetings)}
+            busyId={bot.busyId}
+            onOpenUpload={() => setSheet("upload")}
+            onContinue={() => continuePausedUpload(uploadDeps)}
+            onOpenMeeting={() => setSheet("meeting")}
+            onEnd={bot.actions.stop}
+          />
+        </div>
+        <div className="sticky bottom-0 z-10 bg-background pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
+          <CaptureActions
+            className={PAGE_COLUMN}
+            onUpload={() => setSheet("upload")}
+            {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
+          />
         </div>
       </div>
       <div className={libraryShown ? PANE : "hidden"} data-scroll-root data-testid="capture-library">
@@ -119,6 +162,8 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
           <LibraryPage tcw={scheduledSpace(tcw)} meetingsSlot={meetingsSlot} listSignal={listSignal} />
         </div>
       </div>
+      <UploadSheet open={sheet === "upload"} onOpenChange={sheetChange("upload")} tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
+      <MeetingSheet open={sheet === "meeting"} onOpenChange={sheetChange("meeting")} bot={bot} />
     </div>
   );
 }

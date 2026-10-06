@@ -66,6 +66,7 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
+import { UploadResumer } from "./capture/upload/UploadResumer";
 import { AppShell } from "./shell/AppShell";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
@@ -980,6 +981,18 @@ export function App() {
           cohort — see BackendReconciler.tsx. */}
       {!LOCAL_VALIDATION && state === "ready" && tcw && (
         <BackendReconciler
+          tcw={tcw}
+          sessionStore={sessionStoreRef.current}
+          backendUrl={BACKEND_URL}
+        />
+      )}
+
+      {/* TC-761: an upload a reload interrupted picks up at launch, without
+          opening the Upload sheet. Same ready gate; renders nothing, and never
+          unlocks: an own-key AssemblyAI upload with the vault locked waits as
+          "Upload paused" until the user taps Continue — see UploadResumer.tsx. */}
+      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+        <UploadResumer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
           backendUrl={BACKEND_URL}

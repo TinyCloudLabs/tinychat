@@ -380,6 +380,11 @@ export type AudioStage = "storing" | "stored" | "quota" | "failed" | "not-stored
 
 export interface UploadState {
   engine: UploadEngine;
+  /**
+   * AssemblyAI: whose account this upload uses, as stored with the job (not
+   * the current Settings, which may have changed since it started).
+   */
+  assemblyAiMode?: AssemblyAiKeyMode;
   fileName: string;
   stage: UploadStage;
   /** Percent of the file sent to the engine while uploading. */
@@ -515,6 +520,11 @@ export interface UploadRunner {
   reset(): void;
 }
 
+/** Whose AssemblyAI account a stored job uses, as the runner reads it: a record from before key modes used the user's own key. */
+function jobAssemblyAiMode(job: Pick<PendingUpload, "engine" | "assemblyAiMode">): AssemblyAiKeyMode | undefined {
+  return job.engine === "assemblyai" ? (job.assemblyAiMode ?? "own") : undefined;
+}
+
 export function createUploadRunner(): UploadRunner {
   let state: UploadState | null = null;
   let running = false;
@@ -577,9 +587,11 @@ export function createUploadRunner(): UploadRunner {
     audioAbort = null;
     if (task !== null) await task;
   };
-  const showElsewhere = (job: Pick<PendingUpload, "engine" | "file"> | null, fallback?: UploadInput) => {
+  const showElsewhere = (job: Pick<PendingUpload, "engine" | "file" | "assemblyAiMode"> | null, fallback?: UploadInput) => {
+    const mode = job !== null ? jobAssemblyAiMode(job) : fallback?.engine === "assemblyai" ? (fallback.assemblyAiMode ?? "hosted") : undefined;
     state = {
       engine: job?.engine ?? fallback?.engine ?? "private-cloud",
+      ...(mode !== undefined ? { assemblyAiMode: mode } : {}),
       fileName: job?.file.name ?? fallback?.file.name ?? "",
       stage: "elsewhere",
       uploadPct: null,
@@ -955,8 +967,10 @@ export function createUploadRunner(): UploadRunner {
   }
 
   const show = (job: PendingUpload) => {
+    const mode = jobAssemblyAiMode(job);
     state = {
       engine: job.engine,
+      ...(mode !== undefined ? { assemblyAiMode: mode } : {}),
       fileName: job.file.name,
       stage: job.saved ? "saving" : "preparing",
       uploadPct: null,

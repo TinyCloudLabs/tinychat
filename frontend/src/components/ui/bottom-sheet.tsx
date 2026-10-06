@@ -57,7 +57,7 @@ export function BottomSheet({
         >
           <div aria-hidden className="mx-auto mt-2 h-1.5 w-9 shrink-0 rounded-full bg-muted-foreground/40" />
           <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2">
-            <Drawer.Title className="min-w-0 flex-1 truncate font-display text-title-2">{title}</Drawer.Title>
+            <Drawer.Title className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</Drawer.Title>
             {dismissible && (
               <Drawer.Close
                 aria-label="Close"

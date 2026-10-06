@@ -47,10 +47,11 @@ describe("CaptureSurface", () => {
     const markup = render("/chat/capture", true);
     expect(pane(markup, "capture-home").classes).not.toContain("hidden");
     expect(pane(markup, "capture-library").classes).toEqual(["hidden"]);
-    // Home: the title, the gear and the Library link; the capture cards.
+    // Home: the title, the gear and the Library link; the Upload and Meeting actions.
     expect(markup).toContain(">Capture</span>");
     expect(markup).toContain('href="/chat/capture/library"');
-    expect(markup).toContain(">Transcriber<");
+    expect(markup).toContain('aria-label="Upload audio"');
+    expect(markup).toContain('aria-label="Send a notetaker to a meeting"');
     // The Library is there, with both meeting data paths.
     expect(markup).toContain(">Synced meetings<");
     expect(markup).toContain("cohort-meetings");
@@ -61,8 +62,8 @@ describe("CaptureSurface", () => {
     expect(pane(markup, "capture-home").classes).toEqual(["hidden"]);
     expect(pane(markup, "capture-library").classes).not.toContain("hidden");
     expect(pane(markup, "capture-library").after).toContain(">Back</button>");
-    // The Transcriber (and a desktop local recording in it) is still mounted.
-    expect(markup).toContain(">Transcriber<");
+    // The home (and a desktop local recording in it) is still mounted.
+    expect(pane(markup, "capture-home").after).toContain('data-testid="capture-actions"');
   });
 
   test("the Voice notes card exists only while Capture is on screen", () => {
@@ -72,6 +73,14 @@ describe("CaptureSurface", () => {
     // App and the harness hand `active` from the screen's destination.
     const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
     expect(app).toContain('active={screen.destination === "capture"}');
+  });
+
+  test("the desktop local recorder is mounted whatever shows, and the sheets close when the home is left", () => {
+    const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
+    // Never behind `active`: unmounting the panel stops a recording without saving it.
+    expect(source).toContain("{localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}");
+    expect(source).not.toMatch(/active && \(?\s*<LocalRecorderCard/);
+    expect(source).toContain("if (!homeShown) setSheet(null);");
   });
 
   test("the Library reads through the per-space queue, and re-lists on entry and when something lands", () => {

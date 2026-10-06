@@ -1,7 +1,7 @@
 // Rendered layout: Connectors, Capture and Settings scroll inside their own
 // pane. The app shell (the sidebar, the page's header) stays fixed to the
-// viewport, the document never grows taller than the window, and switching
-// Transcriber tabs on Capture never moves the document. Before the fix,
+// viewport, the document never grows taller than the window, and opening and
+// closing Capture's Upload and Meeting sheets never moves the document. Before the fix,
 // sr-only/absolute descendants (e.g. the meeting-link form labels) were
 // positioned against the initial containing block, escaped the scroller and
 // stretched the document (Exo 0.5.0 at 1280x800). The harness renders the real
@@ -122,20 +122,28 @@ describe.serial(`App pane scroll containment (${name}, 1280x800)`, () => {
     await page.close();
   }, 30_000);
 
-  test("Capture: only the content pane scrolls; Transcriber tab switches never move the document", async () => {
+  test("Capture: only the content pane scrolls; opening and closing the Upload and Meeting sheets never moves the document", async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(`http://127.0.0.1:${server.port}/chat/capture`, { waitUntil: "domcontentloaded" });
-    await page.getByLabel("Meeting link").waitFor({ state: "attached" });
+    await page.getByRole("button", { name: "Upload audio" }).waitFor();
     expectShellPinned(await geometry(page));
     await wheelBoth(page);
 
-    for (const tab of ["Upload audio", "Meeting bot", "Upload audio", "Meeting bot"]) {
-      const target = page.getByRole("tab", { name: tab });
+    for (const [action, field] of [
+      ["Upload audio", "Choose an audio file"],
+      ["Send a notetaker to a meeting", "Meeting link"],
+      ["Upload audio", "Choose an audio file"],
+      ["Send a notetaker to a meeting", "Meeting link"],
+    ] as const) {
+      const target = page.getByRole("button", { name: action });
       const before = (await target.boundingBox())!.y;
       await target.click();
-      await expect(target.getAttribute("aria-selected")).resolves.toBe("true");
+      await page.getByRole("dialog").getByText(field).first().waitFor();
       expectShellPinned(await geometry(page));
-      // The tab strip sits above the panel that changes, so it must not move.
+      await page.keyboard.press("Escape");
+      await page.getByRole("dialog").waitFor({ state: "detached" });
+      expectShellPinned(await geometry(page));
+      // The actions sit where they were: nothing behind the sheet moved.
       expect((await target.boundingBox())!.y).toBe(before);
     }
     await page.close();
