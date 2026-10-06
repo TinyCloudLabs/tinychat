@@ -25,7 +25,7 @@ import {
   type MicState,
   type MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { micStatusText } from "./VoiceNotesSection";
+import { micStatusText } from "@/capture/recorder/recorderCopy";
 
 export type OfflineRecorderPhase = "idle" | "starting" | "recording" | "stopping";
 

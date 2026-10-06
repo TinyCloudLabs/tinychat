@@ -15,7 +15,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { voiceNoteTranscriberFor, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { savePendingRecordings, type PendingRun } from "./VoiceNotesSection";
+import { savePendingRecordings, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 
 /**
  * Save what is on the phone, and hand each saved note to transcription. The availability check

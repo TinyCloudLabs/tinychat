@@ -21,8 +21,6 @@ import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/section-card";
 import {
   VoiceNotes,
-  nativePlatform,
-  nativeRecordingSource,
   nativeVoiceNotesAvailable,
   voiceNoteMaxDurationMs,
   VOICE_NOTE_MAX_DURATION_MS,
@@ -31,45 +29,24 @@ import {
   type VoiceNoteAutoStopEvent,
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
+import { errorCode, messageOf, saveRecording, savePendingRecordings } from "@/lib/voiceNotes/recorderSaves";
+import { listVoiceNotes, loadVoiceNoteAudioBlob, type VoiceNoteListItem } from "@/lib/voiceNotes/voiceNoteStore";
+import { transcriptionStatusText, voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { formatDuration, limitNoticeText, micStatusText } from "@/capture/recorder/recorderCopy";
+import type { RecorderPhase } from "@/capture/recorder/recorderReducer";
 import {
-  listVoiceNotes,
-  loadVoiceNoteAudioBlob,
-  saveVoiceNote,
-  type VoiceNoteAudio,
-  type VoiceNoteAudioSource,
-  type VoiceNoteListItem,
-} from "@/lib/voiceNotes/voiceNoteStore";
-import {
-  maxTranscriptionSeconds,
-  transcriptionStatusText,
-  voiceNoteTranscriberFor,
-  type NoteTranscriptionState,
-  type TranscriptionAvailability,
-  type VoiceNoteTranscriber,
-  type VoiceNoteTranscriberSnapshot,
-} from "@/lib/voiceNotes/voiceNoteTranscription";
+  HIDDEN_SNAPSHOT,
+  noSubscription,
+  transcriptionProps,
+  type VoiceNoteTranscriptionProps,
+} from "@/capture/recorder/transcriptionProps";
 import { PrivateCloudDisclosure } from "./PrivateCloudDisclosure";
 
-export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "saving";
-
-/**
- * Private cloud transcription as the card sees it. `hidden` (no PTX origin in
- * this build, or the backend's 404: dark or not in the cohort) and `checking`
- * offer nothing; `failed` means the check itself failed (offline, 5xx).
- */
-export interface VoiceNoteTranscriptionProps {
-  availability: TranscriptionAvailability;
-  consented: boolean;
-  /** The longest note offered, in seconds. */
-  maxSeconds: number;
-  /** Notes being transcribed, waiting their turn, or whose last attempt failed. */
-  jobs: ReadonlyMap<string, NoteTranscriptionState>;
-  onTranscribe: (sourceId: string) => void;
-  onConsent: () => void;
-  onTurnOff: () => void;
-  onRecheck: () => void;
-}
+// Moved in TC-761 (PR4); re-exported for the card's callers until the card is split.
+export { formatDuration, formatLimit, limitNoticeText, micStatusText } from "@/capture/recorder/recorderCopy";
+export type { RecorderPhase } from "@/capture/recorder/recorderReducer";
+export { transcriptionProps, type VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
+export { savePendingRecordings, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
 
 export interface VoiceNotesViewProps {
   phase: RecorderPhase;
@@ -96,45 +73,6 @@ export interface VoiceNotesViewProps {
   onRetry: () => void;
   /** Absent outside a build that can transcribe; nothing about transcription is shown then. */
   transcription?: VoiceNoteTranscriptionProps;
-}
-
-export function formatDuration(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
-/** How long before the limit the card starts showing it ("Recording 55:00 of 60:00"). */
-const LIMIT_WARNING_MS = 5 * 60 * 1000;
-
-/** "60-minute", or "15-second" for a limit that is not whole minutes (a test override). */
-export function formatLimit(ms: number): string {
-  return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-minute` : `${Math.round(ms / 1000)}-second`;
-}
-
-export function limitNoticeText(maxDurationMs: number): string {
-  return `Stopped at the ${formatLimit(maxDurationMs)} limit.`;
-}
-
-/** Copy for what the OS is telling us about the microphone. */
-export function micStatusText(
-  phase: RecorderPhase,
-  mic: { state: MicState; reason: MicStateReason },
-  elapsedMs: number,
-  maxDurationMs?: number,
-): string {
-  if (phase === "starting") return "Starting the microphone…";
-  if (phase === "stopping" || phase === "saving") return "Saving to your TinyCloud space…";
-  if (phase !== "recording") return "Not recording. The microphone is off.";
-  const time = maxDurationMs !== undefined && elapsedMs >= maxDurationMs - LIMIT_WARNING_MS
-    ? `${formatDuration(Math.min(elapsedMs, maxDurationMs))} of ${formatDuration(maxDurationMs)}`
-    : formatDuration(elapsedMs);
-  if (mic.state === "silenced") {
-    return `Recording ${time}, but the system is blocking the microphone (a call, another app, or the mic privacy toggle).`;
-  }
-  if (mic.reason === "no_signal") {
-    return `Recording ${time}, but no sound is reaching the microphone.`;
-  }
-  return `Recording ${time}`;
 }
 
 const VoiceNoteTranscriptionDisclosure: FC<{ maxSeconds: number }> = ({ maxSeconds }) => (
@@ -380,121 +318,6 @@ export const VoiceNotesView: FC<VoiceNotesViewProps> = (props) => {
   );
 };
 
-function messageOf(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error) return String((error as { message: unknown }).message);
-  return String(error);
-}
-
-function errorCode(error: unknown): string | null {
-  if (error && typeof error === "object" && "code" in error && typeof (error as { code: unknown }).code === "string") {
-    return (error as { code: string }).code;
-  }
-  return null;
-}
-
-/** Recordings being uploaded right now, across mounts (StrictMode mounts effects twice). */
-const savesInFlight = new Set<string>();
-/**
- * Recordings this app session saved: a late "autoStopped" event or a pending retry
- * that still lists one must not save it again (its device copy may already be gone).
- */
-const savedThisSession = new Set<string>();
-
-type SaveOutcome = { saved: true; audio: VoiceNoteAudio | null } | { saved: false; failure: string | null };
-
-function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return out;
-}
-
-/**
- * Upload one stopped recording, part by part from the device; the device copy is deleted
- * only after the save is confirmed. Resolves `saved` with the audio when the note is short
- * enough to transcribe and every part was read in this attempt (handed to transcription, so
- * it is not read back), or with the failure message (null when the recording is being or
- * has been saved elsewhere). The in-flight guard matters because upsertMeeting's
- * select-then-insert is not atomic: two concurrent saves of one recording would write two rows.
- */
-async function saveRecording(
-  tcw: TinyCloudWeb,
-  recording: VoiceNoteRecording,
-  onProgress?: (storedBytes: number, totalBytes: number) => void,
-): Promise<SaveOutcome> {
-  if (savesInFlight.has(recording.id)) return { saved: false, failure: null };
-  if (savedThisSession.has(recording.id)) {
-    await VoiceNotes.deleteAudio({ id: recording.id }).catch(() => {});
-    return { saved: false, failure: null };
-  }
-  savesInFlight.add(recording.id);
-  try {
-    const native = nativeRecordingSource(recording);
-    const kept: Uint8Array[] = [];
-    const keep = recording.durationMs <= VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS * 1000;
-    const source: VoiceNoteAudioSource = keep
-      ? {
-          ...native,
-          readPart: async (offset, length) => {
-            const bytes = await native.readPart(offset, length);
-            kept.push(bytes);
-            return bytes;
-          },
-        }
-      : native;
-    const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress });
-    if (!saved.ok) return { saved: false, failure: saved.error.message };
-    savedThisSession.add(recording.id);
-    await VoiceNotes.deleteAudio({ id: recording.id });
-    const whole = keep && kept.reduce((n, c) => n + c.byteLength, 0) === native.size;
-    return { saved: true, audio: whole ? { mimeType: recording.mimeType, base64: bytesToBase64(concatBytes(kept)) } : null };
-  } catch (caught) {
-    return { saved: false, failure: messageOf(caught) };
-  } finally {
-    savesInFlight.delete(recording.id);
-  }
-}
-
-export interface PendingRun {
-  total: number;
-  left: VoiceNoteRecording[];
-  saved: VoiceNoteRecording[];
-  lastError: string | null;
-}
-
-let pendingRunInFlight: Promise<PendingRun> | null = null;
-
-/**
- * Retry every recording still on the device, oldest first, one at a time. Single-flight: the
- * card, the chat screen's bar and the app's save after sign-in (PendingVoiceNotesSaver) share it.
- */
-export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
-  if (pendingRunInFlight) return pendingRunInFlight;
-  pendingRunInFlight = (async () => {
-    const { recordings } = await VoiceNotes.listPending();
-    const left: VoiceNoteRecording[] = [];
-    const saved: VoiceNoteRecording[] = [];
-    let lastError: string | null = null;
-    for (const recording of [...recordings].sort((a, b) => a.startedAt - b.startedAt)) {
-      const outcome = await saveRecording(tcw, recording);
-      if (outcome.saved) {
-        saved.push(recording);
-      } else if (outcome.failure) {
-        left.push(recording);
-        lastError = outcome.failure;
-      }
-    }
-    return { total: recordings.length, left, saved, lastError };
-  })().finally(() => {
-    pendingRunInFlight = null;
-  });
-  return pendingRunInFlight;
-}
-
 /** The chat screen's one-tap voice note (QuickVoiceNote.tsx) is this same controller with a compact view. */
 interface ControllerProps {
   tcw: TinyCloudWeb;
@@ -509,32 +332,6 @@ interface ControllerProps {
   onSaved?: (recording: VoiceNoteRecording) => void;
   /** Another view of the same recorder (the chat screen's bar); the card by default. */
   render?: (view: VoiceNotesViewProps) => ReactNode;
-}
-
-const HIDDEN_SNAPSHOT: VoiceNoteTranscriberSnapshot = {
-  availability: "hidden",
-  capabilities: null,
-  consented: false,
-  jobs: new Map(),
-};
-const noSubscription = () => () => {};
-
-/** The card's view of private cloud transcription; `undefined` when this build or account has none. */
-export function transcriptionProps(
-  transcriber: VoiceNoteTranscriber | null,
-  snapshot: VoiceNoteTranscriberSnapshot,
-): VoiceNoteTranscriptionProps | undefined {
-  if (transcriber === null) return undefined;
-  return {
-    availability: snapshot.availability,
-    consented: snapshot.consented,
-    maxSeconds: maxTranscriptionSeconds(snapshot.capabilities),
-    jobs: snapshot.jobs,
-    onTranscribe: (sourceId) => transcriber.transcribe(sourceId),
-    onConsent: () => transcriber.consent(),
-    onTurnOff: () => void transcriber.turnOff(),
-    onRecheck: () => void transcriber.check(),
-  };
 }
 
 function VoiceNotesController({ tcw, backendUrl, sessionStore, autoStart, onSaved, render }: ControllerProps) {

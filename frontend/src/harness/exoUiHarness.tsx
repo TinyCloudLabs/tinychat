@@ -20,6 +20,7 @@ import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { legacyScreens } from "./screens/legacy";
 import { primitivesScreens } from "./screens/primitives";
+import { recorderScreens } from "./screens/recorder";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { freezeClock } from "./stubs";
@@ -32,7 +33,7 @@ declare global {
   }
 }
 
-const SCREENS: HarnessScreen[] = [...primitivesScreens, ...legacyScreens, ...shellScreens, ...sheetsScreens];
+const SCREENS: HarnessScreen[] = [...primitivesScreens, ...legacyScreens, ...shellScreens, ...sheetsScreens, ...recorderScreens];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 
 // Hermetic: nothing leaves the machine. A call to another host (the model's

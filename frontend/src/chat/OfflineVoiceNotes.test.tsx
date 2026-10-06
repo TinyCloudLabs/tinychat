@@ -24,7 +24,7 @@ import {
   type OfflineVoiceNotesViewProps,
 } from "./OfflineVoiceNotes";
 import { savePendingVoiceNotes } from "./PendingVoiceNotesSaver";
-import type { PendingRun } from "./VoiceNotesSection";
+import type { PendingRun } from "@/lib/voiceNotes/recorderSaves";
 
 const noop = () => {};
 const read = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
@@ -145,9 +145,10 @@ describe("savePendingVoiceNotes", () => {
     const saver = read("PendingVoiceNotesSaver.tsx");
     expect(saver).toContain("save: () => savePendingRecordings(tcw),");
     expect(saver).toContain("if (!nativeVoiceNotesAvailable()) return;");
-    const section = read("VoiceNotesSection.tsx");
-    expect(section).toContain("export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {");
-    expect(section).toContain("if (pendingRunInFlight) return pendingRunInFlight;");
+    // The single-flight now lives with the other save singletons (TC-761, PR4).
+    const saves = read("../lib/voiceNotes/recorderSaves.ts");
+    expect(saves).toContain("export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {");
+    expect(saves).toContain("if (pendingRunInFlight) return pendingRunInFlight;");
   });
 });
 
