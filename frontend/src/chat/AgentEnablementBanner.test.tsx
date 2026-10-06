@@ -106,10 +106,14 @@ describe("Settings agent controls", () => {
 // test/agent-banner-route.e2e.test.ts.
 describe("App mounts the banner through the chat-view gate", () => {
   const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
+  // App mounts the banner through ChatWorkspace.
+  const workspace = readFileSync(join(import.meta.dir, "ChatWorkspace.tsx"), "utf8");
 
   it("mounts only the chat-view-gated banner, never the bare one", () => {
-    expect(app.split("<ChatViewAgentEnablementBanner />")).toHaveLength(2);
+    expect(workspace.split("<ChatViewAgentEnablementBanner />")).toHaveLength(2);
+    expect(app).not.toContain("<ChatViewAgentEnablementBanner");
     expect(app).not.toContain("<AgentEnablementBanner");
+    expect(workspace).not.toContain("<AgentEnablementBanner");
   });
 
   it("the gate is the positive chat-view classifier", () => {

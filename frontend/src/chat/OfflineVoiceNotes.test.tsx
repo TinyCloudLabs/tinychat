@@ -162,7 +162,8 @@ describe("App wiring of offline voice notes", () => {
     expect(boot).toContain("offlineRecorder ? (");
     expect(boot).toContain("<OfflineVoiceNotes");
     // BootSurface renders the slot; nothing in it depends on the signed-out states.
-    const surface = app.slice(app.indexOf("function BootSurface("));
+    const shell = read("../shell/BootSurface.tsx");
+    const surface = shell.slice(shell.indexOf("export function BootSurface("));
     expect(surface).toContain("{props.voiceNotes}");
   });
 
