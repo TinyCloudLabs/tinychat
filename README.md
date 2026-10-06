@@ -14,15 +14,14 @@ This app was generated with:
 
 ## UI Style
 
-The starter UI is intentionally minimal. It should open as a clean tool, not a
-landing page or backend dashboard: app name and sign-in live in the header,
-connection details live in a compact header disclosure, and the main content is
-only the delegated probe work surface.
-
-Preserve the restrained dashboard baseline when changing or scaffolding from
-this template: neutral gray background, white panels, subtle gray borders,
-system sans typography, compact spacing, and 8px-or-smaller radius. Avoid fake
-nav, hero copy, decorative backgrounds, and always-visible protocol details.
+Exo's look comes from tokens, not per-component values. The palette (navy
+Night and paper Day, following the system theme), the type roles (Literata for
+display titles only, the system sans for everything else), radius, shadow and
+motion are defined in `frontend/src/index.css` and `frontend/tailwind.config.js`.
+`frontend/src/designTokens.test.ts` checks the palette's contrast pairs. To see
+the tokens and primitives rendered, run the screenshot harness
+(`bun run --cwd test exo-ui:screens`) and open the primitives gallery in its
+contact sheet.
 
 ## Local TLS
 

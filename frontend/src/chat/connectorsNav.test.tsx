@@ -167,7 +167,7 @@ describe("App routing under the new IA", () => {
     // the match has to span the nested route for the sidebar entry to stay
     // active — and for the workspace to keep rendering Connectors — there.
     expect(app).not.toContain('location.pathname.endsWith("/chat/connectors")');
-    expect(app).toContain("const showConnectors = /\\/chat\\/connectors(\\/|$)/");
+    expect(app).toContain("const showConnectors = !LOCAL_VALIDATION && /\\/chat\\/connectors(\\/|$)/");
     // The open tab comes from the route, and the route constants are the
     // module's — App never rebuilds either address by hand.
     expect(app).toContain("connectorsTabFor(location.pathname)");

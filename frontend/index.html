@@ -11,9 +11,11 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Cpath d='M10 8h12v16H10z' fill='%23f8fafc'/%3E%3Cpath d='M13 13h6M13 17h6M13 21h4' stroke='%230f172a' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E"
     />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+    <!-- Literata, for display titles (src/index.css). The file name carries the version, so /fonts/* is cached immutably. -->
+    <link rel="preload" href="/fonts/literata/literata-5.3.0-latin-opsz.woff2" as="font" type="font/woff2" crossorigin />
     <!-- Installed-app (PWA) chrome. The manifest link is injected at build time by vite-plugin-pwa. -->
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F6F7F9" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#060B18" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -22,23 +24,37 @@
     <meta name="description" content="Exo: private chat and meeting memory on TinyCloud." />
     <title>TinyCloud Chat</title>
     <script>
+      // Before the first paint: the theme and the size class. The same rules as
+      // src/lib/theme.ts and src/lib/sizeClass.ts (src/lib/theme.test.ts runs
+      // this script against them). Only the theme-choice key is read; the
+      // legacy theme key was written on every launch and says nothing.
       (function () {
+        var root = document.documentElement;
+        var choice = null;
         try {
-          var k = "xyz.tinycloud.tinychat:theme";
-          var s = localStorage.getItem(k);
-          var dark =
-            s === "dark" ||
-            (s !== "light" &&
-              window.matchMedia("(prefers-color-scheme: dark)").matches);
-          if (dark) document.documentElement.classList.add("dark");
-          // An explicit theme choice overrides the system one the theme-color
-          // metas key on (the toggle keeps them in sync after this).
-          if (s === "light" || s === "dark") {
-            var metas = document.querySelectorAll('meta[name="theme-color"]');
-            for (var i = 0; i < metas.length; i++)
-              metas[i].setAttribute("content", dark ? "#09090b" : "#ffffff");
-          }
+          choice = localStorage.getItem("xyz.tinycloud.tinychat:theme-choice");
         } catch (e) {}
+        var dark =
+          choice === "dark" ||
+          (choice !== "light" &&
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        root.classList.toggle("dark", dark);
+        // A chosen theme overrides the per-scheme theme-color metas.
+        if (choice === "light" || choice === "dark") {
+          var metas = document.querySelectorAll('meta[name="theme-color"]');
+          for (var i = 0; i < metas.length; i++)
+            metas[i].setAttribute("content", dark ? "#060B18" : "#F6F7F9");
+        }
+        var w = window.innerWidth;
+        var h = window.innerHeight;
+        var land = w > h && h <= 500;
+        root.setAttribute(
+          "data-size",
+          land ? "compact" : w >= 1024 ? "expanded" : w >= 768 ? "medium" : "compact"
+        );
+        if (land) root.setAttribute("data-land", "");
+        else root.removeAttribute("data-land");
       })();
     </script>
   </head>

@@ -1163,7 +1163,7 @@ function ModelPicker(props: {
   };
   const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (models.length === 0) return;
-    let next = focusedIndex;
+    let next: number;
     if (event.key === "ArrowDown") next = (focusedIndex + 1) % models.length;
     else if (event.key === "ArrowUp") next = (focusedIndex - 1 + models.length) % models.length;
     else if (event.key === "Home") next = 0;
@@ -1540,7 +1540,7 @@ function ChatWorkspace(props: {
         </section>
       </div>
       <Sheet open={props.sidebarOpen} onOpenChange={props.setSidebarOpen}>
-        <SheetContent className="md:hidden bg-muted/40">
+        <SheetContent className="md:hidden">
           <SheetTitle className="sr-only">Chats</SheetTitle>
           <SheetDescription className="sr-only">
             List of your saved chats
@@ -1685,7 +1685,7 @@ function BootSurface(props: {
           T
         </span>
         <div className="flex flex-col gap-1.5">
-          <h1 className="text-xl font-semibold tracking-tight">TinyCloud Chat</h1>
+          <h1 className="font-display text-title-2">TinyCloud Chat</h1>
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
         {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (

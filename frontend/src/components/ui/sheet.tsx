@@ -19,7 +19,7 @@ const SheetOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 md:hidden",
+      "fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:duration-350 data-[state=closed]:duration-250 md:hidden",
       className,
     )}
     {...props}
@@ -37,8 +37,10 @@ const SheetContent = React.forwardRef<
       ref={ref}
       aria-describedby={ariaDescribedBy}
       className={cn(
-        "fixed inset-y-0 left-0 z-50 h-full w-[280px] max-w-[85vw] border-r border-border bg-background pt-[max(2.5rem,env(safe-area-inset-top))] pl-[env(safe-area-inset-left)] pb-[env(safe-area-inset-bottom)] shadow-lg outline-none",
-        "duration-300 ease-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-200 data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left",
+        "fixed inset-y-0 left-0 z-50 h-full w-[280px] max-w-[85vw] bg-chrome pt-[max(2.5rem,env(safe-area-inset-top))] pl-[env(safe-area-inset-left)] pb-[env(safe-area-inset-bottom)] shadow-float outline-none",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:duration-350 data-[state=open]:ease-drawer data-[state=closed]:duration-250 data-[state=closed]:ease-exit data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left",
+        // Reduced motion: a fade in place of the slide.
+        "motion-reduce:data-[state=open]:fade-in-0 motion-reduce:data-[state=closed]:fade-out-0 motion-reduce:data-[state=open]:slide-in-from-left-0 motion-reduce:data-[state=closed]:slide-out-to-left-0 motion-reduce:data-[state=open]:duration-150 motion-reduce:data-[state=closed]:duration-150",
         "focus-visible:ring-2 focus-visible:ring-ring/50",
         className,
       )}

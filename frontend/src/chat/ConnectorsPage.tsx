@@ -65,7 +65,7 @@ export function ConnectorsPage({
       <div className="mx-auto w-full max-w-2xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
         {/* One stable page header across both tabs — the tab strip below is
             what changes, not the identity of the page. */}
-        <h1 className="text-base font-semibold tracking-tight">Connectors</h1>
+        <h1 className="font-display text-title-2">Connectors</h1>
         <p className="mb-4 mt-1 text-sm leading-relaxed text-muted-foreground">
           Bring meeting notes and transcripts into your private space. You
           choose each source, when it syncs, and when its access ends.

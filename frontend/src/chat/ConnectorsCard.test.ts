@@ -73,7 +73,7 @@ describe("Connectors page composition", () => {
     // Connectors is a SUBTREE now (Sources | Library), so the route match and
     // the sidebar target moved to connectorsNav's constants — see
     // connectorsNav.test.tsx for the IA's own assertions.
-    expect(app).toContain("const showConnectors = /\\/chat\\/connectors(");
+    expect(app).toContain("const showConnectors = !LOCAL_VALIDATION && /\\/chat\\/connectors(");
     expect(app).toContain("navigate(CONNECTORS_SOURCES_PATH)");
     expect(app).toContain("<ConnectorsPage");
     expect(settings).not.toContain("ConnectorsCard");
@@ -91,7 +91,7 @@ describe("Connectors page composition", () => {
     expect(threadList.indexOf("{navigation}")).toBeLessThan(
       threadList.indexOf("<ThreadListPrimitive.New"),
     );
-    expect(app).toContain("connectorsSurface={<ConnectorsPage");
+    expect(app).toContain("connectorsSurface={LOCAL_VALIDATION ? null : <ConnectorsPage");
     expect(app).toContain('showConnectors ? "hidden" : "h-full"');
   });
 
