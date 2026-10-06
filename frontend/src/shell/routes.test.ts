@@ -156,8 +156,9 @@ describe("App routes through shell/routes.ts", () => {
     expect(app).not.toContain('location.pathname.endsWith("/chat/settings")');
     expect(app).not.toContain('location.pathname.endsWith("/chat/meetings")');
     expect(app).not.toContain("connectorsTabFor");
-    // The recorder's Open (receipt and island) goes to the Library until note detail lands.
-    expect(app).toContain("onOpenNote={() => navigate(PATHS.library)}");
+    // The recorder's Open (receipt and island): the Library, then the note just saved.
+    expect(app).toContain("const openSavedNote = useOpenSavedNote(tcw);");
+    expect(app).toContain("onOpenNote={openSavedNote}");
   });
 
   test("How it works is mounted in the shell's about slot, with the same Back as Settings", () => {

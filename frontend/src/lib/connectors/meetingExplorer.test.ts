@@ -5,6 +5,7 @@ import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore.js";
 import type { FirefliesSentence } from "./firefliesClient.js";
 import {
   EXPLORER_MEETING_SOURCES,
+  findMeetingId,
   listMeetings,
   listMeetingsRead,
   meetingSourceLabel,
@@ -274,6 +275,27 @@ describe("listMeetingsRead", () => {
     });
     expect(await listMeetingsRead(throwingTcw())).toEqual({ status: "failed" });
     expect(await listMeetingsRead(throwingTcw("sync"))).toEqual({ status: "failed" });
+  });
+});
+
+describe("findMeetingId", () => {
+  it("finds a row's id by source and source id, in one read", async () => {
+    const { tcw, sqlCalls } = fakeTcw({ sql: { ok: true, data: { rows: [["row-9"]] } } });
+    expect(await findMeetingId(tcw, "exo-voice-note", "rec-1")).toEqual({ status: "ok", id: "row-9" });
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0].params).toEqual(["exo-voice-note", "rec-1"]);
+    expect(sqlCalls[0].sql).toContain("WHERE source = ? AND source_id = ?");
+  });
+
+  it("no row (or no table yet) is absent; a store error or a throwing transport is failed", async () => {
+    expect(await findMeetingId(fakeTcw({ sql: { ok: true, data: { rows: [] } } }).tcw, "exo-voice-note", "rec-1")).toEqual({ status: "absent" });
+    expect(
+      await findMeetingId(fakeTcw({ sql: { ok: false, error: { code: "STORE_ERROR", message: "no such table: connector_meeting" } } }).tcw, "s", "x"),
+    ).toEqual({ status: "absent" });
+    expect(await findMeetingId(fakeTcw({ sql: { ok: false, error: { code: "SQL_ERROR", message: "boom" } } }).tcw, "s", "x")).toEqual({
+      status: "failed",
+    });
+    expect(await findMeetingId(throwingTcw(), "s", "x")).toEqual({ status: "failed" });
   });
 });
 

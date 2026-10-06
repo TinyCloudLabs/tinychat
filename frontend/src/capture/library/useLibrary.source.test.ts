@@ -44,3 +44,13 @@ describe("useLibrary reads", () => {
     expect(code).toContain("if (options.visible) refresh();");
   });
 });
+
+describe("the recorder's Open", () => {
+  const open = readFileSync(join(import.meta.dir, "useOpenSavedNote.ts"), "utf8");
+
+  test("one read through the per-space queue, then the note's address, only while the Library still shows", () => {
+    expect(open).toContain("findMeetingId(scheduledSpace(tcw), VOICE_NOTE_SOURCE, recordingId)");
+    expect(open).toContain('if (read.status === "ok" && path.current === PATHS.library) navigate(notePath(read.id), { replace: true });');
+    expect(open.indexOf("navigate(PATHS.library")).toBeLessThan(open.indexOf("findMeetingId("));
+  });
+});

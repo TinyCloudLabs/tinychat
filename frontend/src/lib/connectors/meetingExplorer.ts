@@ -201,6 +201,31 @@ export async function listMeetings(
 }
 
 /**
+ * The `connector_meeting.id` of the row a source wrote for `sourceId` (a voice
+ * note's row, by its recording id): what a note's address needs. One read;
+ * `absent` when no row has it yet, `failed` when the read did not land.
+ */
+export type MeetingIdRead = { status: "ok"; id: string } | { status: "absent" } | { status: "failed" };
+
+export async function findMeetingId(
+  tcw: TinyCloudWeb,
+  source: string,
+  sourceId: string,
+): Promise<MeetingIdRead> {
+  const res = await tolerate(() =>
+    tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
+      "SELECT id FROM connector_meeting WHERE source = ? AND source_id = ? LIMIT 1",
+      [source, sourceId],
+    ),
+  );
+  if (!res) return { status: "failed" };
+  if (!res.ok) return notStoredYet(res) ? { status: "absent" } : { status: "failed" };
+  const row: unknown = res.data?.rows?.[0];
+  const id = Array.isArray(row) ? cellStr(row, 0) : null;
+  return id ? { status: "ok", id } : { status: "absent" };
+}
+
+/**
  * The outcome of one transcript read, with "nothing stored" kept distinct from
  * "the read did not land".
  *

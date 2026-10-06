@@ -16,6 +16,7 @@ import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RecordButton } from "@/capture/recorder/RecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { RecorderShell } from "@/capture/recorder/RecorderShell";
+import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
 import { ConnectorsPage } from "@/chat/ConnectorsPage";
@@ -33,7 +34,7 @@ import { useSizeClass } from "@/lib/sizeClass";
 import { useVisualViewportFit } from "@/lib/useVisualViewport";
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { BootSurface } from "@/shell/BootSurface";
-import { PATHS, homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
+import { homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
 import { HARNESS_ADDRESS, HARNESS_DID, harnessSessionStore, harnessTcw } from "./stubs";
 
@@ -74,6 +75,8 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
   const location = useLocation();
   const navigate = useNavigate();
   const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  // As App: the recorder's Open goes to the Library, then the note just saved.
+  const openSavedNote = useOpenSavedNote(harnessTcw);
   const { size } = useSizeClass();
   const [selectionView, setSelectionView] = useState<SelectionView>(EMPTY_VIEW);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
@@ -94,7 +97,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
 
   const recorderShell = (
     <RecorderShell
-      onOpenNote={() => navigate(PATHS.library)}
+      onOpenNote={openSavedNote}
       screen={screen}
       platform={platform}
       pendingMeetings={0}

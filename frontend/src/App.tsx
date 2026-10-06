@@ -73,9 +73,9 @@ import { RecordButton } from "./capture/recorder/RecordButton";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
+import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
-  PATHS,
   homePath,
   legacyRedirectFor,
   redirectsWhenSignedOut,
@@ -667,6 +667,8 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
+  // The recorder's Open: the Library, then the note just saved.
+  const openSavedNote = useOpenSavedNote(tcw);
   const platform = useContext(PlatformContext);
   const { size } = useSizeClass();
   // Which screen the address shows (shell/routes.ts). The App stays mounted at
@@ -822,7 +824,7 @@ export function App() {
                 assistant runtime, the active thread, and composer state across
                 navigation. */}
             <RecorderShell
-              onOpenNote={() => navigate(PATHS.library)}
+              onOpenNote={openSavedNote}
               screen={screen}
               platform={platform}
               pendingMeetings={pendingMeetings}
