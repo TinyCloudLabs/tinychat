@@ -32,7 +32,7 @@ const ICON_BUTTON = "size-11 shrink-0 rounded-full text-muted-foreground hover:t
 export function ChatHeader({ onOpenChats, onVoiceNote, voiceNoteOpen = false, newChat, verification }: ChatHeaderProps) {
   const title = useAuiState((s) => s.threadListItem.title);
   return (
-    <header className="flex h-13 shrink-0 items-center gap-1 border-b border-border/70 bg-background px-2 medium:px-3 expanded:px-4">
+    <header className="flex min-h-13 shrink-0 items-center gap-1 py-1 border-b border-border/70 bg-background px-2 medium:px-3 expanded:px-4">
       {onOpenChats && (
         <Button variant="ghost" size="icon" aria-label="Chats" title="Chats" onClick={onOpenChats} className={ICON_BUTTON}>
           <PanelLeftIcon />
