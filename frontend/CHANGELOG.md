@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.3
+
+### Minor Changes
+
+- ef2f000: Capture, Chat and Connectors are the three destinations: a tab bar on phones, a rail on landscape phones and tablets, a sidebar on desktop. The phone app opens on Capture. Android Back closes sheets first.
+
 ## 0.6.0-beta.2
 
 ### Patch Changes
