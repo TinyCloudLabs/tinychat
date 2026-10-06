@@ -22,13 +22,13 @@ export interface ListRowProps {
   href?: string;
   onClick?: () => void;
   selected?: boolean;
-  /** How many lines the title may take before it is cut (default 1). */
+  /** Cut the title after this many lines. By default it wraps, so large text never clips it. */
   titleLines?: 1 | 2;
   className?: string;
   [data: `data-${string}`]: string | undefined;
 }
 
-export function ListRow({ leading, title, meta, aside, trailing, href, onClick, selected = false, titleLines = 1, className, ...data }: ListRowProps) {
+export function ListRow({ leading, title, meta, aside, trailing, href, onClick, selected = false, titleLines, className, ...data }: ListRowProps) {
   const main = cn(
     "tap-transparent flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors fine:min-h-11",
     "hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -43,7 +43,7 @@ export function ListRow({ leading, title, meta, aside, trailing, href, onClick, 
       )}
       {/* Long text wraps inside its lines and is cut at the last one, never pushed out sideways. */}
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className={cn("text-body [overflow-wrap:anywhere]", titleLines === 1 ? "line-clamp-1" : "line-clamp-2", selected && "font-semibold")}>
+        <span className={cn("text-body [overflow-wrap:anywhere]", titleLines === 1 && "line-clamp-1", titleLines === 2 && "line-clamp-2", selected && "font-semibold")}>
           {title}
         </span>
         {meta && <span className="line-clamp-1 text-meta text-muted-foreground [overflow-wrap:anywhere]">{meta}</span>}
