@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.9
+
+### Minor Changes
+
+- acea78c: Capture shows what's in progress and your recent notes. The Library has filters and durations, and each note shows how it got into your space.
+
 ## 0.6.0-beta.8
 
 ### Minor Changes
