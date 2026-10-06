@@ -4,7 +4,7 @@
 // titles, this file the words. Every claim here is one the app already made on
 // its screens or in its disclosures: this page moves copy, it never adds
 // promises.
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -122,7 +122,8 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
       </p>
       <p>
         Private transcription and TinyCloud’s AssemblyAI account take MP3, WAV, OGG, M4A/MP4, WebM or FLAC audio, up to
-        2 hours. Where the file goes depends on the engine you choose.
+        2 hours. With your own AssemblyAI key, most audio and video files work. Where the
+        file goes depends on the engine you choose.
       </p>
       <See section="transcription" />
     </>
@@ -185,8 +186,9 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
   "your-data": (
     <>
       <p>
-        Your conversations live in your TinyCloud space, and so do your recordings, transcripts, synced meetings and
-        what the assistant remembers.
+        Your conversations live in your TinyCloud space, and so do your transcripts, synced meetings and what the
+        assistant remembers. Voice notes are saved there, and so is a copy of each file you upload. The audio of a
+        desktop local recording stays on that Mac.
       </p>
       <p>
         The assistant’s memory is a document in your space. You can edit or clear it at any time in Settings; clearing
@@ -228,24 +230,41 @@ export const ABOUT_BODY: Readonly<Record<AboutSectionId, ReactNode>> = {
 };
 
 /**
+ * The section an address's hash names, or null for none: no hash, an unknown
+ * id, or a malformed escape (`#%E0%A4%A`), which opens the page at the top.
+ */
+export function sectionFromHash(hash: string): AboutSectionId | null {
+  let id: string;
+  try {
+    id = decodeURIComponent(hash.replace(/^#/, ""));
+  } catch {
+    return null;
+  }
+  return ABOUT_SECTIONS.find((section) => section.id === id)?.id ?? null;
+}
+
+/**
  * The page. Pushed over the app at every size (Back returns where the user came
  * from); mounted only while shown. Opening it at `#<section>` scrolls that
  * section to the top and focuses its heading, so a screen reader starts there.
  */
 export function AboutPage(props: { onBack: () => void }) {
   const { hash } = useLocation();
+  const scrollerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const id = decodeURIComponent(hash.slice(1));
-    if (!ABOUT_SECTIONS.some((section) => section.id === id)) return;
-    const heading = document.getElementById(`about-${id}-heading`);
-    if (!heading) return;
+    const id = sectionFromHash(hash);
+    const heading = id === null ? null : document.getElementById(`about-${id}-heading`);
+    if (!heading) {
+      scrollerRef.current?.scrollTo({ top: 0 });
+      return;
+    }
     heading.closest("section")?.scrollIntoView({ block: "start" });
     heading.focus({ preventScroll: true });
   }, [hash]);
 
   return (
-    <div className="relative h-full overflow-y-auto" data-scroll-root>
+    <div ref={scrollerRef} className="relative h-full overflow-y-auto" data-scroll-root>
       <PageHeader title="How it works" back={props.onBack} className={PAGE_COLUMN} />
       <div className={`${PAGE_COLUMN} pb-[max(2rem,env(safe-area-inset-bottom))]`}>
         {ABOUT_SECTIONS.map((section) => (

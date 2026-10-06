@@ -317,17 +317,16 @@ function BackendAttestationPanel(props: {
           <span>{busy ? "Checking" : "Recheck"}</span>
         </Button>
       </div>
+      {/* What the three legs check, and why it reads Quote issued today: How it
+          works → verification, linked from the details (or here, until they show). */}
       {verdict ? (
         <BackendAttestationDetails verdict={verdict} attestation={attestation} />
-      ) : message ? (
-        <p className="text-xs text-muted-foreground">{message}</p>
       ) : (
-        <p className="text-xs text-muted-foreground">
-          Waiting for the backend quote check.
-        </p>
+        <>
+          <p className="text-xs text-muted-foreground">{message || "Waiting for the backend quote check."}</p>
+          <HowItWorksLink section="verification">What verification checks</HowItWorksLink>
+        </>
       )}
-      {/* What the three legs check, and why it reads Quote issued today: How it works → verification. */}
-      <HowItWorksLink section="verification">What verification checks</HowItWorksLink>
     </div>
   );
 }

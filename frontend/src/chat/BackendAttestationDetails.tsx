@@ -1,6 +1,8 @@
 import type { FC, ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+
 import type { BackendSelfAttestation } from "@/lib/backendAttestation";
 import type {
   BackendVerdict,
@@ -92,27 +94,25 @@ export const BackendAttestationDetails: FC<{
         ))}
       </div>
 
-      {/* REQUIRED honesty line — same tier language as AttestationDetails. */}
-      <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
-        {verdict.attested ? (
-          <>
-            All three legs pass: the TDX quote is verified (relayed via Phala and
-            anchored trustlessly on-chain), bound to the backend's signing key and
-            server identity, and the served code measurement (RTMR3) replays. This
-            attests the <span className="font-semibold">endpoint and code identity</span>
-            , not each individual response byte.
-          </>
-        ) : (
-          <>
-            Backend attestation is{" "}
-            <span className="font-semibold">incomplete</span>. The compose leg
-            cannot fully bind yet — the backend does not serve the app-compose file,
-            so <code className="font-mono text-xs">sha256(app_compose)</code> can't
-            be checked against the measured compose hash. This proves endpoint and
-            code identity (relayed vs trustless anchors), not each response byte.
-          </>
-        )}
-      </p>
+      {/* REQUIRED honesty line — same tier language as AttestationDetails. One
+          sentence; what the three legs check, and why the compose leg can't bind
+          yet, is How it works → verification. */}
+      <div className="flex flex-col border-t border-border/60 pt-2">
+        <p className="text-xs text-muted-foreground">
+          {verdict.attested ? (
+            <>
+              This attests the <span className="font-semibold">endpoint and code identity</span>, not each
+              individual response byte.
+            </>
+          ) : (
+            <>
+              Backend attestation is <span className="font-semibold">incomplete</span>: it proves endpoint and
+              code identity, not each response byte.
+            </>
+          )}
+        </p>
+        <HowItWorksLink section="verification" className="w-fit">What verification checks</HowItWorksLink>
+      </div>
     </div>
   );
 };

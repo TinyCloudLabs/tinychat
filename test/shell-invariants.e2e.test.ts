@@ -9,6 +9,10 @@
 //      (the Capture card, or the chat bar), and none on Connectors.
 //   3. Android Back closes overlays first, the top one first, then goes home.
 //   4. Retired addresses end on the Library.
+//   5. How it works opens at the section a link names, with its heading
+//      focused; a malformed or unknown anchor opens it at the top.
+//   6. An InfoTip opens on a tap and closes on a second tap, an outside tap
+//      or Escape.
 //
 // SHELL_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -240,6 +244,121 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.evaluate(() => window.shellHarness!.back());
     expect(await page.evaluate(() => window.shellHarness!.minimized())).toBe(1);
     expect(await page.evaluate(() => window.location.pathname)).toBe("/chat/capture");
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("How it works opens at the anchor's section with its heading focused; a bad anchor opens at the top", async () => {
+    const at = async (path: string) => {
+      const { page, errors } = await open(path);
+      await page.locator("[data-about-section]").first().waitFor();
+      await settle(page);
+      return { page, errors };
+    };
+
+    const { page, errors } = await at("/chat/about#connectors");
+    await page.waitForFunction(() => document.activeElement?.id === "about-connectors-heading");
+    const placed = await page.evaluate(() => {
+      const scroller = document.querySelector<HTMLElement>('[data-surface="about"] [data-scroll-root]')!;
+      const section = document.getElementById("connectors")!;
+      return {
+        scrolled: scroller.scrollTop,
+        offset: section.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+      };
+    });
+    expect(placed.scrolled).toBeGreaterThan(0);
+    // Its top sits just under the sticky header (scroll-margin), not mid-page.
+    expect(placed.offset).toBeGreaterThanOrEqual(0);
+    expect(placed.offset).toBeLessThan(100);
+    expect(errors).toEqual([]);
+    await page.close();
+
+    for (const path of ["/chat/about#%E0%A4%A", "/chat/about#nope"]) {
+      const bad = await at(path);
+      const top = await bad.page.evaluate(
+        () => document.querySelector<HTMLElement>('[data-surface="about"] [data-scroll-root]')!.scrollTop,
+      );
+      expect(top).toBe(0);
+      expect(bad.errors).toEqual([]);
+      await bad.page.close();
+    }
+  }, 60_000);
+
+  test("an InfoTip opens on a tap and closes on a second tap, an outside tap or Escape", async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.port}/chat/settings`);
+    await page.waitForFunction(() => window.shellHarness !== undefined);
+    if (process.env.INFOTIP_DEBUG) {
+      page.on("console", (message) => console.log("[page]", message.text()));
+      await page.evaluate(() => {
+        for (const type of ["pointerdown", "pointerup", "pointercancel", "mousedown", "focus", "click", "touchstart", "touchend"]) {
+          document.addEventListener(type, (event) => {
+            const target = event.target as Element | null;
+            console.log(type, (event as PointerEvent).pointerType ?? "", target?.getAttribute?.("aria-label") ?? target?.tagName);
+          }, true);
+        }
+      });
+    }
+
+    // The trigger is a button named for what it explains.
+    const trigger = page.getByRole("button", { name: "About agent access", exact: true });
+    await trigger.waitFor();
+    const describedBy = () => trigger.getAttribute("aria-describedby");
+    const step = async (name: string, wait: Promise<unknown>) => {
+      try {
+        await wait;
+      } catch (error) {
+        throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+    };
+    const isOpen = (name: string) =>
+      step(
+        name,
+        page.waitForFunction(
+          () => {
+            const button = document.querySelector('button[aria-label="About agent access"]');
+            const id = button?.getAttribute("aria-describedby");
+            return !!id && document.getElementById(id)?.textContent?.includes("Public web search stays available.");
+          },
+          undefined,
+          { timeout: 5_000 },
+        ),
+      );
+    const isClosed = (name: string) =>
+      step(
+        name,
+        page.waitForFunction(
+          () => !document.querySelector('button[aria-label="About agent access"]')?.hasAttribute("aria-describedby"),
+          undefined,
+          { timeout: 5_000 },
+        ),
+      );
+
+    expect(await describedBy()).toBeNull();
+    await trigger.tap();
+    await isOpen("a tap opens it");
+    expect(await page.getByRole("tooltip").textContent()).toContain("Public web search stays available.");
+
+    // A second tap closes it, and stays closed.
+    await trigger.tap();
+    await isClosed("a second tap closes it");
+    await settle(page);
+    expect(await describedBy()).toBeNull();
+
+    // An outside tap closes it.
+    await trigger.tap();
+    await isOpen("a third tap opens it again");
+    await page.getByRole("heading", { name: "Account", exact: true }).tap();
+    await isClosed("an outside tap closes it");
+
+    // Escape closes it.
+    await trigger.tap();
+    await isOpen("a tap after the outside tap opens it");
+    await page.keyboard.press("Escape");
+    await isClosed("Escape closes it");
+
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

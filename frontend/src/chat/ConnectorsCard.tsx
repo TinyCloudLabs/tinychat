@@ -566,7 +566,9 @@ const ConnectorRow: FC<{
 }) => {
   const comingSoon = d.status === "coming-soon";
   const connected = state.connection?.status === "connected";
-  const containerCls = "flex flex-col gap-2 py-3" + (comingSoon ? " opacity-60" : "");
+  // A coming-soon row dims only its icon and its status dot; its text keeps
+  // full contrast (a dimmed row put muted text under 4.5:1).
+  const containerCls = "flex flex-col gap-2 py-3";
   const status = rowStatus(comingSoon, state);
   // role="group" + aria-label carries the "coming soon" status to screen
   // readers; aria-disabled on a plain <div> has no semantic effect.
@@ -580,14 +582,18 @@ const ConnectorRow: FC<{
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2">
           <Icon
-            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+            className={`mt-0.5 size-4 shrink-0 text-muted-foreground${comingSoon ? " opacity-50" : ""}`}
             aria-hidden
           />
           <div className="min-w-0">
             <span className="text-sm font-medium text-foreground">{d.name}</span>
             <p className="mt-0.5 text-xs text-muted-foreground">{d.description}</p>
             {status && (
-              <StatusDot tone={status.tone} data-row-status={status.label} className="mt-1 text-xs text-muted-foreground">
+              <StatusDot
+                tone={status.tone}
+                data-row-status={status.label}
+                className={`mt-1 text-xs text-muted-foreground${comingSoon ? " [&>[data-tone]]:opacity-50" : ""}`}
+              >
                 {status.label}
               </StatusDot>
             )}
