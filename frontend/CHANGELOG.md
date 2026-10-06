@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.4
+
+### Minor Changes
+
+- 4dae5f8: Shorter screens: hints in tooltips and a How it works page
+
 ## 0.6.0-beta.3
 
 ### Minor Changes
