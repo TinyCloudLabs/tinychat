@@ -16,6 +16,7 @@ import {
   redirectsWhenSignedOut,
   screenFor,
 } from "./routes";
+import { ABOUT_PATH, aboutHref } from "../lib/about";
 
 describe("screenFor", () => {
   test("Chat is /chat, with or without its trailing slash", () => {
@@ -40,6 +41,16 @@ describe("screenFor", () => {
     expect(screenFor("/chat/connectors/")).toMatchObject({ id: "connectors" });
     expect(screenFor("/chat/settings")).toEqual({ id: "settings", destination: null, noteId: null });
     expect(screenFor("/chat/settings/")).toMatchObject({ id: "settings" });
+  });
+
+  test("How it works is /chat/about: global, like Settings, and its section anchors don't change the screen", () => {
+    expect(PATHS.about).toBe("/chat/about");
+    expect(PATHS.about).toBe(ABOUT_PATH);
+    expect(screenFor("/chat/about")).toEqual({ id: "about", destination: null, noteId: null });
+    expect(screenFor("/chat/about/")).toMatchObject({ id: "about" });
+    // The hash is not part of the pathname the shell reads.
+    expect(screenFor(new URL(aboutHref("connectors"), "https://exo.test").pathname)).toMatchObject({ id: "about" });
+    expect(legacyRedirectFor("/chat/about")).toBeUndefined();
   });
 
   test("an unknown /chat/* address is the chat workspace", () => {
@@ -80,9 +91,10 @@ describe("legacy addresses", () => {
 describe("pushed screens and their parents", () => {
   const at = (path: string) => screenFor(path);
 
-  test("Settings, the Library and a note are pushed; destination roots are not", () => {
+  test("Settings, How it works, the Library and a note are pushed; destination roots are not", () => {
     for (const size of ["compact", "medium", "expanded"] as const) {
       expect(isPushed(at(PATHS.settings), size)).toBe(true);
+      expect(isPushed(at(PATHS.about), size)).toBe(true);
       expect(isPushed(at(PATHS.library), size)).toBe(true);
       expect(isPushed(at(notePath("x")), size)).toBe(true);
       expect(isPushed(at(PATHS.capture), size)).toBe(false);
@@ -91,10 +103,11 @@ describe("pushed screens and their parents", () => {
     }
   });
 
-  test("Back goes up: a note to the Library, the Library to Capture, Settings home", () => {
+  test("Back goes up: a note to the Library, the Library to Capture, Settings and How it works home", () => {
     expect(parentPath(at(notePath("x")))).toBe(PATHS.library);
     expect(parentPath(at(PATHS.library))).toBe(PATHS.capture);
     expect(parentPath(at(PATHS.settings))).toBeNull();
+    expect(parentPath(at(PATHS.about))).toBeNull();
   });
 });
 
@@ -117,6 +130,8 @@ describe("signed out", () => {
     expect(redirectsWhenSignedOut(screenFor(PATHS.library))).toBe(false);
     expect(redirectsWhenSignedOut(screenFor(notePath("x")))).toBe(false);
     expect(redirectsWhenSignedOut(screenFor(PATHS.chat))).toBe(false);
+    // How it works holds no account data: it keeps its address through sign-in.
+    expect(redirectsWhenSignedOut(screenFor(PATHS.about))).toBe(false);
   });
 });
 
@@ -131,6 +146,10 @@ describe("App routes through shell/routes.ts", () => {
     expect(app).not.toContain('location.pathname.endsWith("/chat/meetings")');
     expect(app).not.toContain("connectorsTabFor");
     expect(app).toContain("onOpenLibrary={() => navigate(PATHS.library)}");
+  });
+
+  test("How it works is mounted in the shell's about slot, with the same Back as Settings", () => {
+    expect(app).toContain("about={<AboutPage onBack={onBack} />}");
   });
 
   test("legacy addresses forward through LEGACY_REDIRECTS, with replace, once sign-in has settled", () => {

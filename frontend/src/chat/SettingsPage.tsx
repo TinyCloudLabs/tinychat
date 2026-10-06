@@ -2,7 +2,9 @@ import { AgentSetupCard } from "./AgentSetupCard";
 import { useAgentAccess } from "./useAgentEnablement";
 import { AgentAccessControls } from "./AgentEnablementBanner";
 import {
+  BookOpenIcon,
   BrainIcon,
+  ChevronRightIcon,
   CreditCardIcon,
   DatabaseIcon,
   LogOutIcon,
@@ -11,9 +13,12 @@ import {
   SunIcon,
   UserIcon,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { Button } from "@/components/ui/button";
+import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { InfoTip } from "@/components/ui/info-tip";
 import { SectionCard } from "@/components/ui/section-card";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { AppearanceControl } from "./AppearanceControl";
@@ -26,6 +31,10 @@ import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
+import { PATHS } from "../shell/routes";
+
+/** An InfoTip beside a card title: a 44 px target on touch that doesn't push the title row taller. */
+const TITLE_TIP = "-my-3 -ml-2 fine:-my-1 fine:-ml-1";
 
 interface SettingsPageProps {
   address: string | null;
@@ -105,7 +114,7 @@ export function SettingsPage({
               />
               <span className="text-muted-foreground">{stateLabel(state)}</span>
             </div>
-            <div className="mt-3 flex flex-col gap-0.5 text-xs">
+            <div className="mt-3 flex flex-col gap-2 text-xs">
               <AccountRow label="Address" value={address ?? "none"} />
               <AccountRow label="DID" value={did ?? "none"} />
               <AccountRow label="Space" value={spaceId ?? "none"} />
@@ -127,7 +136,15 @@ export function SettingsPage({
               </Button>
             </div>
           </SectionCard>
-          <SectionCard icon={ShieldCheckIcon} title="Agent access">
+          <SectionCard
+            icon={ShieldCheckIcon}
+            title="Agent access"
+            aside={
+              <InfoTip label="About agent access" className={TITLE_TIP}>
+                Private agent memory and meeting access. Public web search stays available.
+              </InfoTip>
+            }
+          >
             <AgentAccessControls {...agentAccess} />
           </SectionCard>
           <AgentSetupCard />
@@ -212,17 +229,30 @@ export function SettingsPage({
           {conversationCanvas.eligible && (
             <SectionCard icon={DatabaseIcon} title="Experimental Features">
               <div className="flex items-center justify-between gap-3">
-                <div>
+                <div className="flex items-center">
                   <p className="text-sm font-medium">Conversation Canvas</p>
-                  <p className="mt-1 text-xs text-muted-foreground">Explore branches and pin immutable Markdown context in a visual chat.</p>
+                  <InfoTip label="About Conversation Canvas" className="-my-3 fine:-my-1">
+                    Explore branches and pin immutable Markdown context in a visual chat.
+                  </InfoTip>
                 </div>
-                <button type="button" role="switch" aria-checked={conversationCanvas.enabled} aria-label="Enable Conversation Canvas" disabled={conversationCanvas.loading} onClick={() => void conversationCanvas.setEnabled(!conversationCanvas.enabled)} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${conversationCanvas.enabled ? "bg-primary" : "bg-muted"}`}>
-                  <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${conversationCanvas.enabled ? "left-6" : "left-1"}`} />
+                {/* A 44 px target on touch around the 44x24 track. */}
+                <button type="button" role="switch" aria-checked={conversationCanvas.enabled} aria-label="Enable Conversation Canvas" disabled={conversationCanvas.loading} onClick={() => void conversationCanvas.setEnabled(!conversationCanvas.enabled)} className="-my-2.5 flex h-11 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 fine:my-0 fine:h-6 fine:w-11">
+                  <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${conversationCanvas.enabled ? "bg-primary" : "bg-muted"}`}>
+                    <span className={`absolute top-1 size-4 rounded-full bg-background transition-transform ${conversationCanvas.enabled ? "left-6" : "left-1"}`} />
+                  </span>
                 </button>
               </div>
               {conversationCanvas.error && <p role="alert" className="mt-2 text-xs text-destructive">{conversationCanvas.error}</p>}
             </SectionCard>
           )}
+          <Link
+            to={PATHS.about}
+            className="tap-transparent flex min-h-14 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold tracking-tight transition-colors hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:min-h-12"
+          >
+            <BookOpenIcon aria-hidden className="size-4 text-muted-foreground" />
+            <span className="flex-1">How it works</span>
+            <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
+          </Link>
         </div>
       </div>
     </div>
@@ -281,41 +311,32 @@ function BackendAttestationPanel(props: {
           onClick={reverify}
           disabled={busy}
           aria-label="Recheck backend attestation"
-          className="h-8 gap-1.5 px-2"
+          className="gap-1.5 px-2"
         >
           <RefreshCwIcon className={`size-4 ${busy ? "animate-spin" : ""}`} />
           <span>{busy ? "Checking" : "Recheck"}</span>
         </Button>
       </div>
+      {/* What the three legs check, and why it reads Quote issued today: How it
+          works → verification, linked from the details (or here, until they show). */}
       {verdict ? (
         <BackendAttestationDetails verdict={verdict} attestation={attestation} />
-      ) : message ? (
-        <p className="text-xs text-muted-foreground">{message}</p>
       ) : (
-        <p className="text-xs text-muted-foreground">
-          Waiting for the backend quote check.
-        </p>
+        <>
+          <p className="text-xs text-muted-foreground">{message || "Waiting for the backend quote check."}</p>
+          <HowItWorksLink section="verification">What verification checks</HowItWorksLink>
+        </>
       )}
-      <p className="text-xs text-muted-foreground">
-        Browser-side verification checks the TDX quote (relayed via Phala and
-        anchored trustlessly on-chain), binds the backend identity to a fresh
-        nonce, and replays the served code measurement. The pill turns{" "}
-        <span className="font-medium">Backend attested</span> only when all three
-        legs pass. Today the compose leg can't fully bind — the backend doesn't
-        serve the app-compose file yet — so it stays at{" "}
-        <span className="font-medium">Quote issued</span> until that deploy lands.
-      </p>
     </div>
   );
 }
 
+// The whole value, wrapped: an address or DID cut off with an ellipsis can't be checked or copied.
 function AccountRow(props: { label: string; value: string }) {
   return (
-    <div className="flex items-start justify-between gap-2 py-0.5">
+    <div className="flex flex-col gap-0.5">
       <span className="text-muted-foreground">{props.label}</span>
-      <span className="max-w-[14rem] truncate text-right font-mono">
-        {props.value}
-      </span>
+      <span className="select-text break-all font-mono">{props.value}</span>
     </div>
   );
 }

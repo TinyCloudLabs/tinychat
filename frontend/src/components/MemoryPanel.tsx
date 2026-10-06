@@ -3,6 +3,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { BrainIcon, Loader2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -268,15 +269,17 @@ export function MemoryPanel({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-col">
-          <span
-            id="memory-panel-title"
-            className="flex items-center gap-1.5 text-sm font-semibold tracking-tight"
-          >
-            <BrainIcon className="size-3.5 text-muted-foreground" />
-            What the assistant remembers
-          </span>
-          <span className="text-xs text-muted-foreground">
-            Stored in your TinyCloud space. Edit or clear at any time.
+          <span className="flex items-center">
+            <span
+              id="memory-panel-title"
+              className="flex items-center gap-1.5 text-sm font-semibold tracking-tight"
+            >
+              <BrainIcon className="size-3.5 text-muted-foreground" />
+              What the assistant remembers
+            </span>
+            <InfoTip label="About memory" className="-my-3 fine:-my-1">
+              Stored in your TinyCloud space. Edit or clear at any time.
+            </InfoTip>
           </span>
         </div>
         {onClose && (
@@ -285,7 +288,7 @@ export function MemoryPanel({
             variant="ghost"
             size="sm"
             onClick={requestClose}
-            className="-mr-1 -mt-1 h-11 px-3 text-xs md:h-7 md:px-2"
+            className="-mr-1 -mt-1 h-11 px-3 text-xs fine:h-7 fine:px-2"
           >
             Close
           </Button>
@@ -323,11 +326,11 @@ export function MemoryPanel({
             placeholder={
               "# About the user\n## Identity & background\n- (the assistant will fill this in over time)"
             }
-            // text-base (16px) on mobile prevents iOS Safari focus-zoom; the
-            // compact font-mono text-xs is restored from sm up.
-            className="min-h-40 max-h-[min(16rem,40vh)] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-base leading-relaxed text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
+            // 16 px on touch prevents iOS Safari focus-zoom; the compact
+            // font-mono text-xs is restored with a mouse.
+            className="min-h-40 max-h-[min(16rem,40vh)] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-base leading-relaxed text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring fine:text-xs"
           />
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
               {draft.length.toLocaleString()} / {MEMORY_BUDGET_CHARS.toLocaleString()} chars
               {overBudget && (
@@ -359,7 +362,7 @@ export function MemoryPanel({
                 variant="ghost"
                 size="sm"
                 disabled={isEmpty || saving}
-                className="h-11 text-destructive hover:bg-destructive/10 hover:text-destructive md:h-8"
+                className="h-11 text-destructive hover:bg-destructive/10 hover:text-destructive fine:h-8"
               >
                 Clear memory
               </Button>
@@ -390,7 +393,7 @@ export function MemoryPanel({
                 variant="ghost"
                 size="sm"
                 disabled={saving}
-                className="h-11 md:h-8"
+                className="h-11 fine:h-8"
               >
                 Reset to template
               </Button>
@@ -418,7 +421,7 @@ export function MemoryPanel({
               size="sm"
               disabled={saving}
               onClick={() => setDraft(doc ?? "")}
-              className="h-11 md:h-8"
+              className="h-11 fine:h-8"
             >
               Revert
             </Button>
@@ -441,7 +444,7 @@ export function MemoryPanel({
             size="sm"
             disabled={!dirty || saving}
             onClick={save}
-            className="h-11 md:h-8"
+            className="h-11 fine:h-8"
             title="Save (⌘/Ctrl + Enter)"
             aria-keyshortcuts="Meta+Enter Control+Enter"
           >
@@ -455,7 +458,7 @@ export function MemoryPanel({
                 Save
                 <kbd
                   aria-hidden
-                  className="ml-1 hidden rounded border border-border bg-muted px-1 font-mono text-[10px] text-muted-foreground sm:inline"
+                  className="ml-1 hidden rounded border border-border bg-muted px-1 font-mono text-xs text-muted-foreground sm:inline"
                 >
                   ⌘↵
                 </kbd>

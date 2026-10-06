@@ -18,6 +18,7 @@ import type { ModelSelectionController, SelectionView } from "@/chat/modelSelect
 import { OfflineVoiceNotes } from "@/chat/OfflineVoiceNotes";
 import { QuickVoiceNote } from "@/chat/QuickVoiceNote";
 import { SettingsPage } from "@/chat/SettingsPage";
+import { AboutPage } from "@/chat/AboutPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
 import { TranscriberLibrarySyncProvider } from "@/chat/useTranscriberLibrarySync";
 import type { AppState } from "@/lib/appState";
@@ -181,6 +182,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
                     sessionStore={harnessSessionStore}
                   />,
                 )}
+                about={probe("about", <AboutPage onBack={() => navigate(-1)} />)}
               />
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>

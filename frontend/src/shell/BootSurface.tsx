@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
 import type { AppState } from "../lib/appState";
 
 export function BootSurface(props: {
@@ -20,7 +21,7 @@ export function BootSurface(props: {
             ? (props.error ?? "Something went wrong.")
             : props.state === "offline"
               ? (props.error ?? "You're offline.")
-              : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
+              : "Sign in to start chatting.";
 
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
@@ -32,7 +33,15 @@ export function BootSurface(props: {
         </span>
         <div className="flex flex-col gap-1.5">
           <h1 className="font-display text-title-2">TinyCloud Chat</h1>
-          <p className="text-sm text-muted-foreground">{message}</p>
+          <p className="flex items-center justify-center text-callout text-muted-foreground">
+            {message}
+            {/* Where conversations live, as a hint: before sign-in there is no How it works page to link to. */}
+            {props.state === "unauthenticated" && (
+              <InfoTip label="Where your conversations live" className="-my-3 fine:-my-1">
+                Your conversations live in your TinyCloud space.
+              </InfoTip>
+            )}
+          </p>
         </div>
         {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
           <Button onClick={props.onAction} className="h-11 px-6 fine:h-9 fine:px-4">

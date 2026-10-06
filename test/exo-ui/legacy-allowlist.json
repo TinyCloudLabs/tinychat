@@ -42,13 +42,6 @@
     "removeIn": "PR8"
   },
   {
-    "screen": "legacy-connectors",
-    "selector": ".text-\\[10px\\]",
-    "check": "text-size",
-    "reason": "The Coming soon badge is 10px (ConnectorsCard). PR8 restyles the connector rows.",
-    "removeIn": "PR8"
-  },
-  {
     "screen": "legacy-settings",
     "selector": "button[aria-label=\"Toggle theme\"]",
     "check": "touch-target",
@@ -63,69 +56,6 @@
     "removeIn": "PR8"
   },
   {
-    "screen": "legacy-settings",
-    "selector": "span.truncate.font-mono",
-    "check": "clipped-text",
-    "reason": "Account rows truncate the address and DID on purpose (SettingsPage AccountRow). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "div.space-y-3 > div.flex-wrap > button",
-    "check": "touch-target",
-    "reason": "Connect and Disconnect agent are 34px raw buttons (AgentAccessControls). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "#agent-setup-prompt + div a",
-    "check": "touch-target",
-    "reason": "Setup details is a 16px inline link beside Copy prompt (AgentSetupCard). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "#agent-setup-prompt, textarea[aria-label=\"Memory document\"]",
-    "check": "input-size",
-    "reason": "The read-only agent prompt is 12px (AgentSetupCard); the memory editor is 12px from sm up (MemoryPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "[role=radiogroup][aria-label=\"Default transcription engine\"] > [role=radio], [role=radiogroup][aria-label=\"AssemblyAI account\"] > [role=radio]",
-    "check": "touch-target",
-    "reason": "TranscriptionSettings' own 24px segments. PR8 moves them to the segmented control.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "button[aria-label=\"Recheck backend attestation\"]",
-    "check": "touch-target",
-    "reason": "An explicit h-8 (SettingsPage BackendAttestationPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "button[role=switch]",
-    "check": "touch-target",
-    "reason": "The Conversation Canvas switch is 44x24 (SettingsPage). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": "button.md\\:h-8, button.md\\:min-h-0",
-    "check": "touch-target",
-    "reason": "Memory's Clear, Reset and Save and the Import button drop to md:h-8 or md:min-h-0 on touch tablets and phones in landscape (MemoryPanel, ImportDialog). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "legacy-settings",
-    "selector": ".text-\\[10px\\], .text-\\[10px\\] *",
-    "check": "text-size",
-    "reason": "Memory's character count, empty note and ⌘↵ hint are 10px (MemoryPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
     "screen": "shell-capture",
     "selector": "[role=tablist][aria-label=\"Transcription source\"] > [role=tab]",
     "check": "touch-target",
@@ -179,76 +109,6 @@
     "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
     "check": "touch-target",
     "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-connectors",
-    "selector": ".text-\\[10px\\]",
-    "check": "text-size",
-    "reason": "The Coming soon badge is 10px (ConnectorsCard). PR8 restyles the connector rows.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "span.truncate.font-mono",
-    "check": "clipped-text",
-    "reason": "Account rows truncate the address and DID on purpose (SettingsPage AccountRow). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "div.space-y-3 > div.flex-wrap > button",
-    "check": "touch-target",
-    "reason": "Connect and Disconnect agent are 32px raw buttons (AgentAccessControls). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "#agent-setup-prompt + div a",
-    "check": "touch-target",
-    "reason": "Setup details is an inline link beside Copy prompt (AgentSetupCard). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "#agent-setup-prompt, textarea[aria-label=\"Memory document\"]",
-    "check": "input-size",
-    "reason": "The read-only agent prompt is 12px (AgentSetupCard); the memory editor is 12px from sm up (MemoryPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "[role=radiogroup][aria-label=\"Default transcription engine\"] > [role=radio], [role=radiogroup][aria-label=\"AssemblyAI account\"] > [role=radio]",
-    "check": "touch-target",
-    "reason": "TranscriptionSettings' own 24px segments. PR8 moves them to the segmented control.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "button[aria-label=\"Recheck backend attestation\"]",
-    "check": "touch-target",
-    "reason": "An explicit h-8 (SettingsPage BackendAttestationPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "button[role=switch]",
-    "check": "touch-target",
-    "reason": "The Conversation Canvas switch is 44x24 (SettingsPage). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": "button.md\\:h-8, button.md\\:min-h-0",
-    "check": "touch-target",
-    "reason": "Memory's Clear, Reset and Save and the Import button drop to md:h-8 or md:min-h-0 on touch tablets and phones on their side (MemoryPanel, ImportDialog). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings",
-    "selector": ".text-\\[10px\\], .text-\\[10px\\] *",
-    "check": "text-size",
-    "reason": "Memory's character count, empty note and ⌘↵ hint are 10px (MemoryPanel). PR8 regroups Settings.",
     "removeIn": "PR8"
   },
   {
@@ -284,69 +144,6 @@
     "selector": "button[aria-label=\"Send bot to meeting\"], button[aria-label=\"Refresh transcriber meetings\"]",
     "check": "touch-target",
     "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "span.truncate.font-mono",
-    "check": "clipped-text",
-    "reason": "Account rows truncate the address and DID on purpose (SettingsPage AccountRow). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "div.space-y-3 > div.flex-wrap > button",
-    "check": "touch-target",
-    "reason": "Connect and Disconnect agent are 32px raw buttons (AgentAccessControls). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "#agent-setup-prompt + div a",
-    "check": "touch-target",
-    "reason": "Setup details is an inline link beside Copy prompt (AgentSetupCard). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "#agent-setup-prompt, textarea[aria-label=\"Memory document\"]",
-    "check": "input-size",
-    "reason": "The read-only agent prompt is 12px (AgentSetupCard); the memory editor is 12px from sm up (MemoryPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "[role=radiogroup][aria-label=\"Default transcription engine\"] > [role=radio], [role=radiogroup][aria-label=\"AssemblyAI account\"] > [role=radio]",
-    "check": "touch-target",
-    "reason": "TranscriptionSettings' own 24px segments. PR8 moves them to the segmented control.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "button[aria-label=\"Recheck backend attestation\"]",
-    "check": "touch-target",
-    "reason": "An explicit h-8 (SettingsPage BackendAttestationPanel). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "button[role=switch]",
-    "check": "touch-target",
-    "reason": "The Conversation Canvas switch is 44x24 (SettingsPage). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": "button.md\\:h-8, button.md\\:min-h-0",
-    "check": "touch-target",
-    "reason": "Memory's Clear, Reset and Save and the Import button drop to md:h-8 or md:min-h-0 on touch tablets and phones on their side (MemoryPanel, ImportDialog). PR8 regroups Settings.",
-    "removeIn": "PR8"
-  },
-  {
-    "screen": "shell-settings-scrolled",
-    "selector": ".text-\\[10px\\], .text-\\[10px\\] *",
-    "check": "text-size",
-    "reason": "Memory's character count, empty note and ⌘↵ hint are 10px (MemoryPanel). PR8 regroups Settings.",
     "removeIn": "PR8"
   }
 ]

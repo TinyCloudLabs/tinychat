@@ -62,7 +62,7 @@ export const AttestationDetails: FC<{
   const compose = mr.light?.compose;
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-[11px] leading-relaxed text-foreground">
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs leading-relaxed text-foreground">
       {/* Signature leg — present→show (with ok reflecting validity), null→omit.
           A found-but-invalid signature still renders so the mismatch is visible
           rather than silently dropped. */}
@@ -76,7 +76,7 @@ export const AttestationDetails: FC<{
             <>
               {signatureLegLabel(signature)}{" "}
               — signer:{" "}
-              <code className="break-all font-mono text-[10px] text-muted-foreground">
+              <code className="break-all font-mono text-xs text-muted-foreground">
                 {signer ?? "—"}
               </code>
             </>
@@ -145,7 +145,7 @@ export const AttestationDetails: FC<{
                 {mrtdShort ? (
                   <>
                     MRTD{" "}
-                    <code className="break-all font-mono text-[10px] text-muted-foreground">
+                    <code className="break-all font-mono text-xs text-muted-foreground">
                       {mrtdShort}
                     </code>{" "}
                     ·{" "}
@@ -225,7 +225,7 @@ export const AttestationDetails: FC<{
 
       {responseVerified && (
         /* Honest claim — names exactly the legs that pass, nothing more. */
-        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+        <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
           Intel TDX quote verified on-chain (Automata DCAP) · response signature
           valid · reply bound to the enclave · quote fresh
           {gpuPass ? " · NVIDIA GPU attested" : ""}.
@@ -235,7 +235,7 @@ export const AttestationDetails: FC<{
       {!responseVerified && context === "model-level" && (
         /* REQUIRED honesty line, pre-send: no reply exists yet, so the claim is
            about the ENDPOINT, not "the reply above". */
-        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+        <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
           Enclave attestation confirms this endpoint is a genuine Intel TDX
           enclave. Individual responses are{" "}
           <span className="font-semibold">not</span> yet signed — see each
@@ -245,7 +245,7 @@ export const AttestationDetails: FC<{
 
       {!responseVerified && context === "message" && (
         /* REQUIRED honesty line — tier 2 does not bind the reply to the enclave. */
-        <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+        <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
           This model does not sign individual responses, so the reply above is{" "}
           <span className="font-semibold">not</span> cryptographically bound to
           the enclave. The attestation proves a genuine Intel TDX enclave
@@ -255,7 +255,7 @@ export const AttestationDetails: FC<{
 
       {/* Cross-link — this leg attests the model endpoint; the relay backend that
           brokers the request is attested separately under Settings. */}
-      <p className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+      <p className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
         Relay: backend attestation → Settings
       </p>
     </div>
@@ -280,7 +280,7 @@ const Leg: FC<{ ok: boolean; label: ReactNode; muted?: boolean }> = ({
 
 /** Small inline tag noting WHO a leg's verdict trusts (relayed vs trustless). */
 const TrustTag: FC<{ children: ReactNode }> = ({ children }) => (
-  <span className="rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+  <span className="rounded bg-muted px-1 py-px text-xs font-medium uppercase tracking-wide text-muted-foreground">
     {children}
   </span>
 );
