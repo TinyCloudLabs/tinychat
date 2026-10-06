@@ -521,8 +521,56 @@ describe("createLocalTranscriber", () => {
   test("a hung download_model invoke is bounded by the same timer", async () => {
     const bridge = makeBridge();
     bridge.localStt.downloadModel = () => new Promise(() => {});
-    const t = createLocalTranscriber(bridge, { timeouts: { modelDownloadMs: 20 } });
-    await expect(t.ensureModel("QuantizedTinyEn")).rejects.toThrow("Timed out waiting for model download");
+    const t = createLocalTranscriber(bridge, { timeouts: { modelDownloadStallMs: 20 } });
+    await expect(t.ensureModel("QuantizedTinyEn")).rejects.toThrow(
+      "Timed out waiting for the model download to make progress",
+    );
+  });
+
+  test("a slow model download that keeps making progress is not timed out", async () => {
+    const bridge = makeBridge();
+    bridge.localStt.downloadModel = async () => {
+      void (async () => {
+        // Six progress events 40 ms apart: 240 ms in total, well past the
+        // 100 ms stall timeout, but never 100 ms without progress.
+        for (const pct of [10, 25, 40, 55, 70, 85]) {
+          await new Promise((r) => setTimeout(r, 40));
+          bridge.emitDownloadProgress({ model: "QuantizedTinyEn", status: { downloading: pct } });
+        }
+        bridge.emitDownloadProgress({ model: "QuantizedTinyEn", status: "completed" });
+      })();
+      return { status: "ok", data: null };
+    };
+    const t = createLocalTranscriber(bridge, { timeouts: { modelDownloadStallMs: 100 } });
+    const seen: number[] = [];
+    await expect(t.ensureModel("QuantizedTinyEn", (p) => seen.push(p))).resolves.toBeUndefined();
+    expect(seen).toEqual([10, 25, 40, 55, 70, 85, 100]);
+  });
+
+  test("a model download that stops making progress times out", async () => {
+    const bridge = makeBridge();
+    bridge.localStt.downloadModel = async () => {
+      setTimeout(() => bridge.emitDownloadProgress({ model: "QuantizedTinyEn", status: { downloading: 30 } }), 20);
+      // Progress for another model must not keep this wait alive.
+      for (const delay of [60, 110, 160, 210]) {
+        setTimeout(() => bridge.emitDownloadProgress({ model: "QuantizedBase", status: { downloading: delay } }), delay);
+      }
+      return { status: "ok", data: null };
+    };
+    const t = createLocalTranscriber(bridge, { timeouts: { modelDownloadStallMs: 100 } });
+    const seen: number[] = [];
+    const started = Date.now();
+    await expect(t.ensureModel("QuantizedTinyEn", (p) => seen.push(p))).rejects.toThrow(
+      "Timed out waiting for the model download to make progress",
+    );
+    // Expires ~120 ms in (100 ms after the last progress); had the other
+    // model's events restarted the clock, not before ~310 ms.
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(seen).toEqual([30]);
+
+    // The listener is released: a late event no longer reports progress.
+    bridge.emitDownloadProgress({ model: "QuantizedTinyEn", status: { downloading: 90 } });
+    expect(seen).toEqual([30]);
   });
 
   test("an actor-failure stopped event ends the capture and surfaces the failure", async () => {

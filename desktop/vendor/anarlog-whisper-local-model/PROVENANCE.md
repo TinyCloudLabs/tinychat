@@ -25,11 +25,19 @@ CRC32 matches `checksum()` (3055274469), so the plugin's size and checksum
 validation is unchanged. File names, sizes, checksums and everything else are
 upstream as-is.
 
+`src/lib.rs` `fallback_model_url()` (TC-771): the same file on anarlog's own
+host, `https://models.anarlog.so/v0/ggerganov/whisper.cpp/main/<file>`, which
+serves byte-identical files (all seven sizes match `model_size_bytes()`; the
+Tiny and Large Turbo downloads from it pass `checksum()`). The vendored
+`local-model` hands it to the vendored `model-downloader`, which falls back to
+it when Hugging Face fails.
+
 `Cargo.toml` `workspace = true` entries were rewritten: `anlg-language` as a git
 dependency on the same rev, external crates at the versions declared in the
 pinned workspace root (`serde 1`, `specta 2.0.0-rc.22`, `strum 0.28`).
 
-Removal trigger: the anarlog pin moves to a rev whose model URLs resolve.
+Removal trigger: the anarlog pin moves to a rev whose model URLs resolve and
+the vendored `model-downloader` is removed.
 
 Applied via `[patch."https://github.com/fastrepl/anarlog"]` in
 `src-tauri/Cargo.toml`.

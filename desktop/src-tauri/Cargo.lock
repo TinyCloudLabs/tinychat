@@ -2977,7 +2977,6 @@ dependencies = [
 [[package]]
 name = "file"
 version = "0.1.0"
-source = "git+https://github.com/fastrepl/anarlog?rev=864ddc1f692116d128eea2692fd72b0a51007768#864ddc1f692116d128eea2692fd72b0a51007768"
 dependencies = [
  "base64 0.22.1",
  "crc32fast",
@@ -5563,7 +5562,6 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 [[package]]
 name = "local-model"
 version = "0.1.0"
-source = "git+https://github.com/fastrepl/anarlog?rev=864ddc1f692116d128eea2692fd72b0a51007768#864ddc1f692116d128eea2692fd72b0a51007768"
 dependencies = [
  "am",
  "file",
@@ -5825,7 +5823,6 @@ dependencies = [
 [[package]]
 name = "model-downloader"
 version = "0.1.0"
-source = "git+https://github.com/fastrepl/anarlog?rev=864ddc1f692116d128eea2692fd72b0a51007768#864ddc1f692116d128eea2692fd72b0a51007768"
 dependencies = [
  "download-interface",
  "file",

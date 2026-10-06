@@ -18,6 +18,7 @@ loads them lazily so the web bundle never touches Tauri.
 Transitive third-party components exercised at runtime: whisper.cpp /
 whisper-rs (MIT/Unlicense, via `crates/whisper-local` at the pinned rev),
 ggml Whisper model weights (MIT), downloaded on demand from
-`huggingface.co/ggerganov/whisper.cpp` (URLs set in the vendored
-`desktop/vendor/anarlog-whisper-local-model`) with size+checksum validation by
-anarlog's `model-downloader`.
+`huggingface.co/ggerganov/whisper.cpp`, falling back to `models.anarlog.so`
+(URLs set in the vendored `desktop/vendor/anarlog-whisper-local-model`) with
+size+checksum validation by anarlog's `model-downloader` (vendored in
+`desktop/vendor/anarlog-model-downloader`).
