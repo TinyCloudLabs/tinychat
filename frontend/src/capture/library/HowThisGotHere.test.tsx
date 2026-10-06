@@ -64,19 +64,34 @@ describe("captureRoute", () => {
 });
 
 describe("HowThisGotHere", () => {
+  const render = (read: Parameters<typeof HowThisGotHere>[0]["read"]) =>
+    renderToStaticMarkup(
+      <MemoryRouter>
+        <HowThisGotHere source="exo-upload" read={read} onRetry={() => {}} />
+      </MemoryRouter>,
+    );
+
   test("a landed route line, the sentence, and How private cloud works only for private cloud", () => {
-    const render = (metadata: Record<string, unknown>) =>
-      renderToStaticMarkup(
-        <MemoryRouter>
-          <HowThisGotHere source="exo-upload" metadata={metadata} />
-        </MemoryRouter>,
-      );
-    const cloud = render({ transcript_provider: "tinycloud-private-transcription" });
+    const cloud = render({ status: "ok", metadata: { transcript_provider: "tinycloud-private-transcription" } });
     expect(cloud).toContain(">How this got here</h2>");
     expect(cloud).toContain('aria-label="Where your audio goes"');
     expect(cloud).toContain("data-landed");
     expect(cloud.match(/<li /g)).toHaveLength(3);
     expect(cloud).toContain("How private cloud works");
-    expect(render({ transcript_provider: "assemblyai" })).not.toContain("How private cloud works");
+    expect(render({ status: "ok", metadata: { transcript_provider: "assemblyai" } })).not.toContain("How private cloud works");
+  });
+
+  test("while the metadata is read: a skeleton, and no route drawn from the source alone", () => {
+    const html = render(undefined);
+    expect(html).toContain("Loading where this came from…");
+    expect(html).not.toContain('aria-label="Where your audio goes"');
+  });
+
+  test("a metadata read that failed: no route at all, and Try again", () => {
+    const html = render({ status: "failed" });
+    expect(html).toContain("Couldn’t load where this came from.");
+    expect(html).toContain('data-testid="how-this-got-here-retry"');
+    expect(html).not.toContain('aria-label="Where your audio goes"');
+    expect(html).not.toContain("Saved to your TinyCloud space");
   });
 });

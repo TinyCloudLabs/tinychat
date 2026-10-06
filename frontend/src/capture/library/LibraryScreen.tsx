@@ -20,6 +20,7 @@ function RefreshButton(props: { onClick: () => void; busy: boolean }) {
       type="button"
       onClick={props.onClick}
       disabled={props.busy}
+      aria-busy={props.busy}
       aria-label="Refresh the Library"
       className="tap-transparent flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2 disabled:opacity-50 fine:size-9"
     >
@@ -41,7 +42,7 @@ export function LibraryScreen(props: {
   column: string;
 }) {
   const { library } = props;
-  const refresh = <RefreshButton onClick={library.refresh} busy={library.status === "loading"} />;
+  const refresh = <RefreshButton onClick={library.refresh} busy={library.listing} />;
   return (
     <>
       {props.pushed ? (

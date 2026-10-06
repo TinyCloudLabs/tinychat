@@ -145,6 +145,29 @@ describe("a voice note's transcription", () => {
     expect(retry).toContain("Reference: cid-7");
     expect(retry).toContain('data-testid="voice-note-transcribe-retry"');
     expect(render({ transcription: failed(false) })).not.toContain('data-testid="voice-note-transcribe-retry"');
+    // Private cloud unavailable right now: the failure is told, but Retry can't help.
+    const unavailable = render({ transcription: transcription({ jobs: new Map([["rec-1", { kind: "failed", code: "upload_interrupted", message: "The upload did not complete.", retryable: true, reference: "cid-7" }]]), availability: "failed" }) });
+    expect(unavailable).toContain("The upload did not complete.");
+    expect(unavailable).not.toContain('data-testid="voice-note-transcribe-retry"');
+  });
+
+  test("what the reads can't tell is never offered Transcribe", () => {
+    // The metadata read failed: transcribed, or no speech, is unknown.
+    const unknown = render({ metadata: { status: "failed" }, transcription: transcription() });
+    expect(unknown).toContain('data-testid="voice-note-transcript-unknown"');
+    expect(unknown).not.toContain('data-testid="voice-note-transcribe"');
+    // How this got here offers Try again, with no route; the player still plays.
+    expect(unknown).toContain('data-testid="how-this-got-here-retry"');
+    expect(unknown).not.toContain('aria-label="Where your audio goes"');
+    expect(unknown).toContain("Play audio");
+    // Marked transcribed, its transcript body missing: the text the row carries.
+    const marked = render({
+      metadata: { status: "ok", metadata: { transcription_outcome: "transcribed", transcript_text: "Book the venue." } },
+      transcript: { status: "absent" },
+      transcription: transcription(),
+    });
+    expect(marked).toContain("Book the venue.");
+    expect(marked).not.toContain('data-testid="voice-note-transcribe"');
   });
 
   test("a transcribed note shows its transcript whatever the engine's state", () => {

@@ -3,9 +3,14 @@
 // source column says where it came from; `transcript_provider` (or a voice
 // note's `transcription_engine`) adds the stop that made its text. Nothing
 // the row does not record is drawn: no provider, no middle node.
+import { RefreshCwIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { Skeleton } from "@/components/ui/skeleton";
 import { RouteLine, type RouteNode } from "@/capture/recorder/RouteLine";
 import { GMEET_MEETING_SOURCE } from "@/lib/connectors/gmeetNormalize";
+import type { MeetingMetadataRead } from "@/lib/connectors/meetingExplorer";
 import { UPLOAD_MEETING_SOURCE } from "@/lib/audioUpload";
 import { LOCAL_MEETING_SOURCE } from "@/lib/localTranscriber";
 import { TRANSCRIBER_MEETING_SOURCE } from "@/lib/transcriberSave";
@@ -100,16 +105,38 @@ export function captureRoute(source: string, metadata: Record<string, unknown> |
   };
 }
 
-export function HowThisGotHere(props: { source: string; metadata: Record<string, unknown> | null }) {
-  const route = captureRoute(props.source, props.metadata);
+/**
+ * The route, once the row's metadata has been read: a skeleton while it is
+ * read, and no route at all when the read failed (a route drawn from the
+ * source alone would claim a path with no stop in it), with Try again.
+ */
+export function HowThisGotHere(props: { source: string; read: MeetingMetadataRead | undefined; onRetry: () => void }) {
+  const { read } = props;
+  const route = read !== undefined && read.status !== "failed" ? captureRoute(props.source, read.status === "ok" ? read.metadata : null) : null;
   return (
-    <section aria-labelledby="how-this-got-here" data-testid="how-this-got-here">
+    <section aria-labelledby="how-this-got-here" data-testid="how-this-got-here" data-state={read === undefined ? "loading" : read.status}>
       <h2 id="how-this-got-here" className="text-headline">
         How this got here
       </h2>
-      <RouteLine nodes={route.nodes} landed className="mt-3" />
-      <p className="mt-3 max-w-[68ch] text-callout text-muted-foreground">{route.sentence}</p>
-      {route.privateCloud && <HowItWorksLink section="transcription">How private cloud works</HowItWorksLink>}
+      {read === undefined ? (
+        <div role="status" className="mt-3">
+          <span className="sr-only">Loading where this came from…</span>
+          <Skeleton lines={2} className="max-w-md" />
+        </div>
+      ) : route === null ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p className="text-callout text-muted-foreground">Couldn’t load where this came from.</p>
+          <Button type="button" variant="outline" onClick={props.onRetry} data-testid="how-this-got-here-retry">
+            <RefreshCwIcon aria-hidden /> Try again
+          </Button>
+        </div>
+      ) : (
+        <>
+          <RouteLine nodes={route.nodes} landed className="mt-3" />
+          <p className="mt-3 max-w-[68ch] text-callout text-muted-foreground">{route.sentence}</p>
+          {route.privateCloud && <HowItWorksLink section="transcription">How private cloud works</HowItWorksLink>}
+        </>
+      )}
     </section>
   );
 }

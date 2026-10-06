@@ -51,7 +51,8 @@ export function NoteDetail(props: {
   return (
     <NoteDetailView
       item={item}
-      listStatus={library.status}
+      // Not listed yet while a list read is out (a note saved a moment ago): it waits for that read.
+      listStatus={item === null && library.listing ? "loading" : library.status}
       metadata={reads.metadata}
       transcript={reads.transcript}
       loadAudio={loadAudio}

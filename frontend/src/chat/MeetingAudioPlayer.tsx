@@ -14,7 +14,7 @@ interface MeetingAudioPlayerProps {
   ) => Promise<Blob | null>;
 }
 
-type PlayerState =
+export type PlayerState =
   | { phase: "idle" }
   | { phase: "loading"; percent: number | null }
   | { phase: "ready"; url: string }
@@ -63,13 +63,18 @@ export function MeetingAudioPlayer({ load }: MeetingAudioPlayerProps) {
     }
   }, [load]);
 
+  return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} />;
+}
+
+/** What the player shows in each state (rendered on the server in the tests). */
+export function MeetingAudioPlayerView({ state, onPlay }: { state: PlayerState; onPlay: () => void }) {
   if (state.phase === "ready") {
     return <audio controls autoPlay src={state.url} className="h-11 w-full" data-testid="note-audio-player" />;
   }
   if (state.phase === "loading") {
     return (
       <p className="flex min-h-11 items-center gap-1.5 text-callout text-muted-foreground" role="status">
-        <Loader2Icon className="size-4 animate-spin" aria-hidden />
+        <Loader2Icon className="size-4 motion-safe:animate-spin" aria-hidden />
         <span className="tnum">Loading audio…{state.percent === null ? "" : ` ${state.percent}%`}</span>
       </p>
     );
@@ -79,7 +84,7 @@ export function MeetingAudioPlayer({ load }: MeetingAudioPlayerProps) {
   }
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <Button type="button" variant="outline" onClick={() => void onPlay()} data-testid="note-audio-play">
+      <Button type="button" variant="outline" onClick={onPlay} data-testid="note-audio-play">
         <PlayIcon aria-hidden />
         <span>{state.phase === "failed" ? "Try again" : "Play audio"}</span>
       </Button>

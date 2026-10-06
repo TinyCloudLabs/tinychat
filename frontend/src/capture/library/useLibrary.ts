@@ -2,15 +2,21 @@
 // list for Recent, the Library and the list pane, and the open note's reads.
 //
 // Every storage call goes through the per-space queue (scheduledSpace), so it
-// takes turns with an upload's, and through one chain here, so two of these
-// reads are never in flight at once (TinyCloud drops concurrent responses on
-// one space). No Promise.all over storage.
+// takes turns with an upload's and never overlaps another (TinyCloud drops
+// concurrent responses on one space). The list and the note's reads also wait
+// on one chain here, so they run in the order they were asked for. A stored
+// audio file is read part by part through the queue alone, so other reads go
+// in between its parts, and closing the note's player cancels it. No
+// Promise.all over storage.
 //
-// The list is read on mount, each time Capture comes on screen or the Library
-// is entered, when something lands (`library-changed`), when a voice note's
-// transcript is saved, and from Refresh or Try again. A note's settled reads
-// are cached; a failed one is read again when the note is next opened (or on
-// Try again), never pinned.
+// The list is read on the first mount, when something lands
+// (`library-changed`, which a voice note's saved transcript also sends), from
+// Refresh or Try again, and when Capture comes back on screen after more than
+// two minutes away. One read at a time: asks that arrive while one is out
+// become a single read after it; a read already out is never thrown away.
+//
+// A note's settled reads are cached; a failed one is read again when the note
+// is next opened (or on Try again), never pinned.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -41,6 +47,8 @@ export interface NoteReads {
 export interface Library {
   status: LibraryStatus;
   items: LibraryItem[];
+  /** A list read is out (Refresh shows it; a note not listed yet waits for it). */
+  listing: boolean;
   filter: LibraryFilter;
   setFilter: (filter: LibraryFilter) => void;
   refresh: () => void;
@@ -50,6 +58,9 @@ export interface Library {
   retry: () => void;
 }
 
+/** Capture away for longer than this re-reads the list when it comes back (plan §4.11). */
+export const RELIST_AFTER_MS = 2 * 60 * 1000;
+
 const settled = (read: { status: string } | undefined) => read !== undefined && read.status !== "failed";
 const noop = () => undefined;
 
@@ -58,15 +69,16 @@ export function useLibrary(
   options: {
     /** Capture is on screen. */
     visible: boolean;
-    /** The Library screen (or a note) is on screen. */
-    libraryShown: boolean;
     noteId: string | null;
     /** The phone app's voice-note transcriber, to hear when a transcript is saved; absent elsewhere. */
     transcriber?: { backendUrl: string; sessionStore: SessionStore } | null;
+    /** The clock (tests). */
+    now?: () => number;
   },
 ): Library {
   const space = useMemo(() => scheduledSpace(tcw), [tcw]);
   const [list, setList] = useState<{ status: LibraryStatus; items: LibraryItem[] }>({ status: "loading", items: [] });
+  const [listing, setListing] = useState(false);
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const reads = useRef(new Map<string, NoteReads>());
   const reading = useRef(new Set<string>());
@@ -74,7 +86,9 @@ export function useLibrary(
   const bump = useCallback(() => setRevision((n) => n + 1), []);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
   const mounted = useRef(true);
-  const listRequest = useRef(0);
+  const listRun = useRef({ out: false, again: false });
+  const clock = useRef(options.now ?? Date.now);
+  clock.current = options.now ?? Date.now;
 
   useEffect(() => {
     mounted.current = true;
@@ -91,39 +105,49 @@ export function useLibrary(
   }, []);
 
   const refresh = useCallback(() => {
-    const request = ++listRequest.current;
+    // A read is out: one more after it covers every ask that arrived meanwhile.
+    if (listRun.current.out) {
+      listRun.current.again = true;
+      return;
+    }
+    listRun.current.out = true;
+    setListing(true);
     // Try again shows the skeleton; rows already on screen stay until the list answers.
     setList((current) => (current.status === "failed" ? { ...current, status: "loading" } : current));
-    void enqueue(async () => {
+    const readList = async (): Promise<void> => {
       const read = await listMeetingsRead(space);
-      if (!mounted.current || request !== listRequest.current) return;
+      if (!mounted.current) return;
       setList((current) => (read.status === "ok" ? { status: "ready", items: read.meetings } : { status: "failed", items: current.items }));
-    });
+      if (listRun.current.again) {
+        listRun.current.again = false;
+        void enqueue(readList);
+        return;
+      }
+      listRun.current.out = false;
+      setListing(false);
+    };
+    void enqueue(readList);
   }, [enqueue, space]);
 
-  // Read on mount, and each time Capture comes on screen or the Library is entered.
+  // The first mount (Capture's first visit).
   useEffect(() => {
-    if (options.visible) refresh();
-  }, [options.visible, options.libraryShown, refresh]);
+    refresh();
+  }, [refresh]);
+
+  // Coming back to Capture after more than two minutes away.
+  const leftAt = useRef<number | null>(options.visible ? null : clock.current());
+  useEffect(() => {
+    if (!options.visible) {
+      leftAt.current ??= clock.current();
+      return;
+    }
+    const away = leftAt.current === null ? 0 : clock.current() - leftAt.current;
+    leftAt.current = null;
+    if (away > RELIST_AFTER_MS) refresh();
+  }, [options.visible, refresh]);
 
   // Something landed (a voice note saved, an upload's or a notetaker's transcript).
-  const visibleRef = useRef(options.visible);
-  visibleRef.current = options.visible;
-  const stale = useRef(false);
-  useEffect(
-    () =>
-      captureEvents.on("library-changed", () => {
-        if (visibleRef.current) refresh();
-        else stale.current = true;
-      }),
-    [refresh],
-  );
-  useEffect(() => {
-    if (options.visible && stale.current) {
-      stale.current = false;
-      refresh();
-    }
-  }, [options.visible, refresh]);
+  useEffect(() => captureEvents.on("library-changed", () => refresh()), [refresh]);
 
   const item = options.noteId === null ? null : (list.items.find((entry) => entry.id === options.noteId) ?? null);
 
@@ -187,19 +211,19 @@ export function useLibrary(
   const audio = item ? meetingAudioFrom(meta) : null;
   const audioBase = audio?.status === "stored" ? audio.base : null;
   const voiceSourceId = item?.source === VOICE_NOTE_SOURCE ? item.sourceId : null;
-  // The stored file is read only when the player asks, on the same chain.
+  // The stored file is read only when the player asks, one part per queued
+  // call; the player's signal stops it when the note closes.
   const loadAudio = useMemo<AudioLoad | null>(() => {
     if (voiceSourceId !== null) {
-      return (_signal, onProgress) =>
-        enqueue(async () => {
-          const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { onProgress });
-          if (!res.ok) throw new Error(res.error.message);
-          return res.data;
-        });
+      return async (signal, onProgress) => {
+        const res = await loadVoiceNoteAudioBlob(space, voiceSourceId, { signal, onProgress });
+        if (!res.ok) throw new Error(res.error.message);
+        return res.data;
+      };
     }
-    if (audioBase !== null) return (signal, onProgress) => enqueue(() => getAudio(space.kv, audioBase, { signal, onProgress }));
+    if (audioBase !== null) return (signal, onProgress) => getAudio(space.kv, audioBase, { signal, onProgress });
     return null;
-  }, [audioBase, enqueue, space, voiceSourceId]);
+  }, [audioBase, space, voiceSourceId]);
 
   const retry = useCallback(() => {
     if (list.status === "failed") refresh();
@@ -209,6 +233,7 @@ export function useLibrary(
   return {
     status: list.status,
     items: list.items,
+    listing,
     filter,
     setFilter,
     refresh,

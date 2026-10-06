@@ -115,8 +115,9 @@ function cellStr(row: unknown[], idx: number): string | null {
 /**
  * The list read with "nothing stored" kept apart from "the read did not land"
  * (the Library offers Try again for the second). A connectors db or table that
- * does not exist yet, or a session predating the connectors permissions, is
- * an ordinary empty list, as in connectorStore.getConnection.
+ * does not exist yet is an ordinary empty list. A refused read (an expired
+ * session) is a failure, never "no meetings": a user with notes must not be
+ * told they have none.
  */
 export type MeetingListRead = { status: "ok"; meetings: MeetingListItem[] } | { status: "failed" };
 
@@ -124,13 +125,7 @@ function notStoredYet(res: unknown): boolean {
   const code = errorCode(res);
   const err = (res as { error?: { message?: unknown } } | null)?.error;
   const message = typeof err?.message === "string" ? err.message.toLowerCase() : "";
-  return (
-    code === "AUTH_UNAUTHORIZED"
-    || /NOT_FOUND/i.test(code)
-    || message.includes("unauthorized")
-    || message.includes("not authorized")
-    || message.includes("no such table")
-  );
+  return /NOT_FOUND/i.test(code) || message.includes("no such table");
 }
 
 /** Rows come back POSITIONAL; anything that is not a finite number reads as absent. */

@@ -262,17 +262,20 @@ describe("listMeetingsRead", () => {
     expect(sqlCalls[0].sql).toContain("duration_secs");
   });
 
-  it("an ordinary empty space is ok and empty; a store error or a throwing transport is failed", async () => {
+  it("an ordinary empty space is ok and empty; a store error, a refused read or a throwing transport is failed", async () => {
     for (const error of [
       { code: "STORE_ERROR", message: "no such table: connector_meeting" },
-      { code: "AUTH_UNAUTHORIZED", message: "unauthorized" },
       { code: "SQL_DB_NOT_FOUND", message: "no database" },
     ]) {
       expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error } }).tcw)).toEqual({ status: "ok", meetings: [] });
     }
-    expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error: { code: "SQL_ERROR", message: "boom" } } }).tcw)).toEqual({
-      status: "failed",
-    });
+    // An expired session: an error the Library shows (with Try again), never an empty Library.
+    for (const error of [
+      { code: "SQL_ERROR", message: "boom" },
+      { code: "AUTH_UNAUTHORIZED", message: "unauthorized" },
+    ]) {
+      expect(await listMeetingsRead(fakeTcw({ sql: { ok: false, error } }).tcw)).toEqual({ status: "failed" });
+    }
     expect(await listMeetingsRead(throwingTcw())).toEqual({ status: "failed" });
     expect(await listMeetingsRead(throwingTcw("sync"))).toEqual({ status: "failed" });
   });

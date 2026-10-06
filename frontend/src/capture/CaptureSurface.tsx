@@ -117,7 +117,6 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
   // Recent, the Library and the open note: one reader, through the per-space queue.
   const library = useLibrary(tcw, {
     visible: active,
-    libraryShown: active && (libraryScreen || noteScreen),
     noteId: screen.noteId,
     transcriber: recorder.available ? { backendUrl, sessionStore } : null,
   });

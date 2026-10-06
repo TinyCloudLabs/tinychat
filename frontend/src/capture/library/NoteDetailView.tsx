@@ -109,7 +109,7 @@ export function VoiceNoteTranscriptionStatus(props: {
   if (job?.kind === "active") {
     return (
       <p role="status" data-testid="voice-note-transcription-status" className="flex items-center gap-2 text-callout text-muted-foreground">
-        <Loader2Icon className="size-4 shrink-0 animate-spin" aria-hidden /> {transcriptionStatusText(job.status)}
+        <Loader2Icon className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden /> {transcriptionStatusText(job.status)}
       </p>
     );
   }
@@ -147,6 +147,12 @@ export function VoiceNoteTranscriptionStatus(props: {
       </Button>
     </div>
   );
+}
+
+/** The transcript text a voice note's row carries (`transcript_text`), for when its body can't be read. */
+function savedText(metadata: MeetingMetadataRead): string | null {
+  const text = metadata.status === "ok" ? metadata.metadata.transcript_text : null;
+  return typeof text === "string" && text.trim().length > 0 ? text.trim() : null;
 }
 
 function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
@@ -198,6 +204,16 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
       ) : voiceNote ? (
         metadata === undefined ? (
           <Skeleton lines={1} className="w-40" />
+        ) : metadata.status === "failed" ? (
+          // Unknown whether it was transcribed (or had no speech): nothing is offered until the read lands.
+          <p className="text-callout text-muted-foreground" data-testid="voice-note-transcript-unknown">
+            Couldn’t check this note’s transcript.
+          </p>
+        ) : savedText(metadata) ? (
+          // Marked transcribed, its transcript body missing: the text the row carries.
+          <p className="max-w-[68ch] whitespace-pre-wrap break-words text-body" data-testid="voice-note-transcript-text">
+            {savedText(metadata)}
+          </p>
         ) : (
           // A plain function of its props (no hooks), so its "nothing to say" is known here.
           VoiceNoteTranscriptionStatus({
@@ -260,7 +276,7 @@ export function NoteDetailView(props: NoteDetailViewProps) {
           Only the transcript was saved; the audio wasn’t stored.
         </p>
       ) : null}
-      <HowThisGotHere source={item.source} metadata={meta} />
+      <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />
       <Transcript {...props} item={item} />
     </Frame>
   );
