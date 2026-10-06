@@ -1,7 +1,10 @@
 // One sheet, two shapes (TC-761), after shadcn's responsive Dialog/Drawer: a
 // bottom sheet on compact screens (phones, upright or on their side) and a
 // centred Dialog on medium and expanded ones. Same API as BottomSheet, so a
-// caller never branches on size.
+// caller never branches on size, plus a pinned footer: the primary action
+// stays on screen while the body scrolls (a phone on its side has little
+// height). A body that owns the action's state can render
+// ResponsiveSheetBody and ResponsiveSheetFooter itself, as siblings.
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { XIcon } from "lucide-react";
@@ -11,11 +14,22 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
 
-export type ResponsiveSheetProps = BottomSheetProps;
+export interface ResponsiveSheetProps extends BottomSheetProps {
+  /** Pinned under the scrolling body: the sheet's primary action. */
+  footer?: React.ReactNode;
+}
 
-export function ResponsiveSheet(props: ResponsiveSheetProps) {
+export function ResponsiveSheet({ footer, ...props }: ResponsiveSheetProps) {
   const { size } = useSizeClass();
-  if (size === "compact") return <BottomSheet {...props} />;
+  const pinned = footer ? <ResponsiveSheetFooter>{footer}</ResponsiveSheetFooter> : null;
+  if (size === "compact") {
+    return (
+      <BottomSheet {...props}>
+        {props.children}
+        {pinned}
+      </BottomSheet>
+    );
+  }
   const { open, onOpenChange, dismissible = true, title, description, children, contentProps } = props;
   const block = (event: Event) => {
     if (!dismissible) event.preventDefault();
@@ -35,7 +49,7 @@ export function ResponsiveSheet(props: ResponsiveSheetProps) {
         )}
       >
         <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2 pt-1">
-          <DialogTitle className="min-w-0 flex-1 truncate font-display text-title-2">{title}</DialogTitle>
+          <DialogTitle className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</DialogTitle>
           {dismissible && (
             <DialogPrimitive.Close
               aria-label="Close"
@@ -49,6 +63,7 @@ export function ResponsiveSheet(props: ResponsiveSheetProps) {
           <DialogDescription className="shrink-0 px-4 pb-1 text-callout text-muted-foreground">{description}</DialogDescription>
         )}
         {children}
+        {pinned}
       </DialogContent>
     </Dialog>
   );
@@ -57,5 +72,7 @@ export function ResponsiveSheet(props: ResponsiveSheetProps) {
 /** The scrolling middle of a sheet (both shapes). */
 export const ResponsiveSheetBody = BottomSheetBody;
 
-/** Actions pinned under the body (both shapes). */
-export const ResponsiveSheetFooter = BottomSheetFooter;
+/** Actions pinned under the body (both shapes), above a hairline. */
+export function ResponsiveSheetFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <BottomSheetFooter className={cn("border-t border-border pb-4 pt-3", className)} {...props} />;
+}

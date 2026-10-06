@@ -11,7 +11,7 @@
 // has the rest. The first private cloud upload on a device says, in one
 // sentence, what Private cloud does before it sends anything.
 
-import { useCallback, useEffect, useState, useSyncExternalStore, type FC } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type FC, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
@@ -22,6 +22,7 @@ import { useUploadDeps } from "@/capture/upload/useUploadDeps";
 import { RouteLine, uploadRoute } from "@/capture/sheetRoute";
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
+import { ResponsiveSheetBody, ResponsiveSheetFooter } from "@/components/ui/responsive-sheet";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
   readAssemblyAiKey,
@@ -192,6 +193,11 @@ export interface AudioUploadViewProps {
   onOpenSettings: () => void;
   onRecheck: () => void;
   onOpenLibrary?: () => void;
+  /**
+   * `inline` (default): one column. `sheet`: the Upload sheet's scrolling body,
+   * with Transcribe pinned in its footer so it stays on screen.
+   */
+  layout?: "inline" | "sheet";
 }
 
 export const AudioUploadView: FC<AudioUploadViewProps> = ({
@@ -215,9 +221,12 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onOpenSettings,
   onRecheck,
   onOpenLibrary,
+  layout = "inline",
 }) => {
+  const inSheet = layout === "sheet";
+  const body = (node: ReactNode) => (inSheet ? <ResponsiveSheetBody className="pb-5">{node}</ResponsiveSheetBody> : node);
   if (job === null && paused !== null) {
-    return (
+    return body(
       <div className="flex flex-col gap-3" data-testid="upload-paused">
         <p className="truncate text-headline" title={paused.fileName}>
           {paused.fileName}
@@ -228,11 +237,11 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         <Button type="button" size="lg" onClick={onContinue} className="w-full">
           Continue
         </Button>
-      </div>
+      </div>,
     );
   }
   if (job !== null && job.stage === "elsewhere") {
-    return (
+    return body(
       <div className="flex flex-col gap-3">
         <p className="text-callout text-muted-foreground" role="status">
           {job.fileName ? <>&ldquo;{job.fileName}&rdquo; is </> : "An upload is "}
@@ -241,14 +250,14 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         <Button type="button" variant="outline" onClick={onRetry} className="w-full">
           Check again
         </Button>
-      </div>
+      </div>,
     );
   }
   if (job !== null) {
     const busy = job.stage !== "saved" && job.stage !== "failed";
     const saved = job.stage === "saved";
     const audio = audioText(job);
-    return (
+    return body(
       <div className="flex flex-col gap-3" data-testid="upload-job" data-stage={job.stage}>
         {saved ? (
           <div className="flex flex-col gap-0.5">
@@ -264,7 +273,8 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
             {job.fileName}
           </p>
         )}
-        <RouteLine nodes={uploadRoute(job.engine, assemblyAiMode)} landed={saved} />
+        {/* The job's own account, as stored with it: Settings may have changed since it started. */}
+        <RouteLine nodes={uploadRoute(job.engine, job.assemblyAiMode ?? "own")} landed={saved} />
         {busy && (
           <p className="flex items-center gap-2 text-callout text-muted-foreground" role="status">
             <Loader2Icon className="size-4 shrink-0 animate-spin" />
@@ -314,14 +324,19 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
             </Button>
           </div>
         )}
-      </div>
+      </div>,
     );
   }
 
   const status = engines[engine];
   const canTranscribe = file !== null && problem === null && status.state === "available";
   const asking = engine === "private-cloud" && status.state === "available" && !privateConsent;
-  return (
+  const transcribe = (
+    <Button type="button" size="lg" disabled={!canTranscribe} onClick={onTranscribe} className="w-full" data-testid="upload-transcribe">
+      Transcribe
+    </Button>
+  );
+  const form = (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <FilePicker
@@ -331,7 +346,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
           onFile={onFile}
         />
         {file !== null && (
-          <p className="truncate text-callout" title={file.name}>
+          <p className="text-callout [overflow-wrap:anywhere]" title={file.name}>
             {file.name} <span className="text-meta text-muted-foreground">· {formatBytes(file.size)}</span>
           </p>
         )}
@@ -398,10 +413,16 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
         </p>
       )}
 
-      <Button type="button" size="lg" disabled={!canTranscribe} onClick={onTranscribe} className="w-full" data-testid="upload-transcribe">
-        Transcribe
-      </Button>
+      {!inSheet && transcribe}
     </div>
+  );
+  return inSheet ? (
+    <>
+      {body(form)}
+      <ResponsiveSheetFooter>{transcribe}</ResponsiveSheetFooter>
+    </>
+  ) : (
+    form
   );
 };
 
@@ -441,10 +462,11 @@ export interface AudioUploadPanelProps {
   sessionStore: SessionStore;
   /** The sheet closes (after Open Library). */
   onDone?: () => void;
+  layout?: AudioUploadViewProps["layout"];
 }
 
 /** Stateful owner: engine availability, the picked file and choices, and the app-wide upload runner. */
-export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, sessionStore, onDone }) => {
+export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, sessionStore, onDone, layout }) => {
   const navigate = useNavigate();
   const job = useSyncExternalStore(uploadRunner.subscribe, uploadRunner.snapshot, uploadRunner.snapshot);
   const paused = useSyncExternalStore(pausedUpload.subscribe, pausedUpload.snapshot, pausedUpload.snapshot);
@@ -569,6 +591,7 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
         onDone?.();
         navigate(PATHS.library);
       }}
+      layout={layout}
     />
   );
 };

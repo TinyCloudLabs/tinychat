@@ -71,6 +71,28 @@ export interface TranscriberViewProps {
   onStop: (id: string) => void;
   onToggleTranscript: (id: string) => void;
   onRemove: (id: string) => void;
+  /** Send notetaker inside the form (default), or not: the Meeting sheet pins it in its footer. */
+  sendInline?: boolean;
+}
+
+/** The notetaker form's id: Send notetaker submits it from the sheet's footer, outside the form. */
+export const TRANSCRIBER_FORM_ID = "transcriber-form";
+
+export function SendNotetakerButton(props: { form: TranscriberViewProps["form"]; listStatus: ListStatus }) {
+  const canSubmit = props.listStatus !== "dark" && !props.form.submitting && props.form.url.trim().length > 0;
+  return (
+    <Button
+      type="submit"
+      form={TRANSCRIBER_FORM_ID}
+      size="lg"
+      disabled={!canSubmit}
+      aria-label="Send notetaker to meeting"
+      className="w-full gap-1.5"
+    >
+      {props.form.submitting && <Loader2Icon className="size-4 animate-spin" />}
+      <span>{props.form.submitting ? "Sending notetaker…" : "Send notetaker"}</span>
+    </Button>
+  );
 }
 
 export function statusLabel(status: TranscriberMeetingStatus): string {
@@ -161,9 +183,9 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
   onStop,
   onToggleTranscript,
   onRemove,
+  sendInline = true,
 }) => {
   const dark = listStatus === "dark";
-  const canSubmit = !dark && !form.submitting && form.url.trim().length > 0;
 
   return (
     <div className="flex flex-col gap-6" data-testid="meeting-bot">
@@ -175,6 +197,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
         </p>
       ) : (
         <form
+          id={TRANSCRIBER_FORM_ID}
           className="flex flex-col gap-4"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
@@ -225,10 +248,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               {form.error}
             </p>
           )}
-          <Button type="submit" size="lg" disabled={!canSubmit} aria-label="Send notetaker to meeting" className="w-full gap-1.5">
-            {form.submitting && <Loader2Icon className="size-4 animate-spin" />}
-            <span>{form.submitting ? "Sending notetaker…" : "Send notetaker"}</span>
-          </Button>
+          {sendInline && <SendNotetakerButton form={form} listStatus={listStatus} />}
         </form>
       )}
 
@@ -358,7 +378,7 @@ function MeetingRow(props: {
             rel="noreferrer noopener"
             className="flex min-h-11 items-center text-callout font-medium hover:underline fine:min-h-0"
           >
-            <span className="truncate">
+            <span className="line-clamp-2 [overflow-wrap:anywhere]">
               {meeting.metadata?.source === "google-calendar-autojoin" ? transcriberMeetingTitle(meeting) : meetingTitle(meeting.meeting_url)}
             </span>
           </a>
@@ -584,6 +604,8 @@ export interface MeetingBotOptions {
   sessionStore: SessionStore;
   /** Injectable for tests; defaults to the real client. */
   client?: TranscriberClient;
+  /** Injectable for tests; defaults to the real calendar autojoin client. */
+  calendar?: Pick<ReturnType<typeof createCalendarAutojoinClient>, "status">;
   /**
    * On screen. Capture stays mounted while hidden, so the list and calendar
    * reads, and the polling, run only while it shows; each return re-reads
@@ -645,13 +667,16 @@ export function meetingBotViewProps(bot: MeetingBot): TranscriberViewProps {
   };
 }
 
-export function useMeetingBot({ backendUrl, sessionStore, client, active }: MeetingBotOptions): MeetingBot {
+export function useMeetingBot({ backendUrl, sessionStore, client, calendar: calendarClient, active }: MeetingBotOptions): MeetingBot {
   const apiRef = useRef<TranscriberClient | null>(null);
   if (apiRef.current === null) {
     apiRef.current = client ?? createTranscriberClient(backendUrl, { sessionStore });
   }
   const api = apiRef.current;
-  const calendar = useMemo(() => createCalendarAutojoinClient(backendUrl, sessionStore), [backendUrl, sessionStore]);
+  const calendar = useMemo(
+    () => calendarClient ?? createCalendarAutojoinClient(backendUrl, sessionStore),
+    [calendarClient, backendUrl, sessionStore],
+  );
   const [calendarOutcomes, setCalendarOutcomes] = useState<CalendarAutojoinOutcome[]>([]);
 
   const [listStatus, setListStatus] = useState<ListStatus>("idle");
@@ -667,33 +692,67 @@ export function useMeetingBot({ backendUrl, sessionStore, client, active }: Meet
   const anyActive = activeMeetings(meetings).length > 0;
   const timers = meetingBotTimers({ active, anyActive, listStatus });
 
+  // The calendar refresh: the next one is scheduled once the last has
+  // settled, so a slow read never overlaps another; one that lands after the
+  // notetaker left the screen is dropped.
   useEffect(() => {
     if (!timers.calendar) return;
     let current = true;
+    let timer = 0;
     const refresh = async () => {
       try { const status = await calendar.status(); if (current) setCalendarOutcomes(status.outcomes); }
       catch { /* The connector displays status errors; manual recordings remain usable. */ }
+      if (current) timer = window.setTimeout(() => void refresh(), CALENDAR_INTERVAL_MS);
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), CALENDAR_INTERVAL_MS);
-    return () => { current = false; window.clearInterval(timer); };
+    return () => { current = false; window.clearTimeout(timer); };
   }, [calendar, timers.calendar]);
 
+  // One list read at a time. Each visit to the screen is a generation: leaving
+  // it (or unmounting) moves on, and a read still out from an earlier one is
+  // dropped when it lands, so nothing updates off screen.
+  const generation = useRef(0);
+  const reading = useRef<number | null>(null);
   const load = useCallback(async () => {
+    const mine = generation.current;
+    if (reading.current === mine) return;
+    reading.current = mine;
     setListStatus((s) => (s === "ready" ? s : "loading"));
-    const result = await api.list();
-    setListStatus(listStatusOf(result));
-    if (result.status === "ok") setMeetings(result.value.meetings);
+    try {
+      const result = await api.list();
+      if (mine !== generation.current) return;
+      setListStatus(listStatusOf(result));
+      if (result.status === "ok") setMeetings(result.value.meetings);
+    } finally {
+      if (reading.current === mine) reading.current = null;
+    }
   }, [api]);
 
   useEffect(() => {
-    if (active) void load();
+    if (!active) return;
+    void load();
+    return () => {
+      generation.current += 1;
+    };
   }, [load, active]);
 
+  // The poll: the next read is scheduled only after the last one settled.
   useEffect(() => {
     if (!timers.poll) return;
-    const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    let current = true;
+    let timer = 0;
+    const next = () => {
+      timer = window.setTimeout(() => {
+        void load().finally(() => {
+          if (current) next();
+        });
+      }, POLL_INTERVAL_MS);
+    };
+    next();
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
   }, [timers.poll, load]);
 
   const submit = useCallback(() => {

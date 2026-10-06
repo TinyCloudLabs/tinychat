@@ -15,6 +15,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { CaptureActions } from "@/capture/CaptureActions";
+import { AboutPage } from "./AboutPage";
 import { assemblyAiStatus, AudioUploadView, fileProblem, PRIVATE_CONSENT_TEXT, type AudioUploadViewProps } from "./AudioUploadPanel";
 import { TranscriptionSettingsView, type TranscriptionSettingsViewProps } from "./TranscriptionSettings";
 import type { UploadState } from "@/lib/audioUpload";
@@ -137,6 +138,39 @@ describe("AudioUploadView", () => {
     expect(priv).toContain("Transcribed by TinyCloud Private Transcription. A copy of the file stays in your space.");
     // No disclosure paragraphs inline.
     expect(priv).not.toContain("confidential virtual machine");
+  });
+
+  test("the full disclosures live on How it works, which the sheet links to; they still never claim more than each party does", () => {
+    // The sheet's link: the uploads section, which leads on to where the audio goes.
+    expect(renderUpload()).toContain('href="/chat/about#uploads"');
+    const about = renderToStaticMarkup(
+      <MemoryRouter initialEntries={["/chat/about"]}>
+        <AboutPage onBack={noop} />
+      </MemoryRouter>,
+    );
+    const section = (id: string) => {
+      const start = about.indexOf(`<section id="${id}"`);
+      expect(start).toBeGreaterThan(-1);
+      return about.slice(start, about.indexOf("</section>", start));
+    };
+    const uploads = section("uploads");
+    const transcription = section("transcription");
+    expect(uploads).toContain('href="/chat/about#transcription"');
+    for (const html of [uploads, transcription]) expect(html).not.toMatch(/verified|attested|end-to-end/i);
+    // TinyCloud's AssemblyAI account: through Exo's server, under AssemblyAI's terms, deleted there after saving.
+    expect(transcription).toContain("your file goes to Exo’s server (a confidential VM on Phala Cloud)");
+    expect(transcription).toContain("under TinyCloud’s account and AssemblyAI’s terms");
+    expect(transcription).toContain("Exo deletes it at AssemblyAI after saving the transcript to your TinyCloud space");
+    // The user's own key: from this device, under their key and AssemblyAI's terms; the key passes Exo's server once, for the delete.
+    expect(transcription).toContain("the file goes from this device to AssemblyAI under your key and AssemblyAI’s terms");
+    expect(transcription).toContain("it does not pass through TinyChat’s server");
+    expect(transcription).toContain("forwards the key there once; it never stores or logs it");
+    expect(transcription).toContain("AssemblyAI is not part of TinyCloud’s private transcription");
+    // Private cloud.
+    expect(transcription).toContain("TinyCloud Private Transcription, a dedicated confidential virtual machine on Phala Cloud");
+    expect(transcription).toContain("It sends short speech segments to Tinfoil for speech-to-text");
+    expect(transcription).toContain("It never receives your audio");
+    expect(transcription).toContain("An upload keeps a copy of the original file in your space, next to its transcript");
   });
 
   test("a device's first private cloud upload says what private cloud does, in one sentence, before Transcribe", () => {

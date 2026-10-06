@@ -1,12 +1,15 @@
 // The Upload and Meeting sheets' views and Capture's In progress rows
 // (TC-761), rendered on the server: what each state says and offers.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { AudioUploadView, type AudioUploadViewProps } from "@/chat/AudioUploadPanel";
-import { TranscriberView } from "@/chat/TranscriberSection";
-import type { UploadState } from "@/lib/audioUpload";
+import { SendNotetakerButton, TranscriberView } from "@/chat/TranscriberSection";
+import { createUploadRunner, type PendingUpload, type UploadState } from "@/lib/audioUpload";
 import type { TranscriberMeeting } from "@/lib/transcriberApi";
 import { InProgressRowsView, type InProgressRowsViewProps } from "./InProgressRows";
 import { uploadRoute } from "./sheetRoute";
@@ -123,6 +126,62 @@ describe("Upload sheet", () => {
     expect(html).toContain(">Upload another file</button>");
   });
 
+  test("a resumed upload's route is the account it started with, not what Settings says now", async () => {
+    const owner = "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1";
+    const stored: PendingUpload = {
+      engine: "assemblyai",
+      meetingId: "m-1",
+      attemptId: "a-1",
+      jobId: "t-1",
+      diarize: false,
+      file: { name: "Interview.m4a", type: "audio/mp4", size: 1024, lastModified: 0 },
+      owner,
+      saved: false,
+      assemblyAiMode: "own",
+    };
+    let current: PendingUpload | null = stored;
+    const runner = createUploadRunner();
+    runner.resume({
+      tcw: { did: owner, kv: {} } as unknown as TinyCloudWeb,
+      privateCloud: null,
+      save: async () => {
+        throw new Error("not reached");
+      },
+      pending: {
+        read: () => current,
+        write: (next) => {
+          current = next;
+        },
+        clear: () => {
+          current = null;
+        },
+      },
+      assemblyAiClient: async () => {
+        throw new Error("stop here");
+      },
+      lock: async () => () => {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const job = runner.snapshot();
+    expect(job?.assemblyAiMode).toBe("own");
+    // Settings now says TinyCloud's account; the job's route still names the user's key.
+    const html = renderUpload({ job, assemblyAiMode: "hosted" });
+    expect(html).toContain("AssemblyAI · your key");
+    expect(html).not.toContain("TinyCloud&#x27;s account");
+    // And the other way round.
+    const hosted = renderUpload({ job: upload({ engine: "assemblyai", assemblyAiMode: "hosted" }), assemblyAiMode: "own" });
+    expect(hosted).toContain("AssemblyAI · TinyCloud&#x27;s account");
+    expect(hosted).not.toContain("your key");
+  });
+
+  test("in the sheet, Transcribe is pinned in the footer, under the scrolling body", () => {
+    const html = renderUpload({ layout: "sheet" });
+    const footer = html.indexOf("border-t border-border");
+    expect(footer).toBeGreaterThan(html.indexOf("overflow-y-auto"));
+    expect(html.slice(footer)).toMatch(/>Transcribe<\/button>/);
+    expect(html.match(/>Transcribe<\/button>/g)).toHaveLength(1);
+  });
+
   test("the route names whose AssemblyAI account", () => {
     expect(uploadRoute("assemblyai", "hosted").map((n) => n.label)).toEqual(["This device", "AssemblyAI · TinyCloud's account", "Your space"]);
     expect(uploadRoute("assemblyai", "own")[1].label).toBe("AssemblyAI · your key");
@@ -161,6 +220,19 @@ describe("Meeting sheet", () => {
     expect(html).toContain(">Sessions</h3>");
     expect(html).toContain("<span>End</span>");
     expect(html).toContain(">Remove</button>");
+  });
+
+  test("in the sheet, Send notetaker sits in the pinned footer and submits the form by its id", () => {
+    const view = render({ sendInline: false });
+    expect(view).toContain('<form id="transcriber-form"');
+    expect(view).not.toContain("Send notetaker");
+    const button = renderToStaticMarkup(<SendNotetakerButton form={{ ...base.form, url: "https://meet.google.com/x" }} listStatus="ready" />);
+    expect(button).toContain('form="transcriber-form"');
+    expect(button).toContain('type="submit"');
+    expect(button).not.toContain('disabled=""');
+    const sheet = readFileSync(join(import.meta.dir, "meeting/MeetingSheet.tsx"), "utf8");
+    expect(sheet).toContain('footer={bot.listStatus === "dark" ? null : <SendNotetakerButton form={bot.form} listStatus={bot.listStatus} />}');
+    expect(sheet).toContain("sendInline={false}");
   });
 
   test("dark: no form and no sessions, and says why", () => {
