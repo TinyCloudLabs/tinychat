@@ -7,25 +7,29 @@
 // to yet, so Stop leaves the recording on the phone: the native plugin writes
 // its sidecar at stop and `listPending()` returns it until a save is confirmed.
 // The count of those is what the user is told will be saved. When the restore
-// succeeds, PendingVoiceNotesSaver saves them through the Voice notes card's
-// single-flight retry, and a recording still running is picked up by the chat
-// screen's bar (QuickVoiceNote).
+// succeeds, PendingVoiceNotesSaver saves them through the shared single-flight
+// (recorderSaves.ts), and a recording still running is picked up by the
+// recorder (RecorderProvider), never restarted.
 //
-// Only the recorder half of the card is here: listing, playback, saving and
-// transcription all need the space. Its copy for what the OS says about the
-// microphone is the card's (`micStatusText`).
+// Only recording is here: listing, playback, saving and transcription all
+// need the space. It looks like the recorder (status, timer, level trace, the
+// Stop bar), says what the OS reports about the microphone in the recorder's
+// words, and lights the Live Edge (liveCapture) while it records.
 
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
-import { Loader2Icon, MicIcon, SquareIcon } from "lucide-react";
+import { Loader2Icon, MicIcon, MicOffIcon, SquareIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { LevelTrace } from "@/capture/recorder/LevelTrace";
+import { liveCapture } from "@/capture/recorder/liveCapture";
+import { cn } from "@/lib/utils";
 import {
   VoiceNotes,
   nativeVoiceNotesAvailable,
   type MicState,
   type MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { micStatusText } from "./VoiceNotesSection";
+import { formatDuration, micWarning, micWarningSentence, recorderStatusText } from "@/capture/recorder/recorderCopy";
 
 export type OfflineRecorderPhase = "idle" | "starting" | "recording" | "stopping";
 
@@ -33,7 +37,8 @@ export interface OfflineVoiceNotesViewProps {
   phase: OfflineRecorderPhase;
   mic: { state: MicState; reason: MicStateReason };
   elapsedMs: number;
-  level: number;
+  /** Input levels while recording, for the trace. */
+  subscribeLevel: (listener: (level: number) => void) => () => void;
   error: string | null;
   /** Recordings on this phone that are not in the space yet. */
   pendingCount: number;
@@ -46,62 +51,74 @@ export function offlinePendingText(count: number): string {
 }
 
 export const OfflineVoiceNotesView: FC<OfflineVoiceNotesViewProps> = (props) => {
-  const { phase, mic, elapsedMs, level, error, pendingCount } = props;
+  const { phase, mic, elapsedMs, error, pendingCount } = props;
   const live = phase === "recording";
   const busy = phase === "starting" || phase === "stopping";
-  const warn = live && (mic.state === "silenced" || mic.reason === "no_signal");
+  const warning = live ? micWarningSentence(mic) : null;
+  const status =
+    phase === "stopping" ? "Keeping it on this phone…" : phase === "idle" ? "Not recording. The microphone is off." : recorderStatusText(phase, mic, null);
 
   return (
     <section
       aria-label="Voice notes"
       data-testid="offline-voice-notes"
-      className="w-full rounded-lg border border-border bg-card p-4 text-left"
+      className="w-full rounded-xl border border-border bg-card p-4 text-left"
     >
-      <h2 className="flex items-center gap-2 text-sm font-semibold tracking-tight">
+      <h2 className="flex items-center gap-2 text-callout font-semibold">
         <MicIcon className="size-4 text-muted-foreground" aria-hidden />
         Record a voice note
       </h2>
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-meta text-muted-foreground">
         It stays on this phone and is saved to your TinyCloud space when you&apos;re back online.
       </p>
 
-      <div className="mt-3 flex items-center gap-3">
+      <p
+        role="status"
+        data-testid="offline-voice-note-status"
+        data-mic-state={live ? mic.state : "idle"}
+        data-mic-reason={live ? mic.reason ?? "" : ""}
+        className={cn("mt-4 flex items-center gap-2 text-callout font-semibold", warning ? "text-warning" : live ? "text-foreground" : "text-muted-foreground")}
+      >
+        {live && warning && <MicOffIcon className="size-4" aria-hidden />}
+        {live && !warning && <span className="size-2.5 rounded-full bg-live motion-safe:animate-live-pulse" aria-hidden />}
+        {status}
+      </p>
+      {live && <p className="tnum mt-1 font-display text-[2.5rem] font-medium leading-[2.5rem]">{formatDuration(elapsedMs)}</p>}
+      {warning && <p className="mt-2 text-callout text-warning">{warning}</p>}
+      {live && <LevelTrace subscribe={props.subscribeLevel} tone={warning ? "warning" : "live"} className="mt-4" />}
+
+      <div className="mt-4">
         {live ? (
-          <Button type="button" variant="destructive" onClick={props.onStop} className="h-11 shrink-0 md:h-9" data-testid="offline-voice-note-stop">
-            <SquareIcon className="size-4" /> Stop
+          <Button
+            type="button"
+            variant="live"
+            onClick={props.onStop}
+            className="h-14 w-full justify-start gap-3 rounded-xl px-5 text-body font-semibold"
+            data-testid="offline-voice-note-stop"
+          >
+            <SquareIcon className="fill-current" aria-hidden /> Stop
           </Button>
         ) : (
-          <Button type="button" onClick={props.onRecord} disabled={busy} className="h-11 shrink-0 md:h-9" data-testid="offline-voice-note-record">
-            {busy ? <Loader2Icon className="size-4 animate-spin" /> : <MicIcon className="size-4" />} Record
+          <Button
+            type="button"
+            onClick={props.onRecord}
+            disabled={busy}
+            className="h-14 w-full justify-start gap-3 rounded-xl px-5 text-body font-semibold [&_svg]:size-5"
+            data-testid="offline-voice-note-record"
+          >
+            {busy ? <Loader2Icon className="animate-spin" aria-hidden /> : <MicIcon aria-hidden />} Record
           </Button>
         )}
-        <div className="min-w-0 flex-1">
-          <p
-            role="status"
-            data-testid="offline-voice-note-status"
-            data-mic-state={live ? mic.state : "idle"}
-            data-mic-reason={live ? mic.reason ?? "" : ""}
-            className={`text-sm ${warn ? "text-amber-600 dark:text-amber-400" : live ? "text-foreground" : "text-muted-foreground"}`}
-          >
-            {live && <span className={`mr-2 inline-block size-2 rounded-full ${warn ? "bg-amber-500" : "bg-red-500"}`} aria-hidden />}
-            {phase === "stopping" ? "Keeping it on this phone…" : micStatusText(phase, mic, elapsedMs)}
-          </p>
-          {live && (
-            <div className="mt-1 h-1 w-full overflow-hidden rounded bg-muted" aria-hidden>
-              <div className="h-full bg-foreground/60 transition-[width] duration-150" style={{ width: `${Math.round(level * 100)}%` }} />
-            </div>
-          )}
-        </div>
       </div>
 
       {error && (
-        <p role="alert" className="mt-2 text-xs text-destructive">
+        <p role="alert" className="mt-2 text-meta text-destructive">
           {error}
         </p>
       )}
 
       {pendingCount > 0 && (
-        <p className="mt-3 text-xs text-foreground" data-testid="offline-voice-note-pending">
+        <p className="mt-3 text-meta text-foreground" data-testid="offline-voice-note-pending">
           {offlinePendingText(pendingCount)}
         </p>
       )}
@@ -115,17 +132,11 @@ function messageOf(error: unknown): string {
   return String(error);
 }
 
-interface OfflineVoiceNotesProps {
-  /** Whether a recording is running, so the app can keep it on screen once the session is back. */
-  onRecordingChange?: (recording: boolean) => void;
-}
-
-function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesProps) {
+function OfflineVoiceNotesController() {
   const [phase, setPhaseState] = useState<OfflineRecorderPhase>("idle");
   const [mic, setMic] = useState<{ state: MicState; reason: MicStateReason }>({ state: "idle", reason: null });
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const mounted = useRef(true);
@@ -135,10 +146,15 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
     phaseRef.current = next;
     setPhaseState(next);
   }, []);
-  const reportRecording = useRef(onRecordingChange);
-  useEffect(() => {
-    reportRecording.current = onRecordingChange;
-  }, [onRecordingChange]);
+  // Levels fan out to the trace and the Live Edge without React state.
+  const levelListeners = useRef(new Set<(level: number) => void>());
+  const subscribeLevel = useCallback((listener: (level: number) => void) => {
+    const listeners = levelListeners.current;
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
 
   const refreshPending = useCallback(async () => {
     try {
@@ -154,8 +170,6 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
     setPhase("idle");
     setMic({ state: "idle", reason: null });
     setStartedAt(null);
-    setLevel(0);
-    reportRecording.current?.(false);
   }, [setPhase]);
 
   useEffect(() => {
@@ -170,7 +184,10 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
           void refreshPending();
         }
       }),
-      VoiceNotes.addListener("level", (event) => setLevel(event.level)),
+      VoiceNotes.addListener("level", (event) => {
+        for (const listener of levelListeners.current) listener(event.level);
+        liveCapture.setLevel(event.level);
+      }),
     ];
     // A recording already running (started here before "Try again", or before a reload).
     void VoiceNotes.status().then((status) => {
@@ -178,7 +195,6 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
       setMic({ state: status.state, reason: status.reason });
       setStartedAt(Date.now() - status.elapsedMs);
       setPhase("recording");
-      reportRecording.current?.(true);
     });
     void refreshPending();
     return () => {
@@ -193,6 +209,17 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
     return () => clearInterval(timer);
   }, [phase]);
 
+  // The Live Edge follows this recorder while it records (and lets go when it unmounts).
+  const live = phase === "recording";
+  const warning = live && micWarning(mic) !== null;
+  useEffect(() => {
+    if (!live) return;
+    liveCapture.set({ source: "offline-voice-note", warning, startedAt });
+    return () => {
+      if (liveCapture.get()?.source === "offline-voice-note") liveCapture.set(null);
+    };
+  }, [live, warning, startedAt]);
+
   const onRecord = useCallback(async () => {
     setError(null);
     setPhase("starting");
@@ -203,7 +230,6 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
       setNow(Date.now());
       setMic({ state: "recording", reason: null });
       setPhase("recording");
-      reportRecording.current?.(true);
     } catch (caught) {
       if (!mounted.current) return;
       setError(messageOf(caught));
@@ -229,7 +255,7 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
       phase={phase}
       mic={mic}
       elapsedMs={startedAt === null ? 0 : now - startedAt}
-      level={level}
+      subscribeLevel={subscribeLevel}
       error={error}
       pendingCount={pendingCount}
       onRecord={() => void onRecord()}
@@ -239,7 +265,7 @@ function OfflineVoiceNotesController({ onRecordingChange }: OfflineVoiceNotesPro
 }
 
 /** Renders nothing outside the Exo mobile app. */
-export function OfflineVoiceNotes(props: OfflineVoiceNotesProps) {
+export function OfflineVoiceNotes() {
   if (!nativeVoiceNotesAvailable()) return null;
-  return <OfflineVoiceNotesController {...props} />;
+  return <OfflineVoiceNotesController />;
 }

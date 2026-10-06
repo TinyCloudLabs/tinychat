@@ -1,9 +1,8 @@
 // Capture's fixed tree (TC-761): the home and the Library are both mounted and
-// only `hidden` moves between them; the Voice notes card exists only while
-// Capture is on screen, so it never coexists with the chat screen's voice note
-// bar. The panes are rendered on the server (as the web app: the card itself is
-// client-only); test/shell-invariants.e2e.test.ts counts the card's listeners
-// in a browser with the fake recorder.
+// only `hidden` moves between them; Record and the Voice notes list exist only
+// while Capture is on screen. The panes are rendered on the server (as the web
+// app, where there is no recorder); test/shell-invariants.e2e.test.ts counts the
+// recorder's listeners in a browser with the fake plugin.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,11 +13,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { screenFor } from "../shell/routes";
 import { CaptureSurface } from "./CaptureSurface";
+import { StaticRecorderProvider } from "./recorder/RecorderProvider";
 
 const tcw = { did: "did:pkh:eip155:1:0x00000000000000000000000000000000000000a1" } as unknown as TinyCloudWeb;
 function render(path: string, active: boolean) {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[path]}>
+      <StaticRecorderProvider value={{ available: false }}>
       <CaptureSurface
         tcw={tcw}
         backendUrl="http://127.0.0.1"
@@ -27,6 +28,7 @@ function render(path: string, active: boolean) {
         screen={screenFor(path)}
         meetingsSlot={<p>cohort-meetings</p>}
       />
+      </StaticRecorderProvider>
     </MemoryRouter>,
   );
 }
@@ -66,10 +68,15 @@ describe("CaptureSurface", () => {
     expect(pane(markup, "capture-home").after).toContain('data-testid="capture-actions"');
   });
 
-  test("the Voice notes card exists only while Capture is on screen", () => {
+  test("Record sits in the actions row; the Voice notes list exists only while Capture is on screen", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
-    expect(source.match(/<VoiceNotesSection/g)).toHaveLength(1);
-    expect(source).toMatch(/\{active && \(\s*<VoiceNotesSection/);
+    expect(source.match(/<VoiceNotesListCard/g)).toHaveLength(1);
+    expect(source).toMatch(/\{active && <VoiceNotesListCard /);
+    // One Record: the actions row's slot, between Upload and Meeting.
+    expect(source.match(/<RecordButton\b/g)).toHaveLength(1);
+    expect(source).toContain('record={<RecordButton variant="action" />}');
+    // The recorder's notes on the phone and its limit notice are In progress rows.
+    expect(source).toContain("listing: recorder.pending.listing,");
     // App and the harness hand `active` from the screen's destination.
     const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
     expect(app).toContain('active={screen.destination === "capture"}');
@@ -87,13 +94,12 @@ describe("CaptureSurface", () => {
     const source = readFileSync(join(import.meta.dir, "CaptureSurface.tsx"), "utf8");
     expect(source).toContain("<LibraryPage tcw={scheduledSpace(tcw)} meetingsSlot={meetingsSlot} listSignal={listSignal} />");
     expect(source).toContain('captureEvents.on("library-changed"');
-    // Every source of "something landed" emits: the card's save, an upload's
-    // saved stage, and a rise in the transcriber's saved count.
-    expect(source).toContain("onSaved={emitLibraryChanged}");
+    // Every source of "something landed" emits: the recorder's save (App), an
+    // upload's saved stage, and a rise in the transcriber's saved count.
     expect(source).toContain('if (uploadStage === "saved" && lastStage.current !== "saved") emitLibraryChanged();');
     expect(source).toContain("if (savedCount > lastSavedCount.current) emitLibraryChanged();");
-    const quick = readFileSync(join(import.meta.dir, "../chat/QuickVoiceNote.tsx"), "utf8");
-    expect(quick).toContain('captureEvents.emit("library-changed");');
+    const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
+    expect(app).toContain('onSaved={() => captureEvents.emit("library-changed")}');
     // MeetingsPage re-reads when the signal changes.
     const meetings = readFileSync(join(import.meta.dir, "../chat/MeetingsPage.tsx"), "utf8");
     expect(meetings).toContain("}, [tcw, listSignal]);");

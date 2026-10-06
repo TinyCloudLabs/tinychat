@@ -40,11 +40,8 @@ export function ChatWorkspace(props: {
   contextTokensFor: (modelId: string) => number;
   /** The composer's toolbar: the model chip and the usage chip (App owns both). */
   composerToolbar?: ReactNode;
-  /** The phone app's voice note bar, under the header while it is open. */
-  voiceNoteBar?: ReactNode;
-  /** The header's voice note button (phone app only); absent hides it. */
-  onVoiceNote?: () => void;
-  voiceNoteOpen?: boolean;
+  /** The header's Record button and live chip (the phone app's recorder). */
+  headerRecorder?: ReactNode;
   /** Settings is reachable from the Chats sheet (it is not in local validation). */
   settings: boolean;
   billingStatus: BillingStatus | null;
@@ -169,12 +166,10 @@ export function ChatWorkspace(props: {
         <section className="flex min-h-0 min-w-0 flex-col">
           <ChatHeader
             onOpenChats={size === "expanded" ? undefined : openChats}
-            onVoiceNote={props.onVoiceNote}
-            voiceNoteOpen={props.voiceNoteOpen}
+            recorder={props.headerRecorder}
             newChat={size !== "expanded"}
             verification={wide && model ? <ModelVerificationIndicator model={model} /> : undefined}
           />
-          {props.voiceNoteBar}
           <div className="min-h-0 flex-1">
             <Thread
               tcw={props.tcw}

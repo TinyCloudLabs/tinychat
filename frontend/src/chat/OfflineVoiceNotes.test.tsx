@@ -24,7 +24,7 @@ import {
   type OfflineVoiceNotesViewProps,
 } from "./OfflineVoiceNotes";
 import { savePendingVoiceNotes } from "./PendingVoiceNotesSaver";
-import type { PendingRun } from "./VoiceNotesSection";
+import type { PendingRun } from "@/lib/voiceNotes/recorderSaves";
 
 const noop = () => {};
 const read = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
@@ -35,7 +35,7 @@ function render(patch: Partial<OfflineVoiceNotesViewProps> = {}): string {
       phase="idle"
       mic={{ state: "idle", reason: null }}
       elapsedMs={0}
-      level={0}
+      subscribeLevel={() => noop}
       error={null}
       pendingCount={0}
       onRecord={noop}
@@ -60,14 +60,15 @@ describe("OfflineVoiceNotesView", () => {
   });
 
   test("recording: elapsed time, level and Stop; what the OS reports reads as a warning", () => {
-    const html = render({ phase: "recording", mic: { state: "recording", reason: null }, elapsedMs: 65_000, level: 0.5 });
-    expect(html).toContain("Recording 1:05");
+    const html = render({ phase: "recording", mic: { state: "recording", reason: null }, elapsedMs: 65_000 });
+    expect(html).toContain(">Recording<");
+    expect(html).toContain(">1:05</p>");
     expect(html).toContain('data-testid="offline-voice-note-stop"');
-    expect(html).toContain("width:50%");
+    expect(html).toContain("data-level-trace");
     expect(html).not.toContain('data-testid="offline-voice-note-record"');
     const silenced = render({ phase: "recording", mic: { state: "silenced", reason: "os_silenced" }, elapsedMs: 5_000 });
-    expect(silenced).toContain("the system is blocking the microphone");
-    expect(silenced).toContain("text-amber-600");
+    expect(silenced).toContain("The system is blocking the microphone");
+    expect(silenced).toContain("text-warning");
   });
 
   test("stopping never claims a save: the note is kept on the phone", () => {
@@ -145,9 +146,10 @@ describe("savePendingVoiceNotes", () => {
     const saver = read("PendingVoiceNotesSaver.tsx");
     expect(saver).toContain("save: () => savePendingRecordings(tcw),");
     expect(saver).toContain("if (!nativeVoiceNotesAvailable()) return;");
-    const section = read("VoiceNotesSection.tsx");
-    expect(section).toContain("export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {");
-    expect(section).toContain("if (pendingRunInFlight) return pendingRunInFlight;");
+    // The single-flight now lives with the other save singletons (TC-761, PR4).
+    const saves = read("../lib/voiceNotes/recorderSaves.ts");
+    expect(saves).toContain("export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {");
+    expect(saves).toContain("if (pendingRunInFlight) return pendingRunInFlight;");
   });
 });
 
@@ -172,11 +174,14 @@ describe("App wiring of offline voice notes", () => {
     expect(app).toContain("<PendingVoiceNotesSaver");
   });
 
-  test("a recording still running when the session returns is shown in the chat bar, never restarted", () => {
-    const resume = app.slice(app.indexOf("const offlineRecordingRef = useRef(false);"));
-    expect(resume).toContain('if (state !== "ready" || !offlineRecordingRef.current) return;');
-    expect(resume).toContain('if (quickVoiceNoteAvailable) setVoiceNoteOpen("show");');
-    expect(app).toContain('autoStart={voiceNoteOpen === "record"}');
-    expect(app).toContain("onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }}");
+  test("a recording still running when the session returns is picked up by the recorder, never restarted", () => {
+    // No handoff state in App any more: the one recorder asks the plugin what is running when it mounts.
+    expect(app).not.toContain("voiceNoteOpen");
+    expect(app).not.toContain("offlineRecordingRef");
+    expect(app).toContain("<OfflineVoiceNotes />");
+    const controller = read("../capture/recorder/voiceNoteRecorderController.ts");
+    // Once its listeners are in (the retained events heard), it asks status() and picks the recording up.
+    expect(controller).toContain(".then(() => VoiceNotes.status())");
+    expect(controller).toContain('type: "PICKED_UP",');
   });
 });

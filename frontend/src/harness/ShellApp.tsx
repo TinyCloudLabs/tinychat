@@ -9,6 +9,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { OFFERED_CHAT_MODELS } from "@tinyboilerplate/core";
 
 import { CaptureSurface } from "@/capture/CaptureSurface";
+import { captureEvents } from "@/capture/captureEvents";
+import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
+import { LiveEdge } from "@/capture/recorder/LiveEdge";
+import { RecordButton } from "@/capture/recorder/RecordButton";
+import { RecorderProvider } from "@/capture/recorder/RecorderProvider";
+import { RecorderShell } from "@/capture/recorder/RecorderShell";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
 import { ConnectorsPage } from "@/chat/ConnectorsPage";
@@ -16,7 +22,6 @@ import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
 import { OfflineVoiceNotes } from "@/chat/OfflineVoiceNotes";
-import { QuickVoiceNote } from "@/chat/QuickVoiceNote";
 import { SettingsPage } from "@/chat/SettingsPage";
 import { AboutPage } from "@/chat/AboutPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
@@ -26,7 +31,6 @@ import type { AppPlatform } from "@/lib/platform";
 import { useSizeClass } from "@/lib/sizeClass";
 import { useVisualViewportFit } from "@/lib/useVisualViewport";
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { AppShell } from "@/shell/AppShell";
 import { BootSurface } from "@/shell/BootSurface";
 import { PATHS, homePath, legacyRedirectFor, screenFor } from "@/shell/routes";
 import type { createRuntimeShim } from "./runtimeShim";
@@ -71,13 +75,8 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
   const memoryRef = useRef<string | null>(null);
   const backendUrl = window.location.origin;
 
-  // As App: the chat screen's voice note bar, on Chat only, in the phone app.
+  // As App: voice notes in the phone app, through the one recorder once ready.
   const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
-  const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
-  const quickVoiceNoteAvailable = voiceNotesInApp && state === "ready" && screen.destination === "chat";
-  useEffect(() => {
-    if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
-  }, [quickVoiceNoteAvailable]);
 
   // As App: a retired address forwards once sign-in has settled (here: ready,
   // or signed out).
@@ -100,7 +99,14 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
             openkeyHost={backendUrl}
           >
             <TranscriberLibrarySyncProvider enabled={false} tcw={harnessTcw} backendUrl={backendUrl} sessionStore={harnessSessionStore}>
-              <AppShell
+              <RecorderProvider
+                tcw={harnessTcw}
+                backendUrl={backendUrl}
+                sessionStore={harnessSessionStore}
+                onSaved={() => captureEvents.emit("library-changed")}
+              >
+              <RecorderShell
+                onOpenNote={() => navigate(PATHS.library)}
                 screen={screen}
                 platform={platform}
                 pendingMeetings={0}
@@ -127,18 +133,12 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
                         presentation={size === "compact" ? "sheet" : "popover"}
                       />
                     }
-                    voiceNoteBar={voiceNoteOpen && quickVoiceNoteAvailable && (
-                      <QuickVoiceNote
-                        autoStart={voiceNoteOpen === "record"}
-                        tcw={harnessTcw}
-                        backendUrl={backendUrl}
-                        sessionStore={harnessSessionStore}
-                        onClose={() => setVoiceNoteOpen(false)}
-                        onOpenLibrary={() => navigate(PATHS.library)}
-                      />
-                    )}
-                    onVoiceNote={quickVoiceNoteAvailable ? () => setVoiceNoteOpen((open) => open || "record") : undefined}
-                    voiceNoteOpen={voiceNoteOpen !== false}
+                    headerRecorder={
+                      <>
+                        <HeaderLiveChip />
+                        <RecordButton variant="icon" />
+                      </>
+                    }
                     settings
                     billingStatus={null}
                   />,
@@ -184,6 +184,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
                 )}
                 about={probe("about", <AboutPage onBack={() => navigate(-1)} />)}
               />
+              </RecorderProvider>
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
@@ -192,11 +193,12 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node }:
               state={state}
               error={null}
               onAction={() => {}}
-              voiceNotes={state === "offline" && voiceNotesInApp ? <OfflineVoiceNotes onRecordingChange={() => {}} /> : null}
+              voiceNotes={state === "offline" && voiceNotesInApp ? <OfflineVoiceNotes /> : null}
             />
           </main>
         )}
       </div>
+      <LiveEdge />
     </div>
   );
 }

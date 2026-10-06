@@ -66,8 +66,13 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { AboutPage } from "./chat/AboutPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
+import { captureEvents } from "./capture/captureEvents";
+import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
+import { LiveEdge } from "./capture/recorder/LiveEdge";
+import { RecordButton } from "./capture/recorder/RecordButton";
+import { RecorderProvider } from "./capture/recorder/RecorderProvider";
+import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
-import { AppShell } from "./shell/AppShell";
 import { resetNavigationMemory } from "./shell/navigation";
 import {
   PATHS,
@@ -96,7 +101,6 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
-import { QuickVoiceNote } from "./chat/QuickVoiceNote";
 import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
@@ -165,9 +169,6 @@ export function App() {
   });
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  // The chat screen's voice note bar: opened to record (the header button) or to
-  // show a recording that is already running (one started on the offline screen).
-  const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
 
   // ── Billing / paywall state ──────────────────────────────────────
   // config is fetched once on load (public, cached); status is fetched after
@@ -677,16 +678,10 @@ export function App() {
   // they are replaced with their new home below.
   const legacy = legacyRedirectFor(location.pathname);
 
-  // TC-522: the one-tap voice note, inside the Exo mobile app only, and only on
-  // Chat: the Voice notes card on Capture has its own Record and picks a
-  // running recording up, so only one view of the recorder is ever mounted.
-  // Leaving Chat, or signing out, closes it.
+  // Voice notes exist inside the Exo mobile app only. Once ready, the one
+  // recorder (RecorderProvider, below) serves every view of it; a recording
+  // still running from the offline screen is picked up there, never restarted.
   const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
-  const quickVoiceNoteAvailable =
-    voiceNotesInApp && isReady && !LOCAL_VALIDATION && screen.destination === "chat" && !shareToken;
-  useEffect(() => {
-    if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
-  }, [quickVoiceNoteAvailable]);
 
   // TC-515: with the session held but out of reach (`offline`), the app can
   // still record a voice note; it stays on the phone until the session is back.
@@ -698,14 +693,6 @@ export function App() {
     else if (state !== "booting") setOfflineCapture(false);
   }, [state]);
   const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
-  // A recording started offline keeps running through the restore: once the
-  // session is back, the chat screen's bar shows it (picked up, never restarted).
-  const offlineRecordingRef = useRef(false);
-  useEffect(() => {
-    if (state !== "ready" || !offlineRecordingRef.current) return;
-    offlineRecordingRef.current = false;
-    if (quickVoiceNoteAvailable) setVoiceNoteOpen("show");
-  }, [state, quickVoiceNoteAvailable]);
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -821,11 +808,21 @@ export function App() {
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
             <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
+            {/* The one voice-note recorder (phone app): every view of it reads
+                this provider; its saves tell the Library something landed. */}
+            <RecorderProvider
+              tcw={tcw}
+              backendUrl={BACKEND_URL}
+              sessionStore={sessionStoreRef.current}
+              enabled={voiceNotesInApp && !LOCAL_VALIDATION}
+              onSaved={() => captureEvents.emit("library-changed")}
+            >
             {/* The shell keeps ChatWorkspace mounted while another surface is
                 shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
                 navigation. */}
-            <AppShell
+            <RecorderShell
+              onOpenNote={() => navigate(PATHS.library)}
               screen={screen}
               platform={platform}
               pendingMeetings={pendingMeetings}
@@ -847,19 +844,13 @@ export function App() {
                   onMemoryUpdated={onMemoryUpdated}
                   contextTokensFor={contextTokensFor}
                   composerToolbar={composerToolbar}
-                  // The chat screen's voice note bar (phone app), under the chat header.
-                  voiceNoteBar={voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
-                    <QuickVoiceNote
-                      autoStart={voiceNoteOpen === "record"}
-                      tcw={tcw}
-                      backendUrl={BACKEND_URL}
-                      sessionStore={sessionStoreRef.current}
-                      onClose={() => setVoiceNoteOpen(false)}
-                      onOpenLibrary={() => navigate(PATHS.library)}
-                    />
-                  )}
-                  onVoiceNote={quickVoiceNoteAvailable ? () => setVoiceNoteOpen((open) => open || "record") : undefined}
-                  voiceNoteOpen={voiceNoteOpen !== false}
+                  // Record (phone app), and the live chip while the keyboard is up.
+                  headerRecorder={
+                    <>
+                      <HeaderLiveChip />
+                      <RecordButton variant="icon" />
+                    </>
+                  }
                   settings={!LOCAL_VALIDATION}
                   billingStatus={billingStatus}
                 />
@@ -905,6 +896,7 @@ export function App() {
               />}
               about={<AboutPage onBack={onBack} />}
             />
+            </RecorderProvider>
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
@@ -915,7 +907,7 @@ export function App() {
               onAction={authAction}
               voiceNotes={
                 offlineRecorder ? (
-                  <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
+                  <OfflineVoiceNotes />
                 ) : null
               }
             />
@@ -1012,6 +1004,9 @@ export function App() {
           </div>
         </div>
       )}
+
+      {/* The Live Edge: a rim while a microphone is live in Exo (never on the web). */}
+      <LiveEdge />
     </div>
   );
 }

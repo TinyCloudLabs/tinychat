@@ -166,43 +166,81 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("one recorder: the Capture card or the chat bar listens, never both, and nothing on Connectors", async () => {
+  test("one recorder: the provider's three listeners from ready on; navigation, Settings and resizes add none", async () => {
     const { page, errors } = await open("/chat/capture");
+    const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
     let highest = 0;
-    const expectActive = async (count: number) => {
-      await page.waitForFunction((n) => window.shellHarness!.voiceNotes().active === n, count);
-      // Sample a few frames after the move settles: never above one view's three.
+    const sample = async () => {
       for (let i = 0; i < 5; i++) {
         highest = Math.max(highest, await activeListeners(page));
         await page.waitForTimeout(30);
       }
     };
 
-    await page.getByText("Voice notes", { exact: true }).waitFor();
-    await expectActive(3); // the card
+    await page.getByTestId("voice-note-record").waitFor();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 3);
+    const addsAtReady = (await stats()).adds;
 
-    await go(page, "/chat");
-    await expectActive(0); // the card is gone; the bar is closed
+    for (const path of ["/chat", "/chat/connectors", "/chat/settings", "/chat/capture", "/chat"]) {
+      await go(page, path);
+      await sample();
+    }
+    for (const [width, height] of [[844, 390], [820, 1180], [1280, 800], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      await settle(page);
+      await sample();
+    }
+    expect((await stats()).adds).toBe(addsAtReady);
 
+    // Record from the chat header: the recorder opens and records.
     await page.getByTestId("header-voice-note").click();
-    await page.getByTestId("quick-voice-note").waitFor();
-    await expectActive(3); // the chat bar, recording
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
-
-    await go(page, "/chat/connectors");
-    await expectActive(0);
-
-    await go(page, "/chat/capture");
-    await expectActive(3); // the card picks the running recording up
     await page.getByTestId("voice-note-stop").waitFor();
+    // Back (Escape) minimises it without stopping; the island follows to Connectors.
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+    await page.evaluate(() => window.shellHarness!.back());
+    await page.getByTestId("recorder-island").waitFor();
+    expect((await stats()).recording).toBe(true);
+    await go(page, "/chat/connectors");
+    await page.getByTestId("recorder-island").waitFor();
+    // On its side the rail carries it, and no island floats over Send.
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.getByTestId("rail-live").waitFor();
+    expect(await page.getByTestId("recorder-island").count()).toBe(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    // Stop from the island: the save runs and the island turns into its receipt.
+    await page.getByTestId("island-stop").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => /landed|failed/.test(document.querySelector('[data-testid="recorder-island"]')?.getAttribute("data-state") ?? ""));
+    await sample();
 
-    await go(page, "/chat/settings");
-    await expectActive(0);
+    expect((await stats()).adds).toBe(addsAtReady);
+    expect(highest).toBe(3);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
 
-    await go(page, "/chat");
-    await expectActive(0);
-
-    expect(highest).toBeLessThanOrEqual(3);
+  test("offline → ready: the offline recorder's listeners go before the provider's arrive; never above three", async () => {
+    const { page, errors } = await open("/chat");
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 3);
+    const watch = page.evaluate(
+      () =>
+        new Promise<number>((resolve) => {
+          let max = 0;
+          const timer = setInterval(() => {
+            max = Math.max(max, window.shellHarness!.voiceNotes().active);
+          }, 5);
+          setTimeout(() => {
+            clearInterval(timer);
+            resolve(max);
+          }, 1500);
+        }),
+    );
+    await page.evaluate(() => window.shellHarness!.setState("offline"));
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 2);
+    await page.evaluate(() => window.shellHarness!.setState("ready"));
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 3);
+    expect(await watch).toBeLessThanOrEqual(3);
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

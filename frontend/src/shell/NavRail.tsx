@@ -1,7 +1,7 @@
 // The navigation rail, on a phone on its side and on tablets (TC-761): the same
 // three destinations as the tab bar down the leading edge, and Settings at the
 // foot. The minimised recorder joins it above the gear (PR4).
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon } from "lucide-react";
 
@@ -17,9 +17,12 @@ export function NavRail({
   replace,
   onReselect,
   settings,
+  live = null,
 }: NavProps & {
   /** Settings is reachable (it is null in local validation). */
   settings: boolean;
+  /** The minimised recorder, above Settings. */
+  live?: ReactNode;
 }) {
   const { pathname } = useLocation();
   const onSettings = current === null;
@@ -65,6 +68,7 @@ export function NavRail({
         })}
       </ul>
       <div className="mt-auto flex flex-col items-center gap-1">
+        {live}
         {settings && (
           <Link
             to={PATHS.settings}

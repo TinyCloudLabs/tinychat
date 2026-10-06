@@ -22,6 +22,8 @@ export interface BottomSheetProps {
   children?: React.ReactNode;
   /** Data attributes for the sheet itself (harness and tests). */
   contentProps?: Record<`data-${string}`, string>;
+  /** The content brings its own header: the title is for screen readers only, and there is no close button. */
+  bare?: boolean;
 }
 
 export function BottomSheet({
@@ -33,6 +35,7 @@ export function BottomSheet({
   description,
   children,
   contentProps,
+  bare = false,
 }: BottomSheetProps) {
   return (
     <Drawer.Root
@@ -56,17 +59,21 @@ export function BottomSheet({
           )}
         >
           <div aria-hidden className="mx-auto mt-2 h-1.5 w-9 shrink-0 rounded-full bg-muted-foreground/40" />
-          <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2">
-            <Drawer.Title className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</Drawer.Title>
-            {dismissible && (
-              <Drawer.Close
-                aria-label="Close"
-                className="tap-transparent flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
-              >
-                <XIcon className="size-5" />
-              </Drawer.Close>
-            )}
-          </div>
+          {bare ? (
+            <Drawer.Title className="sr-only">{title}</Drawer.Title>
+          ) : (
+            <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2">
+              <Drawer.Title className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</Drawer.Title>
+              {dismissible && (
+                <Drawer.Close
+                  aria-label="Close"
+                  className="tap-transparent flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground active:bg-surface-2"
+                >
+                  <XIcon className="size-5" />
+                </Drawer.Close>
+              )}
+            </div>
+          )}
           {description && (
             <Drawer.Description className="shrink-0 px-4 pb-1 text-callout text-muted-foreground">{description}</Drawer.Description>
           )}
