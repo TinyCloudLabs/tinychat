@@ -27,7 +27,7 @@ declare global {
       setState: (state: AppState) => void;
       /** Times Back minimised the app (at home). */
       minimized: () => number;
-      voiceNotes: () => { adds: number; active: number; recording: boolean };
+      voiceNotes: () => { adds: number; active: number; recording: boolean; deleted: string[] };
       emitLevel: (level: number) => void;
     };
   }

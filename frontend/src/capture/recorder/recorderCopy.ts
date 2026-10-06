@@ -64,6 +64,7 @@ export function recorderStatusText(
   if (phase === "starting") return "Starting the microphone…";
   if (phase === "stopping") return "Saving to your space";
   if (phase === "saving") return typeof savePercent === "number" ? `Saving to your space · ${savePercent}%` : "Saving to your space";
+  if (phase === "discarding") return "Discarding…";
   if (phase !== "recording") return "Not recording";
   const warning = micWarning(mic);
   if (warning === "silenced") return "Mic silenced";
@@ -98,6 +99,10 @@ export const RECEIPT_SAVED = "Saved to your TinyCloud space";
 export const RECEIPT_KEPT = "Kept on this phone. Not in your space yet.";
 export const ISLAND_SAVED = "Saved to your space";
 export const ISLAND_KEPT = "Kept on this phone";
+export const DISCARD_PROMPT = "Discard?";
+/** The question as a screen reader hears it. */
+export const DISCARD_PROMPT_SPOKEN = "Discard this recording?";
+export const DISCARDED = "Recording discarded";
 
 /** "Voice note · 0:42 · 9:41" */
 export function receiptMetaText(durationMs: number, at: number): string {

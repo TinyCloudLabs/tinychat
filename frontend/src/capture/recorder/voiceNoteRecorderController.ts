@@ -8,7 +8,8 @@
 // It owns the plugin's three listeners (micState, level, autoStopped), picks a
 // running recording back up after a WebView reload (status()), saves a stopped
 // recording through the shared single-flight guards (recorderSaves.ts), and
-// hands each saved note to private cloud transcription.
+// hands each saved note to private cloud transcription. Discard (PR5) marks the
+// recording before stopping it, so no save that meets it keeps it.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import {
@@ -17,7 +18,15 @@ import {
   type VoiceNoteAutoStopEvent,
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { errorCode, messageOf, pendingStore, saveRecording, savePendingRecordings } from "@/lib/voiceNotes/recorderSaves";
+import {
+  deleteDiscarded,
+  errorCode,
+  markDiscarded,
+  messageOf,
+  pendingStore,
+  saveRecording,
+  savePendingRecordings,
+} from "@/lib/voiceNotes/recorderSaves";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderEvent, type RecorderState } from "./recorderReducer";
@@ -39,6 +48,8 @@ export interface VoiceNoteRecorderController {
   attach(): () => void;
   record(): Promise<void>;
   stop(): Promise<void>;
+  /** Stop the live recording and delete it from the phone; nothing is saved. */
+  discard(): Promise<void>;
   retryPending(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -89,6 +100,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         void pendingStore.refresh();
         return;
       case "already-saved":
+      case "discarded":
         if (outcome.cleanupError) void pendingStore.refresh(outcome.cleanupError);
         send({ type: "RESET" });
         return;
@@ -202,6 +214,44 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         return;
       }
       await saveStopped(recording);
+    },
+    async discard() {
+      // Only a live recording: the plugin cannot cancel a start, and a stopped one is being saved.
+      if (state.phase !== "recording") return;
+      // The recording on screen: the discard's events carry its id, as the save events do.
+      const shown = state.recordingId;
+      send({ type: "DISCARD_REQUESTED", id: shown });
+      // Marked before stop(): from then on a pending run, the limit's "autoStopped" save,
+      // or a relaunch after the app is killed deletes this recording instead of saving it.
+      if (shown) markDiscarded(shown);
+      let id = shown;
+      try {
+        const recording = await VoiceNotes.stop();
+        if (recording.id !== id) {
+          id = recording.id;
+          markDiscarded(id);
+        }
+      } catch (caught) {
+        // not_recording: the limit stopped it first, and its save meets the mark.
+        // no_audio_captured: the phone kept nothing.
+        const code = errorCode(caught);
+        if (code !== "not_recording" && code !== "no_audio_captured") {
+          send({ type: "DISCARD_FAILED", id: shown, error: `Could not discard the recording: ${messageOf(caught)}` });
+          return;
+        }
+      }
+      if (!id) {
+        send({ type: "DISCARD_FAILED", id: shown, error: "Could not discard the recording." });
+        return;
+      }
+      const cleanupError = await deleteDiscarded(id);
+      if (cleanupError) {
+        // Still marked: the next save of what is on the phone deletes it.
+        send({ type: "DISCARD_FAILED", id: shown, error: cleanupError });
+        void pendingStore.refresh(cleanupError);
+        return;
+      }
+      send({ type: "DISCARDED", id: shown });
     },
     async retryPending() {
       if (!available) return;

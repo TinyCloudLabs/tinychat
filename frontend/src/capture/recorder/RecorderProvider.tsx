@@ -15,7 +15,7 @@ import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
 import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { liveCapture } from "./liveCapture";
-import { micWarning, recorderStatusText, RECEIPT_KEPT, RECEIPT_SAVED } from "./recorderCopy";
+import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT, RECEIPT_SAVED } from "./recorderCopy";
 import type { RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
@@ -43,6 +43,8 @@ export interface RecorderValue {
   sheetOpen: boolean;
   record(): void;
   stop(): void;
+  /** Stop the live recording and delete it; the sheet closes once it is gone. */
+  discard(): void;
   retryPending(): void;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
@@ -59,9 +61,13 @@ export function useRecorder(): RecorderValue {
   return value;
 }
 
-/** A recording is under way or has just ended: the views that follow it show. */
+/**
+ * A recording is under way or has just ended: the views that follow it show.
+ * One being discarded is already gone as far as they go; the sheet that
+ * discarded it says so until it closes.
+ */
 export function recorderActive(value: Pick<RecorderValue, "phase" | "outcome">): boolean {
-  return value.phase !== "idle" || value.outcome !== null;
+  return (value.phase !== "idle" && value.phase !== "discarding") || value.outcome !== null;
 }
 
 /** The island (and the rail and sidebar controls) show while the sheet is minimised. */
@@ -116,6 +122,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);
+    } else if (before.phase === "discarding" && state.phase === "idle" && state.error === null) {
+      // Discarded (a failure stays in the sheet as its alert): nothing is left to show.
+      hapticWarning();
+      setAnnouncement(DISCARDED);
+      setSheetOpen(false);
     }
   }, [state]);
 
@@ -158,6 +169,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       sheetOpen,
       record,
       stop: recorder.stop,
+      discard: recorder.discard,
       retryPending: recorder.retryPending,
       dismissOutcome: dismiss,
       openSheet,
@@ -170,6 +182,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       openSheet,
       record,
       recorder.available,
+      recorder.discard,
       recorder.pending,
       recorder.retryPending,
       recorder.stop,
@@ -217,6 +230,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       sheetOpen: false,
       record: noop,
       stop: noop,
+      discard: noop,
       retryPending: noop,
       dismissOutcome: noop,
       openSheet: noop,

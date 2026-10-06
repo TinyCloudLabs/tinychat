@@ -1,8 +1,9 @@
 // A stand-in for the native VoiceNotes plugin (TC-761), for the browser
 // harnesses: installed with __setVoiceNotesForTests, it lets the real recorder
 // views run on the web. It counts listeners (added, and active now) so the
-// shell invariants can prove there is only ever one recorder listening, and it
-// can emit `level` and `micState` like the shells do.
+// shell invariants can prove there is only ever one recorder listening, it
+// can emit `level` and `micState` like the shells do, and it lists the
+// recordings deleted from the "phone".
 import type {
   MicState,
   MicStateEvent,
@@ -15,8 +16,8 @@ type Listener = (event: never) => void;
 
 export interface FakeVoiceNotes {
   plugin: VoiceNotesPlugin;
-  /** Listeners added since creation, and listeners not yet removed. */
-  stats(): { adds: number; active: number; recording: boolean };
+  /** Listeners added since creation, listeners not yet removed, and the ids deleteAudio was given. */
+  stats(): { adds: number; active: number; recording: boolean; deleted: string[] };
   emit(event: "level", payload: { level: number }): void;
   emit(event: "micState", payload: MicStateEvent): void;
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
@@ -29,6 +30,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   let current: { id: string; startedAt: number } | null = null;
   let state: MicState = "idle";
   let counter = 0;
+  const deleted: string[] = [];
 
   const plugin: VoiceNotesPlugin = {
     async start(options) {
@@ -67,7 +69,9 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       const bytesRead = Math.max(0, Math.min(length, size - offset));
       return { id, offset, base64: btoa("\u0000".repeat(bytesRead)), bytesRead, size, eof: offset + bytesRead >= size };
     },
-    async deleteAudio() {},
+    async deleteAudio({ id }) {
+      deleted.push(id);
+    },
     async listPending() {
       return { recordings: [] };
     },
@@ -94,7 +98,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
 
   return {
     plugin,
-    stats: () => ({ adds, active, recording: current !== null }),
+    stats: () => ({ adds, active, recording: current !== null, deleted: [...deleted] }),
     emit(event: string, payload: unknown) {
       for (const listener of listeners.get(event) ?? []) (listener as (value: unknown) => void)(payload);
     },

@@ -1,8 +1,9 @@
 // The shared voice-note saves: one pending run at a time (the recorder and
 // PendingVoiceNotesSaver share it), saving to the space kept apart from
-// removing the device copy, and the pending store the recorder views read,
-// always re-listed from the phone. The plugin is a scripted fake; the store's
-// save is swapped through harness/fakeVoiceNoteStore.
+// removing the device copy, the pending store the recorder views read, always
+// re-listed from the phone, and the discard guard (PR5): a discarded recording
+// is deleted, never saved, even after a relaunch. The plugin is a scripted
+// fake; the store's save is swapped through harness/fakeVoiceNoteStore.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -211,5 +212,106 @@ describe("pendingStore", () => {
     __setVoiceNotesForTests({ ...plugin, listPending: async () => Promise.reject(new Error("no bridge")) } as VoiceNotesPlugin, { available: true });
     await saves.pendingStore.refresh(null);
     expect(saves.pendingStore.snapshot().listing).toEqual({ state: "error", message: "Could not check this phone for unsaved notes: no bridge" });
+  });
+});
+
+describe("discard guard", () => {
+  test("saveRecording deletes a discarded recording instead of saving it", async () => {
+    const storage = withStorage();
+    const note = recording("discard-one", 1);
+    phone.pending = [note];
+    saves.markDiscarded(note.id);
+    expect(storage.get(saves.VOICE_NOTE_DISCARDED_KEY)).toBe('["discard-one"]');
+    expect(await saves.saveRecording(tcw, note)).toEqual({ kind: "discarded", cleanupError: null });
+    expect(saveCalls).toBe(0);
+    expect(phone.pending).toEqual([]);
+    // Gone from the phone: nothing is left to guard.
+    expect(saves.isDiscarded(note.id)).toBe(false);
+    expect(storage.has(saves.VOICE_NOTE_DISCARDED_KEY)).toBe(false);
+  });
+
+  test("a pending run deletes a discarded recording and saves the rest", async () => {
+    phone.pending = [recording("discard-keep", 2), recording("discard-drop", 1)];
+    saves.markDiscarded("discard-drop");
+    const run = await saves.savePendingRecordings(tcw);
+    expect(run.saved.map((r) => r.id)).toEqual(["discard-keep"]);
+    expect(run.left).toEqual([]);
+    expect(run.lastError).toBeNull();
+    expect(saveCalls).toBe(1);
+    expect(phone.pending).toEqual([]);
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 0 });
+  });
+
+  test("the mark survives a reload: the stored id still deletes the recording", async () => {
+    withStorage();
+    saves.markDiscarded("discard-reload");
+    // A fresh module: nothing in memory; only localStorage kept the id.
+    const after = await reloaded();
+    expect(after.isDiscarded("discard-reload")).toBe(true);
+    phone.pending = [recording("discard-reload", 1)];
+    const run = await after.savePendingRecordings(tcw);
+    expect(run.saved).toEqual([]);
+    expect(saveCalls).toBe(0);
+    expect(phone.pending).toEqual([]);
+    expect(after.isDiscarded("discard-reload")).toBe(false);
+  });
+
+  test("discarded and also marked as in the space: deleted, never saved, and both marks cleared", async () => {
+    // A reload with both marks on one note still on the phone; the discard check runs first.
+    const storage = withStorage();
+    storage.set(saves.VOICE_NOTE_DISCARDED_KEY, '["discard-saved"]');
+    storage.set(saves.VOICE_NOTE_CLOUD_SAVED_KEY, '["discard-saved"]');
+    const after = await reloaded();
+    const note = recording("discard-saved", 1);
+    phone.pending = [note];
+    expect(await after.saveRecording(tcw, note)).toEqual({ kind: "discarded", cleanupError: null });
+    expect(phone.pending).toEqual([]);
+    expect(saveCalls).toBe(0);
+    expect(after.isDiscarded(note.id)).toBe(false);
+    expect(storage.has(saves.VOICE_NOTE_DISCARDED_KEY)).toBe(false);
+    expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(false);
+    // Met again (a late "autoStopped"): nothing to save or delete.
+    expect(await after.saveRecording(tcw, note)).toEqual({ kind: "already-saved", cleanupError: null });
+    expect(saveCalls).toBe(0);
+  });
+
+  test("a failed delete keeps the id marked, and the next run deletes it", async () => {
+    const storage = withStorage();
+    phone.pending = [recording("discard-busy", 1)];
+    phone.deleteFailures = 1;
+    saves.markDiscarded("discard-busy");
+    const first = await saves.savePendingRecordings(tcw);
+    expect(first.saved).toEqual([]);
+    expect(first.lastError).toBe("Discarded, but this phone kept its copy: the file is busy");
+    expect(saves.isDiscarded("discard-busy")).toBe(true);
+    expect(storage.get(saves.VOICE_NOTE_DISCARDED_KEY)).toBe('["discard-busy"]');
+    // Still on the phone, and counted.
+    expect(saves.pendingStore.snapshot().listing).toEqual({ state: "ok", count: 1 });
+
+    const second = await saves.savePendingRecordings(tcw);
+    expect(second.lastError).toBeNull();
+    expect(saves.isDiscarded("discard-busy")).toBe(false);
+    expect(phone.pending).toEqual([]);
+    expect(saveCalls).toBe(0);
+  });
+
+  test("without localStorage the guard still holds for this session", async () => {
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: () => {
+        throw new Error("storage disabled");
+      },
+      setItem: () => {
+        throw new Error("storage disabled");
+      },
+      removeItem: () => {
+        throw new Error("storage disabled");
+      },
+    };
+    const note = recording("discard-no-storage", 1);
+    phone.pending = [note];
+    saves.markDiscarded(note.id);
+    expect(saves.isDiscarded(note.id)).toBe(true);
+    expect((await saves.saveRecording(tcw, note)).kind).toBe("discarded");
+    expect(saveCalls).toBe(0);
   });
 });

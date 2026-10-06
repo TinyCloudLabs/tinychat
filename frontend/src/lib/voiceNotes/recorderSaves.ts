@@ -8,6 +8,9 @@
 // on this phone: what the phone last listed (unknown, a count, or a listing
 // that failed), whether a save of them is running, and the last failure.
 // `savePendingRecordings` publishes to it when it starts and ends.
+//
+// A recording the user discarded is marked (`markDiscarded`, PR5) before it is
+// stopped, and every save deletes a marked recording instead of saving it.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -77,6 +80,73 @@ function persistCloudSaved(): void {
   else storage.setItem(VOICE_NOTE_CLOUD_SAVED_KEY, JSON.stringify([...cloudSaved]));
 }
 
+/** localStorage key: the recordings the user discarded whose device copy may still be on the phone. */
+export const VOICE_NOTE_DISCARDED_KEY = "exo.voiceNotes.discarded";
+
+/**
+ * Discarded in this app session. localStorage keeps the same ids across a
+ * relaunch (the app killed between stop and delete); without it the guard lasts
+ * this session, and the worst case is a discarded note saved.
+ */
+const discardedThisSession = new Set<string>();
+
+function storedDiscarded(): string[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(VOICE_NOTE_DISCARDED_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeDiscarded(ids: string[]): void {
+  try {
+    if (ids.length === 0) globalThis.localStorage?.removeItem(VOICE_NOTE_DISCARDED_KEY);
+    else globalThis.localStorage?.setItem(VOICE_NOTE_DISCARDED_KEY, JSON.stringify(ids));
+  } catch {
+    // Best-effort: the guard then lasts this session only.
+  }
+}
+
+/** The user discarded this recording: from now on every save deletes it instead. */
+export function markDiscarded(id: string): void {
+  discardedThisSession.add(id);
+  const ids = storedDiscarded();
+  if (!ids.includes(id)) storeDiscarded([...ids, id]);
+}
+
+export function isDiscarded(id: string): boolean {
+  return discardedThisSession.has(id) || storedDiscarded().includes(id);
+}
+
+/** Its device copy is gone: nothing is left to guard. */
+export function clearDiscarded(id: string): void {
+  discardedThisSession.delete(id);
+  const ids = storedDiscarded();
+  if (ids.includes(id)) storeDiscarded(ids.filter((stored) => stored !== id));
+}
+
+/**
+ * Delete a discarded recording's device copy, then forget it (both marks). A
+ * failed delete leaves it marked, so the next save that meets it deletes it;
+ * the error message when the phone kept it.
+ */
+export async function deleteDiscarded(id: string): Promise<string | null> {
+  try {
+    await VoiceNotes.deleteAudio({ id });
+  } catch (caught) {
+    return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
+  }
+  clearDiscarded(id);
+  // Saved to the space before it was discarded: its copy is gone now, so that mark goes too.
+  if (cloudSaved.delete(id)) {
+    persistCloudSaved();
+    savedThisSession.add(id);
+  }
+  return null;
+}
+
 /**
  * What saving one recording came to. Saving to the space and removing the
  * device copy are separate steps: a note can be in the space while its copy is
@@ -84,12 +154,14 @@ function persistCloudSaved(): void {
  * pending count is always re-listed from the phone.
  *  - `saved`: in the space now.
  *  - `already-saved`: saved earlier in this app session; only the device copy was left.
+ *  - `discarded`: the user discarded it; its device copy was deleted, not saved.
  *  - `in-flight`: another run is saving it right now.
  *  - `failed`: not in the space; it stays on the phone.
  */
 export type SaveOutcome =
   | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null }
   | { kind: "already-saved"; cleanupError: string | null }
+  | { kind: "discarded"; cleanupError: string | null }
   | { kind: "in-flight" }
   | { kind: "failed"; failure: string };
 
@@ -131,6 +203,9 @@ export async function saveRecording(
   onProgress?: (storedBytes: number, totalBytes: number) => void,
 ): Promise<SaveOutcome> {
   if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
+  // Discarded (a pending run, the limit's "autoStopped" or a relaunch met it): deleted, never
+  // saved. Before the cloudSaved path, so a discarded note marked as in the space loses both marks.
+  if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
   // In the space, with its copy still on the phone (this session or an earlier one): remove the copy only.
   if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: await removeDeviceCopy(recording.id) };
   // Saved and removed earlier in this session (a late "autoStopped" event).
@@ -207,7 +282,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
       if (outcome.kind === "saved") {
         saved.push(recording);
         if (outcome.cleanupError) lastError = outcome.cleanupError;
-      } else if (outcome.kind === "already-saved") {
+      } else if (outcome.kind === "already-saved" || outcome.kind === "discarded") {
         if (outcome.cleanupError) lastError = outcome.cleanupError;
       } else if (outcome.kind === "failed") {
         left.push(recording);

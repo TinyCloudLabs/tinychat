@@ -30,6 +30,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     sheetOpen: false,
     record: noop,
     stop: noop,
+    discard: noop,
     retryPending: noop,
     dismissOutcome: noop,
     openSheet: noop,
