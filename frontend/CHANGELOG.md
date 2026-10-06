@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.2
+
+### Patch Changes
+
+- c8c1e9b: Exo uses its original neutral palette again (zinc greys, light and dark, following the system theme). Recording is shown in red and warnings in amber.
+
 ## 0.6.0-beta.1
 
 ### Patch Changes
