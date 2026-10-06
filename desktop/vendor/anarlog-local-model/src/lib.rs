@@ -234,6 +234,10 @@ impl DownloadableModel for GgufLlmModel {
         Some(self.model_checksum())
     }
 
+    fn download_size(&self) -> Option<u64> {
+        Some(self.model_size())
+    }
+
     fn download_destination(&self, models_base: &Path) -> PathBuf {
         models_base.join("llm").join(self.file_name())
     }
@@ -286,6 +290,14 @@ impl DownloadableModel for LocalModel {
         match self {
             LocalModel::Whisper(model) => vec![model.fallback_model_url()],
             _ => Vec::new(),
+        }
+    }
+
+    fn download_size(&self) -> Option<u64> {
+        match self {
+            LocalModel::Whisper(model) => Some(model.model_size_bytes()),
+            LocalModel::GgufLlm(model) => model.download_size(),
+            _ => None,
         }
     }
 
@@ -423,6 +435,14 @@ mod tests {
             LocalModel::GgufLlm(GgufLlmModel::Gemma3_4bQ4)
                 .download_fallback_urls()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn whisper_downloads_declare_their_size() {
+        assert_eq!(
+            LocalModel::Whisper(WhisperModel::QuantizedLargeTurbo).download_size(),
+            Some(874188075)
         );
     }
 }

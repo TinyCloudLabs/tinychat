@@ -67,6 +67,13 @@ pub(super) fn classify(error: &anlg_file::Error) -> AfterFailure {
         // The pinned `file` crate reports unexpected HTTP statuses only as
         // text: "... (status 403 Forbidden): <url>", "... (status: 503 ...)",
         // "Download failed with status 404 Not Found: <url>".
+        // The host sent more bytes than a range asked for: it is not serving
+        // this file the way the download needs.
+        anlg_file::Error::OtherError(message)
+            if message.starts_with("Range response longer than requested") =>
+        {
+            AfterFailure::NextHost
+        }
         anlg_file::Error::OtherError(message) => match http_status_in(message) {
             Some(status) => classify_status(status),
             None => AfterFailure::Retry,
@@ -145,6 +152,12 @@ mod tests {
             AfterFailure::Retry
         );
         assert_eq!(classify(&other("Download stalled")), AfterFailure::Retry);
+        assert_eq!(
+            classify(&other(
+                "Range response longer than requested: more than 9 bytes for bytes=0-8"
+            )),
+            AfterFailure::NextHost
+        );
         assert_eq!(classify(&anlg_file::Error::Cancelled), AfterFailure::Stop);
         assert_eq!(
             classify(&anlg_file::Error::FileIOError(std::io::Error::other(

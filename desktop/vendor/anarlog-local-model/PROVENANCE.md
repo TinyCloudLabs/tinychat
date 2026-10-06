@@ -20,7 +20,10 @@ pass their fallback URL.
 
 `src/lib.rs`: `LocalModel::download_fallback_urls()` returns
 `WhisperModel::fallback_model_url()` (from the vendored `whisper-local-model`)
-for Whisper models and nothing for the others; plus a unit test.
+for Whisper models and nothing for the others. `download_size()` returns
+`WhisperModel::model_size_bytes()` for Whisper and `GgufLlmModel::model_size()`
+for the LLMs (also on `GgufLlmModel`'s own impl), so the downloader checks the
+size before the checksum. Plus two unit tests.
 
 `Cargo.toml` `workspace = true` entries were rewritten: `model-downloader`,
 `file` and `whisper-local-model` as path dependencies on the vendored copies,

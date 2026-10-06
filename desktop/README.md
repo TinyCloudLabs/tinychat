@@ -94,8 +94,10 @@ Model downloads are resumable (vendored `model-downloader`, `file` and
 - When Hugging Face refuses the file (403, 404) or keeps failing, the
   download continues from the same partial file on
   `models.anarlog.so/v0/ggerganov/whisper.cpp/main/<file>`, which serves
-  byte-identical files. The CRC32 checksum still gates installation; a
-  mismatch deletes the partial file.
+  byte-identical files. The file's size and CRC32 checksum gate
+  installation. If either is wrong, the partial file is deleted and the model
+  is downloaded once more from scratch from `models.anarlog.so`; a second
+  mismatch fails the download.
 - A download that still fails keeps its partial file, so **Download** resumes
   it. Clicking **Download** while one is running joins it rather than
   restarting it.

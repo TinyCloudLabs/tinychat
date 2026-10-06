@@ -18,6 +18,9 @@ pub struct ModelDownloadManager<M: DownloadableModel> {
     downloads: DownloadsRegistry,
     next_generation: Arc<AtomicU64>,
     retry_policy: RetryPolicy,
+    /// Serializes `download` and `cancel_download`, so a cancel's deletion of
+    /// the shared partial file cannot race a download started meanwhile.
+    operations: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl<M: DownloadableModel> Clone for ModelDownloadManager<M> {
@@ -27,6 +30,7 @@ impl<M: DownloadableModel> Clone for ModelDownloadManager<M> {
             downloads: self.downloads.clone(),
             next_generation: self.next_generation.clone(),
             retry_policy: self.retry_policy.clone(),
+            operations: self.operations.clone(),
         }
     }
 }
@@ -40,6 +44,7 @@ impl<M: DownloadableModel> ModelDownloadManager<M> {
             downloads: DownloadsRegistry::new(),
             next_generation: Arc::new(AtomicU64::new(1)),
             retry_policy: RetryPolicy::default(),
+            operations: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -63,7 +68,7 @@ impl<M: DownloadableModel> ModelDownloadManager<M> {
     }
 
     pub async fn is_downloading(&self, model: &M) -> bool {
-        self.downloads.contains(&model.download_key()).await
+        self.downloads.is_running(&model.download_key()).await
     }
 
     pub async fn download(&self, model: &M) -> Result<(), Error> {
@@ -73,10 +78,12 @@ impl<M: DownloadableModel> ModelDownloadManager<M> {
             .download_url()
             .ok_or_else(|| Error::NoDownloadUrl(model.download_key()))?;
 
+        let _operation = self.operations.lock().await;
+
         // Asking again while a download runs joins it (its progress events keep
         // coming) instead of cancelling it and starting over. The running task
         // always ends: every attempt has a stall timeout and retries are bounded.
-        if self.downloads.contains(&key).await {
+        if self.downloads.is_running(&key).await {
             tracing::info!(%key, "model_download_already_running");
             return Ok(());
         }
@@ -147,6 +154,9 @@ impl<M: DownloadableModel> ModelDownloadManager<M> {
 
     pub async fn cancel_download(&self, model: &M) -> Result<bool, Error> {
         let key = model.download_key();
+        // Held until the partial file is deleted: a download requested
+        // meanwhile starts after that, instead of losing its file to it.
+        let _operation = self.operations.lock().await;
 
         let existing = self.downloads.remove(&key).await;
 

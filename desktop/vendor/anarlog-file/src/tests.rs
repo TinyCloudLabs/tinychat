@@ -549,5 +549,74 @@ fn test_transient_chunk_errors() {
     assert!(!is_transient_chunk_error(&other(
         "Server didn't return partial content (status: 403 Forbidden)"
     )));
+    assert!(!is_transient_chunk_error(&other(
+        "Range response longer than requested: more than 10 bytes for bytes=0-9"
+    )));
     assert!(!is_transient_chunk_error(&Error::Cancelled));
+}
+
+// Vendored (TC-771): a 206 carrying more bytes than its range is an error for
+// that chunk, not retried (and must not underflow the expected length).
+#[tokio::test]
+async fn test_download_file_parallel_rejects_an_overlong_range_response() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    struct TooLong {
+        len: usize,
+        gets: Arc<AtomicUsize>,
+    }
+
+    impl Respond for TooLong {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            self.gets.fetch_add(1, Ordering::SeqCst);
+            let range = request.headers.get("range").unwrap().to_str().unwrap();
+            let (start, end) = range
+                .strip_prefix("bytes=")
+                .and_then(|r| r.split_once('-'))
+                .map(|(s, e)| (s.parse::<usize>().unwrap(), e.parse::<usize>().unwrap()))
+                .unwrap();
+            ResponseTemplate::new(206)
+                .set_body_bytes(vec![7u8; end - start + 1 + 4096])
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes {}-{}/{}", start, end, self.len).as_str(),
+                )
+        }
+    }
+
+    let len = 20 * 1024 * 1024;
+    let gets = Arc::new(AtomicUsize::new(0));
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", len.to_string().as_str())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(TooLong {
+            len,
+            gets: gets.clone(),
+        })
+        .mount(&server)
+        .await;
+
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    let error = download_file_parallel(format!("{}/model.bin", server.uri()), temp.path(), |_| {})
+        .await
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("Range response longer than requested"),
+        "{error}"
+    );
+    // One request per chunk started (at most 8 in flight), none retried.
+    assert!(gets.load(Ordering::SeqCst) <= 8);
 }

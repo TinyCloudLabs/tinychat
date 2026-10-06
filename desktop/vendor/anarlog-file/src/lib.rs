@@ -311,7 +311,9 @@ async fn download_range_into(
         )));
     }
 
-    let expected = end + 1 - from;
+    // `from <= end + 1` holds: a retry only follows a response that stayed
+    // within its range (a longer one fails below and is not retried).
+    let expected = (end + 1).saturating_sub(from);
     let mut received = 0u64;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.try_next().await? {
@@ -320,8 +322,15 @@ async fn download_range_into(
             return Ok(()); // Return what we have so far
         }
 
-        bytes.extend_from_slice(&chunk);
         received += chunk.len() as u64;
+        if received > expected {
+            // Not the bytes that were asked for; keeping any of them would
+            // misplace every later byte of the file.
+            return Err(crate::Error::OtherError(format!(
+                "{RANGE_TOO_LONG}: more than {expected} bytes for bytes={from}-{end}"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
 
         let mut downloaded_guard = downloaded.lock().unwrap();
         *downloaded_guard += chunk.len() as u64;
@@ -341,6 +350,7 @@ async fn download_range_into(
 }
 
 const RANGE_ENDED_EARLY: &str = "Range response ended early";
+const RANGE_TOO_LONG: &str = "Range response longer than requested";
 
 /// Network and body errors, 5xx, 408, 429, and a 200 answering a range
 /// request: Cloudflare (models.anarlog.so) answers the first range request

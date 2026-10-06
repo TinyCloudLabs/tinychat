@@ -24,8 +24,19 @@ impl DownloadsRegistry {
         }
     }
 
-    pub(crate) async fn contains(&self, key: &str) -> bool {
-        self.inner.lock().await.contains_key(key)
+    /// Whether a live download task is registered for `key`. An entry whose
+    /// task already ended without removing itself (it panicked) is dropped,
+    /// so it cannot block later downloads of the model.
+    pub(crate) async fn is_running(&self, key: &str) -> bool {
+        let mut guard = self.inner.lock().await;
+        match guard.get(key) {
+            Some(entry) if entry.task.is_finished() => {
+                guard.remove(key);
+                false
+            }
+            Some(_) => true,
+            None => false,
+        }
     }
 
     pub(crate) async fn insert(&self, key: String, entry: DownloadEntry) -> Option<DownloadEntry> {

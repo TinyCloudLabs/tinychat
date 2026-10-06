@@ -192,6 +192,8 @@ async fn handle(
 struct TestRuntime {
     temp_dir: tempfile::TempDir,
     statuses: Mutex<Vec<DownloadStatus>>,
+    /// Panics the download task at its first progress event.
+    panic_once: std::sync::atomic::AtomicBool,
 }
 
 impl TestRuntime {
@@ -199,6 +201,7 @@ impl TestRuntime {
         Arc::new(Self {
             temp_dir: tempfile::TempDir::new().unwrap(),
             statuses: Mutex::new(Vec::new()),
+            panic_once: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -223,6 +226,9 @@ impl ModelDownloaderRuntime<TestModel> for TestRuntime {
     }
 
     fn emit_progress(&self, _model: &TestModel, status: DownloadStatus) {
+        if self.panic_once.swap(false, Ordering::SeqCst) {
+            panic!("test: download task panics");
+        }
         self.statuses.lock().unwrap().push(status);
     }
 }
@@ -232,6 +238,7 @@ struct TestModel {
     url: String,
     fallbacks: Vec<String>,
     checksum: Option<u32>,
+    size: Option<u64>,
 }
 
 impl DownloadableModel for TestModel {
@@ -249,6 +256,10 @@ impl DownloadableModel for TestModel {
 
     fn download_checksum(&self) -> Option<u32> {
         self.checksum
+    }
+
+    fn download_size(&self) -> Option<u64> {
+        self.size
     }
 
     fn download_destination(&self, models_base: &Path) -> PathBuf {
@@ -345,6 +356,7 @@ async fn a_cut_chunk_is_retried_from_where_it_stopped() {
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -393,6 +405,7 @@ async fn a_full_200_answer_to_a_range_request_is_retried() {
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -424,6 +437,7 @@ async fn a_failed_attempt_is_retried_with_backoff_and_completes() {
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -467,6 +481,7 @@ async fn a_stalled_response_is_abandoned_and_retried() {
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -512,6 +527,7 @@ async fn a_failed_download_keeps_its_partial_file_and_the_next_attempt_resumes()
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -559,6 +575,7 @@ async fn a_forbidden_primary_falls_back_without_retrying_it() {
         url: primary.url.clone(),
         fallbacks: vec![fallback.url.clone()],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -598,6 +615,7 @@ async fn a_download_resumes_across_hosts() {
         url: primary.url.clone(),
         fallbacks: vec![fallback.url.clone()],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -621,6 +639,7 @@ async fn a_corrupt_partial_file_fails_the_checksum_and_is_deleted() {
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -655,6 +674,7 @@ async fn without_a_checksum_there_is_no_fallback_and_no_kept_partial() {
         url: primary.url.clone(),
         fallbacks: vec![fallback.url.clone()],
         checksum: None,
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -687,6 +707,7 @@ async fn downloading_again_while_running_joins_the_running_download() {
         url: server.url.clone(),
         fallbacks: vec![],
         checksum: Some(checksum_of(&body)),
+        size: None,
     };
 
     manager.download(&model).await.unwrap();
@@ -697,4 +718,183 @@ async fn downloading_again_while_running_joins_the_running_download() {
     assert_eq!(installed(&runtime).as_deref(), Some(body.as_slice()));
     assert_eq!(server.requests("GET").len(), 1, "not restarted");
     assert!(runtime.failures().is_empty(), "{:?}", runtime.failures());
+}
+
+#[tokio::test]
+async fn a_task_that_died_does_not_block_later_downloads() {
+    let body = test_body();
+    let server = TestServer::start(body.clone(), true, Arc::new(|_: &Request| Reply::Serve)).await;
+
+    let runtime = TestRuntime::new();
+    runtime.panic_once.store(true, Ordering::SeqCst);
+    let manager = manager(&runtime, fast_policy());
+    let model = TestModel {
+        url: server.url.clone(),
+        fallbacks: vec![],
+        checksum: Some(checksum_of(&body)),
+        size: Some(body.len() as u64),
+    };
+
+    manager.download(&model).await.unwrap();
+    // The task panics at its first progress event and never deregisters.
+    wait_until_done(&manager, &model).await;
+    assert!(installed(&runtime).is_none());
+
+    manager.download(&model).await.unwrap();
+    wait_until_done(&manager, &model).await;
+
+    assert_eq!(installed(&runtime).as_deref(), Some(body.as_slice()));
+}
+
+#[tokio::test]
+async fn a_download_requested_during_a_cancel_keeps_its_partial_file() {
+    let body = test_body();
+    let server = TestServer::start(
+        body.clone(),
+        false,
+        Arc::new(|r: &Request| {
+            if r.method == "GET" {
+                Reply::Delayed(Duration::from_millis(200), Box::new(Reply::Serve))
+            } else {
+                Reply::Serve
+            }
+        }),
+    )
+    .await;
+
+    let runtime = TestRuntime::new();
+    let manager = manager(&runtime, fast_policy());
+    let model = TestModel {
+        url: server.url.clone(),
+        fallbacks: vec![],
+        checksum: Some(checksum_of(&body)),
+        size: Some(body.len() as u64),
+    };
+
+    manager.download(&model).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The cancel starts first. The download requested meanwhile waits until
+    // the cancel has deleted the partial file, so it cannot lose its own file
+    // (or race the cancelled task) on the shared `.part` path.
+    let order = Mutex::new(Vec::new());
+    let (cancelled, restarted) = tokio::join!(
+        async {
+            let result = manager.cancel_download(&model).await;
+            order.lock().unwrap().push("cancel finished");
+            result
+        },
+        async {
+            tokio::task::yield_now().await;
+            let result = manager.download(&model).await;
+            order.lock().unwrap().push("download started");
+            result
+        }
+    );
+    assert!(cancelled.unwrap());
+    restarted.unwrap();
+    assert_eq!(
+        *order.lock().unwrap(),
+        vec!["cancel finished", "download started"]
+    );
+    wait_until_done(&manager, &model).await;
+
+    assert_eq!(installed(&runtime).as_deref(), Some(body.as_slice()));
+}
+
+#[tokio::test]
+async fn a_size_mismatch_fails_and_deletes_the_partial_file() {
+    let body = test_body();
+    let server = TestServer::start(body.clone(), true, Arc::new(|_: &Request| Reply::Serve)).await;
+
+    let runtime = TestRuntime::new();
+    let manager = manager(&runtime, fast_policy());
+    let model = TestModel {
+        url: server.url.clone(),
+        fallbacks: vec![],
+        checksum: Some(checksum_of(&body)),
+        size: Some(body.len() as u64 + 1),
+    };
+
+    manager.download(&model).await.unwrap();
+    wait_until_done(&manager, &model).await;
+
+    assert!(installed(&runtime).is_none());
+    assert!(!partial_path(&runtime).exists());
+    let failures = runtime.failures();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].contains("size mismatch"), "{failures:?}");
+}
+
+#[tokio::test]
+async fn a_corrupt_primary_download_is_redone_from_the_fallback_from_scratch() {
+    let body = test_body();
+    let mut corrupt = body.as_ref().clone();
+    corrupt[12_345] ^= 0xff;
+    let primary = TestServer::start(
+        Arc::new(corrupt),
+        false,
+        Arc::new(|_: &Request| Reply::Serve),
+    )
+    .await;
+    let fallback =
+        TestServer::start(body.clone(), false, Arc::new(|_: &Request| Reply::Serve)).await;
+
+    let runtime = TestRuntime::new();
+    let manager = manager(&runtime, fast_policy());
+    let model = TestModel {
+        url: primary.url.clone(),
+        fallbacks: vec![fallback.url.clone()],
+        checksum: Some(checksum_of(&body)),
+        size: Some(body.len() as u64),
+    };
+
+    manager.download(&model).await.unwrap();
+    wait_until_done(&manager, &model).await;
+
+    assert_eq!(installed(&runtime).as_deref(), Some(body.as_slice()));
+    assert!(runtime.failures().is_empty(), "{:?}", runtime.failures());
+    let fallback_gets = fallback.requests("GET");
+    assert_eq!(fallback_gets.len(), 1);
+    assert_eq!(
+        fallback_gets[0].range_start, None,
+        "not resumed from the bad file"
+    );
+    let restarts = runtime
+        .statuses()
+        .iter()
+        .filter(|s| **s == DownloadStatus::Downloading(0))
+        .count();
+    assert_eq!(restarts, 2, "the fresh download reports from 0%");
+}
+
+#[tokio::test]
+async fn a_corrupt_download_with_no_fallback_left_fails() {
+    let body = test_body();
+    let mut corrupt = body.as_ref().clone();
+    corrupt[0] ^= 0xff;
+    let corrupt = Arc::new(corrupt);
+    let primary =
+        TestServer::start(corrupt.clone(), false, Arc::new(|_: &Request| Reply::Serve)).await;
+    let fallback =
+        TestServer::start(corrupt.clone(), false, Arc::new(|_: &Request| Reply::Serve)).await;
+
+    let runtime = TestRuntime::new();
+    let manager = manager(&runtime, fast_policy());
+    let model = TestModel {
+        url: primary.url.clone(),
+        fallbacks: vec![fallback.url.clone()],
+        checksum: Some(checksum_of(&body)),
+        size: Some(body.len() as u64),
+    };
+
+    manager.download(&model).await.unwrap();
+    wait_until_done(&manager, &model).await;
+
+    assert!(installed(&runtime).is_none());
+    assert!(!partial_path(&runtime).exists());
+    assert_eq!(fallback.requests("GET").len(), 1, "one fresh retry only");
+    let failures = runtime.failures();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].contains("checksum"), "{failures:?}");
 }

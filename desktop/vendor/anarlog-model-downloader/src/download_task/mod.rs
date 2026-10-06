@@ -26,30 +26,47 @@ pub(crate) fn spawn_download_task<M: DownloadableModel>(
             return;
         }
 
-        let progress_callback =
-            make_progress_callback(params.runtime.clone(), params.model.clone());
+        let mut urls: &[String] = &params.urls;
+        let mut fresh_retry_used = false;
+        loop {
+            // A new callback per round: a fresh re-download reports from 0%.
+            let progress_callback =
+                make_progress_callback(params.runtime.clone(), params.model.clone());
 
-        if let Err(error) = steps::download(&params, progress_callback).await {
-            let reason = log_download_error(&error);
-            // A verified download keeps its partial file for the next attempt
-            // (or for the download that replaced this one). Without a checksum
-            // a resumed file could not be verified, so it is discarded as
-            // upstream did.
-            let partial = if params.model.download_checksum().is_some() {
-                PartialFile::Keep
-            } else {
-                PartialFile::Delete
-            };
-            fail_task(&params, reason, partial).await;
-            return;
-        }
+            if let Err(error) = steps::download(&params, urls, progress_callback).await {
+                let reason = log_download_error(&error);
+                // A verified download keeps its partial file for the next
+                // attempt (or for the download that replaced this one).
+                // Without a checksum a resumed file could not be verified, so
+                // it is discarded as upstream did.
+                let partial = if params.model.download_checksum().is_some() {
+                    PartialFile::Keep
+                } else {
+                    PartialFile::Delete
+                };
+                fail_task(&params, reason, partial).await;
+                return;
+            }
 
-        if let Some(expected_checksum) = params.model.download_checksum()
-            && let Err(error) = steps::verify_checksum(&params, expected_checksum).await
-        {
-            let reason = log_checksum_error(&error);
-            fail_task(&params, Some(reason), PartialFile::Delete).await;
-            return;
+            match steps::verify(&params).await {
+                Ok(()) => break,
+                // The bytes are wrong. If fallback hosts remain, download
+                // once more from scratch from them only, before giving up.
+                Err(
+                    error @ (ChecksumError::Mismatch { .. } | ChecksumError::SizeMismatch { .. }),
+                ) if !fresh_retry_used && urls.len() > 1 => {
+                    log_checksum_error(&error);
+                    tracing::warn!("model_download_verify_failed_retrying_fallback_fresh");
+                    let _ = tokio::fs::remove_file(&params.destination).await;
+                    urls = &urls[1..];
+                    fresh_retry_used = true;
+                }
+                Err(error) => {
+                    let reason = log_checksum_error(&error);
+                    fail_task(&params, Some(reason), PartialFile::Delete).await;
+                    return;
+                }
+            }
         }
 
         if let Err(error) = steps::finalize(&params).await {
@@ -126,6 +143,14 @@ fn log_download_error(error: &anlg_file::Error) -> Option<String> {
 
 fn log_checksum_error(error: &ChecksumError) -> String {
     match error {
+        ChecksumError::SizeMismatch { actual, expected } => {
+            tracing::error!(
+                actual_size = actual,
+                expected_size = expected,
+                "model_download_size_mismatch"
+            );
+            "Downloaded file is corrupted (size mismatch). Please try again.".to_string()
+        }
         ChecksumError::Mismatch { actual, expected } => {
             tracing::error!(
                 actual_checksum = actual,

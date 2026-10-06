@@ -30,12 +30,15 @@ gets a `206`.
   response shorter than its range) retries that chunk up to 3 times (0.5 s,
   1 s, 2 s backoff), asking only for the bytes it does not have yet. Other
   statuses (403, 404, ...) still fail the download with the same message as
-  upstream, so `model-downloader` moves to the next host.
+  upstream, so `model-downloader` moves to the next host. A `206` carrying
+  more bytes than its range fails that chunk without a retry ("Range response
+  longer than requested"; `model-downloader` moves to the next host).
 - `get_client`: 30 s connect timeout and 30 s read timeout (per read, reset by
   each received piece of data).
 
-`src/tests.rs`: two tests (a chunk answered with `200` then `503` is
-retried; the transient-error classification).
+`src/tests.rs`: three tests (a chunk answered with `200` then `503` is
+retried; an overlong `206` is rejected without a retry; the transient-error
+classification).
 
 `Cargo.toml` `workspace = true` entries were rewritten: anarlog crates as git
 dependencies on the same rev (`download-interface`; dev: `s3`), external

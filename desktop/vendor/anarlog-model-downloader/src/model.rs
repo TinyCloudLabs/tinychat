@@ -15,6 +15,10 @@ pub trait DownloadableModel: Clone + Send + Sync + 'static {
     fn download_checksum(&self) -> Option<u32> {
         None
     }
+    /// Exact size in bytes, checked before the checksum when known.
+    fn download_size(&self) -> Option<u64> {
+        None
+    }
     fn download_destination(&self, models_base: &Path) -> PathBuf;
     fn is_downloaded(&self, models_base: &Path) -> Result<bool, Error>;
     fn finalize_download(&self, downloaded_path: &Path, models_base: &Path) -> Result<(), Error>;

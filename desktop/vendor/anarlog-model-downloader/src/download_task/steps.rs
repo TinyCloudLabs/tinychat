@@ -12,6 +12,7 @@ use crate::download_task::retry::{self, AfterFailure, RetryPolicy};
 use crate::model::DownloadableModel;
 
 pub(super) enum ChecksumError {
+    SizeMismatch { actual: u64, expected: u64 },
     Mismatch { actual: u32, expected: u32 },
     Calculate(anlg_file::Error),
     Join(tokio::task::JoinError),
@@ -33,10 +34,11 @@ pub(super) enum FinalizeError {
 /// files, and the caller still verifies the checksum before installing.
 pub(super) async fn download<M: DownloadableModel>(
     params: &DownloadTaskParams<M>,
+    urls: &[String],
     progress_callback: impl Fn(anlg_download_interface::DownloadProgress) + Send + Sync,
 ) -> Result<(), anlg_file::Error> {
     download_with_retries(
-        &params.urls,
+        urls,
         &params.destination,
         &params.retry_policy,
         &params.cancellation_token,
@@ -162,7 +164,26 @@ async fn partial_size(path: &Path) -> u64 {
     fs::metadata(path).await.map(|m| m.len()).unwrap_or(0)
 }
 
-pub(super) async fn verify_checksum<M: DownloadableModel>(
+/// The size check (when the model declares one), then the CRC32 check.
+pub(super) async fn verify<M: DownloadableModel>(
+    params: &DownloadTaskParams<M>,
+) -> Result<(), ChecksumError> {
+    if let Some(expected) = params.model.download_size() {
+        let actual = fs::metadata(&params.destination)
+            .await
+            .map_err(|e| ChecksumError::Calculate(e.into()))?
+            .len();
+        if actual != expected {
+            return Err(ChecksumError::SizeMismatch { actual, expected });
+        }
+    }
+    match params.model.download_checksum() {
+        Some(expected_checksum) => verify_checksum(params, expected_checksum).await,
+        None => Ok(()),
+    }
+}
+
+async fn verify_checksum<M: DownloadableModel>(
     params: &DownloadTaskParams<M>,
     expected_checksum: u32,
 ) -> Result<(), ChecksumError> {
