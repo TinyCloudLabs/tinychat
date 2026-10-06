@@ -112,10 +112,14 @@ optional = true
 # as it happens (using per-frame / per-token hooks added to the vendored
 # `audio-chunking` and `whisper-local`) and supports recordings up to 8 hours.
 # See vendor/anarlog-transcribe-whisper-local/PROVENANCE.md.
+# `whisper-local-model` is vendored because the pinned rev downloads models from
+# a retired S3 bucket (403 for Large Turbo); it points them at Hugging Face.
+# See vendor/anarlog-whisper-local-model/PROVENANCE.md.
 [patch."https://github.com/fastrepl/anarlog"]
 storage = { path = "../vendor/anarlog-storage" }
 transcribe-whisper-local = { path = "../vendor/anarlog-transcribe-whisper-local" }
 whisper-local = { path = "../vendor/anarlog-whisper-local" }
+whisper-local-model = { path = "../vendor/anarlog-whisper-local-model" }
 audio-chunking = { path = "../vendor/anarlog-audio-chunking" }
 
 # The yujonglee swift-rs fork runs `swift build` with SwiftPM's default build

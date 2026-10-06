@@ -79,8 +79,10 @@ voiceprint and export commands Exo doesn't use.
 | Soniqo Parakeet | Live or batch | Built but not exposed: third-party speech-swift + model weights unreviewed |
 | AM / Argmax | Requires proprietary sidecar + `AM_API_KEY` | Out of scope |
 
-Whisper models download on first use from `hyprnote.s3.us-east-1.amazonaws.com`
-(size + checksum validated by anarlog's `model-downloader`) into
+Whisper models download on first use from Hugging Face
+(`huggingface.co/ggerganov/whisper.cpp`, set in the vendored
+`whisper-local-model`; size + checksum validated by anarlog's
+`model-downloader`) into
 `models/stt/` under the app-data dir. Recordings land in `sessions/<id>/`.
 
 Long recordings: the vendored `transcribe-whisper-local`
