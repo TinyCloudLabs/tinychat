@@ -741,10 +741,11 @@ describe("I1 badge — App wiring (source-asserted)", () => {
   });
 
   test("the pill lives INSIDE the existing button, aria-hidden and layout-neutral", () => {
-    const app = read("../App.tsx");
-    const at = app.indexOf("aria-label={connectorsAriaLabel(showConnectors");
+    // The Connectors button is ChatWorkspace's sidebar entry.
+    const workspace = read("ChatWorkspace.tsx");
+    const at = workspace.indexOf("aria-label={connectorsAriaLabel(showConnectors");
     expect(at).toBeGreaterThan(0);
-    const button = app.slice(at, app.indexOf("</Button>", at));
+    const button = workspace.slice(at, workspace.indexOf("</Button>", at));
     // Absolutely positioned inside the button's own relative box, so the
     // 44/32px footprint never changes — no layout shift.
     expect(button).toContain("relative");
@@ -801,11 +802,11 @@ describe("I1 badge — the pill clamps its display, the label does not", () => {
     expect(connectorsAriaLabel(false, 1234)).toBe("Connectors — 1234 meetings waiting");
   });
 
-  test("App renders the clamped pill text and the unclamped label (source-asserted)", () => {
-    const app = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
-    expect(app).toContain("badgePillLabel(pendingMeetings)");
+  test("ChatWorkspace renders the clamped pill text and the unclamped label (source-asserted)", () => {
+    const workspace = readFileSync(join(import.meta.dir, "ChatWorkspace.tsx"), "utf8");
+    expect(workspace).toContain("badgePillLabel(pendingMeetings)");
     // The label call still takes the raw count — no clamp on its way in.
-    expect(app).toContain("connectorsAriaLabel(showConnectors, pendingMeetings)");
+    expect(workspace).toContain("connectorsAriaLabel(showConnectors, pendingMeetings)");
   });
 });
 

@@ -7,7 +7,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import OpenKey from "@openkey/sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
@@ -30,35 +29,27 @@ import { withEncryptionDecryptGrant } from "./lib/connectors/encryptionGrant";
 import { uploadRunner } from "./lib/audioUpload";
 import { openkeyPasskeysSupported } from "./lib/openkeyPasskeys";
 import { useVisualViewportFit } from "./lib/useVisualViewport";
-import { useChatRuntime } from "./chat/runtime";
-import { Thread } from "./chat/Thread";
-import { ThreadList } from "./chat/ThreadList";
-import { AgentAccessProvider, useAgentAccess } from "./chat/useAgentEnablement";
-import { ChatViewAgentEnablementBanner } from "./chat/AgentEnablementBanner";
+import { ChatWorkspace } from "./chat/ChatWorkspace";
+import { ModelPicker, type ModelOption } from "./chat/ModelPicker";
+import { UsageIndicator } from "./chat/UsageIndicator";
+import { AgentAccessProvider } from "./chat/useAgentEnablement";
 import { PricingDialog } from "./chat/PricingDialog";
 import { RatesDialog } from "./chat/RatesDialog";
 import {
-  appendCompaction,
-  getLatestCompaction,
   readMemoryCache,
   useLocalThreadStorage,
 } from "./lib/threadStore";
 import { resolveLocalValidation, prepareLocalSignIn } from "./lib/localValidation";
-import { completeChat, type ChatMessage } from "./lib/chatApi";
-import { COMPACTION_SUMMARY_MAX_TOKENS, DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
+import { DEFAULT_CONTEXT_TOKENS } from "./chat/compaction";
 import { loadSharedThreadFromToken, readShareTokenFromLocation } from "./lib/tinychatShareLinks";
 import { historyPrefetch } from "./lib/historyPrefetch";
 import {
-  aggregateTurnCredits,
   createBillingClient,
-  formatCredits,
-  getCachedRates,
   type BillingClient,
   type BillingConfig,
   type BillingStatus,
 } from "./lib/billingApi";
 import {
-  emitReceipt,
   onBillingEvent,
   onModelSelectionError,
   onPaywallError,
@@ -71,7 +62,6 @@ import {
 } from "./lib/billingConfigPolicy";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { SettingsPage } from "./chat/SettingsPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import {
@@ -92,10 +82,8 @@ import { BackendReconciler } from "./chat/BackendReconciler";
 import {
   BackgroundDrainer,
   badgePendingCount,
-  badgePillLabel,
   clearBackgroundDrainRecord,
   readBackgroundDrainRecord,
-  connectorsAriaLabel,
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
@@ -105,19 +93,11 @@ import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
-import { createConnectorMeetingsClient } from "./lib/connectors/meetingsApi";
-import { createBrowserMeetingTurnRetriever } from "./lib/meetingChat/retriever";
-import { createMeetingMessageRegistry } from "./chat/pendingHandoff";
 import {
-  ChevronDownIcon,
   MicIcon,
   PanelLeftIcon,
-  PlugIcon,
   SettingsIcon,
-  ShieldCheckIcon,
-  ShieldIcon,
 } from "lucide-react";
-import { isResponseVerifiableModel, isTeeCapableModel } from "./lib/completionStore";
 import type {
   ModelSelectionController,
   SelectionView,
@@ -128,8 +108,12 @@ import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
-import { useConversationCanvasFeature } from "./chat/useExperimentalFeatures";
-import { promotedCanvasForTurn, useLocalCanvasStorage } from "./lib/conversationCanvasStore";
+import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
+import type { AppState } from "./lib/appState";
+import { BootSurface } from "./shell/BootSurface";
+
+// AppState and stateLabel live in lib/appState; re-exported for imports from App.
+export { stateLabel, type AppState } from "./lib/appState";
 
 const OPENKEY_HOST = import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so";
 const LOCAL_VALIDATION = resolveLocalValidation(import.meta.env, globalThis.location?.hostname);
@@ -140,34 +124,6 @@ const BACKEND_URL =
 const TINYCLOUD_HOSTS = import.meta.env.VITE_TINYCLOUD_HOST
   ? [import.meta.env.VITE_TINYCLOUD_HOST]
   : undefined;
-export type AppState =
-  | "booting"
-  | "unauthenticated"
-  | "connecting"
-  | "signing"
-  | "ready"
-  | "recoverableError"
-  // A persisted session is HELD but couldn't be restored because the network
-  // (or the backend) is unreachable. Not signed out: "Try again" and the
-  // browser's `online` event re-run the restore, never OpenKey (TC-514).
-  | "offline";
-
-interface ModelOption {
-  id: string;
-  /** When the paywall is on, whether the current tier may use this model. */
-  allowed?: boolean;
-  requiredTier?: "plus" | "pro";
-  /** Per-model credit rates (spec §5.4 — always present from /api/chat/models). */
-  creditsPerKInput?: number;
-  creditsPerKOutput?: number;
-  multiplier?: number;
-  /**
-   * Context window in tokens (spec §D.4). Plumbed from /api/chat/models so the
-   * adapter can size compaction; absent → DEFAULT_CONTEXT_TOKENS via
-   * contextTokensFor below.
-   */
-  contextLength?: number;
-}
 
 export function App() {
   // Track the visible viewport so the shell shrinks above the soft keyboard
@@ -956,6 +912,7 @@ export function App() {
                 key={importRefreshKey}
                 tcw={tcw}
                 sessionStore={sessionStoreRef.current}
+                backendUrl={BACKEND_URL}
                 selectionControllerRef={selectionControllerRef}
                 selectionView={selectionView}
                 memoryRef={memoryRef}
@@ -1110,454 +1067,6 @@ export function App() {
   );
 }
 
-// Compact, clickable usage chip in the header. Shows the current tier and a
-// thin progress bar of credit-budget consumption. Opens the pricing dialog on
-// click. On hover/focus, an expanded popover surfaces exact numbers + reset
-// date + a "How credits work" link to the rates table (spec §5.5). Renders
-// even before status loads (shows "Plans") so the entry point is always
-// present once the paywall is on.
-function ModelPicker(props: {
-  model: string | null;
-  models: ModelOption[];
-  disabled: boolean;
-  status?: string;
-  onPick: (id: string) => void;
-}) {
-  const { model, models, disabled, status, onPick } = props;
-  const [open, setOpen] = useState(false);
-  const [focusedIndex, setFocusedIndex] = useState(-1);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || models.length === 0) return;
-    const active = Math.max(0, models.findIndex((entry) => entry.id === model));
-    setFocusedIndex(active);
-    queueMicrotask(() => optionRefs.current[active]?.focus());
-  }, [open, model, models]);
-
-  const select = (id: string) => {
-    onPick(id);
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (models.length === 0) return;
-    let next: number;
-    if (event.key === "ArrowDown") next = (focusedIndex + 1) % models.length;
-    else if (event.key === "ArrowUp") next = (focusedIndex - 1 + models.length) % models.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = models.length - 1;
-    else if ((event.key === "Enter" || event.key === " ") && models[focusedIndex]) {
-      event.preventDefault();
-      select(models[focusedIndex]!.id);
-      return;
-    } else return;
-    event.preventDefault();
-    setFocusedIndex(next);
-    optionRefs.current[next]?.focus();
-  };
-
-  return (
-    <div className="relative min-w-0" ref={containerRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls="model-picker-popup"
-        aria-label="Model"
-        title={status}
-        className="flex h-11 max-w-full items-center gap-1.5 rounded-md border border-input bg-background pl-2.5 pr-2 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 md:h-8"
-      >
-        {model && isResponseVerifiableModel(model) ? (
-          <ShieldCheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-        ) : model && isTeeCapableModel(model) ? (
-          <ShieldIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : null}
-        <span className="max-w-[7rem] truncate sm:max-w-[12rem]">
-          {model ?? status ?? "Choosing model…"}
-        </span>
-        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      </button>
-      {open && (
-        <div
-          id="model-picker-popup"
-          role="listbox"
-          aria-label="Model"
-          onKeyDown={onListKeyDown}
-          className="absolute left-0 z-30 mt-1.5 max-h-72 w-80 max-w-[calc(100vw-6.5rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs shadow-lg"
-        >
-          {models.map((entry, index) => {
-            const active = entry.id === model;
-            return (
-              <button
-                key={entry.id}
-                ref={(element) => { optionRefs.current[index] = element; }}
-                type="button"
-                role="option"
-                aria-selected={active}
-                tabIndex={focusedIndex === index ? 0 : -1}
-                onClick={() => select(entry.id)}
-                onFocus={() => setFocusedIndex(index)}
-                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent focus:bg-accent focus:outline-none ${active ? "bg-accent/60" : ""}`}
-              >
-                <span className="flex-1 truncate">{entry.id}</span>
-                {isResponseVerifiableModel(entry.id) ? (
-                  <ShieldCheckIcon aria-label="Response verified" className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-                ) : isTeeCapableModel(entry.id) ? (
-                  <ShieldIcon aria-label="TEE capable" className="size-3.5 text-muted-foreground" />
-                ) : null}
-                {typeof entry.multiplier === "number" ? (
-                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary tabular-nums">
-                    {Number.parseFloat(entry.multiplier.toFixed(1))}×
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-muted-foreground">Rates unavailable</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {status && <div role="status" className="absolute left-0 top-full mt-0.5 whitespace-nowrap text-[10px] text-muted-foreground">{status}</div>}
-    </div>
-  );
-}
-
-function UsageIndicator(props: {
-  status: BillingStatus | null;
-  tierName: string | null;
-  onClick: () => void;
-  onOpenRates: () => void;
-}) {
-  const { status, tierName, onClick, onOpenRates } = props;
-  const [open, setOpen] = useState(false);
-  const usage = status?.usage;
-  const pct =
-    usage && usage.limit > 0
-      ? Math.min(100, Math.round((usage.used / usage.limit) * 100))
-      : 0;
-  const tierLabel = tierName ?? "Plans";
-  const near = pct >= 90;
-  const resetsLabel = usage?.resetsAt ? formatResetsAt(usage.resetsAt) : null;
-  // Compact "12K / 50K" rendered in the visible chip so touch users (who can't
-  // hover) still see live usage at a glance (spec §5.5 transparency).
-  const compactUsage =
-    usage && usage.limit > 0
-      ? `${formatCompact(usage.used)} / ${formatCompact(usage.limit)}`
-      : null;
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocusCapture={() => setOpen(true)}
-      onBlurCapture={(e) => {
-        // Close only when focus leaves the whole popover subtree.
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          setOpen(false);
-        }
-      }}
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label="View plans and usage"
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-2 text-xs text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2 sm:px-2.5"
-      >
-        <span className="font-medium">{tierLabel}</span>
-        {compactUsage && (
-          <span className="hidden tabular-nums text-muted-foreground sm:inline">{compactUsage}</span>
-        )}
-        {usage && usage.limit > 0 && (
-          <span
-            className="hidden h-1.5 w-12 overflow-hidden rounded-full bg-muted sm:inline-flex"
-            aria-hidden
-          >
-            <span
-              className={`block h-full rounded-full ${near ? "bg-destructive" : "bg-primary"}`}
-              style={{ width: `${pct}%` }}
-            />
-          </span>
-        )}
-      </button>
-      {open && (
-        <div
-          role="region"
-          aria-label="Usage and plan details"
-          className="absolute right-0 top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg"
-        >
-          {usage && usage.limit > 0 && (
-            <>
-              <div className="tabular-nums text-foreground">
-                {usage.used.toLocaleString()} / {formatCredits(usage.limit)}
-              </div>
-              {resetsLabel && (
-                <div className="mt-0.5 text-muted-foreground">
-                  Resets {resetsLabel}
-                </div>
-              )}
-            </>
-          )}
-          <button
-            type="button"
-            aria-haspopup="dialog"
-            onClick={() => {
-              setOpen(false);
-              onOpenRates();
-            }}
-            className={`${usage && usage.limit > 0 ? "mt-2" : ""} text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
-          >
-            How credits work →
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Short numeric label for the always-visible chip (e.g. 12_400 → "12K").
-function formatCompact(n: number): string {
-  if (!Number.isFinite(n)) return String(n);
-  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`.replace(/\.0M$/, "M");
-  if (n >= 1_000) return `${Math.round(n / 100) / 10}K`.replace(/\.0K$/, "K");
-  return n.toString();
-}
-
-function formatResetsAt(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  try {
-    return d.toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return d.toDateString();
-  }
-}
-
-function ChatWorkspace(props: {
-  tcw: TinyCloudWeb;
-  sessionStore: SessionStore;
-  selectionControllerRef: React.MutableRefObject<ModelSelectionController | null>;
-  selectionView: SelectionView;
-  memoryRef: React.MutableRefObject<string | null>;
-  onSelectionView: (view: SelectionView) => void;
-  onSelectionAuthFailure: () => void;
-  onMemoryUpdated: (doc: string | null) => void;
-  contextTokensFor: (modelId: string) => number;
-  sidebarOpen: boolean;
-  setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  showConnectors: boolean;
-  pendingMeetings: number;
-  onToggleConnectors: () => void;
-  onOpenChat: () => void;
-  connectorsSurface: React.ReactNode;
-  billingStatus: BillingStatus | null;
-}) {
-  const {
-    agentEnabledRef, activeThreadIdRef, privateAccessRef, onDelegationError,
-  } = useAgentAccess();
-  const meetingMessageRegistry = useMemo(() => createMeetingMessageRegistry(), [props.tcw]);
-  const conversationCanvas = useConversationCanvasFeature(props.tcw, props.billingStatus);
-  // One instance per mounted workspace: its thread selection state is
-  // intentionally in-memory only, survives render churn, and vanishes on a
-  // workspace reload. It receives only browser-local handles and the existing
-  // session-backed metadata/content client.
-  const meetingRetriever = useMemo(
-    () => createBrowserMeetingTurnRetriever({
-      tcw: props.tcw,
-      meetings: createConnectorMeetingsClient(BACKEND_URL, {
-        sessionStore: props.sessionStore,
-      }),
-    }),
-    [props.tcw, props.sessionStore, privateAccessRef.current],
-  );
-
-  const deps = useMemo(
-    () => ({
-      tcw: props.tcw,
-      sessionStore: props.sessionStore,
-      backendUrl: BACKEND_URL,
-      selectionControllerRef: props.selectionControllerRef,
-      onSelectionView: props.onSelectionView,
-      onSelectionAuthFailure: props.onSelectionAuthFailure,
-      memoryRef: props.memoryRef,
-      onMemoryUpdated: props.onMemoryUpdated,
-      activeThreadIdRef,
-      agentEnabledRef,
-      privateAccessRef,
-      onAgentDelegationError: onDelegationError,
-      meetingRetriever,
-      meetingMessageRegistry,
-      // ── Compaction deps (§D.3) ─────────────────────────────────────
-      contextTokensFor: props.contextTokensFor,
-      getPromotedCanvas: (threadId: string) => promotedCanvasForTurn(props.tcw, threadId),
-      getCheckpoint: (threadId: string) => getLatestCompaction(props.tcw, threadId),
-      appendCompaction: (threadId: string, coversThroughMessageId: string, summary: string) =>
-        appendCompaction(props.tcw, threadId, coversThroughMessageId, summary),
-      // Plain single-shot summarization (§C.9): bypasses the runtime exchange
-      // ring, so it never writes thread storage / memory nor triggers extraction
-      // (§F.3). max_tokens is hard-capped by the summary budget.
-      summarize: ({ model, messages }: { model: string; messages: ChatMessage[] }) => {
-        // Compaction is a real billed background call with NO pending visible
-        // reply, so its credits bump the SESSION METER ONLY — never a badge
-        // (edge case a). Fold once via aggregateTurnCredits so in-app usage
-        // tracks the ledger; a 0-token/aborted summarize contributes 0.
-        let folded = false;
-        return completeChat({
-          backendUrl: BACKEND_URL,
-          sessionStore: props.sessionStore,
-          model,
-          messages,
-          maxTokens: COMPACTION_SUMMARY_MAX_TOKENS,
-          onUsage: (usage) => {
-            if (folded) return;
-            folded = true;
-            void getCachedRates(
-              createBillingClient(BACKEND_URL, props.sessionStore),
-            )
-              .then((rates) => {
-                const m = rates.models.find((r) => r.id === model);
-                if (!m) return;
-                const { backgroundCredits } = aggregateTurnCredits(0, [
-                  {
-                    rates: m,
-                    promptTokens: usage.promptTokens,
-                    completionTokens: usage.completionTokens,
-                  },
-                ]);
-                if (backgroundCredits > 0) {
-                  emitReceipt(model, backgroundCredits, model);
-                }
-              })
-              .catch(() => {
-                // receipts are UI sugar; a rates failure must never surface
-              });
-          },
-        });
-      },
-    }),
-    [
-      props.tcw,
-      props.sessionStore,
-      props.selectionControllerRef,
-      props.onSelectionView,
-      props.onSelectionAuthFailure,
-      props.memoryRef,
-      props.onMemoryUpdated,
-      props.contextTokensFor,
-      onDelegationError,
-      meetingRetriever,
-      meetingMessageRegistry,
-      // activeThreadIdRef and agentEnabledRef are stable refs — omitted intentionally.
-    ],
-  );
-
-  const runtime = useChatRuntime(deps);
-  const closeSidebar = useCallback(
-    () => props.setSidebarOpen(false),
-    [props.setSidebarOpen],
-  );
-  const handleChatNavigate = useCallback(() => {
-    closeSidebar();
-    if (props.showConnectors) props.onOpenChat();
-  }, [closeSidebar, props.showConnectors, props.onOpenChat]);
-  const handleConnectorsNavigate = useCallback(() => {
-    closeSidebar();
-    props.onToggleConnectors();
-  }, [closeSidebar, props.onToggleConnectors]);
-  const { showConnectors, pendingMeetings } = props;
-  const connectorsNavigation = (
-    <Button
-      variant="ghost"
-      size="sm"
-      aria-label={connectorsAriaLabel(showConnectors, pendingMeetings)}
-      aria-pressed={showConnectors}
-      onClick={handleConnectorsNavigate}
-      className={`relative min-h-11 w-full justify-start gap-2 px-3 py-2 text-sm font-medium md:min-h-0 ${
-        showConnectors ? "bg-accent text-accent-foreground" : ""
-      }`}
-    >
-      <PlugIcon className="size-4" />
-      Connectors
-      {pendingMeetings > 0 && (
-        <span
-          aria-hidden="true"
-          className="absolute right-3 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"
-        >
-          {badgePillLabel(pendingMeetings)}
-        </span>
-      )}
-    </Button>
-  );
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <div className="grid h-full grid-cols-1 md:grid-cols-[260px_1fr]">
-        <aside className="hidden min-h-0 border-r border-border bg-muted/40 md:block">
-          <ThreadList
-            navigation={connectorsNavigation}
-            onNavigate={handleChatNavigate}
-          />
-        </aside>
-        <section className="min-h-0">
-          <div className={showConnectors ? "hidden" : "h-full"}>
-            <Thread
-              tcw={props.tcw}
-              selection={props.selectionView}
-              onRetrySelection={() => props.selectionControllerRef.current?.retry()}
-              onReload={() => props.selectionControllerRef.current?.reload()}
-              canvasEnabled={conversationCanvas.enabled}
-            />
-          </div>
-          {showConnectors && props.connectorsSurface}
-        </section>
-      </div>
-      <Sheet open={props.sidebarOpen} onOpenChange={props.setSidebarOpen}>
-        <SheetContent className="md:hidden">
-          <SheetTitle className="sr-only">Chats</SheetTitle>
-          <SheetDescription className="sr-only">
-            List of your saved chats
-          </SheetDescription>
-          <ThreadList
-            navigation={connectorsNavigation}
-            onNavigate={handleChatNavigate}
-          />
-        </SheetContent>
-      </Sheet>
-      {/* C3: first-time enablement + expired-delegation reconnect affordance —
-          chat views only (isChatViewPath). */}
-      <ChatViewAgentEnablementBanner />
-    </AssistantRuntimeProvider>
-  );
-}
-
 function SharedThreadSurface(props: { token: string; onClose: () => void }) {
   const [thread, setThread] = useState<ThreadDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1653,66 +1162,6 @@ function SharedMessage({ item }: { item: StoredMessageItem }) {
       </div>
     </div>
   );
-}
-
-function BootSurface(props: {
-  state: AppState;
-  error: string | null;
-  /** Sign in, or — in the `offline` state — retry the session restore. */
-  onAction: () => void;
-  /** The offline voice recorder (TC-515), under the action. */
-  voiceNotes?: React.ReactNode;
-}) {
-  const message =
-    props.state === "booting"
-      ? "Restoring your session…"
-      : props.state === "connecting"
-        ? "Finish the OpenKey prompt to continue."
-        : props.state === "signing"
-          ? "Creating your TinyCloud session…"
-          : props.state === "recoverableError"
-            ? (props.error ?? "Something went wrong.")
-            : props.state === "offline"
-              ? (props.error ?? "You're offline.")
-              : "Sign in to start chatting. Your conversations live in your TinyCloud space.";
-
-  const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
-
-  return (
-    <div className="flex h-full items-center justify-center p-6">
-      <div className="flex max-w-sm flex-col items-center gap-5 text-center">
-        <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
-          T
-        </span>
-        <div className="flex flex-col gap-1.5">
-          <h1 className="font-display text-title-2">TinyCloud Chat</h1>
-          <p className="text-sm text-muted-foreground">{message}</p>
-        </div>
-        {(props.state === "unauthenticated" || props.state === "recoverableError" || props.state === "offline") && (
-          <Button onClick={props.onAction} className="h-11 px-6 md:h-9 md:px-4">
-            {props.state === "unauthenticated" ? "Sign in" : "Try again"}
-          </Button>
-        )}
-        {busy && (
-          <span className="text-xs text-muted-foreground">Working…</span>
-        )}
-        {props.voiceNotes}
-      </div>
-    </div>
-  );
-}
-
-export function stateLabel(state: AppState): string {
-  const labels: Record<AppState, string> = {
-    booting: "Starting",
-    unauthenticated: "Signed out",
-    connecting: "Connecting",
-    signing: "Signing in",
-    ready: "Connected",
-    recoverableError: "Needs attention",
-    offline: "Offline",
-  };
-  return labels[state];
 }
 
 function errorMessage(error: unknown): string {

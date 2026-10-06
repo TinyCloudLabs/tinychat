@@ -83,6 +83,7 @@ describe("Connectors page composition", () => {
 
   test("Connectors navigation lives in the persistent chat sidebar", () => {
     const app = read("../App.tsx");
+    const workspace = read("ChatWorkspace.tsx");
     const threadList = read("ThreadList.tsx");
     const header = app.slice(app.indexOf("<header"), app.indexOf("</header>"));
 
@@ -92,7 +93,7 @@ describe("Connectors page composition", () => {
       threadList.indexOf("<ThreadListPrimitive.New"),
     );
     expect(app).toContain("connectorsSurface={LOCAL_VALIDATION ? null : <ConnectorsPage");
-    expect(app).toContain('showConnectors ? "hidden" : "h-full"');
+    expect(workspace).toContain('showConnectors ? "hidden" : "h-full"');
   });
 
   test("the card builds BOTH typed clients from those props — no new globals", () => {
