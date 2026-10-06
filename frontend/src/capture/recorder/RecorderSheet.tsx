@@ -2,7 +2,8 @@
 // timer, a meta line), where the audio goes as the centrepiece, and the tape
 // trace above a full-width Stop bar. When the note lands, the centre becomes
 // the receipt. Minimising (the chevron, Escape, the scrim, Back) never stops
-// the recording; the island takes over.
+// the recording; the island takes over. Discard (PR5) sits in the header, top
+// right, far from Stop.
 //
 // RecorderSheetView is a pure function of the recorder's value; RecorderSheet
 // puts it in a full-height bottom sheet on a phone and a 560px dialog on wider
@@ -14,6 +15,7 @@ import { BottomSheet } from "@/components/ui/bottom-sheet";
 import { Button } from "@/components/ui/button";
 import { useSizeClass } from "@/lib/sizeClass";
 import { cn } from "@/lib/utils";
+import { DiscardConfirm } from "./DiscardConfirm";
 import { LevelTrace } from "./LevelTrace";
 import { useRecorder, type RecorderValue } from "./RecorderProvider";
 import { micWarning, micWarningSentence, recorderMetaText, recorderStatusText, ISLAND_KEPT } from "./recorderCopy";
@@ -72,24 +74,28 @@ export interface RecorderSheetViewProps {
   onOpenNote?: (id: string) => void;
   /** Start the route control on its one-time question (the harness). */
   consentAsking?: boolean;
+  /** Start Discard on its question, and keep it there (the harness). */
+  discardAsking?: boolean;
 }
 
-export function RecorderSheetView({ recorder, onOpenNote, consentAsking }: RecorderSheetViewProps) {
+export function RecorderSheetView({ recorder, onOpenNote, consentAsking, discardAsking }: RecorderSheetViewProps) {
   const { phase, mic, startedAt, maxDurationMs, outcome, lastSaved, error, limitNotice } = recorder;
   const live = phase === "recording";
   const warning = live ? micWarningSentence(mic) : null;
   const elapsed = useElapsed(startedAt);
   const receipt = phase === "idle" && outcome !== null;
   const saving = phase === "stopping" || phase === "saving";
+  const discarding = phase === "discarding";
   const meta = receipt ? null : recorderMetaText(startedAt, elapsed, maxDurationMs);
 
   return (
     <div data-testid="voice-note-recorder" data-phase={phase} className="flex h-full min-h-0 flex-col">
-      <header className="flex h-13 shrink-0 items-center justify-between px-2">
-        <Button type="button" variant="ghost" size="icon" className="size-11" aria-label="Minimise recorder" onClick={recorder.minimiseSheet} data-testid="recorder-minimise">
+      <header className="flex min-h-13 shrink-0 items-center justify-between gap-2 px-2 land:pl-[max(0.5rem,env(safe-area-inset-left))] land:pr-[max(0.5rem,env(safe-area-inset-right))]">
+        <Button type="button" variant="ghost" size="icon" className="size-11 shrink-0" aria-label="Minimise recorder" onClick={recorder.minimiseSheet} data-testid="recorder-minimise">
           <ChevronDownIcon className="!size-5" />
         </Button>
-        {/* Discard (PR5) sits here, far from Stop. */}
+        {/* Only a live recording: a start cannot be cancelled, and a stopped one is being saved. */}
+        {live && <DiscardConfirm onDiscard={recorder.discard} held={discardAsking} />}
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] gap-y-5 px-5 pb-[max(1rem,env(safe-area-inset-bottom))] land:grid-cols-2 land:grid-rows-[minmax(0,1fr)_auto] land:gap-x-8 land:gap-y-3 land:pl-[max(1.25rem,env(safe-area-inset-left))] land:pr-[max(1.25rem,env(safe-area-inset-right))]">
@@ -159,12 +165,12 @@ export function RecorderSheetView({ recorder, onOpenNote, consentAsking }: Recor
               className="h-14 w-full justify-start gap-3 rounded-xl px-5 text-body font-semibold disabled:bg-surface-2 disabled:text-foreground disabled:opacity-100 land:col-start-2 land:row-start-2"
               data-testid="voice-note-stop"
             >
-              {saving || phase === "starting" ? (
+              {saving || discarding || phase === "starting" ? (
                 <Loader2Icon className="!size-5 animate-spin" aria-hidden="true" />
               ) : (
                 <SquareIcon className="fill-current" aria-hidden="true" />
               )}
-              {saving ? "Saving…" : "Stop and save"}
+              {saving ? "Saving…" : discarding ? "Discarding…" : "Stop and save"}
             </Button>
           )
         )}
@@ -178,13 +184,15 @@ export function RecorderSheetView({ recorder, onOpenNote, consentAsking }: Recor
  * Escape or Android Back minimise it) and a 560px dialog on wider screens,
  * open while `sheetOpen`. Closing it never stops the recording.
  */
-export function RecorderSheet(props: { onOpenNote?: (id: string) => void; consentAsking?: boolean }) {
+export function RecorderSheet(props: { onOpenNote?: (id: string) => void; consentAsking?: boolean; discardAsking?: boolean }) {
   const recorder = useRecorder();
   const { size } = useSizeClass();
   const onOpenChange = (open: boolean) => {
     if (!open) recorder.minimiseSheet();
   };
-  const view = <RecorderSheetView recorder={recorder} onOpenNote={props.onOpenNote} consentAsking={props.consentAsking} />;
+  const view = (
+    <RecorderSheetView recorder={recorder} onOpenNote={props.onOpenNote} consentAsking={props.consentAsking} discardAsking={props.discardAsking} />
+  );
   if (size === "compact") {
     return (
       <BottomSheet open={recorder.sheetOpen} onOpenChange={onOpenChange} height="full" title="Voice note recorder" bare contentProps={{ "data-testid": "recorder-sheet" }}>

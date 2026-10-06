@@ -123,6 +123,64 @@ describe("recorderReducer", () => {
     expect(recorderReducer(initialRecorderState, { type: "RECONCILED" }).ready).toBe(true);
   });
 
+  test("discard: recording → discarding → idle, with nothing to show", () => {
+    const discarding = recorderReducer(recording(), { type: "DISCARD_REQUESTED", id: "rec-1" });
+    expect(discarding.phase).toBe("discarding");
+    expect(recorderReducer(discarding, { type: "DISCARDED", id: "rec-1" })).toMatchObject({
+      phase: "idle",
+      recordingId: null,
+      startedAt: null,
+      outcome: null,
+      error: null,
+      limitNotice: null,
+      mic: { state: "idle", reason: null },
+    });
+  });
+
+  test("discard only takes a live recording", () => {
+    const starting = recorderReducer(initialRecorderState, { type: "START_REQUESTED" });
+    expect(recorderReducer(starting, { type: "DISCARD_REQUESTED", id: "rec-1" })).toBe(starting);
+    const saving = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: 5 }], recording());
+    expect(recorderReducer(saving, { type: "DISCARD_REQUESTED", id: "rec-1" })).toBe(saving);
+    expect(recorderReducer(initialRecorderState, { type: "DISCARDED", id: "rec-1" })).toBe(initialRecorderState);
+  });
+
+  test("a discard event for another recording never touches the one on screen", () => {
+    const live = recording();
+    expect(recorderReducer(live, { type: "DISCARD_REQUESTED", id: "rec-old" })).toBe(live);
+    const discarding = recorderReducer(live, { type: "DISCARD_REQUESTED", id: "rec-1" });
+    expect(recorderReducer(discarding, { type: "DISCARDED", id: "rec-old" })).toBe(discarding);
+    expect(recorderReducer(discarding, { type: "DISCARD_FAILED", id: "rec-old", error: "x" })).toBe(discarding);
+    // An id the recorder does not know (a pickup without one) matches, as for the save events.
+    expect(recorderReducer(discarding, { type: "DISCARDED", id: null }).phase).toBe("idle");
+  });
+
+  test("a failed discard is told and back to idle", () => {
+    const failed = run([{ type: "DISCARD_REQUESTED", id: "rec-1" }, { type: "DISCARD_FAILED", id: "rec-1", error: "Could not discard the recording: busy" }], recording());
+    expect(failed).toMatchObject({ phase: "idle", outcome: null, error: "Could not discard the recording: busy" });
+  });
+
+  test("discard racing the limit's auto-stop: whichever is first wins, and nothing is both", () => {
+    // Discard first: the limit's auto-stop, its save and its reset never move the phase.
+    const discarding = recorderReducer(recording(), { type: "DISCARD_REQUESTED", id: "rec-1" });
+    for (const event of [
+      { type: "AUTO_STOPPED", id: "rec-1", notice: "Stopped at the 60-minute limit.", captured: true },
+      { type: "SAVE_PROGRESS", percent: null },
+      { type: "SAVED", id: "rec-1", durationMs: 1, at: 1 },
+      { type: "SAVE_FAILED", error: "x", recording: null },
+      { type: "RESET" },
+      { type: "STOP_FAILED", error: null },
+    ] satisfies RecorderEvent[]) {
+      expect(recorderReducer(discarding, event)).toBe(discarding);
+    }
+    expect(recorderReducer(discarding, { type: "DISCARDED", id: "rec-1" })).toMatchObject({ phase: "idle", outcome: null, limitNotice: null });
+
+    // The limit first: the recording is being saved, and a late Discard changes nothing.
+    const auto = recorderReducer(recording(), { type: "AUTO_STOPPED", id: "rec-1", notice: "Stopped at the 60-minute limit.", captured: true });
+    expect(recorderReducer(auto, { type: "DISCARD_REQUESTED", id: "rec-1" })).toBe(auto);
+    expect(recorderReducer(auto, { type: "SAVED", id: "rec-1", durationMs: 3_600_000, at: 1 })).toMatchObject({ phase: "idle", outcome: "saved" });
+  });
+
   test("RESET returns to idle keeping what the user still has to read", () => {
     const saving = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: 5 }], { ...recording(), limitNotice: "n" });
     expect(recorderReducer(saving, { type: "RESET" })).toMatchObject({ phase: "idle", savePercent: null, limitNotice: "n", outcome: null });

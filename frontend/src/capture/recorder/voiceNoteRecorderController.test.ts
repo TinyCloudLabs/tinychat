@@ -4,7 +4,8 @@
 // racing the limit's auto-stop saves exactly once; another recording's
 // auto-stop (retained from before a reload, or late) is saved in the background
 // without touching the one on screen; listeners go on teardown; Save now after
-// a failed save lands the receipt.
+// a failed save lands the receipt; a discarded recording is deleted and never
+// saved, even when the limit races it or the phone keeps its copy.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -18,6 +19,7 @@ mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
   saveVoiceNote: (...args: Parameters<typeof realStore.saveVoiceNote>) => (fakeVoiceNoteStore.save ?? realStore.saveVoiceNote)(...args),
 }));
 const { createVoiceNoteRecorderController } = await import("./voiceNoteRecorderController");
+const { isDiscarded } = await import("@/lib/voiceNotes/recorderSaves");
 
 const tcw = {} as TinyCloudWeb;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -45,6 +47,9 @@ function earlier(): VoiceNoteRecording {
   return recording;
 }
 
+/** deleteAudio calls that fail before the phone lets a copy go. */
+let deleteFailures: number;
+
 function controller() {
   return createVoiceNoteRecorderController({
     tcw,
@@ -68,6 +73,7 @@ beforeEach(() => {
   saves = [];
   noted = [];
   currentId = null;
+  deleteFailures = 0;
   const plugin: VoiceNotesPlugin = {
     ...fake.plugin,
     async start(options) {
@@ -84,6 +90,10 @@ beforeEach(() => {
       return { recordings: [...onPhone] };
     },
     async deleteAudio({ id }) {
+      if (deleteFailures > 0) {
+        deleteFailures--;
+        throw new Error("the file is busy");
+      }
       onPhone = onPhone.filter((recording) => recording.id !== id);
     },
   };
@@ -216,5 +226,66 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().lastSaved?.id).toBe(failed.failedRecording!.id);
     expect(noted).toEqual([failed.failedRecording!.id]);
     expect(onPhone).toEqual([]);
+  });
+
+  test("discard stops the recording and deletes it; nothing is saved", async () => {
+    const { recorder } = await attached();
+    await recorder.record();
+    const discarding = recorder.discard();
+    expect(recorder.getState().phase).toBe("discarding");
+    // A second tap while it runs does nothing.
+    await recorder.discard();
+    await discarding;
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: null, recordingId: null });
+    expect(fake.stats().recording).toBe(false);
+    expect(onPhone).toEqual([]);
+    expect(saves).toEqual([]);
+    expect(noted).toEqual([]);
+  });
+
+  test("discard racing the limit's auto-stop: discard first deletes it, the limit first saves it", async () => {
+    for (const order of ["discard-first", "auto-first"] as const) {
+      saves = [];
+      const { recorder, detach } = await attached();
+      await recorder.record();
+      // The native recorder stops itself at the limit: stop() now answers not_recording.
+      const recording = await stopNatively();
+      const autoStopped = { reason: "max_duration" as const, maxDurationMs: 60_000, at: Date.now(), recording };
+      if (order === "discard-first") {
+        const discarding = recorder.discard();
+        fake.emit("autoStopped", autoStopped);
+        await discarding;
+      } else {
+        fake.emit("autoStopped", autoStopped);
+        await recorder.discard();
+      }
+      await tick();
+      await tick();
+      if (order === "discard-first") {
+        expect(saves).toEqual([]);
+        expect(onPhone).toEqual([]);
+        expect(isDiscarded(recording.id)).toBe(false);
+        expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, limitNotice: null });
+      } else {
+        expect(saves).toEqual([recording.id]);
+        expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: "saved" });
+      }
+      detach();
+    }
+  });
+
+  test("a failed delete keeps the recording marked; Save now deletes it, never saves it", async () => {
+    deleteFailures = 1;
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.discard();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this phone kept its copy: the file is busy" });
+    const kept = onPhone[0]!;
+    expect(isDiscarded(kept.id)).toBe(true);
+
+    await recorder.retryPending();
+    expect(onPhone).toEqual([]);
+    expect(saves).toEqual([]);
+    expect(isDiscarded(kept.id)).toBe(false);
   });
 });

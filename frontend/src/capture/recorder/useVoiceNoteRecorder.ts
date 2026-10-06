@@ -31,6 +31,8 @@ export interface VoiceNoteRecorder {
   transcription: VoiceNoteTranscriptionProps | undefined;
   record(): void;
   stop(): void;
+  /** Stop the live recording and delete it; nothing is saved. */
+  discard(): void;
   retryPending(): void;
   /** The receipt was read. */
   dismissOutcome(): void;
@@ -68,6 +70,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       transcription: transcriptionProps(transcriber, snapshot),
       record: () => void controller.record(),
       stop: () => void controller.stop(),
+      discard: () => void controller.discard(),
       retryPending: () => void controller.retryPending(),
       dismissOutcome: controller.dismissOutcome,
       subscribeLevel: controller.subscribeLevel,

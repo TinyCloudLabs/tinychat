@@ -1,10 +1,14 @@
 // The voice-note recorder's state, as a pure reducer (plan §4.2). The phases
-// are the card's: idle → starting → recording → stopping → saving → idle.
+// are the card's: idle → starting → recording → stopping → saving → idle, and
+// recording → discarding → idle when the user discards it (PR5). While it is
+// discarding, nothing else moves the phase: the limit's auto-stop is not shown
+// (autoStopIsCurrent), and its save meets the discard guard (recorderSaves.ts),
+// which deletes the recording instead.
 // `useVoiceNoteRecorder` turns the plugin's answers and events into these
 // events; every view reads the result through RecorderProvider.
 import { VOICE_NOTE_MAX_DURATION_MS, type MicState, type MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
 
-export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "saving";
+export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "saving" | "discarding";
 
 export interface RecorderMic {
   state: MicState;
@@ -64,7 +68,13 @@ export type RecorderEvent =
   /** Back to idle without an outcome (the recording is being saved elsewhere). */
   | { type: "RESET" }
   /** The receipt was read: Done, Open, or its time ran out. */
-  | { type: "DISMISSED" };
+  | { type: "DISMISSED" }
+  /** The user confirmed Discard on the live recording `id`. */
+  | { type: "DISCARD_REQUESTED"; id: string | null }
+  /** Stopped and deleted from the phone; nothing was saved. */
+  | { type: "DISCARDED"; id: string | null }
+  /** stop() or the delete failed; the recording stays marked, so no save keeps it. */
+  | { type: "DISCARD_FAILED"; id: string | null; error: string };
 
 const IDLE_MIC: RecorderMic = { state: "idle", reason: null };
 
@@ -92,8 +102,9 @@ function toIdle(state: RecorderState): RecorderState {
 /**
  * Whether a limit's auto-stop belongs to what the recorder shows. With nothing under
  * way it does (a retained event after a reload: its save is shown). While a recording
- * starts, or another one saves, it is someone else's. While recording or stopping, it
- * must be that recording's.
+ * starts, or another one saves, it is someone else's; while one is discarded, its save
+ * meets the discard guard out of sight. While recording or stopping, it must be that
+ * recording's.
  */
 export function autoStopIsCurrent(state: Pick<RecorderState, "phase" | "recordingId">, id: string | null): boolean {
   switch (state.phase) {
@@ -101,6 +112,7 @@ export function autoStopIsCurrent(state: Pick<RecorderState, "phase" | "recordin
       return true;
     case "starting":
     case "saving":
+    case "discarding":
       return false;
     case "recording":
     case "stopping":
@@ -111,6 +123,11 @@ export function autoStopIsCurrent(state: Pick<RecorderState, "phase" | "recordin
 /** A save result belongs to the recording being saved (or to a failed one that Save now landed). */
 function savingThis(state: RecorderState, id: string | null): boolean {
   return (state.phase === "stopping" || state.phase === "saving") && (id === null || state.recordingId === null || id === state.recordingId);
+}
+
+/** A discard event belongs to the recording on screen, by the same rule. */
+function discardingThis(state: RecorderState, phase: "recording" | "discarding", id: string | null): boolean {
+  return state.phase === phase && (id === null || state.recordingId === null || id === state.recordingId);
 }
 
 export function recorderReducer(state: RecorderState, event: RecorderEvent): RecorderState {
@@ -149,7 +166,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       if (state.phase !== "recording") return state;
       return { ...state, phase: "stopping" };
     case "STOP_FAILED":
-      if (state.autoSaving) return state;
+      if (state.autoSaving || state.phase === "discarding") return state;
       return { ...toIdle(state), error: event.error ?? state.error };
     case "SAVE_PROGRESS":
       if (state.phase !== "stopping" && state.phase !== "saving") return state;
@@ -188,8 +205,19 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "RECONCILED":
       return state.ready ? state : { ...state, ready: true };
     case "RESET":
+      if (state.phase === "discarding") return state;
       return toIdle(state);
     case "DISMISSED":
       return { ...state, outcome: null, error: null, failedRecording: null };
+    case "DISCARD_REQUESTED":
+      // Only a live recording: once Stop or the limit has it, it is being saved.
+      if (!discardingThis(state, "recording", event.id)) return state;
+      return { ...state, phase: "discarding", error: null };
+    case "DISCARDED":
+      if (!discardingThis(state, "discarding", event.id)) return state;
+      return { ...toIdle(state), error: null, limitNotice: null };
+    case "DISCARD_FAILED":
+      if (!discardingThis(state, "discarding", event.id)) return state;
+      return { ...toIdle(state), error: event.error };
   }
 }

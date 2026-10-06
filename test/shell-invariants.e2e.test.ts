@@ -13,6 +13,8 @@
 //      focused; a malformed or unknown anchor opens it at the top.
 //   6. An InfoTip opens on a tap and closes on a second tap, an outside tap
 //      or Escape.
+//   7. Discard asks in place, with focus on Keep, and turns back after 5 s;
+//      confirmed, it stops and deletes the recording and closes the recorder.
 //
 // SHELL_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -216,6 +218,46 @@ describe.serial(`shell invariants (${name})`, () => {
 
     expect((await stats()).adds).toBe(addsAtReady);
     expect(highest).toBe(3);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("discard: the question takes focus to Keep and turns back after 5 s; confirmed, the recording is deleted and the recorder closes", async () => {
+    const { page, errors } = await open("/chat/capture");
+    const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
+    const focused = () => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+
+    // Asked in place: focus moves to Keep; 5 s without an answer turns it back, focus with it.
+    await page.getByTestId("recorder-discard").click();
+    await page.getByTestId("recorder-discard-confirm").waitFor();
+    expect(await page.getByRole("group", { name: "Discard this recording?" }).count()).toBe(1);
+    expect(await focused()).toBe("recorder-discard-keep");
+    await page.waitForTimeout(4_000);
+    expect(await page.getByTestId("recorder-discard-confirm").count()).toBe(1);
+    await page.getByTestId("recorder-discard").waitFor({ timeout: 3_000 });
+    expect(await page.getByTestId("recorder-discard-confirm").count()).toBe(0);
+    expect(await focused()).toBe("recorder-discard");
+
+    // Keep: nothing happens to the recording.
+    await page.getByTestId("recorder-discard").click();
+    await page.getByTestId("recorder-discard-keep").click();
+    await page.getByTestId("recorder-discard").waitFor();
+    expect(await focused()).toBe("recorder-discard");
+    expect((await stats()).recording).toBe(true);
+
+    // Discard: stopped, deleted from the phone, nothing saved, and the recorder closes.
+    await page.getByTestId("recorder-discard").click();
+    await page.getByTestId("recorder-discard-yes").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => document.querySelector('[data-testid="recorder-announcer"]')?.textContent === "Recording discarded");
+    await page.waitForFunction(() => document.querySelector('[data-testid="recorder-sheet"]') === null);
+    expect((await stats()).deleted).toEqual(["fake-1"]);
+    expect(await page.getByTestId("recorder-island").count()).toBe(0);
+    expect(await page.getByTestId("voice-note-record").count()).toBe(1);
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);

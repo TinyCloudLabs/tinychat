@@ -62,7 +62,7 @@ function Backdrop(props: { children?: ReactNode }) {
 function sheet(
   id: string,
   value: Partial<RecorderValue>,
-  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean } = {},
+  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean; discardAsking?: boolean } = {},
 ): HarnessScreen {
   return {
     id: `recorder-${id}`,
@@ -73,7 +73,7 @@ function sheet(
     render: () => (
       <StaticRecorderProvider value={{ ...value, sheetOpen: true }} levels={options.levels ?? LEVELS}>
         <Backdrop />
-        <RecorderSheet onOpenNote={noop} consentAsking={options.consentAsking} />
+        <RecorderSheet onOpenNote={noop} consentAsking={options.consentAsking} discardAsking={options.discardAsking} />
         {options.live && <LiveMic warning={options.warning} />}
       </StaticRecorderProvider>
     ),
@@ -163,6 +163,8 @@ export const recorderScreens: HarnessScreen[] = [
     pending: { listing: { state: "ok", count: 1 }, running: false, lastError: null },
   }),
   sheet("consent", { ...LIVE, transcription: { ...PRIVATE_CLOUD_ON, consented: false } }, { live: true, consentAsking: true }),
+  // Discard's question, in place of the header's action (PR5).
+  sheet("discard", LIVE, { live: true, discardAsking: true }),
   island("live", LIVE, true),
   island("saving", { ...LIVE, phase: "saving", savePercent: 42 }),
   island("landed", { phase: "idle", outcome: "saved", lastSaved: SAVED }),
