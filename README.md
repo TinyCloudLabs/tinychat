@@ -14,8 +14,8 @@ This app was generated with:
 
 ## UI Style
 
-Exo's look comes from tokens, not per-component values. The palette (navy
-Night and paper Day, following the system theme), the type roles (Literata for
+Exo's look comes from tokens, not per-component values. The palette (Exo's
+neutral zinc greys, light and dark, following the system theme), the type roles (Literata for
 display titles only, the system sans for everything else), radius, shadow and
 motion are defined in `frontend/src/index.css` and `frontend/tailwind.config.js`.
 `frontend/src/designTokens.test.ts` checks the palette's contrast pairs. To see

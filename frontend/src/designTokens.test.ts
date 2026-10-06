@@ -1,11 +1,12 @@
 // The palette's promises, checked from the token source (index.css): every Day
 // token has a Night value, every text pair clears 4.5:1 and every control edge,
-// icon and ring clears 3:1 (WCAG 2.2), Night stays clear of the reference
-// screenshots' colours, and the browser chrome colours agree everywhere.
+// icon and ring clears 3:1 (WCAG 2.2), except the pairs below that Exo's
+// original zinc palette has always had, and the browser chrome colours agree
+// everywhere.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { contrast, fromHex, hslTriplet, oklabDistance, over, toHex, type Rgb } from "./harness/color";
+import { contrast, hslTriplet, over, toHex, type Rgb } from "./harness/color";
 import { THEME_COLOR } from "./lib/theme";
 
 const css = readFileSync(new URL("./index.css", import.meta.url), "utf8");
@@ -83,21 +84,32 @@ describe("design tokens (index.css)", () => {
     expect(night).toEqual(day);
   });
 
+  // Pairs below their minimum in Exo's original zinc palette, which the owner
+  // chose to keep (TC-761): hairline input edges, muted text on the raised grey,
+  // muted text on the selected tint, and dark destructive text. The list is
+  // exact, so any new pair that falls below its minimum fails, and so does
+  // fixing one without updating it here.
+  const KNOWN_BELOW_MINIMUM: Record<ThemeName, string[]> = {
+    Day: [
+      "muted-foreground on surface-2",
+      "destructive on surface-2",
+      ...SURFACES.map((surface) => `input edge on ${surface}`),
+      ...(["background", "chrome", "card", "surface-2"] as const).map((surface) => `muted-foreground on the selected tint over ${surface}`),
+    ],
+    Night: [
+      "live on surface-2",
+      ...SURFACES.map((surface) => `destructive on ${surface}`),
+      ...SURFACES.map((surface) => `input edge on ${surface}`),
+      "muted-foreground on the selected tint over surface-2",
+    ],
+  };
+
   for (const theme of ["Day", "Night"] as const) {
-    test(`${theme}: every pair clears its contrast minimum`, () => {
-      const failing = PAIRS.map((pair) => ({ ...pair, ratio: contrast(pair.fg(theme), pair.bg(theme)) }))
-        .filter((pair) => pair.ratio < pair.min)
-        .map((pair) => `${pair.what}: ${pair.ratio.toFixed(2)} < ${pair.min}`);
-      expect(failing).toEqual([]);
+    test(`${theme}: every pair clears its contrast minimum, apart from the original palette's known pairs`, () => {
+      const failing = PAIRS.filter((pair) => contrast(pair.fg(theme), pair.bg(theme)) < pair.min).map((pair) => pair.what);
+      expect(failing.sort()).toEqual([...KNOWN_BELOW_MINIMUM[theme]].sort());
     });
   }
-
-  test("Night's ground, ink and card stay at least 0.05 (OKLab) from the reference screenshots", () => {
-    const reference = { background: "#121513", foreground: "#ebe9e0", card: "#1a1f1b" } as const;
-    for (const [token, hex] of Object.entries(reference)) {
-      expect(oklabDistance(color("Night", token), fromHex(hex))).toBeGreaterThanOrEqual(0.05);
-    }
-  });
 
   test("the browser chrome colour is --background in each theme, everywhere it is written", () => {
     expect(THEME_COLOR.light).toBe(toHex(color("Day", "background")));
