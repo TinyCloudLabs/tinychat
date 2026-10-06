@@ -414,3 +414,29 @@ describe("Connect agent owner check (TC-706)", () => {
     expect(methods).toEqual(["GET"]);
   });
 });
+
+describe("Connect agent passkey support", () => {
+  const SESSION = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+  const provider = { on() {}, removeListener() {}, request: async () => { throw new Error("no signing in tests"); } };
+  const realWindow = (globalThis as { window?: unknown }).window;
+  afterEach(() => { (globalThis as { window?: unknown }).window = realWindow; });
+
+  async function passkeysSupportedSentToOpenKey(): Promise<boolean | undefined> {
+    let sent: boolean | undefined;
+    await mintAgentSessionViaFreshSignIn({
+      appName: "test", openkeyHost: "https://openkey.test", sessionAddress: SESSION,
+      _connect: async (config) => { sent = config.passkeysSupported; return { address: SESSION, web3Provider: provider }; },
+    }).catch(() => undefined); // Sign-in itself cannot run under bun test.
+    return sent;
+  }
+
+  it("keeps passkeys on the web", async () => {
+    (globalThis as { window?: unknown }).window = {};
+    expect(await passkeysSupportedSentToOpenKey()).toBe(true);
+  });
+
+  it("turns passkeys off in the Tauri desktop shell", async () => {
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    expect(await passkeysSupportedSentToOpenKey()).toBe(false);
+  });
+});

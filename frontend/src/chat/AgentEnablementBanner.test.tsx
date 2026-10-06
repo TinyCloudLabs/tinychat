@@ -55,6 +55,16 @@ describe("AgentEnablementBanner", () => {
     expect(markup).toContain("Connect private agent access");
     expect(markup).toContain(">Connect agent</button>");
     expect(markup).not.toContain("Reconnect");
+    expect(markup).toContain("sign with your passkey");
+  });
+
+  it("does not promise a passkey where OpenKey offers none (desktop)", () => {
+    const markup = renderToStaticMarkup(
+      <AgentEnablementBanner {...baseProps} reconnectReason={null} passkeysSupported={false} />,
+    );
+
+    expect(markup).toContain("sign in with OpenKey once to authorize access");
+    expect(markup).not.toContain("passkey");
   });
 });
 
