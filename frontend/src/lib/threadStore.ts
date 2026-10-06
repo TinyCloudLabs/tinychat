@@ -1,3 +1,4 @@
+import { isStorageFullError, reportStorageError, storageSaveMessage, trackStorageWrites } from "./storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
@@ -40,7 +41,7 @@ export const DEFAULT_MODEL = DEFAULT_CHAT_MODEL;
 export const THREADS_SQL_DB_NAME = `${APP_ID}/threads`;
 const SQL_DB_NAME = THREADS_SQL_DB_NAME;
 
-/** Schema creates, run before the first write per session (via ensureSchema). */
+/** Schema statements, created only for tables missing from a read-only probe. */
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS threads (
     id TEXT PRIMARY KEY,
@@ -90,9 +91,9 @@ const MEMORY_ROW_ID = "user_context";
 /**
  * Stable id of the last-known-good backup row, stored in the SAME `memory`
  * table (no schema change). `setMemory` snapshots the prior live doc here
- * before writing the new one; `getMemory` auto-restores from it if the live
- * row is ever found missing/empty; `clearMemory` deletes both rows so an
- * explicit "Clear memory" is not silently resurrected.
+ * before writing the new one; `getMemory` falls back to it if the live row is
+ * ever found missing/empty; `clearMemory` deletes both rows so an explicit
+ * "Clear memory" is not silently resurrected.
  */
 const MEMORY_BACKUP_ROW_ID = "user_context_backup";
 
@@ -179,10 +180,12 @@ export class SqlOpError extends Error {
    */
   readonly retryable: boolean;
   constructor(error: SqlError, context: string) {
-    super(`${context}: [${error.code}] ${error.message}`);
+    const message = storageSaveMessage(error) ?? `${context}: [${error.code}] ${error.message}`;
+    super(message, { cause: error });
     this.name = "SqlOpError";
     this.code = error.code;
     this.retryable = error.code === SQL_TIMEOUT_CODE;
+    reportStorageError(error);
   }
 }
 
@@ -250,7 +253,7 @@ function bounded(db: SqlDb, timeoutMs?: number) {
 /** A SQL database handle bound to the granted per-space resource. */
 function store(tcw: TinyCloudWeb, timeoutMs?: number) {
   if (localStores.has(tcw)) throw new Error("Local validation cannot access the production chat store");
-  return bounded(tcw.sql.db(SQL_DB_NAME), timeoutMs);
+  return trackStorageWrites(bounded(tcw.sql.db(SQL_DB_NAME), timeoutMs));
 }
 
 function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
@@ -260,49 +263,68 @@ function sortSummaries(summaries: ThreadSummary[]): ThreadSummary[] {
 // ── Schema bootstrap (memoized per space) ────────────────────────────
 
 const schemaReadySpaces = new Set<string>();
-const schemaInFlight = new Map<string, Promise<void>>();
+const schemaInFlight = new Map<string, Promise<SqlError | null>>();
 
 /**
- * Ensure the schema (threads, messages, idx_messages_thread) exists. Memoized
- * per account so it's a no-op after the first call per session.
+ * Probe the schema read-only before creating any missing tables. Existing
+ * schemas therefore remain readable when storage is full. Memoized per
+ * account; concurrent callers share one probe/create sequence.
  *
- * Memo key prefers `tcw.did` over `tcw.spaceId` for the same reason as
- * `cacheKey` below: spaceId is undefined on a RESTORED session, and an empty
- * key disabled the memo entirely — every SQL helper paid a schema batch
- * (~2s round-trip) before its real query, doubling all boot traffic.
- *
- * Concurrent first-callers share one in-flight batch instead of each issuing
- * their own (boot fires listThreads / getThread / getMemory / getThreadModel
- * roughly simultaneously, and the node degrades badly under parallel invokes).
- *
- * The CREATEs run as ordinary write statements in one `batch` transaction.
- * NOTE: do NOT use `execute(..., { schema })` — the schema option is authorized
- * differently and returns "400 Schema error: not authorized" under our
- * read+write grant, whereas plain DDL statements (CREATE TABLE …) are allowed.
- * On failure we do NOT memoize and we propagate so the caller can surface it.
+ * The memo key prefers `tcw.did` over `tcw.spaceId` because restored sessions
+ * may not expose `spaceId`. Failed probes or creates are not memoized.
  */
-async function ensureSchema(tcw: TinyCloudWeb): Promise<void> {
+async function ensureSchema(tcw: TinyCloudWeb, options: { forWrite?: boolean } = {}): Promise<void> {
   const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
   const space = typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
   const memoKey = did ?? space ?? "";
   if (memoKey && schemaReadySpaces.has(memoKey)) return;
 
-  const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
-  if (inFlight) return inFlight;
+  let run = memoKey ? schemaInFlight.get(memoKey) : undefined;
+  if (!run) {
+    run = (async (): Promise<SqlError | null> => {
+      const db = store(tcw);
+      const tables = SCHEMA.map((sql) => sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1]).filter(
+        (table): table is string => table !== undefined,
+      );
+      const existingResult = await db.query(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+        tables,
+      );
+      if (!existingResult.ok) throw new SqlOpError(existingResult.error, "ensureSchema probe");
+      const existingRows = existingResult.data.rows as unknown as unknown[][];
+      const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
+      const missing = SCHEMA.filter((sql) => {
+        const table = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i)?.[1];
+        return table !== undefined && !existing.has(table);
+      });
+      if (missing.length > 0) {
+        const result = await db.batch(missing.map((sql) => ({ sql })));
+        if (!result.ok) {
+          // Reads may use existing tables when an unrelated migration fails.
+          // Return the typed storage error so each caller applies its own policy.
+          if (isStorageFullError(result.error)) return result.error;
+          throw new SqlOpError(result.error, "ensureSchema");
+        }
+      }
+      if (memoKey) schemaReadySpaces.add(memoKey);
+      return null;
+    })();
 
-  const run = (async () => {
-    const result = await store(tcw).batch(SCHEMA.map((sql) => ({ sql })));
-    if (!result.ok) {
-      throw new SqlOpError(result.error, "ensureSchema");
+    if (memoKey) {
+      schemaInFlight.set(memoKey, run);
+      void run.then(
+        () => {
+          if (schemaInFlight.get(memoKey) === run) schemaInFlight.delete(memoKey);
+        },
+        () => {
+          if (schemaInFlight.get(memoKey) === run) schemaInFlight.delete(memoKey);
+        },
+      );
     }
-    if (memoKey) schemaReadySpaces.add(memoKey);
-  })();
-
-  if (memoKey) {
-    schemaInFlight.set(memoKey, run);
-    void run.catch(() => {}).finally(() => schemaInFlight.delete(memoKey));
   }
-  return run;
+
+  const storageError = await run;
+  if (storageError && options.forWrite) throw new SqlOpError(storageError, "ensureSchema");
 }
 
 // ── Read helpers (rows are CELL-arrays, mapped by column order) ───────
@@ -408,7 +430,7 @@ export async function getSetting(tcw: TinyCloudWeb, key: string): Promise<string
 export async function setSetting(tcw: TinyCloudWeb, key: string, value: string): Promise<void> {
   const local = localStores.get(tcw);
   if (local) { local.settings.set(key, value); return; }
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
   const res = await store(tcw).execute(
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     [key, value],
@@ -502,9 +524,8 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
       writeMemoryCache(tcw, liveContent);
       return liveContent;
     }
-    // Live row empty/missing — try the last-known-good backup. If present,
-    // restore it into the live row so subsequent reads short-circuit on the
-    // happy path without paying the second query each time.
+    // Live row empty/missing — use the last-known-good backup without trying
+    // to repair TinyCloud storage on the read path.
     const bk = await store(tcw).query(
       "SELECT content FROM memory WHERE id = ?",
       [MEMORY_BACKUP_ROW_ID],
@@ -512,21 +533,6 @@ export async function getMemory(tcw: TinyCloudWeb): Promise<string | null> {
     if (bk.ok && bk.data.rows.length > 0) {
       const bkContent = cellStr(bk.data.rows[0], 0, "");
       if (bkContent.trim().length > 0) {
-        const now = new Date().toISOString();
-        const restoreRes = await store(tcw).execute(
-          `INSERT INTO memory (id, content, updated_at) VALUES (?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`,
-          [MEMORY_ROW_ID, bkContent, now],
-        );
-        if (!restoreRes.ok) {
-          // Data is still safe — bkContent is returned to the caller — but
-          // subsequent reads will pay the extra backup query until the live
-          // row is repopulated. Log so the failure is observable.
-          console.warn(
-            "[threadStore] getMemory: failed to restore backup row into live",
-            restoreRes.error,
-          );
-        }
         writeMemoryCache(tcw, bkContent);
         return bkContent;
       }
@@ -549,7 +555,7 @@ export async function setMemory(tcw: TinyCloudWeb, content: string): Promise<voi
   // Bump BEFORE SQL: any in-flight memory read will see a different counter
   // on completion and skip its ref assignment (see memoryWriteGen above).
   _memoryWriteGen++;
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
   const now = new Date().toISOString();
   const UPSERT =
     `INSERT INTO memory (id, content, updated_at) VALUES (?, ?, ?)
@@ -601,7 +607,7 @@ export async function clearMemory(tcw: TinyCloudWeb): Promise<void> {
   const local = localStores.get(tcw);
   if (local) { _memoryWriteGen++; local.memory = null; return; }
   _memoryWriteGen++;
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
   const res = await store(tcw).batch([
     { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_ROW_ID] },
     { sql: "DELETE FROM memory WHERE id = ?", params: [MEMORY_BACKUP_ROW_ID] },
@@ -649,7 +655,7 @@ export async function appendCompaction(
     local.compactions.set(threadId, cp);
     return cp;
   }
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const res = await store(tcw).execute(
@@ -1099,7 +1105,7 @@ export async function appendMessage(
   }
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
-    await ensureSchema(tcw);
+    await ensureSchema(tcw, { forWrite: true });
 
     // Reconcile a prior uncertain batch before replaying. The message id is the
     // idempotency key; if the server committed but the response was lost (or
@@ -1224,7 +1230,7 @@ export async function rewriteThreadMessages(
   }
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
-    await ensureSchema(tcw);
+    await ensureSchema(tcw, { forWrite: true });
     const read = async () => {
       const res = await store(tcw).query("SELECT payload FROM messages WHERE thread_id = ? ORDER BY position", [id]);
       if (!res.ok) throw new SqlOpError(res.error, "rewriteThreadMessages(read)");
@@ -1258,6 +1264,7 @@ export async function rewriteThreadMessages(
         notifyThreadIndex(readCache(tcw) ?? []);
         return;
       }
+      if (isStorageFullError(res.error)) throw new SqlOpError(res.error, "rewriteThreadMessages");
       lastError = res.error;
       const after = await read();
       const unchanged = after.payloads.length === current.payloads.length
@@ -1302,7 +1309,7 @@ export async function importThread(
     return;
   }
   mutationGen++;
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
 
   const model = conv.model ?? IMPORT_DEFAULT_MODEL;
 
@@ -1359,7 +1366,7 @@ export async function setThreadTitle(
     return;
   }
   mutationGen++;
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
   const now = new Date().toISOString();
   const res = await store(tcw).execute(
     "UPDATE threads SET title = ?, updated_at = ? WHERE id = ?",
@@ -1395,7 +1402,7 @@ export async function setThreadModel(
   }
   return enqueueThreadWrite(tcw, id, async () => {
     mutationGen++;
-    await ensureSchema(tcw);
+    await ensureSchema(tcw, { forWrite: true });
     const now = new Date().toISOString();
     const res = await store(tcw).execute(
       "UPDATE threads SET model = ?, updated_at = ? WHERE id = ?",
@@ -1442,7 +1449,7 @@ export async function deleteThread(tcw: TinyCloudWeb, id: string): Promise<void>
   // Bump BEFORE SQL: any listThreads() revalidate already in flight will see
   // a different mutationGen on completion and will not clobber the cache.
   mutationGen++;
-  await ensureSchema(tcw);
+  await ensureSchema(tcw, { forWrite: true });
   const res = await store(tcw).batch([
     { sql: "DELETE FROM messages WHERE thread_id = ?", params: [id] },
     { sql: "DELETE FROM threads WHERE id = ?", params: [id] },

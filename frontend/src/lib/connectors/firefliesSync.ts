@@ -30,6 +30,7 @@ import {
   type StoreResult,
   type UpdateSyncStateInput,
 } from "./connectorStore";
+import { isStorageFullError } from "../storageStatus";
 import type { SyncProgress, SyncResult } from "./types";
 
 const SOURCE = "fireflies" as const;
@@ -188,11 +189,19 @@ export async function syncFireflies(
             const insertRes = await store.insertMeeting(tcw, meeting);
             if (!insertRes.ok) {
               result.errors.push(`${id}: ${insertRes.error.message}`);
+              if (isStorageFullError(insertRes.error)) {
+                terminal = fromStore(insertRes.error, "insertMeeting");
+                break;
+              }
               continue;
             }
             const putRes = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
             if (!putRes.ok) {
               result.errors.push(`${id}: ${putRes.error.message}`);
+              if (isStorageFullError(putRes.error)) {
+                terminal = fromStore(putRes.error, "putTranscriptBody");
+                break;
+              }
               continue;
             }
             if (insertRes.data) result.added += 1;
@@ -218,6 +227,7 @@ export async function syncFireflies(
     // Unexpected mid-loop throw (e.g. abort-signal listener) — surface as storage.
     terminal = { kind: "storage", message: errorMessage(err) };
   }
+  if (terminal?.kind === "storage") return { ok: false, error: terminal };
 
   // Final state update — both ok and error paths reach here. countMeetings is
   // best-effort so a broken read doesn't mask the real terminal error.

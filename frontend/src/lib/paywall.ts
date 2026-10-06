@@ -1,4 +1,4 @@
-import type { PaywallErrorPayload } from "@/lib/chatApi";
+import type { PaywallEventPayload } from "@/lib/chatApi";
 
 /**
  * ST3 — a 402 is "actionable" (an upgrade can resolve it, so pop the pricing
@@ -11,7 +11,7 @@ import type { PaywallErrorPayload } from "@/lib/chatApi";
  * Pure + DOM-free (the payload type is imported type-only) so the routing is
  * unit-tested rather than browser-checked — see paywall.test.ts.
  */
-export function isPaywallActionable(payload: PaywallErrorPayload): boolean {
+export function isPaywallActionable(payload: PaywallEventPayload): boolean {
   return (
     payload.error === "credit_budget_exceeded" ||
     (payload.error === "model_not_allowed" && payload.requiredTier != null)

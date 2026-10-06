@@ -18,6 +18,12 @@ export interface PaywallErrorPayload {
   requiredTier?: "plus" | "pro";
   usage?: { used: number; limit: number; resetsAt: string };
 }
+export interface StoragePaywallErrorPayload {
+  error: "STORAGE_QUOTA_EXCEEDED" | "STORAGE_LIMIT_REACHED";
+  message: string;
+}
+
+export type PaywallEventPayload = PaywallErrorPayload | StoragePaywallErrorPayload;
 
 export interface ModelSelectionErrorPayload {
   error: "model_not_offered" | "model_blocklisted";
@@ -115,7 +121,7 @@ export async function classifyContextOverflow(
 // ── Billing-event emitter (paywall + receipt) ───────────────────────
 
 export type BillingEvent =
-  | { type: "paywall"; payload: PaywallErrorPayload }
+  | { type: "paywall"; payload: PaywallEventPayload }
   | { type: "receipt"; messageId: string; credits: number; modelId: string };
 
 type BillingListener = (event: BillingEvent) => void;
@@ -159,13 +165,20 @@ function emitModelSelectionError(payload: ModelSelectionErrorPayload): void {
   }
 }
 
-/** Subscribe only to paywall (402) events. Returns an unsubscribe fn. */
+/** Subscribe to LLM and storage paywall events. */
 export function onPaywallError(
-  listener: (payload: PaywallErrorPayload) => void,
+  listener: (payload: PaywallEventPayload) => void,
 ): () => void {
   return onBillingEvent((event) => {
     if (event.type === "paywall") listener(event.payload);
   });
+}
+
+export function emitStoragePaywallError(
+  message: string,
+  error: StoragePaywallErrorPayload["error"] = "STORAGE_QUOTA_EXCEEDED",
+): void {
+  emitBilling({ type: "paywall", payload: { error, message } });
 }
 
 /** Emit a receipt event (called from runtime.tsx after a stream completes). */

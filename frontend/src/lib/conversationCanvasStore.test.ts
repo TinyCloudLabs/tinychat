@@ -13,8 +13,8 @@ import {
   isLocalCanvasStorage,
   loadCanvasState,
   openCanvas,
-  promoteLegacyThread,
   mutateCanvas,
+  promoteLegacyThread,
   promotedCanvasForTurn,
   recordPromotedChatMessage,
   sanitizeCanvas,
@@ -22,6 +22,7 @@ import {
   setCanvasEnabled,
   useLocalCanvasStorage,
 } from "./conversationCanvasStore";
+import { STORAGE_FULL_SAVE_MESSAGE, reportStorageWriteSucceeded } from "./storageStatus";
 import { activeAncestry, createDocument, placeDocument } from "../chat/canvas/model";
 
 type Client = Parameters<typeof useLocalCanvasStorage>[0];
@@ -52,6 +53,9 @@ function recordingClient(did: string, options: {
     async query(sql: string, params: string[] = []) {
       databases.push(name);
       statements.push(sql);
+      if (/FROM sqlite_master/i.test(sql)) {
+        return { ok: true, data: { rows: params.map((table) => [table]) } };
+      }
       if (sql.includes("FROM settings")) {
         if (failSettingsReads > 0) {
           failSettingsReads--;
@@ -83,7 +87,7 @@ function recordingClient(did: string, options: {
   return { tcw, settings, databases, statements, permissionRequests };
 }
 
-const settingsReads = (statements: string[]) => statements.filter((sql) => sql.includes("FROM settings")).length;
+const settingsReads = (statements: string[]) => statements.filter((sql) => /^SELECT key, value FROM settings/i.test(sql.trim())).length;
 
 const item = (id: string, role: "user" | "assistant", text: string, extra: Record<string, unknown> = {}): StoredMessageItem => ({
   parentId: null,
@@ -255,6 +259,9 @@ class SharedSpace {
   private readonly did = `did:test:shared-space-${++spaces}`;
   private readonly databases = new Map<string, Database>();
   private devices = 0;
+  rejectWrites = false;
+  rejectAfterRevisionBump = false;
+  batchCalls = 0;
   /** Runs once, right before the next batch whose first statement matches. */
   private interleave: { match: string; run: () => Promise<void> } | null = null;
 
@@ -293,6 +300,17 @@ class SharedSpace {
         }
       },
       batch: async (operations: Array<{ sql: string; params?: (string | number | null)[] }>) => {
+        this.batchCalls++;
+        if (this.rejectWrites) {
+          return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
+        }
+        if (this.rejectAfterRevisionBump && name === CANVAS_SQL_DB_NAME && operations[0]?.sql.includes("INSERT INTO canvas_revisions")) {
+          this.rejectAfterRevisionBump = false;
+          for (const operation of operations.slice(0, 2)) {
+            this.database(name).query(operation.sql).run(...(operation.params ?? []));
+          }
+          return { ok: false as const, error: { code: "STORAGE_QUOTA_EXCEEDED", message: "Storage quota exceeded" } };
+        }
         const interleave = this.interleave;
         if (interleave && operations[0]?.sql.includes(interleave.match)) {
           this.interleave = null;
@@ -364,6 +382,33 @@ describe("Canvas never loses messages or edits made elsewhere", () => {
     expect(await chatIds(a, "chat")).toEqual(["u0"]);
     const canvas = await getCanvas(a, "chat");
     expect(canvas?.nodes.find((node) => node.id === "u1")).toMatchObject({ parentId: "a0", content: "from an older app" });
+  });
+
+  test("opening a promoted Canvas reconciles chat-only messages without writing", async () => {
+    const { space, a } = await sharedSwitchedChat([item("u0", "user", "zero"), item("a0", "assistant", "reply")]);
+    await appendMessage(a, "chat", childOf("a0", item("u1", "user", "older client message")));
+    const attemptsBeforeOpen = space.batchCalls;
+    space.rejectWrites = true;
+
+    const view = await openCanvas(a, "chat");
+
+    expect(view.canvas.nodes.find((node) => node.id === "u1")?.content).toBe("older client message");
+    expect(view.canvas.activeHeadId).toBe("u1");
+    expect(space.batchCalls).toBe(attemptsBeforeOpen);
+  });
+
+  test("a storage rejection during Canvas save is not retried as a conflict", async () => {
+    const { space, a } = await sharedSwitchedChat([item("u0", "user", "zero")]);
+    const before = space.batchCalls;
+    space.rejectAfterRevisionBump = true;
+    try {
+      await expect(
+        mutateCanvas(a, "chat", (current) => ({ ...current!, activeHeadId: null })),
+      ).rejects.toThrow(STORAGE_FULL_SAVE_MESSAGE);
+      expect(space.batchCalls - before).toBe(1);
+    } finally {
+      reportStorageWriteSucceeded();
+    }
   });
 
   test("two devices: a send landing between a branch switch's read and write is kept, never erased", async () => {

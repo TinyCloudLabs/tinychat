@@ -12,15 +12,15 @@
 //
 // TinyCloud SQLite authorizer restrictions (from listen): no CREATE INDEX,
 // no UNIQUE constraints, no REFERENCES. Dedup is app-level (SELECT before
-// INSERT). CREATE TABLE IF NOT EXISTS can return "not authorized" when the
-// table already exists — on that error, probe SELECT 1 FROM <table> LIMIT 1
-// and treat success as schema-ready.
+// INSERT). Schema existence is checked through sqlite_master before any DDL,
+// so existing tables remain readable when storage is full.
 //
 // Sequential writes only — TinyCloud drops concurrent responses.
 //
 // All exported functions return Result-style objects (spec §4). Callers
 // branch on `.ok`; nothing throws across the module boundary.
 
+import { reportStorageError, reportStorageWriteSucceeded, storageSaveMessage, trackStorageWrites } from "../storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { APP_ID } from "../threadStore";
@@ -79,12 +79,11 @@ type UnderlyingError = { code?: string; message?: string };
 function fail(err: UnderlyingError, context: string): { ok: false; error: StoreError } {
   const code = typeof err.code === "string" && err.code.length > 0 ? err.code : "STORE_ERROR";
   const msg = typeof err.message === "string" && err.message.length > 0 ? err.message : "unknown";
-  return { ok: false, error: { code, message: `${context}: [${code}] ${msg}` } };
+  reportStorageError(err);
+  return { ok: false, error: { code, message: storageSaveMessage(err) ?? `${context}: [${code}] ${msg}` } };
 }
 
-/** Schema statements, executed one at a time so the "not authorized" fallback
- *  can probe per-table. Kept intentionally minimal — no CREATE INDEX / UNIQUE /
- *  REFERENCES (authorizer forbids them); dedup is app-level. */
+/** Schema statements, executed one at a time after the read-only probe. */
 const SCHEMA: { sql: string; table: string }[] = [
   {
     table: "connector_state",
@@ -121,7 +120,7 @@ const SCHEMA: { sql: string; table: string }[] = [
 ];
 
 function store(tcw: TinyCloudWeb) {
-  return tcw.sql.db(CONNECTORS_SQL_DB_NAME);
+  return trackStorageWrites(tcw.sql.db(CONNECTORS_SQL_DB_NAME));
 }
 
 function cellStr(row: unknown[], idx: number, fallback: string | null): string | null {
@@ -159,18 +158,18 @@ export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>
 
   const run = (async (): Promise<StoreResult<void>> => {
     const db = store(tcw);
+    const tables = SCHEMA.map(({ table }) => table);
+    const existingResult = await db.query(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
+      tables,
+    );
+    if (!existingResult.ok) return fail(existingResult.error, "ensureSchema probe");
+    const existingRows = existingResult.data.rows as unknown as unknown[][];
+    const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
     for (const { sql, table } of SCHEMA) {
-      const res = await db.execute(sql);
-      if (res.ok) continue;
-      // "not authorized" on CREATE TABLE IF NOT EXISTS most likely means the
-      // table already exists and the authorizer blocks redundant DDL. Probe
-      // with a SELECT — success means schema is ready for this table.
-      const msg = (res.error.message ?? "").toLowerCase();
-      if (msg.includes("not authorized")) {
-        const probe = await db.query(`SELECT 1 FROM ${table} LIMIT 1`);
-        if (probe.ok) continue;
-      }
-      return fail(res.error, `ensureSchema(${table})`);
+      if (existing.has(table)) continue;
+      const created = await db.execute(sql);
+      if (!created.ok) return fail(created.error, `ensureSchema(${table})`);
     }
     if (memoKey) schemaReadySpaces.add(memoKey);
     return { ok: true, data: undefined };
@@ -627,6 +626,7 @@ export async function putTranscriptBody(
   const key = transcriptKvKey(source, sourceId);
   const res = await tcw.kv.put(key, JSON.stringify(sentences));
   if (!res.ok) return fail(res.error, "putTranscriptBody");
+  reportStorageWriteSucceeded();
   return { ok: true, data: undefined };
 }
 
@@ -654,6 +654,7 @@ export async function putDriveCursor(
   if (!cursor) return { ok: false, error: { code: "STORE_INVALID_CURSOR", message: "putDriveCursor: cursor is required" } };
   const res = await tcw.kv.put(driveCursorKvKey(source), cursor);
   if (!res.ok) return fail(res.error, "putDriveCursor");
+  reportStorageWriteSucceeded();
   return { ok: true, data: undefined };
 }
 
