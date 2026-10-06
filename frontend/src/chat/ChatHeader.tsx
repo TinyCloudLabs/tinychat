@@ -39,7 +39,7 @@ export function ChatHeader({ onOpenChats, onVoiceNote, voiceNoteOpen = false, ne
         </Button>
       )}
       {/* Two lines at most: a long title (or large text) wraps before it truncates. */}
-      <h1 tabIndex={-1} className={cn("line-clamp-2 min-w-0 flex-1 break-words text-headline leading-tight outline-none", onOpenChats ? "px-1" : "px-2")}>
+      <h1 tabIndex={-1} className={cn("min-w-0 flex-1 break-words text-headline leading-tight outline-none", onOpenChats ? "px-1" : "px-2")}>
         {title || "New chat"}
       </h1>
       {verification}
