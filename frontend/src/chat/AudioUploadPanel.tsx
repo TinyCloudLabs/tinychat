@@ -228,7 +228,7 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   if (job === null && paused !== null) {
     return body(
       <div className="flex flex-col gap-3" data-testid="upload-paused">
-        <p className="truncate text-headline" title={paused.fileName}>
+        <p className="break-words text-headline" title={paused.fileName}>
           {paused.fileName}
         </p>
         <p className="text-callout text-muted-foreground" role="status">
@@ -264,12 +264,12 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
             <h3 className="text-headline" role="status">
               Saved to your TinyCloud space
             </h3>
-            <p className="truncate text-meta text-muted-foreground" title={job.fileName}>
+            <p className="break-words text-meta text-muted-foreground" title={job.fileName}>
               {job.savedTitle ?? "Uploaded audio"} · {ROUTE_LABELS[job.engine]}
             </p>
           </div>
         ) : (
-          <p className="truncate text-headline" title={job.fileName}>
+          <p className="break-words text-headline" title={job.fileName}>
             {job.fileName}
           </p>
         )}
