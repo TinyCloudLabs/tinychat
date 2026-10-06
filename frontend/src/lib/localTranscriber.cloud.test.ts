@@ -58,6 +58,7 @@ import {
 import type { CaptureLifecycleEvent } from "./anarlog/transcription.gen";
 
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
+const ACCOUNT_A = "did:pkh:eip155:1:0xA";
 const OTHER_ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W4";
 
 const TRANSCRIPT: PrivateCloudTranscript = {
@@ -256,9 +257,9 @@ function setup(opts: { configured?: boolean; capabilities?: PrivateCloudApi["cap
   const clock = fakeClock();
   const recovered: CloudTranscriptResult[] = [];
   let attempt = 0;
-  const t = createLocalTranscriber(b.bridge, {
+  const options = {
     timeouts: { captureReadyMs: 50 },
-    account: () => "did:pkh:eip155:1:0xA",
+    account: () => ACCOUNT_A,
     kept: () => kept,
     cloud: {
       api: a.api,
@@ -266,14 +267,17 @@ function setup(opts: { configured?: boolean; capabilities?: PrivateCloudApi["cap
       pending,
       clock,
       newAttemptId: () => `00000000-0000-4000-8000-00000000000${++attempt}`,
-      saveRecovered: async (r) => {
+      saveRecovered: async (r: CloudTranscriptResult) => {
         recovered.push(r);
       },
     },
-  });
+  };
+  const t = createLocalTranscriber(b.bridge, options);
+  /** Another view on the same Mac, signed in as `account` (e.g. after sign-out and sign-in). */
+  const remount = (account: string) => createLocalTranscriber(b.bridge, { ...options, account: () => account });
   const statuses: LocalTranscriberStatus[] = [];
   t.onStatus((s) => statuses.push(s));
-  return { t, ...b, n, a, pending, kept, clock, statuses, recovered };
+  return { t, ...b, n, a, pending, kept, clock, statuses, recovered, remount };
 }
 
 /** Start a cloud recording; on stop, native reports the capture handle (or `ready`). */
@@ -370,6 +374,27 @@ describe("private cloud engine", () => {
     expect(s.kept.value).toMatchObject({ audioPath: "/vault/sessions/s/audio.mp3", model: "QuantizedBaseEn" });
     expect(s.pending.value).toBeNull();
     void onDevice.catch(() => {});
+  });
+
+  test("another account is never blocked by, nor adopts, an idle private cloud job; that job is left for its account", async () => {
+    const s = setup();
+    s.n.setSubmit(async () => {
+      throw { code: "upload_interrupted", message: "PTX did not receive the whole recording", correlationId: "c-1", transcriptionId: ID };
+    });
+    s.a.gets.push(job("awaiting_upload"));
+    const { stopped } = await recordAndStop(s);
+    await expect(stopped).rejects.toBeInstanceOf(TranscriptionFailedError);
+    expect(s.pending.value?.transcriptionId).toBe(ID);
+    await s.t.stopCaptureOnUnmount();
+
+    const b = s.remount("did:pkh:eip155:1:0xB");
+    expect(b.adoptTranscription()).toBeNull();
+    await expect(b.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    await new Promise((r) => setTimeout(r, 0));
+    // Set aside, not released: no cancel or delete, and its pending record stays.
+    expect(s.a.calls.filter((c) => c.startsWith("cancel:") || c.startsWith("remove:"))).toEqual([]);
+    expect(s.n.cancels).toEqual([]);
+    expect(s.pending.value?.transcriptionId).toBe(ID);
   });
 
   test("a failed upload that PTX never took: status says awaiting_upload, Retry re-uploads the SAME attempt", async () => {

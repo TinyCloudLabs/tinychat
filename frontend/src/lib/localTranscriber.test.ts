@@ -40,7 +40,9 @@
 //   - kept recordings belong to the signed-in account: another account is
 //     never offered one (nor adopts a closed view's job), and is not blocked;
 //   - closing the view mid-recording keeps the recording (complete or
-//     partial), and one whose transcript is being saved is not offered.
+//     partial), also when capture already ended on its own or a timed-out
+//     Stop's event came late, and one whose transcript is being saved is not
+//     offered until that save settles.
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
@@ -1415,6 +1417,40 @@ describe("kept on-device recordings: accounts, closed views and saves in flight"
     expect(kept.value).toBeNull();
   });
 
+  test("a capture that ended on its own before Stop is kept when the view closes", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge, keptOptions(kept));
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    // The mic stream closes mid-recording; the user leaves without pressing Stop.
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId, { error: "ActorFailed(mic stream closed)" }));
+    await closed.stopCaptureOnUnmount();
+    expect(stopCaptureCalls(bridge)).toBe(0);
+    expect(kept.value).toMatchObject({ sessionId, audioPath: "/vault/sessions/x/audio.mp3" });
+
+    const next = createLocalTranscriber(bridge, keptOptions(kept));
+    await expect(next.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+  });
+
+  test("a Stop that timed out, whose stopped event came late, is kept when the view closes instead of Retry stop", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge, { ...keptOptions(kept), timeouts: { captureStopMs: 20 } });
+    const { sessionId } = await closed.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(closed.stop()).rejects.toBeInstanceOf(CaptureStopUnconfirmedError);
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await closed.stopCaptureOnUnmount();
+    expect(stopCaptureCalls(bridge)).toBe(1);
+    expect(kept.value?.sessionId).toBe(sessionId);
+
+    const next = createLocalTranscriber(bridge, keptOptions(kept));
+    await expect(next.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+    const transcribing = next.retryTranscription();
+    await tick();
+    bridge.emitTranscription(completedEvent(sessionId));
+    await expect(transcribing).resolves.toMatchObject({ sessionId });
+  });
+
   test("a recording whose transcript is being saved is not offered as kept; a failed save offers it again", async () => {
     const kept = memoryKept();
     const bridge = makeBridge({ modelDownloaded: true });
@@ -1431,8 +1467,11 @@ describe("kept on-device recordings: accounts, closed views and saves in flight"
     // The view closed mid-save: the next one does not offer what is being saved.
     const next = createLocalTranscriber(bridge, keptOptions(kept));
     expect(next.resumeKeptRecording()).toBeNull();
+    const settled = next.keptRecordingSave();
+    expect(settled).not.toBeNull();
     failSave(new Error("TinyCloud unavailable"));
-    await saving.catch(() => {});
+    await settled; // never rejects: it only says when to check again
+    expect(next.keptRecordingSave()).toBeNull();
     await expect(next.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
   });
 });

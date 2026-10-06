@@ -5,8 +5,10 @@
 //
 // Asserted behavior:
 //   - on mount: a closed view's transcription first, then this account's kept
-//     on-device recording, then (private cloud available) a cloud job; a panel
-//     already running a recording takes over neither of the last two;
+//     on-device recording (or, while a closed view still saves it, a wait for
+//     that save, after which the panel checks again), then (private cloud
+//     available) a cloud job; a panel already running a recording takes over
+//     none but the first;
 //   - an on-device transcript's save marks it as being saved, and only a
 //     successful save forgets its kept recording; a failed save keeps it;
 //   - a private cloud transcript is deleted from PTX once saved;
@@ -27,7 +29,7 @@ import {
   type OnDeviceTranscriptResult,
 } from "@/lib/localTranscriber";
 
-function fakeTranscriber(has: { adopted?: boolean; kept?: boolean; cloud?: boolean } = {}) {
+function fakeTranscriber(has: { adopted?: boolean; kept?: boolean; saving?: Promise<void>; cloud?: boolean } = {}) {
   const calls: string[] = [];
   const saving: Promise<unknown>[] = [];
   const pending = () => new Promise<LocalTranscriptResult>(() => {});
@@ -39,6 +41,10 @@ function fakeTranscriber(has: { adopted?: boolean; kept?: boolean; cloud?: boole
     resumeKeptRecording: () => {
       calls.push("kept");
       return has.kept ? pending() : null;
+    },
+    keptRecordingSave: () => {
+      calls.push("saving");
+      return has.saving ?? null;
     },
     resumeCloudTranscription: () => {
       calls.push("cloud");
@@ -104,10 +110,18 @@ describe("takeOverOnMount", () => {
   test("then a private cloud job, only while private cloud is available", () => {
     const f = fakeTranscriber({ cloud: true });
     expect(takeOverOnMount(f.t, { wasActive: false, cloudAvailable: true })?.from).toBe("cloud");
-    expect(f.calls).toEqual(["adopt", "kept", "cloud"]);
+    expect(f.calls).toEqual(["adopt", "kept", "saving", "cloud"]);
     const unavailable = fakeTranscriber({ cloud: true });
     expect(takeOverOnMount(unavailable.t, { wasActive: false, cloudAvailable: false })).toBeNull();
-    expect(unavailable.calls).toEqual(["adopt", "kept"]);
+    expect(unavailable.calls).toEqual(["adopt", "kept", "saving"]);
+  });
+
+  test("a kept recording a closed view is still saving is waited on, not offered", async () => {
+    const save = Promise.resolve();
+    const f = fakeTranscriber({ saving: save, cloud: true });
+    const takeover = takeOverOnMount(f.t, { wasActive: false, cloudAvailable: true });
+    expect(takeover).toEqual({ from: "saving", settled: save });
+    expect(f.calls).toEqual(["adopt", "kept", "saving"]);
   });
 
   test("never over a recording the panel is running", () => {
@@ -155,5 +169,7 @@ describe("saving a transcript", () => {
     expect(source).toContain("prepared = prepareTranscriptToSave(t, result);");
     expect(source).toContain("saveTranscriptAndFinish(t, saveToSpace, prepared, savingResult.current)");
     expect(source).toContain("account: () => tcwRef.current.did,");
+    // A save still in flight: the panel checks again once it settles.
+    expect(source).toMatch(/takeover\?\.from === "saving"\) \{[\s\S]*?takeover\.settled\.then\(\(\) => \{\s*if \(!cancelled\) setRetryCount/);
   });
 });

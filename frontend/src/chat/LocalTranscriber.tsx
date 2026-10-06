@@ -572,19 +572,24 @@ function readSavedModel(): WhisperModel {
 /** What a mounted panel takes over, in order: a closed view's transcription
  *  (adoptTranscription), then this account's kept on-device recording, then,
  *  with private cloud available, a cloud job a previous launch left. A panel
- *  already running a recording of its own takes over neither of the last two. */
+ *  already running a recording of its own takes over none but the first. A
+ *  kept recording a closed view is still saving is not taken over: `saving`
+ *  settles with that save, after which the panel checks again. */
 export function takeOverOnMount(
   t: LocalTranscriber,
   opts: { wasActive: boolean; cloudAvailable: boolean },
 ):
   | { from: "adopted" | "kept"; outcome: Promise<LocalTranscriptResult> }
   | { from: "cloud"; outcome: Promise<LocalTranscriptResult | null> }
+  | { from: "saving"; settled: Promise<void> }
   | null {
   const adopted = t.adoptTranscription();
   if (adopted !== null) return { from: "adopted", outcome: adopted };
   if (opts.wasActive) return null;
   const kept = t.resumeKeptRecording();
   if (kept !== null) return { from: "kept", outcome: kept };
+  const saving = t.keptRecordingSave();
+  if (saving !== null) return { from: "saving", settled: saving };
   if (!opts.cloudAvailable) return null;
   const resumed = t.resumeCloudTranscription();
   return resumed === null ? null : { from: "cloud", outcome: resumed };
@@ -846,6 +851,13 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
           setRetryCount((count) => count + 1);
         }, failWithRecovery);
         return;
+      }
+      if (takeover?.from === "saving") {
+        // A closed view is still saving this account's kept recording: check
+        // again once that save settles, so a failed save offers it here.
+        void takeover.settled.then(() => {
+          if (!cancelled) setRetryCount((count) => count + 1);
+        });
       }
       if (cloudCheck === "available") {
         // Jobs of this account no recording here knows (a lost record, a
