@@ -402,13 +402,14 @@ describe.skipIf(config === null)(
             `on the FRESH profile at ${cfg.profileDir}`,
         );
         await page
-          .getByRole("button", { name: "Connectors", exact: true })
+          .getByRole("link", { name: "Connectors", exact: true })
           .waitFor({ state: "visible", timeout: cfg.signInTimeoutMs });
 
         const pagesAfterSignIn = extraPages.length;
 
-        // Steps 4–6 — open the meetings surface and read it.
-        await page.getByRole("button", { name: "Connectors", exact: true }).click();
+        // Steps 4–6 — open the meetings surface (Capture → Library, TC-761) and read it.
+        await page.getByRole("link", { name: "Capture", exact: true }).click();
+        await page.getByRole("link", { name: "Library", exact: true }).click();
         await page
           .getByRole("heading", { name: "Meetings", exact: true })
           .waitFor({ state: "visible", timeout: 60_000 });

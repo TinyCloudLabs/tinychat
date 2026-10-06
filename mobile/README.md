@@ -38,8 +38,8 @@ Record on the phone, save to the user's TinyCloud space, play back from it.
   `{APP_ID}/connectors/exo-voice-note/audio/{id}`. That is inside the existing
   `connectors/` grant, so no manifest change is needed. Notes show up in
   Library.
-- UI: the Voice notes card at the top of Connectors → Sources. It renders only
-  inside the native app.
+- UI: the Voice notes card on Capture (the app's landing), and the one-tap bar
+  from the Chat header's microphone. Both render only inside the native app.
 
 ### Transcription (private cloud)
 
@@ -101,7 +101,7 @@ Exo Local engine (`frontend/src/lib/voiceNotes/voiceNoteTranscription.ts`):
 
 A HealthKit / Health Connect prototype (TC-525): a native `Health` plugin
 (`app/src/main/java/xyz/tinycloud/exo/health/`, `App/App/HealthPlugin.swift`), the JS contract
-`frontend/src/lib/health/nativeHealth.ts`, and a development-only card in Connectors → Sources that
+`frontend/src/lib/health/nativeHealth.ts`, and a development-only card in Connectors that
 shows only in builds with `VITE_EXO_HEALTH_SPIKE=true`. Only Android debug builds declare health
 permissions (`app/src/debug/AndroidManifest.xml`), and only the iOS Debug configuration compiles the
 plugin and carries the HealthKit entitlements (`App/App.entitlements`). Release builds of both apps
@@ -653,8 +653,9 @@ second only for a run you dispatched.
 Use the TestFlight build on a real iPhone. A simulator cannot check any of
 this.
 
-- [ ] Sign in (OpenKey email + code). Connectors → Sources shows the **Voice
-      notes** card, which appears only when the native plugin is registered.
+- [ ] Sign in (OpenKey email + code). The app opens on **Capture**, which
+      shows the **Voice notes** card; it appears only when the native plugin is
+      registered.
 - [ ] Start a note. iOS asks for the microphone once, the orange mic indicator
       shows, and the level meter moves when you speak.
 - [ ] Stop and save. The note appears in the list and in Library. Play it

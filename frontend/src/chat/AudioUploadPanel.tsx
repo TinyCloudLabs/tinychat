@@ -37,6 +37,8 @@ import {
 } from "@/lib/audioUpload";
 import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { createLocalTranscriptSaver } from "@/lib/localTranscriber";
+import { scheduledSpace } from "@/lib/spaceQueue";
+import { resumeUnlessLocked } from "@/lib/uploadResume";
 import { buildPtxUploadOrigin, createPrivateCloudApi, createPrivateCloudJob, type PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { FilePicker } from "./FilePicker";
 import { PrivateCloudDisclosure } from "./PrivateCloudDisclosure";
@@ -165,6 +167,12 @@ function audioText(job: UploadState): string | null {
 export interface AudioUploadViewProps {
   /** The running, failed or finished upload; null shows the form. */
   job: UploadState | null;
+  /**
+   * An upload a reload interrupted that would unlock the vault to resume (it
+   * uses the user's own AssemblyAI key): it waits for Continue instead.
+   */
+  paused?: { fileName: string } | null;
+  onContinue?: () => void;
   file: { name: string; type: string; size: number } | null;
   engine: UploadEngine;
   engines: Readonly<Record<UploadEngine, EngineStatus>>;
@@ -188,6 +196,8 @@ export interface AudioUploadViewProps {
 
 export const AudioUploadView: FC<AudioUploadViewProps> = ({
   job,
+  paused = null,
+  onContinue,
   file,
   engine,
   engines,
@@ -204,6 +214,24 @@ export const AudioUploadView: FC<AudioUploadViewProps> = ({
   onOpenSettings,
   onRecheck,
 }) => {
+  if (job === null && paused !== null) {
+    return (
+      <div className="mt-3 flex flex-col gap-2" data-testid="upload-paused">
+        <p className="truncate text-sm font-medium" title={paused.fileName}>
+          {paused.fileName}
+          <span className="font-normal text-muted-foreground"> · {UPLOAD_ENGINE_LABELS.assemblyai}</span>
+        </p>
+        <p className="text-xs text-muted-foreground" role="status">
+          Upload paused. This upload uses your own AssemblyAI key. Continue to unlock it and finish.
+        </p>
+        <div>
+          <Button type="button" size="sm" onClick={onContinue} className="h-9">
+            Continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
   if (job !== null && job.stage === "elsewhere") {
     return (
       <div className="mt-3 flex flex-col gap-2">
@@ -414,11 +442,14 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   const origin = useMemo(() => buildPtxUploadOrigin(), []);
   const api = useMemo(() => createPrivateCloudApi(backendUrl, { sessionStore }), [backendUrl, sessionStore]);
   const hosted = useMemo(() => createHostedAssemblyAiClient({ backendUrl, sessionStore }), [backendUrl, sessionStore]);
-  const save = useMemo(() => createLocalTranscriptSaver(tcw), [tcw]);
+  // The upload's storage calls take turns with the Library's reads on this
+  // space (lib/spaceQueue.ts); the vault (secrets) is not storage and is not queued.
+  const space = scheduledSpace(tcw);
+  const save = useMemo(() => createLocalTranscriptSaver(space), [space]);
 
   const deps = useMemo<UploadDeps>(
     () => ({
-      tcw,
+      tcw: space,
       // Not gated on capabilities: a job started earlier must still resume; the relay itself refuses new ones.
       privateCloud:
         origin !== null
@@ -434,11 +465,19 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
       },
       save,
     }),
-    [tcw, origin, api, hosted, save, backendUrl, sessionStore],
+    [tcw, space, origin, api, hosted, save, backendUrl, sessionStore],
   );
 
-  // A job a reload interrupted picks up where it was.
+  // A job a reload interrupted picks up where it was, unless that would unlock
+  // the vault (an own-key AssemblyAI job with the vault locked): nothing unlocks
+  // on mount, so that one waits for Continue and the prompt follows the tap.
+  const [paused, setPaused] = useState<{ fileName: string } | null>(null);
   useEffect(() => {
+    const stored = resumeUnlessLocked(uploadRunner, deps, isSecretsUnlocked(tcw));
+    setPaused(stored === null ? null : { fileName: stored.file.name });
+  }, [deps, tcw]);
+  const onContinue = useCallback(() => {
+    setPaused(null);
     uploadRunner.resume(deps);
   }, [deps]);
 
@@ -528,6 +567,8 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   return (
     <AudioUploadView
       job={job}
+      paused={paused}
+      onContinue={onContinue}
       file={file}
       engine={engine}
       engines={{ "private-cloud": privateStatus, assemblyai: assemblyStatus }}

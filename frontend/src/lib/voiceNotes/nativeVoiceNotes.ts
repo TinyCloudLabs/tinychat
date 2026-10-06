@@ -128,10 +128,25 @@ export interface VoiceNotesPlugin {
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
 }
 
-export const VoiceNotes = registerPlugin<VoiceNotesPlugin>("VoiceNotes");
+// `let`, so the browser harnesses can swap in a fake (below): every caller
+// imports this binding, and an ES module binding is live.
+export let VoiceNotes = registerPlugin<VoiceNotesPlugin>("VoiceNotes");
+
+let availableForTests: boolean | null = null;
 
 export function nativeVoiceNotesAvailable(): boolean {
+  if (availableForTests !== null) return availableForTests;
   return Capacitor.isNativePlatform() && Capacitor.isPluginAvailable("VoiceNotes");
+}
+
+/**
+ * Harnesses and tests only: every caller of `VoiceNotes` now talks to `plugin`,
+ * and `nativeVoiceNotesAvailable()` answers `available` (null: ask Capacitor
+ * again, to undo a swap). No call site changes.
+ */
+export function __setVoiceNotesForTests(plugin: VoiceNotesPlugin, options: { available: boolean | null }): void {
+  VoiceNotes = plugin;
+  availableForTests = options.available;
 }
 
 export function nativePlatform(): string {

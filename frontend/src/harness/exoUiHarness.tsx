@@ -3,6 +3,9 @@
 //
 //   ?screen=<id>&theme=light|dark&platform=ios|android|tauri|web&freeze=1
 //
+// An ios or android platform installs the fake voice-notes plugin, so the
+// phone app's recorder views render.
+//
 // Without ?screen it lists the registry (and sets window.exoUi.screens).
 // Screens live in screens/<group>.tsx, one file per group.
 import { StrictMode, useEffect } from "react";
@@ -12,9 +15,12 @@ import { MemoryRouter } from "react-router-dom";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
+import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { legacyScreens } from "./screens/legacy";
 import { primitivesScreens } from "./screens/primitives";
+import { shellScreens } from "./screens/shell";
 import { freezeClock } from "./stubs";
 
 type ScreenInfo = Omit<HarnessScreen, "render">;
@@ -25,8 +31,20 @@ declare global {
   }
 }
 
-const SCREENS: HarnessScreen[] = [...primitivesScreens, ...legacyScreens];
+const SCREENS: HarnessScreen[] = [...primitivesScreens, ...legacyScreens, ...shellScreens];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
+
+// Hermetic: nothing leaves the machine. A call to another host (the model's
+// attestation check) fails at once, as it would offline, and the screen shows
+// its failed state instead of depending on the network.
+const realFetch = window.fetch.bind(window);
+window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (new URL(href, window.location.href).origin !== window.location.origin) {
+    return Promise.reject(new TypeError("Failed to fetch"));
+  }
+  return realFetch(input, init);
+};
 
 const params = new URLSearchParams(window.location.search);
 const platform = PLATFORMS.find((p) => p === params.get("platform")) ?? "web";
@@ -34,6 +52,8 @@ if (params.get("freeze") === "1") freezeClock();
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
+// The phone app records through its native plugin; here a fake stands in.
+if (platform === "ios" || platform === "android") __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: true });
 
 window.exoUi = {
   screens: SCREENS.map(({ render: _render, ...info }) => info),
@@ -44,10 +64,19 @@ window.exoUi = {
  * Marks the capture ready once the screen has mounted, the fonts are in and a
  * frame has painted, after scrolling the screen's `scrollTo` into view.
  */
-function Ready(props: { scrollTo?: string }) {
+function Ready(props: { scrollTo?: string; readyWhen?: string }) {
   useEffect(() => {
     let cancelled = false;
-    void document.fonts.ready.then(() => {
+    const until = Date.now() + 5_000;
+    const arrived = () =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (cancelled || !props.readyWhen || document.querySelector(props.readyWhen) || Date.now() > until) resolve();
+          else setTimeout(check, 50);
+        };
+        check();
+      });
+    void Promise.all([document.fonts.ready, arrived()]).then(() => {
       if (props.scrollTo) document.querySelector(props.scrollTo)?.scrollIntoView({ block: "center" });
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
@@ -58,7 +87,7 @@ function Ready(props: { scrollTo?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [props.scrollTo]);
+  }, [props.scrollTo, props.readyWhen]);
   return null;
 }
 
@@ -70,8 +99,8 @@ function Index() {
         {SCREENS.map((screen) => (
           <li key={screen.id} className="flex items-baseline gap-3">
             <span className="min-w-0 flex-1 truncate">{screen.id}</span>
-            <a className="text-primary underline underline-offset-4" href={`?screen=${screen.id}&theme=light`}>Day</a>
-            <a className="text-primary underline underline-offset-4" href={`?screen=${screen.id}&theme=dark`}>Night</a>
+            <a className="text-primary underline underline-offset-4" href={`?screen=${screen.id}&theme=light&platform=${screen.platform ?? "web"}`}>Day</a>
+            <a className="text-primary underline underline-offset-4" href={`?screen=${screen.id}&theme=dark&platform=${screen.platform ?? "web"}`}>Night</a>
           </li>
         ))}
       </ul>
@@ -88,7 +117,7 @@ createRoot(document.getElementById("root")!).render(
     <PlatformContext.Provider value={platform}>
       <MemoryRouter initialEntries={[screen?.path ?? "/"]}>
         {screen ? screen.render() : <Index />}
-        <Ready scrollTo={screen?.scrollTo} />
+        <Ready scrollTo={screen?.scrollTo} readyWhen={screen?.readyWhen} />
       </MemoryRouter>
     </PlatformContext.Provider>
   </StrictMode>,

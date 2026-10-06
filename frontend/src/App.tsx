@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -60,15 +61,21 @@ import {
   shouldRefetch,
   type RefetchTrigger,
 } from "./lib/billingConfigPolicy";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SettingsPage } from "./chat/SettingsPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
+import { CaptureSurface } from "./capture/CaptureSurface";
+import { AppShell } from "./shell/AppShell";
+import { resetNavigationMemory } from "./shell/navigation";
 import {
-  CONNECTORS_LIBRARY_PATH,
-  CONNECTORS_SOURCES_PATH,
-  connectorsTabFor,
-} from "./chat/connectorsNav";
+  PATHS,
+  homePath,
+  legacyRedirectFor,
+  redirectsWhenSignedOut,
+  screenFor,
+} from "./shell/routes";
+import { PlatformContext } from "./lib/platform";
+import { useSizeClass } from "./lib/sizeClass";
 // W5 — the cohort meetings view. It renders NOTHING unless the backend's read
 // API answers for this address (dark flag / non-cohort = 404 = invisible), and
 // it needs neither the vault nor a connector key: a session is the whole
@@ -92,12 +99,6 @@ import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
-import { ModelVerificationIndicator } from "./chat/ModelVerificationIndicator";
-import {
-  MicIcon,
-  PanelLeftIcon,
-  SettingsIcon,
-} from "lucide-react";
 import type {
   ModelSelectionController,
   SelectionView,
@@ -162,7 +163,6 @@ export function App() {
   });
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   // The chat screen's voice note bar: opened to record (the header button) or to
   // show a recording that is already running (one started on the offline screen).
   const [voiceNoteOpen, setVoiceNoteOpen] = useState<false | "record" | "show">(false);
@@ -208,11 +208,11 @@ export function App() {
   // Soft refresh after an import: bumping this key remounts the inner runtime
   // tree so useChatRuntime re-runs listThreads() cold. The dialog already
   // clears the index cache, so this avoids window.location.reload while still
-  // surfacing imported rows. Header state (model picker, memory popover) and
-  // the auth session survive the bump because they live above ChatWorkspace.
+  // surfacing imported rows. The model picker, the memory popover and the auth
+  // session survive the bump because they live above ChatWorkspace; the Chats
+  // sheet, inside it, comes back closed.
   const [importRefreshKey, setImportRefreshKey] = useState(0);
   const onImported = useCallback(() => {
-    setSidebarOpen(false);
     setImportRefreshKey((k) => k + 1);
   }, []);
   const onMemoryUpdated = useCallback((_doc: string | null) => {}, []);
@@ -258,20 +258,6 @@ export function App() {
       w.__tcw = null;
     };
   }, [tcw]);
-
-  // Close the mobile drawer when the viewport crosses into md+ so the Radix
-  // overlay (a portal sibling not covered by md:hidden on SheetContent) can't
-  // linger as a full-screen backdrop after a resize-while-open.
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia("(min-width: 768px)");
-    const handler = (event: MediaQueryListEvent | MediaQueryList) => {
-      if (event.matches) setSidebarOpen(false);
-    };
-    handler(mql);
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
 
   // Restore an existing session on boot (both Bearer token AND tcw for KV).
   //
@@ -540,6 +526,8 @@ export function App() {
 
   const signIn = useCallback(async () => {
     setError(null);
+    // Each tab's remembered place belongs to the account that left it.
+    resetNavigationMemory();
     try {
       setState("connecting");
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
@@ -601,6 +589,8 @@ export function App() {
     signOutInFlightRef.current = true;
     setSigningOut(true);
     setError(null);
+    // The next account must not reopen this one's Library or note addresses.
+    resetNavigationMemory();
     try {
       const openKeyOutcome = await signOutOpenKeySession(
         openkeyRef.current,
@@ -674,25 +664,24 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
-  const showSettings = !LOCAL_VALIDATION && location.pathname.endsWith("/chat/settings");
-  // Connectors owns a nested route now (Sources | Library), so the match spans
-  // the whole subtree — `endsWith("/chat/connectors")` cannot see
-  // /chat/connectors/library, and the sidebar entry and the workspace both key
-  // off this one flag.
-  const showConnectors = !LOCAL_VALIDATION && /\/chat\/connectors(\/|$)/.test(location.pathname);
-  const connectorsTab = connectorsTabFor(location.pathname);
-  // The standalone Meetings page is gone: meetings live under Connectors →
-  // Library. Old links (bookmarks, shared URLs, the pre-Library header button)
-  // still resolve — they are replaced with the canonical address below.
-  const legacyMeetings = location.pathname.endsWith("/chat/meetings");
+  const platform = useContext(PlatformContext);
+  const { size } = useSizeClass();
+  // Which screen the address shows (shell/routes.ts). The App stays mounted at
+  // /chat/*: the shell toggles surfaces, so the chat runtime, drafts and
+  // streams survive every move between them.
+  const screen = useMemo(() => screenFor(location.pathname), [location.pathname]);
+  const showSettings = !LOCAL_VALIDATION && screen.id === "settings";
+  // Retired addresses (/chat/meetings, /chat/connectors/library) still resolve:
+  // they are replaced with their new home below.
+  const legacy = legacyRedirectFor(location.pathname);
 
-  // TC-522: the one-tap voice note, inside the Exo mobile app only. Offered
-  // wherever the Voice notes card is NOT on screen (Connectors has its own
-  // Record and picks a running recording up), so only one view of the
-  // recorder is ever mounted. Leaving for Connectors, or signing out, closes it.
+  // TC-522: the one-tap voice note, inside the Exo mobile app only, and only on
+  // Chat: the Voice notes card on Capture has its own Record and picks a
+  // running recording up, so only one view of the recorder is ever mounted.
+  // Leaving Chat, or signing out, closes it.
   const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
   const quickVoiceNoteAvailable =
-    voiceNotesInApp && isReady && !LOCAL_VALIDATION && !showConnectors && !shareToken;
+    voiceNotesInApp && isReady && !LOCAL_VALIDATION && screen.destination === "chat" && !shareToken;
   useEffect(() => {
     if (!quickVoiceNoteAvailable) setVoiceNoteOpen(false);
   }, [quickVoiceNoteAvailable]);
@@ -728,12 +717,13 @@ export function App() {
     readBackgroundDrainRecord,
   );
   // Hidden on the connectors route: the detailed queue state is visible there.
-  const pendingMeetings = showConnectors ? 0 : badgePendingCount(drainRecord);
+  const pendingMeetings = screen.destination === "connectors" ? 0 : badgePendingCount(drainRecord);
 
-  // Belt-and-suspenders guard: if the user lands on (or is on) /chat/settings
-  // or /chat/connectors while signed out (post-signOut flip, deep link, etc.),
-  // kick them to /chat. These pages only render inside the isReady branch below,
-  // so this is the sole place the URL gets normalized.
+  // Belt-and-suspenders guard: if the user lands on (or is on) Settings or
+  // Connectors while signed out (post-signOut flip, deep link, etc.), send them
+  // home. These pages only render inside the isReady branch below, so this is
+  // the sole place the URL gets normalized. Capture never redirects: the
+  // sign-in surface renders in place (shell/routes.ts).
   //
   // Keyed on the SETTLED signed-out states, not on `!isReady`: a cold reload of
   // a private surface starts in `booting` and stays there until the persisted
@@ -741,22 +731,22 @@ export function App() {
   // breaks the share/bookmark/reload contract these routes exist for. While
   // authentication is still deciding the address is held and BootSurface shows.
   useEffect(() => {
-    if (authSettledSignedOut && (showSettings || showConnectors)) {
-      navigate("/chat", { replace: true });
+    if (authSettledSignedOut && redirectsWhenSignedOut(screen)) {
+      navigate(homePath(platform), { replace: true });
     }
-  }, [authSettledSignedOut, showSettings, showConnectors, navigate]);
+  }, [authSettledSignedOut, screen, platform, navigate]);
 
-  // Forward the retired /chat/meetings address to its canonical home. `replace`
-  // keeps the dead route out of history, so Back does not bounce through it.
-  // Signed out, the guard above still wins: Library is only reachable ready.
+  // Forward a retired address (LEGACY_REDIRECTS) to its canonical home.
+  // `replace` keeps the dead route out of history, so Back does not bounce
+  // through it. Signed out, it goes home instead: Library is only reachable ready.
   useEffect(() => {
-    if (!legacyMeetings) return;
+    if (!legacy) return;
     // Same rule as the guard above: mid-restore is not an answer. Hold the
     // legacy address until authentication settles, or the cold forward lands
-    // on /chat instead of Library.
+    // home instead of Library.
     if (!isReady && !authSettledSignedOut) return;
-    navigate(isReady ? CONNECTORS_LIBRARY_PATH : "/chat", { replace: true });
-  }, [legacyMeetings, isReady, authSettledSignedOut, navigate]);
+    navigate(isReady ? legacy.to : homePath(platform), { replace: true });
+  }, [legacy, isReady, authSettledSignedOut, platform, navigate]);
 
   // A1 trigger (a): entering the settings page recovers a config-null session
   // (the Plan & Usage card lives there). No-op when a config is already held.
@@ -764,123 +754,47 @@ export function App() {
     if (showSettings) refetchConfigOnTrigger("settings-entry");
   }, [showSettings, refetchConfigOnTrigger]);
 
-  // Prefer history-back so the previous chat scroll/composer focus restores
-  // naturally; fall back to /chat when there's no in-app history (deep link or
-  // refresh on /chat/settings). react-router v7 stamps `idx` on history state.
+  // Settings' Back: history-back, so wherever the user came from restores its
+  // scroll and focus naturally; home when there's no in-app history (deep link
+  // or refresh on /chat/settings). react-router v7 stamps `idx` on history state.
   const onBack = useCallback(() => {
     const idx = (window.history.state as { idx?: number } | null)?.idx;
     if (typeof idx === "number" && idx > 0) {
       navigate(-1);
     } else {
-      navigate("/chat");
+      navigate(homePath(platform), { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, platform]);
+
+  // The composer's toolbar: the model chip (a sheet on phones) and, with the
+  // paywall on, the usage chip. App owns both, so they survive ChatWorkspace's
+  // import-refresh remount.
+  const composerToolbar = isReady ? (
+    <>
+      <ModelPicker
+        model={selectionView.model}
+        models={models}
+        disabled={!selectionView.canPick}
+        status={selectionView.message}
+        onPick={pickModel}
+        presentation={size === "compact" ? "sheet" : "popover"}
+      />
+      {paywallEnabled && (
+        <UsageIndicator
+          status={billingStatus}
+          tierName={billingTierName}
+          onClick={openPricing}
+          onOpenRates={openRates}
+        />
+      )}
+    </>
+  ) : null;
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]"
+      className="flex flex-col bg-background text-foreground"
       style={{ height: "var(--tc-app-height, 100dvh)" }}
     >
-      <header className="flex items-center justify-between gap-1.5 border-b border-border px-3 py-2.5 sm:gap-3 sm:px-4">
-        <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
-          {isReady && !LOCAL_VALIDATION && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Open chat list"
-              onClick={() => setSidebarOpen(true)}
-              className="h-11 w-11 shrink-0 p-0 md:hidden"
-            >
-              <PanelLeftIcon className="size-4" />
-            </Button>
-          )}
-          <span className="flex shrink-0 items-center gap-2 text-sm font-semibold tracking-tight">
-            <span className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
-              T
-            </span>
-            <span className="hidden sm:inline">TinyCloud Chat</span>
-          </span>
-          {isReady && (
-            <ModelPicker
-              model={selectionView.model}
-              models={models}
-              disabled={!selectionView.canPick}
-              status={selectionView.message}
-              onPick={pickModel}
-            />
-          )}
-          {isReady && selectionView.model && (
-            // Intentionally hidden below the `sm` breakpoint: the header is
-            // space-constrained on mobile and the per-message badge still
-            // surfaces verification there. Desktop shows the model-level pill.
-            <span className="hidden sm:inline-flex">
-              <ModelVerificationIndicator model={selectionView.model} />
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {isReady && paywallEnabled && (
-            // A2 — render the chip on mobile too. The chip already degrades to a
-            // compact tier label under `sm` (the usage numbers + bar are
-            // `hidden sm:*` inside UsageIndicator), so this surfaces the
-            // tier/usage affordance on narrow viewports without a redesign and
-            // without crowding the header (the attestation pill stays
-            // `hidden sm:inline-flex`).
-            <UsageIndicator
-              status={billingStatus}
-              tierName={billingTierName}
-              onClick={openPricing}
-              onOpenRates={openRates}
-            />
-          )}
-          <span className="hidden sm:inline-flex">
-            <ThemeToggle />
-          </span>
-          {quickVoiceNoteAvailable && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Record a voice note"
-              aria-pressed={voiceNoteOpen !== false}
-              onClick={() => setVoiceNoteOpen((open) => open || "record")}
-              className="h-11 shrink-0 gap-1.5 px-3 md:h-8"
-              data-testid="header-voice-note"
-            >
-              <MicIcon className="size-4" />
-              Voice note
-            </Button>
-          )}
-          {isReady && (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label={showSettings ? "Close settings" : "Settings"}
-              aria-pressed={showSettings}
-              onClick={() => (showSettings ? onBack() : navigate("/chat/settings"))}
-              className="h-11 w-11 p-0 md:h-8 md:w-8"
-            >
-              <SettingsIcon className="size-4" />
-            </Button>
-          )}
-          {(state === "unauthenticated" || state === "recoverableError" || state === "offline") && (
-            <Button size="sm" onClick={authAction} className="h-11 md:h-8">
-              {state === "unauthenticated" ? "Sign in" : "Try again"}
-            </Button>
-          )}
-        </div>
-      </header>
-
-      {voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
-        <QuickVoiceNote
-          autoStart={voiceNoteOpen === "record"}
-          tcw={tcw}
-          backendUrl={BACKEND_URL}
-          sessionStore={sessionStoreRef.current}
-          onClose={() => setVoiceNoteOpen(false)}
-          onOpenLibrary={() => navigate(CONNECTORS_LIBRARY_PATH)}
-        />
-      )}
-
       {LOCAL_VALIDATION && (
         <div role="status" className="border-b px-4 py-2 text-sm">
           Local validation: chats and memory stay in this tab and reset on reload.
@@ -888,67 +802,85 @@ export function App() {
         </div>
       )}
 
-      <main className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1">
         {shareToken ? (
-          <SharedThreadSurface
-            token={shareToken}
-            onClose={() => {
-              setShareToken(null);
-              if (window.location.hash.startsWith("#share=")) {
-                window.history.replaceState(null, "", window.location.pathname + window.location.search);
-              }
-            }}
-          />
+          <main className="h-full pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+            <SharedThreadSurface
+              token={shareToken}
+              onClose={() => {
+                setShareToken(null);
+                if (window.location.hash.startsWith("#share=")) {
+                  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+                }
+              }}
+            />
+          </main>
         ) : isReady && tcw ? (
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
             <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
-            {/* ChatWorkspace stays mounted while an app surface is active —
-                visibility toggle (not a <Routes> swap) preserves the
+            {/* The shell keeps ChatWorkspace mounted while another surface is
+                shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
-                nav. */}
-            <div className={showSettings ? "hidden" : "contents"}>
-              <ChatWorkspace
-                key={importRefreshKey}
-                tcw={tcw}
-                sessionStore={sessionStoreRef.current}
-                backendUrl={BACKEND_URL}
-                selectionControllerRef={selectionControllerRef}
-                selectionView={selectionView}
-                memoryRef={memoryRef}
-                onSelectionView={setSelectionView}
-                onSelectionAuthFailure={() => {
-                  sessionStoreRef.current.clear();
-                  setError("Your session expired. Sign in again to continue.");
-                  setState("recoverableError");
-                }}
-                onMemoryUpdated={onMemoryUpdated}
-                contextTokensFor={contextTokensFor}
-                sidebarOpen={sidebarOpen}
-                setSidebarOpen={setSidebarOpen}
-                showConnectors={showConnectors}
-                pendingMeetings={pendingMeetings}
-                onToggleConnectors={() =>
-                  !LOCAL_VALIDATION && (showConnectors ? onBack() : navigate(CONNECTORS_SOURCES_PATH))
-                }
-                onOpenChat={() => navigate("/chat")}
-                connectorsSurface={LOCAL_VALIDATION ? null : <ConnectorsPage
+                navigation. */}
+            <AppShell
+              screen={screen}
+              platform={platform}
+              pendingMeetings={pendingMeetings}
+              chat={
+                <ChatWorkspace
+                  key={importRefreshKey}
                   tcw={tcw}
-                  backendUrl={BACKEND_URL}
                   sessionStore={sessionStoreRef.current}
-                  tab={connectorsTab}
-                  meetingsSlot={
-                    <MeetingsSection
+                  backendUrl={BACKEND_URL}
+                  selectionControllerRef={selectionControllerRef}
+                  selectionView={selectionView}
+                  memoryRef={memoryRef}
+                  onSelectionView={setSelectionView}
+                  onSelectionAuthFailure={() => {
+                    sessionStoreRef.current.clear();
+                    setError("Your session expired. Sign in again to continue.");
+                    setState("recoverableError");
+                  }}
+                  onMemoryUpdated={onMemoryUpdated}
+                  contextTokensFor={contextTokensFor}
+                  composerToolbar={composerToolbar}
+                  // The chat screen's voice note bar (phone app), under the chat header.
+                  voiceNoteBar={voiceNoteOpen && quickVoiceNoteAvailable && tcw && (
+                    <QuickVoiceNote
+                      autoStart={voiceNoteOpen === "record"}
+                      tcw={tcw}
                       backendUrl={BACKEND_URL}
                       sessionStore={sessionStoreRef.current}
+                      onClose={() => setVoiceNoteOpen(false)}
+                      onOpenLibrary={() => navigate(PATHS.library)}
                     />
-                  }
-                />}
-                billingStatus={billingStatus}
-              />
-            </div>
-            {showSettings && (
-              <SettingsPage
+                  )}
+                  onVoiceNote={quickVoiceNoteAvailable ? () => setVoiceNoteOpen((open) => open || "record") : undefined}
+                  voiceNoteOpen={voiceNoteOpen !== false}
+                  settings={!LOCAL_VALIDATION}
+                  billingStatus={billingStatus}
+                />
+              }
+              capture={LOCAL_VALIDATION ? null : <CaptureSurface
+                tcw={tcw}
+                backendUrl={BACKEND_URL}
+                sessionStore={sessionStoreRef.current}
+                active={screen.destination === "capture"}
+                screen={screen}
+                meetingsSlot={
+                  <MeetingsSection
+                    backendUrl={BACKEND_URL}
+                    sessionStore={sessionStoreRef.current}
+                  />
+                }
+              />}
+              connectors={LOCAL_VALIDATION ? null : <ConnectorsPage
+                tcw={tcw}
+                backendUrl={BACKEND_URL}
+                sessionStore={sessionStoreRef.current}
+              />}
+              settings={LOCAL_VALIDATION ? null : <SettingsPage
                 address={address}
                 did={did}
                 spaceId={spaceId}
@@ -968,23 +900,25 @@ export function App() {
                 onOpenRates={openRates}
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
-              />
-            )}
+              />}
+            />
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <BootSurface
-            state={state}
-            error={error}
-            onAction={authAction}
-            voiceNotes={
-              offlineRecorder ? (
-                <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
-              ) : null
-            }
-          />
+          <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+            <BootSurface
+              state={state}
+              error={error}
+              onAction={authAction}
+              voiceNotes={
+                offlineRecorder ? (
+                  <OfflineVoiceNotes onRecordingChange={(recording) => { offlineRecordingRef.current = recording; }} />
+                ) : null
+              }
+            />
+          </main>
         )}
-      </main>
+      </div>
 
       {paywallEnabled && billingConfig && (
         <PricingDialog
@@ -1016,7 +950,7 @@ export function App() {
 
       {/* TC-515: voice notes left on the phone (recorded offline, or a save that
           failed) are saved once the session is ready, without opening
-          Connectors. The Voice notes card's own single-flight retry. */}
+          Capture. The Voice notes card's own single-flight retry. */}
       {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && (
         <PendingVoiceNotesSaver
           tcw={tcw}
@@ -1055,7 +989,7 @@ export function App() {
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-[60] -translate-x-1/2"
+          className="fixed bottom-[calc(var(--tc-bottom-chrome)+1rem)] left-1/2 z-[60] -translate-x-1/2"
         >
           <div className="flex items-center gap-2 rounded-lg border border-border bg-popover px-4 py-2.5 text-sm text-popover-foreground shadow-lg">
             <span className="size-1.5 rounded-full bg-green-500" />

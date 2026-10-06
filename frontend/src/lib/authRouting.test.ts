@@ -52,19 +52,21 @@ describe("App wires the private-surface guard to the settled state", () => {
 
   test("the guard no longer conflates booting with signed out", () => {
     expect(app).not.toContain("if (!isReady && (showSettings || showConnectors))");
-    expect(app).toContain(
-      "if (authSettledSignedOut && (showSettings || showConnectors))",
-    );
+    // Which screens redirect is shell/routes.ts's rule (Settings and
+    // Connectors; never Capture); where they go is the platform's home.
+    expect(app).toContain("if (authSettledSignedOut && redirectsWhenSignedOut(screen))");
+    const guard = app.slice(app.indexOf("if (authSettledSignedOut && redirectsWhenSignedOut(screen))"));
+    expect(guard.slice(0, guard.indexOf("}, ["))).toContain("navigate(homePath(platform), { replace: true });");
     expect(app).toContain("isAuthSettledSignedOut(state)");
   });
 
-  test("the legacy /chat/meetings forward waits for authentication to settle", () => {
-    const forward = app.slice(app.indexOf("if (!legacyMeetings) return;"));
+  test("a legacy address forwards only once authentication settles", () => {
+    const forward = app.slice(app.indexOf("if (!legacy) return;"));
     const body = forward.slice(0, forward.indexOf("}, ["));
     // Nonterminal → hold the address so restoration can finish and Library
     // can be reached; settled → the existing ready/signed-out split.
     expect(body).toContain("if (!isReady && !authSettledSignedOut) return;");
-    expect(body).toContain("navigate(isReady ? CONNECTORS_LIBRARY_PATH");
+    expect(body).toContain("navigate(isReady ? legacy.to : homePath(platform)");
     expect(body).toContain("replace: true");
   });
 });

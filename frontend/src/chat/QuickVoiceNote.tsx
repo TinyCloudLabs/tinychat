@@ -1,14 +1,14 @@
 // The chat screen's one-tap voice note (TC-522), inside the Exo mobile app only.
 //
-// The header's "Voice note" button opens this bar under the header: it starts
-// recording at once and shows the live state, the OS mic-state copy and Stop
-// without leaving the chat. It is the Voice notes card's own controller
+// The chat header's voice note button opens this bar under the header: it
+// starts recording at once and shows the live state, the OS mic-state copy and
+// Stop without leaving the chat. It is the Voice notes card's own controller
 // (`VoiceNotesSection`) with a compact view, so recording, saving, the pending
 // retry and the transcription hand-off are the card's, and a saved note shows
-// up in Connectors → Sources and Library exactly as one recorded there.
+// up in Capture and its Library exactly as one recorded there.
 //
-// The bar is never mounted next to the card: the app closes it on the
-// Connectors page, where the card picks a running recording up instead.
+// The bar is never mounted next to the card: it lives on Chat only, and the
+// card on Capture picks a running recording up instead.
 
 import { useCallback, useState, type FC } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
@@ -16,6 +16,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CheckCircle2Icon, Loader2Icon, MicIcon, SquareIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { captureEvents } from "@/capture/captureEvents";
 import type { MicState, MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { VoiceNotesSection, micStatusText, type RecorderPhase } from "./VoiceNotesSection";
 
@@ -131,7 +132,7 @@ export const QuickVoiceNoteView: FC<QuickVoiceNoteViewProps> = (props) => {
       {idle && pendingCount > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="quick-voice-note-pending">
           {pendingCount === 1 ? "1 note is" : `${pendingCount} notes are`} on this phone but not yet in your TinyCloud
-          space. Exo saves them the next time it opens, or from Voice notes in Connectors.
+          space. Exo saves them the next time it opens, or from Voice notes in Capture.
         </p>
       )}
     </section>
@@ -154,7 +155,11 @@ export interface QuickVoiceNoteProps {
 /** Renders nothing outside the Exo mobile app (VoiceNotesSection's gate). */
 export function QuickVoiceNote({ autoStart = true, tcw, backendUrl, sessionStore, onClose, onOpenLibrary }: QuickVoiceNoteProps) {
   const [saved, setSaved] = useState(false);
-  const onSaved = useCallback(() => setSaved(true), []);
+  const onSaved = useCallback(() => {
+    setSaved(true);
+    // The Library re-lists if it is open (Capture keeps it mounted).
+    captureEvents.emit("library-changed");
+  }, []);
   return (
     <VoiceNotesSection
       tcw={tcw}

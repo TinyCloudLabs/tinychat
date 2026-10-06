@@ -1,70 +1,19 @@
-// The Connectors information architecture, in one pure module.
+// What is left of the Connectors tabs (TC-761). Library moved to Capture
+// (/chat/capture/library) and Connectors is one page again, so the Sources |
+// Library tab strip is gone; shell/routes.ts owns the addresses now. The path
+// constants and the Library categories stay here until note detail replaces
+// LibraryPage (PR6), because LibraryPage and chatViewPath.test.ts import them.
 //
-//     Connectors → Sources | Library → Meetings
-//
-// Sources is the setup/capture half (which connectors are connected, and the
-// transcriber). Library is the browsable half — the content those connectors
-// have already synced. They are peer TABS of one persistent page, and each is a
-// real route, so a Library link can be shared, bookmarked and reloaded.
-//
-// Route-driven tabs are marked up as NAVIGATION, not as ARIA `tablist`: the
-// panels are addresses, not toggled regions, so `<nav>` + `<Link>` +
-// `aria-current="page"` is the honest semantic and keeps browser affordances
-// (open in a new tab, back) working. Same reason the sidebar entry is a nav
-// control rather than a tab.
-//
-// Nothing here touches `tcw`, a session or storage — it is markup and a couple
-// of tables, which is what makes the whole IA directly testable.
+// Nothing here touches `tcw`, a session or storage.
 
 import { Link } from "react-router-dom";
 
-/** Sources — the connector setup/capture surface, and the Connectors default. */
-export const CONNECTORS_SOURCES_PATH = "/chat/connectors";
-/** Library — the canonical home of everything the connectors have synced. */
+import { PATHS } from "../shell/routes";
+
+/** Connectors, one page. */
+export const CONNECTORS_SOURCES_PATH = PATHS.connectors;
+/** Library's address while it was a Connectors tab; now a legacy address that forwards to Capture → Library. */
 export const CONNECTORS_LIBRARY_PATH = "/chat/connectors/library";
-
-export type ConnectorsTab = "sources" | "library";
-
-const TABS: { id: ConnectorsTab; label: string; to: string }[] = [
-  { id: "sources", label: "Sources", to: CONNECTORS_SOURCES_PATH },
-  { id: "library", label: "Library", to: CONNECTORS_LIBRARY_PATH },
-];
-
-/** Which tab a pathname selects. Anything that is not Library is Sources, so
- *  the bare `/chat/connectors` address keeps landing on setup. */
-export function connectorsTabFor(pathname: string): ConnectorsTab {
-  return pathname.endsWith("/library") ? "library" : "sources";
-}
-
-const TAB_CLASS =
-  "-mb-px flex min-h-11 items-center border-b-2 px-3 text-sm font-medium transition-colors md:min-h-0 md:py-2";
-
-export function ConnectorsTabs({ active }: { active: ConnectorsTab }) {
-  return (
-    <nav
-      aria-label="Connectors sections"
-      className="mb-4 flex items-center gap-1 border-b border-border"
-    >
-      {TABS.map((tab) => {
-        const isActive = tab.id === active;
-        return (
-          <Link
-            key={tab.id}
-            to={tab.to}
-            aria-current={isActive ? "page" : undefined}
-            className={`${TAB_CLASS} ${
-              isActive
-                ? "border-foreground text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {tab.label}
-          </Link>
-        );
-      })}
-    </nav>
-  );
-}
 
 export type LibraryCategoryId = "meetings";
 
@@ -79,7 +28,7 @@ export const LIBRARY_CATEGORIES: {
   label: string;
   to: string;
 }[] = [
-  { id: "meetings", label: "Meetings", to: CONNECTORS_LIBRARY_PATH },
+  { id: "meetings", label: "Meetings", to: PATHS.library },
 ];
 
 /** Renders nothing while Library has a single category — see above. */

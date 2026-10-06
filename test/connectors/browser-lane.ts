@@ -209,7 +209,8 @@ async function runLane(): Promise<void> {
   const framesBefore = new Set(page.frames().map((f) => f.url()));
   const popupsBefore = popups.length;
 
-  await page.getByRole("button", { name: "Connectors", exact: true }).click();
+  // Connectors is a destination in the shell's navigation (TC-761).
+  await page.getByRole("link", { name: "Connectors", exact: true }).click();
   await page
     .getByRole("button", { name: "Fireflies" })
     .first()
@@ -419,7 +420,7 @@ async function resetConnectorState(page: Page): Promise<void> {
   );
   log(`reset: cleared ${ids.length} kv bodies, secret ${secretCleared}`);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "Connectors", exact: true }).click();
+  await page.getByRole("link", { name: "Connectors", exact: true }).click();
   await page
     .getByRole("button", { name: "Connect Fireflies", exact: true })
     .waitFor({ state: "visible", timeout: 60_000 });

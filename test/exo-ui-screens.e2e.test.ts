@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
+import { OFFERED_CHAT_MODELS } from "../packages/core/src/chatModels";
 
 const frontend = new URL("../frontend/", import.meta.url).pathname;
 
@@ -51,6 +52,8 @@ interface ScreenInfo {
   group: string;
   layout: "pane" | "document";
   displayTitle?: boolean;
+  /** Where the screen runs (default web); the phone app gets the fake recorder. */
+  platform?: string;
 }
 
 interface AllowEntry {
@@ -92,6 +95,8 @@ const API_FIXTURES: Record<string, { status?: number; body: unknown }> = {
     body: { state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] },
   },
   "GET /api/transcriber/meetings": { body: { meetings: [] } },
+  // The chat's automatic model choice (the shell screens run the real chat).
+  "GET /api/chat/model-selection": { body: { model: OFFERED_CHAT_MODELS[0].id, reason: "healthy" } },
 };
 
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -158,8 +163,11 @@ function startServer() {
 /** Console errors that are not the screen's fault. */
 function ignoredConsoleError(message: ConsoleMessage): boolean {
   const text = message.text();
+  const url = message.location().url;
   // A fixture-less /api/ call answers 404; the screen shows its empty state.
-  if (text.startsWith("Failed to load resource") && message.location().url.includes("/api/")) return true;
+  if (text.startsWith("Failed to load resource") && url.includes("/api/")) return true;
+  // Another host: the page itself refuses those calls (exoUiHarness.tsx keeps it hermetic).
+  if (text.startsWith("Failed to load resource") && url !== "" && !url.startsWith("http://127.0.0.1:")) return true;
   // WebKit does not know Chrome's interactive-widget viewport key (index.html) and reports it as an error.
   if (text.includes('Viewport argument key "interactive-widget" not recognized')) return true;
   return false;
@@ -251,13 +259,18 @@ interface Capture {
 const captures: Capture[] = [];
 
 describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
-  let browser: Browser;
+  // Every browser stays open until the run ends. Under bun, closing one
+  // browser and launching the next intermittently cuts the new browser's
+  // DevTools pipe ("Connection terminated while reading from pipe"): the
+  // browser exits and the run waits forever on its next reply.
+  const browsers: Browser[] = [];
   let server: ReturnType<typeof Bun.serve>;
   let screens: ScreenInfo[] = [];
 
   beforeAll(async () => {
     server = startServer();
-    browser = await engine.launch({ headless: true });
+    const browser = await engine.launch({ headless: true });
+    browsers.push(browser);
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${server.port}/`);
     await page.waitForFunction(() => window.exoUi !== undefined);
@@ -268,7 +281,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   }, 60_000);
 
   afterAll(async () => {
-    await browser?.close();
+    for (const browser of browsers) await browser.close();
     server?.stop(true);
     writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures }, null, 2));
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
@@ -282,8 +295,12 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   for (const viewport of viewports) {
     test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height})`, async () => {
       const failures: string[] = [];
+      // A fresh browser per viewport: WebKit stops loading pages after about
+      // sixty in one browser, and a full run loads several hundred.
+      const viewportBrowser = await engine.launch({ headless: true });
+      browsers.push(viewportBrowser);
       for (const theme of themes) {
-        const context: BrowserContext = await browser.newContext({
+        const context: BrowserContext = await viewportBrowser.newContext({
           viewport: { width: viewport.width, height: viewport.height },
           deviceScaleFactor: viewport.deviceScaleFactor,
           isMobile: viewport.isMobile ?? false,
@@ -299,40 +316,47 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
             else document.addEventListener("readystatechange", apply, { once: true });
           }, viewport.textScale);
         }
-        for (const screen of screens) {
-          const page = await context.newPage();
-          const errors: string[] = [];
-          page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-          page.on("console", (message) => {
-            if (message.type() === "error" && !ignoredConsoleError(message)) errors.push(`console.error: ${message.text()}`);
-          });
-          await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=web&freeze=1`);
-          await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
-          await page.waitForLoadState("networkidle");
-          await page.waitForTimeout(300);
+        try {
+          for (const screen of screens) {
+            const page = await context.newPage();
+            const errors: string[] = [];
+            page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+            page.on("console", (message) => {
+              if (message.type() === "error" && !ignoredConsoleError(message)) {
+                const url = message.location().url;
+                errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
+              }
+            });
+            await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
+            await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+            await page.waitForLoadState("networkidle");
+            await page.waitForTimeout(300);
 
-          const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
-          const findings: Finding[] = await page.evaluate(inspectPage, {
-            layout: screen.layout,
-            touch: viewport.hasTouch ?? false,
-            zoom: viewport.zoom ?? false,
-            displayTitle: screen.displayTitle ?? false,
-            allow,
-          });
-          for (const error of errors) findings.push({ check: "errors", detail: error });
+            const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
+            const findings: Finding[] = await page.evaluate(inspectPage, {
+              layout: screen.layout,
+              touch: viewport.hasTouch ?? false,
+              zoom: viewport.zoom ?? false,
+              displayTitle: screen.displayTitle ?? false,
+              allow,
+            });
+            for (const error of errors) findings.push({ check: "errors", detail: error });
 
-          const file = `${screen.id}__${viewport.id}__${theme}.png`;
-          await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
-          captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
-          for (const finding of findings) {
-            failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
+            const file = `${screen.id}__${viewport.id}__${theme}.png`;
+            await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
+            captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
+            for (const finding of findings) {
+              failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
+            }
+            await page.close();
           }
-          await page.close();
+        } finally {
+          await context.close();
         }
-        await context.close();
       }
       expect(failures).toEqual([]);
-    }, 240_000);
+      // WebKit takes several seconds per page for the shell screens (they run the whole chat).
+    }, 600_000);
   }
 });
 

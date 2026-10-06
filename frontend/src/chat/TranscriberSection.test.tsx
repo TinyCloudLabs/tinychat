@@ -362,7 +362,7 @@ describe("LocalTranscriberView", () => {
     const html = renderLocal({ state: "stop-failed", statusText: "Stopping was not confirmed: timed out." });
     expect(html).toContain(">Retry stop</button>");
     expect(html).toContain("Stopping was not confirmed");
-    expect(html).toContain("Keep this view open while recording");
+    expect(html).toContain("Keep this window open while recording.");
     expect(html).not.toContain("Start recording");
     expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
     expect(localRetryAction("stop-failed")).toBe("stop");
@@ -545,10 +545,10 @@ describe("transcriber client", () => {
   });
 });
 
-describe("Connectors page wiring", () => {
-  test("ConnectorsPage mounts TranscriberSection with the session, backend URL and the user's tcw", () => {
-    const src = readFileSync(join(import.meta.dir, "ConnectorsPage.tsx"), "utf8");
-    expect(src).toContain('import { TranscriberSection } from "./TranscriberSection";');
+describe("Capture wiring", () => {
+  test("CaptureSurface mounts TranscriberSection with the session, backend URL and the user's tcw", () => {
+    const src = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");
+    expect(src).toContain('import { TranscriberSection } from "@/chat/TranscriberSection";');
     expect(src).toMatch(
       /<TranscriberSection[\s\S]{0,180}backendUrl=\{backendUrl\}[\s\S]{0,180}sessionStore=\{sessionStore\}[\s\S]{0,180}tcw=\{tcw\}/,
     );

@@ -2,11 +2,9 @@ import { lazy, Suspense } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { useNavKind } from "@/shell/navItems";
+import { PAGE_COLUMN, PageHeader, SettingsGear } from "@/shell/PageHeader";
 import { ConnectorsCard } from "./ConnectorsCard";
-import { ConnectorsTabs, type ConnectorsTab } from "./connectorsNav";
-import { LibraryPage } from "./LibraryPage";
-import { TranscriberSection } from "./TranscriberSection";
-import { VoiceNotesSection } from "./VoiceNotesSection";
 
 // Health spike (TC-525): development-only, and only in builds with VITE_EXO_HEALTH_SPIKE=true (the rule of
 // healthSpikeEnabled, written out so Vite can inline it: a normal build drops the card's chunk entirely).
@@ -22,85 +20,49 @@ interface ConnectorsPageProps {
   tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
-  /** Which peer tab is open — derived from the route by App. */
-  tab: ConnectorsTab;
-  /**
-   * The cohort meeting archive is owned by App because App owns the signed-in
-   * session. It stays optional: outside the backend-ingest cohort the section
-   * returns null and leaves no empty placeholder behind. Passed through to
-   * Library, where every browsable meeting now lives.
-   */
-  meetingsSlot?: React.ReactNode;
 }
 
 /**
- * The persistent Connectors workspace: one page, two peer tabs.
+ * Connectors (TC-761): the meeting sources a user connects and syncs, one page
+ * and one of the app's three destinations. Capture (recording, uploads, the
+ * notetaker) and the Library moved to Capture, so this is the connector rows
+ * and, in builds that ask for them, the development spikes.
  *
- *   Sources — set connectors up and capture from them (the connector rows and
- *             the transcriber).
- *   Library — browse what they have already synced (Meetings today).
- *
- * There is no back affordance here on purpose: this page renders inside the
- * chat workspace, so the persistent sidebar is always on screen (a sheet on
- * mobile) and is the way back to a thread. A second "Back to chat" button would
- * be a redundant, weaker version of navigation the user already has.
- *
- * This deliberately follows TinyChat's existing narrow, card-based page
- * language. Connectors is promoted in the app hierarchy without importing a
- * dashboard shell or a second visual system.
+ * There is no back affordance: it is a destination, and the shell's navigation
+ * is always on screen.
  */
-export function ConnectorsPage({
-  tcw,
-  backendUrl,
-  sessionStore,
-  tab,
-  meetingsSlot,
-}: ConnectorsPageProps) {
+export function ConnectorsPage({ tcw, backendUrl, sessionStore }: ConnectorsPageProps) {
+  const nav = useNavKind();
   return (
     // `relative` makes this scroller the containing block for absolutely
     // positioned descendants (the `sr-only` form labels). Without it they
     // resolve against the initial containing block, escape the scroller and
     // stretch the document, so the whole app shell scrolls.
-    <div className="relative h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl px-4 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
-        {/* One stable page header across both tabs — the tab strip below is
-            what changes, not the identity of the page. */}
-        <h1 className="font-display text-title-2">Connectors</h1>
+    <div className="relative h-full overflow-y-auto" data-scroll-root>
+      <PageHeader title="Connectors" trailing={nav === "tabbar" ? <SettingsGear /> : undefined} className={PAGE_COLUMN} />
+      <div className={`${PAGE_COLUMN} pb-[max(1.5rem,env(safe-area-inset-bottom))]`}>
         <p className="mb-4 mt-1 text-sm leading-relaxed text-muted-foreground">
           Bring meeting notes and transcripts into your private space. You
           choose each source, when it syncs, and when its access ends.
         </p>
-
-        <ConnectorsTabs active={tab} />
-
-        {tab === "library" ? (
-          <LibraryPage tcw={tcw} meetingsSlot={meetingsSlot} />
-        ) : (
-          <div className="flex flex-col gap-4">
-            <VoiceNotesSection tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
-            {HealthSpikeSection && (
-              <Suspense fallback={null}>
-                <HealthSpikeSection tcw={tcw} />
-              </Suspense>
-            )}
-            {LocationSpikeSection && (
-              <Suspense fallback={null}>
-                <LocationSpikeSection tcw={tcw} />
-              </Suspense>
-            )}
-            <ConnectorsCard
-              tcw={tcw}
-              backendUrl={backendUrl}
-              sessionStore={sessionStore}
-              title="Meeting sources"
-            />
-            <TranscriberSection
-              backendUrl={backendUrl}
-              sessionStore={sessionStore}
-              tcw={tcw}
-            />
-          </div>
-        )}
+        <div className="flex flex-col gap-4">
+          {HealthSpikeSection && (
+            <Suspense fallback={null}>
+              <HealthSpikeSection tcw={tcw} />
+            </Suspense>
+          )}
+          {LocationSpikeSection && (
+            <Suspense fallback={null}>
+              <LocationSpikeSection tcw={tcw} />
+            </Suspense>
+          )}
+          <ConnectorsCard
+            tcw={tcw}
+            backendUrl={backendUrl}
+            sessionStore={sessionStore}
+            title="Meeting sources"
+          />
+        </div>
       </div>
     </div>
   );

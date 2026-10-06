@@ -17,11 +17,14 @@ interface LibraryPageProps {
    * renders nothing and leaves no empty placeholder behind.
    */
   meetingsSlot?: React.ReactNode;
+  /** Bumped to re-read the list (entering the Library, something new landed). */
+  listSignal?: number;
 }
 
 /**
- * Library — the browsable half of Connectors: what the connected sources have
- * already synced, rather than how they are set up.
+ * Library — what the user's sources and captures have already put into their
+ * space, rather than how they are set up. It lives under Capture
+ * (/chat/capture/library).
  *
  * Meetings is the only category, so its surface renders directly and the
  * category nav stays silent (see connectorsNav.tsx). Adding Documents means an
@@ -36,6 +39,7 @@ export function LibraryPage({
   tcw,
   category = "meetings",
   meetingsSlot,
+  listSignal,
 }: LibraryPageProps) {
   const label =
     LIBRARY_CATEGORIES.find((c) => c.id === category)?.label ?? "Meetings";
@@ -49,7 +53,7 @@ export function LibraryPage({
           Everything your connected sources have synced into your private space.
         </p>
       </div>
-      <MeetingsPage tcw={tcw} />
+      <MeetingsPage tcw={tcw} listSignal={listSignal} />
       {meetingsSlot}
     </div>
   );

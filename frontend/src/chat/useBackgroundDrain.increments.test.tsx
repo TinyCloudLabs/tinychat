@@ -74,6 +74,7 @@ import {
   type BackgroundSyncState,
 } from "./backgroundSyncState";
 import { CONNECTORS } from "@/lib/connectors/registry";
+import { navItems } from "@/shell/navItems";
 import type {
   ConnectorAckResult,
   ConnectorWebhookConfigPoll,
@@ -664,24 +665,21 @@ describe("I1 badge — hide states", () => {
 
 describe("I1 badge — accessibility copy", () => {
   test("the count folds into the EXISTING aria-label, generically", () => {
-    expect(connectorsAriaLabel(false, 3)).toBe("Connectors — 3 meetings waiting");
-    expect(connectorsAriaLabel(false, 1)).toBe("Connectors — 1 meeting waiting");
+    expect(connectorsAriaLabel(3)).toBe("Connectors — 3 meetings waiting");
+    expect(connectorsAriaLabel(1)).toBe("Connectors — 1 meeting waiting");
   });
 
-  test("when hidden the label reverts to the existing strings EXACTLY", () => {
-    expect(connectorsAriaLabel(false, 0)).toBe("Connectors");
-    // On the connectors route the section itself is visible; the button is a
-    // close affordance and says only that.
-    expect(connectorsAriaLabel(true, 0)).toBe("Close connectors");
-    expect(connectorsAriaLabel(true, 5)).toBe("Close connectors");
+  test("with nothing waiting the label is the item's name EXACTLY", () => {
+    // The navigation item is a link now (TC-761): it never becomes a close
+    // control, so there is no "Close connectors" any more.
+    expect(connectorsAriaLabel(0)).toBe("Connectors");
   });
 
   test("no provider name ever reaches the label", () => {
     for (const label of [
-      connectorsAriaLabel(false, 0),
-      connectorsAriaLabel(false, 1),
-      connectorsAriaLabel(false, 42),
-      connectorsAriaLabel(true, 42),
+      connectorsAriaLabel(0),
+      connectorsAriaLabel(1),
+      connectorsAriaLabel(42),
     ]) {
       expect(label.toLowerCase()).not.toContain("fireflies");
       for (const descriptor of CONNECTORS) {
@@ -737,29 +735,32 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     // No polling, no second count, no badge-owned state.
     expect(app).not.toContain("setInterval");
     // The count is the shared helper's, suppressed on the connectors route.
-    expect(app).toMatch(/showConnectors\s*\?\s*0\s*:\s*badgePendingCount\(/);
+    expect(app).toContain('screen.destination === "connectors" ? 0 : badgePendingCount(');
   });
 
-  test("the pill lives INSIDE the existing button, aria-hidden and layout-neutral", () => {
-    // The Connectors button is ChatWorkspace's sidebar entry.
-    const workspace = read("ChatWorkspace.tsx");
-    const at = workspace.indexOf("aria-label={connectorsAriaLabel(showConnectors");
-    expect(at).toBeGreaterThan(0);
-    const button = workspace.slice(at, workspace.indexOf("</Button>", at));
-    // Absolutely positioned inside the button's own relative box, so the
-    // 44/32px footprint never changes — no layout shift.
-    expect(button).toContain("relative");
-    expect(button).toContain("absolute");
-    expect(button).toContain('aria-hidden="true"');
-    // The destination's icon is still the button's content.
-    expect(button).toContain("<PlugIcon");
-    // The aria-label is the single announcement; the pill itself renders the
-    // bare count and no copy at all — so no provider name, and nothing for a
-    // screen reader to double-announce.
-    expect(button.toLowerCase()).not.toContain("fireflies");
-    const pill = button.slice(button.indexOf("<span"), button.indexOf("</span>"));
+  test("the pill lives INSIDE the navigation item, aria-hidden and layout-neutral", () => {
+    // The Connectors item is the shell's (tab bar, rail, sidebar); the pill is NavBadge.
+    const badge = read("../shell/NavBadge.tsx");
+    // Absolutely positioned inside the item's own relative box, so the item's
+    // footprint never changes — no layout shift.
+    expect(badge).toContain('aria-hidden="true"');
+    expect(badge).toContain("absolute");
+    const pill = badge.slice(badge.indexOf("<span"), badge.indexOf("</span>"));
     const children = pill.slice(pill.lastIndexOf(">") + 1).trim();
-    expect(children).toBe("{badgePillLabel(pendingMeetings)}");
+    expect(children).toBe("{badgePillLabel(count)}");
+    expect(badge.toLowerCase()).not.toContain("fireflies");
+    // Every navigation renders it, and the item's aria-label is the single
+    // announcement. (shell/TabBar.test.tsx renders each one and checks the pill
+    // sits in a relative box.)
+    for (const nav of ["TabBar.tsx", "NavRail.tsx", "Sidebar.tsx"]) {
+      const source = read(`../shell/${nav}`);
+      expect(source).toContain("<NavBadge count={item.badge}");
+      expect(source).toContain("aria-label={item.ariaLabel}");
+    }
+    // …and it is the label with the count folded in.
+    const items = read("../shell/navItems.ts");
+    expect(items).toContain("ariaLabel: connectorsAriaLabel(pendingMeetings)");
+    expect(items).toContain("badge: pendingMeetings");
   });
 
   test("the drainer mount gate is untouched by the badge edit", () => {
@@ -798,15 +799,18 @@ describe("I1 badge — the pill clamps its display, the label does not", () => {
     // The pill is aria-hidden; the LABEL is the announcement and it keeps the
     // exact number — the clamp is a visual overflow rule, never a rounding of
     // what the user is told.
-    expect(connectorsAriaLabel(false, 100)).toBe("Connectors — 100 meetings waiting");
-    expect(connectorsAriaLabel(false, 1234)).toBe("Connectors — 1234 meetings waiting");
+    expect(connectorsAriaLabel(100)).toBe("Connectors — 100 meetings waiting");
+    expect(connectorsAriaLabel(1234)).toBe("Connectors — 1234 meetings waiting");
   });
 
-  test("ChatWorkspace renders the clamped pill text and the unclamped label (source-asserted)", () => {
-    const workspace = readFileSync(join(import.meta.dir, "ChatWorkspace.tsx"), "utf8");
-    expect(workspace).toContain("badgePillLabel(pendingMeetings)");
-    // The label call still takes the raw count — no clamp on its way in.
-    expect(workspace).toContain("connectorsAriaLabel(showConnectors, pendingMeetings)");
+  test("the shell renders the clamped pill text and the unclamped label", () => {
+    const items = navItems(1234);
+    const connectors = items.find((item) => item.id === "connectors")!;
+    // The label takes the raw count — no clamp on its way in.
+    expect(connectors.ariaLabel).toBe("Connectors — 1234 meetings waiting");
+    expect(connectors.badge).toBe(1234);
+    const badge = readFileSync(join(import.meta.dir, "../shell/NavBadge.tsx"), "utf8");
+    expect(badge).toContain("badgePillLabel(count)");
   });
 });
 
