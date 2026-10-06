@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.12
+
+### Minor Changes
+
+- 1cabcd5: Keep existing data readable when storage is full and show clear write failures.
+
 ## 0.6.0-beta.11
 
 No changes in this release.

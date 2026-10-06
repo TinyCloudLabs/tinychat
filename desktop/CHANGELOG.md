@@ -1,5 +1,9 @@
 # exo-desktop
 
+## 0.6.0-beta.12
+
+No changes in this release.
+
 ## 0.6.0-beta.11
 
 ### Patch Changes
