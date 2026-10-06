@@ -40,6 +40,7 @@ import {
   createCloudJobPoller,
   loadPrivateCloudNative,
   localStoragePendingCloudStore,
+  localStorageRecordStore,
   privateCloudJobClient,
   privateCloudMessage,
   PrivateCloudError,
@@ -54,8 +55,10 @@ import {
   type PrivateCloudJob,
   type PrivateCloudNative,
   type PrivateCloudTranscript,
+  type RecordStore,
   type TranscriptionEngine,
 } from "./privateCloud";
+import { accountStorageKey } from "./voiceNotes/voiceNoteTranscription";
 
 export type { TranscriptionEngine } from "./privateCloud";
 
@@ -72,6 +75,9 @@ export const LOCAL_MEETING_SOURCE_LABEL = "Exo Local";
 
 export const LOCAL_KIND_STORAGE_KEY = "exo.transcriber.kind";
 export const LOCAL_MODEL_STORAGE_KEY = "exo.transcriber.localModel";
+/** The stopped on-device recording not yet transcribed and saved, so a relaunch
+ *  offers it again. Suffixed with the account's DID (accountStorageKey). */
+export const LOCAL_KEPT_RECORDING_KEY = "exo.transcriber.localKeptRecording";
 
 /** True only inside the Tauri webview. Everything below must stay behind this gate. */
 export function isDesktopLocalTranscriptionAvailable(): boolean {
@@ -109,6 +115,35 @@ export const LOCAL_WHISPER_MODELS: readonly LocalWhisperModel[] = [
 ];
 
 export const DEFAULT_LOCAL_MODEL: WhisperModel = "QuantizedTinyEn";
+
+// ── Kept recording (relaunch) ──────────────────────────────────────────
+
+/** What Transcribe needs to re-run Whisper on a recording after a relaunch. */
+export interface KeptLocalRecording {
+  sessionId: string;
+  startedAt: string;
+  audioPath: string;
+  model: WhisperModel;
+  language: string;
+}
+
+export type KeptRecordingStore = RecordStore<KeptLocalRecording>;
+
+/** This Mac's kept recording for one account (keyed by DID, like uploads and
+ *  voice notes), so another account never sees, resumes, overwrites or clears it. */
+export function localStorageKeptRecordingStore(accountDid: string): KeptRecordingStore {
+  return localStorageRecordStore(accountStorageKey(LOCAL_KEPT_RECORDING_KEY, accountDid), (v) => {
+    if (typeof v.sessionId !== "string" || typeof v.startedAt !== "string") return null;
+    if (typeof v.audioPath !== "string" || v.audioPath === "") return null;
+    return {
+      sessionId: v.sessionId,
+      startedAt: v.startedAt,
+      audioPath: v.audioPath,
+      model: LOCAL_WHISPER_MODELS.some((m) => m.id === v.model) ? (v.model as WhisperModel) : DEFAULT_LOCAL_MODEL,
+      language: typeof v.language === "string" ? v.language : "en",
+    };
+  });
+}
 
 // ── Plugin bridge ──────────────────────────────────────────────────────
 
@@ -295,8 +330,8 @@ export interface LocalTranscriber {
     /** Explicitly move a private cloud recording to on-device Whisper with this model. */
     onDevice?: { model: WhisperModel };
   }): Promise<LocalTranscriptResult>;
-  /** Give up on the kept recording without transcribing it. Its audio file
-   *  stays on disk. */
+  /** Give up on the kept recording without transcribing it, and forget it
+   *  (a relaunch no longer offers it). Its audio file stays on disk. */
   discardRecording(): void;
   /** Take over a transcription whose view closed: the one still running, or
    *  the outcome it left. Resolves with the transcript (exactly once, to this
@@ -321,6 +356,21 @@ export interface LocalTranscriber {
   stopCaptureOnUnmount(): Promise<void>;
   /** Subscribe to capture/transcription status; returns unsubscribe. */
   onStatus(cb: (s: LocalTranscriberStatus) => void): () => void;
+  /** This account's on-device recording that stopped but never had its
+   *  transcript saved (Exo quit or crashed, or its view closed), kept for this
+   *  view like a failed transcription: rejects with KeptRecordingError for
+   *  retryTranscription() or discardRecording(). Null when there is none, a job
+   *  already runs, or its transcript is being saved right now. */
+  resumeKeptRecording(): Promise<LocalTranscriptResult> | null;
+  /** While `saving` runs, the on-device transcript's recording is being saved,
+   *  so it is not offered as kept (e.g. to a view that opens meanwhile). */
+  savingOnDeviceTranscript(result: OnDeviceTranscriptResult, saving: Promise<unknown>): void;
+  /** The save of this account's kept recording running right now (it is not
+   *  offered meanwhile), settling when that save does; null when none runs. */
+  keptRecordingSave(): Promise<void> | null;
+  /** After an on-device transcript is saved (or had no speech to save):
+   *  forget its kept recording, so a relaunch no longer offers it. */
+  finishOnDeviceTranscript(result: OnDeviceTranscriptResult): void;
   /** Private cloud is offered only when this build can upload (native) and the
    *  backend admits this account (capabilities 200). A clean 404 also forgets
    *  a pending job, which can no longer be finished here. */
@@ -459,6 +509,18 @@ export class PartialRecordingError extends TranscriptionFailedError {
   constructor(message: string) {
     super(message);
     this.name = "PartialRecordingError";
+  }
+}
+
+/**
+ * An on-device recording that stopped but never had its transcript saved: Exo
+ * quit or crashed, or its view closed first. Transcribe runs
+ * retryTranscription(); its audio file may be gone, which fails without Retry.
+ */
+export class KeptRecordingError extends TranscriptionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = "KeptRecordingError";
   }
 }
 
@@ -754,6 +816,8 @@ interface TranscriptionJob {
   report: ((s: LocalTranscriberStatus) => void) | null;
   /** Private cloud state; null for on-device recordings. */
   cloud: CloudJobState | null;
+  /** DID of the account whose recording this is (null: no account given). */
+  account: string | null;
   /** The latest attempt's outcome; never rejects. */
   attempt: Promise<TranscriptionOutcome>;
   /** True while an attempt runs. */
@@ -761,6 +825,9 @@ interface TranscriptionJob {
 }
 
 const transcriptionJobs = new WeakMap<object, TranscriptionJob>();
+
+/** On-device transcripts being saved (session → settles with the save), per native identity. */
+const savingTranscripts = new WeakMap<object, Map<string, Promise<void>>>();
 
 /** A new job's attempt until runAttempt() replaces it, in the same tick. */
 const NOT_ATTEMPTED: Promise<TranscriptionOutcome> = new Promise(() => {});
@@ -911,7 +978,15 @@ const ON_DEVICE_ALTERNATIVE_CODES: ReadonlySet<string> = new Set([
 
 export function createLocalTranscriber(
   injected?: LocalTranscriberBridge,
-  options: { timeouts?: Partial<LocalTranscriberTimeouts>; cloud?: PrivateCloudDeps } = {},
+  options: {
+    timeouts?: Partial<LocalTranscriberTimeouts>;
+    cloud?: PrivateCloudDeps;
+    /** The signed-in account's DID. Scopes the kept recording and a closed
+     *  view's job to it; without one, no recording is kept across a relaunch. */
+    account?: () => string | null;
+    /** An account's kept-recording store; injected in tests, localStorage otherwise. */
+    kept?: (accountDid: string) => KeptRecordingStore;
+  } = {},
 ): LocalTranscriber {
   const timeouts: LocalTranscriberTimeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
   let bridgePromise: Promise<LocalTranscriberBridge> | null = injected
@@ -947,7 +1022,43 @@ export function createLocalTranscriber(
             ),
         });
   const pendingStore = cloud?.pending ?? localStoragePendingCloudStore;
+  const account = options.account ?? (() => null);
+  const keptFor = options.kept ?? localStorageKeptRecordingStore;
+  const keptStore = (did: string | null): KeptRecordingStore | null => (did === null ? null : keptFor(did));
+  /** Persist an on-device recording before it is transcribed, so a quit or crash cannot lose it. */
+  const keepRecording = (recording: StoppedRecording, did: string | null) => {
+    if (recording.engine !== "on-device") return;
+    keptStore(did)?.write({
+      sessionId: recording.sessionId,
+      startedAt: recording.startedAt,
+      audioPath: recording.audioPath,
+      model: recording.model,
+      language: recording.language,
+    });
+  };
+  const forgetRecording = (id: string, did: string | null) => {
+    const store = keptStore(did);
+    if (store?.read()?.sessionId === id) store.clear();
+  };
+  /** An idle job of another account (signed out since) neither blocks nor is
+   *  shown to this one. An on-device recording stays kept under that account,
+   *  which is offered it again; a private cloud job is left as it is (not
+   *  cancelled), for that account's relaunch resume or tenant-list recovery. */
+  const setAsideOtherAccountJob = () => {
+    const job = transcriptionJobs.get(nativeKey);
+    if (job === undefined || job.account === null || job.account === account() || job.running) return;
+    transcriptionJobs.delete(nativeKey);
+  };
   const newAttemptId = cloud?.newAttemptId ?? (() => crypto.randomUUID());
+  /** Closing the view never loses an on-device recording (complete or partial):
+   *  it is kept for the next view or launch (resumeKeptRecording). */
+  const keepOnClose = (session: string, at: string | null, stopped: CaptureStoppedEvent) => {
+    if (sessionEngine !== "on-device" || !stopped.audio_path || at === null) return;
+    keepRecording(
+      { sessionId: session, startedAt: at, audioPath: stopped.audio_path, model, language, engine: "on-device" },
+      account(),
+    );
+  };
   const readyStore = captureReadyStore(nativeKey);
   let cloudNativePromise: Promise<PrivateCloudNative> | null = cloud?.native ? Promise.resolve(cloud.native) : null;
   /** Native cloud commands, loaded once; a failed load is retried by the next call. */
@@ -1104,7 +1215,10 @@ export function createLocalTranscriber(
       },
     );
     if (done.type === "failed") {
-      throw new Error(`Transcription failed (${done.code}): ${done.error}`);
+      // The audio file is missing (moved or deleted) or unreadable: transcribing it again cannot help.
+      throw new TranscriptionFailedError(`Transcription failed (${done.code}): ${done.error}`, {
+        retryable: done.code !== "audio_metadata_read_failed",
+      });
     }
     if (done.type !== "completed") {
       throw new Error(`Transcription ended unexpectedly (${done.type})`);
@@ -1401,7 +1515,7 @@ export function createLocalTranscriber(
         return { ok: true, result: await transcribe(b, job.recording, url) };
       } catch (err) {
         if (job.recording.engine === "private-cloud") return { ok: false, error: cloudFailure(err, job) };
-        return { ok: false, error: new TranscriptionFailedError(errorMessage(err)) };
+        return { ok: false, error: err instanceof TranscriptionFailedError ? err : new TranscriptionFailedError(errorMessage(err)) };
       } finally {
         job.running = false;
       }
@@ -1450,6 +1564,7 @@ export function createLocalTranscriber(
 
     async start(opts) {
       if (sessionId !== null || starting !== null) throw new Error("A local recording is already active");
+      setAsideOtherAccountJob();
       // The local Whisper server runs one job at a time, and a kept recording
       // must be transcribed or discarded before another replaces it.
       const job = transcriptionJobs.get(nativeKey);
@@ -1459,6 +1574,10 @@ export function createLocalTranscriber(
             ? "A previous recording is still being transcribed; wait for it to finish"
             : "A stopped recording is waiting to be transcribed or saved; finish or discard it first",
         );
+      }
+      // Nor one a previous launch kept (resumeKeptRecording offers it), or whose save is still running.
+      if (keptStore(account())?.read() != null) {
+        throw new Error("A stopped recording is waiting to be transcribed or saved; finish or discard it first");
       }
       const engine = opts.engine ?? "on-device";
       if (engine === "private-cloud" && cloud === null) throw new Error("Private cloud transcription is not available");
@@ -1589,6 +1708,7 @@ export function createLocalTranscriber(
             recording,
             owner: open ? ownerId : null,
             report: open ? emit : null,
+            account: account(),
             cloud:
               sessionEngine === "private-cloud"
                 ? { captureHandle: null, handleLost: false, attemptId: newAttemptId(), transcriptionId: null, next: "submit" }
@@ -1603,6 +1723,7 @@ export function createLocalTranscriber(
               : NOT_ATTEMPTED,
             running: false,
           };
+          keepRecording(recording, job.account);
           if (!stopped.error) {
             emit({ kind: "transcribing", progress: null });
             runAttempt(job, serverUrl);
@@ -1631,6 +1752,7 @@ export function createLocalTranscriber(
         releaseCloud(job);
         job.cloud = null;
         job.recording = { ...job.recording, engine: "on-device", model: opts.onDevice.model };
+        keepRecording(job.recording, job.account);
       }
       emit({ kind: "transcribing", progress: null });
       runAttempt(job, null);
@@ -1645,12 +1767,14 @@ export function createLocalTranscriber(
       if (job.running) throw new Error("The recording is being transcribed; it can be discarded if that fails");
       transcriptionJobs.delete(nativeKey);
       releaseCloud(job);
+      forgetRecording(job.recording.sessionId, job.account);
       emit({ kind: "idle" });
     },
 
     adoptTranscription() {
       const job = transcriptionJobs.get(nativeKey);
-      if (job === undefined || job.owner !== null) return null;
+      // Never another account's: its transcript would be saved into this account's space.
+      if (job === undefined || job.owner !== null || job.account !== account()) return null;
       job.owner = ownerId;
       job.report = emit;
       if (job.running) emit({ kind: "transcribing", progress: null });
@@ -1678,7 +1802,15 @@ export function createLocalTranscriber(
       listeners = null;
       void activeListeners?.then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()), ignore);
       const pendingStart = starting;
-      if (!captureActive && pendingStart === null) return;
+      if (!captureActive && pendingStart === null) {
+        // Capture already ended without stop() taking it (it ended on its own,
+        // or a timed-out Stop's event came late): keep it, then release it.
+        if (!stopping && sessionId !== null && captureStopped !== null) {
+          keepOnClose(sessionId, startedAt, captureStopped);
+          releaseSession();
+        }
+        return;
+      }
       // The view is going away, but the stop still has to be confirmed. Until it
       // is, a remounted view's start() waits on it; if it is not confirmed, the
       // capture is left as the previous recording for the next view to stop.
@@ -1687,9 +1819,11 @@ export function createLocalTranscriber(
         // generation and leaves its capture here; its own rejection goes to its caller.
         if (pendingStart !== null) await pendingStart.then(ignore, ignore);
         const session = sessionId;
+        const sessionStartedAt = startedAt;
         if (!captureActive || session === null) return;
+        let stopped: CaptureStoppedEvent;
         try {
-          await confirmCaptureStopped(await bridge());
+          stopped = await confirmCaptureStopped(await bridge());
         } catch (err) {
           adoptOrphan(
             nativeKey,
@@ -1700,6 +1834,8 @@ export function createLocalTranscriber(
           );
           throw err;
         }
+        // A stop() in flight keeps its own, with its transcription job.
+        if (!stopping) keepOnClose(session, sessionStartedAt, stopped);
         releaseSession();
       })();
       closingCaptures.set(nativeKey, closing);
@@ -1757,6 +1893,7 @@ export function createLocalTranscriber(
         },
         owner: ownerId,
         report: emit,
+        account: account(),
         cloud: {
           captureHandle: null,
           handleLost: true,
@@ -1787,6 +1924,53 @@ export function createLocalTranscriber(
           throw err;
         },
       );
+    },
+
+    resumeKeptRecording() {
+      setAsideOtherAccountJob();
+      if (transcriptionJobs.has(nativeKey)) return null;
+      const did = account();
+      const kept = keptStore(did)?.read() ?? null;
+      if (kept === null || savingTranscripts.get(nativeKey)?.has(kept.sessionId)) return null;
+      const job: TranscriptionJob = {
+        recording: { ...kept, engine: "on-device" },
+        owner: ownerId,
+        report: emit,
+        account: did,
+        cloud: null,
+        // Never transcribed on its own: the user chooses Transcribe or Discard.
+        attempt: Promise.resolve({
+          ok: false,
+          error: new KeptRecordingError(
+            `"${localRecordingTitle(kept.startedAt)}" stopped, but its transcript was never saved. The recording was kept on this Mac.`,
+          ),
+        }),
+        running: false,
+      };
+      transcriptionJobs.set(nativeKey, job);
+      return takeTranscription(nativeKey, job, ownerId);
+    },
+
+    savingOnDeviceTranscript(result, saving) {
+      let sessions = savingTranscripts.get(nativeKey);
+      if (sessions === undefined) {
+        sessions = new Map();
+        savingTranscripts.set(nativeKey, sessions);
+      }
+      const session = result.sessionId;
+      const settled = saving.then(ignore, ignore).then(() => {
+        if (sessions.get(session) === settled) sessions.delete(session);
+      });
+      sessions.set(session, settled);
+    },
+
+    keptRecordingSave() {
+      const kept = keptStore(account())?.read() ?? null;
+      return kept === null ? null : (savingTranscripts.get(nativeKey)?.get(kept.sessionId) ?? null);
+    },
+
+    finishOnDeviceTranscript(result) {
+      forgetRecording(result.sessionId, account());
     },
 
     async recoverCloudTranscripts() {

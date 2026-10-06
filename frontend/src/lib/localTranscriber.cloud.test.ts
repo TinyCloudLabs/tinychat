@@ -6,6 +6,8 @@
 // Asserted behavior:
 //   - a cloud recording never starts Whisper; capture runs in batch mode and
 //     the capture-ready listener is registered before capture starts;
+//   - a cloud recording is never the on-device kept recording, until
+//     "Transcribe on this Mac" moves it there (and forgets the cloud job);
 //   - Stop → capture handle → submit (attempt id, compiled backend, bearer) →
 //     poll → transcript, saved as the same exo-local meeting with engine
 //     metadata, then deleted from PTX and the handle released;
@@ -37,6 +39,7 @@ import {
   normalizeLocalTranscript,
   TranscriptionFailedError,
   type CloudTranscriptResult,
+  type KeptLocalRecording,
   type LocalTranscriberBridge,
   type LocalTranscriberStatus,
 } from "./localTranscriber";
@@ -44,17 +47,18 @@ import {
   PrivateCloudError,
   type CaptureReadyEvent,
   type PendingCloudJob,
-  type PendingCloudStore,
   type PrivateCloudApi,
   type PrivateCloudJob,
   type PrivateCloudNative,
   type PrivateCloudSubmitArgs,
   type PrivateCloudTranscript,
+  type RecordStore,
   type UploadProgressEvent,
 } from "./privateCloud";
 import type { CaptureLifecycleEvent } from "./anarlog/transcription.gen";
 
 const ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W3";
+const ACCOUNT_A = "did:pkh:eip155:1:0xA";
 const OTHER_ID = "trn_01J8Z3K4M5N6P7Q8R9S0T1V2W4";
 
 const TRANSCRIPT: PrivateCloudTranscript = {
@@ -216,11 +220,11 @@ function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"] } = {}) 
   return { api, calls, gets, getsById, listed, control };
 }
 
-function memoryPending(initial: PendingCloudJob | null = null): PendingCloudStore & { value: PendingCloudJob | null } {
+function memoryStore<T>(initial: T | null = null): RecordStore<T> & { value: T | null } {
   const store = {
     value: initial,
     read: () => store.value,
-    write: (j: PendingCloudJob) => {
+    write: (j: T) => {
       store.value = { ...j };
     },
     clear: () => {
@@ -248,26 +252,32 @@ function setup(opts: { configured?: boolean; capabilities?: PrivateCloudApi["cap
   const b = makeBridge();
   const n = makeNative({ configured: opts.configured });
   const a = makeApi({ capabilities: opts.capabilities });
-  const pending = memoryPending(opts.pending ?? null);
+  const pending = memoryStore<PendingCloudJob>(opts.pending ?? null);
+  const kept = memoryStore<KeptLocalRecording>();
   const clock = fakeClock();
   const recovered: CloudTranscriptResult[] = [];
   let attempt = 0;
-  const t = createLocalTranscriber(b.bridge, {
+  const options = {
     timeouts: { captureReadyMs: 50 },
+    account: () => ACCOUNT_A,
+    kept: () => kept,
     cloud: {
       api: a.api,
       native: n.native,
       pending,
       clock,
       newAttemptId: () => `00000000-0000-4000-8000-00000000000${++attempt}`,
-      saveRecovered: async (r) => {
+      saveRecovered: async (r: CloudTranscriptResult) => {
         recovered.push(r);
       },
     },
-  });
+  };
+  const t = createLocalTranscriber(b.bridge, options);
+  /** Another view on the same Mac, signed in as `account` (e.g. after sign-out and sign-in). */
+  const remount = (account: string) => createLocalTranscriber(b.bridge, { ...options, account: () => account });
   const statuses: LocalTranscriberStatus[] = [];
   t.onStatus((s) => statuses.push(s));
-  return { t, ...b, n, a, pending, clock, statuses, recovered };
+  return { t, ...b, n, a, pending, kept, clock, statuses, recovered, remount };
 }
 
 /** Start a cloud recording; on stop, native reports the capture handle (or `ready`). */
@@ -355,11 +365,36 @@ describe("private cloud engine", () => {
     expect(err.retryable).toBe(false);
     expect(err.offerOnDevice).toBe(true);
     expect(s.calls).toEqual(["start_capture:batch::", "stop_capture"]);
+    expect(s.kept.value).toBeNull();
 
     const onDevice = s.t.retryTranscription({ onDevice: { model: "QuantizedBaseEn" } });
     await new Promise((r) => setTimeout(r, 0));
     expect(s.calls.slice(2)).toEqual(["start_server:QuantizedBaseEn", "start_transcription:/vault/sessions/s/audio.mp3"]);
+    // Now an on-device recording: kept across a relaunch like one, and no longer a cloud job.
+    expect(s.kept.value).toMatchObject({ audioPath: "/vault/sessions/s/audio.mp3", model: "QuantizedBaseEn" });
+    expect(s.pending.value).toBeNull();
     void onDevice.catch(() => {});
+  });
+
+  test("another account is never blocked by, nor adopts, an idle private cloud job; that job is left for its account", async () => {
+    const s = setup();
+    s.n.setSubmit(async () => {
+      throw { code: "upload_interrupted", message: "PTX did not receive the whole recording", correlationId: "c-1", transcriptionId: ID };
+    });
+    s.a.gets.push(job("awaiting_upload"));
+    const { stopped } = await recordAndStop(s);
+    await expect(stopped).rejects.toBeInstanceOf(TranscriptionFailedError);
+    expect(s.pending.value?.transcriptionId).toBe(ID);
+    await s.t.stopCaptureOnUnmount();
+
+    const b = s.remount("did:pkh:eip155:1:0xB");
+    expect(b.adoptTranscription()).toBeNull();
+    await expect(b.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+    await new Promise((r) => setTimeout(r, 0));
+    // Set aside, not released: no cancel or delete, and its pending record stays.
+    expect(s.a.calls.filter((c) => c.startsWith("cancel:") || c.startsWith("remove:"))).toEqual([]);
+    expect(s.n.cancels).toEqual([]);
+    expect(s.pending.value?.transcriptionId).toBe(ID);
   });
 
   test("a failed upload that PTX never took: status says awaiting_upload, Retry re-uploads the SAME attempt", async () => {

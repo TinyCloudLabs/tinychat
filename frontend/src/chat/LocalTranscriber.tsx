@@ -29,6 +29,7 @@ import {
   createLocalTranscriber,
   createLocalTranscriptSaver,
   DEFAULT_LOCAL_MODEL,
+  KeptRecordingError,
   LOCAL_MODEL_STORAGE_KEY,
   LOCAL_WHISPER_MODELS,
   PartialRecordingError,
@@ -67,6 +68,8 @@ export type LocalPanelState =
   | "connection-lost"
   /** Capture failed but kept a partial recording; it can be transcribed or discarded. */
   | "partial-recording"
+  /** A previous launch stopped this recording but never saved its transcript; it can be transcribed or discarded. */
+  | "kept-recording"
   /** The transcript is held in the panel; Retry re-runs the identical save. */
   | "save-failed"
   | "error";
@@ -91,6 +94,7 @@ export function isLocalWorkflowActive(state: LocalPanelState): boolean {
     state === "transcribe-failed" ||
     state === "connection-lost" ||
     state === "partial-recording" ||
+    state === "kept-recording" ||
     state === "save-failed"
   );
 }
@@ -100,7 +104,14 @@ export function localRetryAction(
   state: LocalPanelState,
 ): "stop" | "transcribe" | "save" | "stop-previous" | "readiness" {
   if (state === "stop-failed") return "stop";
-  if (state === "transcribe-failed" || state === "partial-recording" || state === "connection-lost") return "transcribe";
+  if (
+    state === "transcribe-failed" ||
+    state === "partial-recording" ||
+    state === "kept-recording" ||
+    state === "connection-lost"
+  ) {
+    return "transcribe";
+  }
   if (state === "save-failed") return "save";
   if (state === "previous-recording") return "stop-previous";
   return "readiness";
@@ -109,9 +120,17 @@ export function localRetryAction(
 /** The panel state a rejected start(), stop() or retryTranscription() lands in. */
 export function localFailureState(
   err: unknown,
-): "stop-failed" | "transcribe-failed" | "connection-lost" | "partial-recording" | "previous-recording" | "error" {
+):
+  | "stop-failed"
+  | "transcribe-failed"
+  | "connection-lost"
+  | "partial-recording"
+  | "kept-recording"
+  | "previous-recording"
+  | "error" {
   if (err instanceof CaptureStopUnconfirmedError) return "stop-failed";
   if (err instanceof PartialRecordingError) return "partial-recording";
+  if (err instanceof KeptRecordingError) return "kept-recording";
   if (err instanceof CloudConnectionLostError) return "connection-lost";
   if (err instanceof TranscriptionFailedError) return "transcribe-failed";
   if (err instanceof PreviousCaptureUnconfirmedError) return "previous-recording";
@@ -130,7 +149,7 @@ export interface LocalTranscriberViewProps {
   onMicChange: (device: string) => void;
   onDownload: () => void;
   onRetry: () => void;
-  /** Leaves `transcribe-failed` or `partial-recording` without transcribing; the audio file stays on disk. */
+  /** Leaves `transcribe-failed`, `partial-recording` or `kept-recording` without transcribing; the audio file stays on disk. */
   onDiscardRecording: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -425,15 +444,20 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
             Retry stop
           </Button>
         )}
-        {(state === "transcribe-failed" || state === "partial-recording" || state === "connection-lost") && (
+        {(state === "transcribe-failed" ||
+          state === "partial-recording" ||
+          state === "kept-recording" ||
+          state === "connection-lost") && (
           <>
-            {(retryable || state === "partial-recording") && (
+            {(retryable || state === "partial-recording" || state === "kept-recording") && (
               <Button type="button" size="sm" onClick={onRetry} className="h-9">
                 {state === "partial-recording"
                   ? "Transcribe partial recording"
-                  : state === "connection-lost"
-                    ? "Keep waiting"
-                    : "Retry transcription"}
+                  : state === "kept-recording"
+                    ? "Transcribe recording"
+                    : state === "connection-lost"
+                      ? "Keep waiting"
+                      : "Retry transcription"}
               </Button>
             )}
             {onDeviceOffer && state === "transcribe-failed" && (
@@ -475,7 +499,8 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       )}
       {state === "save-failed" && (
         <p className="text-xs text-muted-foreground">
-          The transcript is kept here until it saves. Leaving this view discards it.
+          The transcript is kept here until it saves. If you leave this view first, Exo offers the
+          recording again.
         </p>
       )}
       {state === "previous-recording" && (
@@ -498,6 +523,11 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
       {recording && cloud && nearCloudLimit && (
         <p className="text-xs text-muted-foreground">
           Private cloud transcription takes recordings up to 2 hours. Stop soon, or transcribe this one on this Mac.
+        </p>
+      )}
+      {state === "kept-recording" && (
+        <p className="text-xs text-muted-foreground">
+          Transcribe it now, or discard it; discarding leaves its audio file on this Mac.
         </p>
       )}
       {state === "partial-recording" && (
@@ -538,6 +568,68 @@ function readSavedModel(): WhisperModel {
   return LOCAL_WHISPER_MODELS.some((m) => m.id === stored)
     ? (stored as WhisperModel)
     : DEFAULT_LOCAL_MODEL;
+}
+
+/** What a mounted panel takes over, in order: a closed view's transcription
+ *  (adoptTranscription), then this account's kept on-device recording, then,
+ *  with private cloud available, a cloud job a previous launch left. A panel
+ *  already running a recording of its own takes over none but the first. A
+ *  kept recording a closed view is still saving is not taken over: `saving`
+ *  settles with that save, after which the panel checks again. */
+export function takeOverOnMount(
+  t: LocalTranscriber,
+  opts: { wasActive: boolean; cloudAvailable: boolean },
+):
+  | { from: "adopted" | "kept"; outcome: Promise<LocalTranscriptResult> }
+  | { from: "cloud"; outcome: Promise<LocalTranscriptResult | null> }
+  | { from: "saving"; settled: Promise<void> }
+  | null {
+  const adopted = t.adoptTranscription();
+  if (adopted !== null) return { from: "adopted", outcome: adopted };
+  if (opts.wasActive) return null;
+  const kept = t.resumeKeptRecording();
+  if (kept !== null) return { from: "kept", outcome: kept };
+  const saving = t.keptRecordingSave();
+  if (saving !== null) return { from: "saving", settled: saving };
+  if (!opts.cloudAvailable) return null;
+  const resumed = t.resumeCloudTranscription();
+  return resumed === null ? null : { from: "cloud", outcome: resumed };
+}
+
+/** Normalizes a transcript to save. With no speech there is nothing to save,
+ *  so an on-device one's kept recording is forgotten (a relaunch would only
+ *  find silence again). */
+export function prepareTranscriptToSave(t: LocalTranscriber, result: LocalTranscriptResult): PreparedLocalTranscript {
+  try {
+    return prepareLocalTranscript(result);
+  } catch (err) {
+    if (result.engine !== "private-cloud") t.finishOnDeviceTranscript(result);
+    throw err;
+  }
+}
+
+/** Saves a prepared transcript, then finishes its recording: an on-device one
+ *  is not offered as kept while the save runs and is forgotten once saved; a
+ *  private cloud one is deleted from PTX (`cloudDeletion`). Rejects, keeping
+ *  the recording, when the save fails. */
+export async function saveTranscriptAndFinish(
+  t: LocalTranscriber,
+  save: LocalTranscriptSaver,
+  prepared: PreparedLocalTranscript,
+  result: LocalTranscriptResult | null,
+): Promise<{ cloudDeletion: Promise<void> | null }> {
+  const saving = save(prepared).then((saved) => {
+    if (!saved.ok) throw new Error(saved.error.message);
+  });
+  if (result !== null && result.engine !== "private-cloud") t.savingOnDeviceTranscript(result, saving);
+  await saving;
+  if (result?.engine === "private-cloud") {
+    const cloudDeletion = t.finishCloudTranscript(result);
+    cloudDeletion.catch(() => {}); // the caller handles it; never an unhandled rejection meanwhile
+    return { cloudDeletion };
+  }
+  if (result !== null) t.finishOnDeviceTranscript(result);
+  return { cloudDeletion: null };
 }
 
 /** Waits between availability checks after one fails (plus the first try). */
@@ -605,12 +697,13 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   if (transcriberRef.current === null) {
     transcriberRef.current =
       transcriber ??
-      createLocalTranscriber(
-        undefined,
-        backendUrl !== undefined && sessionStore !== undefined
+      createLocalTranscriber(undefined, {
+        // Kept recordings belong to the signed-in account.
+        account: () => tcwRef.current.did,
+        ...(backendUrl !== undefined && sessionStore !== undefined
           ? { cloud: { api: createPrivateCloudApi(backendUrl, { sessionStore }), saveRecovered } }
-          : {},
-      );
+          : {}),
+      });
   }
   const t = transcriberRef.current;
 
@@ -671,8 +764,9 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   }, [capturing]);
   const [noteText, setNoteText] = useState<string | null>(null);
   const [nearCloudLimit, setNearCloudLimit] = useState(false);
-  // The private cloud transcript being saved, deleted from PTX once saved.
-  const cloudResult = useRef<CloudTranscriptResult | null>(null);
+  // The transcript being saved: once saved, a private cloud one is deleted
+  // from PTX and an on-device one's kept recording is forgotten.
+  const savingResult = useRef<LocalTranscriptResult | null>(null);
 
   useEffect(() => {
     onWorkflowActiveChange?.(isLocalWorkflowActive(state));
@@ -743,29 +837,40 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       setState((s) => (s === "stopping-previous" ? "checking-model" : s));
       // A transcription whose panel closed is shown and finished here: its
       // transcript is saved by this panel, once; a failure offers Retry/Discard.
-      const adopted = t.adoptTranscription();
-      if (adopted !== null) {
+      // A kept on-device recording (Exo quit or crashed, or its view closed)
+      // is offered for Transcribe or Discard; a private cloud job left by a
+      // previous launch is finished the same way.
+      const takeover = takeOverOnMount(t, { wasActive, cloudAvailable: cloudCheck === "available" });
+      if (takeover?.from === "adopted") {
         setState("transcribing");
-        void adopted.then(saveTranscript, failWithRecovery);
+        void takeover.outcome.then(saveTranscript, failWithRecovery);
         return;
       }
+      if (takeover?.from === "kept") {
+        void takeover.outcome.then(saveTranscript, failWithRecovery);
+        return;
+      }
+      if (takeover?.from === "cloud") {
+        setState("transcribing");
+        void takeover.outcome.then((result) => {
+          if (result !== null) {
+            saveTranscript(result);
+            return;
+          }
+          // That job no longer exists: back to ready.
+          setState("checking-model");
+          setRetryCount((count) => count + 1);
+        }, failWithRecovery);
+        return;
+      }
+      if (takeover?.from === "saving") {
+        // A closed view is still saving this account's kept recording: check
+        // again once that save settles, so a failed save offers it here.
+        void takeover.settled.then(() => {
+          if (!cancelled) setRetryCount((count) => count + 1);
+        });
+      }
       if (cloudCheck === "available") {
-        // A private cloud job left by a previous launch is finished the same
-        // way, but never over a recording this panel is running.
-        const resumed = wasActive ? null : t.resumeCloudTranscription();
-        if (resumed !== null) {
-          setState("transcribing");
-          void resumed.then((result) => {
-            if (result !== null) {
-              saveTranscript(result);
-              return;
-            }
-            // That job no longer exists: back to ready.
-            setState("checking-model");
-            setRetryCount((count) => count + 1);
-          }, failWithRecovery);
-          return;
-        }
         // Jobs of this account no recording here knows (a lost record, a
         // relaunch, another Mac): finish them so no transcript is lost.
         if (!recoveryStarted.current) {
@@ -865,16 +970,14 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   const save = (prepared: PreparedLocalTranscript) => {
     setErrorText(null);
     setState("saving");
-    void saveToSpace(prepared)
-      .then((saved) => {
-        if (!saved.ok) throw new Error(saved.error.message);
+    void saveTranscriptAndFinish(t, saveToSpace, prepared, savingResult.current)
+      .then(({ cloudDeletion }) => {
         setPendingSave(null);
+        savingResult.current = null;
         setState("saved");
-        const finished = cloudResult.current;
-        cloudResult.current = null;
-        if (finished !== null) {
-          // Saved to the space: delete the transcript from PTX now.
-          t.finishCloudTranscript(finished).catch((err) => {
+        if (cloudDeletion !== null) {
+          // Saved to the space: the transcript is being deleted from PTX.
+          cloudDeletion.catch((err) => {
             console.error("Deleting the private cloud transcript failed", err);
             setNoteText("The private cloud copy could not be deleted now; it is scheduled for deletion 24 hours after transcription.");
           });
@@ -890,12 +993,12 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
     setProgressText(null);
     let prepared: PreparedLocalTranscript;
     try {
-      prepared = prepareLocalTranscript(result);
+      prepared = prepareTranscriptToSave(t, result);
     } catch (err) {
       fail(err);
       return;
     }
-    cloudResult.current = result.engine === "private-cloud" ? result : null;
+    savingResult.current = result;
     setPendingSave(prepared);
     save(prepared);
   };
