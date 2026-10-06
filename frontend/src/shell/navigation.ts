@@ -49,7 +49,7 @@ export function scrollSurfaceToTop(destination: Destination, doc: Document = doc
   }
 }
 
-/** Tests only. */
+/** Forgets every remembered place: on sign-in and sign-out (App.tsx), and in tests. */
 export function resetNavigationMemory(): void {
   lastPath.clear();
   entries.clear();

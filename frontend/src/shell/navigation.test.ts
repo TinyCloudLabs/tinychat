@@ -79,3 +79,18 @@ describe("the keyboard", () => {
     expect(keyboardIsUp({ typing: false, fullHeight: 844, visibleHeight: 400 })).toBe(false);
   });
 });
+
+describe("remembered places never cross accounts", () => {
+  test("forgetting them sends every tab back to its root", () => {
+    noteLocation(PATHS.library, 3);
+    resetNavigationMemory();
+    expect(tabTarget("capture", false)).toBe(PATHS.capture);
+  });
+
+  test("App forgets them at both account boundaries, sign-in and sign-out", async () => {
+    const app = await Bun.file(new URL("../App.tsx", import.meta.url)).text();
+    const body = (name: string) => app.slice(app.indexOf(`const ${name} = useCallback(`), app.indexOf("}, [", app.indexOf(`const ${name} = useCallback(`)));
+    expect(body("signIn")).toContain("resetNavigationMemory();");
+    expect(body("signOut")).toContain("resetNavigationMemory();");
+  });
+});

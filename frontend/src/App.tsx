@@ -66,6 +66,7 @@ import { SettingsPage } from "./chat/SettingsPage";
 import { ConnectorsPage } from "./chat/ConnectorsPage";
 import { CaptureSurface } from "./capture/CaptureSurface";
 import { AppShell } from "./shell/AppShell";
+import { resetNavigationMemory } from "./shell/navigation";
 import {
   PATHS,
   homePath,
@@ -525,6 +526,8 @@ export function App() {
 
   const signIn = useCallback(async () => {
     setError(null);
+    // Each tab's remembered place belongs to the account that left it.
+    resetNavigationMemory();
     try {
       setState("connecting");
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
@@ -586,6 +589,8 @@ export function App() {
     signOutInFlightRef.current = true;
     setSigningOut(true);
     setError(null);
+    // The next account must not reopen this one's Library or note addresses.
+    resetNavigationMemory();
     try {
       const openKeyOutcome = await signOutOpenKeySession(
         openkeyRef.current,
