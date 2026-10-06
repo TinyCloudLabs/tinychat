@@ -32,6 +32,7 @@ import {
 import {
   CaptureStopUnconfirmedError,
   CloudConnectionLostError,
+  KeptRecordingError,
   NO_SPEECH_MESSAGE,
   PartialRecordingError,
   PreviousCaptureUnconfirmedError,
@@ -410,6 +411,30 @@ describe("LocalTranscriberView", () => {
     expect(html).not.toContain(">Retry transcription</button>");
     expect(localRetryAction("partial-recording")).toBe("transcribe");
     expect(isLocalWorkflowActive("partial-recording")).toBe(true);
+  });
+
+  test("a recording kept from before Exo closed offers Transcribe recording and Discard recording", () => {
+    const html = renderLocal({
+      state: "kept-recording",
+      statusText: 'Exo closed before "Local recording Oct 5, 9:00 AM" was transcribed. The recording was kept on this Mac.',
+    });
+    expect(html).toContain(">Transcribe recording</button>");
+    expect(html).toContain(">Discard recording</button>");
+    expect(html).toContain("Exo closed before");
+    expect(html).toContain("discarding leaves its audio file on this Mac.");
+    expect(html).not.toContain("Start recording");
+    expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
+    expect(localFailureState(new KeptRecordingError("Exo closed before it was transcribed"))).toBe("kept-recording");
+    expect(localRetryAction("kept-recording")).toBe("transcribe");
+    expect(isLocalWorkflowActive("kept-recording")).toBe(true);
+    // Transcribe found its audio file gone: only Discard.
+    const gone = renderLocal({
+      state: "transcribe-failed",
+      retryable: false,
+      statusText: "Transcription failed (audio_metadata_read_failed): Audio file not found.",
+    });
+    expect(gone).toContain(">Discard recording</button>");
+    expect(gone).not.toContain("Retry transcription");
   });
 
   test("a rejected start, stop or transcription retry lands in its own failed state", () => {

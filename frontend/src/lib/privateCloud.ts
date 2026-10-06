@@ -941,42 +941,53 @@ export interface PendingCloudJob {
   language: string;
 }
 
-export interface PendingCloudStore {
-  read(): PendingCloudJob | null;
-  write(job: PendingCloudJob): void;
+/** One JSON record kept across relaunches (a job or recording Exo must not forget). */
+export interface RecordStore<T> {
+  read(): T | null;
+  write(record: T): void;
   clear(): void;
 }
 
-export const localStoragePendingCloudStore: PendingCloudStore = {
-  read() {
-    try {
-      const raw = globalThis.localStorage?.getItem(PRIVATE_CLOUD_PENDING_KEY);
-      if (!raw) return null;
-      const v = JSON.parse(raw) as Partial<PendingCloudJob>;
-      if (typeof v.attemptId !== "string" || typeof v.sessionId !== "string" || typeof v.startedAt !== "string") return null;
-      return {
-        attemptId: v.attemptId,
-        transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null,
-        sessionId: v.sessionId,
-        startedAt: v.startedAt,
-        language: typeof v.language === "string" ? v.language : "en",
-      };
-    } catch {
-      return null;
-    }
-  },
-  write(job) {
-    try {
-      globalThis.localStorage?.setItem(PRIVATE_CLOUD_PENDING_KEY, JSON.stringify(job));
-    } catch {
-      // Best-effort: without it a relaunch cannot resume this job.
-    }
-  },
-  clear() {
-    try {
-      globalThis.localStorage?.removeItem(PRIVATE_CLOUD_PENDING_KEY);
-    } catch {
-      // Nothing to clear.
-    }
-  },
-};
+export type PendingCloudStore = RecordStore<PendingCloudJob>;
+
+/** A RecordStore in localStorage under `key`. Best-effort: `parse` returns null
+ *  for a malformed record, and without storage nothing outlives a relaunch. */
+export function localStorageRecordStore<T>(key: string, parse: (v: Record<string, unknown>) => T | null): RecordStore<T> {
+  return {
+    read() {
+      try {
+        const raw = globalThis.localStorage?.getItem(key);
+        if (!raw) return null;
+        const v: unknown = JSON.parse(raw);
+        return v !== null && typeof v === "object" ? parse(v as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    },
+    write(record) {
+      try {
+        globalThis.localStorage?.setItem(key, JSON.stringify(record));
+      } catch {
+        // Best-effort: without it a relaunch cannot pick this record up.
+      }
+    },
+    clear() {
+      try {
+        globalThis.localStorage?.removeItem(key);
+      } catch {
+        // Nothing to clear.
+      }
+    },
+  };
+}
+
+export const localStoragePendingCloudStore: PendingCloudStore = localStorageRecordStore(PRIVATE_CLOUD_PENDING_KEY, (v) => {
+  if (typeof v.attemptId !== "string" || typeof v.sessionId !== "string" || typeof v.startedAt !== "string") return null;
+  return {
+    attemptId: v.attemptId,
+    transcriptionId: typeof v.transcriptionId === "string" ? v.transcriptionId : null,
+    sessionId: v.sessionId,
+    startedAt: v.startedAt,
+    language: typeof v.language === "string" ? v.language : "en",
+  };
+});

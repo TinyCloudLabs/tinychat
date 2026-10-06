@@ -32,7 +32,11 @@
 //     recording to transcribe or discard;
 //   - a transcription outlives its view: closing the view during the first
 //     attempt or a retry hands it to the next view, which alone takes its
-//     outcome (once), and no capture starts while it is running or kept.
+//     outcome (once), and no capture starts while it is running or kept;
+//   - a stopped on-device recording is persisted before it is transcribed and
+//     outlives a quit or crash: a relaunch offers it (Transcribe through
+//     retryTranscription, or Discard) until its transcript is saved or it is
+//     discarded, and one whose audio file is gone can only be discarded.
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
@@ -41,7 +45,10 @@ import {
   CaptureStopUnconfirmedError,
   createLocalTranscriber,
   createLocalTranscriptSaver,
+  KeptRecordingError,
+  localStorageKeptRecordingStore,
   normalizeLocalTranscript,
+  LOCAL_KEPT_RECORDING_KEY,
   LOCAL_MEETING_SOURCE,
   LOCAL_WHISPER_MODELS,
   NO_SPEECH_MESSAGE,
@@ -50,8 +57,11 @@ import {
   PreviousCaptureUnconfirmedError,
   saveLocalTranscript,
   TranscriptionFailedError,
+  type KeptLocalRecording,
+  type KeptRecordingStore,
   type LocalTranscriberBridge,
   type LocalTranscriptResult,
+  type OnDeviceTranscriptResult,
 } from "./localTranscriber";
 import { transcriptKvKey } from "./connectors/connectorStore";
 import type {
@@ -1088,6 +1098,194 @@ function sqliteStore() {
   } as never;
   return { tcw, sqlite, kv, failNextKvPut: () => { failingKvPuts++; } };
 }
+
+function memoryKept(): KeptRecordingStore & { value: KeptLocalRecording | null } {
+  const store = {
+    value: null as KeptLocalRecording | null,
+    read: () => store.value,
+    write: (r: KeptLocalRecording) => {
+      store.value = { ...r };
+    },
+    clear: () => {
+      store.value = null;
+    },
+  };
+  return store;
+}
+
+/** A fresh process: a new native identity (no in-memory jobs) sharing only the persisted store. */
+function relaunch(kept: KeptRecordingStore) {
+  const bridge = makeBridge({ modelDownloaded: true });
+  return { bridge, t: createLocalTranscriber(bridge, { kept }) };
+}
+
+describe("kept on-device recordings across a relaunch", () => {
+  test("a recording stopped before Exo quit is offered on relaunch, and Transcribe saves it as an Exo Local meeting", async () => {
+    const kept = memoryKept();
+    const before = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(before, { kept });
+    const { sessionId } = await t.start({ model: "QuantizedBaseEn", language: "en" });
+    void t.stop().catch(() => {});
+    await tick();
+    before.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await tick();
+    // Persisted by the time Whisper runs; Exo quits before it finishes.
+    expect(startTranscriptionCalls(before)).toBe(1);
+    expect(kept.value).toEqual({
+      sessionId,
+      startedAt: expect.any(String),
+      audioPath: "/vault/sessions/x/audio.mp3",
+      model: "QuantizedBaseEn",
+      language: "en",
+    });
+
+    const after = relaunch(kept);
+    // The kept recording comes first: nothing new starts over it.
+    await expect(after.t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("waiting to be transcribed");
+    const offered = await after.t.resumeKeptRecording()!.catch((e: unknown) => e);
+    expect(offered).toBeInstanceOf(KeptRecordingError);
+    expect((offered as KeptRecordingError).retryable).toBe(true);
+    expect((offered as Error).message).toContain("Exo closed before");
+    // Offered once: the job now belongs to this view.
+    expect(after.t.resumeKeptRecording()).toBeNull();
+    expect(startTranscriptionCalls(after.bridge)).toBe(0);
+
+    const transcribing = after.t.retryTranscription();
+    await tick();
+    after.bridge.emitTranscription(completedEvent(sessionId));
+    const result = (await transcribing) as OnDeviceTranscriptResult;
+    expect(result).toMatchObject({ sessionId, startedAt: kept.value!.startedAt, model: "QuantizedBaseEn", language: "en" });
+    expect(after.bridge.calls).toEqual([
+      "start_server:QuantizedBaseEn",
+      "start_transcription:whispercpp:/vault/sessions/x/audio.mp3",
+    ]);
+    // Taken but not yet saved: a quit now would still offer it again.
+    expect(kept.value?.sessionId).toBe(sessionId);
+
+    const store = sqliteStore();
+    expect((await saveLocalTranscript(store.tcw, prepareLocalTranscript(result))).ok).toBe(true);
+    after.t.finishOnDeviceTranscript(result);
+    expect(store.sqlite.query("SELECT source, source_id FROM connector_meeting").values()).toEqual([
+      [LOCAL_MEETING_SOURCE, `local:${sessionId}`],
+    ]);
+    expect(kept.value).toBeNull();
+    expect(relaunch(kept).t.resumeKeptRecording()).toBeNull();
+  });
+
+  test("a relaunch after the transcript was saved offers nothing", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, { kept });
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const result = (await stopWith(bridge, t, sessionId, completedEvent(sessionId))) as OnDeviceTranscriptResult;
+    t.finishOnDeviceTranscript(result);
+    expect(kept.value).toBeNull();
+
+    const after = relaunch(kept);
+    expect(after.t.resumeKeptRecording()).toBeNull();
+    await expect(after.t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("Discard forgets the kept recording, without transcribing it", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, { kept });
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    await expect(stopWith(bridge, t, sessionId, failedTranscription(sessionId, "stalled"))).rejects.toBeInstanceOf(
+      TranscriptionFailedError,
+    );
+    expect(kept.value?.sessionId).toBe(sessionId);
+
+    const after = relaunch(kept);
+    await expect(after.t.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+    after.t.discardRecording();
+    expect(kept.value).toBeNull();
+    expect(startTranscriptionCalls(after.bridge)).toBe(0);
+    expect(relaunch(kept).t.resumeKeptRecording()).toBeNull();
+    await expect(after.t.start({ model: "QuantizedTinyEn", language: "en" })).resolves.toBeTruthy();
+  });
+
+  test("a partial recording is kept across a relaunch too", async () => {
+    const kept = memoryKept();
+    const bridge = makeBridge({ modelDownloaded: true });
+    const t = createLocalTranscriber(bridge, { kept });
+    const { sessionId } = await t.start({ model: "QuantizedTinyEn", language: "en" });
+    const stopping = t.stop();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId, { error: "ActorFailed(mic stream closed)" }));
+    await expect(stopping).rejects.toBeInstanceOf(PartialRecordingError);
+    expect(kept.value?.sessionId).toBe(sessionId);
+    await expect(relaunch(kept).t.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+  });
+
+  test("a kept recording whose audio file is gone can only be discarded", async () => {
+    const kept = memoryKept();
+    kept.write({
+      sessionId: "sess-gone",
+      startedAt: "2026-10-05T09:00:00.000Z",
+      audioPath: "/vault/sessions/sess-gone/audio.mp3",
+      model: "QuantizedTinyEn",
+      language: "en",
+    });
+    const after = relaunch(kept);
+    await expect(after.t.resumeKeptRecording()!).rejects.toBeInstanceOf(KeptRecordingError);
+
+    const transcribing = after.t.retryTranscription();
+    await tick();
+    // What whisper reports for a missing file (listener2-core's audio metadata read).
+    after.bridge.emitTranscription({
+      type: "failed",
+      session_id: "sess-gone",
+      code: "audio_metadata_read_failed",
+      error: "Audio file not found. The recording may have been moved or deleted.",
+    });
+    const err = (await transcribing.catch((e: unknown) => e)) as TranscriptionFailedError;
+    expect(err).toBeInstanceOf(TranscriptionFailedError);
+    expect(err.message).toContain("Audio file not found");
+    expect(err.retryable).toBe(false);
+    // Still kept until the user discards it.
+    expect(kept.value?.sessionId).toBe("sess-gone");
+    after.t.discardRecording();
+    expect(kept.value).toBeNull();
+  });
+
+  test("the localStorage store round-trips a record and ignores a malformed one", () => {
+    const items = new Map<string, string>();
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (k: string) => items.get(k) ?? null,
+        setItem: (k: string, v: string) => void items.set(k, v),
+        removeItem: (k: string) => void items.delete(k),
+      },
+    });
+    try {
+      const record: KeptLocalRecording = {
+        sessionId: "s-1",
+        startedAt: "2026-10-05T09:00:00.000Z",
+        audioPath: "/vault/sessions/s-1/audio.mp3",
+        model: "QuantizedSmallEn",
+        language: "en",
+      };
+      localStorageKeptRecordingStore.write(record);
+      expect(JSON.parse(items.get(LOCAL_KEPT_RECORDING_KEY)!)).toEqual(record);
+      expect(localStorageKeptRecordingStore.read()).toEqual(record);
+      // An unknown model falls back to the default rather than losing the recording.
+      items.set(LOCAL_KEPT_RECORDING_KEY, JSON.stringify({ ...record, model: "Retired" }));
+      expect(localStorageKeptRecordingStore.read()?.model).toBe("QuantizedTinyEn");
+      for (const raw of ["not json", "null", JSON.stringify({ ...record, audioPath: "" })]) {
+        items.set(LOCAL_KEPT_RECORDING_KEY, raw);
+        expect(localStorageKeptRecordingStore.read()).toBeNull();
+      }
+      localStorageKeptRecordingStore.clear();
+      expect(items.has(LOCAL_KEPT_RECORDING_KEY)).toBe(false);
+    } finally {
+      if (original) Object.defineProperty(globalThis, "localStorage", original);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+});
 
 describe("prepareLocalTranscript", () => {
   test("refuses a transcript with no speech so silence is never saved as a meeting", () => {
