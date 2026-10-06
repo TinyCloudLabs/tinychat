@@ -41,6 +41,11 @@ export class CalendarAutojoinConnection {
 
   async getStatus(tenant: string) {
     const connection = await this.options.store.getConnection(tenant);
+    // Occurrences are only scheduled for a tenant with a connection row, and connection rows are
+    // never deleted (disable/disconnect rewrite them as "disabled"). A never-connected tenant has
+    // no outcomes, so skip the prefix listing: on the shared serialized storage lane it pushed this
+    // read past the client's 20s abort, showing a never-connected account an error.
+    if (!connection) return { state: "off" as const, enabled: false, lastScanAt: null, errorCode: null, outcomes: [] };
     const outcomes = (await this.options.store.listOccurrences(tenant))
       .filter(row => !!row.errorCode || ["missed", "missed_window", "failed", "event_ineligible", "event_changed"].includes(row.disposition ?? ""))
       .sort((a, b) => b.start - a.start).slice(0, 30)

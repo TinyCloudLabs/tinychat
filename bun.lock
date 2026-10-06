@@ -18,7 +18,7 @@
     },
     "backend": {
       "name": "@tinychat/backend",
-      "version": "0.2.0-beta.0",
+      "version": "0.4.0",
       "dependencies": {
         "@scalar/express-api-reference": "^0.4.0",
         "@tinyboilerplate/core": "workspace:*",
@@ -42,7 +42,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.2.0-beta.2",
+      "version": "0.5.0",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -52,14 +52,14 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.2.0-beta.2",
+      "version": "0.5.0",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
         "@capacitor/app": "^8.1.2",
         "@capacitor/browser": "^8.0.5",
         "@capacitor/core": "^8.5.2",
-        "@openkey/sdk": "^0.10.0",
+        "@openkey/sdk": "^0.11.0",
         "@peculiar/x509": "^2.0.0",
         "@radix-ui/react-alert-dialog": "^1.1.4",
         "@radix-ui/react-dialog": "^1.1.4",
@@ -121,12 +121,12 @@
         "@tinycloud/sdk-core": "2.11.0",
       },
       "devDependencies": {
-        "@openkey/sdk": "^0.10.0",
+        "@openkey/sdk": "^0.11.0",
         "@tinycloud/web-sdk": "2.11.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@openkey/sdk": ">=0.8.0",
+        "@openkey/sdk": ">=0.11.0",
         "@tinycloud/web-sdk": ">=2.4.1-beta.0",
       },
     },
@@ -574,7 +574,7 @@
 
     "@openkey/core": ["@openkey/core@0.8.8", "", {}, "sha512-aeGiQ2SK5lMTaJMkLZJ/HKMTym/AlrWLHeKHNZmuV6pTbAgIi9uTTO+IaF11V7+htFHO0kD6XUosNVGCGRWr3w=="],
 
-    "@openkey/sdk": ["@openkey/sdk@0.10.0", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-ClkYu7YrCUQ898VysOP9mflt5nOUMUIA8SOkwGqTgpBo7bLuLYPK/VzskdtWw5qElTab+l13nbdukGEHY8j8PQ=="],
+    "@openkey/sdk": ["@openkey/sdk@0.11.0", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-TsIvnia+rbCDQt1sb6i6mNhDeF6NQHUQVmWVd4JvDFUQlBoDYnY2RwhdMvHi50yVu2Z7ENAGtw/6BoAQynaeGA=="],
 
     "@peculiar/asn1-cms": ["@peculiar/asn1-cms@2.7.0", "", { "dependencies": { "@peculiar/asn1-schema": "^2.7.0", "@peculiar/asn1-x509": "^2.7.0", "@peculiar/asn1-x509-attr": "^2.7.0", "asn1js": "^3.0.6", "tslib": "^2.8.1" } }, "sha512-hew63shtzzvBcSHbhm+cyAmKe6AIfinT9hzEqSPjDC6opTTMKmTkQ0gHuN2KsWlvqiKw1S/fS94fhag/FJkioQ=="],
 

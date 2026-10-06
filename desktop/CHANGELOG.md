@@ -1,5 +1,21 @@
 # exo-desktop
 
+## 0.5.1
+
+### Patch Changes
+
+- 57a7198: Connectors and Settings scroll inside their own pane again. The header and sidebar stay fixed to the window, the blank band below the content is gone, and switching Transcriber tabs no longer jumps the page.
+
+## 0.5.1-beta.1
+
+### Patch Changes
+
+- 57a7198: Connectors and Settings scroll inside their own pane again. The header and sidebar stay fixed to the window, the blank band below the content is gone, and switching Transcriber tabs no longer jumps the page.
+
+## 0.5.1-beta.0
+
+No changes in this release.
+
 ## 0.5.0
 
 ### Patch Changes

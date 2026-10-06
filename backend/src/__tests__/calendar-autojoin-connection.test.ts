@@ -231,10 +231,40 @@ describe("Calendar OAuth custody lifecycle", () => {
 
   test("status exposes missed windows and unresolved failed dispatch without losing recording metadata", async () => {
     const f = fixture();
+    await f.enable();
     await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
     await f.store.putOccurrence({ ...attempt(), id: "uncertain", errorCode: "lookup_identity_mismatch" });
     const status = await f.connection.getStatus(TENANT);
     expect(status.outcomes.map(outcome => outcome.reason).sort()).toEqual(["lookup_identity_mismatch", "missed_window"]);
+  });
+
+  test("never-connected status is a normal off state read without listing occurrences", async () => {
+    const f = fixture();
+    let listed = 0;
+    f.store.listOccurrences = async () => { listed++; return []; };
+    expect(await f.connection.getStatus(TENANT)).toEqual({ state: "off", enabled: false, lastScanAt: null, errorCode: null, outcomes: [] });
+    expect(listed).toBe(0);
+  });
+
+  test("status storage failures still surface for never-connected and connected tenants", async () => {
+    const f = fixture();
+    const getConnection = f.store.getConnection.bind(f.store);
+    f.store.getConnection = async () => { throw new Error("kv_unavailable"); };
+    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_unavailable");
+    f.store.getConnection = getConnection;
+    await f.enable();
+    f.store.listOccurrences = async () => { throw new Error("kv_list_unavailable"); };
+    await expect(f.connection.getStatus(TENANT)).rejects.toThrow("kv_list_unavailable");
+  });
+
+  test("a disabled tenant keeps its outcome history", async () => {
+    const f = fixture();
+    await f.enable();
+    await f.store.putOccurrence({ ...attempt(), phase: "terminal", disposition: "missed_window" });
+    await f.connection.disable(TENANT);
+    const status = await f.connection.getStatus(TENANT);
+    expect(status.state).toBe("off");
+    expect(status.outcomes.map(outcome => outcome.reason)).toEqual(["missed_window"]);
   });
 
   test("disconnect deletes custody and reports failed revocation even without browser token", async () => {

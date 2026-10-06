@@ -1,5 +1,17 @@
 # @tinychat/backend
 
+## 0.4.1
+
+### Patch Changes
+
+- 532d811: Calendar autojoin status for an account that never connected Google now returns "off" without listing occurrences, so the read no longer exceeds the client's 20s timeout and shows an error.
+
+## 0.4.1-beta.0
+
+### Patch Changes
+
+- 532d811: Calendar autojoin status for an account that never connected Google now returns "off" without listing occurrences, so the read no longer exceeds the client's 20s timeout and shows an error.
+
 ## 0.4.0
 
 ### Minor Changes

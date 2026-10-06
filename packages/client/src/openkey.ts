@@ -7,6 +7,8 @@ export interface ConnectWalletConfig {
   appName?: string;
   /** EIP-155 chain ID in hex, defaults to "0x1" (Ethereum mainnet) */
   chainId?: string;
+  /** False where WebAuthn is unavailable; OpenKey then hides passkey options. Defaults to true. */
+  passkeysSupported?: boolean;
 }
 
 export interface ConnectWalletResult {
@@ -81,6 +83,7 @@ export async function connectWallet(config?: ConnectWalletConfig): Promise<Conne
   const openkey = new OpenKey({
     host: config?.host ?? "https://openkey.so",
     appName: config?.appName ?? "TinyCloud App",
+    passkeysSupported: config?.passkeysSupported,
   });
 
   // Passkey authentication via iframe — user authenticates, we get signing capability
