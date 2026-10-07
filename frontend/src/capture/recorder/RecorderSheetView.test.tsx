@@ -21,7 +21,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     phase: "recording",
     mic: { state: "recording", reason: null },
     startedAt: Date.now() - 42_000,
-    maxDurationMs: 3_600_000,
+    maxDurationMs: 10_800_000,
     limitNotice: null,
     savePercent: null,
     error: null,
@@ -84,7 +84,7 @@ describe("RecorderSheetView", () => {
   });
 
   test("near the limit the meta line says when it stops", () => {
-    expect(render({ startedAt: Date.now() - 56 * 60_000 })).toContain("Stops at 60:00");
+    expect(render({ startedAt: Date.now() - 176 * 60_000 })).toContain("Stops at 3:00:00");
   });
 
   test("saving: the percentage, and Stop shows a spinner and is disabled", () => {

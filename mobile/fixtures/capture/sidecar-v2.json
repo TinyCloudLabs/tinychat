@@ -1,0 +1,77 @@
+{
+  "id": "11111111-1111-4111-8111-111111111111",
+  "startedAt": 1759800000000,
+  "durationMs": 4000,
+  "mimeType": "audio/mp4",
+  "sizeBytes": 32000,
+  "silencedMs": 0,
+  "silencedEvents": 0,
+  "noSignalMs": 0,
+  "version": 2,
+  "rev": 7,
+  "wallMs": 11000,
+  "pausedMs": 5000,
+  "spans": [
+    {
+      "kind": "omitted",
+      "reason": "interruption",
+      "startedAt": 1759800002500,
+      "endedAt": 1759800004500,
+      "atAudioMs": 2500,
+      "audioMs": 0
+    }
+  ],
+  "recovered": false,
+  "endedUnexpectedly": false,
+  "lastHeartbeatAt": 1759800011000,
+  "exitReason": null,
+  "legacyImport": false,
+  "ownerUnknown": false,
+  "source": "in_app",
+  "owner": null,
+  "transitionGen": 12,
+  "options": {
+    "transcriber": "on-device",
+    "identifySpeakers": false
+  },
+  "input": {
+    "id": "built-in",
+    "name": "iPhone Microphone",
+    "kind": "built_in"
+  },
+  "sampleRate": 48000,
+  "bitrate": 64000,
+  "ledger": {
+    "spaceId": null,
+    "audio": {
+      "state": "pending",
+      "rowId": null,
+      "at": null
+    },
+    "transcript": {
+      "state": "pending",
+      "outcome": null,
+      "reason": null,
+      "attempts": 0,
+      "nextAttemptAt": null
+    },
+    "transcriptSync": {
+      "state": "pending",
+      "rev": 0,
+      "at": null
+    },
+    "landed": {
+      "state": "none",
+      "eventId": null
+    },
+    "remote": []
+  },
+  "stt": {
+    "state": "waiting_for_model",
+    "pack": null,
+    "engine": null,
+    "segmentsDone": 0,
+    "windowsDone": 0,
+    "error": null
+  }
+}

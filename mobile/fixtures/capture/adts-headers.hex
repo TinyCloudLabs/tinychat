@@ -1,0 +1,3 @@
+# AAC-LC, MPEG-4, mono, no CRC, 100-byte payload (frame_length 107)
+48k-ios: ff f1 40 c4 0d 7f fc
+44k1-android: ff f1 41 04 0d 7f fc

@@ -7,6 +7,7 @@ import type { RecorderPhase } from "./recorderReducer";
 
 export function formatDuration(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
+  if (total >= 3600) return `${Math.floor(total / 3600)}:${String(Math.floor(total % 3600 / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
@@ -15,6 +16,7 @@ const LIMIT_WARNING_MS = 5 * 60 * 1000;
 
 /** "60-minute", or "15-second" for a limit that is not whole minutes (a test override). */
 export function formatLimit(ms: number): string {
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0) return `${ms / 3_600_000}-hour`;
   return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000}-minute` : `${Math.round(ms / 1000)}-second`;
 }
 
@@ -36,6 +38,9 @@ export function micStatusText(
   if (phase === "starting") return "Starting the microphone…";
   if (phase === "stopping" || phase === "saving") return "Saving to your TinyCloud space…";
   if (phase !== "recording") return "Not recording. The microphone is off.";
+  if (mic.state === "paused") return `Paused at ${formatDuration(elapsedMs)}. The microphone is off.`;
+  if (mic.state === "interrupted") return `Recording interrupted at ${formatDuration(elapsedMs)}. Trying to resume.`;
+  if (mic.state === "needs_user") return `Recording needs you at ${formatDuration(elapsedMs)}. Tap to resume.`;
   const time = maxDurationMs !== undefined && elapsedMs >= maxDurationMs - LIMIT_WARNING_MS
     ? `${formatDuration(Math.min(elapsedMs, maxDurationMs))} of ${formatDuration(maxDurationMs)}`
     : formatDuration(elapsedMs);
@@ -66,6 +71,9 @@ export function recorderStatusText(
   if (phase === "saving") return typeof savePercent === "number" ? `Saving to your space · ${savePercent}%` : "Saving to your space";
   if (phase === "discarding") return "Discarding…";
   if (phase !== "recording") return "Not recording";
+  if (mic.state === "paused") return "Paused · mic off";
+  if (mic.state === "interrupted") return "Interrupted · resuming";
+  if (mic.state === "needs_user") return "Tap to resume";
   const warning = micWarning(mic);
   if (warning === "silenced") return "Mic silenced";
   if (warning === "no-signal") return "No sound";
@@ -74,6 +82,9 @@ export function recorderStatusText(
 
 /** The sentence under the timer while the mic has a problem (the card's own words). */
 export function micWarningSentence(mic: { state: MicState; reason: MicStateReason }): string | null {
+  if (mic.state === "paused") return "Recording paused. The microphone is off.";
+  if (mic.state === "interrupted") return "Recording was interrupted. Exo is trying to resume.";
+  if (mic.state === "needs_user") return "Recording needs you to tap Resume.";
   const warning = micWarning(mic);
   if (warning === "silenced") return sentence(SILENCED_CLAUSE);
   if (warning === "no-signal") return sentence(NO_SIGNAL_CLAUSE);

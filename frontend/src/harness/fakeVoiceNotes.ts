@@ -33,7 +33,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   const deleted: string[] = [];
 
   const plugin: VoiceNotesPlugin = {
-    async start(options) {
+    async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
       if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
       counter += 1;
       current = { id: `fake-${counter}`, startedAt: Date.now() };
@@ -64,12 +64,12 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         elapsedMs: current ? Date.now() - current.startedAt : 0,
       };
     },
-    async readAudioChunk({ id, offset, length }) {
+    async readAudioChunk({ id, offset, length }: Parameters<VoiceNotesPlugin["readAudioChunk"]>[0]) {
       const size = 4;
       const bytesRead = Math.max(0, Math.min(length, size - offset));
       return { id, offset, base64: btoa("\u0000".repeat(bytesRead)), bytesRead, size, eof: offset + bytesRead >= size };
     },
-    async deleteAudio({ id }) {
+    async deleteAudio({ id }: Parameters<VoiceNotesPlugin["deleteAudio"]>[0]) {
       deleted.push(id);
     },
     async listPending() {
@@ -94,7 +94,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         },
       });
     },
-  } as VoiceNotesPlugin;
+  } as unknown as VoiceNotesPlugin;
 
   return {
     plugin,

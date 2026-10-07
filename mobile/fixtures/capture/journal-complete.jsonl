@@ -1,0 +1,13 @@
+{"e":"session","t":1759800000000,"a":0,"v":1,"id":"11111111-1111-4111-8111-111111111111","platform":"ios","codec":"aac-lc","container":"adts","rate":48000,"channels":1,"bitrate":64000,"maxDurationMs":10800000,"source":"in_app","owner":null,"transitionGen":12,"options":{"transcriber":"on-device","identifySpeakers":false}}
+{"e":"segment","t":1759800000000,"a":0,"index":0,"file":"seg-00000.aac"}
+{"e":"hb","t":1759800002000,"a":2000,"seg":0,"segBytes":16014,"intent":"recording","availability":"available"}
+{"e":"avail","t":1759800002500,"a":2500,"value":"interrupted","reason":"call","gen":2}
+{"e":"span_open","t":1759800002500,"a":2500,"kind":"omitted","reason":"interruption"}
+{"e":"span_close","t":1759800004500,"a":2500,"kind":"omitted","reason":"interruption"}
+{"e":"segment","t":1759800004500,"a":2500,"index":1,"file":"seg-00001.aac"}
+{"e":"intent","t":1759800005000,"a":3000,"value":"paused","by":"user"}
+{"e":"intent","t":1759800010000,"a":3000,"value":"recording","by":"user"}
+{"e":"segment","t":1759800010000,"a":3000,"index":2,"file":"seg-00002.aac"}
+{"e":"hb","t":1759800011000,"a":4000,"seg":2,"segBytes":8014,"intent":"recording","availability":"available"}
+{"e":"intent","t":1759800011000,"a":4000,"value":"stopped","by":"user"}
+{"e":"stop","t":1759800011000,"a":4000,"reason":"user"}
