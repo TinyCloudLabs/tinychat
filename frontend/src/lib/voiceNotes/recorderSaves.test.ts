@@ -35,7 +35,8 @@ function withStorage(): Map<string, string> {
 const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 
 function recording(id: string, startedAt: number): VoiceNoteRecording {
-  return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  return { id, startedAt, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    version: 2, owner: tcw.did, rev: 1 };
 }
 
 /** The phone: what is listed as pending, and how deleteAudio and listPending behave. */
@@ -46,6 +47,7 @@ const phone = {
   lists: 0,
   holdList: null as Promise<void> | null,
   ledgerUpdates: [] as unknown[],
+  ledgerConflicts: 0,
 };
 
 const plugin = {
@@ -67,6 +69,11 @@ const plugin = {
   },
   async updateLedger(options: unknown) {
     phone.ledgerUpdates.push(options);
+    if (phone.ledgerConflicts > 0) {
+      phone.ledgerConflicts--;
+      phone.pending = phone.pending.map((note) => ({ ...note, rev: 2 }));
+      throw Object.assign(new Error("ledger changed"), { code: "rev_conflict" });
+    }
     return { rev: 3 };
   },
 } as unknown as VoiceNotesPlugin;
@@ -83,7 +90,7 @@ const fails = async () => {
 
 beforeEach(() => {
   __setVoiceNotesForTests(plugin, { available: true });
-  Object.assign(phone, { pending: [], deleteFailures: 0, deletes: 0, lists: 0, holdList: null, ledgerUpdates: [] });
+  Object.assign(phone, { pending: [], deleteFailures: 0, deletes: 0, lists: 0, holdList: null, ledgerUpdates: [], ledgerConflicts: 0 });
   saveCalls = 0;
   fakeVoiceNoteStore.save = ok;
 });
@@ -157,6 +164,17 @@ describe("saveRecording", () => {
     expect(phone.pending).toEqual([note]);
   });
 
+  test("every v1 note, including one missing ownerUnknown, is held by the sign-in saver", async () => {
+    const bareV1: VoiceNoteRecording = {
+      id: "bare-v1", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    };
+    phone.pending = [bareV1];
+    expect(await saves.savePendingRecordings(tcw)).toMatchObject({ total: 1, left: [bareV1], saved: [] });
+    expect(saveCalls).toBe(0);
+    expect(phone.deletes).toBe(0);
+  });
+
   test("legacy and unowned v2 notes never reach saveVoiceNote", async () => {
     const legacy = { ...recording("legacy-held", 1), ownerUnknown: true };
     const unowned = { ...recording("unowned-held", 2), version: 2 as const, owner: null };
@@ -178,6 +196,17 @@ describe("saveRecording", () => {
     expect(phone.ledgerUpdates).toEqual([{ id: note.id, did: note.owner, rev: 2,
       patch: { audio: { state: "saved", rowId: "actual-row", at: expect.any(Number) } } }]);
     expect(phone.pending).toEqual([note]);
+    expect(phone.deletes).toBe(0);
+  });
+
+  test("a changed ledger rev is re-read and patched once without another upload", async () => {
+    const note = recording("owned-rev-conflict", 4);
+    phone.pending = [note];
+    phone.ledgerConflicts = 1;
+    const result = await saves.saveRecording(tcw, note);
+    expect(result).toMatchObject({ kind: "saved", cleanupError: null });
+    expect(saveCalls).toBe(1);
+    expect(phone.ledgerUpdates).toMatchObject([{ rev: 1 }, { rev: 2 }]);
     expect(phone.deletes).toBe(0);
   });
 });

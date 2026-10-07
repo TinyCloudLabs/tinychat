@@ -21,7 +21,7 @@ mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
 const { createVoiceNoteRecorderController } = await import("./voiceNoteRecorderController");
 const { isDiscarded, saveRecording } = await import("@/lib/voiceNotes/recorderSaves");
 
-const tcw = {} as TinyCloudWeb;
+const tcw = { did: "did:example:alice" } as TinyCloudWeb;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 let fake: FakeVoiceNotes;
@@ -33,9 +33,10 @@ let noted: string[];
 let serial = 0;
 let currentId: string | null = null;
 let paused = false;
+let plugin: VoiceNotesPlugin;
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
-  const recording = { ...(await fake.plugin.stop()), id: currentId! };
+  const recording = { ...(await fake.plugin.stop()), id: currentId!, version: 2 as const, owner: tcw.did, rev: 1 };
   currentId = null;
   paused = false;
   onPhone.push(recording);
@@ -44,7 +45,7 @@ async function stopNatively(): Promise<VoiceNoteRecording> {
 
 /** A recording made before this one, stopped at its limit, still on the phone. */
 function earlier(): VoiceNoteRecording {
-  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  const recording = { id: `old-${++serial}`, startedAt: 1, durationMs: 60_000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2 as const, owner: tcw.did, rev: 1 };
   onPhone.push(recording);
   return recording;
 }
@@ -80,7 +81,7 @@ beforeEach(() => {
   deleteFailures = 0;
   deleteCalls = 0;
   nativeDiscards = 0;
-  const plugin: VoiceNotesPlugin = {
+  plugin = {
     ...fake.plugin,
     async start(options) {
       const started = await fake.plugin.start(options);
@@ -106,6 +107,7 @@ beforeEach(() => {
     async listPending() {
       return { recordings: [...onPhone] };
     },
+    async updateLedger() { return { rev: 2 }; },
     async deleteAudio({ id }) {
       deleteCalls++;
       if (deleteFailures > 0) {
@@ -332,6 +334,82 @@ describe("voice-note recorder controller", () => {
     expect(noted).toEqual([]);
     expect(nativeDiscards).toBe(1);
     expect(deleteCalls).toBe(0);
+  });
+
+  test("a failed Discard clears its mark; Stop keeps and saves the recording", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async discard() {
+      throw Object.assign(new Error("engine busy"), { code: "engine_busy" });
+    } }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    await recorder.discard();
+    expect(recorder.getState()).toMatchObject({ phase: "recording", recordingId: id, error: "Could not discard the recording: engine busy" });
+    expect(isDiscarded(id)).toBe(false);
+    await recorder.stop();
+    await tick();
+    expect(onPhone.map((recording) => recording.id)).toEqual([id]);
+    expect(saves).toEqual([id]);
+    expect(deleteCalls).toBe(0);
+  });
+
+  test("a failed Stop checks native status before showing a live recorder", async () => {
+    const base = plugin;
+    let checks = 0;
+    __setVoiceNotesForTests({ ...base,
+      async stop() {
+        await stopNatively();
+        throw new Error("write failed");
+      },
+      async status() { checks++; return base.status(); },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.stop();
+    expect(checks).toBeGreaterThan(1);
+    expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null, error: "Could not stop: write failed" });
+    expect(onPhone).toHaveLength(1);
+  });
+
+  test("a double tap sends only one native Pause and Resume", async () => {
+    const base = plugin;
+    let pauseCalls = 0;
+    let resumeCalls = 0;
+    let releasePause!: () => void;
+    let releaseResume!: () => void;
+    const pauseGate = new Promise<void>((resolve) => { releasePause = resolve; });
+    const resumeGate = new Promise<void>((resolve) => { releaseResume = resolve; });
+    __setVoiceNotesForTests({ ...base,
+      async pause() { pauseCalls++; await pauseGate; paused = true; },
+      async resume() { resumeCalls++; await resumeGate; paused = false; },
+    }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    const firstPause = recorder.pause();
+    await recorder.pause();
+    expect(pauseCalls).toBe(1);
+    releasePause();
+    await firstPause;
+    const firstResume = recorder.resume();
+    await recorder.resume();
+    expect(resumeCalls).toBe(1);
+    releaseResume();
+    await firstResume;
+  });
+
+  test("a mic event cannot hide a failed Resume", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async resume() {
+      fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
+      throw Object.assign(new Error("microphone busy"), { code: "resume_failed" });
+    } }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    await recorder.resume();
+    fake.emit("micState", { id: currentId, state: "needs_user", reason: "resume_blocked" });
+    expect(recorder.getState()).toMatchObject({ mic: { state: "needs_user" }, error: "Could not resume: microphone busy" });
   });
 
   test("discard racing the limit's auto-stop: discard first deletes it, the limit first saves it", async () => {

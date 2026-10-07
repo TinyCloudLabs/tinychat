@@ -14,6 +14,7 @@ import { RouteLine, type RouteNode } from "./RouteLine";
 
 export interface SavedReceiptProps {
   outcome: "local" | "saved" | "failed";
+  localUpload?: "uploading" | "held" | "in-flight" | null;
   /** The saved note (absent after a failure). */
   saved?: { id: string; durationMs: number; at: number } | null;
   route: readonly RouteNode[];
@@ -66,7 +67,11 @@ export function SavedReceipt(props: SavedReceiptProps) {
       {localError && <p role="alert" className="text-callout text-destructive">{localError}</p>}
       {!localUrl && !localError && props.saved && <p role="status" className="text-meta text-muted-foreground">Getting this phone&apos;s audio…</p>}
       <RouteLine nodes={props.route} landed={saved} />
-      {props.outcome === "local" && <p className="text-meta text-muted-foreground">Saving to your TinyCloud space…</p>}
+      {props.outcome === "local" && <p className="text-meta text-muted-foreground">{
+        props.localUpload === "held" ? "Kept on this phone. This note needs an ownership check before upload."
+          : props.localUpload === "in-flight" ? "Another save is finishing in your TinyCloud space…"
+          : "Saving to your TinyCloud space…"
+      }</p>}
       {saved && <p className="text-meta text-muted-foreground">Saved to your TinyCloud space</p>}
       {saved && props.transcribing && <p className="text-meta text-muted-foreground">Transcribing in private cloud…</p>}
       <div className="flex flex-wrap justify-end gap-2">

@@ -23,7 +23,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
   const active = phase === "recording";
   const warning = active && micWarning(mic) ? micWarningSentence(mic) : null;
   const receipt = phase === "idle" && outcome !== null;
-  const audioElapsed = useAudioElapsed(recorder.audioMs ?? 0, active && (mic.state === "recording" || mic.state === "silenced"));
+  const audioElapsed = useAudioElapsed(recorder.audioMs, active && (mic.state === "recording" || mic.state === "silenced"));
   const transcribing = outcome === "saved" && recorder.transcription?.availability === "available" &&
     recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
   const paused = mic.state === "paused" || mic.state === "interrupted" || mic.state === "needs_user";
@@ -43,17 +43,17 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
         <div className="flex min-w-0 flex-col items-center justify-center text-center land:col-start-1 land:row-start-1">
           <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={active && (mic.state === "recording" || mic.state === "silenced")} fixedMs={receipt ? lastSaved?.durationMs ?? 0 : undefined} className="font-display text-[4.25rem] leading-tight tracking-[-0.025em] sm:text-[5rem]" />
           {!receipt && <p className="tnum text-meta text-muted-foreground" data-testid="recorder-meta">{recorderMetaText(recorder.startedAt, audioElapsed, recorder.maxDurationMs)}</p>}
-          {!receipt && <LevelTrace subscribe={recorder.subscribeLevel} variant="waveform" tone={warning ? "warning" : "live"} paused={!active || paused} className="mt-10 h-32 max-w-[36rem] land:mt-6" />}
+          {!receipt && <LevelTrace subscribe={recorder.subscribeLevel} variant="waveform" tone={paused ? "muted" : warning ? "warning" : "live"} paused={!active || paused} className="mt-10 h-32 max-w-[36rem] land:mt-6" />}
           {warning && <p className="mt-5 flex items-start gap-2 text-callout text-warning"><MicOffIcon className="mt-0.5 size-4 shrink-0" aria-hidden />{warning}</p>}
-          {paused && <p className="mt-5 text-callout text-warning">{mic.state === "paused" ? "Paused · microphone off" : "Recording interrupted · tap Resume to continue"}</p>}
-          {(mic.state === "interrupted" || mic.state === "needs_user") && <Button type="button" size="lg" onClick={recorder.resume} className="mt-5 min-h-12 min-w-36" data-testid="voice-note-resume-main">Resume</Button>}
+          {paused && <p className="mt-5 text-callout text-warning">{mic.state === "paused" ? "Paused · microphone off" : mic.state === "interrupted" ? "Recording interrupted · trying to resume" : "Recording needs you · tap Resume to continue"}</p>}
+          {mic.state === "needs_user" && <Button type="button" size="lg" onClick={recorder.resume} disabled={recorder.controlPending !== null} className="mt-5 min-h-12 min-w-36" data-testid="voice-note-resume-main">Resume</Button>}
           {recorder.limitNotice && !active && <p data-testid="voice-note-limit" className="mt-4 text-callout text-warning">{recorder.limitNotice}</p>}
           {recorder.error && !receipt && <p role="alert" className="mt-4 text-callout text-destructive">{recorder.error}</p>}
         </div>
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">
           {receipt ? (
-            <SavedReceipt outcome={outcome} saved={lastSaved} route={voiceNoteRoute(outcome === "saved" && transcribing)} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
+            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(outcome === "saved" && transcribing)} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
               onOpen={outcome === "saved" && onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
               onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} />
           ) : (

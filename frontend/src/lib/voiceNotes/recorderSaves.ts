@@ -201,9 +201,9 @@ export async function saveRecording(
   // Discarded (a pending run, the limit's "autoStopped" or a relaunch met it): deleted, never
   // saved. Before the cloudSaved path, so a discarded note marked as in the space loses both marks.
   if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
-  if (recording.ownerUnknown) return { kind: "held", reason: "legacy" };
-  if (recording.version === 2 && !recording.owner) return { kind: "held", reason: "unowned" };
-  if (recording.version === 2 && recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
+  if (recording.ownerUnknown || recording.version !== 2) return { kind: "held", reason: "legacy" };
+  if (!recording.owner) return { kind: "held", reason: "unowned" };
+  if (recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
   if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
@@ -232,8 +232,17 @@ export async function saveRecording(
     let cleanupError: string | null = null;
     if (recording.version === 2 && recording.owner) {
       try {
-        await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0,
-          patch: { audio: { state: "saved", rowId: saved.data.id, at: Date.now() } } });
+        const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
+        try {
+          await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: recording.rev ?? 0, patch });
+        } catch (caught) {
+          if (errorCode(caught) !== "rev_conflict") throw caught;
+          const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+          if (!fresh || fresh.version !== 2 || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
+          if (fresh.ledger?.audio?.state !== "saved") {
+            await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
+          }
+        }
       } catch (caught) {
         cleanupError = `Saved to your space, but this phone could not update its note status: ${messageOf(caught)}`;
       }

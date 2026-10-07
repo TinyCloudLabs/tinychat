@@ -160,6 +160,7 @@ export const recorderScreens: HarnessScreen[] = [
   sheet("interrupted", { ...LIVE, mic: { state: "interrupted", reason: "call" } }, { levels: QUIET }),
   sheet("saving", { ...LIVE, phase: "saving", savePercent: 42 }),
   sheet("landed", { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
+  sheet("local", { phase: "idle", outcome: "local", localUpload: "uploading", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
   sheet("failed", {
     phase: "idle",
     outcome: "failed",

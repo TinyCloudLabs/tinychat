@@ -32,13 +32,15 @@ export interface RecorderValue {
   mic: RecorderMic;
   /** Wall-clock start; views tick from native audioMs for recorded time. */
   startedAt: number | null;
-  audioMs?: number;
+  audioMs: number;
+  controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
   savePercent: number | null;
   error: string | null;
   /** How the last recording ended; drives the receipt. */
   outcome: "local" | "saved" | "failed" | null;
+  localUpload: RecorderState["localUpload"];
   lastSaved: RecorderState["lastSaved"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
@@ -194,11 +196,13 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       mic: state.mic,
       startedAt: state.startedAt,
       audioMs: state.audioMs,
+      controlPending: state.controlPending,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
       error: state.error ?? defaultsError,
       outcome: state.outcome,
+      localUpload: state.localUpload,
       lastSaved: state.lastSaved,
       pending: recorder.pending,
       transcription: recorder.transcription,
@@ -266,11 +270,13 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       mic: { state: "idle", reason: null },
       startedAt: null,
       audioMs: 0,
+      controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,
       savePercent: null,
       error: null,
       outcome: null,
+      localUpload: null,
       lastSaved: null,
       pending: NO_PENDING,
       transcription: undefined,

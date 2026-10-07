@@ -48,7 +48,6 @@ export function MeetingAudioPlayer({ load, url, onPlayingChange }: MeetingAudioP
 
   const onPlay = useCallback(async () => {
     if (url) {
-      onPlayingChange?.(true);
       setState({ phase: "ready", url });
       return;
     }
@@ -73,7 +72,7 @@ export function MeetingAudioPlayer({ load, url, onPlayingChange }: MeetingAudioP
     } catch {
       if (!controller.signal.aborted) setState({ phase: "failed" });
     }
-  }, [load, onPlayingChange, url]);
+  }, [load, url]);
 
   return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} onPlayingChange={onPlayingChange}
     onError={() => { onPlayingChange?.(false); setState({ phase: "failed" }); }} />;

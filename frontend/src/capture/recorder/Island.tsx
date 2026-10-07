@@ -35,7 +35,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           aria-hidden="true"
         />
         <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-callout font-semibold" />
-        <LevelTrace subscribe={recorder.subscribeLevel} tone={warning ? "warning" : "live"} paused={paused} bars={12} className="h-6 w-14 shrink-0" />
+        <LevelTrace subscribe={recorder.subscribeLevel} tone={paused ? "muted" : warning ? "warning" : "live"} paused={paused} bars={12} className="h-6 w-14 shrink-0" />
         <span className={cn("min-w-0 text-callout [overflow-wrap:anywhere]", warning ? "text-warning" : "text-muted-foreground")}>
           {recorder.phase === "starting" ? "Starting…" : paused ? recorder.mic.state === "paused" ? "Paused" : "Interrupted" : warning ? "Mic problem" : "Recording"}
         </span>
@@ -89,7 +89,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           size="icon"
           className="size-11 shrink-0 rounded-full"
           onClick={paused ? recorder.resume : recorder.stop}
-          disabled={recorder.phase !== "recording"}
+          disabled={recorder.phase !== "recording" || (paused && recorder.controlPending !== null)}
           aria-label={paused ? "Resume recording" : "Stop and save"}
           data-testid="island-stop"
         >

@@ -16,7 +16,7 @@ export function barScale(level: number): number {
 export function LevelTrace(props: {
   subscribe: (listener: (level: number) => void) => () => void;
   /** `live` while the mic hears; `warning` while it is silenced or hears nothing. */
-  tone?: "live" | "warning";
+  tone?: "live" | "warning" | "muted";
   variant?: "tape" | "waveform";
   paused?: boolean;
   bars?: number;
@@ -55,7 +55,7 @@ export function LevelTrace(props: {
       {Array.from({ length: bars }, (_, index) => (
         <span
           key={index}
-          className={cn("h-full min-w-0 flex-1 rounded-full", tone === "warning" ? "bg-warning" : "bg-live")}
+          className={cn("h-full min-w-0 flex-1 rounded-full", tone === "warning" ? "bg-warning" : tone === "muted" ? "bg-muted-foreground/45" : "bg-live")}
           style={{ transform: `scaleY(${FLOOR})` }}
         />
       ))}

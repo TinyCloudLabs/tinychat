@@ -8,6 +8,10 @@ export function RecorderControls({ recorder, discardAsking }: { recorder: Record
   const live = recorder.phase === "recording";
   const paused = recorder.mic.state === "paused";
   const needsResume = paused || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user";
+  if ((recorder.phase === "stopping" || recorder.phase === "discarding") && recorder.error) {
+    return <Button type="button" variant="outline" onClick={recorder.phase === "stopping" ? recorder.stop : recorder.discard}
+      className="h-12 w-full" data-testid="recorder-check-status">Check recording status</Button>;
+  }
   if (recorder.phase === "idle") {
     return <Button type="button" onClick={recorder.record} className="h-14 w-full gap-3 rounded-xl text-body font-semibold" data-testid="recorder-record-again"><MicIcon aria-hidden />Record</Button>;
   }
@@ -18,7 +22,7 @@ export function RecorderControls({ recorder, discardAsking }: { recorder: Record
         <SquareIcon className="!size-6 fill-current" aria-hidden />
       </Button>
       <div className="flex min-w-20 flex-1 justify-end">
-        {live && <Button type="button" variant="outline" onClick={needsResume ? recorder.resume : recorder.pause} aria-label={needsResume ? "Resume recording" : "Pause recording"} data-testid={needsResume ? "voice-note-resume" : "voice-note-pause"} className="size-12 rounded-full p-0">
+        {live && <Button type="button" variant="outline" onClick={needsResume ? recorder.resume : recorder.pause} disabled={recorder.controlPending !== null} aria-label={needsResume ? "Resume recording" : "Pause recording"} data-testid={needsResume ? "voice-note-resume" : "voice-note-pause"} className="size-12 rounded-full p-0">
           {needsResume ? <PlayIcon className="!size-5 fill-current" aria-hidden /> : <PauseIcon className="!size-5" aria-hidden />}
         </Button>}
       </div>
