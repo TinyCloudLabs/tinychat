@@ -98,7 +98,7 @@ describe("recorderReducer", () => {
 
   test("a failed stop is told; not_recording leaves the error alone", () => {
     const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED" });
-    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "no_audio_captured" })).toMatchObject({ phase: "idle", error: "no_audio_captured" });
+    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "no_audio_captured" })).toMatchObject({ phase: "recording", error: "no_audio_captured" });
     expect(recorderReducer(stopping, { type: "STOP_FAILED", error: null })).toMatchObject({ phase: "idle", error: null });
   });
 
@@ -169,9 +169,11 @@ describe("recorderReducer", () => {
     expect(recorderReducer(discarding, { type: "DISCARDED", id: null }).phase).toBe("idle");
   });
 
-  test("a failed discard is told and back to idle", () => {
+  test("a failed native discard keeps the live recording available for retry", () => {
     const failed = run([{ type: "DISCARD_REQUESTED", id: "rec-1" }, { type: "DISCARD_FAILED", id: "rec-1", error: "Could not discard the recording: busy" }], recording());
-    expect(failed).toMatchObject({ phase: "idle", outcome: null, error: "Could not discard the recording: busy" });
+    expect(failed).toMatchObject({ phase: "recording", outcome: null, error: "Could not discard the recording: busy" });
+    const committedFailure = run([{ type: "DISCARD_REQUESTED", id: "rec-1" }, { type: "DISCARD_FAILED", id: "rec-1", error: "The file is busy", committed: true }], recording());
+    expect(committedFailure).toMatchObject({ phase: "idle", error: "The file is busy" });
   });
 
   test("discard racing the limit's auto-stop: whichever is first wins, and nothing is both", () => {

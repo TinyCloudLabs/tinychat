@@ -19,6 +19,8 @@ export interface RecorderState {
   phase: RecorderPhase;
   recordingId: string | null;
   startedAt: number | null;
+  /** Last native audio clock checkpoint; paused time is excluded. */
+  audioMs: number;
   maxDurationMs: number;
   mic: RecorderMic;
   /** Set when the recorder stopped itself at the limit, e.g. "Stopped at the 3-hour limit." */
@@ -27,7 +29,7 @@ export interface RecorderState {
   savePercent: number | null;
   error: string | null;
   /** How the last recording ended; drives the receipt until dismissed. */
-  outcome: "saved" | "failed" | null;
+  outcome: "local" | "saved" | "failed" | null;
   lastSaved: { id: string; durationMs: number; at: number } | null;
   /** The recording behind a "Kept on this phone" receipt, so a later Save now can land it. */
   failedRecording: { id: string; durationMs: number } | null;
@@ -49,8 +51,8 @@ export type RecorderEvent =
   | { type: "STARTED"; id: string; startedAt: number; maxDurationMs: number }
   | { type: "START_FAILED"; error: string }
   /** A recording was already running (a WebView reload, or one started offline). */
-  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs?: number; mic: RecorderMic }
-  | { type: "MIC_STATE"; mic: RecorderMic }
+  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs?: number; audioMs?: number; mic: RecorderMic }
+  | { type: "MIC_STATE"; mic: RecorderMic; audioMs?: number }
   | { type: "PAUSE_REQUESTED" }
   | { type: "PAUSE_FAILED"; error: string }
   | { type: "RESUME_REQUESTED" }
@@ -60,6 +62,7 @@ export type RecorderEvent =
   | { type: "STOP_FAILED"; error: string | null }
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
+  | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; at: number }
   | { type: "SAVED"; id: string; durationMs: number; at: number }
   | { type: "SAVE_FAILED"; error: string; recording: { id: string; durationMs: number } | null }
   /**
@@ -78,7 +81,7 @@ export type RecorderEvent =
   /** Stopped and deleted from the phone; nothing was saved. */
   | { type: "DISCARDED"; id: string | null }
   /** stop() or the delete failed; the recording stays marked, so no save keeps it. */
-  | { type: "DISCARD_FAILED"; id: string | null; error: string };
+  | { type: "DISCARD_FAILED"; id: string | null; error: string; committed?: boolean };
 
 const IDLE_MIC: RecorderMic = { state: "idle", reason: null };
 
@@ -86,6 +89,7 @@ export const initialRecorderState: RecorderState = {
   phase: "idle",
   recordingId: null,
   startedAt: null,
+  audioMs: 0,
   maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
   mic: IDLE_MIC,
   limitNotice: null,
@@ -146,6 +150,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         phase: "recording",
         recordingId: event.id,
         startedAt: event.startedAt,
+        audioMs: 0,
         maxDurationMs: event.maxDurationMs,
         mic: { state: "recording", reason: null },
       };
@@ -159,13 +164,14 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         phase: "recording",
         recordingId: event.id,
         startedAt: event.startedAt,
+        audioMs: event.audioMs ?? 0,
         maxDurationMs: event.maxDurationMs ?? state.maxDurationMs,
         mic: event.mic,
         outcome: null,
       };
     case "MIC_STATE":
       if (state.phase !== "recording") return state;
-      return { ...state, mic: event.mic };
+      return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs, error: null };
     case "PAUSE_REQUESTED":
       if (state.phase !== "recording" || state.mic.state === "paused") return state;
       // The native engine confirms release via MIC_STATE. Keep showing a live mic until then.
@@ -184,13 +190,22 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...state, phase: "stopping" };
     case "STOP_FAILED":
       if (state.autoSaving || state.phase === "discarding") return state;
+      if (event.error !== null && state.phase === "stopping") return { ...state, phase: "recording", error: event.error };
       return { ...toIdle(state), error: event.error ?? state.error };
     case "SAVE_PROGRESS":
+      if (state.phase === "idle" && state.outcome === "local") return { ...state, savePercent: event.percent };
       if (state.phase !== "stopping" && state.phase !== "saving") return state;
       return { ...state, phase: "saving", savePercent: event.percent };
+    case "LOCAL_COMMITTED":
+      if (!savingThis(state, event.id)) return state;
+      return {
+        ...toIdle(state), outcome: "local", audioMs: event.durationMs,
+        lastSaved: { id: event.id, durationMs: event.durationMs, at: event.at },
+        error: null,
+      };
     case "SAVED":
       // Only the save on screen, or the failed note behind a receipt; never another recording's.
-      if (!savingThis(state, event.id) && !(state.phase === "idle" && state.outcome === "failed" && state.failedRecording?.id === event.id)) {
+      if (!savingThis(state, event.id) && !(state.phase === "idle" && ((state.outcome === "failed" && state.failedRecording?.id === event.id) || (state.outcome === "local" && state.lastSaved?.id === event.id)))) {
         return state;
       }
       return {
@@ -201,7 +216,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         lastSaved: { id: event.id, durationMs: event.durationMs, at: event.at },
       };
     case "SAVE_FAILED":
-      if (!savingThis(state, event.recording?.id ?? null)) return state;
+      if (!savingThis(state, event.recording?.id ?? null) && !(state.phase === "idle" && state.outcome === "local" && state.lastSaved?.id === event.recording?.id)) return state;
       return { ...toIdle(state), outcome: "failed", error: event.error, failedRecording: event.recording };
     case "AUTO_STOPPED":
       if (!autoStopIsCurrent(state, event.id)) return state;
@@ -235,6 +250,6 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...toIdle(state), error: null, limitNotice: null };
     case "DISCARD_FAILED":
       if (!discardingThis(state, "discarding", event.id)) return state;
-      return { ...toIdle(state), error: event.error };
+      return event.committed ? { ...toIdle(state), error: event.error } : { ...state, phase: "recording", error: event.error };
   }
 }
