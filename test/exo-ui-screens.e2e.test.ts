@@ -359,6 +359,13 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               displayTitle: screen.displayTitle ?? false,
               allow,
             });
+            // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
+            if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
+              const record = page.locator('[data-testid="voice-note-record"]');
+              if (await record.count() === 0 || await record.first().isDisabled()) {
+                findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
+              }
+            }
             for (const error of errors) findings.push({ check: "errors", detail: error });
 
             const file = `${screen.id}__${viewport.id}__${theme}.png`;
