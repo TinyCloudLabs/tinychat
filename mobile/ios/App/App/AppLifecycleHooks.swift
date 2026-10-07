@@ -1,6 +1,7 @@
 import AVFoundation
 import CaptureCore
 import ExoCapture
+import ExoStt
 import UIKit
 import UserNotifications
 
@@ -10,6 +11,7 @@ enum AppLifecycleHooks {
                                    options: [UIApplication.LaunchOptionsKey: Any]?) {
         ExoCaptureBootstrap.start()
         CaptureLiveActivity.install()
+        ExoSttBootstrap.start()
         UNUserNotificationCenter.current().delegate = app.delegate as? UNUserNotificationCenterDelegate
         #if DEBUG
         if ["cold", "cold_warm"].contains(ProcessInfo.processInfo.environment["EXO_QUICK_ACTION_SMOKE"] ?? "") {
@@ -29,7 +31,7 @@ enum AppLifecycleHooks {
 
     static func handleEventsForBackgroundURLSession(_ identifier: String,
                                                     completionHandler: @escaping () -> Void) -> Bool {
-        false // ExoStt.ModelDownloads is connected by T7.
+        ModelDownloads.handleBackgroundEvents(identifier: identifier, completion: completionHandler)
     }
 
     static func didReceive(_ response: UNNotificationResponse, completion: @escaping () -> Void) {
