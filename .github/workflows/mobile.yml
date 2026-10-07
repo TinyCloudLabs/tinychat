@@ -66,6 +66,9 @@ jobs:
       - name: Install JS deps
         run: bun install --frozen-lockfile
 
+      - name: Test iOS CaptureCore
+        run: swift test --package-path mobile/ios/Packages/CaptureCore
+
       - name: Build workspace packages and frontend
         run: bun run build:packages && bun run build:frontend
 

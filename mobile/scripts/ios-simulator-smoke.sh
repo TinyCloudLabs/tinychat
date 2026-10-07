@@ -3,7 +3,7 @@
 # up. Fails unless, within SMOKE_TIMEOUT seconds:
 #   - the debug-only probe in ExoBridgeViewController logs `EXO_SMOKE {json}` with the bundled web app at
 #     capacitor://localhost, platform "ios", React mounted into #root, the VoiceNotes plugin visible to JS and
-#     its status() answering over the bridge with state "idle" and the 60-minute recording limit, and its
+#     its status() answering over the bridge with state "idle" and the 3-hour recording limit, and its
 #     readAudioChunk() refusing a missing recording with "not_found", and the web app's PWA service worker skipped;
 #   - the Debug-only Location plugin (TC-524 spike) is visible to JS and its status() reports the Debug Info.plist
 #     keys (usage strings and the location background mode);
@@ -30,6 +30,8 @@ esac
 bundle_id=xyz.tinycloud.exo
 timeout_s=${SMOKE_TIMEOUT:-120}
 settle_s=${SMOKE_SETTLE:-10}
+capture_smoke=${EXO_CAPTURE_SMOKE:-1}
+location_smoke=${EXO_LOCATION_SMOKE:-1}
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -41,12 +43,15 @@ log() { echo "[smoke $(date -u +%H:%M:%S)] $*"; }
 if [ -f "$out/device.txt" ]; then
   read -r runtime udid device <"$out/device.txt"
 else
-  read -r runtime udid device < <(xcrun simctl list devices available -j | jq -r '
+  read -r runtime udid device < <(xcrun simctl list devices available -j | jq -r \
+  --arg chosen_runtime "${EXO_SMOKE_RUNTIME:-}" --arg chosen_device "${EXO_SMOKE_DEVICE_TYPE:-}" '
   .devices | to_entries
   | map(select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+")))
+  | map(select($chosen_runtime == "" or .key == $chosen_runtime))
   | map({runtime: .key,
          version: (.key | capture("iOS-(?<major>[0-9]+)-(?<minor>[0-9]+)") | [(.major | tonumber), (.minor | tonumber)]),
-         iphones: [.value[] | select(.name | startswith("iPhone"))]})
+         iphones: [.value[] | select((.name | startswith("iPhone")) and
+           ($chosen_device == "" or .name == $chosen_device or .deviceTypeIdentifier == $chosen_device))]})
   | map(select(.iphones | length > 0))
   | sort_by(.version) | last // empty
   | "\(.runtime) \(.iphones[0].udid) \(.iphones[0].name)"')
@@ -79,7 +84,8 @@ touch "$marker"
 
 # --console-pty gives the app a terminal, so its stdout is line-buffered and lands in console.log as it happens.
 log "launching $bundle_id"
-SIMCTL_CHILD_EXO_LOCATION_SMOKE=1 xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$out/console.log" 2>&1 &
+SIMCTL_CHILD_EXO_LOCATION_SMOKE="$location_smoke" SIMCTL_CHILD_EXO_CAPTURE_SMOKE="$capture_smoke" \
+  xcrun simctl launch --console-pty "$udid" "$bundle_id" >"$out/console.log" 2>&1 &
 launcher=$!
 
 pid=""
@@ -98,11 +104,6 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     break
   fi
   probe=$(grep -a -m1 'EXO_SMOKE ' "$out/console.log" 2>/dev/null | sed 's/^.*EXO_SMOKE //' | tr -d '\r')
-  if [ -z "$probe" ]; then
-    probe=$(xcrun simctl spawn "$udid" log show --style compact --last 5m \
-      --predicate 'subsystem == "xyz.tinycloud.exo" AND category == "smoke"' 2>/dev/null \
-      | grep -a -m1 'EXO_SMOKE ' | sed 's/^.*EXO_SMOKE //' | tr -d '\r')
-  fi
   [ -n "$probe" ] && break
 done
 
@@ -111,7 +112,7 @@ if [ -n "$probe" ]; then
   log "probe: $probe"
   # The location probe captures for about 15 s after the main probe; give it up to 60 s.
   location_deadline=$((SECONDS + 60))
-  while [ -z "$location_probe" ] && [ "$SECONDS" -lt "$location_deadline" ]; do
+  while [ "$location_smoke" = 1 ] && [ -z "$location_probe" ] && [ "$SECONDS" -lt "$location_deadline" ]; do
     sleep 2
     if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then break; fi
     location_probe=$(grep -a -m1 'EXO_LOCATION_SMOKE ' "$out/console.log" 2>/dev/null | sed 's/^.*EXO_LOCATION_SMOKE //' | tr -d '\r')
@@ -155,8 +156,18 @@ check '.platform == "ios"' 'Capacitor platform is "ios"'
 check '.mounted == true' "React mounted into #root"
 check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes plugin registered and visible to JS"
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
-check '.voiceNotesStatus.maxDurationMs == 3600000' "VoiceNotes reports the 60-minute recording limit"
+check '.voiceNotesStatus.maxDurationMs == 10800000' "VoiceNotes reports the 3-hour recording limit"
 check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
+if [ "$capture_smoke" = 1 ]; then
+  check '.capture.committed == true and .capture.sampleRate == 48000 and .capture.channels == 1' \
+    "synthetic sine passed the AAC writer, muxer and native commit"
+  check '.capture.sessionsGone == true and .capture.legacyHeld == true' \
+    "capture cleanup and legacy ownerUnknown probe"
+  check '.capture.pauseSequenceValid == true' \
+    "capture pause, resume and segment-close journal sequence"
+  check '(.capture.probedDurationMs - .capture.durationMs | fabs) <= 100' \
+    "capture duration matches the native file probe within 100 ms"
+fi
 check '.serviceWorkerDecision == "skip:capacitor" and .serviceWorkerRegistrations == 0' "the web app's PWA service worker is not registered in the shell"
 check '.locationAvailable == true and .locationStatus.platform == "ios"' "Location plugin (Debug-only TC-524 spike) registered and answering status()"
 check '.locationStatus.declared.foreground == true and .locationStatus.declared.background == true and .locationStatus.declared.backgroundExecution == true' \

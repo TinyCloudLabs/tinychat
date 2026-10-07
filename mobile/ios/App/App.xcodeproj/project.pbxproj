@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
+		E0A1C0DE0000000000000021 /* ExoCapture in Frameworks */ = {isa = PBXBuildFile; productRef = E0A1C0DE0000000000000020 /* ExoCapture */; };
+		E0A1C0DE0000000000000023 /* AppLifecycleHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */; };
+		E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
@@ -37,6 +40,8 @@
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceNotesPlugin.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLifecycleHooks.swift; sourceTree = "<group>"; };
+		E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLiveActivity.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoBridgeViewController.swift; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E0A1C0DE0000000000000007 /* HealthPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthPlugin.swift; sourceTree = "<group>"; };
@@ -51,6 +56,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+				E0A1C0DE0000000000000021 /* ExoCapture in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -82,6 +88,8 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				E0A1C0DE0000000000000003 /* ExoBridgeViewController.swift */,
 				E0A1C0DE0000000000000001 /* VoiceNotesPlugin.swift */,
+				E0A1C0DE0000000000000022 /* AppLifecycleHooks.swift */,
+				E0A1C0DE0000000000000024 /* CaptureLiveActivity.swift */,
 				E0A1C0DE0000000000000007 /* HealthPlugin.swift */,
 				E0A1C0DE0000000000000010 /* LocationRecorder.swift */,
 				E0A1C0DE0000000000000012 /* LocationPlugin.swift */,
@@ -116,6 +124,7 @@
 			name = App;
 			packageProductDependencies = (
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
+				E0A1C0DE0000000000000020 /* ExoCapture */,
 			);
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
@@ -148,6 +157,7 @@
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
+				E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
@@ -209,6 +219,8 @@
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				E0A1C0DE0000000000000004 /* ExoBridgeViewController.swift in Sources */,
 				E0A1C0DE0000000000000002 /* VoiceNotesPlugin.swift in Sources */,
+				E0A1C0DE0000000000000023 /* AppLifecycleHooks.swift in Sources */,
+				E0A1C0DE0000000000000025 /* CaptureLiveActivity.swift in Sources */,
 				E0A1C0DE0000000000000008 /* HealthPlugin.swift in Sources */,
 				E0A1C0DE0000000000000011 /* LocationRecorder.swift in Sources */,
 				E0A1C0DE0000000000000013 /* LocationPlugin.swift in Sources */,
@@ -417,6 +429,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../Packages/ExoCapture";
+		};
 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "CapApp-SPM";
@@ -424,6 +440,11 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		E0A1C0DE0000000000000020 /* ExoCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */;
+			productName = ExoCapture;
+		};
 		4D22ABE82AF431CB00220026 /* CapApp-SPM */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
