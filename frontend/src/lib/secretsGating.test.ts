@@ -1,7 +1,7 @@
 // TC-775 E1 — secrets gating on native OpenKey sessions.
 //
-// `secretsAvailable()` is the one predicate: false only inside the Exo app
-// (ios/android) when the build sets VITE_EXO_NATIVE_OPENKEY=true. These tests
+// `secretsAvailable()` is the one predicate: false only for an active native
+// delegation session. These tests
 // pin both sides of it — unlockSecrets refuses BEFORE touching tcw.secrets and
 // isSecretsUnlocked reports locked — and that web/desktop sessions are
 // untouched (the default test environment is web). The test seam
@@ -13,7 +13,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import {
   SECRETS_UNAVAILABLE_IN_APP_MESSAGE,
   setSecretsAvailableForTests,
-  useNativeOpenKey,
+  isNativeOpenKeySignIn,
 } from "./openkeyNative";
 import { isSecretsUnlocked, unlockSecrets } from "./connectors/connectorSecrets";
 
@@ -39,13 +39,13 @@ function fakeTcw(unlocked = false) {
 }
 
 describe("secretsAvailable gate", () => {
-  test("is false only inside the flagged native app", () => {
-    expect(useNativeOpenKey("ios", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
-    expect(useNativeOpenKey("android", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+  test("the sign-in flag is limited to iOS and Android", () => {
+    expect(isNativeOpenKeySignIn("ios", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+    expect(isNativeOpenKeySignIn("android", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
     // Web and the Tauri desktop always have secrets.
-    expect(useNativeOpenKey("web", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
-    expect(useNativeOpenKey("tauri", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
-    expect(useNativeOpenKey("ios", {})).toBe(false);
+    expect(isNativeOpenKeySignIn("web", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
+    expect(isNativeOpenKeySignIn("tauri", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
+    expect(isNativeOpenKeySignIn("ios", {})).toBe(false);
   });
 
   test("unlockSecrets refuses on native before touching the vault", async () => {

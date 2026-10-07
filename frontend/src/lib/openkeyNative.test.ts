@@ -6,7 +6,7 @@
 // restore with a read-only provider → verify — plus the flag/platform routing
 // and the cancel/deny messages.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { OpenKeyNativeError } from "@openkey/sdk-capacitor";
@@ -22,12 +22,21 @@ import {
   nativeOpenKeyEnabled,
   nativePermissions,
   nativeSignInErrorMessage,
+  isNativeOpenKeySession,
+  isNativeOpenKeySignIn,
+  logNativeOpenKeyError,
+  nativeSessionWasActive,
+  retireNativeSessionAtBoot,
   secretsAvailable,
+  setNativeSessionActive,
   signInNative,
   signOutNative,
-  useNativeOpenKey,
   NATIVE_SIGN_IN_CANCELLED_MESSAGE,
   NATIVE_SIGN_IN_DENIED_MESSAGE,
+  NATIVE_SIGN_IN_NETWORK_MESSAGE,
+  NATIVE_SIGN_IN_NONCE_MESSAGE,
+  NATIVE_SIGN_IN_SERVER_MESSAGE,
+  NATIVE_SIGN_IN_SPACE_MESSAGE,
   type NativeSignInDeps,
 } from "./openkeyNative";
 import APP_MANIFEST from "../../../manifest.json";
@@ -58,11 +67,12 @@ const sessionKey = {
 } as NativeSession["sessionKey"];
 
 /** A NativeSessionStorage-shaped fake; `saved` keeps every handoff record. */
-function fakeStorage() {
+function fakeStorage(order: string[]) {
   const saved: Array<{ address: string; record: PersistedSessionData }> = [];
   const storage: ISessionStorage & { saved: typeof saved } = {
     saved,
     save: async (address, record) => {
+      order.push("save");
       saved.push({ address, record });
     },
     load: async () => null,
@@ -88,9 +98,10 @@ interface Flow {
 
 /** A fully mocked sign-in flow; individual fakes can be re-pointed per test. */
 function makeFlow(): Flow {
+  const order: string[] = [];
   const flow = {
-    order: [] as string[],
-    storage: fakeStorage(),
+    order,
+    storage: fakeStorage(order),
     signInArgs: [] as Flow["signInArgs"],
     nonceCalls: [] as Flow["nonceCalls"],
     activation: [] as Flow["activation"],
@@ -98,6 +109,8 @@ function makeFlow(): Flow {
     verify: [] as Flow["verify"],
   } as Flow;
   flow.openkey = {
+    current: async () => null,
+    signOut: async () => { flow.order.push("signOut"); },
     signIn: async (args: { capabilities: unknown; siweNonce?: string }) => {
       flow.order.push("signIn");
       flow.signInArgs.push(args);
@@ -139,25 +152,56 @@ const config = {
   env: { VITE_OPENKEY_NATIVE_CLIENT_ID: "exo-native" },
 };
 
+afterEach(() => setNativeSessionActive(false));
+
 describe("native sign-in gate", () => {
   test("runs only on ios/android with the build flag", () => {
     for (const platform of ["ios", "android"] as const) {
-      expect(useNativeOpenKey(platform, { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+      expect(isNativeOpenKeySignIn(platform, { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
     }
     // Web and desktop keep the iframe widget even when the flag is set.
     for (const platform of ["web", "tauri"] as const) {
-      expect(useNativeOpenKey(platform, { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
+      expect(isNativeOpenKeySignIn(platform, { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(false);
     }
     // The flag alone gates too, whatever the platform.
     for (const platform of ["ios", "android"] as const) {
-      expect(useNativeOpenKey(platform, {})).toBe(false);
-      expect(useNativeOpenKey(platform, { VITE_EXO_NATIVE_OPENKEY: "false" })).toBe(false);
+      expect(isNativeOpenKeySignIn(platform, {})).toBe(false);
+      expect(isNativeOpenKeySignIn(platform, { VITE_EXO_NATIVE_OPENKEY: "false" })).toBe(false);
     }
     expect(nativeOpenKeyEnabled({ VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
   });
 
   test("test env is web, so secrets stay available by default", () => {
     expect(secretsAvailable()).toBe(true);
+  });
+
+  test("a restored widget session keeps vault access even with native sign-in enabled", () => {
+    expect(isNativeOpenKeySignIn("android", { VITE_EXO_NATIVE_OPENKEY: "true" })).toBe(true);
+    expect(isNativeOpenKeySession()).toBe(false);
+    expect(secretsAvailable()).toBe(true);
+    setNativeSessionActive(true);
+    expect(isNativeOpenKeySession()).toBe(true);
+    expect(secretsAvailable()).toBe(false);
+  });
+
+  test("the native session marker stores only the kind, never a JWK", () => {
+    const prior = (globalThis as { localStorage?: unknown }).localStorage;
+    const values = new Map<string, string>();
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+    try {
+      setNativeSessionActive(true);
+      expect(nativeSessionWasActive()).toBe(true);
+      expect([...values.values()]).toEqual(["native"]);
+      setNativeSessionActive(false);
+      expect(nativeSessionWasActive()).toBe(false);
+    } finally {
+      if (prior === undefined) delete (globalThis as { localStorage?: unknown }).localStorage;
+      else (globalThis as { localStorage?: unknown }).localStorage = prior;
+    }
   });
 });
 
@@ -196,7 +240,7 @@ describe("signInNative", () => {
     const flow = makeFlow();
     const result = await signInNative(config, flow.deps);
 
-    expect(flow.order).toEqual(["nonce", "signIn", "activate", "restore", "verify"]);
+    expect(flow.order).toEqual(["nonce", "signIn", "save", "activate", "restore", "verify"]);
     // Address-less: the signer is unknown until OpenKey signs the delegation.
     expect(flow.nonceCalls).toEqual([undefined]);
     expect(flow.signInArgs[0].siweNonce).toBe("backend-nonce-1");
@@ -294,6 +338,59 @@ describe("signInNative", () => {
     await expect(signInNative(config, flow.deps)).rejects.toThrow();
     expect(flow.activation).toEqual([]);
   });
+
+  test("save, activate, restore and verify failures all revoke the new grant", async () => {
+    for (const failed of ["save", "activate", "restore", "verify"]) {
+      const flow = makeFlow();
+      if (failed === "save") flow.storage.save = async () => { throw new Error("secure store failed"); };
+      if (failed === "activate") flow.deps.activateSession = async () => { throw new Error("activation failed"); };
+      if (failed === "restore") flow.deps.restoreSession = async () => { throw new Error("restore failed"); };
+      if (failed === "verify") flow.deps.verifySession = async () => { throw new Error("SIWE verification failed: Nonce is invalid, expired, or already used"); };
+      await expect(signInNative(config, flow.deps)).rejects.toThrow(
+        failed === "verify" ? NATIVE_SIGN_IN_NONCE_MESSAGE : /sign-in failed/i,
+      );
+      expect(flow.order.at(-1)).toBe("signOut");
+      expect(flow.order.filter((step) => step === "signOut")).toHaveLength(1);
+    }
+  });
+
+  test("revokes an existing SDK session before requesting a new nonce", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
+    await signInNative(config, flow.deps);
+    expect(flow.order.slice(0, 2)).toEqual(["signOut", "nonce"]);
+  });
+
+  test("a failed cleanup revoke leaves the handoff error visible", async () => {
+    const flow = makeFlow();
+    flow.deps.verifySession = async () => { throw new Error("SIWE verification failed: invalid_nonce"); };
+    flow.openkey.signOut = async () => { throw new OpenKeyNativeError("NETWORK", "offline"); };
+    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_NONCE_MESSAGE);
+  });
+});
+
+describe("native boot", () => {
+  test("constructs the client and revokes a surviving session before widget restore", async () => {
+    const flow = makeFlow();
+    let constructed = 0;
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
+    const hadSession = await retireNativeSessionAtBoot(config, {
+      createOpenKeyNative: () => { constructed++; return flow.openkey; },
+    });
+    expect(hadSession).toBe(true);
+    expect(constructed).toBe(1);
+    expect(flow.order).toEqual(["signOut"]);
+  });
+
+  test("constructs the client even without a current session so pending revokes retry", async () => {
+    const flow = makeFlow();
+    let constructed = 0;
+    expect(await retireNativeSessionAtBoot(config, {
+      createOpenKeyNative: () => { constructed++; return flow.openkey; },
+    })).toBe(false);
+    expect(constructed).toBe(1);
+    expect(flow.order).toEqual([]);
+  });
 });
 
 describe("error message mapping", () => {
@@ -304,8 +401,30 @@ describe("error message mapping", () => {
     expect(nativeSignInErrorMessage(new OpenKeyNativeError("ACCESS_DENIED", "x"))).toBe(
       NATIVE_SIGN_IN_DENIED_MESSAGE,
     );
+    expect(nativeSignInErrorMessage(new Error("SIWE verification failed: Nonce is invalid, expired, or already used"))).toBe(NATIVE_SIGN_IN_NONCE_MESSAGE);
+    expect(nativeSignInErrorMessage(new OpenKeyNativeError("SPACE_UNAVAILABLE", "x"))).toBe(NATIVE_SIGN_IN_SPACE_MESSAGE);
+    expect(nativeSignInErrorMessage(new OpenKeyNativeError("NETWORK", "x"))).toBe(NATIVE_SIGN_IN_NETWORK_MESSAGE);
+    expect(nativeSignInErrorMessage(new OpenKeyNativeError("SERVER", "x"))).toBe(NATIVE_SIGN_IN_SERVER_MESSAGE);
     expect(nativeSignInErrorMessage(new Error("boom"))).toMatch(/failed/i);
     expect(nativeSignInErrorMessage("boom")).toMatch(/failed/i);
+  });
+
+  test("logs only an SDK code, and a plain error message", () => {
+    const prior = console.warn;
+    const lines: string[] = [];
+    console.warn = (line: string) => { lines.push(line); };
+    try {
+      const sdkError = new OpenKeyNativeError("SERVER", "secret detail");
+      sdkError.rotatedRefreshToken = "secret refresh token";
+      logNativeOpenKeyError("sign-in", sdkError);
+      logNativeOpenKeyError("verify", new Error("verification failed"));
+    } finally {
+      console.warn = prior;
+    }
+    expect(lines).toEqual([
+      "[OpenKey native] sign-in: SERVER",
+      "[OpenKey native] verify: verification failed",
+    ]);
   });
 });
 
@@ -335,7 +454,7 @@ describe("platform routing (source)", () => {
 
   test("signIn takes the native branch before the widget path", () => {
     const signIn = app.slice(app.indexOf("const signIn = useCallback"), app.indexOf("const signOut = useCallback"));
-    expect(signIn).toContain("if (useNativeOpenKey())");
+    expect(signIn).toContain("if (isNativeOpenKeySignIn())");
     expect(signIn).toContain("signInNative(");
     // Native first, the embedded-widget path second — web/desktop never reach it.
     expect(signIn.indexOf("signInNative(")).toBeLessThan(signIn.indexOf("connectWallet("));
@@ -344,6 +463,12 @@ describe("platform routing (source)", () => {
   test("signOut calls OpenKeyNative.signOut on the native path", () => {
     const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
     expect(signOut).toContain("signOutNative()");
-    expect(signOut.indexOf("useNativeOpenKey()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
+    expect(signOut.indexOf("isNativeOpenKeySession()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
+  });
+
+  test("boot retires native grants before trying the legacy widget restore", () => {
+    const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
+    expect(boot.indexOf("retireNativeSessionAtBoot(")).toBeLessThan(boot.indexOf("restorePersistedSession("));
+    expect(boot).toContain("if (wasNative)");
   });
 });

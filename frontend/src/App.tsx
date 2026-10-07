@@ -118,7 +118,11 @@ import type {
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
-import { secretsAvailable, signInNative, signOutNative, useNativeOpenKey } from "./lib/openkeyNative";
+import {
+  isNativeOpenKeySession, isNativeOpenKeySignIn, logNativeOpenKeyError,
+  nativeSessionWasActive, retireNativeSessionAtBoot, secretsAvailable,
+  setNativeSessionActive, signInNative, signOutNative, NATIVE_SIGN_OUT_WARNING,
+} from "./lib/openkeyNative";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
@@ -287,6 +291,32 @@ export function App() {
     setError(null);
     setState("booting");
     try {
+      if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
+        const wasNative = nativeSessionWasActive();
+        try {
+          // Creating the SDK client retries any pending revocation. E1 retires
+          // surviving native sessions at boot; E2 will restore and renew them.
+          await retireNativeSessionAtBoot({
+            tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+          });
+        } catch (caught) {
+          logNativeOpenKeyError("boot revoke", caught);
+          if (wasNative) {
+            sessionStoreRef.current.clear();
+            setError(NATIVE_SIGN_OUT_WARNING);
+            setState("recoverableError");
+            return;
+          }
+        }
+        if (wasNative) {
+          const storedAddress = sessionStoreRef.current.getAddress();
+          if (storedAddress) clearPersistedSession(storedAddress);
+          sessionStoreRef.current.clear();
+          setNativeSessionActive(false);
+          setState("unauthenticated");
+          return;
+        }
+      }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         isOffline: browserIsOffline,
         loadManifest: async () => {
@@ -547,7 +577,7 @@ export function App() {
     resetNavigationMemory();
     try {
       setState("connecting");
-      if (useNativeOpenKey()) {
+      if (isNativeOpenKeySignIn()) {
         // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
         // keeps the session key in the device secure store; nothing wallet-shaped
         // signs in the WebView. Throws a user-facing message on cancel/deny.
@@ -562,6 +592,7 @@ export function App() {
           native.verified.expiresIn,
           native.verified.address,
         );
+        setNativeSessionActive(true);
         const nativeTcw = native.tcw as TinyCloudWeb;
         setTcw(nativeTcw);
         setDid(nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`);
@@ -632,19 +663,22 @@ export function App() {
     resetNavigationMemory();
     try {
       let openKeyWarning: string | null = null;
-      if (useNativeOpenKey()) {
+      const nativeSession = isNativeOpenKeySession();
+      if (nativeSession) {
         // Native sign-out revokes the OpenKey delegation grant and clears the
         // secure-store session; the local cleanup below is unchanged.
         try {
           await signOutNative();
-        } catch {
-          // The SDK clears local state and queues transient revoke failures for
-          // another attempt when it next starts. Do not log the raw error: it
-          // can carry a refresh token if the pending-revoke write itself failed.
-          console.warn("[App] native OpenKey sign-out could not confirm revocation");
-          openKeyWarning =
-            "Exo signed out locally, but OpenKey could not confirm revocation. " +
-            "The app will retry when it opens again; you can also check your grants at openkey.so.";
+        } catch (caught) {
+          logNativeOpenKeyError("sign-out revoke", caught);
+          if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
+            // Keep the SDK record and key available for revocation once the
+            // native client is configured again.
+            setError(caught.message);
+            setState("ready");
+            return;
+          }
+          openKeyWarning = NATIVE_SIGN_OUT_WARNING;
         }
       } else {
         const openKeyOutcome = await signOutOpenKeySession(
@@ -667,17 +701,18 @@ export function App() {
         }
       }
 
-      if (tcw) {
+      if (tcw && !nativeSession) {
         try {
           await tcw.signOut?.();
         } catch (caught) {
-          console.warn("[App] TinyCloud sign-out cleanup failed", caught);
+          logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
       }
       // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
       // directly as well so a client cleanup failure cannot restore this user.
       if (address) clearPersistedSession(address);
       sessionStoreRef.current.clear();
+      if (nativeSession) setNativeSessionActive(false);
       // Drop the in-memory history prefetch cache and stop its queue — it holds
       // the signed-out account's message docs.
       historyPrefetch.clear();

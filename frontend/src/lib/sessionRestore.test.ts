@@ -271,9 +271,11 @@ describe("App wiring (TC-514)", () => {
   });
 
   test("the restore path no longer clears the session on its own", () => {
-    // Whether to clear is lib/sessionRestore's verdict, not a blanket catch.
-    expect(restoreRegion).not.toContain(".clear()");
-    expect(restoreRegion).not.toMatch(/catch \(caught\) \{\s+sessionStore\.clear\(\)/);
+    // The browser/widget restore still delegates its verdict to
+    // lib/sessionRestore. Native E1 boot cleanup is a separate earlier path.
+    const browserRestore = restoreRegion.slice(restoreRegion.indexOf("const restored = await restorePersistedSession"));
+    expect(browserRestore).not.toContain(".clear()");
+    expect(browserRestore).not.toMatch(/catch \(caught\) \{\s+sessionStore\.clear\(\)/);
   });
 
   test("a held session lands in `offline`, a verdict in the old states", () => {

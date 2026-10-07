@@ -16,7 +16,7 @@ export interface VerifyResponse {
  * recovered signer at /verify). Bound and unbound nonces are both single-use.
  */
 export async function requestNonce(backendUrl: string, address?: string): Promise<string> {
-  const query = address ? `?address=${encodeURIComponent(address)}` : "";
+  const query = address !== undefined ? `?address=${encodeURIComponent(address)}` : "";
   const res = await fetch(`${backendUrl}/api/auth/nonce${query}`);
 
   if (!res.ok) {
