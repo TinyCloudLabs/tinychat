@@ -11,6 +11,7 @@ import os
 class ExoBridgeViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(VoiceNotesPlugin())
+        bridge?.registerPluginInstance(OnDeviceSttPlugin())
         #if EXO_HEALTH
         // Health spike (TC-525): Debug builds only (see HealthPlugin.swift).
         bridge?.registerPluginInstance(HealthPlugin())

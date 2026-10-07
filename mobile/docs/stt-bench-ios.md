@@ -1,0 +1,22 @@
+# iOS on-device STT spike (TC-786)
+
+`ExoStt` pins [sherpa-onnx 1.13.8](https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8). The app bundles the runtime and downloads no model as part of this spike. `OnDeviceStt.status()` reports `engine: "none"` until the model manager and transcription queue land in T13/T23. `EXO_STT_BENCH` enables the separate benchmark method; ordinary builds do not expose it.
+
+## Reproduce the fixtures
+
+Run `bash mobile/scripts/stt-fixtures/fetch.sh` from any working directory. The script writes to `~/.cache/exo-stt-fixtures/`, verifies sizes and SHA-256 hashes against `mobile/stt-fixtures.lock`, and fails if any file differs. Maintainers use `fetch.sh --pin` only when intentionally updating the committed lock. The lock covers the fixture WAV, RTTM, reference text/JSON and every model file in the full, small, VAD and diarization packs. `fetch.sh --fixtures-only` prepares audio and annotations while verifying those entries against an existing lock.
+
+Sources are [LibriSpeech test-clean](https://www.openslr.org/12) (first 60 sorted utterances of speaker 1089; speaker 121 also feeds the two-person fixture) and [AMI ES2004a](https://groups.inf.ed.ac.uk/ami/corpus/) with [pyannote's word-only RTTM](https://github.com/pyannote/AMI-diarization-setup/tree/main/only_words/rttms/test). All audio and annotations are CC BY 4.0; the generated fixtures and model weights stay outside git. The synthetic alternation uses seed 781, complete 2–6 second utterances, and 0.3–0.8 second overlaps. Its reference text belongs to each original turn. The LibriSpeech filename has the plan's `10m` label; the specified first 60 utterances determine its actual duration.
+
+AMI audio is cropped from 300 to 900 seconds. RTTM turns crossing an edge are clipped, and words crossing an edge are omitted. Both references are shifted by 300 seconds so their timestamps refer to the first sample of the cropped WAV. `score.py` refuses any reference or hypothesis time outside `[0, 600]`.
+
+## Run the benchmark
+
+1. Check that no other `devicectl device install` is running. Build the app for Vonnegut with `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) EXO_STT_BENCH'` and install over the existing app. The iOS 27 simulator's Capacitor bridge is known to hang, so use an iOS 26 or iOS 18 simulator for simulator work.
+2. Copy `~/.cache/exo-stt-fixtures/` to `Documents/stt-bench` in the app data container with `xcrun devicectl device copy to --device 00008140-0006645414D2801C --domain-type appDataContainer --domain-identifier xyz.tinycloud.exo.dev --source "$HOME/.cache/exo-stt-fixtures" --destination Documents/stt-bench`.
+3. From the bridge, call `OnDeviceStt.benchmark({dir: "Documents/stt-bench", threads: [2, 4]})`. Alternatively, launch the benchmark build with `DEVICECTL_CHILD_EXO_STT_BENCH=1 xcrun devicectl device process launch --device 00008140-0006645414D2801C xyz.tinycloud.exo.dev`; the synchronous bootstrap schedules the same run at utility QoS and logs `EXO_STT_BENCH` with its summary or failure. The 4-thread files use the fixture basename; 2-thread files have a `-t2` suffix. Results are in `Documents/stt-bench/results/ios/` and include `.hyp.txt`, `.words.json`, `.rttm`, and `.metrics.json` for every input.
+4. Pull the results using `devicectl device copy from`. Run `python3 mobile/scripts/stt-fixtures/wer.py <reference.txt> <hyp.txt>` and `python3 mobile/scripts/stt-fixtures/score.py --rttm <reference.rttm> --hyp <hyp.rttm> --words <reference.words.json> --hyp-words <hyp.words.json>`.
+
+The benchmark uses 25-second ASR chunks and 60-second diarization windows, with model load and decode times measured separately. It measures the process's `phys_footprint` after ASR and diarization. The benchmark writes the raw outputs even if a stop/go threshold fails, so the failure can be inspected. Stop/go limits on Vonnegut are: stripped binary growth ≤ 40 MB, IPA growth ≤ 25 MB, model load ≤ 8 seconds, four-thread RTF ≤ 0.25, peak footprint ≤ 1.6 GB, LibriSpeech WER ≤ 4%, AMI DER ≤ 30%, diarization extra footprint ≤ 400 MB, and each 60-second diarization window ≤ 5 seconds. A missed threshold stops TC-786 pending a product choice.
+
+The pinned Parakeet weights come from [sherpa-onnx's Hugging Face export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8); the small pack, Silero VAD and diarization models come from [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases). The model weights are separate from the binary size budget.
