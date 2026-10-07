@@ -705,8 +705,10 @@ The session JWK never touches WebView localStorage. Details:
 - The delegation covers the manifest's applications-space KV/SQL entries plus
   capabilities/read — no secrets or vault. Everything that unlocks or stores
   credentials (connect, Sync now, disconnect key-delete, own AssemblyAI key,
-  the background drains) is gated behind `secretsAvailable()` and shows "set
-  up from Exo on the web or desktop" copy. Voice notes are unaffected.
+  the background drains) is gated behind `secretsAvailable()` for native
+  delegation sessions and shows "set up from Exo on the web or desktop" copy.
+  A session established earlier with the embedded widget keeps its vault access
+  and widget sign-out path even after the flag turns on. Voice notes are unaffected.
 - Android: the plugin's redirect activity matches `${openkeyRedirectScheme}` /
   `${openkeyRedirectHost}` / `/callback`, set to `xyz.tinycloud.exo` / `openkey`
   in `app/build.gradle`. It does not touch the `oauth` / `/google` filter on
@@ -717,7 +719,11 @@ The session JWK never touches WebView localStorage. Details:
   registered client are not deployed). The local gate L1 runs it against a
   local OpenKey over a tunnel; `scripts/android-dev/signin-openkey-native.sh`
   is the emulator harness (Custom Tab + mailinator email OTP).
+- E1 retires any surviving native session at app boot and before a fresh native
+  sign-in. The SDK instance is created at boot so queued revocations retry;
+  persistent native restore and renewal belong to E2. A failed handoff after
+  consent also revokes the new grant before showing an error.
 - `@openkey/sdk-capacitor` is installed from the vendored tarball
-  `vendor/openkey-sdk-capacitor-087d175.tgz` (gitignored; TC-774 S2 is
+  `vendor/openkey-sdk-capacitor-cc22884.tgz` (gitignored; TC-774 S2 is
   unpublished). When it publishes, replace the `file:` specs in
   `frontend/package.json` and `mobile/package.json` with `"0.1.0"`.

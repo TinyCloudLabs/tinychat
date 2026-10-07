@@ -11,7 +11,7 @@
 // secrets-dependent flow is gated behind `secretsAvailable()` below.
 //
 // TODO(E1 → prod): `@openkey/sdk-capacitor` is vendored from the TC-774 S2
-// branch at 087d175 as a file: tarball (frontend/package.json, vendor/). When the SDK
+// branch at cc22884 as a file: tarball (frontend/package.json, vendor/). When the SDK
 // publishes, replace the file: specs in frontend/package.json and
 // mobile/package.json with `"0.1.0"` and delete vendor/.
 
@@ -38,7 +38,7 @@ export function nativeOpenKeyEnabled(
  * the build flag. Web and the Tauri desktop app always keep the embedded
  * iframe widget.
  */
-export function useNativeOpenKey(
+export function isNativeOpenKeySignIn(
   platform: AppPlatform = appPlatform(),
   env: { VITE_EXO_NATIVE_OPENKEY?: string } = import.meta.env,
 ): boolean {
@@ -50,8 +50,34 @@ export function useNativeOpenKey(
  * no secrets capability, so every flow that unlocks or stores credentials is
  * gated on this inside the app.
  */
+const NATIVE_SESSION_KIND_KEY = "xyz.tinycloud.tinychat:auth-kind";
+let nativeSessionActive = false;
+
+/** A native JWT is marked separately from a legacy widget session. No key material is stored here. */
+export function nativeSessionWasActive(): boolean {
+  try {
+    return localStorage.getItem(NATIVE_SESSION_KIND_KEY) === "native";
+  } catch {
+    return false;
+  }
+}
+
+export function setNativeSessionActive(active: boolean): void {
+  nativeSessionActive = active;
+  try {
+    if (active) localStorage.setItem(NATIVE_SESSION_KIND_KEY, "native");
+    else localStorage.removeItem(NATIVE_SESSION_KIND_KEY);
+  } catch {
+    // The SDK secure store is still authoritative if web storage is unavailable.
+  }
+}
+
+export function isNativeOpenKeySession(): boolean {
+  return nativeSessionActive || nativeSessionWasActive();
+}
+
 export function secretsAvailable(): boolean {
-  return secretsAvailableOverride ?? !useNativeOpenKey();
+  return secretsAvailableOverride ?? !isNativeOpenKeySession();
 }
 
 let secretsAvailableOverride: boolean | null = null;
@@ -129,19 +155,50 @@ export function createNativeReadOnlyProvider(
 export const NATIVE_SIGN_IN_CANCELLED_MESSAGE = "Sign-in was cancelled.";
 export const NATIVE_SIGN_IN_DENIED_MESSAGE =
   "OpenKey denied the sign-in. Nothing was signed in.";
+export const NATIVE_SIGN_IN_NONCE_MESSAGE =
+  "Sign-in took too long. Please try again.";
+export const NATIVE_SIGN_IN_SPACE_MESSAGE =
+  "Your TinyCloud space is unavailable right now. Please try again later.";
+export const NATIVE_SIGN_IN_NETWORK_MESSAGE =
+  "Can't reach OpenKey right now. Check your connection and try again.";
+export const NATIVE_SIGN_IN_SERVER_MESSAGE =
+  "OpenKey couldn't complete sign-in. The app or server may need configuration; please try again later.";
 export const NATIVE_SIGN_IN_FAILED_MESSAGE =
-  "Native sign-in failed. Check your connection and try again.";
+  "Native sign-in failed. Please try again.";
+
+function sdkErrorCode(error: unknown): string | null {
+  return error instanceof Error && error.name === "OpenKeyNativeError" &&
+    "code" in error && typeof error.code === "string" ? error.code : null;
+}
+
+/** SDK errors may carry a refresh token, so only their code is safe to log. */
+export function logNativeOpenKeyError(operation: string, error: unknown): void {
+  const code = sdkErrorCode(error);
+  if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
+  else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.message : "unknown error"}`);
+}
 
 /** Map an OpenKey native failure to a user-facing message. */
 export function nativeSignInErrorMessage(error: unknown): string {
-  const code =
-    error && typeof error === "object" && "code" in error
-      ? String((error as { code: unknown }).code)
-      : undefined;
+  const code = sdkErrorCode(error);
   if (code === "USER_CANCELLED") return NATIVE_SIGN_IN_CANCELLED_MESSAGE;
   if (code === "ACCESS_DENIED") return NATIVE_SIGN_IN_DENIED_MESSAGE;
+  if (error instanceof Error && /invalid_nonce|nonce.{0,45}(invalid|expired|already used)/i.test(error.message)) {
+    return NATIVE_SIGN_IN_NONCE_MESSAGE;
+  }
+  if (code === "SPACE_UNAVAILABLE") return NATIVE_SIGN_IN_SPACE_MESSAGE;
+  if (code === "NETWORK" || code === "TEMPORARILY_UNAVAILABLE" ||
+    (error instanceof Error && /failed to fetch|network|fetch failed|load failed/i.test(error.message))) {
+    return NATIVE_SIGN_IN_NETWORK_MESSAGE;
+  }
+  if (code === "SERVER" || code === "STATE_MISMATCH" || code === "INVALID_GRANT" || code === "UNAVAILABLE") {
+    return NATIVE_SIGN_IN_SERVER_MESSAGE;
+  }
   return NATIVE_SIGN_IN_FAILED_MESSAGE;
 }
+
+export const NATIVE_SIGN_OUT_WARNING =
+  "Exo signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
 
 // ── Sign-in ───────────────────────────────────────────────────────────
 
@@ -193,6 +250,32 @@ export interface NativeSignInDeps {
 
 const DEFAULT_REDIRECT_URI = "xyz.tinycloud.exo://openkey/callback";
 const DEFAULT_ISSUER = "https://api.openkey.so/api/auth";
+let defaultOpenKeyNative: OpenKeyNative | null = null;
+
+function nativeClientOptions(
+  env: NativeSignInConfig["env"] | undefined,
+  tinycloudHost: string,
+): Parameters<NativeSignInDeps["createOpenKeyNative"]>[0] {
+  const clientId = env?.VITE_OPENKEY_NATIVE_CLIENT_ID;
+  if (!clientId) {
+    throw new Error("Native sign-in is not configured in this build (VITE_OPENKEY_NATIVE_CLIENT_ID is unset).");
+  }
+  return {
+    clientId,
+    redirectUri: env?.VITE_OPENKEY_NATIVE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
+    issuer: env?.VITE_OPENKEY_ISSUER ?? DEFAULT_ISSUER,
+    tinycloudHost,
+  };
+}
+
+function nativeClient(
+  options: Parameters<NativeSignInDeps["createOpenKeyNative"]>[0],
+  create: NativeSignInDeps["createOpenKeyNative"],
+  injected: boolean,
+): OpenKeyNative {
+  if (injected) return create(options);
+  return defaultOpenKeyNative ??= create(options);
+}
 
 async function defaultDeps(): Promise<NativeSignInDeps> {
   const [{ OpenKeyNative }, { activateSessionWithHost }, client] = await Promise.all([
@@ -227,21 +310,15 @@ export async function signInNative(
   deps?: NativeSignInDeps,
 ): Promise<NativeSignInResult> {
   const env = config.env ?? import.meta.env;
-  const clientId = env.VITE_OPENKEY_NATIVE_CLIENT_ID;
-  if (!clientId) {
-    throw new Error(
-      "Native sign-in is not configured in this build (VITE_OPENKEY_NATIVE_CLIENT_ID is unset).",
-    );
-  }
-  const d = deps ?? (await defaultDeps());
-  const openkey = d.createOpenKeyNative({
-    clientId,
-    redirectUri: env.VITE_OPENKEY_NATIVE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
-    issuer: env.VITE_OPENKEY_ISSUER ?? DEFAULT_ISSUER,
-    tinycloudHost: config.tinycloudHost,
-  });
-
   try {
+    const d = deps ?? (await defaultDeps());
+    const openkey = nativeClient(
+      nativeClientOptions(env, config.tinycloudHost), d.createOpenKeyNative, !!deps,
+    );
+    // A stale secure-store session must be revoked before a new grant can
+    // replace it. The SDK queues transient revoke failures for a later retry.
+    if (await openkey.current()) await openkey.signOut();
+
     // The delegation's signer is unknown until OpenKey signs, so the backend
     // nonce is unbound; /verify binds it to the recovered address.
     const [siweNonce, manifest] = await Promise.all([
@@ -253,13 +330,38 @@ export async function signInNative(
       capabilities: nativePermissions(manifest),
       siweNonce,
     });
-    return await handoffNativeSession(openkey, session, config, d);
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) {
+    try {
+      return await handoffNativeSession(openkey, session, config, d);
+    } catch (error) {
+      try {
+        await openkey.signOut();
+      } catch (revokeError) {
+        logNativeOpenKeyError("cleanup revoke", revokeError);
+      }
       throw error;
     }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) {
+      logNativeOpenKeyError("sign-in", error);
+      throw error;
+    }
+    logNativeOpenKeyError("sign-in", error);
     throw new Error(nativeSignInErrorMessage(error), { cause: error });
   }
+}
+
+/** Construct the SDK at app boot so it retries pending revokes, then retire an E1 session. */
+export async function retireNativeSessionAtBoot(
+  config: Pick<NativeSignInConfig, "tinycloudHost" | "env">,
+  deps?: Pick<NativeSignInDeps, "createOpenKeyNative">,
+): Promise<boolean> {
+  const env = config.env ?? import.meta.env;
+  const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
+  const openkey = nativeClient(nativeClientOptions(env, config.tinycloudHost), create, !!deps);
+  const current = await openkey.current();
+  if (!current) return false;
+  await openkey.signOut();
+  return true;
 }
 
 /**
@@ -338,14 +440,11 @@ export async function signOutNative(deps?: {
   env?: NativeSignInConfig["env"] & { VITE_TINYCLOUD_HOST?: string };
 }): Promise<void> {
   const env = deps?.env ?? import.meta.env;
-  const clientId = env.VITE_OPENKEY_NATIVE_CLIENT_ID;
-  if (!clientId) return;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
-  const openkey = create({
-    clientId,
-    redirectUri: env.VITE_OPENKEY_NATIVE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
-    issuer: env.VITE_OPENKEY_ISSUER ?? DEFAULT_ISSUER,
-    tinycloudHost: env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz",
-  });
+  const openkey = nativeClient(
+    nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
+    create,
+    !!deps?.createOpenKeyNative,
+  );
   await openkey.signOut();
 }

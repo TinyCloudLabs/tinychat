@@ -61,7 +61,7 @@
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
         "@openkey/sdk": "^0.11.0",
-        "@openkey/sdk-capacitor": "file:../vendor/openkey-sdk-capacitor-087d175.tgz",
+        "@openkey/sdk-capacitor": "file:../vendor/openkey-sdk-capacitor-cc22884.tgz",
         "@peculiar/x509": "^2.0.0",
         "@radix-ui/react-alert-dialog": "^1.1.4",
         "@radix-ui/react-dialog": "^1.1.4",
@@ -112,7 +112,7 @@
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
         "@capacitor/ios": "^8.5.2",
-        "@openkey/sdk-capacitor": "file:../vendor/openkey-sdk-capacitor-087d175.tgz",
+        "@openkey/sdk-capacitor": "file:../vendor/openkey-sdk-capacitor-cc22884.tgz",
       },
       "devDependencies": {
         "@capacitor/cli": "^8.5.2",
@@ -584,7 +584,7 @@
 
     "@openkey/sdk": ["@openkey/sdk@0.11.0", "", { "dependencies": { "@openkey/core": "^0.8.8" } }, "sha512-TsIvnia+rbCDQt1sb6i6mNhDeF6NQHUQVmWVd4JvDFUQlBoDYnY2RwhdMvHi50yVu2Z7ENAGtw/6BoAQynaeGA=="],
 
-    "@openkey/sdk-capacitor": ["@openkey/sdk-capacitor@../vendor/openkey-sdk-capacitor-087d175.tgz", { "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" } }, "sha512-GY7QetVvJJ/WIZzeUL/UFOWVIGelAIwchpQ43jRA4gXwJiwpPDoIzxkIv1ahSz2sz+AAtTzyFTSmkEC5VCCnrg=="],
+    "@openkey/sdk-capacitor": ["@openkey/sdk-capacitor@../vendor/openkey-sdk-capacitor-cc22884.tgz", { "peerDependencies": { "@capacitor/core": "^8.0.0", "@tinycloud/web-sdk": "^2.11.0" } }, "sha512-+3zH0E/NTKn6PO75hrSDSvL2686Zjo1JycdJjl1u3R7JWPqq9fw1kZRHOnUBL++L5xvSqqflyLw455Zw4X8aMw=="],
 
     "@peculiar/asn1-cms": ["@peculiar/asn1-cms@2.7.0", "", { "dependencies": { "@peculiar/asn1-schema": "^2.7.0", "@peculiar/asn1-x509": "^2.7.0", "@peculiar/asn1-x509-attr": "^2.7.0", "asn1js": "^3.0.6", "tslib": "^2.8.1" } }, "sha512-hew63shtzzvBcSHbhm+cyAmKe6AIfinT9hzEqSPjDC6opTTMKmTkQ0gHuN2KsWlvqiKw1S/fS94fhag/FJkioQ=="],
 
