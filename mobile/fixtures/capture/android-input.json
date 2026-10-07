@@ -1,4 +1,5 @@
 {
+  "role": "expected-journal-events",
   "platform": "android",
   "rate": 44100,
   "bitrate": 64000,
@@ -16,6 +17,10 @@
       "value": "available",
       "reason": null,
       "gen": 1
+    },
+    {
+      "at": 0,
+      "e": "input"
     },
     {
       "at": 0,

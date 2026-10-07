@@ -180,6 +180,17 @@ describe("VoiceNotes v2 fake public contract", () => {
     expect((await plugin.listPending()).recordings.find((note) => note.id === "legacy-2")?.ledger).toBeUndefined();
   });
 
+  test("an already-owned v2 note still rejects legacy space-row evidence without changing its ledger", async () => {
+    const { plugin } = createFakeVoiceNotes();
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    const { id } = await plugin.start();
+    await plugin.stop();
+    const before = (await plugin.listPending()).recordings[0];
+    await expect(plugin.claim({ id, did: "did:A", evidence: "space_row", rowId: "someone-elses-row" }))
+      .rejects.toEqual(code("claim_evidence_invalid"));
+    expect((await plugin.listPending()).recordings[0]).toEqual(before);
+  });
+
   test("ledger CAS, owner check, tombstone refusal and durable cleanup outbox", async () => {
     const { plugin, controls } = createFakeVoiceNotes();
     await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
@@ -233,6 +244,33 @@ describe("VoiceNotes v2 fake public contract", () => {
     controls.failNextPause();
     await expect(plugin.pause()).rejects.toEqual(code("pause_failed"));
     expect(await plugin.status()).toMatchObject({ intent: "recording", state: "recording", availability: "available" });
+  });
+
+  test("Pause drains pre-stop OS audio; stop failure keeps recording and release failure remains paused", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    await plugin.start();
+    controls.tick(1000);
+    controls.queueCapturedBuffer(180);
+    controls.failNextPause();
+    await expect(plugin.pause()).rejects.toEqual(code("pause_failed"));
+    expect(await plugin.status()).toMatchObject({ state: "recording", audioMs: 1000 });
+    controls.failNextRelease();
+    await expect(plugin.pause()).resolves.toBeUndefined();
+    expect(await plugin.status()).toMatchObject({ state: "paused", intent: "paused", audioMs: 1180 });
+    expect(controls.releaseFailureCount()).toBe(1);
+    expect((await plugin.stop()).durationMs).toBe(1180);
+  });
+
+  test("Pause during an interruption closes its omitted span at the pause instant", async () => {
+    let clock = 0;
+    const { plugin, controls } = createFakeVoiceNotes(() => clock);
+    await plugin.start();
+    controls.interruptionBegins();
+    clock = 1000;
+    await plugin.pause();
+    expect(await plugin.status()).toMatchObject({
+      state: "paused", openSpan: null, spans: [{ kind: "omitted", endedAt: 1000 }],
+    });
   });
 
   test("silencing remembered during Pause opens a silenced span on Resume", async () => {

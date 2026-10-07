@@ -13,7 +13,7 @@ type Session = {
   intent: Intent; availability: Availability; reason: MicStateReason; gen: number; source: CaptureSource;
   owner: string | null; transitionGen: number; options: CaptureOptions; spans: MissingAudioSpan[];
   openSpan: MissingAudioSpan | null; maxDurationMs: number; backoffAttempt: number; nextRetryMs: number | null;
-  osSilenced: boolean;
+  osSilenced: boolean; pendingCapturedMs: number;
 };
 
 function failure(code: string): Error & { code: string } {
@@ -39,7 +39,11 @@ export interface FakeVoiceNotes {
     backoffExhausted(): void;
     backoffDelayMs(): number | null;
     retryAutomatic(success?: boolean): void;
+    /** Audio captured before input stop, delivered from the OS during Pause drain. */
+    queueCapturedBuffer(ms: number): void;
     failNextPause(): void;
+    failNextRelease(): void;
+    releaseFailureCount(): number;
     failNextResume(): void;
     routeChange(): void;
     mediaReset(): void;
@@ -76,6 +80,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   let outboxCounter = 0;
   let generation = 0;
   let pauseShouldFail = false;
+  let releaseShouldFail = false;
+  let releaseFailures = 0;
   let resumeShouldFail = false;
   let pendingNotification: { id: string; gen: number } | null = null;
   let selectedId: string | null = null;
@@ -120,6 +126,10 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     const span: MissingAudioSpan = { kind, reason, startedAt: now(), endedAt: null, atAudioMs: s.audioMs, audioMs: 0 };
     s.spans.push(span);
     s.openSpan = span;
+  };
+  const drainCapturedBuffers = (s: Session) => {
+    s.audioMs += s.pendingCapturedMs;
+    s.pendingCapturedMs = 0;
   };
   const applyRestartResult = (s: Session, success: boolean) => {
     if (success) {
@@ -168,6 +178,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     if (!s) throw failure("not_recording");
     generation++;
     pendingNotification = null;
+    drainCapturedBuffers(s);
     closeSpan(s);
     if (s.pauseStarted !== null) s.pausedMs += now() - s.pauseStarted;
     s.intent = "stopped";
@@ -195,6 +206,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     const note = checked(id);
     if (note.owner && note.owner !== did) throw failure("owner_mismatch");
     if (evidence === "space_row" && (typeof options.rowId !== "string" || !options.rowId.trim())) throw failure("row_id_required");
+    const legacy = note.version !== 2 || note.ownerUnknown === true || note.legacyImport === true;
+    if (legacy && evidence === "signed_out_v2") throw failure("claim_evidence_required");
+    if (!legacy && evidence !== "signed_out_v2") throw failure("claim_evidence_invalid");
     if (note.owner === did) {
       if (evidence === "space_row" && (note.ledger?.audio.rowId !== options.rowId || note.ledger.audio.state !== "saved")) {
         note.ledger ??= ledger();
@@ -203,9 +217,6 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       }
       return { owner: did };
     }
-    const legacy = note.version !== 2 || note.ownerUnknown === true || note.legacyImport === true;
-    if (legacy && evidence === "signed_out_v2") throw failure("claim_evidence_required");
-    if (!legacy && evidence !== "signed_out_v2") throw failure("claim_evidence_invalid");
     note.owner = did;
     note.ownerUnknown = false;
     note.rev = (note.rev ?? 0) + 1;
@@ -226,7 +237,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       session = { id, startedAt: now(), audioMs: 0, pausedMs: 0, pauseStarted: null, intent: "recording", availability: "available",
         reason: null, gen: ++generation, source: "in_app", owner: defaults.accountDid, transitionGen: defaults.transitionGen,
         options: opts, spans: [], openSpan: null, maxDurationMs: Math.min(10_800_000, Math.max(1000, options?.maxDurationMs ?? 10_800_000)),
-        backoffAttempt: 0, nextRetryMs: null, osSilenced: false };
+        backoffAttempt: 0, nextRetryMs: null, osSilenced: false, pendingCapturedMs: 0 };
       stateChanged();
       return { id, startedAt: session.startedAt, maxDurationMs: session.maxDurationMs };
     },
@@ -274,10 +285,14 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const s = session;
       if (!s) throw failure("not_recording");
       if (s.intent === "paused") return;
+      // A failed input stop leaves the same segment live and every queued buffer intact.
       if (pauseShouldFail) { pauseShouldFail = false; throw failure("pause_failed"); }
+      drainCapturedBuffers(s);
       s.intent = "paused"; s.pauseStarted = now(); s.gen = ++generation;
       s.backoffAttempt = 0; s.nextRetryMs = null;
       closeSpan(s); pendingNotification = null; stateChanged();
+      // The input is already stopped. A failed deactivate/release cannot undo Pause.
+      if (releaseShouldFail) { releaseShouldFail = false; releaseFailures++; }
     },
     async resume() {
       const s = session;
@@ -368,7 +383,10 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     backoffExhausted() { const s = session; if (s?.intent === "recording") { s.availability = "blocked"; s.reason = "resume_blocked"; s.nextRetryMs = null; stateChanged(); } },
     backoffDelayMs: () => session?.nextRetryMs ?? null,
     retryAutomatic(success = true) { const s = session; if (s?.intent === "recording" && s.nextRetryMs !== null) automaticRestart(s, success); },
+    queueCapturedBuffer(ms) { const s = session; if (s?.intent === "recording" && s.availability === "available") s.pendingCapturedMs += Math.max(0, ms); },
     failNextPause() { pauseShouldFail = true; },
+    failNextRelease() { releaseShouldFail = true; },
+    releaseFailureCount: () => releaseFailures,
     failNextResume() { resumeShouldFail = true; },
     routeChange() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "route_change"); restart(s, true); } } },
     mediaReset() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "media_services_reset"); restart(s, true); } } },

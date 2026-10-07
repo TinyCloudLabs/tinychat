@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate/check the normative capture fixtures from wall-clock and AAC-frame inputs."""
+"""Generate/check the normative capture fixtures from expected journal events."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,7 @@ def canonical(value: object) -> str:
 
 
 def fixture_for(script: dict) -> tuple[str, str]:
+    assert script["role"] == "expected-journal-events"
     assert script["id"] == ID and script["startedAt"] == STARTED_AT
     assert script["frameBytes"] == FRAME_BYTES and script["bitrate"] == 64000
     rate = script["rate"]
@@ -48,6 +49,8 @@ def fixture_for(script: dict) -> tuple[str, str]:
                        owner=None, transitionGen=12, options={"transcriber": "on-device", "identifySpeakers": False})
         elif event == "segment":
             row.update(index=step["index"], file=f"seg-{step['index']:05d}.aac")
+        elif event == "input":
+            row.update(id="built-in", name=script["inputName"], kind="built_in")
         elif event == "hb":
             row.update(seg=step["seg"], segBytes=step["frames"] * FRAME_BYTES,
                        intent="recording", availability="available")
@@ -63,6 +66,25 @@ def fixture_for(script: dict) -> tuple[str, str]:
             raise ValueError(event)
         events.append(row)
     assert total_frames == script["totalFrames"]
+    assert [event["e"] for event in events[:4]] == ["session", "avail", "input", "segment"]
+    assert events[2]["name"] == script["inputName"]
+    heartbeat_times: set[tuple[int, int]] = set()
+    for index, event in enumerate(events):
+        if event["e"] != "hb":
+            continue
+        key = (event["seg"], event["t"])
+        assert key not in heartbeat_times, "periodic heartbeat must be suppressed at a close"
+        heartbeat_times.add(key)
+        assert event["intent"] == "recording" and event["availability"] == "available"
+        next_event = events[index + 1] if index + 1 < len(events) else None
+        closing = next_event is not None and next_event["t"] == event["t"] and (
+            next_event["e"] == "span_open" or
+            next_event["e"] == "segment" or
+            (next_event["e"] == "intent" and next_event["value"] in ("paused", "stopped"))
+        )
+        if not closing:
+            since_segment = event["t"] - (STARTED_AT + segment_started_at[event["seg"]])
+            assert since_segment > 0 and since_segment % 2000 == 0, "periodic heartbeat must use segment timer"
     pause = next(i for i, event in enumerate(events) if event["e"] == "intent" and event["value"] == "paused")
     assert events[pause - 1]["e"] == "hb" and events[pause - 1]["t"] == events[pause]["t"]
     assert any(events[i]["e"] == "avail" and events[i]["value"] == "available" and events[i - 1]["e"] == "span_close"
