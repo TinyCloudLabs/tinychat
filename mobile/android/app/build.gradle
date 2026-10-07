@@ -1,4 +1,5 @@
 import groovy.json.JsonSlurper
+import java.security.MessageDigest
 
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
@@ -45,6 +46,7 @@ def signGradleRelease = !unsignedRelease && missingReleaseSigning.isEmpty()
 android {
     namespace = "xyz.tinycloud.exo"
     compileSdk = rootProject.ext.compileSdkVersion
+    buildFeatures { buildConfig true }
     defaultConfig {
         applicationId "xyz.tinycloud.exo"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -136,8 +138,37 @@ repositories {
     }
 }
 
+def sherpaAarName = 'sherpa-onnx-static-link-onnxruntime-1.13.8'
+def sherpaAar = file("libs/${sherpaAarName}.aar")
+def sherpaSha256 = 'b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471'
+def fetchSherpaOnnx = tasks.register('fetchSherpaOnnx') {
+    group = 'build setup'
+    description = 'Fetch and verify the pinned sherpa-onnx Android runtime.'
+    doLast {
+        sherpaAar.parentFile.mkdirs()
+        if (!sherpaAar.isFile()) {
+            def temp = file("${sherpaAar}.download")
+            temp.delete()
+            try {
+                new URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/${sherpaAarName}.aar").withInputStream { input ->
+                    temp.withOutputStream { output -> output << input }
+                }
+                def digest = MessageDigest.getInstance('SHA-256').digest(temp.bytes).encodeHex().toString()
+                if (digest != sherpaSha256) throw new GradleException("sherpa-onnx SHA-256 mismatch: ${digest}")
+                if (!temp.renameTo(sherpaAar)) throw new GradleException("Cannot move ${temp} to ${sherpaAar}")
+            } finally {
+                temp.delete()
+            }
+        }
+        def digest = MessageDigest.getInstance('SHA-256').digest(sherpaAar.bytes).encodeHex().toString()
+        if (digest != sherpaSha256) throw new GradleException("sherpa-onnx SHA-256 mismatch: ${digest}")
+    }
+}
+tasks.named('preBuild') { dependsOn fetchSherpaOnnx }
+
 dependencies {
     testImplementation 'org.json:json:20240303'
+    implementation(name: sherpaAarName, ext: 'aar')
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
