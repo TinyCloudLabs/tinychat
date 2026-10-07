@@ -50,7 +50,7 @@ else
   | map(select($chosen_runtime == "" or .key == $chosen_runtime))
   | map({runtime: .key,
          version: (.key | capture("iOS-(?<major>[0-9]+)-(?<minor>[0-9]+)") | [(.major | tonumber), (.minor | tonumber)]),
-         iphones: [.value[] | select((.name | startswith("iPhone")) and
+         iphones: [.value[] | select((.deviceTypeIdentifier | contains("iPhone")) and
            ($chosen_device == "" or .name == $chosen_device or .deviceTypeIdentifier == $chosen_device))]})
   | map(select(.iphones | length > 0))
   | sort_by(.version) | last // empty
@@ -107,6 +107,14 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   [ -n "$probe" ] && break
 done
 
+if [ -z "$probe" ]; then
+  # A PTY can lose a late stdout line under CI load; the same payload is also in os_log.
+  xcrun simctl spawn "$udid" log show --style compact --last 4m --info \
+    --predicate 'subsystem == "xyz.tinycloud.exo" AND category == "smoke"' \
+    >"$out/smoke-fallback.log" 2>&1 || true
+  probe=$(grep -a -m1 'EXO_SMOKE ' "$out/smoke-fallback.log" 2>/dev/null | sed 's/^.*EXO_SMOKE //' | tr -d '\r')
+fi
+
 location_probe=""
 if [ -n "$probe" ]; then
   log "probe: $probe"
@@ -161,8 +169,8 @@ check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() an
 if [ "$capture_smoke" = 1 ]; then
   check '.capture.committed == true and .capture.sampleRate == 48000 and .capture.channels == 1' \
     "synthetic sine passed the AAC writer, muxer and native commit"
-  check '.capture.sessionsGone == true and .capture.legacyHeld == true' \
-    "capture cleanup and legacy ownerUnknown probe"
+  check '.capture.sessionsGone == true and .capture.legacyHeld == true and .capture.orphanHeld == true' \
+    "capture cleanup, v1 pair and runtime orphan import retain ownerUnknown"
   check '.capture.pauseSequenceValid == true' \
     "capture pause, resume and segment-close journal sequence"
   check '(.capture.probedDurationMs - .capture.durationMs | fabs) <= 100' \

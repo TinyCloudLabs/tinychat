@@ -118,12 +118,13 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: retried.url("tombstones/\(id)").path))
     }
 
-    func testRevisedT1CanonicalFixturesWhenPresent() throws {
+    func testRevisedT1CanonicalFixturesRequired() throws {
         let fixtures = ProcessInfo.processInfo.environment["EXO_T1_FIXTURES"].map { URL(fileURLWithPath: $0) }
             ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent()
                 .appendingPathComponent("../../../../../fixtures/capture").standardizedFileURL
         guard FileManager.default.fileExists(atPath: fixtures.appendingPathComponent("sidecar-v2-ios.json").path) else {
-            throw XCTSkip("T1 fixtures arrive after the T1 branch merges")
+            XCTFail("T1 golden fixtures are required at \(fixtures.path)")
+            return
         }
         let started: Int64 = 1_759_800_000_000
         let journal = try JournalCodec.read(Data(contentsOf: fixtures.appendingPathComponent("journal-ios.jsonl")))
@@ -181,6 +182,58 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
         XCTAssertEqual(try library.recoverableSessions().count, 0)
         XCTAssertEqual(try library.recoverableSessions().count, 0)
+    }
+
+    func testColdQuickActionCanStartDuringRecoveryAndOldStagingIsCollected() throws {
+        let (oldProcess, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let crashed = UUID().uuidString.lowercased()
+        try oldProcess.startSession(SessionInfo(id: crashed, source: "in_app", owner: nil,
+                                                transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        let newProcess = try RecordingLibrary(root: root)
+        let live = UUID().uuidString.lowercased()
+        try newProcess.startSession(SessionInfo(id: live, source: "quick_action", owner: nil,
+                                                transitionGen: 0, options: CaptureOptions(), startedAt: 2))
+        let abandoned = newProcess.url("staging/\(crashed).0.partial.m4a")
+        let liveStage = newProcess.url("staging/\(live).0.live.m4a")
+        try Data(repeating: 1, count: 4096).write(to: abandoned)
+        try Data("live".utf8).write(to: liveStage)
+        XCTAssertEqual(try newProcess.recoverableSessions(), [crashed])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveStage.path))
+        XCTAssertTrue(try newProcess.recoverableSessions().isEmpty)
+    }
+
+    func testRepeatedRecoveryNeverSelectsLiveCaptureAfterOldSessionFails() throws {
+        let (previousProcess, root) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let broken = UUID().uuidString.lowercased()
+        try previousProcess.startSession(SessionInfo(id: broken, source: "in_app", owner: nil,
+                                                     transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        // A complete but invalid journal line leaves this old session for a later recovery attempt.
+        let corruptJournal = try FileHandle(forWritingTo: previousProcess.journalURL(broken))
+        try corruptJournal.seekToEnd()
+        try corruptJournal.write(contentsOf: Data("not-json\n".utf8))
+        try corruptJournal.close()
+
+        let library = try RecordingLibrary(root: root)
+        let live = UUID().uuidString.lowercased()
+        try library.startSession(SessionInfo(id: live, source: "quick_action", owner: nil,
+                                             transitionGen: 0, options: CaptureOptions(), startedAt: 2))
+        try library.openFirstSegment(live, at: 2)
+        let liveJournal = try Data(contentsOf: library.journalURL(live))
+
+        // Launch recovery sees only the broken prior id; failed recovery leaves it in place.
+        XCTAssertEqual(try library.recoverableSessions(), [broken])
+        XCTAssertThrowsError(try library.readJournal(broken))
+        XCTAssertTrue(library.isLiveCapture(live))
+
+        // listPending and plugin reload may ask again while the microphone is still running.
+        XCTAssertTrue(try library.recoverableSessions().isEmpty)
+        XCTAssertTrue(try library.recoverableSessions(excluding: live).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: library.journalURL(live)), liveJournal)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.segmentURL(live, index: 0).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sidecarURL(live).path))
+        XCTAssertTrue(library.isLiveCapture(live))
     }
 
     func testDeleteDuringGatedCommitCannotRepublishAndPreservesOutbox() throws {
@@ -278,6 +331,36 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertThrowsError(try library.claim(id, did: "did:alice", evidence: "space_row"))
         XCTAssertEqual(try library.claim(id, did: "did:alice", evidence: "space_row", rowId: "existing-row"), "did:alice")
         XCTAssertEqual(try library.listCommitted().first?["ownerUnknown"] as? Bool, false)
+        let nextRow = "second-row"
+        XCTAssertEqual(try library.claim(id, did: "did:alice", evidence: "space_row", rowId: nextRow), "did:alice")
+        let ledger = try XCTUnwrap((library.readSidecar(id)["ledger"] as? [String: Any])?["audio"] as? [String: Any])
+        XCTAssertEqual(ledger["rowId"] as? String, nextRow)
+        XCTAssertEqual(ledger["state"] as? String, "saved")
+        XCTAssertEqual((try library.readSidecar(id))["rev"] as? Int, 2)
+    }
+
+    func testClaimEvidenceErrorCodes() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = UUID().uuidString.lowercased()
+        _ = try library.commit(legacy, sidecar: ["id": legacy, "durationMs": 1000]) {
+            try Data("audio".utf8).write(to: $0)
+        }
+        XCTAssertThrowsError(try library.claim(legacy, did: "did:a", evidence: "space_row")) {
+            XCTAssertEqual(($0 as? CaptureError)?.code, "row_id_required")
+        }
+        XCTAssertThrowsError(try library.claim(legacy, did: "did:a", evidence: "signed_out_v2")) {
+            XCTAssertEqual(($0 as? CaptureError)?.code, "claim_evidence_required")
+        }
+        let modern = UUID().uuidString.lowercased()
+        _ = try library.commit(modern, sidecar: sidecar(modern)) {
+            try Data("audio".utf8).write(to: $0)
+        }
+        XCTAssertThrowsError(try library.claim(modern, did: "did:test", evidence: "space_row", rowId: "row")) {
+            XCTAssertEqual(($0 as? CaptureError)?.code, "claim_evidence_invalid")
+        }
+        XCTAssertThrowsError(try library.claim(modern, did: "did:test", evidence: "unknown")) {
+            XCTAssertEqual(($0 as? CaptureError)?.code, "claim_evidence_invalid")
+        }
     }
 
     func testDeleteDuringGatedLegacyProbeCannotImport() throws {

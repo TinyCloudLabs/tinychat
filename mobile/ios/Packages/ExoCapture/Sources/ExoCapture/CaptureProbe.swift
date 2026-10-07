@@ -14,8 +14,12 @@ public enum CaptureProbe {
         try library.startSession(info)
         try library.appendJournal(id, ["e": "avail", "t": wallMilliseconds(), "a": 0,
                                        "value": "available", "reason": NSNull(), "gen": 1])
-        try library.openFirstSegment(id)
-        let writer = try AacAdtsWriter(library: library, id: id)
+        try library.appendJournal(id, ["e": "input", "t": wallMilliseconds(), "a": 0,
+                                       "id": "synthetic", "name": "Synthetic sine", "kind": "built_in"])
+        let openedAt = wallMilliseconds()
+        try library.openFirstSegment(id, at: openedAt)
+        let writer = try AacAdtsWriter(library: library, id: id, segmentOpenedAt: openedAt)
+        writer.setGeneration(1)
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
             throw CaptureError.io("create sine format")
         }
@@ -26,7 +30,7 @@ public enum CaptureProbe {
             for frame in 0..<4096 {
                 channel[frame] = 0.2 * sin(Float(2 * Double.pi * 440 * Double(batch * 4096 + frame) / 48_000))
             }
-            writer.enqueue(buffer)
+            writer.enqueue(buffer, generation: 1)
         }
         let paused = try writer.closeForPause()
         try library.appendJournal(id, ["e": "intent", "t": paused.at, "a": paused.audioMs,
@@ -36,6 +40,7 @@ public enum CaptureProbe {
         try library.appendJournal(id, ["e": "avail", "t": wallMilliseconds(), "a": paused.audioMs,
                                        "value": "available", "reason": NSNull(), "gen": 2])
         try writer.reopen()
+        writer.setGeneration(2)
         for batch in 12..<14 {
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096),
                   let channel = buffer.floatChannelData?[0] else { throw CaptureError.io("create sine buffer") }
@@ -43,11 +48,11 @@ public enum CaptureProbe {
             for frame in 0..<4096 {
                 channel[frame] = 0.2 * sin(Float(2 * Double.pi * 440 * Double(batch * 4096 + frame) / 48_000))
             }
-            writer.enqueue(buffer)
+            writer.enqueue(buffer, generation: 2)
         }
-        let audioMs = try writer.finish().audioMs
-        guard audioMs > 0 else { throw CaptureError.noAudio }
         let stoppedAt = wallMilliseconds()
+        let audioMs = try writer.finish(at: stoppedAt).audioMs
+        guard audioMs > 0 else { throw CaptureError.noAudio }
         try library.appendJournal(id, ["e": "intent", "t": stoppedAt, "a": audioMs,
                                        "value": "stopped", "by": "user"])
         try library.appendJournal(id, ["e": "stop", "t": stoppedAt, "a": audioMs,
@@ -58,9 +63,29 @@ public enum CaptureProbe {
         let segmentDescription = segmentTrack?.formatDescriptions.first
         let segmentAsbd = segmentDescription.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0 as! CMAudioFormatDescription)?.pointee }
         let journal = try library.readJournal(id)
-        let pauseSequence = journal.map { $0["e"] as? String }
-        let pauseValid = pauseSequence.contains("intent") && pauseSequence.filter { $0 == "segment" }.count == 2 &&
-            journal.last(where: { $0["e"] as? String == "hb" })?["intent"] as? String == "recording"
+        let pausedIndex = journal.firstIndex { $0["e"] as? String == "intent" && $0["value"] as? String == "paused" }
+        let resumedIndex = journal.firstIndex { $0["e"] as? String == "intent" && $0["value"] as? String == "recording" }
+        let stoppedIndex = journal.firstIndex { $0["e"] as? String == "intent" && $0["value"] as? String == "stopped" }
+        let pauseValid: Bool = {
+            guard let pausedIndex, let resumedIndex, let stoppedIndex,
+                  pausedIndex > 0, resumedIndex + 2 < journal.count, stoppedIndex > 0,
+                  stoppedIndex + 1 < journal.count else { return false }
+            let finalBeforePause = journal[pausedIndex - 1]
+            let finalBeforeStop = journal[stoppedIndex - 1]
+            return finalBeforePause["e"] as? String == "hb" &&
+                finalBeforePause["intent"] as? String == "recording" &&
+                finalBeforePause["availability"] as? String == "available" &&
+                finalBeforePause["t"] as? Int64 == journal[pausedIndex]["t"] as? Int64 &&
+                finalBeforePause["a"] as? Int64 == journal[pausedIndex]["a"] as? Int64 &&
+                journal[resumedIndex + 1]["e"] as? String == "avail" &&
+                journal[resumedIndex + 2]["e"] as? String == "segment" &&
+                finalBeforeStop["e"] as? String == "hb" &&
+                finalBeforeStop["intent"] as? String == "recording" &&
+                finalBeforeStop["availability"] as? String == "available" &&
+                finalBeforeStop["t"] as? Int64 == journal[stoppedIndex]["t"] as? Int64 &&
+                finalBeforeStop["a"] as? Int64 == journal[stoppedIndex]["a"] as? Int64 &&
+                journal[stoppedIndex + 1]["e"] as? String == "stop"
+        }()
         let sidecar = SidecarFactory.v2(session: info, durationMs: audioMs,
                                         wallMs: wallMilliseconds() - info.startedAt,
                                         pausedMs: 0, spans: [], input: ["id": "synthetic",
@@ -85,6 +110,27 @@ public enum CaptureProbe {
         let legacyHeld = try library.listCommitted().contains {
             $0["id"] as? String == legacyId && $0["ownerUnknown"] as? Bool == true
         }
+        let orphanID = UUID().uuidString.lowercased()
+        let orphanURL = library.audioURL(orphanID)
+        try FileManager.default.copyItem(at: library.audioURL(id), to: orphanURL)
+        try library.probeLegacy(orphanID) {
+            let orphanAsset = AVURLAsset(url: orphanURL)
+            let seconds = CMTimeGetSeconds(orphanAsset.duration)
+            guard !orphanAsset.tracks(withMediaType: .audio).isEmpty, seconds.isFinite, seconds >= 0.5 else {
+                return nil
+            }
+            let session = SessionInfo(id: orphanID, source: "in_app", owner: nil, transitionGen: 0,
+                                      options: CaptureOptions(), startedAt: wallMilliseconds())
+            var item = SidecarFactory.v2(session: session, durationMs: Int64(seconds * 1000),
+                                         wallMs: Int64(seconds * 1000), pausedMs: 0, spans: [], input: nil,
+                                         recovered: true, endedUnexpectedly: false, lastHeartbeatAt: nil)
+            item["legacyImport"] = true; item["ownerUnknown"] = true
+            item["sizeBytes"] = (try? orphanURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return item
+        }
+        let orphanSidecar = try library.readSidecar(orphanID)
+        let orphanHeld = orphanSidecar["ownerUnknown"] as? Bool == true &&
+            orphanSidecar["legacyImport"] as? Bool == true
         let sync = library.syncMetrics()
         return ["committed": item["version"] as? Int == 2,
                 "durationMs": audioMs,
@@ -94,6 +140,7 @@ public enum CaptureProbe {
                 "adtsFrequencyIndex": adts.count > 2 ? Int((adts[2] >> 2) & 0x0f) : -1,
                 "channels": Int(asbd?.mChannelsPerFrame ?? 0),
                 "legacyHeld": legacyHeld,
+                "orphanHeld": orphanHeld,
                 "fullSyncMeanMs": sync["F_FULLFSYNC"]?.meanMs as Any? ?? NSNull(),
                 "barrierSyncMeanMs": sync["F_BARRIERFSYNC"]?.meanMs as Any? ?? NSNull(),
                 "fallbackSyncMeanMs": sync["fsync_fallback"]?.meanMs as Any? ?? NSNull(),

@@ -106,6 +106,10 @@ class ExoBridgeViewController: CAPBridgeViewController {
                 print("EXO_SMOKE \(value)")
                 fflush(stdout)
                 Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_SMOKE \(value, privacy: .public)")
+                if ProcessInfo.processInfo.environment["EXO_QUICK_ACTION_SMOKE"] == "cold_warm" {
+                    _ = AppLifecycleHooks.performShortcut(UIApplicationShortcutItem(
+                        type: "xyz.tinycloud.exo.record", localizedTitle: "Record"))
+                }
             }
             if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
                 DispatchQueue.global(qos: .userInitiated).async {

@@ -14,6 +14,7 @@ public final class RecordingLibrary {
     private let queue = DispatchQueue(label: "xyz.tinycloud.exo.capture.library")
     private var generations: [String: UInt64] = [:]
     private var active: [String: Int] = [:]
+    private var liveSessions: Set<String> = []
     private var didRecover = false
     private let metricLock = NSLock()
     private var syncDurations: [String: (count: Int, totalMs: Double, maxMs: Double)] = [:]
@@ -115,10 +116,11 @@ public final class RecordingLibrary {
             try check("start.journal")
             try writeDurable(JournalCodec.line(info.journalEvent()), to: journalURL(info.id))
             try sync(sessionURL(info.id))
+            liveSessions.insert(info.id)
         }
     }
 
-    public func openFirstSegment(_ id: String) throws {
+    public func openFirstSegment(_ id: String, at: Int64 = wallMilliseconds()) throws {
         try queue.sync {
             guard !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else {
                 throw CaptureError.tombstoned
@@ -128,7 +130,7 @@ public final class RecordingLibrary {
                 throw CaptureError.io("create first segment")
             }
             try sync(sessionURL(id))
-            try appendJournalUnlocked(id, ["e": "segment", "t": wallMilliseconds(), "a": 0,
+            try appendJournalUnlocked(id, ["e": "segment", "t": at, "a": 0,
                                                 "index": 0, "file": segment.lastPathComponent])
         }
     }
@@ -142,7 +144,8 @@ public final class RecordingLibrary {
         try sync(journalURL(id), barrier: !fullSync)
     }
 
-    public func rollSegment(_ id: String, next: Int, audioMs: Int64) throws -> URL {
+    public func rollSegment(_ id: String, next: Int, audioMs: Int64,
+                            at: Int64 = wallMilliseconds()) throws -> URL {
         try queue.sync {
             guard !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else {
                 throw CaptureError.tombstoned
@@ -158,7 +161,7 @@ public final class RecordingLibrary {
                 throw CaptureError.io("create segment")
             }
             try sync(sessionURL(id))
-            try appendJournalUnlocked(id, ["e": "segment", "t": wallMilliseconds(), "a": audioMs,
+            try appendJournalUnlocked(id, ["e": "segment", "t": at, "a": audioMs,
                                            "index": next, "file": segment.lastPathComponent])
             return segment
         }
@@ -239,6 +242,7 @@ public final class RecordingLibrary {
                 try check("publish.gc")
                 try? FileManager.default.removeItem(at: sessionURL(id))
                 try sync(url("sessions"))
+                liveSessions.remove(id)
                 return record
             }
         } catch { throw error }
@@ -306,21 +310,36 @@ public final class RecordingLibrary {
     }
 
     public func claim(_ id: String, did: String, evidence: String, rowId: String? = nil) throws -> String? {
-        guard ["signed_out_v2", "space_row", "user_choice"].contains(evidence), !did.isEmpty else {
-            throw CaptureError.invalidArgument
+        guard !did.isEmpty else { throw CaptureError.invalidArgument }
+        guard ["signed_out_v2", "space_row", "user_choice"].contains(evidence) else {
+            throw CaptureError.claimEvidenceInvalid
         }
-        if evidence == "space_row", rowId?.isEmpty != false { throw CaptureError.invalidArgument }
+        if evidence == "space_row", rowId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            throw CaptureError.rowIDRequired
+        }
         return try queue.sync {
             try check("claim.write")
             var item = try readSidecarUnlocked(id)
-            let legacy = item["version"] == nil || item["ownerUnknown"] as? Bool == true
-            guard legacy ? evidence != "signed_out_v2" : evidence == "signed_out_v2" else {
-                throw CaptureError.invalidArgument
-            }
+            let legacy = item["version"] == nil || item["legacyImport"] as? Bool == true ||
+                item["ownerUnknown"] as? Bool == true
+            if legacy && evidence == "signed_out_v2" { throw CaptureError.claimEvidenceRequired }
+            if !legacy && evidence != "signed_out_v2" { throw CaptureError.claimEvidenceInvalid }
             guard item["owner"] is NSNull || item["owner"] == nil || item["owner"] as? String == did else {
                 throw CaptureError.ownerMismatch
             }
-            if item["owner"] as? String == did { return did }
+            if item["owner"] as? String == did {
+                if evidence == "space_row", let rowId {
+                    var ledger = item["ledger"] as? [String: Any] ?? [:]
+                    let audio = ledger["audio"] as? [String: Any]
+                    if audio?["state"] as? String != "saved" || audio?["rowId"] as? String != rowId {
+                        ledger["audio"] = ["state": "saved", "rowId": rowId, "at": wallMilliseconds()]
+                        item["ledger"] = ledger
+                        item["rev"] = (item["rev"] as? Int ?? 0) + 1
+                        try publishSidecarUnlocked(id, item, failpointName: "claim.write")
+                    }
+                }
+                return did
+            }
             item["owner"] = did
             item["ownerUnknown"] = false
             if evidence == "space_row", let rowId {
@@ -394,6 +413,7 @@ public final class RecordingLibrary {
                 try moveRemoteToOutboxUnlocked(item)
             }
             try unlinkArtifactsUnlocked(id)
+            liveSessions.remove(id)
         }
     }
 
@@ -572,6 +592,14 @@ public final class RecordingLibrary {
         try queue.sync {
             guard !didRecover else { return [] }
             didRecover = true
+            // A crashed mux can leave large partial outputs. Never touch a live id's staged work.
+            for file in try FileManager.default.contentsOfDirectory(at: url("staging"), includingPropertiesForKeys: nil) {
+                let id = String(file.lastPathComponent.prefix(36))
+                guard Self.validID(id), id != liveID, !liveSessions.contains(id),
+                      active[id, default: 0] == 0 else { continue }
+                try FileManager.default.removeItem(at: file)
+            }
+            try sync(url("staging"))
             for tombstone in try FileManager.default.contentsOfDirectory(at: url("tombstones"), includingPropertiesForKeys: nil) {
                 let id = tombstone.lastPathComponent
                 do {
@@ -581,8 +609,18 @@ public final class RecordingLibrary {
                 } catch { /* Retain marker and retry next launch. */ }
             }
             return try FileManager.default.contentsOfDirectory(at: url("sessions"), includingPropertiesForKeys: nil)
-                .map(\.lastPathComponent).filter { $0 != liveID && Self.validID($0) }
+                .map(\.lastPathComponent).filter { $0 != liveID && !liveSessions.contains($0) && Self.validID($0) }
         }
+    }
+
+    /// Recovery may be triggered by launch or a plugin reload. Check again immediately
+    /// before finalizing an id because capture can start while a sweep is in flight.
+    public func isLiveCapture(_ id: String) -> Bool {
+        queue.sync { liveSessions.contains(id) }
+    }
+
+    public func endLiveCapture(_ id: String) {
+        queue.sync { _ = liveSessions.remove(id) }
     }
 
     public func markRecoveryComplete() { queue.sync { didRecover = true } }

@@ -70,9 +70,9 @@
 			<key>UIApplicationShortcutItemType</key>
 			<string>xyz.tinycloud.exo.record</string>
 			<key>UIApplicationShortcutItemTitle</key>
-			<string>Record a voice note</string>
-			<key>UIApplicationShortcutItemIconType</key>
-			<string>UIApplicationShortcutIconTypeAudio</string>
+			<string>Record</string>
+			<key>UIApplicationShortcutItemIconFile</key>
+			<string>RecordMic</string>
 		</dict>
 	</array>
 	<key>UILaunchStoryboardName</key>

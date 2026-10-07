@@ -4,12 +4,12 @@ public enum SidecarFactory {
     public static func v2(session: SessionInfo, durationMs: Int64, wallMs: Int64,
                           pausedMs: Int64, spans: [MissingAudioSpan], input: [String: Any]?,
                           recovered: Bool, endedUnexpectedly: Bool,
-                          lastHeartbeatAt: Int64?) -> [String: Any] {
+                          lastHeartbeatAt: Int64?, noSignalMs: Int64 = 0) -> [String: Any] {
         let silenced = spans.filter { $0.kind == "silenced" }
         return [
             "id": session.id, "startedAt": session.startedAt, "durationMs": durationMs,
             "mimeType": "audio/mp4", "sizeBytes": 0, "silencedMs": silenced.reduce(0) { $0 + $1.audioMs },
-            "silencedEvents": silenced.count, "noSignalMs": 0,
+            "silencedEvents": silenced.count, "noSignalMs": noSignalMs,
             "version": 2, "rev": 1, "wallMs": wallMs, "pausedMs": pausedMs,
             "spans": spans.map { span in
                 ["kind": span.kind, "reason": span.reason, "startedAt": span.startedAt,

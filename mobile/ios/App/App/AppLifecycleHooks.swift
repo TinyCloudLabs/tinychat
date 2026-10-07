@@ -1,4 +1,5 @@
 import AVFoundation
+import CaptureCore
 import ExoCapture
 import UIKit
 import UserNotifications
@@ -10,17 +11,19 @@ enum AppLifecycleHooks {
         ExoCaptureBootstrap.start()
         CaptureLiveActivity.install()
         UNUserNotificationCenter.current().delegate = app.delegate as? UNUserNotificationCenterDelegate
+        #if DEBUG
+        if ["cold", "cold_warm"].contains(ProcessInfo.processInfo.environment["EXO_QUICK_ACTION_SMOKE"] ?? "") {
+            // Exercise the same quick-action handler before a scene or WebView exists.
+            _ = performShortcut(UIApplicationShortcutItem(type: "xyz.tinycloud.exo.record", localizedTitle: "Record"))
+        }
+        #endif
         if let raw = ProcessInfo.processInfo.environment["EXO_CAPTURE_PROBE_SECONDS"],
            let seconds = Int(raw), (1...300).contains(seconds) {
+            // Release-enabled solely for the signed D-IOS device validation recipe.
             runDeviceProbe(seconds: seconds)
         }
         #if DEBUG
-        if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
-            DispatchQueue.global(qos: .utility).async {
-                do { NSLog("EXO_CAPTURE_PROBE %@", String(describing: try CaptureProbe.run())) }
-                catch { NSLog("EXO_CAPTURE_PROBE error=%@", String(describing: error)) }
-            }
-        }
+        // ExoBridgeViewController runs the capture smoke once after WebView mount.
         #endif
     }
 
@@ -60,7 +63,15 @@ enum AppLifecycleHooks {
     @discardableResult static func performShortcut(_ item: UIApplicationShortcutItem) -> Bool {
         guard item.type == "xyz.tinycloud.exo.record" else { return false }
         let record = {
-            do { _ = try CaptureEngine.shared.start(source: "quick_action") }
+            do {
+                let result = try CaptureEngine.shared.start(source: "quick_action")
+                NSLog("EXO_QUICK_ACTION started id=%@ at=%@", result["id"] as? String ?? "unknown",
+                      String(describing: result["startedAt"] ?? "unknown"))
+            }
+            catch CaptureError.alreadyRecording {
+                CaptureEngine.shared.presentRecorder()
+                NSLog("EXO_QUICK_ACTION presented existing recording")
+            }
             catch { NSLog("Exo quick action could not start: %@", String(describing: error)) }
         }
         if AVAudioApplication.shared.recordPermission == .granted { record() }

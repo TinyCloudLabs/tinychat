@@ -11,32 +11,63 @@ final class AacAdtsWriter {
     private let queue = DispatchQueue(label: "xyz.tinycloud.exo.capture.writer")
     private let queueLock = NSLock()
     private var pendingFrames = 0
+    private var activeGeneration = 0
+    private var accepting = true
+    private var stalled = false
+    private var staleFrames = 0
+    private var stalledFrames = 0
     private var converter: AVAudioConverter?
     private var handle: FileHandle?
     private var segment = 0
     private var segmentBytes: Int64 = 0
     private var audioFrames: Int64 = 0
     private var segmentStartFrames: Int64 = 0
-    private var lastCheckpoint = Date()
+    private var heartbeat: HeartbeatSchedule
     private var lastFullSync = Date()
     private var stopped = false
     var onLevel: ((Double, Double) -> Void)?
     var onFailure: ((Error) -> Void)?
     var onFrames: ((Int64) -> Void)?
+    var onStall: ((Bool, Int) -> Void)?
+    var onStale: ((Int) -> Void)?
 
-    init(library: RecordingLibrary, id: String) throws {
+    init(library: RecordingLibrary, id: String, segmentOpenedAt: Int64) throws {
         self.library = library; self.id = id
+        self.heartbeat = HeartbeatSchedule(segmentOpenedAt: segmentOpenedAt)
         self.handle = try FileHandle(forWritingTo: library.segmentURL(id, index: 0))
     }
 
     var audioMs: Int64 { queue.sync { audioFrames * 1000 / 48_000 } }
+    var rejectedStaleFrames: Int {
+        queueLock.lock(); defer { queueLock.unlock() }
+        return staleFrames
+    }
+    var droppedStallFrames: Int {
+        queueLock.lock(); defer { queueLock.unlock() }
+        return stalledFrames
+    }
 
-    func enqueue(_ input: AVAudioPCMBuffer) {
+    func setGeneration(_ generation: Int) {
+        queueLock.lock(); activeGeneration = generation; accepting = true; queueLock.unlock()
+    }
+
+    func enqueue(_ input: AVAudioPCMBuffer, generation: Int) {
         let frames = Int(input.frameLength)
         queueLock.lock()
-        if pendingFrames + frames > Int(input.format.sampleRate * 10) {
+        guard accepting && generation == activeGeneration else {
+            staleFrames += frames
+            let lost = staleFrames
             queueLock.unlock()
-            onFailure?(CaptureError.io("writer_stalled"))
+            onStale?(lost)
+            return
+        }
+        if pendingFrames + frames > Int(input.format.sampleRate * 10) {
+            stalledFrames += frames
+            let dropped = stalledFrames
+            let first = !stalled
+            stalled = true
+            queueLock.unlock()
+            if first { onStall?(true, dropped) }
             return
         }
         pendingFrames += frames
@@ -70,15 +101,26 @@ final class AacAdtsWriter {
         queue.async { [weak self] in
             guard let self else { return }
             defer {
-                self.queueLock.lock(); self.pendingFrames -= frames; self.queueLock.unlock()
+                self.queueLock.lock()
+                self.pendingFrames -= frames
+                let recovered = self.stalled && self.pendingFrames <= Int(copy.format.sampleRate / 2)
+                if recovered { self.stalled = false }
+                let dropped = self.stalledFrames
+                self.queueLock.unlock()
+                if recovered { self.onStall?(false, dropped) }
             }
-            do { try self.encode(copy) }
+            do { try self.encode(copy, generation: generation) }
             catch { self.onFailure?(error) }
         }
     }
 
-    private func encode(_ pcm: AVAudioPCMBuffer) throws {
-        guard !stopped, let handle else { return }
+    private func encode(_ pcm: AVAudioPCMBuffer, generation: Int) throws {
+        queueLock.lock()
+        let valid = generation == activeGeneration
+        if !valid { staleFrames += Int(pcm.frameLength) }
+        let lost = staleFrames
+        queueLock.unlock()
+        guard valid, !stopped, let handle else { onStale?(lost); return }
         if converter == nil {
             guard let output = AVAudioFormat(settings: [
                 AVFormatIDKey: Int(kAudioFormatMPEG4AAC), AVSampleRateKey: 48_000,
@@ -106,12 +148,11 @@ final class AacAdtsWriter {
         }
         let now = Date()
         let shouldRoll = audioFrames - segmentStartFrames >= 60 * 48_000
-        if !shouldRoll && now.timeIntervalSince(lastCheckpoint) >= 2 {
+        if heartbeat.periodicDue(at: wallMilliseconds(), closing: shouldRoll) {
             try library.checkpoint(id, segment: segment, bytes: segmentBytes,
                                    audioMs: audioFrames * 1000 / 48_000,
                                    intent: "recording", availability: "available")
             onFrames?(audioFrames * 1000 / 48_000)
-            lastCheckpoint = now
         }
         if now.timeIntervalSince(lastFullSync) >= 10 {
             try library.fullSyncSegment(id, index: segment)
@@ -124,12 +165,13 @@ final class AacAdtsWriter {
             onFrames?(audioFrames * 1000 / 48_000)
             try handle.close()
             segment += 1
+            let openedAt = wallMilliseconds()
             let next = try library.rollSegment(id, next: segment,
-                                               audioMs: audioFrames * 1000 / 48_000)
+                                               audioMs: audioFrames * 1000 / 48_000, at: openedAt)
             self.handle = try FileHandle(forWritingTo: next)
             segmentBytes = 0
             segmentStartFrames = audioFrames
-            lastCheckpoint = now
+            heartbeat = HeartbeatSchedule(segmentOpenedAt: openedAt)
             lastFullSync = now
         }
     }
@@ -169,7 +211,8 @@ final class AacAdtsWriter {
     }
 
     func closeForPause() throws -> (audioMs: Int64, at: Int64) {
-        try queue.sync {
+        queueLock.lock(); accepting = false; queueLock.unlock()
+        return try queue.sync {
             guard handle != nil else { return (audioFrames * 1000 / 48_000, wallMilliseconds()) }
             try drainEncoder(to: handle!)
             let at = wallMilliseconds()
@@ -185,29 +228,30 @@ final class AacAdtsWriter {
     func reopen() throws {
         try queue.sync {
             let nextIndex = segment + 1
+            let openedAt = wallMilliseconds()
             let next = try library.rollSegment(id, next: nextIndex,
-                                               audioMs: audioFrames * 1000 / 48_000)
+                                               audioMs: audioFrames * 1000 / 48_000, at: openedAt)
             segment = nextIndex
             handle = try FileHandle(forWritingTo: next)
             segmentBytes = 0
             segmentStartFrames = audioFrames
             converter = nil
-            lastCheckpoint = Date()
-            lastFullSync = lastCheckpoint
+            heartbeat = HeartbeatSchedule(segmentOpenedAt: openedAt)
+            lastFullSync = Date()
         }
     }
 
-    func finish() throws -> (audioMs: Int64, heartbeatAt: Int64?) {
-        try queue.sync {
+    func finish(at stoppedAt: Int64) throws -> (audioMs: Int64, heartbeatAt: Int64?) {
+        queueLock.lock(); accepting = false; queueLock.unlock()
+        return try queue.sync {
             stopped = true
             var heartbeatAt: Int64?
             if handle != nil {
                 try drainEncoder(to: handle!)
-                let at = wallMilliseconds()
                 try library.checkpoint(id, segment: segment, bytes: segmentBytes,
                                        audioMs: audioFrames * 1000 / 48_000,
-                                       intent: "recording", availability: "available", fullSync: true, at: at)
-                heartbeatAt = at
+                                       intent: "recording", availability: "available", fullSync: true, at: stoppedAt)
+                heartbeatAt = stoppedAt
             }
             try handle?.close(); handle = nil
             return (audioFrames * 1000 / 48_000, heartbeatAt)

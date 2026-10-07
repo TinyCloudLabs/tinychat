@@ -2,6 +2,7 @@ import AVFoundation
 import CaptureCore
 import Foundation
 import OSLog
+import UIKit
 
 public final class CaptureEngine {
     public static let shared = CaptureEngine()
@@ -9,19 +10,18 @@ public final class CaptureEngine {
     private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
     private let defaultsKey = "exo.capture.defaults.v2"
     private let recovery = DispatchGroup()
-    private let recoveryLock = NSLock()
-    private var recoveryFailure: Error?
     private var startedRecovery = false
     private var audioEngine: AVAudioEngine?
     private let tapCallbacks = DispatchGroup()
+    private let tapTimeLock = NSLock()
+    private var lastTapEndSample: AVAudioFramePosition?
     private var writer: AacAdtsWriter?
     private var info: SessionInfo?
     private var intent = "stopped"
     private var availability = "available"
     private var reason: String?
     private var generation = 0
-    private var startedUptime: TimeInterval = 0
-    private var pausedSince: TimeInterval?
+    private var pausedSince: Int64?
     private var pausedMs: Int64 = 0
     private var audioMs: Int64 = 0
     private var spans: [MissingAudioSpan] = []
@@ -29,8 +29,10 @@ public final class CaptureEngine {
     private var lastLevel = Date.distantPast
     private var appActive = false
     private var zeroSince: Date?
+    private var noSignalMs: Int64 = 0
     private var options = CaptureOptions()
     private var currentInput: [String: Any]?
+    private var transitions: CaptureTransitionMachine?
     private var limitTimer: Timer?
     private var lastDiskCheck = Date.distantPast
     private var observers: [UUID: (String, [String: Any], Bool) -> Void] = [:]
@@ -39,8 +41,8 @@ public final class CaptureEngine {
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("voice-notes", isDirectory: true)
-        // This directory is required before a plugin or a scene exists. Failure is fatal to
-        // capture operations and is surfaced through the plugin, not papered over with a new path.
+        // This directory is required before a plugin or a scene exists. Initialization failure
+        // terminates launch because no capture or library operation can be made durable.
         do { library = try RecordingLibrary(root: base) }
         catch { fatalError("Voice-note library unavailable: \(error)") }
     }
@@ -53,6 +55,12 @@ public final class CaptureEngine {
     }
     public func removeObserver(_ token: UUID) { observers.removeValue(forKey: token) }
     public func setAppActive(_ active: Bool) { appActive = active }
+    public func presentRecorder() {
+        if let id = info?.id {
+            log.notice("presentRecorder id=\(id, privacy: .public)")
+            emit("presentRecorder", ["id": id], retained: true)
+        }
+    }
     private func emit(_ name: String, _ data: [String: Any], retained: Bool = false) {
         if retained && observers.isEmpty { retainedEvents.append((name, data)) }
         for listener in observers.values { listener(name, data, retained) }
@@ -65,25 +73,22 @@ public final class CaptureEngine {
         DispatchQueue.global(qos: .utility).async { [self] in
             defer { recovery.leave() }
             do {
-                for id in try library.recoverableSessions() {
-                    do { try recoverSession(id) }
-                    catch {
-                        recoveryLock.lock(); recoveryFailure = recoveryFailure ?? error; recoveryLock.unlock()
+                CaptureRecoverySweep.run(ids: try library.recoverableSessions(), recover: { id in
+                    try recoverSession(id)
+                }, failed: { id, error in
                         log.error("Recovery failed for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
-                    }
-                }
+                        DispatchQueue.main.async { self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true) }
+                })
                 try importLegacyOrphans()
             } catch {
-                recoveryLock.lock(); recoveryFailure = recoveryFailure ?? error; recoveryLock.unlock()
                 log.error("Recovery scan failed: \(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async { self.emit("recoveryFailed", ["reason": String(describing: error)], retained: true) }
             }
         }
     }
 
     public func awaitRecovery() throws {
         recovery.wait()
-        recoveryLock.lock(); defer { recoveryLock.unlock() }
-        if let recoveryFailure { throw recoveryFailure }
     }
 
     public func defaults() -> CaptureDefaults {
@@ -125,7 +130,6 @@ public final class CaptureEngine {
     public func start(source: String = "in_app", requestedLimitMs: Int64? = nil,
                       override: CaptureOptions? = nil) throws -> [String: Any] {
         recoverOnce()
-        try awaitRecovery()
         guard info == nil else { throw CaptureError.alreadyRecording }
         guard let free = try library.root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity else {
             throw CaptureError.io("read available storage")
@@ -144,8 +148,9 @@ public final class CaptureEngine {
                                   startedAt: now)
         try library.startSession(session)
         info = session; options = selected; intent = "recording"; availability = "available"
+        transitions = CaptureTransitionMachine()
         reason = nil; spans = []; openSpan = nil; audioMs = 0; pausedMs = 0; pausedSince = nil
-        startedUptime = ProcessInfo.processInfo.systemUptime
+        noSignalMs = 0; zeroSince = nil
         lastDiskCheck = Date()
         generation += 1
         do { try activateGraph() }
@@ -159,7 +164,7 @@ public final class CaptureEngine {
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkDurationLimit() }
         RunLoop.main.add(timer, forMode: .common)
         limitTimer = timer
-        if source != "in_app" { emit("presentRecorder", ["id": session.id], retained: true) }
+        if source != "in_app" { presentRecorder() }
         return ["id": session.id, "startedAt": now, "maxDurationMs": limit]
     }
 
@@ -167,8 +172,10 @@ public final class CaptureEngine {
         guard let session = info else { throw CaptureError.notRecording }
         let audioSession = AVAudioSession.sharedInstance()
         var acquired = false
+        var pendingEngine: AVAudioEngine?
         defer {
             if !acquired {
+                pendingEngine?.stop()
                 do { try audioSession.setActive(false, options: .notifyOthersOnDeactivation) }
                 catch { log.error("Audio session cleanup failed: \(String(describing: error), privacy: .public)") }
             }
@@ -179,8 +186,17 @@ public final class CaptureEngine {
         try audioSession.setPrefersNoInterruptionsFromSystemAlerts(true)
         try audioSession.setPrefersInterruptionOnRouteDisconnect(false)
         try audioSession.setActive(true)
-        try library.appendJournal(session.id, ["e": "avail", "t": wallMilliseconds(), "a": audioMs,
-                                               "value": "available", "reason": NSNull(), "gen": generation])
+        let engine = AVAudioEngine()
+        pendingEngine = engine
+        let node = engine.inputNode
+        let format = node.outputFormat(forBus: 0)
+        guard format.sampleRate > 0 else { throw CaptureError.io("microphone input has no format") }
+        // Verify the input can actually start before recording a successful acquisition.
+        engine.prepare()
+        try engine.start()
+        let acquiredAt = wallMilliseconds()
+        // The transition machine emits span_close, availability, and only a changed input.
+        var input: (id: String, name: String, kind: String)?
         if let port = audioSession.currentRoute.inputs.first {
             let kind: String
             switch port.portType {
@@ -191,19 +207,22 @@ public final class CaptureEngine {
             case .carAudio: kind = "car"
             default: kind = "other"
             }
+            input = (port.uid, port.portName, kind)
             currentInput = ["id": port.uid, "name": port.portName, "kind": kind]
-            try library.appendJournal(session.id, ["e": "input", "t": wallMilliseconds(), "a": audioMs,
-                                                   "id": port.uid, "name": port.portName, "kind": kind])
         }
-        let engine = AVAudioEngine()
-        let node = engine.inputNode
-        let format = node.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else { throw CaptureError.io("microphone input has no format") }
+        var next = transitions ?? CaptureTransitionMachine()
+        for event in next.acquired(at: acquiredAt, audioMs: audioMs, generation: generation, input: input) {
+            try library.appendJournal(session.id, event)
+        }
+        if openSpan != nil { closeSpan(at: acquiredAt, journal: false) }
+        transitions = next
         let writer: AacAdtsWriter
         if let existing = self.writer { try existing.reopen(); writer = existing }
         else {
-            try library.openFirstSegment(session.id)
-            writer = try AacAdtsWriter(library: library, id: session.id); self.writer = writer
+            let openedAt = wallMilliseconds()
+            try library.openFirstSegment(session.id, at: openedAt)
+            writer = try AacAdtsWriter(library: library, id: session.id, segmentOpenedAt: openedAt)
+            self.writer = writer
         }
         writer.onLevel = { [weak self] level, peak in
             DispatchQueue.main.async { self?.receiveLevel(level, peak: peak) }
@@ -214,13 +233,25 @@ public final class CaptureEngine {
         writer.onFailure = { [weak self] error in
             DispatchQueue.main.async { self?.writerFailed(error) }
         }
-        node.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self, weak writer] buffer, _ in
+        writer.onStall = { [weak self] active, dropped in
+            DispatchQueue.main.async { self?.writerStallChanged(active, droppedFrames: dropped) }
+        }
+        writer.onStale = { [weak self] frames in
+            DispatchQueue.main.async { self?.log.error("Stale tap frames rejected: \(frames)") }
+        }
+        writer.setGeneration(generation)
+        tapTimeLock.lock(); lastTapEndSample = nil; tapTimeLock.unlock()
+        let attemptGeneration = generation
+        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, writer] buffer, when in
             self?.tapCallbacks.enter()
             defer { self?.tapCallbacks.leave() }
-            writer?.enqueue(buffer)
+            if when.isSampleTimeValid {
+                self?.tapTimeLock.lock()
+                self?.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
+                self?.tapTimeLock.unlock()
+            }
+            writer.enqueue(buffer, generation: attemptGeneration)
         }
-        engine.prepare()
-        try engine.start()
         audioEngine = engine
         acquired = true
     }
@@ -237,10 +268,18 @@ public final class CaptureEngine {
 
     @discardableResult private func stopInput() -> Bool {
         guard let engine = audioEngine else { return true }
+        let renderTime = engine.inputNode.lastRenderTime
+        let renderEnd = renderTime?.isSampleTimeValid == true ? renderTime?.sampleTime : nil
         engine.stop()
         guard !engine.isRunning else { return false }
         engine.inputNode.removeTap(onBus: 0)
         tapCallbacks.wait()
+        tapTimeLock.lock()
+        let deliveredEnd = lastTapEndSample
+        tapTimeLock.unlock()
+        if let renderEnd, let deliveredEnd {
+            log.notice("Pause/stop tap tail estimate samples=\(max(0, renderEnd - deliveredEnd)); bufferSize=1024")
+        }
         audioEngine = nil
         return true
     }
@@ -254,12 +293,19 @@ public final class CaptureEngine {
                 reason = "no_signal"; emitState()
             }
         } else {
-            zeroSince = nil
+            closeNoSignal(at: now)
             if reason == "no_signal" { reason = nil; emitState() }
         }
         if appActive && now.timeIntervalSince(lastLevel) >= 0.05 {
             emit("level", ["level": level, "peak": peak]); lastLevel = now
         }
+    }
+
+    private func closeNoSignal(at now: Date = Date()) {
+        if let since = zeroSince, now.timeIntervalSince(since) > 2 {
+            noSignalMs += Int64(now.timeIntervalSince(since) * 1000)
+        }
+        zeroSince = nil
     }
 
     private func receiveFrames(_ value: Int64) {
@@ -302,34 +348,43 @@ public final class CaptureEngine {
         }
     }
 
+    private func writerStallChanged(_ active: Bool, droppedFrames: Int) {
+        guard info != nil, intent == "recording" else { return }
+        log.error("Writer stall \(active ? "opened" : "closed", privacy: .public); dropped PCM frames=\(droppedFrames)")
+        if active { openOmittedSpan("writer_stalled") }
+        else if openSpan?.reason == "writer_stalled" { closeSpan() }
+    }
+
     public func pause() throws {
         guard let session = info else { throw CaptureError.notRecording }
         if intent == "paused" { return }
         guard intent == "recording" else { throw CaptureError.notRecording }
         generation += 1
-        // Stop input first. The writer retains every buffer delivered through the tap,
-        // including a callback already in flight, before the queue is drained.
-        guard stopInput() else { throw CaptureError.pauseFailed }
-        let closed: (audioMs: Int64, at: Int64)?
-        do { closed = try writer?.closeForPause() }
-        catch {
-            writerFailed(error)
-            throw CaptureError.pauseFailed
-        }
-        audioMs = closed?.audioMs ?? audioMs
-        closeSpan(at: closed?.at)
+        var next = transitions ?? CaptureTransitionMachine()
+        let input = ClosureInputControl(stop: { [self] in stopInput() }, release: {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        })
+        let frames = ClosureFrameSink(close: { [self] in try writer?.closeForPause() })
+        let journal = ClosureJournalSink(write: { [self] event, fullSync in
+            try library.appendJournal(session.id, event, fullSync: fullSync)
+        })
+        let paused: (audioMs: Int64, at: Int64)
         do {
-            try library.appendJournal(session.id, ["e": "intent", "t": closed?.at ?? wallMilliseconds(), "a": audioMs,
-                                                   "value": "paused", "by": "user"], fullSync: true)
+            paused = try next.pause(input: input, frames: frames, journal: journal,
+                                    clock: SystemCaptureClock(), currentAudioMs: audioMs) { [self] error in
+                log.error("Audio session remained active after Pause: \(String(describing: error), privacy: .public)")
+            }
+        } catch CaptureError.pauseFailed {
+            throw CaptureError.pauseFailed
         } catch {
             writerFailed(error)
             throw CaptureError.pauseFailed
         }
-        intent = "paused"; reason = "user"; pausedSince = ProcessInfo.processInfo.systemUptime
-        do { try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
-        catch {
-            log.error("Audio session remained active after Pause: \(String(describing: error), privacy: .public)")
-        }
+        audioMs = paused.audioMs
+        closeNoSignal()
+        if openSpan != nil { closeSpan(at: paused.at, journal: false) }
+        transitions = next
+        intent = "paused"; reason = "user"; pausedSince = paused.at
         emitState()
     }
 
@@ -339,19 +394,24 @@ public final class CaptureEngine {
         let wasPaused = intent == "paused"
         generation += 1
         if wasPaused {
-            if let since = pausedSince { pausedMs += Int64((ProcessInfo.processInfo.systemUptime - since) * 1000) }
+            let now = wallMilliseconds()
+            var next = transitions ?? CaptureTransitionMachine()
+            for event in next.resumed(at: now, audioMs: audioMs) { try library.appendJournal(session.id, event) }
+            if let since = pausedSince { pausedMs += max(0, now - since) }
             pausedSince = nil
             intent = "recording"
-            try library.appendJournal(session.id, ["e": "intent", "t": wallMilliseconds(), "a": audioMs,
-                                                   "value": "recording", "by": "user"])
+            transitions = next
         }
         do {
             try activateGraph()
-            availability = "available"; reason = nil; closeSpan()
+            availability = "available"; reason = nil
         } catch {
             availability = "blocked"; reason = "resume_blocked"
-            try library.appendJournal(session.id, ["e": "avail", "t": wallMilliseconds(), "a": audioMs,
-                                                   "value": "blocked", "reason": "resume_blocked", "gen": generation], fullSync: true)
+            var next = transitions ?? CaptureTransitionMachine()
+            for event in next.blocked(at: wallMilliseconds(), audioMs: audioMs, generation: generation) {
+                try library.appendJournal(session.id, event, fullSync: true)
+            }
+            transitions = next
             emitState(); throw CaptureError.resumeFailed
         }
         emitState()
@@ -366,11 +426,22 @@ public final class CaptureEngine {
         }
         do { audioMs = try writer?.closeForPause().audioMs ?? audioMs }
         catch { writerFailed(error); return }
+        closeNoSignal()
         deactivateGraph(tapRemoved: true)
-        if intent == "recording" { openOmittedSpan("interruption") }
+        let interruptedAt = wallMilliseconds()
+        var next = transitions ?? CaptureTransitionMachine()
+        let events = next.interrupted(at: interruptedAt, audioMs: audioMs,
+                                      generation: generation, reason: "interruption")
+        if events.first?["e"] as? String == "span_open" {
+            openSpan = MissingAudioSpan(kind: "omitted", reason: "interruption",
+                                        startedAt: interruptedAt, atAudioMs: audioMs)
+        }
         availability = "interrupted"; reason = "interruption"
-        try? library.appendJournal(session.id, ["e": "avail", "t": wallMilliseconds(), "a": audioMs,
-                                                "value": "interrupted", "reason": "interruption", "gen": generation])
+        do {
+            for event in events { try library.appendJournal(session.id, event) }
+            transitions = next
+        }
+        catch { log.error("Journal interruption failed: \(String(describing: error), privacy: .public)") }
         emitState()
     }
 
@@ -382,20 +453,32 @@ public final class CaptureEngine {
 
     private func openOmittedSpan(_ why: String) {
         guard openSpan == nil, let session = info else { return }
-        openSpan = MissingAudioSpan(kind: "omitted", reason: why,
-                                    startedAt: wallMilliseconds(), atAudioMs: audioMs)
-        try? library.appendJournal(session.id, ["e": "span_open", "t": wallMilliseconds(),
-                                                "a": audioMs, "kind": "omitted", "reason": why])
+        let at = wallMilliseconds()
+        openSpan = MissingAudioSpan(kind: "omitted", reason: why, startedAt: at, atAudioMs: audioMs)
+        var next = transitions ?? CaptureTransitionMachine()
+        do {
+            for event in next.openedSpan(at: at, audioMs: audioMs, kind: "omitted", reason: why) {
+                try library.appendJournal(session.id, event)
+            }
+            transitions = next
+        }
+        catch { log.error("Journal span open failed: \(String(describing: error), privacy: .public)") }
     }
 
-    private func closeSpan(at timestamp: Int64? = nil) {
+    private func closeSpan(at timestamp: Int64? = nil, journal: Bool = true) {
         guard var span = openSpan else { return }
         span.endedAt = timestamp ?? wallMilliseconds()
         if span.kind == "silenced" { span.audioMs = max(0, audioMs - span.atAudioMs) }
         spans.append(span); openSpan = nil
-        if let session = info {
-            try? library.appendJournal(session.id, ["e": "span_close", "t": span.endedAt!,
-                                                    "a": audioMs, "kind": span.kind, "reason": span.reason])
+        if journal, let session = info {
+            var next = transitions ?? CaptureTransitionMachine()
+            do {
+                for event in next.closedSpan(at: span.endedAt!, audioMs: audioMs) {
+                    try library.appendJournal(session.id, event)
+                }
+                transitions = next
+            }
+            catch { log.error("Journal span close failed: \(String(describing: error), privacy: .public)") }
         }
     }
 
@@ -403,11 +486,18 @@ public final class CaptureEngine {
         guard let session = info, intent == "recording" else { return }
         if muted {
             guard openSpan == nil else { return }
+            let at = wallMilliseconds()
             openSpan = MissingAudioSpan(kind: "silenced", reason: "input_muted",
-                                        startedAt: wallMilliseconds(), atAudioMs: audioMs)
+                                        startedAt: at, atAudioMs: audioMs)
             reason = "input_muted"
-            try? library.appendJournal(session.id, ["e": "span_open", "t": wallMilliseconds(),
-                                                    "a": audioMs, "kind": "silenced", "reason": "input_muted"])
+            var next = transitions ?? CaptureTransitionMachine()
+            do {
+                for event in next.openedSpan(at: at, audioMs: audioMs, kind: "silenced", reason: "input_muted") {
+                    try library.appendJournal(session.id, event)
+                }
+                transitions = next
+            }
+            catch { log.error("Journal mute failed: \(String(describing: error), privacy: .public)") }
         } else { closeSpan(); reason = nil }
         emitState()
     }
@@ -416,14 +506,16 @@ public final class CaptureEngine {
                      completion: @escaping (Result<[String: Any], Error>) -> Void) {
         guard let session = info else { completion(.failure(CaptureError.notRecording)); return }
         generation += 1
-        closeSpan()
         guard stopInput() else {
             completion(.failure(CaptureError.io("stop capture input")))
             return
         }
+        closeNoSignal()
+        let stoppedAt = wallMilliseconds()
         let final: (audioMs: Int64, heartbeatAt: Int64?)
-        do { final = try writer?.finish() ?? (audioMs: 0, heartbeatAt: nil) }
+        do { final = try writer?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
         catch {
+            library.endLiveCapture(session.id)
             deactivateGraph(tapRemoved: true)
             limitTimer?.invalidate(); limitTimer = nil
             writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
@@ -436,27 +528,33 @@ public final class CaptureEngine {
             return
         }
         deactivateGraph(tapRemoved: true)
-        if let since = pausedSince { pausedMs += Int64((ProcessInfo.processInfo.systemUptime - since) * 1000) }
+        library.endLiveCapture(session.id)
+        if openSpan != nil { closeSpan(at: stoppedAt, journal: false) }
+        var next = transitions ?? CaptureTransitionMachine()
+        let stopEvents = next.stopped(at: stoppedAt, audioMs: final.audioMs, reason: stopReason)
+        transitions = next
+        if let since = pausedSince { pausedMs += max(0, stoppedAt - since) }
         let paused = pausedMs
         let spans = self.spans
         let input = currentInput
+        let noSignal = noSignalMs
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
         emitState()
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") {
+            self.log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
+        }
         DispatchQueue.global(qos: .userInitiated).async { [self] in
+            defer { DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(backgroundTask) } }
             do {
                 let duration = final.audioMs
                 guard duration > 0 else {
                     try library.delete(session.id)
                     throw CaptureError.noAudio
                 }
-                let stoppedAt = wallMilliseconds()
-                let stoppedBy = stopReason == "max_duration" ? "limit" :
-                    stopReason == "disk_full" ? "disk" : stopReason
-                try library.appendJournal(session.id, ["e": "intent", "t": stoppedAt,
-                                                       "a": duration, "value": "stopped", "by": stoppedBy])
-                try library.appendJournal(session.id, ["e": "stop", "t": stoppedAt,
-                                                       "a": duration, "reason": stopReason], fullSync: true)
+                for (index, event) in stopEvents.enumerated() {
+                    try library.appendJournal(session.id, event, fullSync: index == stopEvents.count - 1)
+                }
                 let lastHeartbeat: Int64?
                 if let at = final.heartbeatAt { lastHeartbeat = at }
                 else {
@@ -467,7 +565,8 @@ public final class CaptureEngine {
                                           wallMs: max(0, stoppedAt - session.startedAt),
                                           pausedMs: paused, spans: spans, recovered: false,
                                           endedUnexpectedly: false,
-                                          lastHeartbeatAt: lastHeartbeat, input: input)
+                                          lastHeartbeatAt: lastHeartbeat, input: input,
+                                          noSignalMs: noSignal)
                 let committed = try library.commit(session.id, sidecar: sidecar) { staged in
                     try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(session.id)),
                                                expectedAudioMs: duration, to: staged)
@@ -491,9 +590,10 @@ public final class CaptureEngine {
     public func discard() throws -> String? {
         guard let session = info else { return nil }
         generation += 1
-        deactivateGraph()
-        try library.delete(session.id) // tombstone before the writer is released
-        _ = try? writer?.finish()
+        try library.delete(session.id)
+        _ = stopInput()
+        deactivateGraph(tapRemoved: true)
+        _ = try? writer?.finish(at: wallMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
@@ -515,11 +615,13 @@ public final class CaptureEngine {
         let state: String = intent == "stopped" ? "idle" : intent == "paused" ? "paused" :
             availability == "interrupted" ? "interrupted" : availability == "blocked" ? "needs_user" :
             openSpan?.kind == "silenced" ? "silenced" : "recording"
-        let elapsed = info == nil ? 0 : max(0, Int64((ProcessInfo.processInfo.systemUptime - startedUptime) * 1000) - pausedMs -
-                                               Int64((pausedSince.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0) * 1000))
+        let now = wallMilliseconds()
+        let elapsed = info.map { CaptureTiming.elapsedMilliseconds(startedAt: $0.startedAt,
+            closedPaused: pausedMs, pausedSince: pausedSince, now: now) } ?? 0
         return ["state": state, "reason": reason as Any? ?? NSNull(), "id": info?.id as Any? ?? NSNull(),
                 "intent": intent, "availability": availability, "startedAt": info?.startedAt as Any? ?? NSNull(),
-                "elapsedMs": elapsed, "audioMs": audioMs, "pausedMs": pausedMs + Int64((pausedSince.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0) * 1000),
+                "elapsedMs": elapsed, "audioMs": audioMs,
+                "pausedMs": CaptureTiming.pausedMilliseconds(closed: pausedMs, since: pausedSince, now: now),
                 "maxDurationMs": info?.maxDurationMs ?? 10_800_000,
                 "spans": spans.map(Self.spanObject), "openSpan": openSpan.map(Self.spanObject) as Any? ?? NSNull(),
                 "source": info?.source as Any? ?? NSNull(),
@@ -538,14 +640,15 @@ public final class CaptureEngine {
     private func makeSidecar(_ session: SessionInfo, duration: Int64, wallMs: Int64,
                              pausedMs: Int64, spans: [MissingAudioSpan], recovered: Bool,
                              endedUnexpectedly: Bool, lastHeartbeatAt: Int64?,
-                             input: [String: Any]?) -> [String: Any] {
+                             input: [String: Any]?, noSignalMs: Int64 = 0) -> [String: Any] {
         SidecarFactory.v2(session: session, durationMs: duration, wallMs: wallMs,
                           pausedMs: pausedMs, spans: spans, input: input,
                           recovered: recovered, endedUnexpectedly: endedUnexpectedly,
-                          lastHeartbeatAt: lastHeartbeatAt)
+                          lastHeartbeatAt: lastHeartbeatAt, noSignalMs: noSignalMs)
     }
 
     private func recoverSession(_ id: String) throws {
+        guard !library.isLiveCapture(id) else { return }
         if FileManager.default.fileExists(atPath: library.sidecarURL(id).path) {
             try library.cleanupCommittedSession(id)
             return
@@ -595,7 +698,8 @@ public final class CaptureEngine {
                   !FileManager.default.fileExists(atPath: library.url("tombstones/\(id)").path) else { continue }
             if FileManager.default.fileExists(atPath: library.sidecarURL(id).path),
                (try? library.readSidecar(id)) != nil { continue }
-            try library.probeLegacy(id) {
+            do {
+                try library.probeLegacy(id) {
                 let asset = AVURLAsset(url: audio)
                 let seconds = CMTimeGetSeconds(asset.duration)
                 guard !asset.tracks(withMediaType: .audio).isEmpty, seconds.isFinite, seconds >= 0.5 else {
@@ -611,6 +715,12 @@ public final class CaptureEngine {
                 item["legacyImport"] = true; item["ownerUnknown"] = true
                 item["sizeBytes"] = (try? audio.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                 return item
+                }
+            } catch {
+                log.error("Legacy import failed for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async { [weak self] in
+                    self?.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
+                }
             }
         }
     }
