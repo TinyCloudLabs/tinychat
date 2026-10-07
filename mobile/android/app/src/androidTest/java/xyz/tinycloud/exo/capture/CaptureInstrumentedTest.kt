@@ -211,7 +211,12 @@ class CaptureInstrumentedTest {
             assertEquals("write_failed", engine.status().getString("reason"))
             engine.recover()
             assertNotNull(engine.library.read(id))
-            engine.discard()
+            try { engine.discard(); fail("Discard deleted a committed note") }
+            catch (e: IllegalStateException) { assertEquals("already_committed", e.message) }
+            val saved = engine.stop()
+            assertEquals(id, saved.getString("id"))
+            assertEquals("idle", engine.status().getString("state"))
+            engine.library.delete(id)
         } finally {
             context.stopService(Intent(context, CaptureService::class.java))
             activity.finish()

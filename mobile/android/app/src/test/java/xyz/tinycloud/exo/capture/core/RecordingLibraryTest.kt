@@ -45,6 +45,42 @@ class RecordingLibraryTest {
         }
     }
 
+    @Test fun failedStopThenRecoveryReturnsSavedNoteAndDiscardCannotDeleteIt() {
+        val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id()
+        begin(lib, note)
+        ops.failOnce("publish.sidecarTmp")
+        expectFailure("publish.sidecarTmp") { commit(lib, note) }
+        assertNull(lib.read(note))
+        recoverTwice(lib)
+        val saved = lib.read(note) ?: error("Recovery did not save the stopped note")
+        assertEquals(note, saved.getString("id"))
+        assertTrue(saved.getBoolean("recovered"))
+        assertEquals(1, saved.getInt("rev"))
+        assertFalse("Recovery should have collected the old journal", lib.session(note).exists())
+        val sidecar = lib.sidecar(note).readBytes()
+        val audio = lib.audio(note).readBytes()
+        try { lib.discardUncommitted(note); fail("Discard must reject a saved note") }
+        catch (e: IllegalStateException) { assertEquals("already_committed", e.message) }
+        assertArrayEquals(sidecar, lib.sidecar(note).readBytes())
+        assertArrayEquals(audio, lib.audio(note).readBytes())
+        assertFalse(lib.tombstone(note).exists())
+    }
+
+    @Test fun corruptCompleteJournalFailsRecoveryTwiceWithoutMuxing() {
+        val lib = library(); val note = id(); begin(lib, note)
+        File(lib.session(note), "journal.jsonl").appendText("{invalid complete line}\n")
+        lib.closeSession(note)
+        var muxCalls = 0
+        repeat(2) {
+            expectFailure("Recovery needs retry") {
+                lib.recoverOnce({ _, out -> muxCalls++; out.writeBytes(byteArrayOf(1)) }, { null })
+            }
+            assertEquals("Corrupt journal was muxed on recovery pass ${it + 1}", 0, muxCalls)
+            assertTrue(lib.session(note).isDirectory)
+            assertFalse(lib.sidecar(note).exists())
+        }
+    }
+
     @Test fun retriedRecoveryLeavesLiveSequenceUntouchedWhileBrokenSessionPersists() {
         val lib = library(); val broken = id(); val live = id()
         begin(lib, broken)

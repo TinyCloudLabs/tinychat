@@ -35,3 +35,28 @@ screen off, Stop from the notification, pull the private file with `run-as`,
 and inspect it with `ffprobe` and `ffmpeg -af volumedetect`. For recovery,
 SIGKILL the app while recording and relaunch; do not use `force-stop` as an
 approximation of a process death.
+
+## Shortcut permission tests on an emulator
+
+The first-use and denied tests require a fresh microphone permission state.
+Granting `RECORD_AUDIO` when installing the APK, or running them after another
+capture test grants it, causes their `assumeTrue` precondition to skip them.
+Install both APKs on the emulator without `-g`, then revoke and clear the
+permission flags before **each** test:
+
+```bash
+adb -s emulator-5574 install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
+adb -s emulator-5574 install -r -t mobile/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+for test in shortcutFirstUsePermissionGrantStartsRecording shortcutDeniedPermissionClearsCommandWithoutReprompting; do
+  adb -s emulator-5574 shell pm revoke xyz.tinycloud.exo android.permission.RECORD_AUDIO
+  adb -s emulator-5574 shell pm clear-permission-flags xyz.tinycloud.exo android.permission.RECORD_AUDIO user-set user-fixed
+  adb -s emulator-5574 shell am instrument -w -r \
+    -e class "xyz.tinycloud.exo.capture.CaptureInstrumentedTest#$test" \
+    xyz.tinycloud.exo.test/androidx.test.runner.AndroidJUnitRunner
+done
+```
+
+Confirm each run says `OK (1 test)` and reports status code `0`; status code
+`-4` means the test skipped. Use an emulator only: connected tests uninstall the
+app when Gradle finishes, so they must never run on the Moto.

@@ -367,6 +367,12 @@ class CaptureEngine private constructor(private val context: Context) {
     }
     fun stop(reason: String = "user"): JSONObject = controlLock.withLock {
         val current = id ?: throw IllegalStateException("not_recording")
+        if (input == null) library.read(current)?.let { saved ->
+            id = null; state = "idle"; this.reason = null; intent = "stopped"; availability = "available"
+            main.removeCallbacks(limitTick)
+            publishState(); emit("committed", saved)
+            return@withLock saved
+        }
         // AudioCapture.stop drains its bounded queue. Never hold the engine monitor
         // while joining that writer, because each encoded frame enters that monitor.
         val captured = input
@@ -414,7 +420,8 @@ class CaptureEngine private constructor(private val context: Context) {
     }
     fun discard(): String? = controlLock.withLock {
         val current = id ?: return@withLock null
-        gen++; intent = "stopped"; library.delete(current)
+        if (library.sidecar(current).exists()) throw IllegalStateException("already_committed")
+        gen++; intent = "stopped"; library.discardUncommitted(current)
         input?.stop(); input = null; encoder?.finish(); encoder = null
         id = null; state = "idle"; reason = null; publishState()
         main.removeCallbacks(limitTick)

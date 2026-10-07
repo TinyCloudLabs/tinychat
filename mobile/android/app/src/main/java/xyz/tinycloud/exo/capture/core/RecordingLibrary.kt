@@ -290,6 +290,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         gcArtifacts(id)
         retire(id)
     }
+    /** Discard applies only to an unpublished session; saved notes use explicit deleteAudio. */
+    fun discardUncommitted(id: String) = lock.withLock {
+        requireId(id)
+        if (sidecar(id).exists()) throw IllegalStateException("already_committed")
+        delete(id)
+    }
     /** Retryable after a tombstone: stable entry ids prevent duplicate cleanup jobs. */
     private fun enqueueOutbox(id: String) {
         val note = sidecar(id).takeIf { it.exists() }?.let { JSONObject(it.readText()) }
@@ -355,7 +361,14 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 if (lock.withLock { id in openSessions }) continue
                 if (tombstone(id).exists()) { lock.withLock { enqueueOutbox(id); gcArtifacts(id); retire(id) }; continue }
                 if (sidecar(id).exists()) { gcSession(id); continue }
-                if (dir.listFiles().orEmpty().filter { it.name.endsWith(".aac") }.sumOf { scanAdts(it).frames } == 0L) {
+                val segments = dir.listFiles().orEmpty().filter { it.name.endsWith(".aac") }
+                if (segments.all { it.length() == 0L }) {
+                    gcSession(id); continue
+                }
+                // A complete but invalid journal line makes this session unrecoverable.
+                // Reject it before scanning or muxing a long segment on every retry.
+                if (events(id).none { it.optString("e") == "session" }) throw IOException("Missing session")
+                if (segments.sumOf { scanAdts(it).frames } == 0L) {
                     gcSession(id); continue
                 }
                 commit(id, { mux(id, it) }, recovered = true, exitReason = exitReason)
