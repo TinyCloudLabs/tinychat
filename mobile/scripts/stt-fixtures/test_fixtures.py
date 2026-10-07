@@ -8,6 +8,8 @@ from pathlib import Path
 
 from make_alternation import RATE, trim_speech
 from prepare_ami import crop_rttm, crop_words
+from score import diarization_error, window_many_to_one_mapping
+from wer import reference_text, tokens
 
 
 class FixtureTests(unittest.TestCase):
@@ -47,6 +49,20 @@ class FixtureTests(unittest.TestCase):
         self.assertGreaterEqual(len(trimmed), 2 * RATE)
         self.assertLess(len(trimmed), len(samples))
         self.assertEqual(max(trimmed), 4000)
+
+    def test_json_transcript_reference_and_many_to_one_speaker_merge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "turns.json"
+            path.write_text(json.dumps([{"text": "A kind"}, {"text": "of WORD"}]))
+            self.assertEqual(tokens(reference_text(path)), ["a", "kind", "of", "word"])
+
+        ref = [(0.0, 1.0, "A")]
+        hyp = [(0.0, 1.0, "w0_speaker_0"), (0.0, 1.0, "w0_speaker_1")]
+        reference_frames = [{"A"}] * 100
+        hypothesis_frames = [{"w0_speaker_0", "w0_speaker_1"}] * 100
+        mapping = window_many_to_one_mapping(ref, hyp, reference_frames, hypothesis_frames)
+        self.assertEqual(mapping, {"w0_speaker_0": "A", "w0_speaker_1": "A"})
+        self.assertEqual(diarization_error(ref, reference_frames, hypothesis_frames, mapping)[0], 0)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Case/punctuation-normalized word error rate for CC BY 4.0 fixtures."""
 import argparse
-import re
+import json
 import unicodedata
 from pathlib import Path
 
@@ -22,12 +22,18 @@ def distance(reference, hypothesis):
     return row[-1]
 
 
+def reference_text(path):
+    if path.suffix == ".json":
+        return " ".join(row["text"] for row in json.loads(path.read_text()))
+    return path.read_text()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("reference", type=Path)
     parser.add_argument("hypothesis", type=Path)
     args = parser.parse_args()
-    ref = tokens(args.reference.read_text())
+    ref = tokens(reference_text(args.reference))
     hyp = tokens(args.hypothesis.read_text())
     if not ref:
         parser.error("empty reference")

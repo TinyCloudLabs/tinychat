@@ -27,10 +27,15 @@ public enum SttBenchmark {
         guard let cap, (10...25).contains(cap) else {
             throw SttBenchmarkError.invalidConfiguration("VAD cap must be 10–25 seconds")
         }
-        let threshold = Float(ProcessInfo.processInfo.environment["EXO_STT_BENCH_CLUSTER_THRESHOLD"] ?? "0.95")
+        let threshold = Float(ProcessInfo.processInfo.environment["EXO_STT_BENCH_CLUSTER_THRESHOLD"] ?? "0.8")
         guard let threshold, (0.5...1.5).contains(threshold) else {
             throw SttBenchmarkError.invalidConfiguration("cluster threshold must be 0.5–1.5")
         }
+        let hardSplit = Double(ProcessInfo.processInfo.environment["EXO_STT_BENCH_HARD_SPLIT_SECONDS"] ?? "0")
+        guard let hardSplit, hardSplit == 0 || (5...25).contains(hardSplit) else {
+            throw SttBenchmarkError.invalidConfiguration("hard split must be 0 or 5–25 seconds")
+        }
+        let asrOnly = ProcessInfo.processInfo.environment["EXO_STT_BENCH_ASR_ONLY"] == "1"
         #if os(macOS)
         let output = directory.appendingPathComponent("results/mac", isDirectory: true)
         #else
@@ -43,12 +48,17 @@ public enum SttBenchmark {
         if let only, !fixtureNames.contains(only) { throw SttBenchmarkError.invalidFixture(only) }
         for name in only.map({ [$0] }) ?? fixtureNames {
             let samples = try readWav(directory.appendingPathComponent("\(name).wav"))
+            let reference = try referenceText(directory: directory, fixture: name)
             for threadCount in orderedThreads {
                 let model = directory.appendingPathComponent("models/full", isDirectory: true)
                 let cold = summary.isEmpty
-                let result = try recognize(samples: samples, model: model, threads: threadCount, vadCap: cap)
+                let result = try recognize(samples: samples, model: model, threads: threadCount,
+                                           vadCap: cap, hardSplit: hardSplit)
                 let stem = threadCount == 4 ? name : "\(name)-t\(threadCount)"
                 try result.text.write(to: output.appendingPathComponent("\(stem).hyp.txt"), atomically: true, encoding: .utf8)
+                guard let wer = WordErrorRate.score(reference: reference, hypothesis: result.text) else {
+                    throw SttBenchmarkError.invalidFixture("empty reference for \(name)")
+                }
                 var words = result.words
                 var metrics: [String: Any] = [
                     "fixture": name, "threads": threadCount, "audioSeconds": Double(samples.count) / 16_000,
@@ -58,17 +68,27 @@ public enum SttBenchmark {
                     "asrSampledPeakPhysFootprintBytes": result.sampledPeakPhysFootprintBytes,
                     "speechSegments": result.speechSegments, "vadCapSeconds": cap,
                     "maxSpeechSegmentSeconds": result.maxSpeechSegmentSeconds,
+                    "maxAsrWindowSeconds": result.maxAsrWindowSeconds,
+                    "asrWindowCount": result.asrWindows.count,
+                    "hardSplitSeconds": hardSplit,
+                    "vadCoverageSeconds": result.vadCoverageSeconds,
+                    "vadSegments": result.vadSegments,
+                    "asrWindows": result.asrWindows,
+                    "wer": wer.rate, "werErrors": wer.errors,
+                    "werReferenceWords": wer.referenceWords,
+                    "werHypothesisWords": wer.hypothesisWords,
                     "vadProcessingSeconds": result.vadProcessingSeconds,
                     "coldLoad": cold
                 ]
                 if cold { metrics["coldLoadSeconds"] = result.loadSeconds }
-                if name != "ls-1089-10m" {
+                if name != "ls-1089-10m" && !asrOnly {
                     let diar = try diarize(samples: samples, model: directory.appendingPathComponent("models/diarization"),
                                            threads: threadCount, threshold: threshold)
                     try diar.rttm.write(to: output.appendingPathComponent("\(stem).rttm"), atomically: true, encoding: .utf8)
                     words = SpeakerAttribution.assign(words, turns: diar.turns)
                     metrics["diarizationSeconds"] = diar.seconds
                     metrics["maxWindowSeconds"] = diar.maxWindowSeconds
+                    metrics["diarizationWindowSeconds"] = diar.windowSeconds
                     metrics["diarizationBaselineFootprintBytes"] = diar.baselineFootprintBytes
                     metrics["diarizationSampledPeakFootprintBytes"] = diar.sampledPeakFootprintBytes
                     metrics["diarizationExtraFootprintBytes"] = diar.extraFootprintBytes
@@ -77,6 +97,7 @@ public enum SttBenchmark {
                     metrics["peakPhysFootprintBytes"] = diar.processPeakPhysFootprintBytes
                 } else {
                     try "".write(to: output.appendingPathComponent("\(stem).rttm"), atomically: true, encoding: .utf8)
+                    if asrOnly { metrics["diarizationSkipped"] = true }
                 }
                 try writeJSON(words, to: output.appendingPathComponent("\(stem).words.json"))
                 let metricData = try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys])
@@ -100,6 +121,19 @@ public enum SttBenchmark {
         return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
     }
 
+    private static func referenceText(directory: URL, fixture: String) throws -> String {
+        if fixture == "ls-1089-10m" {
+            let url = directory.appendingPathComponent("\(fixture).ref.txt")
+            guard FileManager.default.fileExists(atPath: url.path) else { throw SttBenchmarkError.missingFixture(url.path) }
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+        let suffix = fixture == "ami-es2004a-10m" ? "words.json" : "ref.json"
+        let url = directory.appendingPathComponent("\(fixture).\(suffix)")
+        guard FileManager.default.fileExists(atPath: url.path) else { throw SttBenchmarkError.missingFixture(url.path) }
+        let entries = try JSONDecoder().decode([TimedWord].self, from: Data(contentsOf: url))
+        return entries.map(\.text).joined(separator: " ")
+    }
+
     private struct Recognition {
         let text: String
         let words: [TimedWord]
@@ -109,10 +143,15 @@ public enum SttBenchmark {
         let sampledPeakPhysFootprintBytes: UInt64
         let speechSegments: Int
         let maxSpeechSegmentSeconds: Double
+        let maxAsrWindowSeconds: Double
+        let vadCoverageSeconds: Double
+        let vadSegments: [[String: Any]]
+        let asrWindows: [[String: Any]]
         let vadProcessingSeconds: Double
     }
 
-    private static func recognize(samples: [Float], model: URL, threads: Int, vadCap: Float) throws -> Recognition {
+    private static func recognize(samples: [Float], model: URL, threads: Int,
+                                  vadCap: Float, hardSplit: Double) throws -> Recognition {
         for file in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"] {
             guard FileManager.default.fileExists(atPath: model.appendingPathComponent(file).path) else {
                 throw SttBenchmarkError.missingFixture(model.appendingPathComponent(file).path)
@@ -133,12 +172,12 @@ public enum SttBenchmark {
         let loaded = CFAbsoluteTimeGetCurrent()
         let segmented = try speechChunks(samples: samples,
                                          model: model.deletingLastPathComponent().appendingPathComponent("silero_vad.onnx"),
-                                         threads: threads, cap: vadCap)
-        var texts: [String] = []
+                                         threads: threads, cap: vadCap, hardSplit: hardSplit)
         var words: [TimedWord] = []
+        var windows: [[String: Any]] = []
+        var wordsPerSegment = [Int](repeating: 0, count: segmented.vadSegments.count)
         for chunk in segmented.chunks {
             let result = recognizer.decode(samples: chunk.samples)
-            texts.append(result.text)
             var tokens: [String] = []
             if result.count > 0 {
                 guard let tokenPointers = result.result.pointee.tokens_arr else {
@@ -150,33 +189,69 @@ public enum SttBenchmark {
                 }
             }
             guard tokens.count == result.count else { throw SttBenchmarkError.missingTokenData }
-            words += try TokenWordAlignment.align(tokens: tokens, timestamps: result.timestamps,
-                                                   durations: result.durations, origin: Double(chunk.start) / 16_000)
+            let decoded = try TokenWordAlignment.align(tokens: tokens, timestamps: result.timestamps,
+                                                        durations: result.durations,
+                                                        origin: Double(chunk.start) / 16_000)
+            let kept = decoded.filter { word in
+                let middle = (word.start + word.end) * 8_000 // seconds to midpoint sample.
+                return middle >= Double(chunk.ownedStart) && middle < Double(chunk.ownedEnd)
+            }
+            words += kept
+            wordsPerSegment[chunk.sourceSegment] += kept.count
+            windows.append(["start": Double(chunk.start) / 16_000,
+                            "end": Double(chunk.end) / 16_000,
+                            "ownedStart": Double(chunk.ownedStart) / 16_000,
+                            "ownedEnd": Double(chunk.ownedEnd) / 16_000,
+                            "sourceVadSegment": chunk.sourceSegment,
+                            "decodedWords": decoded.count, "keptWords": kept.count])
         }
         let ended = CFAbsoluteTimeGetCurrent()
         let memory = try sampler.stop()
-        return Recognition(text: texts.joined(separator: " "), words: words,
+        let vadMetrics = segmented.vadSegments.enumerated().map { index, segment in
+            ["start": Double(segment.start) / 16_000,
+             "end": Double(segment.end) / 16_000,
+             "decodedWords": wordsPerSegment[index],
+             "rms": segment.rms,
+             "sourceMaxSampleDifference": segment.sourceMaxSampleDifference] as [String: Any]
+        }
+        return Recognition(text: words.map(\.text).joined(separator: " "), words: words,
                            loadSeconds: loaded - loadStart + segmented.loadSeconds,
                            decodeSeconds: ended - loaded - segmented.loadSeconds,
                            peakPhysFootprintBytes: memory.lifetimePeak,
                            sampledPeakPhysFootprintBytes: memory.sampledPeak,
-                           speechSegments: segmented.chunks.count,
-                           maxSpeechSegmentSeconds: Double(segmented.chunks.map(\.samples.count).max() ?? 0) / 16_000,
+                           speechSegments: segmented.vadSegments.count,
+                           maxSpeechSegmentSeconds: Double(segmented.vadSegments.map { $0.end - $0.start }.max() ?? 0) / 16_000,
+                           maxAsrWindowSeconds: Double(segmented.chunks.map { $0.end - $0.start }.max() ?? 0) / 16_000,
+                           vadCoverageSeconds: Double(segmented.vadSegments.reduce(0) { $0 + $1.end - $1.start }) / 16_000,
+                           vadSegments: vadMetrics, asrWindows: windows,
                            vadProcessingSeconds: segmented.processingSeconds)
     }
 
     private struct SpeechChunk {
         let start: Int
+        let end: Int
+        let ownedStart: Int
+        let ownedEnd: Int
+        let sourceSegment: Int
         let samples: [Float]
+    }
+
+    private struct SpeechRange {
+        let start: Int
+        let end: Int
+        let rms: Double
+        let sourceMaxSampleDifference: Double
     }
 
     private struct SpeechChunks {
         let chunks: [SpeechChunk]
+        let vadSegments: [SpeechRange]
         let loadSeconds: Double
         let processingSeconds: Double
     }
 
-    private static func speechChunks(samples: [Float], model: URL, threads: Int, cap: Float) throws -> SpeechChunks {
+    private static func speechChunks(samples: [Float], model: URL, threads: Int,
+                                     cap: Float, hardSplit: Double) throws -> SpeechChunks {
         guard FileManager.default.fileExists(atPath: model.path) else {
             throw SttBenchmarkError.missingFixture(model.path)
         }
@@ -190,20 +265,49 @@ public enum SttBenchmark {
         let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: 30)
         let loaded = CFAbsoluteTimeGetCurrent()
         var chunks: [SpeechChunk] = []
-        func drain() {
+        var vadSegments: [SpeechRange] = []
+        func drain() throws {
             while !vad.isEmpty() {
                 let segment = vad.front()
-                chunks.append(.init(start: segment.start, samples: segment.samples))
+                let sourceIndex = vadSegments.count
+                let end = segment.start + segment.samples.count
+                guard segment.start >= 0, end <= samples.count else {
+                    throw SttBenchmarkError.invalidAudio("VAD segment outside source audio")
+                }
+                var squared = 0.0
+                var maxDifference = 0.0
+                for index in segment.samples.indices {
+                    let value = Double(segment.samples[index])
+                    squared += value * value
+                    maxDifference = max(maxDifference,
+                                        abs(value - Double(samples[segment.start + index])))
+                }
+                let rms = (squared / Double(max(1, segment.samples.count))).squareRoot()
+                vadSegments.append(.init(start: segment.start, end: end,
+                                         rms: rms, sourceMaxSampleDifference: maxDifference))
+                let planned = hardSplit == 0
+                    ? [AsrWindow(start: 0, end: segment.samples.count,
+                                 ownedStart: 0, ownedEnd: segment.samples.count)]
+                    : AsrWindowing.plan(samples: segment.samples, sampleRate: 16_000,
+                                        maxSeconds: hardSplit)
+                for part in planned {
+                    chunks.append(.init(start: segment.start + part.start,
+                                        end: segment.start + part.end,
+                                        ownedStart: segment.start + part.ownedStart,
+                                        ownedEnd: segment.start + part.ownedEnd,
+                                        sourceSegment: sourceIndex,
+                                        samples: Array(segment.samples[part.start..<part.end])))
+                }
                 vad.pop()
             }
         }
         for offset in stride(from: 0, to: samples.count, by: 512) {
             vad.acceptWaveform(samples: Array(samples[offset..<min(offset + 512, samples.count)]))
-            drain()
+            try drain()
         }
         vad.flush()
-        drain()
-        return SpeechChunks(chunks: chunks, loadSeconds: loaded - began,
+        try drain()
+        return SpeechChunks(chunks: chunks, vadSegments: vadSegments, loadSeconds: loaded - began,
                             processingSeconds: CFAbsoluteTimeGetCurrent() - loaded)
     }
 
@@ -211,6 +315,7 @@ public enum SttBenchmark {
         let rttm: String
         let seconds: Double
         let maxWindowSeconds: Double
+        let windowSeconds: [Double]
         let baselineFootprintBytes: UInt64
         let sampledPeakFootprintBytes: UInt64
         let processPeakPhysFootprintBytes: UInt64
@@ -235,6 +340,7 @@ public enum SttBenchmark {
         let diarizer = SherpaOnnxOfflineSpeakerDiarizationWrapper(config: &config)
         let start = CFAbsoluteTimeGetCurrent()
         var maxWindow = 0.0
+        var windowSeconds: [Double] = []
         var lines: [String] = []
         var attributedTurns: [SpeakerTurn] = []
         var clustersPerWindow: [Int] = []
@@ -243,7 +349,9 @@ public enum SttBenchmark {
             let windowIndex = offset / window
             let began = CFAbsoluteTimeGetCurrent()
             let turns = diarizer.process(samples: Array(samples[offset..<min(offset + window, samples.count)]))
-            maxWindow = max(maxWindow, CFAbsoluteTimeGetCurrent() - began)
+            let elapsed = CFAbsoluteTimeGetCurrent() - began
+            maxWindow = max(maxWindow, elapsed)
+            windowSeconds.append(elapsed)
             clustersPerWindow.append(Set(turns.map(\.speaker)).count)
             for turn in turns {
                 let origin = Double(offset) / 16_000
@@ -257,7 +365,7 @@ public enum SttBenchmark {
         let elapsed = CFAbsoluteTimeGetCurrent() - start
         let memory = try sampler.stop()
         return Diarization(rttm: lines.joined(separator: "\n") + "\n",
-                           seconds: elapsed, maxWindowSeconds: maxWindow,
+                           seconds: elapsed, maxWindowSeconds: maxWindow, windowSeconds: windowSeconds,
                            baselineFootprintBytes: baseline,
                            sampledPeakFootprintBytes: memory.sampledPeak,
                            processPeakPhysFootprintBytes: memory.lifetimePeak,

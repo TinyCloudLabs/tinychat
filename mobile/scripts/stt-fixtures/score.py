@@ -87,9 +87,11 @@ def diarization_error(ref, ref_frames, hyp_frames, mapping):
     for tick, (r, h) in enumerate(zip(ref_frames, hyp_frames)):
         if collared[tick]:
             continue
-        mapped = [mapping.get(s) for s in h]
-        correct = sum(1 for s in mapped if s in r)
-        errors += max(len(r), len(h)) - correct
+        # A many-to-one link collapses simultaneous local labels assigned to
+        # the same global speaker. Unmapped labels remain distinct errors.
+        mapped = {mapping.get(s) if mapping.get(s) is not None else ("unmapped", s) for s in h}
+        correct = len(mapped.intersection(r))
+        errors += max(len(r), len(mapped)) - correct
         total += len(r)
     return errors / total if total else 0, errors, total
 
@@ -104,6 +106,26 @@ def window_oracle_mapping(ref, hyp, ref_frames, hyp_frames):
         first, last = round(begin / STEP), round(end / STEP)
         mapping.update(best_mapping(local_ref, local_hyp,
                                     ref_frames[first:last], hyp_frames[first:last]))
+    return mapping
+
+
+def window_many_to_one_mapping(ref, hyp, ref_frames, hyp_frames):
+    """Optimistic diagnostic: each local cluster may merge into any reference speaker."""
+    mapping = {}
+    for window in range(10):
+        begin, end = window * 60, (window + 1) * 60
+        local_ref = sorted({turn[2] for turn in ref if turn[0] < end and turn[1] > begin})
+        local_hyp = sorted({turn[2] for turn in hyp if turn[0] < end and turn[1] > begin})
+        counts = {(h, r): 0 for h in local_hyp for r in local_ref}
+        first, last = round(begin / STEP), round(end / STEP)
+        for r, h in zip(ref_frames[first:last], hyp_frames[first:last]):
+            for hs in h:
+                for rs in r:
+                    counts[(hs, rs)] += 1
+        for hs in local_hyp:
+            candidates = [(counts[(hs, rs)], rs) for rs in local_ref]
+            best = max(candidates) if candidates else (0, None)
+            mapping[hs] = best[1] if best[0] > 0 else None
     return mapping
 
 
@@ -160,4 +182,13 @@ if __name__ == "__main__":
                        "per_window_oracle_word_attribution": oracle_attr,
                        "per_window_oracle_attributed_words": oracle_matched,
                        "per_window_oracle_eligible_words": oracle_eligible})
+        merge = window_many_to_one_mapping(ref, hyp, ref_frames, hyp_frames)
+        merge_der, merge_errors, _ = diarization_error(ref, ref_frames, hyp_frames, merge)
+        merge_attr, merge_matched, merge_eligible = word_attribution(
+            ref_words, hyp_words, merge, ref_frames, args.attribution_mode)
+        result.update({"per_window_many_to_one_oracle_DER": merge_der,
+                       "per_window_many_to_one_oracle_error_frames": merge_errors,
+                       "per_window_many_to_one_oracle_word_attribution": merge_attr,
+                       "per_window_many_to_one_oracle_attributed_words": merge_matched,
+                       "per_window_many_to_one_oracle_eligible_words": merge_eligible})
     print(json.dumps(result, sort_keys=True))
