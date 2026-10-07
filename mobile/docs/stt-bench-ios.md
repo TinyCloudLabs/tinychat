@@ -19,7 +19,7 @@ AMI audio is cropped from 300 to 900 seconds. RTTM turns crossing an edge are cl
 
 ## ASR coverage and stop/go
 
-The benchmark requests a 25-second `maxSpeechDuration` from pinned Silero VAD and uses 60-second diarization windows. Sherpa's setting is soft: AMI emitted a 29.760-second VAD segment and alternation a 27.424-second one. `EXO_STT_BENCH_HARD_SPLIT_SECONDS=15` is a diagnostic hard limit: it chooses the lowest-energy 20 ms frame near each boundary, gives adjacent windows 0.6 seconds of shared audio, then assigns each decoded word to one window by its midpoint. The default is `0` (no additional split), because the experiment below worsened WER. `vadSegments` in each metrics file records `[start, end, decodedWords, rms, sourceMaxSampleDifference]`; `asrWindows` records the decode range, owned range, and decoded and kept word counts. `vadCoverageSeconds` reports the sum of VAD segment durations.
+The benchmark requests a 25-second `maxSpeechDuration` from pinned Silero VAD and uses 60-second diarization windows. Sherpa's setting is soft: AMI emitted a 29.760-second VAD segment and alternation a 27.424-second one. `EXO_STT_BENCH_HARD_SPLIT_SECONDS=15` is a diagnostic hard limit: it chooses the lowest-energy 20 ms frame near each boundary, gives adjacent windows 0.6 seconds of shared audio, then assigns each decoded word to one window by its midpoint. The default is `0` (no additional split), because the experiment below worsened WER. `EXO_STT_BENCH_BLANK_PENALTY` passes a penalty to sherpa's greedy decoder; `EXO_STT_BENCH_CHUNK_PAD_SECONDS` adds that many seconds of zeros to both ends of each ASR chunk and shifts word timestamps back by the pad. Both default to `0`. `vadSegments` in each metrics file records `[start, end, decodedWords, rms, sourceMaxSampleDifference]`; `emptyVadSegments` counts VAD speech segments with no kept words. `asrWindows` records the original audio range, owned range, and decoded and kept word counts. `vadCoverageSeconds` reports the sum of VAD segment durations. Metrics also record `blankPenalty` and `chunkPadSeconds`.
 
 Four-thread Mac WER, using the same pinned fixtures and references:
 
@@ -28,7 +28,45 @@ Four-thread Mac WER, using the same pinned fixtures and references:
 | VAD, no hard split | 2.0202% (24/1188) | 28.7269% (528/1838) | 65.0809% (1327/2039) |
 | VAD, hard split at 15 s | 2.0202% (24/1188) | 33.5147% (616/1838) | 67.1898% (1370/2039) |
 
-LibriSpeech has natural pauses and its longest VAD segment is 14.676 seconds. On alternation, VAD covers 91.66% of reference speech time; on AMI, it covers 96.88% of annotated word midpoints. Every returned VAD sample matched the source WAV (`sourceMaxSampleDifference=0`). Yet the unsplit recognizer returned no words for 18 of 74 alternation VAD segments, including a 4.34-second segment with nonzero speech energy; the split version returned no words for 19 segments. The recognizer drops speech even on short, intact mixed-speech input. The 30-second VAD buffer and long segments are not the primary explanation, and a 15-second split is not a remedy. A LibriSpeech WER pass alone **cannot pass the ASR gate**: both continuous-speech WERs must be reported, and this spike is **no-go for ASR** until the blank outputs are solved and continuous-speech acceptance limits are set for T23. The earlier fixed 25-second slicing pass also scored 20.7912% LibriSpeech WER.
+LibriSpeech has natural pauses and its longest VAD segment is 14.676 seconds. On alternation, VAD covers 91.66% of reference speech time; on AMI, it covers 96.88% of annotated word midpoints. Every returned VAD sample matched the source WAV (`sourceMaxSampleDifference=0`). With **Parakeet v3 int8, greedy search, blank penalty 0 and no padding**, the unsplit recognizer returned no words for 18 of 74 alternation VAD segments, including a 4.34-second segment with nonzero speech energy; the split version returned no words for 19 segments. The same cut collapses in Python sherpa-onnx 1.13.8, while changing only the blank penalty recovers its words. This is a v3 int8 greedy blank-collapse failure, not evidence that VAD discarded the samples. A 15-second hard split is not a remedy: its mid-speech boundaries also remove leading context. The earlier fixed 25-second slicing pass scored 20.7912% LibriSpeech WER.
+
+### T7b decode sweep (TC-819)
+
+Four-thread Mac, ASR-only, pinned v3 int8 and the same VAD cuts on all three fixtures. Each cell is **WER / empty VAD speech segments**; denominators are 79 LibriSpeech, 63 AMI and 74 alternation. The eight settings ran sequentially. The full metrics and hypotheses are in `/tmp/exo-capture/evidence/T7b/sweep/`.
+
+| Blank penalty | Zero pad per end | LibriSpeech | AMI ES2004a | Two-speaker alternation |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 s | 2.02% / 0 | 28.73% / 5 | 65.08% / 18 |
+| 0 | 0.5 s | 8.42% / 0 | 35.47% / 6 | 81.46% / 23 |
+| 0.5 | 0 s | 2.02% / 0 | 25.84% / 0 | 58.21% / 6 |
+| 0.5 | 0.5 s | 8.33% / 0 | 27.42% / 4 | 80.58% / 14 |
+| 1.0 | 0 s | 2.02% / 0 | 23.39% / 0 | 52.67% / 2 |
+| 1.0 | 0.5 s | 8.50% / 0 | 25.46% / 3 | 72.98% / 7 |
+| 1.5 | 0 s | 1.94% / 0 | 22.31% / 0 | 47.72% / 0 |
+| 1.5 | 0.5 s | 8.42% / 0 | 23.67% / 0 | 69.69% / 3 |
+
+Padding fails the 4% LibriSpeech limit at every penalty. The 1.0/0 setting improves both continuous fixtures without the obvious invented phrases seen at higher penalties, but two **non-silent** alternation segments of 6.74 s and 4.28 s remain entirely blank. Additional unpadded checks at 1.1, 1.2 and 1.3 scored 51.20%, 50.42% and 50.02% alternation WER, with 1, 1 and 0 empty segments. Already at 1.1, the 6.74-second segment produces "I'm not sure" instead of its reference speech, and the first segment gains "the year"; 1.5 also invents those phrases. **No tested global penalty/padding setting meets all three acceptance conditions.** Lower WER and zero empty segments at 1.5 do not make the fabricated words acceptable.
+
+The model check used Python sherpa-onnx **1.13.8**, two threads, greedy search, blank penalty 0 and no padding on the exact two VAD cuts that were blank in the v3 int8 baseline (0.060–4.400 s and 82.876–90.160 s). The [v3 fp32](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/tree/1a468a35cbba69418f126de829e75261dea4a4e4) and [English v2 int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tree/1ab9323565ddb038682214b292f588070a538ce2) downloads were revision-pinned and checked against their published SHA-256 hashes. The 110M English int8 pack is the fixture lock's small model.
+
+| Model | First cut | Second cut |
+| --- | --- | --- |
+| v3 int8 | 0 tokens, blank | 0 tokens, blank |
+| v3 fp32 | 21 tokens, “On Friday, confession will be heard all the afternoon after” | 0 tokens, blank |
+| English v2 int8 | 25 tokens, “On Friday, confession will be heard all the afternoon afterwards” | 30 tokens, “The others resented postponement, but it was just his scruples that charmed him” |
+| 110M English int8 | 23 tokens, “On Friday, confession will be heard all the afternoon afterity” | 44 tokens, includes “The others resented postponement” and “Cold lucid indifference reigned in his head” |
+
+Fp32 recovering only the first cut is consistent with quantization contributing to the collapse, but the second cut shows it is not the whole explanation. Both English variants recover these cuts. The following full-fixture variant runs used the **same saved v3 baseline VAD boundaries**, Python sherpa-onnx 1.13.8, greedy search, penalty 0 and no pad. As a parity check, Python v3 int8 reproduced the Swift benchmark's WER and empty counts exactly on all three fixtures.
+
+| Model | LibriSpeech WER / empty | AMI WER / empty | Alternation WER / empty |
+| --- | ---: | ---: | ---: |
+| v3 int8 baseline | 2.02% / 0 | 28.73% / 5 | 65.08% / 18 |
+| English v2 int8 | 2.53% / 1 | 23.50% / 0 | 65.47% / 7 |
+| 110M English int8 | 2.44% / 0 | 30.30% / 4 | 21.53% / 0 |
+
+**ASR verdict:** v3 int8 with greedy search, blank penalty **0**, pad **0** is no-go on continuous speech; the 1.0/0 candidate reduces but does not remove whole-utterance blanks. The 1.5/0 setting removes blank segments on these fixtures but fabricates words. Neither English variant passes both continuous fixtures, so this Mac experiment does **not** establish a production-ready Parakeet configuration. LibriSpeech alone still cannot pass the ASR gate.
+
+**T23 recommendation:** use **v3 int8, greedy search, `blankPenalty = 1.0`, 0 s chunk pad and the 25 s soft VAD cap** as the initial implementation and measurement configuration, not as a shipping pass. Do not carry over the benchmark's 15 s diagnostic split: T23 still needs a context-aware hard bound of ≤25 s per ASR work unit for capture-priority handoff. Keep the ASR gate closed until one configuration scores ≤4% LibriSpeech WER and, on continuous speech, **≤25% AMI WER** (the anchor) and **≤50% alternation WER** (the deliberately overlapped stress test), with no entirely blank non-silent segment of at least 4 s and no invented phrases. The 1.0/0 candidate currently fails the alternation WER and blank-segment conditions. Tune on another meeting before using ES2004a as a final held-out gate; the limits here are provisional because this sweep used the gate fixtures. Do not silently substitute the small pack: its 30.30% AMI WER and four empty AMI segments fail the anchor despite its much better alternation score. Phone load, RTF and memory gates remain pending.
 
 The benchmark does not apply the plan's 0.001 dither or −3 dBFS peak normalization to these clean fixtures. `EXO_STT_BENCH_VAD_CAP_SECONDS` can vary the soft VAD request from 10 to 25 seconds. `EXO_STT_BENCH_ASR_ONLY=1` skips diarization for a focused diagnostic; it never supplies a diarization gate result.
 
@@ -42,6 +80,6 @@ Diarization speaker IDs are qualified by their 60-second window. `score.py` repo
 
 `diarizationExtraFootprintBytes` is the sampled peak above the footprint immediately before diarizer creation, sampled every 10 ms during construction and processing. Allocator reuse changes that reading: the full AMI run was 57.5 MB above an 895.6 MB baseline, while a focused AMI process was 200.0 MB above a 61.6 MB baseline. Use a focused process for the Vonnegut extra-memory gate. `peakPhysFootprintBytes` uses the kernel's lifetime `ledger_phys_footprint_peak`; `diarizationWindowSeconds` records every window time alongside the maximum. The benchmark writes raw outputs even when a threshold fails. Other Vonnegut stop/go limits remain: stripped binary growth ≤40 MB, IPA growth ≤25 MB, cold model load ≤8 s, four-thread RTF ≤0.25, lifetime peak footprint ≤1.6 GB, LibriSpeech WER ≤4%, AMI DER ≤30%, extra diarization footprint ≤400 MB, and each 60-second window ≤5 s. Mac timings are provisional, especially on the overloaded host; Vonnegut is needed for device timing and memory gates.
 
-For a Mac-only diagnostic, run `EXO_STT_BENCH_ONLY=ami-es2004a-10m swift run --package-path mobile/ios/Packages/ExoStt -Xswiftc -DEXO_STT_BENCH SttBenchMac "$HOME/.cache/exo-stt-fixtures" 4`. This writes `results/mac/`, separate from phone results. The 31 C++ static initializers introduced by the linked runtime still need a non-benchmark phone launch timing check. T13 should check the `physicalMemory >= 6_000_000_000` small-model policy against a real 6 GB iPhone.
+For a Mac-only diagnostic of the T23 candidate, run `EXO_STT_BENCH_ASR_ONLY=1 EXO_STT_BENCH_BLANK_PENALTY=1.0 EXO_STT_BENCH_CHUNK_PAD_SECONDS=0 swift run --package-path mobile/ios/Packages/ExoStt -Xswiftc -DEXO_STT_BENCH SttBenchMac "$HOME/.cache/exo-stt-fixtures" 4`. Set `EXO_STT_BENCH_ONLY=ami-es2004a-10m` to focus on AMI. This writes `results/mac/`, separate from phone results; copy that directory after each setting because the next run overwrites the same filenames. The 31 C++ static initializers introduced by the linked runtime still need a non-benchmark phone launch timing check. T13 should check the `physicalMemory >= 6_000_000_000` small-model policy against a real 6 GB iPhone.
 
 The pinned Parakeet weights come from [sherpa-onnx's Hugging Face export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8); the small pack, Silero VAD and diarization models come from [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases). The model weights are separate from the binary size budget.
