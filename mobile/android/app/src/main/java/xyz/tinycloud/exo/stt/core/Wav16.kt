@@ -2,6 +2,8 @@ package xyz.tinycloud.exo.stt.core
 
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /** Fixture reader. Refuses resampling or format guesses so timestamps retain the scorer's origin. */
 internal object Wav16 {
@@ -42,6 +44,15 @@ internal object Wav16 {
         }
         require(dataBytes / 2 <= Int.MAX_VALUE) { "WAV too large: $file" }
         input.seek(dataOffset)
-        FloatArray((dataBytes / 2).toInt()) { u16().toShort() / 32768f }
+        val samples = FloatArray((dataBytes / 2).toInt())
+        val buffer = ByteArray(64 * 1024)
+        var index = 0
+        while (index < samples.size) {
+            val bytes = minOf(buffer.size, (samples.size - index) * 2)
+            input.readFully(buffer, 0, bytes)
+            val shorts = ByteBuffer.wrap(buffer, 0, bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            while (shorts.hasRemaining()) samples[index++] = shorts.get() / 32768f
+        }
+        samples
     }
 }

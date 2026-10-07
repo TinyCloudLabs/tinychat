@@ -25,13 +25,16 @@ import xyz.tinycloud.exo.stt.core.Wav16
 import xyz.tinycloud.exo.stt.core.WordErrorRate
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /** One-shot diagnostic on T7's pinned 16 kHz WAV fixtures. It never enters the production queue. */
 internal object Benchmark {
     private const val RATE = 16_000
+    private const val NON_SILENT_RMS = 1e-4
     private val names = listOf("ls-1089-10m", "ami-es2004a-10m", "ls-alt-2spk-10m")
+    private val firstRecognizerLoad = AtomicBoolean(true)
 
     data class Options(
         val threads: List<Int>,
@@ -39,6 +42,7 @@ internal object Benchmark {
         val padSeconds: Double = 0.0,
         val clusterThreshold: Double = .8,
         val asrOnly: Boolean = false,
+        val only: String? = null,
     ) {
         init {
             require(threads.isNotEmpty() && threads.size == threads.toSet().size && threads.all { it == 2 || it == 4 }) {
@@ -47,13 +51,15 @@ internal object Benchmark {
             require(blankPenalty.isFinite() && blankPenalty in 0.0..2.0) { "blankPenalty must be 0..2" }
             require(padSeconds.isFinite() && padSeconds in 0.0..1.0) { "padSeconds must be 0..1" }
             require(clusterThreshold.isFinite() && clusterThreshold in .5..1.5) { "clusterThreshold must be 0.5..1.5" }
+            require(only == null || only in names) { "only must be one of: ${names.joinToString()}" }
         }
     }
 
     fun run(directory: File, options: Options): JSObject {
-        val output = File(directory, "results/android").also { check(it.mkdirs() || it.isDirectory) }
+        val runId = "${System.currentTimeMillis()}-${UUID.randomUUID()}"
+        val output = File(directory, "results/android/$runId").also { check(it.mkdirs()) { "Cannot create benchmark run directory: $it" } }
         val summaries = JSONArray()
-        for (name in names) {
+        for (name in names.filter { options.only == null || it == options.only }) {
             val samples = Wav16.read(File(directory, "$name.wav"))
             val reference = referenceText(directory, name)
             for (threads in options.threads.sortedDescending()) {
@@ -61,7 +67,7 @@ internal object Benchmark {
                 val began = now()
                 val baselineHwm = statusKb("VmHWM")
                 val recognition = recognize(directory, samples, threads, options)
-                val (words, vadCount, emptyCount, coverage) = recognition
+                val words = recognition.words
                 val asrEnded = now()
                 val text = words.joinToString(" ") { it.text }
                 val wer = WordErrorRate.score(reference, text)
@@ -69,13 +75,22 @@ internal object Benchmark {
                 val metrics = JSObject()
                     .put("fixture", name).put("threads", threads)
                     .put("audioSeconds", samples.size.toDouble() / RATE)
+                    .put("runId", runId)
                     .put("loadSeconds", recognition.loadSeconds)
+                    .put("coldLoad", recognition.coldLoad)
+                    .put("coldLoadSeconds", if (recognition.coldLoad) recognition.loadSeconds else JSObject.NULL)
+                    .put("vadCreationSeconds", recognition.vadCreationSeconds)
+                    .put("vadProcessingSeconds", recognition.vadProcessingSeconds)
                     .put("decodeSeconds", recognition.decodeSeconds)
                     .put("loadAndDecodeSeconds", asrEnded - began)
                     .put("rtf", recognition.decodeSeconds / (samples.size.toDouble() / RATE))
                     .put("blankPenalty", options.blankPenalty).put("padSeconds", options.padSeconds)
-                    .put("vadSegments", vadCount).put("emptyVadSegments", emptyCount)
-                    .put("vadCoverageSeconds", coverage)
+                    .put("vadSegments", recognition.segments)
+                    .put("vadSegmentCount", recognition.segments.length())
+                    .put("emptyVadSegments", recognition.empty)
+                    .put("emptyNonSilentVadSegments", recognition.emptyNonSilent)
+                    .put("nonSilentRmsThreshold", NON_SILENT_RMS)
+                    .put("vadCoverageSeconds", recognition.coverage)
                     .put("wer", wer.rate).put("werErrors", wer.errors)
                     .put("werReferenceWords", wer.referenceWords)
                     .put("werHypothesisWords", wer.hypothesisWords)
@@ -88,6 +103,7 @@ internal object Benchmark {
                     attributed = SpeakerAttribution.assign(words, diar.turns)
                     metrics.put("diarizationSeconds", diar.seconds)
                         .put("diarizationWindowSeconds", JSONArray(diar.windowSeconds))
+                        .put("diarizationClustersPerWindow", JSONArray(diar.clustersPerWindow))
                         .put("maxWindowSeconds", diar.windowSeconds.maxOrNull() ?: 0.0)
                         .put("diarizationBaselineRssBytes", diar.baselineRss * 1024)
                         .put("diarizationExtraRssBytes", diar.extraRss * 1024)
@@ -103,11 +119,12 @@ internal object Benchmark {
                 summaries.put(metrics)
             }
         }
-        return JSObject().put("output", output.absolutePath).put("results", summaries)
+        return JSObject().put("runId", runId).put("output", output.absolutePath).put("results", summaries)
     }
 
-    private data class Recognition(val words: List<TimedWord>, val segments: Int, val empty: Int,
-        val coverage: Double, val loadSeconds: Double, val decodeSeconds: Double)
+    private data class Recognition(val words: List<TimedWord>, val segments: JSONArray, val empty: Int,
+        val emptyNonSilent: Int, val coverage: Double, val loadSeconds: Double, val coldLoad: Boolean,
+        val vadCreationSeconds: Double, val vadProcessingSeconds: Double, val decodeSeconds: Double)
 
     private fun recognize(directory: File, samples: FloatArray, threads: Int, options: Options): Recognition {
         val model = File(directory, "models/full")
@@ -125,17 +142,23 @@ internal object Benchmark {
                 tokens = File(model, required[3]).path,
                 modelType = "nemo_transducer", numThreads = threads, provider = "cpu"),
             decodingMethod = "greedy_search", blankPenalty = options.blankPenalty.toFloat()))
+        val loadSeconds = now() - loadBegan
+        val coldLoad = firstRecognizerLoad.getAndSet(false)
         try {
+            val vadCreationBegan = now()
             val vad = Vad(config = VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(model = vadModel.path,
                     minSilenceDuration = .4f, minSpeechDuration = .1f, maxSpeechDuration = 25f),
                 numThreads = threads, provider = "cpu"))
+            val vadCreationSeconds = now() - vadCreationBegan
             try {
                 val decodeBegan = now()
                 val words = mutableListOf<TimedWord>()
-                var count = 0
+                val segments = JSONArray()
                 var empty = 0
+                var emptyNonSilent = 0
                 var coverage = 0.0
+                var vadProcessingSeconds = 0.0
                 fun drain() {
                     while (!vad.empty()) {
                         val segment = vad.front()
@@ -144,7 +167,8 @@ internal object Benchmark {
                         val chunk = segment.samples
                         require(start >= 0 && start.toLong() + chunk.size <= samples.size) { "VAD returned audio outside fixture" }
                         coverage += chunk.size.toDouble() / RATE
-                        count++
+                        val rms = if (chunk.isEmpty()) 0.0 else
+                            kotlin.math.sqrt(chunk.fold(0.0) { sum, sample -> sum + sample * sample } / chunk.size)
                         val pad = (options.padSeconds * RATE).toInt()
                         val padded = FloatArray(chunk.size + 2 * pad)
                         chunk.copyInto(padded, pad)
@@ -156,25 +180,34 @@ internal object Benchmark {
                             val aligned = TokenWordAlignment.align(result.tokens, result.timestamps, result.durations,
                                 (start - pad).toDouble() / RATE)
                             if (aligned.isEmpty()) empty++
+                            if (aligned.isEmpty() && rms > NON_SILENT_RMS) emptyNonSilent++
+                            segments.put(JSONObject().put("start", start.toDouble() / RATE)
+                                .put("end", (start + chunk.size).toDouble() / RATE)
+                                .put("decodedWords", aligned.size).put("rms", rms))
                             words.addAll(aligned)
                         } finally { stream.release() }
                     }
                 }
                 // VAD's buffer is 30 seconds. Feeding 0.5 second blocks preserves the source sample origin.
                 for (start in samples.indices step RATE / 2) {
+                    val vadBegan = now()
                     vad.acceptWaveform(samples.copyOfRange(start, minOf(start + RATE / 2, samples.size)))
+                    vadProcessingSeconds += now() - vadBegan
                     drain()
                 }
+                val flushBegan = now()
                 vad.flush()
+                vadProcessingSeconds += now() - flushBegan
                 drain()
-                return Recognition(words.sortedBy { it.start }, count, empty, coverage,
-                    decodeBegan - loadBegan, now() - decodeBegan)
+                return Recognition(words.sortedBy { it.start }, segments, empty, emptyNonSilent, coverage,
+                    loadSeconds, coldLoad, vadCreationSeconds, vadProcessingSeconds, now() - decodeBegan)
             } finally { vad.release() }
         } finally { recognizer.release() }
     }
 
     private data class Diarization(val rttm: String, val turns: List<SpeakerTurn>,
-        val seconds: Double, val windowSeconds: List<Double>, val baselineRss: Long, val extraRss: Long)
+        val seconds: Double, val windowSeconds: List<Double>, val clustersPerWindow: List<Int>,
+        val baselineRss: Long, val extraRss: Long)
 
     private fun diarize(directory: File, samples: FloatArray, threads: Int, threshold: Double): Diarization {
         val seg = File(directory, "models/diarization/model.int8.onnx")
@@ -194,12 +227,14 @@ internal object Benchmark {
                 val lines = mutableListOf<String>()
                 val turns = mutableListOf<SpeakerTurn>()
                 val windows = mutableListOf<Double>()
+                val clustersPerWindow = mutableListOf<Int>()
                 val length = RATE * 60
                 for (offset in samples.indices step length) {
                     val index = offset / length
                     val began = now()
                     val results = diarizer.process(samples.copyOfRange(offset, minOf(offset + length, samples.size)))
                     windows.add(now() - began)
+                    clustersPerWindow.add(results.map { it.speaker }.distinct().size)
                     for (result in results) {
                         val origin = offset.toDouble() / RATE
                         val speaker = "w${index}_speaker_${result.speaker}"
@@ -210,7 +245,7 @@ internal object Benchmark {
                     }
                 }
                 return Diarization(lines.joinToString("\n", postfix = "\n"), turns,
-                    now() - start, windows, baseline, maxOf(0, sampler.peakKb() - baseline))
+                    now() - start, windows, clustersPerWindow, baseline, maxOf(0, sampler.peakKb() - baseline))
             } finally { diarizer.release() }
         } finally { sampler.close() }
     }

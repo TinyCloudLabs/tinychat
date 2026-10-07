@@ -150,7 +150,10 @@ def fetchSherpaOnnx = tasks.register('fetchSherpaOnnx') {
             def temp = file("${sherpaAar}.download")
             temp.delete()
             try {
-                new URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/${sherpaAarName}.aar").withInputStream { input ->
+                def connection = new URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/${sherpaAarName}.aar").openConnection()
+                connection.connectTimeout = 30_000
+                connection.readTimeout = 120_000
+                connection.getInputStream().withCloseable { input ->
                     temp.withOutputStream { output -> output << input }
                 }
                 def digest = MessageDigest.getInstance('SHA-256').digest(temp.bytes).encodeHex().toString()
