@@ -68,7 +68,7 @@ export type LocalPanelState =
   | "connection-lost"
   /** Capture failed but kept a partial recording; it can be transcribed or discarded. */
   | "partial-recording"
-  /** A previous launch stopped this recording but never saved its transcript; it can be transcribed or discarded. */
+  /** A previous launch or a closed view stopped this recording but never saved its transcript; it can be transcribed or discarded. */
   | "kept-recording"
   /** The transcript is held in the panel; Retry re-runs the identical save. */
   | "save-failed"
@@ -175,6 +175,8 @@ export interface LocalTranscriberViewProps {
   retryable?: boolean;
   /** Offer transcribing the kept private cloud recording with on-device Whisper. */
   onDeviceOffer?: boolean;
+  /** The kept recording (`kept-recording`) was made for private cloud: Transcribe uploads it. */
+  keptCloud?: boolean;
   onTranscribeOnDevice?: () => void;
   /** That recording could be transcribed on this Mac once a Whisper model is downloaded. */
   onDeviceNeedsModel?: boolean;
@@ -231,6 +233,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   referenceId = null,
   retryable = true,
   onDeviceOffer = false,
+  keptCloud = false,
   onTranscribeOnDevice,
   onDeviceNeedsModel = false,
   modelDownloading = false,
@@ -243,6 +246,8 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   const recording = state === "recording";
   const micDevices = mics.status === "loaded" ? mics.devices : [];
   const locked = isLocalWorkflowActive(state);
+  /** States that offer moving a private cloud recording to on-device Whisper. */
+  const canMoveOnDevice = state === "transcribe-failed" || state === "kept-recording";
   const busy =
     state === "checking-model" ||
     state === "stopping-previous" ||
@@ -454,18 +459,20 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
                 {state === "partial-recording"
                   ? "Transcribe partial recording"
                   : state === "kept-recording"
-                    ? "Transcribe recording"
+                    ? keptCloud
+                      ? "Transcribe in private cloud"
+                      : "Transcribe recording"
                     : state === "connection-lost"
                       ? "Keep waiting"
                       : "Retry transcription"}
               </Button>
             )}
-            {onDeviceOffer && state === "transcribe-failed" && (
+            {onDeviceOffer && canMoveOnDevice && (
               <Button type="button" size="sm" variant="outline" onClick={onTranscribeOnDevice} className="h-9">
                 Transcribe on this Mac
               </Button>
             )}
-            {onDeviceNeedsModel && state === "transcribe-failed" && (
+            {onDeviceNeedsModel && canMoveOnDevice && (
               <Button
                 type="button"
                 size="sm"
@@ -515,7 +522,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           file on this Mac.
         </p>
       )}
-      {onDeviceNeedsModel && state === "transcribe-failed" && (
+      {onDeviceNeedsModel && canMoveOnDevice && (
         <p className="text-xs text-muted-foreground">
           To transcribe this recording on this Mac instead, download a Whisper model first.
         </p>
@@ -571,8 +578,10 @@ function readSavedModel(): WhisperModel {
 }
 
 /** What a mounted panel takes over, in order: a closed view's transcription
- *  (adoptTranscription), then this account's kept on-device recording, then,
- *  with private cloud available, a cloud job a previous launch left. A panel
+ *  (adoptTranscription), then this account's kept recording (on-device, or a
+ *  private cloud one never uploaded, offered whether or not private cloud is
+ *  available now), then, with private cloud available, a cloud job a previous
+ *  launch or closed view left. A panel
  *  already running a recording of its own takes over none but the first. A
  *  kept recording a closed view is still saving is not taken over: `saving`
  *  settles with that save, after which the panel checks again. */
@@ -597,13 +606,19 @@ export function takeOverOnMount(
 }
 
 /** Normalizes a transcript to save. With no speech there is nothing to save,
- *  so an on-device one's kept recording is forgotten (a relaunch would only
- *  find silence again). */
+ *  so its recording is finished (a relaunch would only find silence again):
+ *  an on-device one's kept recording is forgotten, and a private cloud one is
+ *  deleted from PTX along with its pending record. */
 export function prepareTranscriptToSave(t: LocalTranscriber, result: LocalTranscriptResult): PreparedLocalTranscript {
   try {
     return prepareLocalTranscript(result);
   } catch (err) {
     if (result.engine !== "private-cloud") t.finishOnDeviceTranscript(result);
+    else {
+      t.finishCloudTranscript(result).catch((deleteErr: unknown) => {
+        console.warn("Deleting a private cloud transcript with no speech failed; a relaunch retries", deleteErr);
+      });
+    }
     throw err;
   }
 }
@@ -751,6 +766,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
   const [referenceId, setReferenceId] = useState<string | null>(null);
   const [retryable, setRetryable] = useState(true);
   const [onDeviceOffer, setOnDeviceOffer] = useState(false);
+  const [keptCloud, setKeptCloud] = useState(false);
   const [modelReady, setModelReady] = useState(false);
 
   // The Live Edge, held still (this recorder reports no level), while this Mac's microphone records.
@@ -837,9 +853,9 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       setState((s) => (s === "stopping-previous" ? "checking-model" : s));
       // A transcription whose panel closed is shown and finished here: its
       // transcript is saved by this panel, once; a failure offers Retry/Discard.
-      // A kept on-device recording (Exo quit or crashed, or its view closed)
-      // is offered for Transcribe or Discard; a private cloud job left by a
-      // previous launch is finished the same way.
+      // A kept recording (Exo quit or crashed, or its view closed) is offered
+      // for Transcribe or Discard; a private cloud job left by a previous
+      // launch is finished the same way.
       const takeover = takeOverOnMount(t, { wasActive, cloudAvailable: cloudCheck === "available" });
       if (takeover?.from === "adopted") {
         setState("transcribing");
@@ -926,6 +942,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
     setReferenceId(null);
     setRetryable(true);
     setOnDeviceOffer(false);
+    setKeptCloud(false);
   };
 
   const onDownload = () => {
@@ -955,6 +972,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       setRetryable(err.retryable);
       setOnDeviceOffer(err.offerOnDevice);
     }
+    setKeptCloud(err instanceof KeptRecordingError && err.engine === "private-cloud");
     setState(localFailureState(err));
   };
 
@@ -1101,6 +1119,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       referenceId={referenceId}
       retryable={retryable}
       onDeviceOffer={onDeviceOffer && modelReady}
+      keptCloud={keptCloud}
       onDeviceNeedsModel={onDeviceOffer && !modelReady}
       modelDownloading={modelDownloading}
       onDownloadForOnDevice={onDownloadForOnDevice}

@@ -27,6 +27,7 @@ fn main() {
             "cloud_transcription_status",
             "cloud_transcription_submit",
             "cloud_transcription_cancel",
+            "cloud_transcription_reopen",
         ]),
     ))
     .expect("failed to run tauri-build");

@@ -114,10 +114,7 @@ pub fn open_capture(
     audio_path: &str,
 ) -> Result<OpenedCapture, Rejection> {
     if !valid_session_id(session_id) {
-        return Err(reject(
-            "capture_not_available",
-            "The recording's session id is not valid",
-        ));
+        return Err(invalid_session());
     }
     let audio_path = Path::new(audio_path);
     let file_name = audio_path
@@ -136,25 +133,90 @@ pub fn open_capture(
             "The recording is not in Exo's sessions folder",
         ));
     }
+    let session =
+        open_session_dir(sessions_dir, session_id).map_err(|(what, e)| open_err(what, e))?;
+    let fd = open_audio(&session, file_name).map_err(|e| open_err("recording", e))?;
+    checked_capture(File::from(fd), format)
+}
 
-    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let open_err = |what: &str, e: rustix::io::Errno| {
-        reject("capture_not_available", format!("Opening {what}: {e}"))
+/// The audio files a session can hold, in the transcription plugin's own
+/// order of preference (listener-core `resolve_final_audio_path`).
+const AUDIO_FILES: [&str; 3] = ["audio.mp3", "audio.wav", "audio.ogg"];
+
+/// Re-opens a stopped cloud-bound session's recording by session id alone,
+/// after a relaunch or a closed view lost its handle. The webview names no
+/// path: the file is looked up as `<sessions_dir>/<session_id>/audio.{mp3,wav,ogg}`
+/// (first that exists), with the same `openat` + `O_NOFOLLOW` walk and checks
+/// as [`open_capture`]. Only `cloud-` sessions (recorded for private cloud) can
+/// be re-opened, so an on-device recording is never readable this way. A
+/// symlink in place of a candidate is refused, never skipped.
+pub fn reopen_capture(sessions_dir: &Path, session_id: &str) -> Result<OpenedCapture, Rejection> {
+    if !valid_session_id(session_id) || !session_id.starts_with(CLOUD_SESSION_PREFIX) {
+        return Err(invalid_session());
+    }
+    let session = match open_session_dir(sessions_dir, session_id) {
+        Err(("session folder", rustix::io::Errno::NOENT)) => return Err(gone()),
+        other => other.map_err(|(what, e)| open_err(what, e))?,
     };
+    for file_name in AUDIO_FILES {
+        match open_audio(&session, file_name) {
+            Ok(fd) => {
+                let format = AudioFormat::from_file_name(file_name).expect("listed audio file");
+                return checked_capture(File::from(fd), format);
+            }
+            Err(rustix::io::Errno::NOENT) => continue,
+            Err(e) => return Err(open_err("recording", e)),
+        }
+    }
+    Err(gone())
+}
+
+fn invalid_session() -> Rejection {
+    reject(
+        "capture_not_available",
+        "The recording's session id is not valid",
+    )
+}
+
+fn gone() -> Rejection {
+    reject(
+        "capture_not_available",
+        "The recording is no longer on this Mac",
+    )
+}
+
+fn open_err(what: &str, e: rustix::io::Errno) -> Rejection {
+    reject("capture_not_available", format!("Opening {what}: {e}"))
+}
+
+/// `<sessions_dir>/<session_id>` as a directory descriptor, following no
+/// symlink; an error names the component that failed.
+fn open_session_dir(
+    sessions_dir: &Path,
+    session_id: &str,
+) -> Result<rustix::fd::OwnedFd, (&'static str, rustix::io::Errno)> {
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let sessions = rustix::fs::open(sessions_dir, dir_flags, Mode::empty())
-        .map_err(|e| open_err("sessions folder", e))?;
-    let session = rustix::fs::openat(&sessions, session_id, dir_flags, Mode::empty())
-        .map_err(|e| open_err("session folder", e))?;
+        .map_err(|e| ("sessions folder", e))?;
+    rustix::fs::openat(&sessions, session_id, dir_flags, Mode::empty())
+        .map_err(|e| ("session folder", e))
+}
+
+fn open_audio(
+    session: &rustix::fd::OwnedFd,
+    file_name: &str,
+) -> rustix::io::Result<rustix::fd::OwnedFd> {
     // NONBLOCK: opening a FIFO planted in the session folder must not hang.
-    let fd = rustix::fs::openat(
-        &session,
+    rustix::fs::openat(
+        session,
         file_name,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     )
-    .map_err(|e| open_err("recording", e))?;
-    let file = File::from(fd);
+}
 
+/// A regular, non-empty recording within the size cap.
+fn checked_capture(file: File, format: AudioFormat) -> Result<OpenedCapture, Rejection> {
     let meta = file.metadata().map_err(|e| {
         reject(
             "capture_not_available",
@@ -476,6 +538,146 @@ pub(crate) mod tests {
         let err =
             open_capture(&sessions, SESSION, &audio_path(&sessions, "audio.mp3")).unwrap_err();
         assert_eq!(err.code, "recording_too_long_for_cloud");
+    }
+
+    const CLOUD: &str = "cloud-0b7c6d1e-2f3a-4b5c-8d9e-0f1a2b3c4d5e";
+
+    /// A sessions folder holding one cloud session with these audio files.
+    fn cloud_session(files: &[(&str, &[u8])]) -> (tempdir::TempDir, std::path::PathBuf) {
+        let dir = tempdir::TempDir::new();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(sessions.join(CLOUD)).unwrap();
+        for (name, contents) in files {
+            std::fs::write(sessions.join(CLOUD).join(name), contents).unwrap();
+        }
+        (dir, sessions)
+    }
+
+    #[test]
+    fn reopens_a_cloud_session_by_id_in_the_plugins_order() {
+        let (_d, sessions) = cloud_session(&[("audio.mp3", b"mp3"), ("audio.wav", b"wave")]);
+        let opened = reopen_capture(&sessions, CLOUD).unwrap();
+        assert_eq!(opened.format, AudioFormat::Mp3);
+        assert_eq!(opened.stamp.size, 3);
+
+        let (_d, sessions) = cloud_session(&[("audio.wav", b"wave"), ("audio.ogg", b"o")]);
+        let opened = reopen_capture(&sessions, CLOUD).unwrap();
+        assert_eq!(opened.format, AudioFormat::Wav);
+        let (_d, sessions) = cloud_session(&[("audio.ogg", b"o"), ("notes.txt", b"x")]);
+        assert_eq!(
+            reopen_capture(&sessions, CLOUD).unwrap().format,
+            AudioFormat::Ogg
+        );
+    }
+
+    #[test]
+    fn reopen_refuses_on_device_and_malformed_session_ids() {
+        let (d, sessions) = cloud_session(&[("audio.mp3", b"x")]);
+        // An on-device recording (no `cloud-` prefix) is never re-opened.
+        std::fs::create_dir_all(sessions.join(SESSION)).unwrap();
+        std::fs::write(sessions.join(SESSION).join("audio.mp3"), b"x").unwrap();
+        std::fs::create_dir_all(d.path().join("elsewhere")).unwrap();
+        std::fs::write(d.path().join("elsewhere/audio.mp3"), b"x").unwrap();
+        for session in [
+            SESSION,
+            "",
+            "cloud-",
+            "cloud-../elsewhere",
+            "cloud-a/b",
+            "../sessions/cloud-x",
+            "cloud-x\0",
+        ] {
+            let err = reopen_capture(&sessions, session).unwrap_err();
+            assert_eq!(err.code, "capture_not_available", "{session}");
+        }
+        assert!(reopen_capture(&sessions, CLOUD).is_ok());
+    }
+
+    #[test]
+    fn reopen_reports_a_missing_recording() {
+        let (_d, sessions) = cloud_session(&[("notes.txt", b"x")]);
+        let err = reopen_capture(&sessions, CLOUD).unwrap_err();
+        assert_eq!(err.code, "capture_not_available");
+        assert_eq!(err.message, "The recording is no longer on this Mac");
+
+        std::fs::remove_dir_all(sessions.join(CLOUD)).unwrap();
+        let err = reopen_capture(&sessions, CLOUD).unwrap_err();
+        assert_eq!(err.message, "The recording is no longer on this Mac");
+
+        let (_d, sessions) = cloud_session(&[("audio.mp3", b"")]);
+        let err = reopen_capture(&sessions, CLOUD).unwrap_err();
+        assert_eq!(err.message, "The recording is empty");
+    }
+
+    #[test]
+    fn reopen_follows_no_symlink() {
+        let (d, sessions) = cloud_session(&[("audio.wav", b"wave")]);
+        let secret = d.path().join("secret.mp3");
+        std::fs::write(&secret, b"not a recording").unwrap();
+
+        // A symlinked first choice is refused, not skipped for the real wav.
+        symlink(&secret, sessions.join(CLOUD).join("audio.mp3")).unwrap();
+        let err = reopen_capture(&sessions, CLOUD).unwrap_err();
+        assert_eq!(err.code, "capture_not_available");
+        assert!(
+            err.message.starts_with("Opening recording"),
+            "{}",
+            err.message
+        );
+
+        // Symlinked session folder.
+        let real = d.path().join("real-session");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("audio.mp3"), b"x").unwrap();
+        std::fs::remove_dir_all(sessions.join(CLOUD)).unwrap();
+        symlink(&real, sessions.join(CLOUD)).unwrap();
+        let err = reopen_capture(&sessions, CLOUD).unwrap_err();
+        assert_eq!(err.code, "capture_not_available");
+        assert!(
+            err.message.starts_with("Opening session folder"),
+            "{}",
+            err.message
+        );
+
+        // Symlinked sessions folder.
+        let (d2, sessions2) = cloud_session(&[("audio.mp3", b"x")]);
+        let moved = d2.path().join("moved");
+        std::fs::rename(&sessions2, &moved).unwrap();
+        symlink(&moved, &sessions2).unwrap();
+        let err = reopen_capture(&sessions2, CLOUD).unwrap_err();
+        assert_eq!(err.code, "capture_not_available");
+        assert!(
+            err.message.starts_with("Opening sessions folder"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn reopen_refuses_non_regular_files_and_enforces_the_size_cap() {
+        let (_d, sessions) = cloud_session(&[]);
+        let file = sessions.join(CLOUD).join("audio.mp3");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&file)
+            .status()
+            .unwrap()
+            .success());
+        let err = reopen_capture(&sessions, CLOUD).unwrap_err();
+        assert_eq!(err.message, "The recording is not a regular file");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert_eq!(
+            reopen_capture(&sessions, CLOUD).unwrap_err().code,
+            "capture_not_available"
+        );
+        std::fs::remove_dir(&file).unwrap();
+
+        let f = File::create(&file).unwrap();
+        f.set_len(MAX_CAPTURE_BYTES + 1).unwrap();
+        assert_eq!(
+            reopen_capture(&sessions, CLOUD).unwrap_err().code,
+            "recording_too_long_for_cloud"
+        );
     }
 
     #[test]

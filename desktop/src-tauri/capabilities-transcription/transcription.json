@@ -15,6 +15,7 @@
     "allow-cloud-transcription-status",
     "allow-cloud-transcription-submit",
     "allow-cloud-transcription-cancel",
+    "allow-cloud-transcription-reopen",
     "core:event:deny-emit",
     "core:event:deny-emit-to"
   ]

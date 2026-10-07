@@ -169,6 +169,27 @@ Native side (`src-tauri/src/cloud/`):
   After acceptance, recovery goes through job status only: PTX deletes a job's
   upload capabilities when it accepts the upload, so a replayed PUT gets 401.
   `cloud_transcription_cancel` aborts an upload and releases the handle.
+  `cloud_transcription_reopen` issues a new handle for a stopped recording
+  that native no longer holds (after a relaunch, or once a handle was
+  released). The webview passes only the session id, which must be a
+  `cloud-` session. Native opens `vault/sessions/<session>/audio.{mp3,wav,ogg}`
+  (the first that exists, in the plugin's order), with the same `openat` +
+  `O_NOFOLLOW` walk and checks. A symlinked candidate is refused, not skipped.
+  On-device recordings can't be read this way.
+- Webview side (`frontend/src/lib/localTranscriber.ts`): each account has
+  its own pending record, `exo.transcriber.privateCloudPending:<DID>`. It holds
+  the attempt id, the job id once known, the session, and the audio path. It is
+  written at Stop, or when the view closes mid-recording, before any upload,
+  and cleared once the transcript is saved (and deleted from PTX) or
+  discarded. A recording that was never uploaded is offered again (Transcribe in private cloud /
+  Transcribe on this Mac / Discard). A job that already has an id resumes by
+  itself, and an upload that never completed is re-sent from the re-opened
+  recording. Every upload of a recording reuses its attempt id, the create
+  call's `Idempotency-Key`, so a replay re-joins the same job. While a record
+  whose upload began has no job id yet, tenant-list recovery waits, so it can't
+  save that job's transcript a second time. A record under the old shared key (before TC-772) is
+  adopted only by the account whose tenant-scoped `GET` can read its job. It is
+  dropped after 48 h, or straight away if it names no job.
 - The commands are declared in `build.rs` (app ACL manifest) and granted only
   by `capabilities-transcription/transcription.json`, which also denies the
   webview `event:emit`, so it cannot forge the plugin's `stopped` event.

@@ -12,7 +12,9 @@
 //   - an on-device transcript's save marks it as being saved, and only a
 //     successful save forgets its kept recording; a failed save keeps it;
 //   - a private cloud transcript is deleted from PTX once saved;
-//   - a transcript with no speech forgets the on-device kept recording.
+//   - a transcript with no speech forgets the on-device kept recording, or
+//     deletes a private cloud one (and its pending record) from PTX;
+//   - a kept private cloud recording is labelled as one (Transcribe in private cloud).
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -161,6 +163,19 @@ describe("saving a transcript", () => {
     const f = fakeTranscriber();
     expect(() => prepareTranscriptToSave(f.t, onDevice([]))).toThrow(NO_SPEECH_MESSAGE);
     expect(f.calls).toEqual(["finish-on-device:sess-1"]);
+  });
+
+  test("no speech in a private cloud transcript finishes its job, so a relaunch does not resume it again", () => {
+    const f = fakeTranscriber();
+    const silent: CloudTranscriptResult = { ...cloudResult, transcript: { ...cloudResult.transcript, segments: [] } };
+    expect(() => prepareTranscriptToSave(f.t, silent)).toThrow(NO_SPEECH_MESSAGE);
+    expect(f.calls).toEqual(["finish-cloud:trn_1"]);
+  });
+
+  test("a kept private cloud recording is shown as one", () => {
+    const source = readFileSync(join(import.meta.dir, "LocalTranscriber.tsx"), "utf8");
+    expect(source).toContain('setKeptCloud(err instanceof KeptRecordingError && err.engine === "private-cloud");');
+    expect(source).toContain("keptCloud={keptCloud}");
   });
 
   test("the panel takes over and saves through these, with kept recordings scoped to the signed-in account", () => {

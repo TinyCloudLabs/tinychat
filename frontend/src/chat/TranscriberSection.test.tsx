@@ -394,6 +394,28 @@ describe("LocalTranscriberView", () => {
     expect(isLocalWorkflowActive("partial-recording")).toBe(true);
   });
 
+  test("a kept private cloud recording never uploaded offers private cloud, this Mac, or Discard", () => {
+    const html = renderLocal({
+      state: "kept-recording",
+      engine: "private-cloud",
+      keptCloud: true,
+      onDeviceOffer: true,
+      statusText: '"Local recording Oct 5, 9:00 AM" stopped before it was uploaded for transcription. The recording was kept on this Mac.',
+    });
+    expect(html).toContain(">Transcribe in private cloud</button>");
+    expect(html).toContain(">Transcribe on this Mac</button>");
+    expect(html).toContain(">Discard recording</button>");
+    expect(html).not.toContain(">Transcribe recording</button>");
+    expect(html).not.toContain("Start recording");
+    // No Whisper model yet: the download is offered instead.
+    const noModel = renderLocal({ state: "kept-recording", engine: "private-cloud", keptCloud: true, onDeviceNeedsModel: true });
+    expect(noModel).toContain("Download model (~44 MB)");
+    expect(noModel).not.toContain(">Transcribe on this Mac</button>");
+    expect(localFailureState(new KeptRecordingError("x", { engine: "private-cloud" }))).toBe("kept-recording");
+    // An on-device kept recording is never offered as a move to this Mac.
+    expect(renderLocal({ state: "kept-recording" })).not.toContain(">Transcribe on this Mac</button>");
+  });
+
   test("a kept recording whose transcript was never saved offers Transcribe recording and Discard recording", () => {
     const html = renderLocal({
       state: "kept-recording",

@@ -37,6 +37,7 @@ pub fn run() {
             cloud::commands::cloud_transcription_status,
             cloud::commands::cloud_transcription_submit,
             cloud::commands::cloud_transcription_cancel,
+            cloud::commands::cloud_transcription_reopen,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -45,6 +46,7 @@ pub fn run() {
             cloud::commands::cloud_transcription_status,
             cloud::commands::cloud_transcription_submit,
             cloud::commands::cloud_transcription_cancel,
+            cloud::commands::cloud_transcription_reopen,
             smoke::exo_desktop_smoke,
         ]);
 

@@ -38,9 +38,11 @@ import type {
 import type { DownloadProgressPayload } from "./anarlog/localStt.gen";
 import {
   createCloudJobPoller,
+  legacyPendingCloudStore,
   loadPrivateCloudNative,
-  localStoragePendingCloudStore,
   localStorageRecordStore,
+  parsePendingCloudJob,
+  PRIVATE_CLOUD_PENDING_KEY,
   privateCloudJobClient,
   privateCloudMessage,
   PrivateCloudError,
@@ -49,6 +51,7 @@ import {
   type CaptureReadyEvent,
   type CloudClock,
   type CloudPolling,
+  type PendingCloudJob,
   type PendingCloudStore,
   type PrivateCloudApi,
   type PrivateCloudAvailability,
@@ -144,6 +147,18 @@ export function localStorageKeptRecordingStore(accountDid: string): KeptRecordin
     };
   });
 }
+
+/** This Mac's private cloud recording not yet saved, for one account (keyed by
+ *  DID like the kept recording), so another account never sees, resumes,
+ *  overwrites or clears it. */
+export function localStoragePendingCloudStore(accountDid: string): PendingCloudStore {
+  return localStorageRecordStore(accountStorageKey(PRIVATE_CLOUD_PENDING_KEY, accountDid), parsePendingCloudJob);
+}
+
+/** How long a pre-TC-772 shared pending record can still name a job someone can
+ *  finish: PTX deletes a transcript 24 h after it is made. Past this, an account
+ *  that cannot read the job drops the record. */
+const LEGACY_PENDING_MAX_AGE_MS = 48 * 60 * 60_000;
 
 // ── Plugin bridge ──────────────────────────────────────────────────────
 
@@ -356,11 +371,14 @@ export interface LocalTranscriber {
   stopCaptureOnUnmount(): Promise<void>;
   /** Subscribe to capture/transcription status; returns unsubscribe. */
   onStatus(cb: (s: LocalTranscriberStatus) => void): () => void;
-  /** This account's on-device recording that stopped but never had its
-   *  transcript saved (Exo quit or crashed, or its view closed), kept for this
-   *  view like a failed transcription: rejects with KeptRecordingError for
-   *  retryTranscription() or discardRecording(). Null when there is none, a job
-   *  already runs, or its transcript is being saved right now. */
+  /** This account's recording that stopped but never had its transcript saved
+   *  (Exo quit or crashed, or its view closed), kept for this view like a
+   *  failed transcription: rejects with KeptRecordingError for
+   *  retryTranscription() or discardRecording(). An on-device recording comes
+   *  first; otherwise a private cloud recording not yet uploaded (Transcribe
+   *  uploads it, re-opening its audio by session id; it can also be moved to
+   *  this Mac). Null when there is none, a job already runs, or its transcript
+   *  is being saved right now. */
   resumeKeptRecording(): Promise<LocalTranscriptResult> | null;
   /** While `saving` runs, the on-device transcript's recording is being saved,
    *  so it is not offered as kept (e.g. to a view that opens meanwhile). */
@@ -377,9 +395,13 @@ export interface LocalTranscriber {
   privateCloudAvailability(): Promise<PrivateCloudAvailability>;
   /** True when any Whisper model is on disk (decides the default engine). */
   anyModelDownloaded(): Promise<boolean>;
-  /** A private cloud job left by a previous launch, finished in this view like
-   *  adoptTranscription(); null when there is none. Resolves null (and forgets
-   *  it) when that job no longer exists. Call only while the engine is available. */
+  /** This account's private cloud job left by a previous launch or a closed
+   *  view (one the backend has named), finished in this view like
+   *  adoptTranscription(): an upload that never completed is re-sent from the
+   *  same recording with the same Idempotency-Key. Null when there is none.
+   *  Resolves null (and forgets it) when that job no longer exists. A record
+   *  from before TC-772, shared by every account, is adopted only by the
+   *  account that can read its job. Call only while the engine is available. */
   resumeCloudTranscription(): Promise<LocalTranscriptResult | null> | null;
   /** Tenant-list recovery: finishes this account's jobs no view on this Mac
    *  knows about (a lost pending record, a relaunch), handing each transcript
@@ -434,7 +456,10 @@ export interface PrivateCloudDeps {
   api: PrivateCloudApi;
   /** Injected in tests; the real one is loaded lazily. */
   native?: PrivateCloudNative;
-  pending?: PendingCloudStore;
+  /** An account's pending record store; injected in tests, localStorage otherwise. */
+  pending?: (accountDid: string) => PendingCloudStore;
+  /** The pre-TC-772 record shared by every account; injected in tests. */
+  legacyPending?: PendingCloudStore;
   clock?: CloudClock;
   polling?: Partial<CloudPolling>;
   newAttemptId?: () => string;
@@ -523,9 +548,12 @@ export class PartialRecordingError extends TranscriptionFailedError {
  * retryTranscription(); its audio file may be gone, which fails without Retry.
  */
 export class KeptRecordingError extends TranscriptionFailedError {
-  constructor(message: string) {
-    super(message);
+  /** The engine Transcribe uses: a private cloud recording is uploaded. */
+  readonly engine: TranscriptionEngine;
+  constructor(message: string, extra: { engine?: TranscriptionEngine; offerOnDevice?: boolean } = {}) {
+    super(message, { offerOnDevice: extra.offerOnDevice });
     this.name = "KeptRecordingError";
+    this.engine = extra.engine ?? "on-device";
   }
 }
 
@@ -556,10 +584,14 @@ interface StoppedRecording {
 interface CloudJobState {
   /** Native's opaque handle for the recording; null until `exo://capture-ready`. */
   captureHandle: string | null;
-  /** True for a job resumed after a relaunch: native no longer holds the recording. */
+  /** Native may no longer hold the recording (a relaunch, a closed view's
+   *  recording, a released handle): the upload uses this launch's handle if it
+   *  has one, else re-opens the recording by session id. */
   handleLost: boolean;
   /** Idempotency-Key of the current PTX job; a new one creates a new job. */
   attemptId: string;
+  /** An upload was started with attemptId (a job may exist before its id is known). */
+  submitted: boolean;
   transcriptionId: string | null;
   /** submit: (re)upload with attemptId · resolve: ask status first · poll: wait for the transcript. */
   next: "submit" | "resolve" | "poll";
@@ -910,6 +942,9 @@ export const CLOUD_SESSION_PREFIX = "cloud-";
  *  paths (a submit blocked by the job, relaunch recovery) finish it once. */
 const cloudRecoveries = new WeakMap<object, Map<string, Promise<CloudRecoveryOutcome>>>();
 
+/** Accounts that checked the pre-TC-772 shared pending record this launch, per native identity. */
+const legacyChecks = new WeakMap<object, Set<string>>();
+
 /** finished: its transcript went to saveRecovered · ended: nothing to save ·
  *  unfinishable: it awaits an upload only its own recording can make. */
 type CloudRecoveryOutcome = "finished" | "ended" | "unfinishable";
@@ -1060,10 +1095,18 @@ export function createLocalTranscriber(
               "Lost contact with private cloud transcription for 10 minutes. The job may still be running; the recording is kept on this Mac.",
             ),
         });
-  const pendingStore = cloud?.pending ?? localStoragePendingCloudStore;
   const account = options.account ?? (() => null);
   const keptFor = options.kept ?? localStorageKeptRecordingStore;
   const keptStore = (did: string | null): KeptRecordingStore | null => (did === null ? null : keptFor(did));
+  const pendingFor = cloud?.pending ?? localStoragePendingCloudStore;
+  /** An account's private cloud record; without an account nothing is kept. */
+  const pendingStore = (did: string | null): PendingCloudStore | null => (did === null ? null : pendingFor(did));
+  const legacyPending = cloud?.legacyPending ?? legacyPendingCloudStore;
+  /** Forget an account's private cloud record, if it is this recording's. */
+  const forgetPending = (id: string, did: string | null) => {
+    const store = pendingStore(did);
+    if (store?.read()?.sessionId === id) store.clear();
+  };
   /** Persist an on-device recording before it is transcribed, so a quit or crash cannot lose it. */
   const keepRecording = (recording: StoppedRecording, did: string | null) => {
     if (recording.engine !== "on-device") return;
@@ -1087,12 +1130,31 @@ export function createLocalTranscriber(
     const job = transcriptionJobs.get(nativeKey);
     if (job === undefined || job.account === null || job.account === account() || job.running) return;
     transcriptionJobs.delete(nativeKey);
+    // Its account's pending record (attempt, job id, audio path) is all it
+    // needs to finish later, so no upload can use its native handle any more.
+    if (job.cloud !== null) {
+      persistPending(job);
+      releaseHandle(job);
+    }
   };
   const newAttemptId = cloud?.newAttemptId ?? (() => crypto.randomUUID());
-  /** Closing the view never loses an on-device recording (complete or partial):
-   *  it is kept for the next view or launch (resumeKeptRecording). */
+  /** Closing the view never loses a recording (complete or partial): it is kept
+   *  for the next view or launch (resumeKeptRecording). A private cloud one is
+   *  not uploaded, since Stop was never pressed: it is offered instead. */
   const keepOnClose = (session: string, at: string | null, stopped: CaptureStoppedEvent) => {
-    if (sessionEngine !== "on-device" || !stopped.audio_path || at === null) return;
+    if (!stopped.audio_path || at === null) return;
+    if (sessionEngine === "private-cloud") {
+      pendingStore(account())?.write({
+        attemptId: newAttemptId(),
+        transcriptionId: null,
+        sessionId: session,
+        startedAt: at,
+        language,
+        audioPath: stopped.audio_path,
+        submitted: false,
+      });
+      return;
+    }
     keepRecording(
       { sessionId: session, startedAt: at, audioPath: stopped.audio_path, model, language, engine: "on-device" },
       account(),
@@ -1273,17 +1335,37 @@ export function createLocalTranscriber(
 
   // ── Private cloud attempt ──────────────────────────────────────────
 
-  const persistPending = (job: TranscriptionJob) => {
+  /** Persist a private cloud recording under its own account, from Stop until
+   *  its transcript is saved or it is discarded, so a quit, crash or closed
+   *  view never loses it. */
+  function persistPending(job: TranscriptionJob) {
     const c = job.cloud;
     if (c === null) return;
-    pendingStore.write({
+    pendingStore(job.account)?.write({
       attemptId: c.attemptId,
       transcriptionId: c.transcriptionId,
       sessionId: job.recording.sessionId,
       startedAt: job.recording.startedAt,
       language: job.recording.language,
+      audioPath: job.recording.audioPath,
+      submitted: c.submitted,
     });
-  };
+  }
+
+  /** Release a job's native upload handle (including one it has not taken
+   *  yet) when no upload can use it. A later upload re-opens the recording. */
+  function releaseHandle(job: TranscriptionJob) {
+    const c = job.cloud;
+    if (c === null) return;
+    const handle = c.captureHandle ?? readyStore.ready.get(job.recording.sessionId)?.captureHandle ?? null;
+    c.captureHandle = null;
+    c.handleLost = true;
+    readyStore.ready.delete(job.recording.sessionId);
+    if (handle === null) return;
+    void cloudNative()
+      .then((native) => native.cancel(handle))
+      .catch((err) => console.warn("Releasing the recording's upload handle failed", err));
+  }
 
   const requirePoller = () => {
     requireCloud();
@@ -1393,24 +1475,30 @@ export function createLocalTranscriber(
     }
 
     if (c.next === "submit") {
-      if (c.handleLost) {
-        throw new PrivateCloudError(
-          "upload_interrupted_by_quit",
-          "The upload was interrupted when Exo quit. The recording is kept on this Mac.",
-        );
-      }
+      const native = await cloudNative();
+      /** Native re-opens the stopped recording by session id (never a path). */
+      const reopen = async () => {
+        readyStore.ready.delete(rec.sessionId);
+        c.handleLost = false;
+        return (await native.reopen(rec.sessionId)).captureHandle;
+      };
       if (c.captureHandle === null) {
-        const ready = await waitCaptureReady(readyStore, rec.sessionId, timeouts.captureReadyMs);
-        if (ready.error) throw new PrivateCloudError(ready.error.code, ready.error.message);
-        if (!ready.captureHandle) throw new PrivateCloudError("capture_not_available", "No upload handle for this recording");
-        c.captureHandle = ready.captureHandle;
+        if (c.handleLost) {
+          // This launch's handle for the recording if it has one, else a new one.
+          c.captureHandle = readyStore.ready.get(rec.sessionId)?.captureHandle ?? (await reopen());
+        } else {
+          const ready = await waitCaptureReady(readyStore, rec.sessionId, timeouts.captureReadyMs);
+          if (ready.error) throw new PrivateCloudError(ready.error.code, ready.error.message);
+          if (!ready.captureHandle) throw new PrivateCloudError("capture_not_available", "No upload handle for this recording");
+          c.captureHandle = ready.captureHandle;
+        }
       }
       const bearer = deps.api.bearer();
       if (bearer === null) throw new PrivateCloudError("unauthenticated", "Not signed in");
+      c.submitted = true;
       persistPending(job);
-      const native = await cloudNative();
-      const handle = c.captureHandle;
-      for (let recovered = 0; ; ) {
+      let handle = c.captureHandle;
+      for (let recovered = 0, reopened = false; ; ) {
         report({ kind: "uploading", pct: 0 });
         const unlisten = await withTimeout(
           native.onUploadProgress((e) => {
@@ -1432,6 +1520,14 @@ export function createLocalTranscriber(
           break;
         } catch (err) {
           const e = toPrivateCloudError(err);
+          if (e.code === "capture_not_available" && e.transcriptionId === null && !reopened) {
+            // Native no longer holds this handle (released, or evicted): the
+            // recording may still be on disk. Same attempt, so no second job.
+            reopened = true;
+            handle = await reopen();
+            c.captureHandle = handle;
+            continue;
+          }
           if (e.code === "active_transcription_exists") {
             // The account's one active job is another recording's (the backend
             // scopes it to this account): a previous launch's whose record was
@@ -1521,9 +1617,9 @@ export function createLocalTranscriber(
   const releaseCloud = (job: TranscriptionJob) => {
     const c = job.cloud;
     if (c === null) return;
-    const pending = pendingStore.read();
-    if (pending === null || pending.sessionId === job.recording.sessionId) pendingStore.clear();
-    const handle = c.captureHandle;
+    forgetPending(job.recording.sessionId, job.account);
+    const handle = c.captureHandle ?? readyStore.ready.get(job.recording.sessionId)?.captureHandle ?? null;
+    readyStore.ready.delete(job.recording.sessionId);
     const id = c.transcriptionId;
     void (async () => {
       if (handle !== null) await (await cloudNative()).cancel(handle);
@@ -1539,6 +1635,140 @@ export function createLocalTranscriber(
     })().catch((err) => {
       console.error("Releasing the private cloud job failed; PTX deletes it on its own schedule", err);
     });
+  };
+
+  /** Finish `did`'s pending private cloud job in this view: status first, then
+   *  a re-upload (same attempt) if it never completed, or its transcript. */
+  const resumePendingCloud = (pending: PendingCloudJob, did: string): Promise<LocalTranscriptResult | null> => {
+    const job: TranscriptionJob = {
+      recording: {
+        sessionId: pending.sessionId,
+        startedAt: pending.startedAt,
+        audioPath: pending.audioPath,
+        model: DEFAULT_LOCAL_MODEL,
+        language: pending.language,
+        engine: "private-cloud",
+      },
+      owner: ownerId,
+      report: emit,
+      account: did,
+      cloud: {
+        captureHandle: null,
+        handleLost: true,
+        attemptId: pending.attemptId,
+        submitted: pending.submitted,
+        transcriptionId: pending.transcriptionId,
+        next: "resolve",
+      },
+      attempt: NOT_ATTEMPTED,
+      running: false,
+    };
+    transcriptionJobs.set(nativeKey, job);
+    emit({ kind: "transcribing", progress: null });
+    runAttempt(job, null);
+    return takeTranscription(nativeKey, job, ownerId).then(
+      (result): LocalTranscriptResult | null => {
+        emit({ kind: "done" });
+        return result;
+      },
+      (err: unknown) => {
+        // The job is gone (deleted, or expired past its transcript's 24 h):
+        // nothing is left to finish, so forget it instead of failing.
+        if (err instanceof TranscriptionFailedError && err.code === "transcription_not_found") {
+          if (transcriptionJobs.get(nativeKey) === job) transcriptionJobs.delete(nativeKey);
+          forgetPending(pending.sessionId, did);
+          emit({ kind: "idle" });
+          return null;
+        }
+        throw err;
+      },
+    );
+  };
+
+  /**
+   * The pre-TC-772 pending record, under one key for every account, names no
+   * account. The backend's job reads are tenant-scoped, so only the account
+   * that can read its job owns it: that account moves it under its own key and
+   * finishes it. Any other answer leaves it alone (its owner, or tenant-list
+   * recovery, finishes the job); once it is older than any job PTX keeps, it
+   * is dropped. A record without a job id is dropped at once: the upload it
+   * began could only have landed as a job tenant-list recovery finishes.
+   * Checked once per account per launch.
+   */
+  const adoptLegacyPending = (did: string, store: PendingCloudStore): Promise<LocalTranscriptResult | null> | null => {
+    const legacy = legacyPending.read();
+    if (legacy === null) return null;
+    const id = legacy.transcriptionId;
+    if (id === null) {
+      legacyPending.clear();
+      return null;
+    }
+    let checked = legacyChecks.get(nativeKey);
+    if (checked === undefined) {
+      checked = new Set();
+      legacyChecks.set(nativeKey, checked);
+    }
+    if (checked.has(did)) return null;
+    checked.add(did);
+    const api = requireCloud().api;
+    return (async () => {
+      try {
+        await api.get(id);
+      } catch (err) {
+        if (err instanceof PrivateCloudError && err.code === "transcription_not_found") {
+          if (Date.parse(legacy.startedAt) < cloudClock.now() - LEGACY_PENDING_MAX_AGE_MS) legacyPending.clear();
+        } else {
+          console.warn("Checking an earlier private cloud job failed; the next launch checks again", err);
+        }
+        return null;
+      }
+      // Still the same record, still this account, and nothing else took over meanwhile.
+      if (legacyPending.read()?.sessionId !== legacy.sessionId || account() !== did) return null;
+      if (store.read() !== null || transcriptionJobs.has(nativeKey)) return null;
+      store.write(legacy);
+      legacyPending.clear();
+      return resumePendingCloud(legacy, did);
+    })();
+  };
+
+  /** `did`'s private cloud recording that was never uploaded (its view closed
+   *  mid-recording, or Exo quit before the upload began), offered like a kept
+   *  on-device one: Transcribe uploads it with the record's attempt id. */
+  const resumeKeptCloudRecording = (did: string | null): Promise<LocalTranscriptResult> | null => {
+    if (cloud === null) return null;
+    const pending = pendingStore(did)?.read() ?? null;
+    if (pending === null || pending.transcriptionId !== null) return null;
+    const job: TranscriptionJob = {
+      recording: {
+        sessionId: pending.sessionId,
+        startedAt: pending.startedAt,
+        audioPath: pending.audioPath,
+        model: DEFAULT_LOCAL_MODEL,
+        language: pending.language,
+        engine: "private-cloud",
+      },
+      owner: ownerId,
+      report: emit,
+      account: did,
+      cloud: {
+        captureHandle: null,
+        handleLost: true,
+        attemptId: pending.attemptId,
+        submitted: pending.submitted,
+        transcriptionId: null,
+        next: "submit",
+      },
+      attempt: Promise.resolve({
+        ok: false,
+        error: new KeptRecordingError(
+          `"${localRecordingTitle(pending.startedAt)}" stopped before it was uploaded for transcription. The recording was kept on this Mac.`,
+          { engine: "private-cloud", offerOnDevice: pending.audioPath !== "" },
+        ),
+      }),
+      running: false,
+    };
+    transcriptionJobs.set(nativeKey, job);
+    return takeTranscription(nativeKey, job, ownerId);
   };
 
   /** Run one transcription attempt for `job`. Every failure becomes an outcome
@@ -1619,8 +1849,10 @@ export function createLocalTranscriber(
             : "A stopped recording is waiting to be transcribed or saved; finish or discard it first",
         );
       }
-      // Nor one a previous launch kept (resumeKeptRecording offers it), or whose save is still running.
-      if (keptStore(account())?.read() != null) {
+      // Nor one a previous launch or closed view kept (resumeKeptRecording offers
+      // it), or whose save is still running, or a private cloud one not yet uploaded.
+      const pendingCloud = cloud === null ? null : (pendingStore(account())?.read() ?? null);
+      if (keptStore(account())?.read() != null || (pendingCloud !== null && pendingCloud.transcriptionId === null)) {
         throw new Error("A stopped recording is waiting to be transcribed or saved; finish or discard it first");
       }
       const engine = opts.engine ?? "on-device";
@@ -1755,7 +1987,14 @@ export function createLocalTranscriber(
             account: account(),
             cloud:
               sessionEngine === "private-cloud"
-                ? { captureHandle: null, handleLost: false, attemptId: newAttemptId(), transcriptionId: null, next: "submit" }
+                ? {
+                    captureHandle: null,
+                    handleLost: false,
+                    attemptId: newAttemptId(),
+                    submitted: false,
+                    transcriptionId: null,
+                    next: "submit",
+                  }
                 : null,
             // A failed capture's partial recording is kept untranscribed until
             // the user chooses to transcribe or discard it.
@@ -1768,6 +2007,7 @@ export function createLocalTranscriber(
             running: false,
           };
           keepRecording(recording, job.account);
+          persistPending(job);
           if (!stopped.error) {
             emit({ kind: "transcribing", progress: null });
             runAttempt(job, serverUrl);
@@ -1904,7 +2144,10 @@ export function createLocalTranscriber(
         if ((await cloud.api.capabilities()) === null) {
           // Dark, or this account left the cohort: a pending job cannot be
           // finished here (tenant-list recovery picks it up if it comes back).
-          pendingStore.clear();
+          // A recording never uploaded stays kept: it can still be transcribed
+          // on this Mac or discarded.
+          const store = pendingStore(account());
+          if (store?.read()?.transcriptionId != null) store.clear();
           return "hidden";
         }
         return "available";
@@ -1923,51 +2166,16 @@ export function createLocalTranscriber(
     },
 
     resumeCloudTranscription() {
-      if (cloud === null || transcriptionJobs.has(nativeKey)) return null;
-      const pending = pendingStore.read();
-      if (pending === null) return null;
-      const job: TranscriptionJob = {
-        recording: {
-          sessionId: pending.sessionId,
-          startedAt: pending.startedAt,
-          audioPath: "",
-          model: DEFAULT_LOCAL_MODEL,
-          language: pending.language,
-          engine: "private-cloud",
-        },
-        owner: ownerId,
-        report: emit,
-        account: account(),
-        cloud: {
-          captureHandle: null,
-          handleLost: true,
-          attemptId: pending.attemptId,
-          transcriptionId: pending.transcriptionId,
-          next: "resolve",
-        },
-        attempt: NOT_ATTEMPTED,
-        running: false,
-      };
-      transcriptionJobs.set(nativeKey, job);
-      emit({ kind: "transcribing", progress: null });
-      runAttempt(job, null);
-      return takeTranscription(nativeKey, job, ownerId).then(
-        (result): LocalTranscriptResult | null => {
-          emit({ kind: "done" });
-          return result;
-        },
-        (err: unknown) => {
-          // The job is gone (deleted, or expired past its transcript's 24 h):
-          // nothing is left to finish, so forget it instead of failing.
-          if (err instanceof TranscriptionFailedError && err.code === "transcription_not_found") {
-            if (transcriptionJobs.get(nativeKey) === job) transcriptionJobs.delete(nativeKey);
-            pendingStore.clear();
-            emit({ kind: "idle" });
-            return null;
-          }
-          throw err;
-        },
-      );
+      if (cloud === null) return null;
+      setAsideOtherAccountJob();
+      if (transcriptionJobs.has(nativeKey)) return null;
+      const did = account();
+      const store = pendingStore(did);
+      if (did === null || store === null) return null;
+      const pending = store.read();
+      // Not uploaded yet: resumeKeptRecording offers it instead.
+      if (pending !== null) return pending.transcriptionId === null ? null : resumePendingCloud(pending, did);
+      return adoptLegacyPending(did, store);
     },
 
     resumeKeptRecording() {
@@ -1975,7 +2183,8 @@ export function createLocalTranscriber(
       if (transcriptionJobs.has(nativeKey)) return null;
       const did = account();
       const kept = keptStore(did)?.read() ?? null;
-      if (kept === null || savingTranscripts.get(nativeKey)?.has(kept.sessionId)) return null;
+      if (kept === null) return resumeKeptCloudRecording(did);
+      if (savingTranscripts.get(nativeKey)?.has(kept.sessionId)) return null;
       const job: TranscriptionJob = {
         recording: { ...kept, engine: "on-device" },
         owner: ownerId,
@@ -2022,8 +2231,12 @@ export function createLocalTranscriber(
       const known = new Set<string>();
       const current = transcriptionJobs.get(nativeKey)?.cloud?.transcriptionId;
       if (current) known.add(current);
-      const pending = pendingStore.read()?.transcriptionId;
-      if (pending) known.add(pending);
+      const pending = pendingStore(account())?.read() ?? null;
+      // A recording whose upload began before its job id was recorded may own
+      // any listed job, and its own upload (same Idempotency-Key) finishes it:
+      // recovering that job here would save its transcript twice.
+      if (pending !== null && pending.transcriptionId === null && pending.submitted) return 0;
+      if (pending?.transcriptionId) known.add(pending.transcriptionId);
       let finished = 0;
       for (const listed of await cloud.api.list()) {
         if (known.has(listed.id)) continue;
@@ -2043,11 +2256,11 @@ export function createLocalTranscriber(
     async finishCloudTranscript(result) {
       const deps = requireCloud();
       if (result.captureHandle !== null) await (await cloudNative()).cancel(result.captureHandle);
+      readyStore.ready.delete(result.sessionId);
       await deps.api.remove(result.transcriptionId);
       // Only once PTX has deleted it: until then a relaunch resumes (and
       // idempotently re-saves) the job instead of recovering it as a stranger.
-      const pending = pendingStore.read();
-      if (pending !== null && pending.sessionId === result.sessionId) pendingStore.clear();
+      forgetPending(result.sessionId, account());
     },
   };
 }
