@@ -23,14 +23,14 @@ class CaptureService : Service() {
         val action = intent?.action ?: return START_NOT_STICKY
         val engine = CaptureEngine.get(this)
         try {
-            ensureChannel()
-            val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(engine.status().optString("state") == "paused"), type)
             if (action in listOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD)) {
                 val currentId = engine.status().optString("id")
                 if (intent.getStringExtra("id")?.let { it != currentId } == true) return START_NOT_STICKY
                 // gen is diagnostic; a valid tap remains usable after an automatic retry.
             }
+            ensureChannel()
+            val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(engine.status().optString("state") == "paused"), type)
             when (action) {
                 ACTION_START -> {
                     engine.start(intent.getLongExtra("maxDurationMs", 0).takeIf { it > 0 }, null,
@@ -59,6 +59,7 @@ class CaptureService : Service() {
             .setContentTitle(if (paused) getString(R.string.capture_paused) else getString(R.string.capture_recording))
             .setContentText(if (paused) getString(R.string.capture_resume_hint) else getString(R.string.capture_running_hint))
             .setContentIntent(open).setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setUsesChronometer(!paused).setWhen(System.currentTimeMillis())
             .addAction(0, if (paused) getString(R.string.capture_resume) else getString(R.string.capture_pause), toggle)
             .addAction(0, getString(R.string.capture_stop), stop).build()

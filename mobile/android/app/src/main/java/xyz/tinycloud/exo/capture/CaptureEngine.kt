@@ -16,7 +16,8 @@ import kotlin.concurrent.withLock
 class CaptureEngine private constructor(private val context: Context) {
     interface Listener { fun event(name: String, data: JSONObject) }
     private val listeners = CopyOnWriteArrayList<Listener>()
-    private val retainedEvents = HashMap<String, JSONObject>()
+    private val retainedEvents = ArrayDeque<Pair<String, JSONObject>>()
+    @Volatile private var retentionConsumer: Listener? = null
     private val announcedRecovered = java.util.Collections.synchronizedSet(HashSet<String>())
     private val controlLock = ReentrantLock()
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
@@ -35,6 +36,7 @@ class CaptureEngine private constructor(private val context: Context) {
     private var id: String? = null
     private var startedAt = 0L
     private var audioMs = 0L
+    private var durableAudioMs = 0L
     private var frames = 0L
     private var segment = 0
     private var segmentFrames = 0L
@@ -62,12 +64,25 @@ class CaptureEngine private constructor(private val context: Context) {
     fun addListener(listener: Listener) {
         listeners.add(listener)
         listener.event("micState", status())
-        synchronized(retainedEvents) { for ((name, value) in retainedEvents) listener.event(name, value) }
     }
-    fun removeListener(listener: Listener) { listeners.remove(listener) }
+    fun addConsumerListener(listener: Listener) {
+        val pending = synchronized(retainedEvents) {
+            listeners.add(listener)
+            retentionConsumer = listener
+            retainedEvents.toList().also { retainedEvents.clear() }
+        }
+        listener.event("micState", status())
+        for ((name, value) in pending) listener.event(name, value)
+    }
+    fun removeListener(listener: Listener) {
+        synchronized(retainedEvents) {
+            listeners.remove(listener)
+            if (retentionConsumer === listener) retentionConsumer = null
+        }
+    }
     private fun emit(name: String, data: JSONObject) {
         if (name in listOf("autoStopped", "presentRecorder", "recovered", "committed"))
-            synchronized(retainedEvents) { retainedEvents[name] = data }
+            synchronized(retainedEvents) { if (retentionConsumer == null) retainedEvents.addLast(name to data.copy()) }
         for (listener in listeners) listener.event(name, data)
     }
     private fun publishState() { emit("micState", status()) }
@@ -94,7 +109,7 @@ class CaptureEngine private constructor(private val context: Context) {
             .commit()) { "defaults_write_failed" }
         val claimed = JSONArray()
         if (did != null) {
-            if (id != null && owner == null) { owner = did; library.transition(id!!, "owner", audioMs, JSONObject().put("did", did)); claimed.put(id) }
+            if (id != null && owner == null) { owner = did; journalLiveTransition(id!!, "owner", JSONObject().put("did", did)); claimed.put(id) }
             for (note in library.list()) {
                 if (note.optInt("version") == 2 && !note.optBoolean("ownerUnknown") && note.optString("owner") == "null") {
                     library.claim(note.getString("id"), did, "signed_out_v2"); claimed.put(note.getString("id"))
@@ -108,7 +123,7 @@ class CaptureEngine private constructor(private val context: Context) {
         val transcriber = if (owner == null) "on-device" else value.optString("transcriber", options.optString("transcriber"))
         options = JSONObject().put("transcriber", transcriber)
             .put("identifySpeakers", value.optBoolean("identifySpeakers", options.optBoolean("identifySpeakers")))
-        library.transition(current, "options", audioMs, options.copy())
+        journalLiveTransition(current, "options", options.copy())
         publishState()
     }
     @Synchronized fun start(requestedMs: Long?, requestedOptions: JSONObject?, startSource: String, commandId: String? = null): JSONObject {
@@ -123,11 +138,14 @@ class CaptureEngine private constructor(private val context: Context) {
         maxMs = requestedMs?.takeIf { it > 0 }?.coerceIn(1000, MAX_DURATION_MS) ?: MAX_DURATION_MS
         val newId = UUID.randomUUID().toString()
         library.start(newId, startSource, owner, transitionGen, options, maxMs)
-        id = newId; startedAt = System.currentTimeMillis(); audioMs = 0; frames = 0; segment = 0; segmentFrames = 0
+        id = newId; startedAt = System.currentTimeMillis(); audioMs = 0; durableAudioMs = 0; frames = 0; segment = 0; segmentFrames = 0
         pausedMs = 0; pausedAt = 0; silencedMs = 0; silencedEvents = 0; noSignalMs = 0
         source = startSource; intent = "recording"; availability = "available"; state = "recording"; reason = null; gen++
         spans = JSONArray(); openSpan = null; lastCheckpoint = startedAt
-        try { acquire() } catch (e: Exception) {
+        try { acquire {
+            library.openFirstSegment(newId, 0, gen)
+            lastCheckpoint = System.currentTimeMillis()
+        } } catch (e: Exception) {
             id = null; intent = "stopped"; state = "idle"; throw e
         }
         main.removeCallbacks(limitTick); main.postDelayed(limitTick, 1000)
@@ -146,13 +164,14 @@ class CaptureEngine private constructor(private val context: Context) {
                 frames++ ; segmentFrames++
                 audioMs = frames * 1024L * 1000 / SAMPLE_RATE
                 val now = System.currentTimeMillis()
-                if (now - lastCheckpoint >= 2000) {
-                    library.checkpoint(current, segment, audioMs, intent, availability)
-                    lastCheckpoint = now
-                }
                 if (segmentFrames * 1024L / SAMPLE_RATE >= 60) {
-                    library.checkpoint(current, segment, audioMs, "recording", availability, close = true)
+                    library.checkpoint(current, segment, audioMs, "recording", "available", close = true)
+                    durableAudioMs = audioMs
                     segment++; segmentFrames = 0; library.roll(current, segment, audioMs); lastCheckpoint = now
+                } else if (availability == "available" && now - lastCheckpoint >= 2000) {
+                    library.checkpoint(current, segment, audioMs, "recording", "available")
+                    durableAudioMs = audioMs
+                    lastCheckpoint = now
                 }
                 if (recordedElapsedMs() >= maxMs) android.os.Handler(android.os.Looper.getMainLooper()).post { autoStop("max_duration") }
             }
@@ -169,16 +188,16 @@ class CaptureEngine private constructor(private val context: Context) {
                     silencedAt = System.currentTimeMillis(); silencedEvents++
                     openSpan = JSONObject().put("kind", "silenced").put("reason", "os_silenced")
                         .put("startedAt", silencedAt).put("endedAt", JSONObject.NULL).put("atAudioMs", audioMs).put("audioMs", 0)
-                    library.transition(current, "span_open", audioMs, JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
+                    journalLiveTransition(current, "span_open", JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
                     state = "silenced"; reason = "os_silenced"; publishState()
                 }
                 if (!silenced && silencedAt != 0L) { closeSilence(current); state = "recording"; reason = null; publishState() }
             }
         }, { error ->
             if (error == "writer_stalled") {
-                library.transition(current, "span_open", audioMs, JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
+                journalLiveTransition(current, "span_open", JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
             } else if (error == "writer_resumed") {
-                library.transition(current, "span_close", audioMs, JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
+                journalLiveTransition(current, "span_close", JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
             }
             if (error != "writer_resumed") Log.e("ExoCapture", error)
             reason = if (error == "writer_resumed") null else error; publishState()
@@ -191,11 +210,20 @@ class CaptureEngine private constructor(private val context: Context) {
             throw e
         }
     }
+    private fun journalLiveTransition(current: String, name: String, extra: JSONObject) = synchronized(this) {
+        if (id != current || library.tombstone(current).exists()) return@synchronized
+        if (intent == "recording") {
+            if (!File(library.session(current), "seg-%05d.aac".format(segment)).isFile) return@synchronized
+            library.syncAudio(current, segment)
+            durableAudioMs = audioMs
+        }
+        library.transition(current, name, durableAudioMs, extra)
+    }
     private fun closeSilence(current: String) {
         if (silencedAt == 0L) return
         val now = System.currentTimeMillis()
         silencedMs += now - silencedAt; silencedAt = 0
-        library.transition(current, "span_close", audioMs, JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
+        journalLiveTransition(current, "span_close", JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
         openSpan?.put("endedAt", now)?.put("audioMs", audioMs - openSpan!!.optLong("atAudioMs"))
         if (openSpan != null) spans.put(openSpan)
         openSpan = null
@@ -203,22 +231,40 @@ class CaptureEngine private constructor(private val context: Context) {
     fun pause() = controlLock.withLock {
         val current = id ?: throw IllegalStateException("not_recording")
         if (intent == "paused") return@withLock
-        // The pause boundary is durable before releasing AudioRecord: drain PCM,
-        // sync the final segment, journal its byte count, journal intent paused.
-        val captured = input
-        captured?.drain()
-        encoder?.finish(); encoder = null
-        closeSilence(current)
+        // AudioRecord.stop cuts the input first. AudioCapture then collects the
+        // in-flight read and any post-stop readable tail before draining PCM.
+        val captured = input ?: throw IllegalStateException("pause_failed")
         val at = System.currentTimeMillis()
-        library.checkpoint(current, segment, audioMs, "recording", availability, close = true, at = at)
-        library.transition(current, "intent", audioMs, JSONObject().put("value", "paused").put("by", "user"), at)
-        try { captured?.release() } catch (e: Exception) {
-            state = "needs_user"; availability = "blocked"; reason = "pause_failed"; publishState()
-            throw IllegalStateException("pause_failed", e)
+        try { captured.drain() } catch (e: Exception) {
+            if (!captured.inputStopped) throw IllegalStateException("pause_failed", e)
+            failStoppedPause(current, captured, e)
+        }
+        try {
+            encoder?.finish(); encoder = null
+            closeSilence(current)
+            library.checkpoint(current, segment, audioMs, "recording", "available", close = true, at = at)
+            durableAudioMs = audioMs
+            library.transition(current, "intent", audioMs, JSONObject().put("value", "paused").put("by", "user"), at)
+        } catch (e: Exception) { failStoppedPause(current, captured, e) }
+        try { captured.release() } catch (e: Exception) {
+            Log.e("ExoCapture", "AudioRecord release failed after durable pause", e)
         }
         input = null
         gen++; intent = "paused"; state = "paused"; reason = "user"; pausedAt = at
         publishState()
+    }
+    private fun failStoppedPause(current: String, captured: AudioCapture, failure: Exception): Nothing {
+        try { captured.release() } catch (e: Exception) { Log.e("ExoCapture", "AudioRecord release after failed Pause", e) }
+        input = null
+        try { encoder?.abort() } catch (e: Exception) { Log.e("ExoCapture", "AAC abort after failed Pause", e) }
+        encoder = null
+        try { library.checkpoint(current, segment, audioMs, "recording", "available", close = true); durableAudioMs = audioMs }
+        catch (e: Exception) { Log.e("ExoCapture", "Final checkpoint after failed Pause", e) }
+        autoStop("write_failed")
+        if (id != null) {
+            availability = "blocked"; state = "needs_user"; reason = "write_failed"; publishState()
+        }
+        throw IllegalStateException("pause_failed", failure)
     }
     fun resume() = controlLock.withLock {
         val current = id ?: throw IllegalStateException("not_recording")
@@ -255,7 +301,10 @@ class CaptureEngine private constructor(private val context: Context) {
         gen++; intent = "stopped"
         if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
         val at = System.currentTimeMillis()
-        if (wasCapturing) library.checkpoint(current, segment, audioMs, "recording", availability, close = true, at = at)
+        if (wasCapturing) {
+            library.checkpoint(current, segment, audioMs, "recording", "available", close = true, at = at)
+            durableAudioMs = audioMs
+        }
         library.stopJournal(current, audioMs, reason, at)
         library.commit(current, { RecordingFinalizer.mux(library.session(current), it) })
         val note = library.mutate(current, "stop.metrics") { side ->
@@ -289,8 +338,12 @@ class CaptureEngine private constructor(private val context: Context) {
         .put("id", id ?: JSONObject.NULL).put("intent", intent).put("availability", availability)
         .put("startedAt", if (id == null) JSONObject.NULL else startedAt)
         .put("elapsedMs", recordedElapsedMs()).put("pausedMs", pausedMs + if (pausedAt > 0) System.currentTimeMillis() - pausedAt else 0)
-        .put("audioMs", audioMs).put("maxDurationMs", maxMs).put("spans", spans).put("openSpan", openSpan ?: JSONObject.NULL)
-        .put("source", source).put("options", options).put("input", JSONObject.NULL).put("owner", owner ?: JSONObject.NULL)
+        .put("audioMs", durableAudioMs).put("maxDurationMs", maxMs)
+        .put("spans", JSONArray(spans.toString())).put("openSpan", openSpan?.copy() ?: JSONObject.NULL)
+        .put("source", source).put("options", options.copy())
+        .put("input", if (id == null) JSONObject.NULL else JSONObject().put("id", "built-in")
+            .put("name", "Built-in microphone").put("kind", "built_in"))
+        .put("owner", owner ?: JSONObject.NULL)
         .put("transitionGen", transitionGen).put("gen", gen).put("androidSdkInt", Build.VERSION.SDK_INT)
     companion object {
         @Volatile private var instance: CaptureEngine? = null

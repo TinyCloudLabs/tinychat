@@ -18,6 +18,7 @@ class RecordingLibraryTest {
     private fun library() = RecordingLibrary(temp.newFolder())
     private fun begin(lib: RecordingLibrary, id: String) {
         lib.start(id, "in_app", null, 1, defaultOptions(), MAX_DURATION_MS)
+        lib.openFirstSegment(id, 0, 1)
         lib.append(id, 0, byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0))
         lib.checkpoint(id, 0, 1000, "recording", "available")
         lib.stopJournal(id, 1000, "user")
@@ -41,6 +42,16 @@ class RecordingLibraryTest {
         lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(9)) }, { null })
         assertEquals("new", lib.read(note)!!.getString("marker"))
         assertEquals(2, lib.read(note)!!.getInt("rev"))
+    }
+    @Test fun successfulInputIsJournaledBeforeFirstSegment() {
+        val lib = library(); val note = id()
+        lib.start(note, "in_app", null, 1, defaultOptions(), MAX_DURATION_MS)
+        assertEquals(listOf("session"), lib.events(note).map { it.getString("e") })
+        lib.openFirstSegment(note, 0, 7)
+        val events = lib.events(note)
+        assertEquals(listOf("session", "avail", "input", "segment"), events.map { it.getString("e") })
+        assertEquals(7, events[1].getInt("gen"))
+        assertEquals("built_in", events[2].getString("kind"))
     }
     @Test fun failedSidecarRenameRecoversWithoutPublishingPartialCommit() {
         val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id(); begin(lib, note)
@@ -105,6 +116,15 @@ class RecordingLibraryTest {
         assertEquals(1, lib.listOutbox("did:a").length())
         assertFalse(lib.sidecar(note).exists())
     }
+    @Test fun spaceRowEvidenceCannotMarkAV2NoteSaved() {
+        val lib = library(); val note = id(); begin(lib, note); commit(lib, note)
+        lib.mutate(note, "ledger.write") { it.put("owner", "did:a") }
+        val before = lib.read(note)!!.getInt("rev")
+        try { lib.claim(note, "did:a", "space_row", "another-row"); fail("v2 association must reject") }
+        catch (_: IllegalStateException) { }
+        assertEquals(before, lib.read(note)!!.getInt("rev"))
+        assertEquals("pending", lib.read(note)!!.getJSONObject("ledger").getJSONObject("audio").getString("state"))
+    }
     @Test fun hostedTranscriptAndUploadBothReachOutbox() {
         val lib = library(); val note = id(); begin(lib, note); commit(lib, note)
         lib.mutate(note, "ledger.write") { side ->
@@ -122,6 +142,7 @@ class RecordingLibraryTest {
     @Test fun silencedSpanAndLatestOptionsReachCommittedSidecar() {
         val lib = library(); val note = id()
         lib.start(note, "app_shortcut", null, 3, defaultOptions(), MAX_DURATION_MS)
+        lib.openFirstSegment(note, 0, 1)
         lib.append(note, 0, byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0))
         lib.transition(note, "span_open", 100, JSONObject().put("kind", "silenced").put("reason", "os_silenced"))
         lib.transition(note, "span_close", 500, JSONObject().put("kind", "silenced").put("reason", "os_silenced"))

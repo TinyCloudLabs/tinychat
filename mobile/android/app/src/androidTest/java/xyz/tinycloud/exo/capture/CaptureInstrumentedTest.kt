@@ -21,6 +21,10 @@ import xyz.tinycloud.exo.capture.core.RecordingLibrary
 import xyz.tinycloud.exo.capture.core.defaultOptions
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import xyz.tinycloud.exo.MainActivity
 import kotlin.math.PI
 import kotlin.math.sin
@@ -40,6 +44,7 @@ class CaptureInstrumentedTest {
         val id = UUID.randomUUID().toString()
         try {
             library.start(id, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+            library.openFirstSegment(id, 0, 1)
             var packets = 0
             val encoder = AacAdtsEncoder { library.append(id, 0, it); packets++ }
             val samples = 44_100
@@ -76,6 +81,65 @@ class CaptureInstrumentedTest {
         assertEquals("app_shortcut", restored?.source)
         assertNull(LaunchCommandStore(context).pending(first.createdAt + 30_001))
     }
+    @Test fun pauseKeepsBuffersCapturedBeforeTheTap() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val entered = CountDownLatch(1)
+        val releaseWriter = CountDownLatch(1)
+        val delivered = AtomicInteger()
+        val capture = AudioCapture({
+            if (delivered.get() == 0) {
+                entered.countDown()
+                releaseWriter.await(5, TimeUnit.SECONDS)
+            }
+            delivered.incrementAndGet()
+        }, { _, _ -> }, { _ -> }, { error -> throw AssertionError(error) })
+        try {
+            capture.start()
+            assertTrue("writer never received the first buffer", entered.await(3, TimeUnit.SECONDS))
+            Thread.sleep(180) // at least one more 50 ms buffer waits in AudioCapture
+            val drainFailure = AtomicReference<Throwable?>()
+            val draining = Thread { try { capture.drain() } catch (e: Throwable) { drainFailure.set(e) } }
+            draining.start()
+            Thread.sleep(100) // input stop precedes releasing the blocked writer
+            releaseWriter.countDown()
+            draining.join(5000)
+            assertFalse("capture did not drain", draining.isAlive)
+            assertNull("pause drain failed", drainFailure.get())
+            assertTrue("pre-pause queued audio was discarded", delivered.get() >= 2)
+        } finally {
+            releaseWriter.countDown()
+            capture.release()
+            activity.finish()
+        }
+    }
+    @Test fun pauseCheckpointFailureAutoStops() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            val deadline = System.currentTimeMillis() + 5000
+            while (engine.status().optString("state") != "recording" && System.currentTimeMillis() < deadline) Thread.sleep(50)
+            assertEquals("recording", engine.status().getString("state"))
+            val liveId = engine.status().getString("id")
+            Thread.sleep(400)
+            engine.library.ops.failOnce("seg.sync")
+            try { engine.pause(); fail("Pause should reject a failed checkpoint") }
+            catch (e: IllegalStateException) { assertEquals("pause_failed", e.message) }
+            assertTrue("write failure did not stop capture", engine.status().isNull("id"))
+            assertNotNull("durable frames were not committed", engine.library.read(liveId))
+            engine.library.delete(liveId)
+        } finally {
+            if (!engine.status().isNull("id")) engine.stop("write_failed")
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
     @Test fun visibleAppShortcutStartsNativeCapture() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         grant(Manifest.permission.RECORD_AUDIO)
@@ -91,6 +155,8 @@ class CaptureInstrumentedTest {
             while (engine.status().optString("state") != "recording" && System.currentTimeMillis() < deadline) Thread.sleep(50)
             assertEquals("recording", engine.status().getString("state"))
             assertEquals("app_shortcut", engine.status().getString("source"))
+            engine.status().getJSONObject("options").put("transcriber", "mutated-by-caller")
+            assertNotEquals("mutated-by-caller", engine.status().getJSONObject("options").getString("transcriber"))
             Thread.sleep(1100)
             val liveId = engine.status().getString("id")
             engine.pause()

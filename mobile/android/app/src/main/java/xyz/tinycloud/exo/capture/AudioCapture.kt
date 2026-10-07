@@ -18,12 +18,18 @@ class AudioCapture(
     private val onError: (String) -> Unit
 ) {
     private val running = AtomicBoolean(false)
+    private val producerDone = AtomicBoolean(false)
+    private val cutting = AtomicBoolean(false)
     private val queue = ArrayBlockingQueue<ByteArray>(200) // 200 × 50 ms = 10 s
     private val minBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
     private val record: AudioRecord
     private var reader: Thread? = null
     private var writer: Thread? = null
     private var drained = false
+    @Volatile private var tailLost = false
+    @Volatile private var writerFailure: Exception? = null
+    @Volatile var inputStopped = false
+        private set
     private var recordingCallback: Any? = null
     init {
         require(minBytes > 0) { "Unsupported capture format" }
@@ -52,9 +58,12 @@ class AudioCapture(
         running.set(true)
         writer = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            while (running.get() || queue.isNotEmpty()) {
+            while (!producerDone.get() || queue.isNotEmpty()) {
                 val pcm = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-                try { onPcm(pcm) } catch (e: Exception) { onError("write_failed: ${e.message}"); running.set(false) }
+                try { onPcm(pcm) } catch (e: Exception) {
+                    writerFailure = e
+                    onError("write_failed: ${e.message}"); running.set(false); producerDone.set(true)
+                }
             }
         }.also { it.name = "ExoAACWriter"; it.start() }
         reader = Thread {
@@ -69,7 +78,15 @@ class AudioCapture(
                     break
                 }
                 if (n == 0) continue
-                if (!queue.offer(scratch.copyOf(n))) {
+                val chunk = scratch.copyOf(n)
+                var accepted = queue.offer(chunk)
+                if (!accepted && cutting.get()) {
+                    val deadline = System.currentTimeMillis() + 10_000
+                    while (!accepted && writer?.isAlive == true && System.currentTimeMillis() < deadline)
+                        accepted = queue.offer(chunk, 200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    if (!accepted) tailLost = true
+                }
+                if (!accepted) {
                     if (!stalled) { stalled = true; onError("writer_stalled") }
                 } else if (stalled) { stalled = false; onError("writer_resumed") }
                 val now = System.currentTimeMillis()
@@ -87,10 +104,35 @@ class AudioCapture(
     }
     fun drain() {
         if (drained) return
+        // Stop cuts the capture boundary. If stop fails, the reader and writer
+        // remain live so the caller can truthfully report recording.
+        if (!inputStopped) {
+            cutting.set(true)
+            try { record.stop() } catch (e: Exception) { cutting.set(false); throw e }
+            if (record.recordingState != AudioRecord.RECORDSTATE_STOPPED) {
+                cutting.set(false)
+                throw IllegalStateException("AudioRecord did not stop")
+            }
+            inputStopped = true
+        }
         running.set(false)
-        try { record.stop() } catch (_: IllegalStateException) { }
-        reader?.join(2000); writer?.join(3000)
-        if (reader?.isAlive == true || writer?.isAlive == true) throw IllegalStateException("Audio capture did not drain")
+        reader?.join(2000)
+        if (reader?.isAlive == true) throw IllegalStateException("AudioRecord reader did not stop")
+        if (tailLost) throw IllegalStateException("Audio tail could not reach the writer")
+        // The reader may have returned an in-flight block after stop(). Drain
+        // anything else Android still makes readable before ending production.
+        val scratch = ByteArray(SAMPLE_RATE / 10)
+        while (true) {
+            val count = record.read(scratch, 0, scratch.size, AudioRecord.READ_NON_BLOCKING)
+            if (count <= 0) break // ERROR_INVALID_OPERATION means no post-stop read is available.
+            while (!queue.offer(scratch.copyOf(count), 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                if (writer?.isAlive != true) throw IllegalStateException("Audio writer stopped before tail drain")
+            }
+        }
+        producerDone.set(true)
+        writer?.join(3000)
+        if (writer?.isAlive == true) throw IllegalStateException("Audio writer did not drain")
+        writerFailure?.let { throw IllegalStateException("Audio writer failed", it) }
         drained = true
     }
     fun release() {
@@ -98,5 +140,5 @@ class AudioCapture(
             recordingCallback as android.media.AudioManager.AudioRecordingCallback)
         record.release()
     }
-    fun stop() { try { drain() } finally { release() } }
+    fun stop() { drain(); release() }
 }

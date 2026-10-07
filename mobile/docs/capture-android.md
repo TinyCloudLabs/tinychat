@@ -3,15 +3,18 @@
 `CaptureService` enters a microphone foreground service before `CaptureEngine`
 opens `AudioRecord`. Audio is 44,100 Hz mono PCM16, encoded as AAC-LC 64 kbps.
 Each AAC access unit is wrapped in ADTS and appended to a session segment.
-The journal and segment checkpoint every two seconds while capturing. A final
-heartbeat closes each segment; journal and sidecar JSON use canonical UTF-8
+The journal and segment checkpoint every two seconds from each segment start
+while capturing. A final heartbeat closes each segment and replaces a periodic
+heartbeat due at the same instant; journal and sidecar JSON use canonical UTF-8
 with sorted keys and one trailing newline. `RecordingFinalizer`
 combines ADTS segments into a staged MPEG-4 file and publishes the sidecar last.
 A sidecar is the commit marker. `CaptureBootstrap` recovers sessions on process
 start without waiting for Capacitor or the WebView.
 
-Pause stops and releases `AudioRecord` while the service and its paused
-notification remain. Resume starts a new segment and reacquires the mic. The
+Pause first stops `AudioRecord`, collects any buffered input, drains the writer
+and encoder, syncs the segment, then journals the final heartbeat and paused
+intent before releasing the input. The service and its paused notification
+remain. Resume starts a new segment and reacquires the mic. The
 three-hour limit counts wall time minus user pauses, including interrupted time.
 A user Stop from the
 notification finalizes into `files/voice-notes/<id>.m4a` and `<id>.json`.

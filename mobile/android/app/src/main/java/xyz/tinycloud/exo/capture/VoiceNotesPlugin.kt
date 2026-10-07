@@ -27,7 +27,7 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     private lateinit var engine: CaptureEngine
     private val main = Handler(Looper.getMainLooper())
     private var pendingStart: Pair<String, PluginCall>? = null
-    override fun load() { engine = CaptureEngine.get(context); engine.addListener(this); engine.recover() }
+    override fun load() { engine = CaptureEngine.get(context); engine.addConsumerListener(this); engine.recover() }
     override fun handleOnDestroy() { engine.removeListener(this); super.handleOnDestroy() }
     override fun event(name: String, data: JSONObject) {
         if (name == "started") {

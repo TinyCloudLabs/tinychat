@@ -52,13 +52,23 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             .put("owner", owner ?: JSONObject.NULL).put("transitionGen", transitionGen).put("options", options))
         first.put("t", now)
         ops.write(journal(id), jsonLine(first), false, "start.journal"); ops.syncDir(dir)
+    }
+    fun openFirstSegment(id: String, audioMs: Long, gen: Long, at: Long = System.currentTimeMillis()) = lock.withLock {
+        appendJournal(id, event("avail", audioMs, JSONObject().put("value", "available")
+            .put("reason", JSONObject.NULL).put("gen", gen), at), "start.avail")
+        appendJournal(id, event("input", audioMs, JSONObject().put("id", "built-in")
+            .put("name", "Built-in microphone").put("kind", "built_in"), at), "start.input")
+        val dir = session(id)
         val segment = File(dir, "seg-00000.aac")
         ops.write(segment, byteArrayOf(), false, "roll.create"); ops.syncDir(dir)
-        appendJournal(id, event("segment", 0, JSONObject().put("index", 0).put("file", segment.name)), "start.segment")
+        appendJournal(id, event("segment", audioMs, JSONObject().put("index", 0).put("file", segment.name), at), "start.segment")
     }
     fun append(id: String, index: Int, frame: ByteArray) = lock.withLock {
         ensureAlive(id)
         ops.write(File(session(id), "seg-%05d.aac".format(index)), frame, true, "seg.write", false)
+    }
+    fun syncAudio(id: String, index: Int) = lock.withLock {
+        ops.sync(File(session(id), "seg-%05d.aac".format(index)), false, "seg.sync")
     }
     fun checkpoint(id: String, index: Int, audioMs: Long, intent: String, availability: String,
                    close: Boolean = false, at: Long = System.currentTimeMillis()) = lock.withLock {
@@ -120,6 +130,9 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             val optionEvent = history.lastOrNull { it.optString("e") == "options" } ?: first.optJSONObject("options") ?: defaultOptions()
             val finalOptions = JSONObject().put("transcriber", optionEvent.optString("transcriber", "on-device"))
                 .put("identifySpeakers", optionEvent.optBoolean("identifySpeakers"))
+            val inputEvent = history.lastOrNull { it.optString("e") == "input" }
+            val inputValue = inputEvent?.let { JSONObject().put("id", it.getString("id"))
+                .put("name", it.getString("name")).put("kind", it.getString("kind")) } ?: JSONObject.NULL
             val result = JSONObject().put("id", id).put("startedAt", startedAt).put("durationMs", audioMs)
                 .put("mimeType", "audio/mp4").put("sizeBytes", staged.length()).put("silencedMs", 0)
                 .put("silencedEvents", 0).put("noSignalMs", 0).put("version", 2).put("rev", 1)
@@ -130,7 +143,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 .put("exitReason", exitReason ?: JSONObject.NULL).put("legacyImport", false).put("ownerUnknown", false)
                 .put("source", first.optString("source", "in_app")).put("owner", owner ?: JSONObject.NULL)
                 .put("transitionGen", first.optLong("transitionGen")).put("options", finalOptions)
-                .put("input", JSONObject().put("id", "built-in").put("name", "Built-in microphone").put("kind", "built_in"))
+                .put("input", inputValue)
                 .put("sampleRate", SAMPLE_RATE).put("bitrate", BITRATE)
                 .put("ledger", defaultLedger()).put("stt", defaultStt())
             lock.withLock {
@@ -205,7 +218,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     fun claim(id: String, did: String, evidence: String, rowId: String? = null): JSONObject = mutate(id, "claim.write") { note ->
         val legacy = note.optBoolean("ownerUnknown", false)
         if (legacy && evidence !in listOf("space_row", "user_choice")) throw IllegalStateException("owner_unknown")
-        if (!legacy && evidence != "signed_out_v2" && evidence != "space_row") throw IllegalStateException("invalid_evidence")
+        if (!legacy && evidence != "signed_out_v2") throw IllegalStateException("claim_evidence_invalid")
         val owner = note.optString("owner")
         if (owner != "null" && owner.isNotEmpty() && owner != did) throw IllegalStateException("owner_mismatch")
         if (note.optInt("version") < 2) note.put("version", 2).put("legacyImport", false)
