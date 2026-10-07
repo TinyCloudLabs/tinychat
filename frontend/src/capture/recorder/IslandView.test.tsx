@@ -19,6 +19,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     phase: "recording",
     mic: { state: "recording", reason: null },
     startedAt: Date.now() - (12 * 60 + 48) * 1000,
+    audioMs: (12 * 60 + 48) * 1000,
     maxDurationMs: 3_600_000,
     limitNotice: null,
     savePercent: null,

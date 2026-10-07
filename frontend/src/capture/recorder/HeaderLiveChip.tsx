@@ -23,7 +23,7 @@ export function HeaderLiveChipView(props: { recorder: RecorderValue; className?:
     >
       <span className="flex h-8 items-center gap-1.5 rounded-full bg-surface-2 px-3 text-meta font-semibold">
         <span className={cn("size-2 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live")} aria-hidden="true" />
-        <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} />
+        <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} />
       </span>
     </button>
   );

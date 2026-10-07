@@ -33,7 +33,7 @@ export function RailLiveButtonView(props: { recorder: RecorderValue; className?:
       {state === "saving" && <Loader2Icon className="size-4 animate-spin text-muted-foreground" aria-hidden="true" />}
       {state === "landed" && <CheckIcon className="size-4 text-primary" aria-hidden="true" />}
       {state === "failed" && <AlertCircleIcon className="size-4 text-warning" aria-hidden="true" />}
-      {state === "live" && <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-label" />}
+      {state === "live" && <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-label" />}
     </button>
   );
 }

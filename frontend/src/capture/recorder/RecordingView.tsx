@@ -41,7 +41,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
 
       <main className="mx-auto grid min-h-0 w-full max-w-xl flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-y-auto px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-4 land:max-w-[72rem] land:grid-cols-2 land:grid-rows-[minmax(0,1fr)_auto] land:gap-x-10 land:px-[max(1.5rem,env(safe-area-inset-left))]">
         <div className="flex min-w-0 flex-col items-center justify-center text-center land:col-start-1 land:row-start-1">
-          <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={active && (mic.state === "recording" || mic.state === "silenced")} fixedMs={receipt ? lastSaved?.durationMs ?? 0 : undefined} className="font-display text-[4.25rem] leading-tight tracking-[-0.025em] sm:text-[5rem]" />
+          <RecorderTimer audioMs={recorder.audioMs} running={active && (mic.state === "recording" || mic.state === "silenced")} fixedMs={receipt ? lastSaved?.durationMs ?? 0 : undefined} className="font-display text-[4.25rem] leading-tight tracking-[-0.025em] sm:text-[5rem]" />
           {!receipt && <p className="tnum text-meta text-muted-foreground" data-testid="recorder-meta">{recorderMetaText(recorder.startedAt, audioElapsed, recorder.maxDurationMs)}</p>}
           {!receipt && <LevelTrace subscribe={recorder.subscribeLevel} variant="waveform" tone={paused ? "muted" : warning ? "warning" : "live"} paused={!active || paused} className="mt-10 h-32 max-w-[36rem] land:mt-6" />}
           {warning && <p className="mt-5 flex items-start gap-2 text-callout text-warning"><MicOffIcon className="mt-0.5 size-4 shrink-0" aria-hidden />{warning}</p>}

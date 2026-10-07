@@ -34,7 +34,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           className={cn("size-2.5 shrink-0 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")}
           aria-hidden="true"
         />
-        <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-callout font-semibold" />
+        <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-callout font-semibold" />
         <LevelTrace subscribe={recorder.subscribeLevel} tone={paused ? "muted" : warning ? "warning" : "live"} paused={paused} bars={12} className="h-6 w-14 shrink-0" />
         <span className={cn("min-w-0 text-callout [overflow-wrap:anywhere]", warning ? "text-warning" : "text-muted-foreground")}>
           {recorder.phase === "starting" ? "Starting…" : paused ? recorder.mic.state === "paused" ? "Paused" : "Interrupted" : warning ? "Mic problem" : "Recording"}

@@ -24,7 +24,7 @@ export function SidebarLiveCardView(props: { recorder: RecorderValue; className?
         {state === "live" && (
           <>
             <span className={cn("size-2.5 shrink-0 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
-            <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="font-semibold" />
+            <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="font-semibold" />
             <span className="sr-only">{paused ? "Paused" : warning ? "Recording, mic problem" : "Recording"}</span>
           </>
         )}
