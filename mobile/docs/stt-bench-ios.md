@@ -19,7 +19,7 @@ AMI audio is cropped from 300 to 900 seconds. RTTM turns crossing an edge are cl
 
 ## ASR coverage and stop/go
 
-The benchmark requests a 25-second `maxSpeechDuration` from pinned Silero VAD and uses 60-second diarization windows. Sherpa's setting is soft: AMI emitted a 29.760-second VAD segment and alternation a 27.424-second one. `EXO_STT_BENCH_HARD_SPLIT_SECONDS=15` is a diagnostic hard limit: it chooses the lowest-energy 20 ms frame near each boundary, gives adjacent windows 0.6 seconds of shared audio, then assigns each decoded word to one window by its midpoint. The default is `0` (no additional split), because the experiment below worsened WER. `EXO_STT_BENCH_BLANK_PENALTY` passes a penalty to sherpa's greedy decoder; `EXO_STT_BENCH_CHUNK_PAD_SECONDS` adds that many seconds of zeros to both ends of each ASR chunk and shifts word timestamps back by the pad. Both default to `0`. `vadSegments` in each metrics file records `[start, end, decodedWords, rms, sourceMaxSampleDifference]`; `emptyVadSegments` counts VAD speech segments with no kept words. `asrWindows` records the original audio range, owned range, and decoded and kept word counts. `vadCoverageSeconds` reports the sum of VAD segment durations. Metrics also record `blankPenalty` and `chunkPadSeconds`.
+The benchmark requests a 25-second `maxSpeechDuration` from pinned Silero VAD and uses 60-second diarization windows. Sherpa's setting is soft: AMI emitted a 29.760-second VAD segment and alternation a 27.424-second one. `EXO_STT_BENCH_HARD_SPLIT_SECONDS=15` is a diagnostic hard limit: it chooses the lowest-energy 20 ms frame near each boundary, gives adjacent windows 0.6 seconds of shared audio, then assigns each decoded word to one window by its midpoint. The default is `0` (no additional split), because the experiment below worsened WER. `EXO_STT_BENCH_BLANK_PENALTY` passes a penalty to sherpa's greedy decoder; `EXO_STT_BENCH_CHUNK_PAD_SECONDS` adds that many seconds of zeros to both ends of each ASR chunk and subtracts the pad from the word-time origin. Both default to `0`. Padding also **distorts** TDT word timestamps by roughly 0.3–0.5 s at chunk edges; subtracting the pad does not repair that drift, which would matter for diarization attribution. The word keep filter therefore applies only at shared hard-split boundaries, never at the outer edge of a VAD segment. `vadSegments` in each metrics file records `[start, end, decodedWords, rms, sourceMaxSampleDifference]`; `emptyVadSegments` counts VAD speech segments with no kept words. `asrWindows` records the original audio range, owned range, and decoded and kept word counts. `vadCoverageSeconds` reports the sum of VAD segment durations. Metrics also record `blankPenalty` and `chunkPadSeconds`.
 
 Four-thread Mac WER, using the same pinned fixtures and references:
 
@@ -32,20 +32,31 @@ LibriSpeech has natural pauses and its longest VAD segment is 14.676 seconds. On
 
 ### T7b decode sweep (TC-819)
 
-Four-thread Mac, ASR-only, pinned v3 int8 and the same VAD cuts on all three fixtures. Each cell is **WER / empty VAD speech segments**; denominators are 79 LibriSpeech, 63 AMI and 74 alternation. The eight settings ran sequentially. The full metrics and hypotheses are in `/tmp/exo-capture/evidence/T7b/sweep/`.
+Four-thread Mac, ASR-only, pinned v3 int8 and the same VAD cuts on all three fixtures. Each cell is **WER / empty VAD speech segments**; denominators are 79 LibriSpeech, 63 AMI and 74 alternation. The 0/0 baseline ran first as a standalone invocation; the other seven settings then ran sequentially. After correcting the padding filter, the four padded settings were rerun sequentially. **This committed table is the result record**; local run logs and per-fixture outputs are under `/tmp/exo-capture/evidence/T7b/sweep/` and `sweep-fixed/` for review while that scratch directory exists.
 
 | Blank penalty | Zero pad per end | LibriSpeech | AMI ES2004a | Two-speaker alternation |
 | ---: | ---: | ---: | ---: | ---: |
 | 0 | 0 s | 2.02% / 0 | 28.73% / 5 | 65.08% / 18 |
-| 0 | 0.5 s | 8.42% / 0 | 35.47% / 6 | 81.46% / 23 |
+| 0 | 0.5 s | 2.19% / 0 | 34.22% / 6 | 80.09% / 22 |
 | 0.5 | 0 s | 2.02% / 0 | 25.84% / 0 | 58.21% / 6 |
-| 0.5 | 0.5 s | 8.33% / 0 | 27.42% / 4 | 80.58% / 14 |
+| 0.5 | 0.5 s | 2.19% / 0 | 26.12% / 4 | 78.81% / 12 |
 | 1.0 | 0 s | 2.02% / 0 | 23.39% / 0 | 52.67% / 2 |
-| 1.0 | 0.5 s | 8.50% / 0 | 25.46% / 3 | 72.98% / 7 |
+| 1.0 | 0.5 s | 2.36% / 0 | 24.21% / 2 | 70.97% / 5 |
 | 1.5 | 0 s | 1.94% / 0 | 22.31% / 0 | 47.72% / 0 |
-| 1.5 | 0.5 s | 8.42% / 0 | 23.67% / 0 | 69.69% / 3 |
+| 1.5 | 0.5 s | 2.36% / 0 | 22.42% / 0 | 67.29% / 1 |
 
-Padding fails the 4% LibriSpeech limit at every penalty. The 1.0/0 setting improves both continuous fixtures without the obvious invented phrases seen at higher penalties, but two **non-silent** alternation segments of 6.74 s and 4.28 s remain entirely blank. Additional unpadded checks at 1.1, 1.2 and 1.3 scored 51.20%, 50.42% and 50.02% alternation WER, with 1, 1 and 0 empty segments. Already at 1.1, the 6.74-second segment produces "I'm not sure" instead of its reference speech, and the first segment gains "the year"; 1.5 also invents those phrases. **No tested global penalty/padding setting meets all three acceptance conditions.** Lower WER and zero empty segments at 1.5 do not make the fabricated words acceptable.
+The first sweep's 8.33–8.50% padded LibriSpeech scores were invalid: the model decoded 1,181–1,182 words, but the old keep filter discarded about 75 at the VAD edges because padding distorted their timestamps. The corrected padded cells keep every decoded word. Padding is still a poor configuration for **continuous speech**: at penalty 0, alternation decoded words fall from 735 to 427, and AMI from 1,298 to 1,209 before filtering. The 1.0/0 setting improves both continuous fixtures and leaves no AMI segment blank, but two non-silent alternation segments of 6.74 s and 4.28 s remain entirely blank. Additional unpadded checks at 1.1, 1.2 and 1.3 scored 51.20%, 50.42% and 50.02% alternation WER, with 1, 1 and 0 empty segments.
+
+Fabrication grows gradually with the penalty. This diagnostic flags a segment with at least two hypothesis words when at least half are absent from reference words within ±0.5 s; insertion counts are from minimum-edit WER alignment. These counts indicate where to inspect audio, not a complete hallucination metric.
+
+| Unpadded penalty | 0 | 0.5 | 1.0 | 1.1 | 1.2 | 1.3 | 1.5 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Alternation flagged segments | 0 | 0 | 0 | 1 | 1 | 1 | 2 |
+| AMI flagged segments | 0 | 1 | 1 | 1 | 1 | 0 | 0 |
+| Alternation insertions | 0 | 5 | 2 | 3 | 6 | 8 | 12 |
+| AMI insertions | 3 | 8 | 9 | 11 | 11 | 11 | 15 |
+
+At penalties 0.5–1.2, one AMI cut gains the unsupported words “good thing.” At ≥1.1, a clean 16-word alternation sentence becomes “I'm not sure.”; at 1.5 another cut adds “…but I think that's a”. The first cut's “the year” is instead a **mishearing of overlapped speech**, not a fabrication. Penalty 1.0 is the lowest tested setting with zero AMI blanks and no flagged fabrication on alternation; it is **not fabrication-free**. No single tested setting removes every synthetic blank without adding unsupported output.
 
 The model check used Python sherpa-onnx **1.13.8**, two threads, greedy search, blank penalty 0 and no padding on the exact two VAD cuts that were blank in the v3 int8 baseline (0.060–4.400 s and 82.876–90.160 s). The [v3 fp32](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3/tree/1a468a35cbba69418f126de829e75261dea4a4e4) and [English v2 int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/tree/1ab9323565ddb038682214b292f588070a538ce2) downloads were revision-pinned and checked against their published SHA-256 hashes. The 110M English int8 pack is the fixture lock's small model.
 
@@ -56,17 +67,23 @@ The model check used Python sherpa-onnx **1.13.8**, two threads, greedy search, 
 | English v2 int8 | 25 tokens, “On Friday, confession will be heard all the afternoon afterwards” | 30 tokens, “The others resented postponement, but it was just his scruples that charmed him” |
 | 110M English int8 | 23 tokens, “On Friday, confession will be heard all the afternoon afterity” | 44 tokens, includes “The others resented postponement” and “Cold lucid indifference reigned in his head” |
 
-Fp32 recovering only the first cut is consistent with quantization contributing to the collapse, but the second cut shows it is not the whole explanation. Both English variants recover these cuts. The following full-fixture variant runs used the **same saved v3 baseline VAD boundaries**, Python sherpa-onnx 1.13.8, greedy search, penalty 0 and no pad. As a parity check, Python v3 int8 reproduced the Swift benchmark's WER and empty counts exactly on all three fixtures.
+Fp32 recovering only the first cut is consistent with quantization contributing to the collapse, but the second cut shows it is not the whole explanation. Both English variants recover these cuts. The following full-fixture variant runs used the **same saved v3 baseline VAD boundaries**, Python sherpa-onnx 1.13.8, greedy search and no pad, with the penalty shown per row. As a parity check, Python v3 int8 at penalty 0 reproduced the Swift benchmark's WER and empty counts exactly on all three fixtures.
 
-| Model | LibriSpeech WER / empty | AMI WER / empty | Alternation WER / empty |
+| Model / penalty | LibriSpeech WER / empty | AMI WER / empty | Alternation WER / empty |
 | --- | ---: | ---: | ---: |
-| v3 int8 baseline | 2.02% / 0 | 28.73% / 5 | 65.08% / 18 |
-| English v2 int8 | 2.53% / 1 | 23.50% / 0 | 65.47% / 7 |
-| 110M English int8 | 2.44% / 0 | 30.30% / 4 | 21.53% / 0 |
+| v3 int8 / 0 | 2.02% / 0 | 28.73% / 5 | 65.08% / 18 |
+| v3 int8 / 1.0 | 2.02% / 0 | 23.39% / 0 | 52.67% / 2 |
+| English v2 int8 / 0 | 2.53% / 1 | 23.50% / 0 | 65.47% / 7 |
+| 110M English int8 / 0 | 2.44% / 0 | 30.30% / 4 | 21.53% / 0 |
+| 110M English int8 / 1.0 | 2.53% / 0 | 28.13% / 3 | 20.35% / 0 |
 
-**ASR verdict:** v3 int8 with greedy search, blank penalty **0**, pad **0** is no-go on continuous speech; the 1.0/0 candidate reduces but does not remove whole-utterance blanks. The 1.5/0 setting removes blank segments on these fixtures but fabricates words. Neither English variant passes both continuous fixtures, so this Mac experiment does **not** establish a production-ready Parakeet configuration. LibriSpeech alone still cannot pass the ASR gate.
+The 110M model's three remaining AMI empty cuts at penalty 1.0 are each at most 0.8 s; its AMI deficit is mainly deletions within decoded segments (478, against v3 int8 at penalty 1.0's 328). The English v2 int8 model still has seven empty alternation segments at penalty 0, including 16.6 s and 26.1 s cuts. The small model's strong synthetic alternation score therefore does not displace v3 on the real AMI meeting, but it remains the planned pack for phones with less than 6 GB of RAM.
 
-**T23 recommendation:** use **v3 int8, greedy search, `blankPenalty = 1.0`, 0 s chunk pad and the 25 s soft VAD cap** as the initial implementation and measurement configuration, not as a shipping pass. Do not carry over the benchmark's 15 s diagnostic split: T23 still needs a context-aware hard bound of ≤25 s per ASR work unit for capture-priority handoff. Keep the ASR gate closed until one configuration scores ≤4% LibriSpeech WER and, on continuous speech, **≤25% AMI WER** (the anchor) and **≤50% alternation WER** (the deliberately overlapped stress test), with no entirely blank non-silent segment of at least 4 s and no invented phrases. The 1.0/0 candidate currently fails the alternation WER and blank-segment conditions. Tune on another meeting before using ES2004a as a final held-out gate; the limits here are provisional because this sweep used the gate fixtures. Do not silently substitute the small pack: its 30.30% AMI WER and four empty AMI segments fail the anchor despite its much better alternation score. Phone load, RTF and memory gates remain pending.
+**ASR verdict:** v3 int8 with greedy search, blank penalty **0**, pad **0** is no-go on continuous speech. The **1.0/0** setting is the recommended default for T23: it meets the LibriSpeech and AMI limits, removes all AMI blanks and improves alternation, while retaining two blank synthetic segments. Raising the penalty to 1.3 removes those blanks but replaces one sentence with “I'm not sure.” English v2 int8 loses long alternation segments, and the 110M model is less accurate on the real AMI meeting. The two pre-ship experiments below remain necessary; LibriSpeech alone cannot pass the ASR gate.
+
+**T23 decode and gates:** use **v3 int8, greedy search, `blankPenalty = 1.0`, 0 s chunk pad and the 25 s soft VAD cap** as the default on phones with at least 6 GB of RAM. Keep the planned **110M English int8 pack** on phones under 6 GB; its penalty-1.0 result is recorded above. Do not carry over the benchmark's 15 s diagnostic split: T23 still needs a context-aware hard bound of ≤25 s per ASR work unit for capture-priority handoff. Keep **≤4% LibriSpeech WER** and **≤25% AMI WER** as hard limits. Treat alternation as a relative stress check: no worse than the v3 1.0/0 reference of **52.67% WER with at most two blank segments**, and report a fabrication count. Count and log blank-but-VAD-speech segments at runtime; track any non-silent blank of at least 4 s on real audio. These limits are provisional because ES2004a and alternation were used during tuning. Phone load, RTF and memory gates remain pending.
+
+**Before shipping:** (1) score v3 int8 and 110M, both at penalty 1.0, on a second **real English recording with fast turn-taking** to check whether the synthetic weakness occurs outside alternation and provide a meeting not used for this tuning; (2) score v3 on several minutes each of **German, French and Spanish** at penalties 0 and 1.0 to check that the English-tuned penalty preserves multilingual speech. A real-audio pre-roll experiment may follow if the first check finds onset-related losses; zero padding is the wrong substitute.
 
 The benchmark does not apply the plan's 0.001 dither or −3 dBFS peak normalization to these clean fixtures. `EXO_STT_BENCH_VAD_CAP_SECONDS` can vary the soft VAD request from 10 to 25 seconds. `EXO_STT_BENCH_ASR_ONLY=1` skips diarization for a focused diagnostic; it never supplies a diarization gate result.
 

@@ -209,9 +209,15 @@ public enum SttBenchmark {
             let decoded = try TokenWordAlignment.align(tokens: tokens, timestamps: result.timestamps,
                                                         durations: result.durations,
                                                         origin: Double(chunk.start - padSamples) / 16_000)
+            let sourceSegment = segmented.vadSegments[chunk.sourceSegment]
+            // Padding distorts edge timestamps; only shared hard-split boundaries own words.
+            let lowerBound = chunk.ownedStart == sourceSegment.start
+                ? -Double.infinity : Double(chunk.ownedStart)
+            let upperBound = chunk.ownedEnd == sourceSegment.end
+                ? Double.infinity : Double(chunk.ownedEnd)
             let kept = decoded.filter { word in
                 let middle = (word.start + word.end) * 8_000 // seconds to midpoint sample.
-                return middle >= Double(chunk.ownedStart) && middle < Double(chunk.ownedEnd)
+                return middle >= lowerBound && middle < upperBound
             }
             words += kept
             wordsPerSegment[chunk.sourceSegment] += kept.count
