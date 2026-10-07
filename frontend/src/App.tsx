@@ -119,9 +119,10 @@ import type {
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import {
-  isNativeOpenKeySession, isNativeOpenKeySignIn, logNativeOpenKeyError,
+  isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   nativeSessionWasActive, retireNativeSessionAtBoot, secretsAvailable,
-  setNativeSessionActive, signInNative, signOutNative, NATIVE_SIGN_OUT_WARNING,
+  setNativeSessionActive, signInNative, signOutNative,
+  NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
 } from "./lib/openkeyNative";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
@@ -303,7 +304,7 @@ export function App() {
           logNativeOpenKeyError("boot revoke", caught);
           if (wasNative) {
             sessionStoreRef.current.clear();
-            setError(NATIVE_SIGN_OUT_WARNING);
+            setError(isNativeStorageError(caught) ? NATIVE_SIGN_OUT_STORAGE_WARNING : NATIVE_SIGN_OUT_WARNING);
             setState("recoverableError");
             return;
           }
@@ -666,11 +667,18 @@ export function App() {
       const nativeSession = isNativeOpenKeySession();
       if (nativeSession) {
         // Native sign-out revokes the OpenKey delegation grant and clears the
-        // secure-store session; the local cleanup below is unchanged.
+        // secure-store session unless secure storage needs another attempt.
         try {
           await signOutNative();
         } catch (caught) {
           logNativeOpenKeyError("sign-out revoke", caught);
+          if (isNativeStorageError(caught)) {
+            // The SDK may still have the session and grant in secure storage.
+            // Keep the native marker and current session for another attempt.
+            setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
+            setState("ready");
+            return;
+          }
           if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
             // Keep the SDK record and key available for revocation once the
             // native client is configured again.

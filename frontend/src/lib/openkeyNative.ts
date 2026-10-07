@@ -11,7 +11,7 @@
 // secrets-dependent flow is gated behind `secretsAvailable()` below.
 //
 // TODO(E1 → prod): `@openkey/sdk-capacitor` is vendored from the TC-774 S2
-// branch at cc22884 as a file: tarball (frontend/package.json, vendor/). When the SDK
+// branch at 65c5b63 as a file: tarball (frontend/package.json, vendor/). When the SDK
 // publishes, replace the file: specs in frontend/package.json and
 // mobile/package.json with `"0.1.0"` and delete vendor/.
 
@@ -161,6 +161,8 @@ export const NATIVE_SIGN_IN_SPACE_MESSAGE =
   "Your TinyCloud space is unavailable right now. Please try again later.";
 export const NATIVE_SIGN_IN_NETWORK_MESSAGE =
   "Can't reach OpenKey right now. Check your connection and try again.";
+export const NATIVE_SIGN_IN_STORAGE_MESSAGE =
+  "Couldn't access secure storage on this device. Please try again.";
 export const NATIVE_SIGN_IN_SERVER_MESSAGE =
   "OpenKey couldn't complete sign-in. The app or server may need configuration; please try again later.";
 export const NATIVE_SIGN_IN_FAILED_MESSAGE =
@@ -187,6 +189,7 @@ export function nativeSignInErrorMessage(error: unknown): string {
     return NATIVE_SIGN_IN_NONCE_MESSAGE;
   }
   if (code === "SPACE_UNAVAILABLE") return NATIVE_SIGN_IN_SPACE_MESSAGE;
+  if (code === "STORAGE") return NATIVE_SIGN_IN_STORAGE_MESSAGE;
   if (code === "NETWORK" || code === "TEMPORARILY_UNAVAILABLE" ||
     (error instanceof Error && /failed to fetch|network|fetch failed|load failed/i.test(error.message))) {
     return NATIVE_SIGN_IN_NETWORK_MESSAGE;
@@ -199,6 +202,12 @@ export function nativeSignInErrorMessage(error: unknown): string {
 
 export const NATIVE_SIGN_OUT_WARNING =
   "Exo signed out locally. OpenKey will retry any queued revocation when the app opens again. Check your grants at openkey.so if it remains active.";
+export const NATIVE_SIGN_OUT_STORAGE_WARNING =
+  "Couldn't access secure storage on this device. Your OpenKey session may still be stored. Please try signing out again when storage is available.";
+
+export function isNativeStorageError(error: unknown): boolean {
+  return sdkErrorCode(error) === "STORAGE";
+}
 
 // ── Sign-in ───────────────────────────────────────────────────────────
 
@@ -271,10 +280,13 @@ function nativeClientOptions(
 function nativeClient(
   options: Parameters<NativeSignInDeps["createOpenKeyNative"]>[0],
   create: NativeSignInDeps["createOpenKeyNative"],
-  injected: boolean,
 ): OpenKeyNative {
-  if (injected) return create(options);
   return defaultOpenKeyNative ??= create(options);
+}
+
+/** Tests only: isolate the module-level SDK client between mocked flows. */
+export function resetNativeOpenKeyClientForTests(): void {
+  defaultOpenKeyNative = null;
 }
 
 async function defaultDeps(): Promise<NativeSignInDeps> {
@@ -313,11 +325,10 @@ export async function signInNative(
   try {
     const d = deps ?? (await defaultDeps());
     const openkey = nativeClient(
-      nativeClientOptions(env, config.tinycloudHost), d.createOpenKeyNative, !!deps,
+      nativeClientOptions(env, config.tinycloudHost), d.createOpenKeyNative,
     );
-    // A stale secure-store session must be revoked before a new grant can
-    // replace it. The SDK queues transient revoke failures for a later retry.
-    if (await openkey.current()) await openkey.signOut();
+    // The SDK keeps any existing session until the replacement commits. A
+    // failed sign-in (including immediate renewal) handles its own cleanup.
 
     // The delegation's signer is unknown until OpenKey signs, so the backend
     // nonce is unbound; /verify binds it to the recovered address.
@@ -357,7 +368,7 @@ export async function retireNativeSessionAtBoot(
 ): Promise<boolean> {
   const env = config.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
-  const openkey = nativeClient(nativeClientOptions(env, config.tinycloudHost), create, !!deps);
+  const openkey = nativeClient(nativeClientOptions(env, config.tinycloudHost), create);
   const current = await openkey.current();
   if (!current) return false;
   await openkey.signOut();
@@ -444,7 +455,6 @@ export async function signOutNative(deps?: {
   const openkey = nativeClient(
     nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
     create,
-    !!deps?.createOpenKeyNative,
   );
   await openkey.signOut();
 }
