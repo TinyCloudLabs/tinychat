@@ -19,6 +19,7 @@ import xyz.tinycloud.exo.capture.LaunchCommandStore;
 import xyz.tinycloud.exo.capture.VoiceNotesPlugin;
 import xyz.tinycloud.exo.health.HealthPlugin;
 import xyz.tinycloud.exo.location.LocationPlugin;
+import xyz.tinycloud.exo.stt.OnDeviceSttPlugin;
 
 public class MainActivity extends BridgeActivity implements CaptureEngine.Listener {
     private LaunchCommandStore commands;
@@ -41,6 +42,7 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
 
     @Override public void onCreate(Bundle savedInstanceState) {
         registerPlugin(VoiceNotesPlugin.class);
+        registerPlugin(OnDeviceSttPlugin.class);
         registerPlugin(HealthPlugin.class);
         // TC-524 location spike. Registered in every build, but only the debug manifest declares
         // location permissions and the location foreground service; release cannot capture location.
