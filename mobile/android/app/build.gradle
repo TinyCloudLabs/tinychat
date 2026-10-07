@@ -146,7 +146,7 @@ dependencies {
     implementation "androidx.health.connect:connect-client:$healthConnectClientVersion"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
     testImplementation "junit:junit:$junitVersion"
-    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit:2.3.0'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
