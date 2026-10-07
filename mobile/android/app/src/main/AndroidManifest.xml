@@ -10,6 +10,7 @@
     <uses-sdk tools:overrideLibrary="androidx.health.connect.client" />
 
     <application
+        android:name=".ExoApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -29,6 +30,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
 
             <!-- Google connector OAuth return (TC-521): the backend's /callback 302s the
                  system browser here, and singleTask delivers it to the running activity
@@ -57,7 +59,7 @@
         </provider>
 
         <service
-            android:name=".voicenotes.VoiceNoteService"
+            android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
     </application>
