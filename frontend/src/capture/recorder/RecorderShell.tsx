@@ -1,13 +1,13 @@
 // The app's shell with the recorder's presentations in their slots (TC-761,
 // PR4): the island above the tab bar on a phone held upright, the live button
-// in the rail, the live card in the sidebar, and the recorder sheet. App and
+// in the rail, the live card in the sidebar, and the full-page recorder. App and
 // the browser harnesses render this inside the one RecorderProvider.
 import { useNavKind } from "@/shell/navItems";
 import { AppShell, type AppShellProps } from "@/shell/AppShell";
 import { Island } from "./Island";
 import { RailLiveButton } from "./RailLiveButton";
 import { islandShown, useRecorder } from "./RecorderProvider";
-import { RecorderSheet } from "./RecorderSheet";
+import { RecordingOverlay } from "./RecordingOverlay";
 import { SidebarLiveCard } from "./SidebarLiveCard";
 
 export function RecorderShell({ onOpenNote, ...shell }: Omit<AppShellProps, "island" | "railLive" | "sidebarLive"> & {
@@ -31,7 +31,7 @@ export function RecorderShell({ onOpenNote, ...shell }: Omit<AppShellProps, "isl
         railLive={<RailLiveButton />}
         sidebarLive={<SidebarLiveCard />}
       />
-      <RecorderSheet onOpenNote={onOpenNote} />
+      <RecordingOverlay onOpenNote={onOpenNote} />
     </>
   );
 }

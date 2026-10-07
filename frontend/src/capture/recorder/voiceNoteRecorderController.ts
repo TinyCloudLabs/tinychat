@@ -5,7 +5,7 @@
 // saver at startup). useVoiceNoteRecorder wraps it for RecorderProvider, which
 // mounts it exactly once; the tests drive it directly against the fake plugin.
 //
-// It owns the plugin's three listeners (micState, level, autoStopped), picks a
+// It owns the plugin's four listeners (micState, level, autoStopped, presentRecorder), picks a
 // running recording back up after a WebView reload (status()), saves a stopped
 // recording through the shared single-flight guards (recorderSaves.ts), and
 // hands each saved note to private cloud transcription. Discard (PR5) marks the
@@ -19,6 +19,7 @@ import {
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import {
+  clearDiscarded,
   deleteDiscarded,
   errorCode,
   markDiscarded,
@@ -42,12 +43,15 @@ export interface VoiceNoteRecorderControllerOptions {
 export interface VoiceNoteRecorderController {
   getState(): RecorderState;
   subscribe(listener: () => void): () => void;
+  setOnPresent(onPresent: (() => void) | undefined): void;
   /** A recording landed in the space (by Stop, the limit, or Save now). */
   setOnSaved(onSaved: ((recording: VoiceNoteRecording) => void) | undefined): void;
   /** Adds the plugin's listeners and picks up a running recording; returns their teardown. */
   attach(): () => void;
   record(): Promise<void>;
   stop(): Promise<void>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   /** Stop the live recording and delete it from the phone; nothing is saved. */
   discard(): Promise<void>;
   retryPending(): Promise<void>;
@@ -60,6 +64,7 @@ export interface VoiceNoteRecorderController {
 export function createVoiceNoteRecorderController({ tcw, available, transcriber }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
   let onSaved: ((recording: VoiceNoteRecording) => void) | undefined;
+  let onPresent: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
 
@@ -72,13 +77,62 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     for (const listener of [...listeners]) listener();
   };
 
+  const activePickup = (status: Awaited<ReturnType<typeof VoiceNotes.status>>): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
+    if (!status.id || status.startedAt === null) throw new Error("Native recording status has no active id or start time");
+    return { type: "PICKED_UP", id: status.id, startedAt: status.startedAt,
+      maxDurationMs: status.maxDurationMs, audioMs: status.audioMs,
+      mic: { state: status.state, reason: status.reason } };
+  };
+
+  const reconcileFailedStop = async (error: string | null) => {
+    try {
+      const status = await VoiceNotes.status();
+      if (state.phase !== "stopping") return;
+      if (status.state === "idle") {
+        send({ type: "STOP_FAILED", status: "idle", error });
+        void pendingStore.refresh();
+      } else if (status.id === state.recordingId) {
+        send({ type: "STOP_FAILED", status: "active", error,
+          mic: { state: status.state, reason: status.reason }, audioMs: status.audioMs });
+      } else {
+        send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone." });
+        send(activePickup(status));
+      }
+    } catch (caught) {
+      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this phone stopped recording: ${messageOf(caught)}` });
+    }
+  };
+
+  const reconcileDiscardFailure = async (shown: string | null, error: string) => {
+    try {
+      const status = await VoiceNotes.status();
+      if (state.phase !== "discarding") return;
+      if (status.state === "idle") {
+        send({ type: "DISCARD_FAILED", id: shown, committed: true,
+          error: `${error} The recording ended; its audio remains on this phone.` });
+        void pendingStore.refresh();
+      } else if (status.id === shown) {
+        send({ type: "DISCARD_FAILED", id: shown, error });
+        send({ type: "MIC_STATE", mic: { state: status.state, reason: status.reason }, audioMs: status.audioMs });
+      } else {
+        send({ type: "DISCARD_FAILED", id: shown, committed: true, error });
+        send(activePickup(status));
+      }
+    } catch (caught) {
+      send({ type: "DISCARD_FAILED", id: shown, uncertain: true,
+        error: `${error} Could not check whether recording continues: ${messageOf(caught)}` });
+    }
+  };
+
   const landed = (recording: VoiceNoteRecording, audio?: Parameters<VoiceNoteTranscriber["noteSaved"]>[1]) => {
     transcriber?.noteSaved(recording, audio);
     onSaved?.(recording);
   };
 
-  /** Save a stopped recording (by Stop or by the limit); a failure leaves it pending on the phone. */
+  /** A native commit is enough for the receipt; cloud work follows independently. */
   const saveStopped = async (recording: VoiceNoteRecording) => {
+    send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+    void pendingStore.refresh();
     send({ type: "SAVE_PROGRESS", percent: null });
     const outcome = await saveRecording(tcw, recording, (stored, total) => {
       if (total > 0) send({ type: "SAVE_PROGRESS", percent: Math.floor((stored / total) * 100) });
@@ -87,26 +141,32 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       case "saved":
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
         landed(recording, outcome.audio ?? undefined);
-        // A copy the phone kept is counted (and told) until Save now removes it.
-        if (outcome.cleanupError) void pendingStore.refresh(outcome.cleanupError);
+        void pendingStore.refresh(outcome.cleanupError);
         return;
       case "failed":
-        // The audio stays on the device; nothing is lost if the save failed.
+        // The committed audio stays on the device and is playable.
         send({
           type: "SAVE_FAILED",
-          error: `Recorded, but saving to your space failed: ${outcome.failure}`,
+          error: `Saved on this phone, but uploading to your space failed: ${outcome.failure}`,
           recording: { id: recording.id, durationMs: recording.durationMs },
         });
-        void pendingStore.refresh();
+        void pendingStore.refresh(outcome.failure);
         return;
       case "already-saved":
+        send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
+        void pendingStore.refresh(outcome.cleanupError);
+        return;
       case "discarded":
-        if (outcome.cleanupError) void pendingStore.refresh(outcome.cleanupError);
+        void pendingStore.refresh(outcome.cleanupError);
         send({ type: "RESET" });
         return;
+      case "held":
+        send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
+        void pendingStore.refresh();
+        return;
       case "in-flight":
-        // Another run is saving it.
-        send({ type: "RESET" });
+        // Another run is uploading it; keep the local receipt visible.
+        send({ type: "LOCAL_UPLOAD_IN_FLIGHT", id: recording.id });
         return;
     }
   };
@@ -120,11 +180,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     const outcome = await saveRecording(tcw, recording);
     if (outcome.kind === "saved") landed(recording, outcome.audio ?? undefined);
     if (outcome.kind === "failed") void pendingStore.refresh(outcome.failure);
-    else if (outcome.kind !== "in-flight") void pendingStore.refresh(outcome.cleanupError ?? undefined);
+    else if (outcome.kind === "already-saved" || outcome.kind === "discarded") void pendingStore.refresh(outcome.cleanupError ?? undefined);
+    else if (outcome.kind === "held") void pendingStore.refresh();
   };
 
   const onAutoStopped = (event: VoiceNoteAutoStopEvent) => {
     const recording = event.recording;
+    if (recording && state.phase === "idle" && state.lastSaved?.id === recording.id) return;
     if (!autoStopIsCurrent(state, recording?.id ?? null)) {
       if (recording) void saveInBackground(recording);
       return;
@@ -147,16 +209,34 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     setOnSaved(next) {
       onSaved = next;
     },
+    setOnPresent(next) {
+      onPresent = next;
+    },
     attach() {
       if (!available) return () => {};
       let attached = true;
       const handles = [
-        VoiceNotes.addListener("micState", (event) => send({ type: "MIC_STATE", mic: { state: event.state, reason: event.reason } })),
+        VoiceNotes.addListener("micState", (event) => {
+          if (event.id && state.recordingId && event.id !== state.recordingId) return;
+          send({ type: "MIC_STATE", mic: { state: event.state, reason: event.reason }, audioMs: event.audioMs });
+        }),
         VoiceNotes.addListener("level", (event) => {
           for (const listener of levelListeners) listener(event.level);
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
+        VoiceNotes.addListener("presentRecorder", async (event) => {
+          try {
+            const status = await VoiceNotes.status();
+            if (!attached || status.state === "idle" || status.id !== event.id) return;
+            if (state.phase === "idle") {
+              send(activePickup(status));
+            }
+            if (state.recordingId === status.id && state.phase === "recording") onPresent?.();
+          } catch (caught) {
+            console.warn("[VoiceNotes] Could not present the native recording", caught);
+          }
+        }),
       ];
       // Once the listeners are in (the shell hands them its retained events as they
       // attach), ask what is running: a WebView reload mid-recording, or a recording
@@ -166,16 +246,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         .then(
           (status) => {
             if (!attached || status.state === "idle") return;
-            send({
-              type: "PICKED_UP",
-              id: status.id,
-              startedAt: Date.now() - status.elapsedMs,
-              maxDurationMs: status.maxDurationMs,
-              mic: { state: status.state, reason: status.reason },
-            });
+            send(activePickup(status));
           },
           (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
         )
+        .catch((caught: unknown) => console.warn("[VoiceNotes] Native recorder status was incomplete", caught))
         .finally(() => {
           if (attached) send({ type: "RECONCILED" });
         });
@@ -203,6 +278,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     },
     async stop() {
       // Stop waits for STARTED: the plugin cannot cancel a start in flight.
+      if (state.phase === "stopping" && state.error) {
+        await reconcileFailedStop(state.error);
+        return;
+      }
       if (state.phase !== "recording") return;
       send({ type: "STOP_REQUESTED" });
       let recording: VoiceNoteRecording;
@@ -210,12 +289,54 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         recording = await VoiceNotes.stop();
       } catch (caught) {
         // "not_recording": the limit stopped it first, and its "autoStopped" event saves it.
-        send({ type: "STOP_FAILED", error: errorCode(caught) === "not_recording" ? null : messageOf(caught) });
+        await reconcileFailedStop(errorCode(caught) === "not_recording" ? null : `Could not stop: ${messageOf(caught)}`);
         return;
       }
-      await saveStopped(recording);
+      void saveStopped(recording).catch((caught: unknown) =>
+        send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
+      );
+    },
+    async pause() {
+      if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return;
+      send({ type: "PAUSE_REQUESTED" });
+      try {
+        await VoiceNotes.pause();
+      } catch (caught) {
+        send({ type: "PAUSE_FAILED", error: `Could not pause: ${messageOf(caught)}` });
+        return;
+      }
+      try {
+        const status = await VoiceNotes.status();
+        send({ type: "MIC_STATE", mic: { state: status.state, reason: status.reason }, audioMs: status.audioMs });
+      } catch (caught) {
+        console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
+        send({ type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
+      }
+      send({ type: "PAUSE_CONFIRMED" });
+    },
+    async resume() {
+      if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "paused" && state.mic.state !== "interrupted" && state.mic.state !== "needs_user")) return;
+      send({ type: "RESUME_REQUESTED" });
+      try {
+        await VoiceNotes.resume();
+      } catch (caught) {
+        send({ type: "RESUME_FAILED", error: `Could not resume: ${messageOf(caught)}` });
+        return;
+      }
+      try {
+        const status = await VoiceNotes.status();
+        send({ type: "MIC_STATE", mic: { state: status.state, reason: status.reason }, audioMs: status.audioMs });
+      } catch (caught) {
+        console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);
+        send({ type: "MIC_STATE", mic: { state: "recording", reason: null } });
+      }
+      send({ type: "RESUME_CONFIRMED" });
     },
     async discard() {
+      if (state.phase === "discarding" && state.error) {
+        await reconcileDiscardFailure(state.recordingId, state.error);
+        return;
+      }
       // Only a live recording: the plugin cannot cancel a start, and a stopped one is being saved.
       if (state.phase !== "recording") return;
       // The recording on screen: the discard's events carry its id, as the save events do.
@@ -225,10 +346,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       // or a relaunch after the app is killed deletes this recording instead of saving it.
       if (shown) markDiscarded(shown);
       let id = shown;
+      let needDeleteCommitted = false;
       try {
-        const recording = await VoiceNotes.stop();
-        if (recording.id !== id) {
-          id = recording.id;
+        const discarded = await VoiceNotes.discard();
+        if (discarded.id && discarded.id !== id) {
+          if (shown) clearDiscarded(shown);
+          id = discarded.id;
           markDiscarded(id);
         }
       } catch (caught) {
@@ -236,20 +359,28 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         // no_audio_captured: the phone kept nothing.
         const code = errorCode(caught);
         if (code !== "not_recording" && code !== "no_audio_captured") {
-          send({ type: "DISCARD_FAILED", id: shown, error: `Could not discard the recording: ${messageOf(caught)}` });
+          if (shown) clearDiscarded(shown);
+          if (id && id !== shown) clearDiscarded(id);
+          await reconcileDiscardFailure(shown, `Could not discard the recording: ${messageOf(caught)}`);
           return;
         }
+        needDeleteCommitted = code === "not_recording";
       }
       if (!id) {
-        send({ type: "DISCARD_FAILED", id: shown, error: "Could not discard the recording." });
+        if (shown) clearDiscarded(shown);
+        await reconcileDiscardFailure(shown, "Could not discard the recording.");
         return;
       }
-      const cleanupError = await deleteDiscarded(id);
-      if (cleanupError) {
-        // Still marked: the next save of what is on the phone deletes it.
-        send({ type: "DISCARD_FAILED", id: shown, error: cleanupError });
-        void pendingStore.refresh(cleanupError);
-        return;
+      if (needDeleteCommitted) {
+        const cleanupError = await deleteDiscarded(id);
+        if (cleanupError) {
+          send({ type: "DISCARD_FAILED", id: shown, error: cleanupError, committed: true });
+          void pendingStore.refresh(cleanupError);
+          return;
+        }
+      } else {
+        clearDiscarded(id);
+        if (shown && shown !== id) clearDiscarded(shown);
       }
       send({ type: "DISCARDED", id: shown });
     },

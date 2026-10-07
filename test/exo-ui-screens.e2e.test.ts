@@ -281,7 +281,26 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   }, 60_000);
 
   afterAll(async () => {
-    for (const browser of browsers) await browser.close();
+    // A dead Chromium DevTools pipe can leave close() pending after every
+    // capture passed. Bound cleanup so it cannot hide the screen results.
+    await Promise.all(browsers.map(async (browser) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          browser.close(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              console.warn("exo-ui: browser close timed out");
+              resolve();
+            }, 10_000);
+          }),
+        ]);
+      } catch (caught) {
+        console.warn("exo-ui: browser close failed", caught);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }));
     server?.stop(true);
     writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures }, null, 2));
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
@@ -340,6 +359,13 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               displayTitle: screen.displayTitle ?? false,
               allow,
             });
+            // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
+            if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
+              const record = page.locator('[data-testid="voice-note-record"]');
+              if (await record.count() === 0 || await record.first().isDisabled()) {
+                findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
+              }
+            }
             for (const error of errors) findings.push({ check: "errors", detail: error });
 
             const file = `${screen.id}__${viewport.id}__${theme}.png`;

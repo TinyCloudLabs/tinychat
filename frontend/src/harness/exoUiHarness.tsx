@@ -16,7 +16,7 @@ import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens } from "./screens/capture";
 import { legacyScreens } from "./screens/legacy";
@@ -25,7 +25,7 @@ import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
-import { freezeClock } from "./stubs";
+import { FROZEN_NOW, freezeClock } from "./stubs";
 
 type ScreenInfo = Omit<HarnessScreen, "render">;
 
@@ -65,7 +65,16 @@ applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
 // The phone app records through its native plugin; here a fake stands in.
-if (platform === "ios" || platform === "android") __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: true });
+if (platform === "ios" || platform === "android") {
+  const fake = createCaptureFakeVoiceNotes();
+  if (params.get("screen")?.startsWith("recorder-")) {
+    fake.controls.commitLegacy({
+      id: "rec-1", startedAt: FROZEN_NOW - 42_000, durationMs: 42_000,
+      mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    });
+  }
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+}
 
 window.exoUi = {
   screens: SCREENS.map(({ render: _render, ...info }) => info),

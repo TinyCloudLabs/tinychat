@@ -8,16 +8,18 @@ import { MemoryRouter } from "react-router-dom";
 
 import { DISCARD_REVERT_MS, DiscardConfirmView } from "./DiscardConfirm";
 import type { RecorderValue } from "./RecorderProvider";
-import { RecorderSheetView } from "./RecorderSheet";
+import { RecordingView } from "./RecordingView";
 
 const noop = () => {};
 
 function value(patch: Partial<RecorderValue> = {}): RecorderValue {
   return {
     available: true,
+    ready: true,
     phase: "recording",
     mic: { state: "recording", reason: null },
     startedAt: Date.now() - 42_000,
+    audioMs: 42_000,
     maxDurationMs: 3_600_000,
     limitNotice: null,
     savePercent: null,
@@ -29,11 +31,14 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
     sheetOpen: true,
     record: noop,
     stop: noop,
+    pause: noop,
+    resume: noop,
     discard: noop,
     retryPending: noop,
     dismissOutcome: noop,
     openSheet: noop,
     minimiseSheet: noop,
+    setReceiptPlaying: noop,
     subscribeLevel: () => noop,
     ...patch,
   };
@@ -42,7 +47,7 @@ function value(patch: Partial<RecorderValue> = {}): RecorderValue {
 const sheet = (patch: Partial<RecorderValue> = {}, discardAsking?: boolean) =>
   renderToStaticMarkup(
     <MemoryRouter>
-      <RecorderSheetView recorder={value(patch)} discardAsking={discardAsking} />
+      <RecordingView recorder={value(patch)} discardAsking={discardAsking} />
     </MemoryRouter>,
   );
 
@@ -76,11 +81,11 @@ describe("DiscardConfirmView", () => {
   });
 });
 
-describe("RecorderSheetView's Discard", () => {
-  test("only a live recording offers it, in the header, never beside Stop", () => {
+describe("RecordingView's Discard", () => {
+  test("only a live recording offers it in the controls", () => {
     const live = sheet();
     expect(live).toContain('data-testid="recorder-discard"');
-    expect(live.indexOf('data-testid="recorder-discard"')).toBeLessThan(live.indexOf("</header>"));
+    expect(live.indexOf('data-testid="recorder-discard"')).toBeGreaterThan(live.indexOf('data-testid="recorder-controls"'));
     expect(sheet({ mic: { state: "silenced", reason: "os_silenced" } })).toContain('data-testid="recorder-discard"');
     for (const patch of [
       { phase: "starting", startedAt: null },
@@ -93,7 +98,7 @@ describe("RecorderSheetView's Discard", () => {
     }
   });
 
-  test("asking (the harness): the question is open in the header", () => {
+  test("asking (the harness): the question is open in the controls", () => {
     const html = sheet({}, true);
     expect(html).toContain('data-testid="recorder-discard-confirm"');
     expect(html).not.toContain('data-testid="recorder-discard"');
@@ -101,9 +106,9 @@ describe("RecorderSheetView's Discard", () => {
 
   test("discarding: the status and the bar say so, and Stop is disabled", () => {
     const html = sheet({ phase: "discarding" });
-    expect(html).toContain(">Discarding…</span>");
+    expect(html).toContain("Discarding…</p>");
     const stop = html.match(/<button[^>]*data-testid="voice-note-stop"[^>]*>/)?.[0] ?? "";
     expect(stop).toContain('disabled=""');
-    expect(html).not.toContain("Stop and save");
+    expect(html).not.toContain('data-testid="recorder-discard"');
   });
 });

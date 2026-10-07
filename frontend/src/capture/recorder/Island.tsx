@@ -2,7 +2,7 @@
 // short level trace and Stop. It morphs into the receipt when the note lands
 // ("Saved to your space", for 3 s) or into "Kept on this phone" with Save now
 // when the save failed. Tapping it opens the recorder again.
-import { AlertCircleIcon, CheckIcon, Loader2Icon, SquareIcon } from "lucide-react";
+import { AlertCircleIcon, CheckIcon, Loader2Icon, PlayIcon, SquareIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,7 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
   const { recorder } = props;
   const state = islandState(recorder);
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
+  const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
   const lastSaved = recorder.lastSaved;
 
   let summary;
@@ -30,13 +31,13 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
     summary = (
       <>
         <span
-          className={cn("size-2.5 shrink-0 rounded-full", warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")}
+          className={cn("size-2.5 shrink-0 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")}
           aria-hidden="true"
         />
-        <RecorderTimer startedAt={recorder.startedAt} className="text-callout font-semibold" />
-        <LevelTrace subscribe={recorder.subscribeLevel} tone={warning ? "warning" : "live"} bars={12} className="h-6 w-14 shrink-0" />
+        <RecorderTimer audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-callout font-semibold" />
+        <LevelTrace subscribe={recorder.subscribeLevel} tone={paused ? "muted" : warning ? "warning" : "live"} paused={paused} bars={12} className="h-6 w-14 shrink-0" />
         <span className={cn("min-w-0 text-callout [overflow-wrap:anywhere]", warning ? "text-warning" : "text-muted-foreground")}>
-          {recorder.phase === "starting" ? "Starting…" : warning ? "Mic problem" : "Recording"}
+          {recorder.phase === "starting" ? "Starting…" : paused ? recorder.mic.state === "paused" ? "Paused" : "Interrupted" : warning ? "Mic problem" : "Recording"}
         </span>
       </>
     );
@@ -87,12 +88,12 @@ export function IslandView(props: { recorder: RecorderValue; onOpenNote?: (id: s
           variant="live"
           size="icon"
           className="size-11 shrink-0 rounded-full"
-          onClick={recorder.stop}
-          disabled={recorder.phase !== "recording"}
-          aria-label="Stop and save"
+          onClick={paused ? recorder.resume : recorder.stop}
+          disabled={recorder.phase !== "recording" || (paused && recorder.controlPending !== null)}
+          aria-label={paused ? "Resume recording" : "Stop and save"}
           data-testid="island-stop"
         >
-          <SquareIcon className="fill-current" aria-hidden="true" />
+          {paused ? <PlayIcon className="fill-current" aria-hidden="true" /> : <SquareIcon className="fill-current" aria-hidden="true" />}
         </Button>
       )}
       {state === "landed" && props.onOpenNote && lastSaved && (

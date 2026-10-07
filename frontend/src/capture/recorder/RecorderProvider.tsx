@@ -1,8 +1,8 @@
-// The one voice-note recorder, shared by every view of it: the recorder
-// sheet, the island, the rail and sidebar live controls and the header chip.
+// The one voice-note recorder, shared by every view of it: the full-page view,
+// the island, the rail and sidebar live controls and the header chip.
 // RecorderProvider calls useVoiceNoteRecorder once (a second controller would
 // race the first for the microphone and its saves); the views are context
-// consumers that own no listeners. It also owns whether the sheet is open,
+// consumers that own no listeners. It also owns whether the overlay is open,
 // publishes the live microphone to liveCapture (the Live Edge), and gives
 // feedback: haptics, and a polite announcement of each change.
 //
@@ -11,11 +11,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
+import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
-import { VOICE_NOTE_MAX_DURATION_MS, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, nativeVoiceNotesAvailable, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { liveCapture } from "./liveCapture";
-import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT, RECEIPT_SAVED } from "./recorderCopy";
+import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
 import type { RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
@@ -29,20 +30,25 @@ export interface RecorderValue {
   ready: boolean;
   phase: RecorderPhase;
   mic: RecorderMic;
-  /** Views tick their own timers from this (useElapsed); the provider never ticks. */
+  /** Wall-clock start; views tick from native audioMs for recorded time. */
   startedAt: number | null;
+  audioMs: number;
+  controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
   savePercent: number | null;
   error: string | null;
   /** How the last recording ended; drives the receipt. */
-  outcome: "saved" | "failed" | null;
+  outcome: "local" | "saved" | "failed" | null;
+  localUpload: RecorderState["localUpload"];
   lastSaved: RecorderState["lastSaved"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
   sheetOpen: boolean;
   record(): void;
   stop(): void;
+  pause(): void;
+  resume(): void;
   /** Stop the live recording and delete it; the sheet closes once it is gone. */
   discard(): void;
   retryPending(): void;
@@ -50,6 +56,7 @@ export interface RecorderValue {
   dismissOutcome(): void;
   openSheet(): void;
   minimiseSheet(): void;
+  setReceiptPlaying(playing: boolean): void;
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
@@ -87,13 +94,38 @@ export interface RecorderProviderProps {
 }
 
 export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, children }: RecorderProviderProps) {
-  const recorder = useVoiceNoteRecorder({ tcw, enabled, backendUrl, sessionStore, onSaved });
+  const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
+  const [defaultsAttempt, setDefaultsAttempt] = useState(0);
+  const defaultsReady = configured?.tcw === tcw && configured.did === (tcw.did ?? null);
+  useEffect(() => {
+    if (enabled === false || !nativeVoiceNotesAvailable()) return;
+    let active = true;
+    setConfigured(null);
+    void (async () => {
+      try {
+        const native = await VoiceNotes.getCaptureDefaults();
+        if (!active) return;
+        const key = "exo.capture.transitionGen";
+        const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
+        const transitionGen = Math.max(native.transitionGen, local) + 1;
+        await VoiceNotes.setCaptureDefaults({ ...native, accountDid: tcw.did ?? null, transitionGen });
+        globalThis.localStorage?.setItem(key, String(transitionGen));
+        if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); }
+      } catch (caught) {
+        if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
+      }
+    })();
+    return () => { active = false; };
+  }, [enabled, tcw, defaultsAttempt]);
+  const recorder = useVoiceNoteRecorder({ tcw, enabled: enabled !== false && defaultsReady, backendUrl, sessionStore, onSaved });
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [receiptPlaying, setReceiptPlaying] = useState(false);
   const [announcement, setAnnouncement] = useState("");
 
   // The Live Edge follows the live microphone.
-  const live = state.phase === "recording";
+  const live = state.phase === "recording" && (state.mic.state === "recording" || state.mic.state === "silenced");
   const warning = live && micWarning(state.mic) !== null;
   useEffect(() => {
     liveCapture.set(live ? { source: "voice-note", warning, startedAt: state.startedAt } : null);
@@ -114,11 +146,13 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     if (before.phase === "starting" && state.phase === "recording") {
       hapticRecordStarted();
       setAnnouncement("Recording started");
+    } else if (before.phase === "recording" && state.phase === "recording" && before.mic.state !== state.mic.state) {
+      setAnnouncement(recorderStatusText(state.phase, state.mic, null));
     } else if (before.phase === "recording" && state.phase === "recording" && micWarning(before.mic) !== micWarning(state.mic)) {
       setAnnouncement(recorderStatusText(state.phase, state.mic, null));
-    } else if (before.outcome !== state.outcome && state.outcome === "saved") {
+    } else if (before.outcome !== state.outcome && state.outcome === "local") {
       hapticSaved();
-      setAnnouncement(RECEIPT_SAVED);
+      setAnnouncement("Saved on this phone");
     } else if (before.outcome !== state.outcome && state.outcome === "failed") {
       hapticWarning();
       setAnnouncement(RECEIPT_KEPT);
@@ -130,15 +164,18 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     }
   }, [state]);
 
-  // A saved receipt stays 3 s, then the sheet closes; a failure stays until it is read.
+  // Local commit starts the receipt clock. Playback keeps it open.
   useEffect(() => {
-    if (state.outcome !== "saved") return;
+    if (state.outcome !== "local" && state.outcome !== "saved") return;
+    if (receiptPlaying) return;
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MS);
     return () => clearTimeout(timer);
-  }, [dismissOutcome, state.outcome, state.lastSaved]);
+  }, [dismissOutcome, receiptPlaying, state.outcome, state.lastSaved]);
+
+  useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
   const record = useCallback(() => {
     setSheetOpen(true);
@@ -158,22 +195,28 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       phase: state.phase,
       mic: state.mic,
       startedAt: state.startedAt,
+      audioMs: state.audioMs,
+      controlPending: state.controlPending,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
       savePercent: state.savePercent,
-      error: state.error,
+      error: state.error ?? defaultsError,
       outcome: state.outcome,
+      localUpload: state.localUpload,
       lastSaved: state.lastSaved,
       pending: recorder.pending,
       transcription: recorder.transcription,
       sheetOpen,
       record,
       stop: recorder.stop,
+      pause: recorder.pause,
+      resume: recorder.resume,
       discard: recorder.discard,
       retryPending: recorder.retryPending,
       dismissOutcome: dismiss,
       openSheet,
       minimiseSheet,
+      setReceiptPlaying,
       subscribeLevel,
     }),
     [
@@ -186,7 +229,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.pending,
       recorder.retryPending,
       recorder.stop,
+      recorder.pause,
+      recorder.resume,
       recorder.transcription,
+      defaultsError,
       sheetOpen,
       state,
       subscribeLevel,
@@ -196,6 +242,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   return (
     <RecorderContext.Provider value={value}>
       {children}
+      {defaultsError && <div role="alert" className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 mx-auto flex max-w-xl items-center gap-3 rounded-xl bg-card p-4 text-callout text-card-foreground shadow-float">
+        <span className="min-w-0 flex-1">{defaultsError}</span>
+        <Button type="button" variant="outline" onClick={() => setDefaultsAttempt((n) => n + 1)}>Retry</Button>
+      </div>}
       <p role="status" aria-live="polite" className="sr-only" data-testid="recorder-announcer">
         {announcement}
       </p>
@@ -219,22 +269,28 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       phase: "idle",
       mic: { state: "idle", reason: null },
       startedAt: null,
+      audioMs: 0,
+      controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,
       savePercent: null,
       error: null,
       outcome: null,
+      localUpload: null,
       lastSaved: null,
       pending: NO_PENDING,
       transcription: undefined,
       sheetOpen: false,
       record: noop,
       stop: noop,
+      pause: noop,
+      resume: noop,
       discard: noop,
       retryPending: noop,
       dismissOutcome: noop,
       openSheet: noop,
       minimiseSheet: noop,
+      setReceiptPlaying: noop,
       subscribeLevel: (listener) => {
         for (const level of levels ?? []) listener(level);
         return noop;

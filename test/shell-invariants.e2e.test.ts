@@ -170,7 +170,7 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("one recorder: the provider's three listeners from ready on; navigation, Settings and resizes add none", async () => {
+  test("one recorder: the provider's four listeners from ready on; navigation, Settings and resizes add none", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());
     let highest = 0;
@@ -182,7 +182,7 @@ describe.serial(`shell invariants (${name})`, () => {
     };
 
     await page.getByTestId("voice-note-record").waitFor();
-    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 3);
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 4);
     const addsAtReady = (await stats()).adds;
 
     for (const path of ["/chat", "/chat/connectors", "/chat/settings", "/chat/capture", "/chat"]) {
@@ -219,7 +219,7 @@ describe.serial(`shell invariants (${name})`, () => {
     await sample();
 
     expect((await stats()).adds).toBe(addsAtReady);
-    expect(highest).toBe(3);
+    expect(highest).toBe(4);
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);
@@ -256,7 +256,7 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.getByTestId("recorder-discard-yes").click();
     await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
     await page.waitForFunction(() => document.querySelector('[data-testid="recorder-announcer"]')?.textContent === "Recording discarded");
-    await page.waitForFunction(() => document.querySelector('[data-testid="recorder-sheet"]') === null);
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null);
     expect((await stats()).deleted).toEqual(["fake-1"]);
     expect(await page.getByTestId("recorder-island").count()).toBe(0);
     expect(await page.getByTestId("voice-note-record").count()).toBe(1);
@@ -264,9 +264,9 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
-  test("offline → ready: the offline recorder's listeners go before the provider's arrive; never above three", async () => {
+  test("offline → ready: the offline recorder's listeners go before the provider's arrive; never above four", async () => {
     const { page, errors } = await open("/chat");
-    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 3);
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 4);
     const watch = page.evaluate(
       () =>
         new Promise<number>((resolve) => {
@@ -283,8 +283,8 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.evaluate(() => window.shellHarness!.setState("offline"));
     await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 2);
     await page.evaluate(() => window.shellHarness!.setState("ready"));
-    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 3);
-    expect(await watch).toBeLessThanOrEqual(3);
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().active === 4);
+    expect(await watch).toBeLessThanOrEqual(4);
     expect(errors).toEqual([]);
     await page.close();
   }, 60_000);
