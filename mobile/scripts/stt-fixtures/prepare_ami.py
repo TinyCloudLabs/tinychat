@@ -5,6 +5,7 @@ import html
 import itertools
 import json
 import re
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -60,8 +61,15 @@ def crop_words(archive: Path, rttm: Path, output: Path):
         for begin, end, label in turns:
             if begin <= middle < end:
                 counts[(word["speaker"], label)] += 1
-    mapping = max((dict(zip("ABCD", permutation)) for permutation in itertools.permutations(labels)),
-                  key=lambda candidate: sum(counts[(letter, candidate[letter])] for letter in "ABCD"))
+    candidates = [(sum(counts[(letter, label)] for letter, label in zip("ABCD", permutation)),
+                   dict(zip("ABCD", permutation)))
+                  for permutation in itertools.permutations(labels)]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, mapping = candidates[0]
+    margin = best_score - candidates[1][0]
+    print(f"AMI channel mapping: {mapping}; overlap votes={best_score}; margin={margin}", file=sys.stderr)
+    if margin <= 0:
+        raise RuntimeError("AMI channel mapping is ambiguous")
     for word in words:
         word["speaker"] = mapping[word["speaker"]]
     words.sort(key=lambda row: (row["start"], row["end"], row["speaker"]))

@@ -26,24 +26,47 @@ public struct SpeakerTurn: Codable, Equatable, Sendable {
     }
 }
 
-public enum SttTiming {
-    /// Crop a reference turn to an audio excerpt, then rebase to its first sample.
-    public static func clippedTurn(_ turn: SpeakerTurn, cropStart: Double, cropEnd: Double) -> SpeakerTurn? {
-        let start = max(turn.start, cropStart)
-        let end = min(turn.end, cropEnd)
-        guard end > start else { return nil }
-        return SpeakerTurn(start: start - cropStart, end: end - cropStart, speaker: turn.speaker)
-    }
+public enum TokenWordAlignmentError: Error {
+    case mismatchedCounts
+    case invalidTiming
+}
 
-    /// A clipped word no longer has the same acoustic evidence, so exclude it.
-    public static func wholeWord(_ word: TimedWord, cropStart: Double, cropEnd: Double) -> TimedWord? {
-        guard word.start >= cropStart, word.end <= cropEnd, word.end > word.start else { return nil }
-        return TimedWord(start: word.start - cropStart, end: word.end - cropStart,
-                         text: word.text, speaker: word.speaker)
-    }
-
-    public static func validate(_ words: [TimedWord], duration: Double) -> Bool {
-        words.allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end <= duration && $0.end >= $0.start }
+public enum TokenWordAlignment {
+    /// Sherpa timestamps are per BPE token. Word boundaries are marked by a
+    /// leading space or SentencePiece's leading U+2581 marker.
+    public static func align(tokens: [String], timestamps: [Float], durations: [Float],
+                             origin: Double) throws -> [TimedWord] {
+        guard tokens.count == timestamps.count, tokens.count == durations.count else {
+            throw TokenWordAlignmentError.mismatchedCounts
+        }
+        var words: [TimedWord] = []
+        var text = ""
+        var start = 0.0
+        var end = 0.0
+        for index in tokens.indices {
+            let token = tokens[index]
+            let boundary = token.hasPrefix(" ") || token.hasPrefix("▁")
+            let piece = token.replacingOccurrences(of: "▁", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            let tokenStart = origin + Double(timestamps[index])
+            let tokenEnd = tokenStart + Double(durations[index])
+            guard tokenStart.isFinite, tokenEnd.isFinite, tokenEnd >= tokenStart else {
+                throw TokenWordAlignmentError.invalidTiming
+            }
+            if boundary && !text.isEmpty {
+                words.append(.init(start: start, end: end, text: text))
+                text = ""
+            }
+            guard !piece.isEmpty else { continue }
+            if text.isEmpty {
+                start = tokenStart
+                end = tokenEnd
+            }
+            text += piece
+            end = max(end, tokenEnd)
+        }
+        if !text.isEmpty { words.append(.init(start: start, end: end, text: text)) }
+        return words
     }
 }
 
@@ -53,12 +76,12 @@ public enum SpeakerAttribution {
         let ordered = turns.sorted { $0.start == $1.start ? $0.speaker < $1.speaker : $0.start < $1.start }
         var previous: String?
         return words.map { word in
-            let middle = (word.start + word.end) / 2
-            let covering = ordered.first { $0.start <= middle && middle < $0.end }
+            let tokenStart = word.start
+            let covering = ordered.first { $0.start <= tokenStart && tokenStart < $0.end }
             let nearest = ordered.min { left, right in
-                distance(middle, to: left) < distance(middle, to: right)
+                distance(tokenStart, to: left) < distance(tokenStart, to: right)
             }
-            let speaker = covering?.speaker ?? ((nearest.map { distance(middle, to: $0) <= 0.5 } ?? false)
+            let speaker = covering?.speaker ?? ((nearest.map { distance(tokenStart, to: $0) <= 0.5 } ?? false)
                 ? nearest?.speaker : previous)
             previous = speaker
             return TimedWord(start: word.start, end: word.end, text: word.text, speaker: speaker)

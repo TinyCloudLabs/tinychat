@@ -3,6 +3,7 @@
 import argparse
 import array
 import json
+import math
 import random
 import subprocess
 import wave
@@ -37,6 +38,22 @@ def write_wave(path: Path, samples: array.array):
         output.writeframes(samples.tobytes())
 
 
+def trim_speech(samples: array.array):
+    """Keep 50 ms around energy-bearing speech, excluding archive edge silence."""
+    frame = RATE // 100
+    rms = [math.sqrt(sum(value * value for value in samples[offset:offset + frame]) /
+                     len(samples[offset:offset + frame]))
+           for offset in range(0, len(samples), frame)]
+    threshold = max(180, max(rms) * 0.08)
+    active = [index for index, level in enumerate(rms) if level >= threshold]
+    if not active:
+        raise RuntimeError("LibriSpeech utterance has no speech energy")
+    pad = RATE // 20
+    begin = max(0, active[0] * frame - pad)
+    end = min(len(samples), (active[-1] + 1) * frame + pad)
+    return samples[begin:end]
+
+
 def build(root: Path, out: Path):
     first = utterances(root, "1089")
     second = utterances(root, "121")
@@ -48,8 +65,10 @@ def build(root: Path, out: Path):
 
     rng = random.Random(SEED)
     eligible = {
-        "1089": [(samples, text) for samples, text in first if 2 * RATE <= len(samples) <= 6 * RATE],
-        "121": [(samples, text) for samples, text in second if 2 * RATE <= len(samples) <= 6 * RATE],
+        "1089": [(trimmed, text) for samples, text in first
+                 if 2 * RATE <= len(trimmed := trim_speech(samples)) <= 6 * RATE],
+        "121": [(trimmed, text) for samples, text in second
+                if 2 * RATE <= len(trimmed := trim_speech(samples)) <= 6 * RATE],
     }
     if not all(eligible.values()):
         raise RuntimeError("no 2–6 s utterances for a speaker")
@@ -59,8 +78,12 @@ def build(root: Path, out: Path):
     turn = 0
     while cursor < len(mix):
         speaker = "1089" if turn % 2 == 0 else "121"
-        samples, text = rng.choice(eligible[speaker])
-        end = min(cursor + len(samples), len(mix))
+        fitting = [(samples, text) for samples, text in eligible[speaker]
+                   if cursor + len(samples) <= len(mix)]
+        if not fitting:
+            break  # Never truncate a turn while retaining its full reference text.
+        samples, text = rng.choice(fitting)
+        end = cursor + len(samples)
         for index in range(cursor, end):
             mix[index] = max(-32768, min(32767, mix[index] + samples[index - cursor]))
         start_s, end_s = cursor / RATE, end / RATE

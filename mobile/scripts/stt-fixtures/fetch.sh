@@ -47,7 +47,7 @@ if [[ "$fixtures_only" == false ]]; then
   download 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2' "$downloads/small.tar.bz2"
   for file in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do
     [[ -s "$cache_dir/models/small/$file" ]] && continue
-    path=$(tar -tf "$downloads/small.tar.bz2" | rg "/$file$" | head -1)
+    path=$(tar -tf "$downloads/small.tar.bz2" | grep -E "/$file$" | head -1)
     [[ -n "$path" ]] || { echo "small pack missing $file" >&2; exit 1; }
     tar -xOf "$downloads/small.tar.bz2" "$path" > "$cache_dir/models/small/$file.part"
     mv "$cache_dir/models/small/$file.part" "$cache_dir/models/small/$file"
@@ -55,7 +55,7 @@ if [[ "$fixtures_only" == false ]]; then
   download 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx' "$cache_dir/models/silero_vad.onnx"
   download 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2' "$downloads/diarization.tar.bz2"
   if [[ ! -s "$cache_dir/models/diarization/model.int8.onnx" ]]; then
-    path=$(tar -tf "$downloads/diarization.tar.bz2" | rg '/model.int8.onnx$' | head -1)
+    path=$(tar -tf "$downloads/diarization.tar.bz2" | grep -E '/model.int8.onnx$' | head -1)
     [[ -n "$path" ]] || { echo 'diarization pack missing model.int8.onnx' >&2; exit 1; }
     tar -xOf "$downloads/diarization.tar.bz2" "$path" > "$cache_dir/models/diarization/model.int8.onnx.part"
     mv "$cache_dir/models/diarization/model.int8.onnx.part" "$cache_dir/models/diarization/model.int8.onnx"

@@ -37,7 +37,7 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("Benchmark directory must be Documents/stt-bench", "invalid_directory")
             return
         }
-        let threads = call.getArray("threads", Int.self) ?? [2, 4]
+        let threads = call.getArray("threads", Int.self) ?? [4, 2]
         let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(relative)
         DispatchQueue.global(qos: .utility).async {
             do {

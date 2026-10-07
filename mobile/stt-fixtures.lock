@@ -26,16 +26,16 @@
       "sha256": "02b8c590106a34a4f8f5d563fbb97b7cdecac9c1909391b4b37839255430a9a7"
     },
     "ls-alt-2spk-10m.ref.json": {
-      "bytes": 23800,
-      "sha256": "54977c1792b0a533af3ca61728f49f9fff2ba58f31e9211b1811a98ad25a40f0"
+      "bytes": 26981,
+      "sha256": "d2d19fe9261788945d36bc9b2495e56d02809ac7de93a88cb0d61061fa792bdd"
     },
     "ls-alt-2spk-10m.rttm": {
-      "bytes": 11207,
-      "sha256": "b8519d41a5d40fb9a0adc282409b7251e3041c234ad145748ff9a7b0652666ec"
+      "bytes": 12134,
+      "sha256": "e23bb0d4980ff5b1f94679b4510d6ab318450db7abf359f05df8484055a0f48a"
     },
     "ls-alt-2spk-10m.wav": {
       "bytes": 19200044,
-      "sha256": "0a91c3ff8ebcdd75cb0cbc914bc40bc4f86c74529dec5fff2f87ea121e6f91ad"
+      "sha256": "d1ede847896b4e65b975db8f1cf6429194a38285735977604e05cff8708e7a41"
     },
     "models/diarization/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx": {
       "bytes": 29596978,

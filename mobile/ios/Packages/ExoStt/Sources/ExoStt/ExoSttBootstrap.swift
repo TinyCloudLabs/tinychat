@@ -8,7 +8,7 @@ public enum ExoSttBootstrap {
             DispatchQueue.global(qos: .utility).async {
                 let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/stt-bench")
                 do {
-                    let result = try SttBenchmark.run(directory: directory, threads: [2, 4])
+                    let result = try SttBenchmark.run(directory: directory, threads: [4, 2])
                     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
                     NSLog("EXO_STT_BENCH %@", String(decoding: data, as: UTF8.self))
                 } catch {
