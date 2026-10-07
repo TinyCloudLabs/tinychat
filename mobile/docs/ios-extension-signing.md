@@ -22,7 +22,7 @@ xcodebuild -project mobile/ios/App/App.xcodeproj -target ExoWidgets -configurati
   EXO_BUNDLE_ID=xyz.tinycloud.exo.dev -showBuildSettings | rg PRODUCT_BUNDLE_IDENTIFIER
 ```
 
-For a signed device build, use T2's `mobile/scripts/ios-device-install.sh` with `UDID=00008140-0006645414D2801C`, `TEAM=UDTLDX736A`, and `BUNDLE=xyz.tinycloud.exo.dev`. Check `pgrep -fl 'devicectl device install|adb .*install'` before installing; never uninstall Exo. Inspect both `App.app` and `App.app/PlugIns/ExoWidgets.appex` with `codesign -dvv` and `security cms -D -i …/embedded.mobileprovision`, checking team, bundle IDs, and expiry.
+For a signed device build, activate Node 22 or newer and use T2's `mobile/scripts/ios-device-install.sh` with `UDID=00008140-0006645414D2801C`, `TEAM=UDTLDX736A`, and `BUNDLE=xyz.tinycloud.exo.dev`. Check `pgrep -fl 'devicectl device install|adb .*install'` before installing; never uninstall Exo. Inspect both `App.app` and `App.app/PlugIns/ExoWidgets.appex` with `codesign -dvv` and `security cms -D -i …/embedded.mobileprovision`, checking team, bundle IDs, and expiry.
 
 ## On-device probe
 
