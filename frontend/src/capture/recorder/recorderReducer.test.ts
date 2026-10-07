@@ -54,8 +54,11 @@ describe("recorderReducer", () => {
     expect(recorderReducer(initialRecorderState, { type: "MIC_STATE", mic: { state: "recording", reason: null } })).toBe(initialRecorderState);
   });
 
-  test("pause releases the mic in the displayed state; Resume and a failed reacquisition are surfaced", () => {
-    const paused = recorderReducer(recording(), { type: "PAUSE_REQUESTED" });
+  test("pause waits for native confirmation; Resume and a failed reacquisition are surfaced", () => {
+    const requested = recorderReducer(recording(), { type: "PAUSE_REQUESTED" });
+    expect(requested.mic).toEqual({ state: "recording", reason: null });
+    expect(recorderReducer(requested, { type: "PAUSE_FAILED", error: "busy" })).toMatchObject({ mic: { state: "recording" }, error: "busy" });
+    const paused = recorderReducer(requested, { type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
     expect(paused).toMatchObject({ phase: "recording", mic: { state: "paused", reason: "user" } });
     expect(recorderReducer(paused, { type: "RESUME_REQUESTED" }).error).toBeNull();
     const failed = recorderReducer(paused, { type: "RESUME_FAILED", error: "microphone_busy" });

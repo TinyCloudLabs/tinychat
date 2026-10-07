@@ -168,7 +168,8 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...state, mic: event.mic };
     case "PAUSE_REQUESTED":
       if (state.phase !== "recording" || state.mic.state === "paused") return state;
-      return { ...state, mic: { state: "paused", reason: "user" }, error: null };
+      // The native engine confirms release via MIC_STATE. Keep showing a live mic until then.
+      return { ...state, error: null };
     case "PAUSE_FAILED":
       if (state.phase !== "recording") return state;
       return { ...state, error: event.error };

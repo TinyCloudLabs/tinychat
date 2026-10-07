@@ -32,13 +32,14 @@ describe("VoiceNotes v2 fake public contract", () => {
     expect(notification?.id).toBe(id);
     controls.interruptionEnds(false);
     expect((await plugin.status()).state).toBe("interrupted");
+    expect((await plugin.status()).reason).toBe("call");
     expect(controls.backoffDelayMs()).toBe(500);
     controls.retryAutomatic(false);
     expect(controls.backoffDelayMs()).toBe(1000);
     await plugin.resume();
     expect(await plugin.status()).toMatchObject({ state: "recording", availability: "available", openSpan: null });
     expect(controls.pendingNotification()).toBeNull();
-    controls.deliverNotification(notification!.id, notification!.gen);
+    await controls.deliverNotification(notification!.id, notification!.gen);
     expect((await plugin.status()).state).toBe("recording");
     controls.interruptionBegins();
     controls.backoffExhausted();
@@ -55,7 +56,7 @@ describe("VoiceNotes v2 fake public contract", () => {
     await plugin.pause();
     controls.interruptionEnds();
     controls.appActive();
-    controls.deliverNotification(notification.id, notification.gen);
+    await controls.deliverNotification(notification.id, notification.gen);
     controls.completeRestart(notification.gen, true);
     expect(await plugin.status()).toMatchObject({ state: "paused", intent: "paused", openSpan: null });
     expect(controls.pendingNotification()).toBeNull();
@@ -94,7 +95,7 @@ describe("VoiceNotes v2 fake public contract", () => {
     const gen = controls.pendingNotification()!.gen;
     await plugin.stop();
     controls.completeRestart(gen, true);
-    controls.deliverNotification(first.id, gen);
+    await controls.deliverNotification(first.id, gen);
     expect((await plugin.status()).state).toBe("idle");
     await plugin.start();
     controls.interruptionBegins();
@@ -114,8 +115,7 @@ describe("VoiceNotes v2 fake public contract", () => {
     controls.interruptionBegins();
     clock = 20_000; controls.tick(0);
     // No frames during the call, but wallMs - pausedMs has reached the limit.
-    controls.interruptionEnds();
-    controls.tick(0);
+    expect((await plugin.status()).state).toBe("idle");
     expect((await plugin.listPending()).recordings[0]).toMatchObject({ durationMs: 4000, pausedMs: 10_000 });
   });
 
@@ -173,8 +173,8 @@ describe("VoiceNotes v2 fake public contract", () => {
     const { plugin, controls } = createFakeVoiceNotes();
     controls.commitLegacy(legacy("legacy"));
     await expect(plugin.claim({ id: "legacy", did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("claim_evidence_required"));
-    await plugin.claim({ id: "legacy", did: "did:A", evidence: "space_row" });
-    expect((await plugin.listPending()).recordings[0]).toMatchObject({ owner: "did:A", ownerUnknown: false, ledger: { audio: { state: "saved" } } });
+    await plugin.claim({ id: "legacy", did: "did:A", evidence: "space_row", rowId: "old-random-row" });
+    expect((await plugin.listPending()).recordings[0]).toMatchObject({ owner: "did:A", ownerUnknown: false, ledger: { audio: { state: "saved", rowId: "old-random-row" } } });
     controls.commitLegacy(legacy("legacy-2"));
     await plugin.claim({ id: "legacy-2", did: "did:A", evidence: "user_choice" });
     expect((await plugin.listPending()).recordings.find((note) => note.id === "legacy-2")?.ledger).toBeUndefined();
@@ -201,5 +201,111 @@ describe("VoiceNotes v2 fake public contract", () => {
     await expect(plugin.putTranscript({ id, transcript: {} as never })).rejects.toEqual(code("tombstoned"));
     await expect(plugin.claim({ id, did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("tombstoned"));
     expect(() => controls.commitLegacy(legacy(id))).toThrow("tombstoned");
+  });
+
+  test("a notification tap resumes after failed automatic retries changed gen", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    await plugin.start();
+    controls.interruptionBegins("call");
+    const notification = controls.pendingNotification()!;
+    controls.interruptionEnds(false);
+    controls.retryAutomatic(false);
+    controls.backoffExhausted();
+    expect((await plugin.status()).state).toBe("needs_user");
+    await controls.deliverNotification(notification.id, notification.gen);
+    expect(await plugin.status()).toMatchObject({ state: "recording", availability: "available" });
+  });
+
+  test("failed Resume from Pause rejects and reports blocked without claiming the mic is live", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    await plugin.start();
+    await plugin.pause();
+    controls.failNextResume();
+    await expect(plugin.resume()).rejects.toEqual(code("resume_failed"));
+    expect(await plugin.status()).toMatchObject({ intent: "recording", availability: "blocked", state: "needs_user", reason: "resume_blocked" });
+    await plugin.resume();
+    expect((await plugin.status()).state).toBe("recording");
+  });
+
+  test("failed Pause keeps capturing and reports the error", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    await plugin.start();
+    controls.failNextPause();
+    await expect(plugin.pause()).rejects.toEqual(code("pause_failed"));
+    expect(await plugin.status()).toMatchObject({ intent: "recording", state: "recording", availability: "available" });
+  });
+
+  test("silencing remembered during Pause opens a silenced span on Resume", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    await plugin.start();
+    await plugin.pause();
+    controls.silence(true);
+    controls.backoffExhausted(); // no graph or backoff exists while paused
+    expect((await plugin.status()).spans).toEqual([]);
+    await plugin.resume();
+    expect(await plugin.status()).toMatchObject({ state: "silenced", openSpan: { kind: "silenced", reason: "os_silenced" } });
+  });
+
+  test("the limit timer stops a blocked capture without audio callbacks", async () => {
+    let clock = 0;
+    const { plugin, controls } = createFakeVoiceNotes(() => clock);
+    await plugin.start({ maxDurationMs: 10_000 });
+    controls.interruptionBegins("call");
+    controls.backoffExhausted();
+    clock = 100_000;
+    controls.tick(0);
+    expect((await plugin.status()).state).toBe("idle");
+    expect((await plugin.listPending()).recordings).toHaveLength(1);
+  });
+
+  test("hosted cleanup keeps both handles; own unknown submit looks up its URL", async () => {
+    const { plugin, controls } = createFakeVoiceNotes();
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+    const hosted = await plugin.start(); await plugin.stop();
+    controls.addRemote(hosted.id, { provider: "assemblyai", mode: "hosted", stage: "submitted", uploadId: "up-1", uploadUrl: null, jobId: "job-1", cleanup: "pending" });
+    await plugin.deleteAudio({ id: hosted.id });
+    expect((await plugin.listOutbox({ did: "did:A" })).entries.map((entry) => [entry.kind, entry.handle])).toEqual([
+      ["transcript", "job-1"], ["hosted_upload", "up-1"],
+    ]);
+    const own = await plugin.start(); await plugin.stop();
+    controls.addRemote(own.id, { provider: "assemblyai", mode: "own", stage: "submit_unknown", uploadId: null,
+      uploadUrl: "https://cdn.example.test/x", jobId: null, cleanup: "pending" });
+    controls.addRemote(own.id, { provider: "assemblyai", mode: "own", stage: "create_unknown", uploadId: null,
+      uploadUrl: null, jobId: null, cleanup: "pending" });
+    await plugin.deleteAudio({ id: own.id });
+    expect((await plugin.listOutbox({ did: "did:A" })).entries.map((entry) => [entry.kind, entry.handle])).toContainEqual([
+      "own_upload_lookup", "https://cdn.example.test/x",
+    ]);
+    expect((await plugin.listOutbox({ did: "did:A" })).entries).toHaveLength(3);
+  });
+
+  test("native return values are snapshots, and putTranscript alone leaves the sidecar rev unchanged", async () => {
+    const { plugin } = createFakeVoiceNotes();
+    const { id } = await plugin.start();
+    const stopped = await plugin.stop();
+    await plugin.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "on-device", identifySpeakers: false });
+    expect(stopped).toMatchObject({ owner: null, rev: 1 });
+    const listed = (await plugin.listPending()).recordings[0];
+    listed.owner = "did:B";
+    expect((await plugin.listPending()).recordings[0]).toMatchObject({ owner: "did:A", rev: 2 });
+    await plugin.putTranscript({ id, transcript: { version: 1, noteId: id, transcriber: "on-device", rev: 1,
+      engine: "parakeet-tdt-0.6b-v3", model: null, language: "en", outcome: "transcribed", diarized: false,
+      segments: [], createdAt: "2026-10-07T00:00:00Z" } });
+    expect((await plugin.listPending()).recordings[0].rev).toBe(2);
+    expect(await plugin.updateLedger({ id, did: "did:A", rev: 2, patch: {} })).toEqual({ rev: 3 });
+  });
+
+  test("retained committed events are queued and consumed in order", async () => {
+    const { plugin } = createFakeVoiceNotes();
+    const first = await plugin.start(); await plugin.stop();
+    const second = await plugin.start(); await plugin.stop();
+    const received: string[] = [];
+    await plugin.addListener("committed", (event) => received.push(event.id));
+    await Promise.resolve();
+    expect(received).toEqual([first.id, second.id]);
+    const later: string[] = [];
+    await plugin.addListener("committed", (event) => later.push(event.id));
+    await Promise.resolve();
+    expect(later).toEqual([]);
   });
 });

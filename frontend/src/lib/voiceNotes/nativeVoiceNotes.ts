@@ -41,6 +41,9 @@ export interface OutboxEntry {
   kind: "transcript" | "hosted_upload" | "ptx_job" | "own_upload_lookup";
   handle: string; createdAt: number; attempts: number;
 }
+export type ClaimOptions =
+  | { id: string; did: string; evidence: "signed_out_v2" | "user_choice" }
+  | { id: string; did: string; evidence: "space_row"; rowId: string };
 export interface NoteLedger {
   spaceId?: string | null;
   audio: { state: "pending" | "saved"; rowId: string | null; at: number | null };
@@ -127,12 +130,11 @@ export interface VoiceNoteRecording {
 
 export interface CaptureStatus {
   state: MicState; reason: MicStateReason; id: string | null;
-  /** New fields may be absent when talking to a v1 shell during upgrade. */
-  intent?: "recording" | "paused" | "stopped"; availability?: "available" | "interrupted" | "blocked";
-  startedAt?: number | null; elapsedMs: number; audioMs?: number; pausedMs?: number; maxDurationMs?: number;
-  spans?: MissingAudioSpan[]; openSpan?: MissingAudioSpan | null;
+  intent: "recording" | "paused" | "stopped"; availability: "available" | "interrupted" | "blocked";
+  startedAt: number | null; elapsedMs: number; audioMs: number; pausedMs: number; maxDurationMs: number;
+  spans: MissingAudioSpan[]; openSpan: MissingAudioSpan | null;
   source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
-  transitionGen?: number; androidSdkInt?: number;
+  transitionGen: number; androidSdkInt?: number;
 }
 
 /**
@@ -182,7 +184,7 @@ export interface VoiceNotesPlugin {
   setRecordingOptions(options: Partial<CaptureOptions>): Promise<void>;
   getCaptureDefaults(): Promise<CaptureDefaults>;
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;
-  claim(options: { id: string; did: string; evidence: "signed_out_v2" | "space_row" | "user_choice" }): Promise<{ owner: string | null }>;
+  claim(options: ClaimOptions): Promise<{ owner: string | null }>;
   updateLedger(options: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;
   localAudioUrl(options: { id: string }): Promise<{ url: string }>;
   putTranscript(options: { id: string; transcript: LocalTranscript }): Promise<void>;

@@ -1,10 +1,1 @@
-{
-  "entryId": "cleanup-1",
-  "did": "did:pkh:eip155:1:0x1234",
-  "provider": "assemblyai",
-  "mode": "hosted",
-  "kind": "hosted_upload",
-  "handle": "upload-1",
-  "createdAt": 1759800012000,
-  "attempts": 2
-}
+{"attempts":2,"createdAt":1759800012000,"did":"did:pkh:eip155:1:0x1234","entryId":"cleanup-1","handle":"upload-1","kind":"hosted_upload","mode":"hosted","provider":"assemblyai"}
