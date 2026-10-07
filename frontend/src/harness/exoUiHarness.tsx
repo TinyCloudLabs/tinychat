@@ -17,7 +17,6 @@ import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
-import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
 import { captureScreens } from "./screens/capture";
 import { legacyScreens } from "./screens/legacy";
@@ -67,16 +66,14 @@ document.documentElement.dataset.platform = platform;
 initSizeClass();
 // The phone app records through its native plugin; here a fake stands in.
 if (platform === "ios" || platform === "android") {
+  const fake = createCaptureFakeVoiceNotes();
   if (params.get("screen")?.startsWith("recorder-")) {
-    const fake = createCaptureFakeVoiceNotes();
     fake.controls.commitLegacy({
       id: "rec-1", startedAt: FROZEN_NOW - 42_000, durationMs: 42_000,
       mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
     });
-    __setVoiceNotesForTests(fake.plugin, { available: true });
-  } else {
-    __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: true });
   }
+  __setVoiceNotesForTests(fake.plugin, { available: true });
 }
 
 window.exoUi = {
