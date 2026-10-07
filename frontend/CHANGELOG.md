@@ -1,5 +1,9 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.13
+
+No changes in this release.
+
 ## 0.6.0-beta.12
 
 ### Minor Changes
