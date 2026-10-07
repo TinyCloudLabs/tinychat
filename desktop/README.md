@@ -187,7 +187,10 @@ Native side (`src-tauri/src/cloud/`):
   Mac / Discard). A job that already has an id resumes by itself, and an
   upload that never completed is re-sent from the re-opened recording. While
   private cloud is hidden (404) or unreachable, a recording with a job is kept
-  and offered the same way. No new recording starts while a record waits. Every upload of a recording reuses its attempt id, the create
+  and offered the same way. While it is hidden, Exo doesn't contact it for
+  that recording (a dark 404 would look like a deleted job and start a second
+  one): only Transcribe on this Mac or Discard. No new recording starts while
+  a record waits. Every upload of a recording reuses its attempt id, the create
   call's `Idempotency-Key`, so a replay re-joins the same job. While a record
   whose upload began has no job id yet, tenant-list recovery waits, so it can't
   save that job's transcript a second time. A record under the old shared key (before TC-772) is

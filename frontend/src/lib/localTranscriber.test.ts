@@ -54,6 +54,7 @@ import {
   KeptRecordingError,
   localStorageKeptRecordingStore,
   localStoragePendingCloudStore,
+  unfinishedTranscriptOwners,
   normalizeLocalTranscript,
   LOCAL_KEPT_RECORDING_KEY,
   LOCAL_MEETING_SOURCE,
@@ -1491,8 +1492,10 @@ describe("kept on-device recordings: accounts, closed views and saves in flight"
     bridge.emitTranscription(completedEvent(sessionId));
     const result = (await transcribing) as OnDeviceTranscriptResult;
     expect(result).toMatchObject({ sessionId, model: "QuantizedSmallEn" });
+    expect(unfinishedTranscriptOwners(bridge)).toBe(1);
     next.finishOnDeviceTranscript(result);
     expect(kept.value).toBeNull();
+    expect(unfinishedTranscriptOwners(bridge)).toBe(0);
   });
 
   test("a recording is kept under the account that started it, even if another signs in before the view closes", async () => {

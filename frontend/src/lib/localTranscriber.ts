@@ -898,8 +898,14 @@ interface TranscriptionJob {
 const transcriptionJobs = new WeakMap<object, TranscriptionJob>();
 
 /** The account that owns each transcript taken from a job (session → DID), per
- *  native identity, so finishing it clears that account's record. */
+ *  native identity, so finishing it clears that account's record. An entry
+ *  lives until the recording is finished or discarded. */
 const transcriptOwners = new WeakMap<object, Map<string, string | null>>();
+
+/** Test hook: how many transcripts handed out by `native` are not finished yet. */
+export function unfinishedTranscriptOwners(native: object): number {
+  return transcriptOwners.get(native)?.size ?? 0;
+}
 
 /** On-device transcripts being saved (session → settles with the save), per native identity. */
 const savingTranscripts = new WeakMap<object, Map<string, Promise<void>>>();
@@ -1052,6 +1058,7 @@ const NOT_RETRYABLE_CLOUD_CODES: ReadonlySet<string> = new Set([
 /** Failures where on-device Whisper may still work, if a model is downloaded. */
 const ON_DEVICE_ALTERNATIVE_CODES: ReadonlySet<string> = new Set([
   "active_transcription_exists",
+  "feature_unavailable",
   "recording_too_long_for_cloud",
   "recording_too_large",
   "recording_too_long",
@@ -1188,6 +1195,10 @@ export function createLocalTranscriber(
   const ownerOf = (session: string): string | null => {
     const owners = transcriptOwners.get(nativeKey);
     return owners?.has(session) ? (owners.get(session) ?? null) : account();
+  };
+  /** Once a recording is finished or discarded, its owner entry is not needed. */
+  const forgetOwner = (session: string) => {
+    transcriptOwners.get(nativeKey)?.delete(session);
   };
   /** The last availability answer (null before the first). While private cloud
    *  is hidden or unreachable, a job it has named is offered as kept too. */
@@ -1480,6 +1491,14 @@ export function createLocalTranscriber(
     if (c === null) throw new Error("Not a private cloud recording");
     const rec = job.recording;
     const report = (s: LocalTranscriberStatus) => job.report?.(s);
+    // Dark for this account: every route 404s, so a status read would look like
+    // a deleted job and Retry would start a second one. Keep the job as it is.
+    if (cloudReach === "hidden") {
+      throw new PrivateCloudError(
+        "feature_unavailable",
+        "Private cloud transcription isn't available for this account right now. The recording was kept on this Mac.",
+      );
+    }
 
     if (c.next === "resolve") {
       if (c.transcriptionId === null) {
@@ -2089,6 +2108,7 @@ export function createLocalTranscriber(
       transcriptionJobs.delete(nativeKey);
       releaseCloud(job);
       forgetRecording(job.recording.sessionId, job.account);
+      forgetOwner(job.recording.sessionId);
       emit({ kind: "idle" });
     },
 
@@ -2264,6 +2284,7 @@ export function createLocalTranscriber(
 
     finishOnDeviceTranscript(result) {
       forgetRecording(result.sessionId, ownerOf(result.sessionId));
+      forgetOwner(result.sessionId);
     },
 
     async recoverCloudTranscripts() {
@@ -2301,6 +2322,7 @@ export function createLocalTranscriber(
       // Only once PTX has deleted it: until then a relaunch resumes (and
       // idempotently re-saves) the job instead of recovering it as a stranger.
       forgetPending(result.sessionId, ownerOf(result.sessionId));
+      forgetOwner(result.sessionId);
     },
   };
 }

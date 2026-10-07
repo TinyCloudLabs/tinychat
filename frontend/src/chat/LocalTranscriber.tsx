@@ -177,6 +177,8 @@ export interface LocalTranscriberViewProps {
   onDeviceOffer?: boolean;
   /** The kept recording (`kept-recording`) was made for private cloud: Transcribe uploads it. */
   keptCloud?: boolean;
+  /** Private cloud is dark for this account (404): a kept cloud recording can't be sent there. */
+  cloudHidden?: boolean;
   onTranscribeOnDevice?: () => void;
   /** That recording could be transcribed on this Mac once a Whisper model is downloaded. */
   onDeviceNeedsModel?: boolean;
@@ -234,6 +236,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
   retryable = true,
   onDeviceOffer = false,
   keptCloud = false,
+  cloudHidden = false,
   onTranscribeOnDevice,
   onDeviceNeedsModel = false,
   modelDownloading = false,
@@ -454,7 +457,7 @@ export const LocalTranscriberView: FC<LocalTranscriberViewProps> = ({
           state === "kept-recording" ||
           state === "connection-lost") && (
           <>
-            {(retryable || state === "partial-recording" || state === "kept-recording") && (
+            {(state === "kept-recording" ? !(keptCloud && cloudHidden) : retryable || state === "partial-recording") && (
               <Button type="button" size="sm" onClick={onRetry} className="h-9">
                 {state === "partial-recording"
                   ? "Transcribe partial recording"
@@ -1120,6 +1123,7 @@ export const LocalTranscriberPanel: FC<LocalTranscriberPanelProps> = ({
       retryable={retryable}
       onDeviceOffer={onDeviceOffer && modelReady}
       keptCloud={keptCloud}
+      cloudHidden={cloudCheck === "hidden"}
       onDeviceNeedsModel={onDeviceOffer && !modelReady}
       modelDownloading={modelDownloading}
       onDownloadForOnDevice={onDownloadForOnDevice}

@@ -48,6 +48,7 @@ import {
   createLocalTranscriber,
   KeptRecordingError,
   normalizeLocalTranscript,
+  unfinishedTranscriptOwners,
   TranscriptionFailedError,
   type CloudTranscriptResult,
   type KeptLocalRecording,
@@ -1063,6 +1064,21 @@ describe("private cloud recordings kept across a closed view or relaunch (TC-772
     expect(await u.t.recoverCloudTranscripts()).toBe(1);
   });
 
+  test("a transcript's owner entry is dropped once it is finished or discarded", async () => {
+    const s = setup();
+    s.a.gets.push(job("completed"));
+    const { stopped } = await recordAndStop(s);
+    const result = (await stopped) as CloudTranscriptResult;
+    expect(unfinishedTranscriptOwners(s.bridge)).toBe(1);
+    // A failed PTX delete keeps it, so the retried finish still clears the right account's record.
+    s.a.control.removeFails = true;
+    await expect(s.t.finishCloudTranscript(result)).rejects.toThrow("down");
+    expect(unfinishedTranscriptOwners(s.bridge)).toBe(1);
+    s.a.control.removeFails = false;
+    await s.t.finishCloudTranscript(result);
+    expect(unfinishedTranscriptOwners(s.bridge)).toBe(0);
+  });
+
   test("a released or evicted handle is re-opened once, with the same attempt", async () => {
     const s = setup();
     let submits = 0;
@@ -1104,6 +1120,25 @@ describe("private cloud recordings kept across a closed view or relaunch (TC-772
     await settle();
     expect(s.kept.value).toMatchObject({ sessionId: "cloud-s", audioPath: AUDIO });
     expect(s.pending.value).toBeNull();
+  });
+
+  test("while private cloud is dark, Transcribe never contacts it and keeps the job (no new attempt), offering this Mac", async () => {
+    const s = setup({ capabilities: async () => null, pending: { attemptId: "a-1", transcriptionId: ID, audioPath: AUDIO } });
+    expect(await s.t.privateCloudAvailability()).toBe("hidden");
+    void s.t.resumeKeptRecording()!.catch(() => {});
+    await settle();
+    const err = (await s.t.retryTranscription().catch((e) => e)) as TranscriptionFailedError;
+    expect(err.code).toBe("feature_unavailable");
+    expect(err.retryable).toBe(false);
+    expect(err.offerOnDevice).toBe(true);
+    // No status read (a dark 404 would look like a deleted job) and no upload.
+    expect(s.a.calls).toEqual([]);
+    expect(s.n.submits).toHaveLength(0);
+    expect(s.pending.value).toMatchObject({ attemptId: "a-1", transcriptionId: ID, submitted: true });
+    // Transcribe on this Mac is still there.
+    void s.t.retryTranscription({ onDevice: { model: "QuantizedTinyEn" } }).catch(() => {});
+    await settle();
+    expect(s.kept.value).toMatchObject({ sessionId: "cloud-s", audioPath: AUDIO });
   });
 
   test("offline, a named job is offered too, nothing new starts over it, and Transcribe finishes it once back", async () => {

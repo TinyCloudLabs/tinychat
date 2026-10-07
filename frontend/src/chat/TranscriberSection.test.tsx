@@ -412,6 +412,12 @@ describe("LocalTranscriberView", () => {
     expect(noModel).toContain("Download model (~44 MB)");
     expect(noModel).not.toContain(">Transcribe on this Mac</button>");
     expect(localFailureState(new KeptRecordingError("x", { engine: "private-cloud" }))).toBe("kept-recording");
+    // Private cloud dark for this account: only this Mac or Discard.
+    const dark = renderLocal({ state: "kept-recording", engine: "private-cloud", keptCloud: true, cloudHidden: true, onDeviceOffer: true });
+    expect(dark).not.toContain(">Transcribe in private cloud</button>");
+    expect(dark).toContain(">Transcribe on this Mac</button>");
+    expect(dark).toContain(">Discard recording</button>");
+    expect(renderLocal({ state: "kept-recording", cloudHidden: true })).toContain(">Transcribe recording</button>");
     // An on-device kept recording is never offered as a move to this Mac.
     expect(renderLocal({ state: "kept-recording" })).not.toContain(">Transcribe on this Mac</button>");
   });

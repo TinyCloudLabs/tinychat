@@ -176,6 +176,7 @@ describe("saving a transcript", () => {
     const source = readFileSync(join(import.meta.dir, "LocalTranscriber.tsx"), "utf8");
     expect(source).toContain('setKeptCloud(err instanceof KeptRecordingError && err.engine === "private-cloud");');
     expect(source).toContain("keptCloud={keptCloud}");
+    expect(source).toContain('cloudHidden={cloudCheck === "hidden"}');
   });
 
   test("the panel takes over and saves through these, with kept recordings scoped to the signed-in account", () => {
