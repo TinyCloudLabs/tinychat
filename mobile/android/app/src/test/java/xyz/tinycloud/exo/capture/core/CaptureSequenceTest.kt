@@ -6,6 +6,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.UUID
 
 class CaptureSequenceTest {
     @get:Rule val temp = TemporaryFolder()
@@ -96,5 +97,45 @@ class CaptureSequenceTest {
         assertEquals(base + 2000, heartbeats.single().getLong("t"))
         assertEquals("recording", heartbeats.single().getString("intent"))
         assertEquals("available", heartbeats.single().getString("availability"))
+    }
+    @Test fun quarantineAndOutboxGoldenRecordsAndTornJournalAreCanonical() {
+        val library = RecordingLibrary(temp.newFolder())
+        library.audio(noteId).writeBytes(ByteArray(12_288))
+        library.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null })
+        assertArrayEquals(fixture("quarantine-record.json"),
+            File(library.quarantine, "$noteId.json").readBytes())
+        for ((name, remote) in listOf(
+            "outbox-entry.json" to JSONObject().put("provider", "assemblyai").put("mode", "hosted")
+                .put("uploadId", "upload-1").put("cleanup", "pending"),
+            "outbox-own-lookup.json" to JSONObject().put("provider", "assemblyai").put("mode", "own")
+                .put("stage", "submit_unknown").put("uploadUrl", "https://cdn.example.test/uploads/x")
+                .put("cleanup", "pending"))) {
+            val id = UUID.randomUUID().toString()
+            library.start(id, "in_app", "did:pkh:eip155:1:0x1234", 0, defaultOptions(), MAX_DURATION_MS)
+            library.openFirstSegment(id, 0, 1)
+            library.append(id, 0, frame)
+            library.stopJournal(id, 100, "user")
+            library.commit(id, { it.writeBytes(byteArrayOf(1)) })
+            library.mutate(id, "ledger.write") { it.getJSONObject("ledger").getJSONArray("remote").put(remote) }
+            library.delete(id)
+            val actualFile = library.outbox.listFiles()!!.first { file ->
+                JSONObject(file.readText()).optString("handle") ==
+                    if (name == "outbox-entry.json") "upload-1" else "https://cdn.example.test/uploads/x"
+            }
+            val actual = JSONObject(actualFile.readText())
+            val expected = JSONObject(String(fixture(name), Charsets.UTF_8))
+                .put("entryId", actual.getString("entryId"))
+                .put("createdAt", actual.getLong("createdAt"))
+                .put("attempts", actual.getInt("attempts"))
+            assertArrayEquals(name, CanonicalJson.line(expected), actualFile.readBytes())
+        }
+        val torn = fixture("journal-torn.jsonl")
+        val dir = library.session(noteId)
+        dir.mkdirs()
+        File(dir, "journal.jsonl").writeBytes(torn)
+        val complete = torn.copyOfRange(0, torn.lastIndexOf('\n'.code.toByte()) + 1)
+        val parsed = library.events(noteId).flatMap { CanonicalJson.line(it).asIterable() }.toByteArray()
+        assertArrayEquals(complete, parsed)
+        assertEquals(3, library.events(noteId).size)
     }
 }

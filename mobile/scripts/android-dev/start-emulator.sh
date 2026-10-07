@@ -12,7 +12,7 @@ fi
 extra=()
 if [[ -n "${EXO_EMULATOR_ARGS:-}" ]]; then read -r -a extra <<< "$EXO_EMULATOR_ARGS"; fi
 emulator=("$ANDROID_HOME/emulator/emulator" -avd "$EXO_AVD" -port "$EXO_EMULATOR_PORT"
-  -no-snapshot -no-boot-anim -allow-host-audio "${extra[@]}")
+  -no-snapshot -no-boot-anim -allow-host-audio ${extra[@]+"${extra[@]}"})
 if [[ "$(uname -s)" = Linux ]]; then
   "$here/pulse-setup.sh"
   launch=(env PULSE_SOURCE=vmic.monitor PULSE_SINK=emu_out QEMU_AUDIO_DRV=pa

@@ -111,9 +111,10 @@ class CaptureSequence(
     }
 
     private fun openNextSegment(at: Long) {
-        segment++
+        val next = segment + 1
+        library.roll(id, next, audioMs, at)
+        segment = next
         segmentFrames = 0
-        library.roll(id, segment, audioMs, at)
         segmentOpen = true
         closing = false
         lastHeartbeatAt = at

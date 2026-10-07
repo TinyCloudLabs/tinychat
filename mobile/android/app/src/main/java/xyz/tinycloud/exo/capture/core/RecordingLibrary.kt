@@ -15,8 +15,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     private val recoveryLock = ReentrantLock()
     private val generation = HashMap<String, Int>()
     private val active = HashMap<String, Int>()
+    // Sessions opened in this process still have a writer. Recovery must never
+    // inspect or collect them, even when another broken session forces a retry.
+    private val openSessions = HashSet<String>()
     private val gates = ConcurrentHashMap<String, () -> Unit>()
-    private var recovered = false
     val sessions = File(root, "sessions")
     val staging = File(root, "staging")
     val tombstones = File(root, "tombstones")
@@ -52,7 +54,9 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             .put("owner", owner ?: JSONObject.NULL).put("transitionGen", transitionGen).put("options", options))
         first.put("t", at)
         ops.write(journal(id), jsonLine(first), false, "start.journal"); ops.syncDir(dir)
+        openSessions.add(id)
     }
+    fun closeSession(id: String) = lock.withLock { openSessions.remove(id) }
     fun openFirstSegment(id: String, audioMs: Long, gen: Long, at: Long = System.currentTimeMillis()) = lock.withLock {
         appendJournal(id, event("avail", audioMs, JSONObject().put("value", "available")
             .put("reason", JSONObject.NULL).put("gen", gen), at), "start.avail")
@@ -109,8 +113,9 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
 
     /** Staging may block on MediaMuxer. The publish transaction rechecks deletion and generation. */
     fun commit(id: String, mux: (File) -> Unit, recovered: Boolean = false, exitReason: String? = null,
-               metrics: JSONObject = JSONObject()): JSONObject {
+               metrics: JSONObject = JSONObject()): JSONObject = recoveryLock.withLock {
         requireId(id)
+        if (!recovered) closeSession(id) // Input was stopped before a normal commit.
         val opGen = begin(id)
         val staged = File(staging, "$id.$opGen.m4a")
         try {
@@ -151,6 +156,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 .put("ledger", defaultLedger()).put("stt", defaultStt())
             lock.withLock {
                 ensureAlive(id)
+                if (recovered && id in openSessions) throw IllegalStateException("live_session")
                 if ((generation[id] ?: 0) != opGen) throw IllegalStateException("stale_operation")
                 // Do not regenerate a sidecar, including one with a newer rev.
                 if (sidecar(id).exists()) return JSONObject(sidecar(id).readText())
@@ -279,6 +285,13 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         generation[id] = (generation[id] ?: 0) + 1
         ops.write(tombstone(id), byteArrayOf(), false, "delete.tombstone")
         ops.syncDir(tombstones)
+        openSessions.remove(id)
+        enqueueOutbox(id)
+        gcArtifacts(id)
+        retire(id)
+    }
+    /** Retryable after a tombstone: stable entry ids prevent duplicate cleanup jobs. */
+    private fun enqueueOutbox(id: String) {
         val note = sidecar(id).takeIf { it.exists() }?.let { JSONObject(it.readText()) }
         val remote = note?.optJSONObject("ledger")?.optJSONArray("remote") ?: JSONArray()
         for (i in 0 until remote.length()) {
@@ -299,15 +312,17 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             val oldHandle = item.optString("handle").takeUnless { it == "null" || it.isEmpty() }
             if (handles.isEmpty() && oldHandle != null) handles += item.optString("kind") to oldHandle
             for ((kind, handle) in handles) {
-                val entry = JSONObject().put("entryId", UUID.randomUUID().toString()).put("did", note?.optString("owner"))
+                val did = note?.opt("owner")?.takeUnless { it == JSONObject.NULL } ?: JSONObject.NULL
+                val entryId = UUID.nameUUIDFromBytes("$id:$provider:$kind:$handle".toByteArray(Charsets.UTF_8)).toString()
+                val target = File(outbox, "$entryId.json")
+                if (target.exists()) continue
+                val entry = JSONObject().put("entryId", entryId).put("did", did)
                     .put("provider", provider).put("mode", mode ?: JSONObject.NULL).put("kind", kind)
                     .put("handle", handle).put("createdAt", System.currentTimeMillis()).put("attempts", 0)
-                ops.write(File(outbox, "${entry.getString("entryId")}.json"), jsonLine(entry), false, "delete.outbox")
+                ops.write(target, jsonLine(entry), false, "delete.outbox")
             }
         }
         ops.syncDir(outbox)
-        gcArtifacts(id)
-        retire(id)
     }
     private fun gcArtifacts(id: String) {
         for (file in root.listFiles().orEmpty()) if (file.name.startsWith("$id.")) ops.unlink(file, "delete.unlink")
@@ -323,7 +338,6 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         ops.unlink(tombstone(id), "tombstone.retire"); ops.syncDir(tombstones)
     }
     fun recoverOnce(mux: (String, File) -> Unit, probe: (File) -> JSONObject?, exitReason: String? = null) = recoveryLock.withLock {
-        if (recovered) return@withLock
         val failures = mutableListOf<String>()
         // This lock makes later plugin calls await bootstrap recovery. It is separate
         // from the short publication lock, so mux and probe still run outside it.
@@ -338,7 +352,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         for (dir in sessions.listFiles().orEmpty().filter { it.isDirectory && it.name.isNoteId() }) {
             val id = dir.name
             try {
-                if (tombstone(id).exists()) { lock.withLock { gcArtifacts(id); retire(id) }; continue }
+                if (lock.withLock { id in openSessions }) continue
+                if (tombstone(id).exists()) { lock.withLock { enqueueOutbox(id); gcArtifacts(id); retire(id) }; continue }
                 if (sidecar(id).exists()) { gcSession(id); continue }
                 if (dir.listFiles().orEmpty().filter { it.name.endsWith(".aac") }.sumOf { scanAdts(it).frames } == 0L) {
                     gcSession(id); continue
@@ -357,9 +372,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                 lock.withLock {
                     if (tombstone(id).exists() || (generation[id] ?: 0) != opGen) return@withLock
                     if (note == null) {
+                        val size = file.length()
                         ops.rename(file, File(quarantine, file.name), "import.quarantine")
                         ops.write(File(quarantine, "$id.json"), jsonLine(JSONObject().put("id", id)
-                            .put("reason", "no_audio_track").put("sizeBytes", file.length())), false, "import.quarantine")
+                            .put("reason", "no_audio_track").put("sizeBytes", size)), false, "import.quarantine")
                     } else if (!sidecar(id).exists()) {
                         val startedAt = note.optLong("startedAt", file.lastModified())
                         val durationMs = note.optLong("durationMs")
@@ -386,10 +402,9 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             finally { end(id) }
         }
         for (marker in tombstones.listFiles().orEmpty()) if (marker.name.isNoteId()) lock.withLock {
-            try { gcArtifacts(marker.name); retire(marker.name) }
+            try { enqueueOutbox(marker.name); gcArtifacts(marker.name); retire(marker.name) }
             catch (e: IOException) { failures.add("${marker.name}: ${e.message}") }
         }
         if (failures.isNotEmpty()) throw IOException("Recovery needs retry: ${failures.joinToString()}")
-        recovered = true
     }
 }

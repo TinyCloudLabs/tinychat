@@ -24,6 +24,194 @@ class RecordingLibraryTest {
         lib.stopJournal(id, 1000, "user")
     }
     private fun commit(lib: RecordingLibrary, id: String) = lib.commit(id, { it.writeBytes(byteArrayOf(1, 2, 3)) })
+    private val frame = byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0)
+    private fun recoverTwice(lib: RecordingLibrary) {
+        fun recover() = lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1, 2, 3)) }, { file ->
+            JSONObject().put("startedAt", file.lastModified()).put("durationMs", 1000)
+                .put("mimeType", "audio/mp4").put("sizeBytes", file.length())
+        })
+        fun snapshot() = lib.root.walkTopDown().filter { it.isFile }
+            .associate { it.relativeTo(lib.root).path to it.readBytes() }
+        recover()
+        val first = snapshot()
+        recover()
+        val second = snapshot()
+        assertEquals("Recovery changed the file set on its second pass", first.keys, second.keys)
+        for ((path, bytes) in first) assertArrayEquals("Recovery rewrote $path", bytes, second[path])
+    }
+    private inline fun expectFailure(point: String, action: () -> Unit) {
+        try { action(); fail("$point did not fail") } catch (e: IOException) {
+            assertTrue(e.message.orEmpty().contains(point))
+        }
+    }
+
+    @Test fun retriedRecoveryLeavesLiveSequenceUntouchedWhileBrokenSessionPersists() {
+        val lib = library(); val broken = id(); val live = id()
+        begin(lib, broken)
+        File(lib.session(broken), "journal.jsonl").appendText("{invalid complete line}\n")
+        lib.closeSession(broken) // Simulate the previous process dying.
+        expectFailure("Recovery needs retry") { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null }) }
+        val sequence = CaptureSequence(lib, live)
+        sequence.start("in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        sequence.firstInput(1)
+        repeat(50) { sequence.frame(frame) }
+        val journalBefore = File(lib.session(live), "journal.jsonl").readBytes()
+        val segmentBefore = File(lib.session(live), "seg-00000.aac").readBytes()
+        repeat(2) {
+            expectFailure("Recovery needs retry") { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1, 2, 3)) }, { null }) }
+            assertTrue(lib.session(live).isDirectory)
+            assertArrayEquals(journalBefore, File(lib.session(live), "journal.jsonl").readBytes())
+            assertArrayEquals(segmentBefore, File(lib.session(live), "seg-00000.aac").readBytes())
+            assertFalse(lib.sidecar(live).exists())
+        }
+        sequence.frame(frame)
+        assertEquals(segmentBefore.size + frame.size.toLong(), File(lib.session(live), "seg-00000.aac").length())
+    }
+
+    @Test fun startAndRollAndStopFailuresRecoverTwice() {
+        for (point in listOf("start.mkdir", "start.journal", "roll.create", "stop.journal")) {
+            val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id()
+            if (point.startsWith("start")) {
+                ops.failOnce(point)
+                expectFailure(point) { lib.start(note, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS) }
+                recoverTwice(lib)
+                assertFalse(lib.sidecar(note).exists())
+                assertFalse(lib.session(note).exists())
+            } else {
+                lib.start(note, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+                lib.openFirstSegment(note, 0, 1)
+                lib.append(note, 0, frame)
+                ops.failOnce(point)
+                if (point == "roll.create") expectFailure(point) { lib.roll(note, 1, 100) }
+                else expectFailure(point) { lib.stopJournal(note, 100, "user") }
+                lib.closeSession(note) // A crashed input no longer owns the session.
+                recoverTwice(lib)
+                assertEquals(1, lib.read(note)!!.getInt("rev"))
+                assertTrue(lib.audio(note).isFile)
+            }
+        }
+    }
+    @Test fun segmentWriteAndSyncFailuresRecoverTwiceWithOnlyDurableFrames() {
+        for (point in listOf("seg.write", "seg.sync")) {
+            val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id()
+            lib.start(note, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+            lib.openFirstSegment(note, 0, 1)
+            lib.append(note, 0, frame)
+            ops.failOnce(point)
+            if (point == "seg.write") expectFailure(point) { lib.append(note, 0, frame) }
+            else expectFailure(point) { lib.checkpoint(note, 0, 100, "recording", "available") }
+            lib.closeSession(note)
+            recoverTwice(lib)
+            assertEquals(1024L * 1000 / SAMPLE_RATE, lib.read(note)!!.getLong("durationMs"))
+            assertEquals(1, lib.read(note)!!.getInt("rev"))
+        }
+    }
+
+    @Test fun mutationAndImportFailuresRecoverTwiceWithoutRevisingPublishedNote() {
+        for (point in listOf("claim.write", "ledger.write")) {
+            val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id()
+            begin(lib, note); commit(lib, note)
+            val before = lib.sidecar(note).readBytes()
+            ops.failOnce(point)
+            if (point == "claim.write") expectFailure(point) { lib.claim(note, "did:a", "signed_out_v2") }
+            else expectFailure(point) { lib.mutate(note, point) { it.put("marker", true) } }
+            recoverTwice(lib)
+            assertArrayEquals(before, lib.sidecar(note).readBytes())
+            assertTrue(lib.audio(note).isFile)
+        }
+        val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val orphan = id()
+        lib.audio(orphan).writeBytes(byteArrayOf(1, 2, 3))
+        ops.failOnce("import.sidecar")
+        expectFailure("import.sidecar") { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { file ->
+            JSONObject().put("startedAt", 1).put("durationMs", 100).put("mimeType", "audio/mp4").put("sizeBytes", file.length())
+        }) }
+        recoverTwice(lib)
+        assertEquals(1, lib.read(orphan)!!.getInt("rev"))
+        assertTrue(lib.audio(orphan).isFile)
+    }
+
+    @Test fun tombstoneAndOutboxAndRetireFailuresRecoverTwiceWithoutLosingRemoteHandle() {
+        for (point in listOf("delete.tombstone", "delete.outbox", "tombstone.retire")) {
+            val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops); val note = id()
+            begin(lib, note); commit(lib, note)
+            lib.mutate(note, "ledger.write") { side ->
+                side.put("owner", "did:a")
+                side.getJSONObject("ledger").getJSONArray("remote").put(JSONObject()
+                    .put("provider", "assemblyai").put("mode", "hosted")
+                    .put("uploadId", "upload-a").put("cleanup", "pending"))
+            }
+            ops.failOnce(point)
+            expectFailure(point) { lib.delete(note) }
+            if (point == "delete.tombstone") {
+                assertEquals("upload-a", lib.read(note)!!.getJSONObject("ledger")
+                    .getJSONArray("remote").getJSONObject(0).getString("uploadId"))
+            } else assertTrue(lib.tombstone(note).exists())
+            recoverTwice(lib)
+            if (point == "delete.tombstone") assertNotNull(lib.read(note))
+            else {
+                assertFalse(lib.sidecar(note).exists())
+                assertFalse(lib.audio(note).exists())
+                assertEquals("upload-a", lib.listOutbox("did:a").getJSONObject(0).getString("handle"))
+                assertEquals(1, lib.listOutbox("did:a").length())
+            }
+        }
+    }
+
+    @Test fun deletionAtBothStageGatesCannotPublishAndRecoveryTwiceDoesNotResurrect() {
+        for (gate in listOf("stage.begin", "stage.afterMux")) {
+            val lib = library(); val note = id(); begin(lib, note)
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            lib.gate(gate) { entered.countDown(); release.await(5, TimeUnit.SECONDS) }
+            val worker = Thread { runCatching { commit(lib, note) } }
+            worker.start(); assertTrue("$gate not reached", entered.await(5, TimeUnit.SECONDS))
+            lib.delete(note); release.countDown(); worker.join(5000)
+            assertFalse("$gate commit did not finish", worker.isAlive)
+            recoverTwice(lib)
+            assertFalse(lib.sidecar(note).exists())
+            assertFalse(lib.audio(note).exists())
+        }
+    }
+
+    @Test fun recoveryCannotRaceANormalCommitForTheSameStagingFile() {
+        val lib = library(); val note = id(); begin(lib, note)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val recovered = CountDownLatch(1)
+        lib.gate("stage.begin") { entered.countDown(); release.await(5, TimeUnit.SECONDS) }
+        val committing = Thread { commit(lib, note) }
+        val recovering = Thread {
+            lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(9)) }, { null })
+            recovered.countDown()
+        }
+        committing.start(); assertTrue(entered.await(5, TimeUnit.SECONDS))
+        recovering.start()
+        assertFalse("recovery raced a live normal commit", recovered.await(100, TimeUnit.MILLISECONDS))
+        release.countDown(); committing.join(5000); recovering.join(5000)
+        assertFalse(committing.isAlive); assertFalse(recovering.isAlive)
+        assertEquals(1, lib.read(note)!!.getInt("rev"))
+        assertArrayEquals(byteArrayOf(1, 2, 3), lib.audio(note).readBytes())
+        recoverTwice(lib)
+    }
+
+    @Test fun modeledPowerLossDropsOnlyUnsyncedFramesWithinHeartbeatBound() {
+        class PowerLossOps : FileOps() {
+            val durable = HashMap<File, ByteArray>()
+            override fun sync(file: File, metadata: Boolean, point: String) {
+                super.sync(file, metadata, point)
+                if (file.name.endsWith(".aac")) durable[file] = file.readBytes()
+            }
+            fun crash() { for ((file, bytes) in durable) if (file.exists()) file.writeBytes(bytes) }
+        }
+        val ops = PowerLossOps(); val dir = temp.newFolder(); val lib = RecordingLibrary(dir, ops); val note = id()
+        lib.start(note, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        lib.openFirstSegment(note, 0, 1)
+        repeat(90) { lib.append(note, 0, frame) }
+        lib.checkpoint(note, 0, 90L * 1024 * 1000 / SAMPLE_RATE, "recording", "available")
+        repeat(80) { lib.append(note, 0, frame) } // 1.86 s since the last durable checkpoint.
+        ops.crash()
+        val relaunched = RecordingLibrary(dir)
+        recoverTwice(relaunched)
+        assertEquals(90L * 1024 * 1000 / SAMPLE_RATE, relaunched.read(note)!!.getLong("durationMs"))
+        assertTrue(80L * 1024 * 1000 / SAMPLE_RATE < 2000)
+    }
 
     @Test fun canonicalJsonUsesSortedKeysEscapesAndOneLf() {
         val data = JSONObject().put("z", JSONArray().put(JSONObject().put("b", 2).put("a", "é/\u0001")))
@@ -94,6 +282,7 @@ class RecordingLibraryTest {
         val saved = id(); begin(lib, saved); commit(lib, saved)
         val broken = id(); begin(lib, broken)
         File(lib.session(broken), "journal.jsonl").appendText("{invalid complete line}\n")
+        lib.closeSession(broken) // Simulate the previous process dying.
         repeat(2) {
             try { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null }); fail("recovery must surface the broken session") }
             catch (e: IOException) { assertTrue(e.message!!.contains(broken)) }
@@ -245,6 +434,7 @@ class RecordingLibraryTest {
         }
         worker.start(); assertTrue(entering.await(5, TimeUnit.SECONDS))
         lib.delete(note); release.countDown(); worker.join(5000)
+        recoverTwice(lib)
         assertFalse(File(lib.root, "$note.transcript.json").exists())
         assertFalse(lib.sidecar(note).exists())
     }
@@ -257,6 +447,7 @@ class RecordingLibraryTest {
         }) }
         worker.start(); assertTrue(entering.await(5, TimeUnit.SECONDS))
         lib.delete(note); release.countDown(); worker.join(5000)
+        recoverTwice(lib)
         assertFalse(lib.sidecar(note).exists()); assertFalse(lib.audio(note).exists())
     }
 }

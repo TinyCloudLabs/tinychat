@@ -80,7 +80,7 @@ class AudioCapture(
             while (running.get()) {
                 val n = record.read(scratch, 0, scratch.size, AudioRecord.READ_BLOCKING)
                 if (n < 0) {
-                    if (running.get()) onError(if (n == AudioRecord.ERROR_DEAD_OBJECT) "read_error" else "read_failed:$n")
+                    if (running.get() && !cutting.get()) onError(if (n == AudioRecord.ERROR_DEAD_OBJECT) "read_error" else "read_failed:$n")
                     break
                 }
                 if (n == 0) continue
@@ -155,6 +155,8 @@ class AudioCapture(
         drained = true
     }
     fun release() {
+        running.set(false)
+        producerDone.set(true)
         try {
             if (Build.VERSION.SDK_INT >= 29) record.unregisterAudioRecordingCallback(
                 recordingCallback as android.media.AudioManager.AudioRecordingCallback)

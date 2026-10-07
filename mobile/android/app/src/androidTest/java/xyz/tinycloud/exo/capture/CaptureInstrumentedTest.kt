@@ -13,6 +13,10 @@ import org.json.JSONObject
 import androidx.core.content.ContextCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.Assume.assumeTrue
@@ -55,6 +59,224 @@ class CaptureInstrumentedTest {
             InstrumentationRegistry.getInstrumentation().uiAutomation
                 .executeShellCommand("pm grant ${context.packageName} $permission")
         ).use { it.readBytes() }
+    }
+    private fun permissionButton(allow: Boolean) {
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val suffixes = if (allow) listOf("permission_allow_foreground_only_button", "permission_allow_button")
+            else listOf("permission_deny_button")
+        val packages = listOf("com.android.permissioncontroller", "com.google.android.permissioncontroller",
+            "com.google.android.packageinstaller", "com.android.packageinstaller")
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            for (pkg in packages) for (suffix in suffixes) {
+                val button = device.findObject(By.res(pkg, suffix))
+                if (button != null) { button.click(); return }
+            }
+            Thread.sleep(100)
+        }
+        error("Runtime permission dialog button missing: allow=$allow")
+    }
+    private fun awaitNoPendingCommand() {
+        val deadline = System.currentTimeMillis() + 5000
+        while (LaunchCommandStore(context).pending() != null && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        assertNull(LaunchCommandStore(context).pending())
+    }
+
+    /** Run with RECORD_AUDIO revoked and permission flags reset before instrumentation starts. */
+    @Test fun shortcutFirstUsePermissionGrantStartsRecording() {
+        assumeTrue("Run this case with RECORD_AUDIO revoked before instrumentation",
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            permissionButton(true)
+            awaitState(engine, "recording")
+            assertEquals("app_shortcut", engine.status().getString("source"))
+            awaitNoPendingCommand()
+            Thread.sleep(1200)
+            val note = engine.stop()
+            assertFalse(note.getBoolean("recovered"))
+            engine.library.delete(note.getString("id"))
+        } finally {
+            if (!engine.status().isNull("id")) engine.stop()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+
+    /** Run with RECORD_AUDIO revoked and permission flags reset before instrumentation starts. */
+    @Test fun shortcutDeniedPermissionClearsCommandWithoutReprompting() {
+        assumeTrue("Run this case with RECORD_AUDIO revoked before instrumentation",
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+        val engine = CaptureEngine.get(context)
+        val denied = CountDownLatch(1)
+        val listener = object : CaptureEngine.Listener {
+            override fun event(name: String, data: JSONObject) {
+                if (name == "presentRecorder" && data.optString("reason") == "permission_denied") denied.countDown()
+            }
+        }
+        engine.addListener(listener)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try {
+            permissionButton(false)
+            assertTrue("denial was not surfaced", denied.await(5, TimeUnit.SECONDS))
+            awaitNoPendingCommand()
+            assertEquals("idle", engine.status().getString("state"))
+            Thread.sleep(500)
+            assertNull("denial triggered another permission dialog",
+                UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                    .findObject(By.res("com.android.permissioncontroller", "permission_deny_button")))
+        } finally { engine.removeListener(listener); activity.finish() }
+    }
+
+    @Test fun shortcutCommandAndRecordingSurviveActivityRecreation() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val engine = CaptureEngine.get(context)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try {
+            awaitState(engine, "recording")
+            val id = engine.status().getString("id")
+            instrumentation.runOnMainSync { activity.recreate() }
+            instrumentation.waitForIdleSync()
+            engine.recover() // Plugin load also performs this on WebView recreation.
+            assertEquals(id, engine.status().getString("id"))
+            assertFalse(engine.library.sidecar(id).exists())
+            Thread.sleep(1200)
+            val note = engine.stop()
+            assertEquals(id, note.getString("id"))
+            assertFalse(note.getBoolean("recovered"))
+            engine.library.delete(id)
+        } finally {
+            if (!engine.status().isNull("id")) engine.stop()
+            context.stopService(Intent(context, CaptureService::class.java))
+            instrumentation.runOnMainSync {
+                ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .filterIsInstance<MainActivity>().forEach { it.finish() }
+            }
+        }
+    }
+
+    @Test fun failedRecoveryDuringShortcutRecordingNeverCollectsTheLiveSession() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val engine = CaptureEngine.get(context)
+        val broken = UUID.randomUUID().toString()
+        val crashed = RecordingLibrary(engine.library.root, AndroidFileOps())
+        crashed.start(broken, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        crashed.openFirstSegment(broken, 0, 1)
+        crashed.append(broken, 0, byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0))
+        File(crashed.session(broken), "journal.jsonl").appendText("{invalid complete line}\n")
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try {
+            awaitState(engine, "recording")
+            val live = engine.status().getString("id")
+            repeat(2) { engine.recover() }
+            assertTrue(engine.library.session(live).isDirectory)
+            assertFalse(engine.library.sidecar(live).exists())
+            Thread.sleep(1200)
+            assertEquals("recording", engine.status().getString("state"))
+            val note = engine.stop()
+            assertEquals(live, note.getString("id"))
+            assertFalse(note.getBoolean("recovered"))
+            assertEquals(1, note.getInt("rev"))
+            engine.library.delete(live)
+        } finally {
+            if (!engine.status().isNull("id")) engine.stop()
+            engine.library.delete(broken)
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+
+    @Test fun stopJournalFailureReportsNeedsUserAfterInputTeardown() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            awaitState(engine, "recording")
+            val id = engine.status().getString("id")
+            Thread.sleep(1200)
+            engine.library.ops.failOnce("stop.journal")
+            try { engine.stop(); fail("stop.journal did not fail") } catch (_: java.io.IOException) { }
+            assertEquals("needs_user", engine.status().getString("state"))
+            assertEquals("write_failed", engine.status().getString("reason"))
+            engine.recover()
+            assertNotNull(engine.library.read(id))
+            engine.discard()
+        } finally {
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+    @Test fun retryingBlockedResumeDoesNotCloseAnAbsentOmittedSpan() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            awaitState(engine, "recording")
+            val id = engine.status().getString("id")
+            Thread.sleep(1200)
+            engine.pause()
+            engine.library.ops.failOnce("roll.create")
+            try { engine.resume(); fail("resume should fail at roll.create") } catch (_: IllegalStateException) { }
+            assertEquals("resume_blocked", engine.status().getString("reason"))
+            engine.resume()
+            assertEquals("recording", engine.status().getString("state"))
+            assertEquals(0, engine.library.events(id).count { it.optString("e") == "span_close" })
+            Thread.sleep(1200)
+            val note = engine.stop()
+            engine.library.delete(note.getString("id"))
+        } finally {
+            if (!engine.status().isNull("id")) engine.discard()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+    @Test fun slowRecoveryDoesNotBlockMainThreadStatus() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        val crashed = RecordingLibrary(engine.library.root, AndroidFileOps())
+        val old = UUID.randomUUID().toString()
+        crashed.start(old, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        crashed.openFirstSegment(old, 0, 1)
+        crashed.append(old, 0, byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0))
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        engine.library.gate("stage.begin") { entered.countDown(); release.await(5, TimeUnit.SECONDS) }
+        val worker = Thread { try { engine.start(null, null, "in_app") } catch (e: Throwable) { failure.set(e) } }
+        try {
+            worker.start()
+            assertTrue("recovery did not reach mux", entered.await(5, TimeUnit.SECONDS))
+            val started = System.nanoTime()
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { engine.status() }
+            assertTrue("status blocked behind recovery", (System.nanoTime() - started) / 1_000_000 < 500)
+            release.countDown(); worker.join(10_000)
+            assertFalse(worker.isAlive)
+            assertNull(failure.get())
+            engine.library.clearGate("stage.begin")
+            Thread.sleep(1200)
+            val note = engine.stop()
+            engine.library.delete(note.getString("id"))
+            engine.library.delete(old)
+        } finally {
+            release.countDown(); engine.library.clearGate("stage.begin")
+            if (!engine.status().isNull("id")) engine.discard()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
     }
     @Test fun encodeFinalizeAndProbe44100Hz() {
         val root = File(context.cacheDir, "capture-test-${UUID.randomUUID()}")

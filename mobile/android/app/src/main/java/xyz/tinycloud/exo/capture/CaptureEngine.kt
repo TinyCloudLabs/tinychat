@@ -144,10 +144,13 @@ class CaptureEngine private constructor(private val context: Context) {
         journalLiveTransition(current, "options", options.copy())
         publishState()
     }
-    @Synchronized fun start(requestedMs: Long?, requestedOptions: JSONObject?, startSource: String, commandId: String? = null): JSONObject {
+    fun start(requestedMs: Long?, requestedOptions: JSONObject?, startSource: String, commandId: String? = null): JSONObject = controlLock.withLock {
         if (id != null) throw IllegalStateException("already_recording")
         if (context.filesDir.usableSpace < 300L * 1024 * 1024) throw IllegalStateException("insufficient_storage")
         recover() // Reports failed sessions, but never treats them as a prerequisite for this new id.
+        synchronized(this) { startAfterRecovery(requestedMs, requestedOptions, startSource, commandId) }
+    }
+    private fun startAfterRecovery(requestedMs: Long?, requestedOptions: JSONObject?, startSource: String, commandId: String?): JSONObject {
         val defaults = defaults()
         owner = defaults.opt("accountDid")?.takeUnless { it == JSONObject.NULL }?.toString()?.takeIf { it.isNotEmpty() }
         transitionGen = defaults.optLong("transitionGen")
@@ -167,6 +170,7 @@ class CaptureEngine private constructor(private val context: Context) {
         try { acquire {
             sequence!!.firstInput(gen)
         } } catch (e: Exception) {
+            library.closeSession(newId)
             id = null; intent = "stopped"; state = "idle"; throw e
         }
         main.removeCallbacks(limitTick); main.postDelayed(limitTick, 1000)
@@ -210,6 +214,7 @@ class CaptureEngine private constructor(private val context: Context) {
                 if (!silenced && silencedAt != 0L) { closeSilence(current); state = "recording"; reason = null; publishState() }
             }
         }, { error ->
+            if (error.startsWith("read_") && input?.inputStopped == true) return@AudioCapture
             if (error == "writer_stalled") {
                 journalLiveTransition(current, "span_open", JSONObject().put("kind", "omitted").put("reason", "writer_stalled"))
             } else if (error == "writer_resumed") {
@@ -340,8 +345,9 @@ class CaptureEngine private constructor(private val context: Context) {
                 availability = "available"
                 if (wasPaused) sequence!!.resumeAcquired(gen, at)
                 else {
-                    val omittedReason = openSpan?.optString("reason") ?: "read_error"
-                    sequence!!.restartAfterInterruption(omittedReason, gen, at)
+                    val omittedReason = openSpan?.takeIf { it.optString("kind") == "omitted" }?.optString("reason")
+                    if (omittedReason != null) sequence!!.restartAfterInterruption(omittedReason, gen, at)
+                    else sequence!!.resumeAcquired(gen, at)
                     closeOmittedInMemory(at)
                 }
             })
@@ -375,20 +381,32 @@ class CaptureEngine private constructor(private val context: Context) {
                 input = null
             }
         }
-        if (captureFailure == null) {
-            try { encoder?.finish() } catch (e: Exception) { captureFailure = e; Log.e("ExoCapture", "Encoder finish failed", e) }
+        var finalReason = reason
+        val note = try {
+            if (captureFailure == null) {
+                try { encoder?.finish() } catch (e: Exception) { captureFailure = e; Log.e("ExoCapture", "Encoder finish failed", e) }
+            }
+            if (captureFailure != null) encoder?.abort()
+            encoder = null
+            closeSilence(current)
+            closeOmitted(current, System.currentTimeMillis())
+            gen++; intent = "stopped"
+            if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
+            val at = System.currentTimeMillis()
+            finalReason = if (captureFailure != null) "write_failed" else reason
+            sequence!!.stop(finalReason, at)
+            library.commit(current, { RecordingFinalizer.mux(library.session(current), it) },
+                metrics = JSONObject().put("silencedMs", silencedMs).put("silencedEvents", silencedEvents).put("noSignalMs", noSignalMs))
+        } catch (e: Exception) {
+            try { encoder?.abort() } catch (abort: Exception) { Log.e("ExoCapture", "AAC abort after failed Stop", abort) }
+            encoder = null
+            gen++; intent = "stopped"
+            library.closeSession(current)
+            state = "needs_user"; this.reason = "write_failed"; availability = "blocked"
+            main.removeCallbacks(limitTick)
+            publishState()
+            throw e
         }
-        if (captureFailure != null) encoder?.abort()
-        encoder = null
-        closeSilence(current)
-        closeOmitted(current, System.currentTimeMillis())
-        gen++; intent = "stopped"
-        if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
-        val at = System.currentTimeMillis()
-        val finalReason = if (captureFailure != null) "write_failed" else reason
-        sequence!!.stop(finalReason, at)
-        val note = library.commit(current, { RecordingFinalizer.mux(library.session(current), it) },
-            metrics = JSONObject().put("silencedMs", silencedMs).put("silencedEvents", silencedEvents).put("noSignalMs", noSignalMs))
         id = null; state = "idle"; this.reason = if (finalReason == "user") null else finalReason
         main.removeCallbacks(limitTick)
         publishState(); emit("committed", note)
