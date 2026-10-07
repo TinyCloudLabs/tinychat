@@ -1,4 +1,4 @@
-//! The three webview commands. Each is declared in build.rs's AppManifest and
+//! The four webview commands. Each is declared in build.rs's AppManifest and
 //! granted only by `capabilities-transcription/transcription.json`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, State};
 use super::client::{self, CreateRequest};
 use super::origins;
 use super::reader::{ensure_unchanged, sha256_hex};
-use super::registry::Capture;
+use super::registry::{self, Capture};
 use super::{CloudError, CloudState, UPLOAD_PROGRESS_EVENT};
 
 #[derive(Serialize)]
@@ -151,6 +151,44 @@ pub fn cloud_transcription_cancel(
         capture.abort_upload();
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reopened {
+    pub capture_handle: String,
+    pub size_bytes: u64,
+    pub format: &'static str,
+}
+
+/// A new handle for a stopped cloud-bound session's recording that native no
+/// longer holds (Exo relaunched, or the handle was released). The webview
+/// names only the session id: the file is looked up inside `vault/sessions`
+/// with the registry's `openat` + `O_NOFOLLOW` walk, and only `cloud-`
+/// sessions can be re-opened ([`registry::reopen_capture`]).
+#[tauri::command]
+pub fn cloud_transcription_reopen(
+    app: AppHandle,
+    state: State<'_, CloudState>,
+    session_id: String,
+) -> Result<Reopened, CloudError> {
+    use tauri_plugin_settings::SettingsPluginExt;
+
+    origins::ptx_upload_origin()?;
+    let vault = app
+        .settings()
+        .vault_base()
+        .map_err(|e| CloudError::new("capture_not_available", format!("vault directory: {e}")))?;
+    let sessions_dir = std::path::Path::new(vault.as_str()).join("sessions");
+    let opened = registry::reopen_capture(&sessions_dir, &session_id)
+        .map_err(|r| CloudError::new(r.code, r.message))?;
+    let size_bytes = opened.stamp.size;
+    let format = opened.format.as_str();
+    Ok(Reopened {
+        capture_handle: state.registry.insert(Capture::new(opened)),
+        size_bytes,
+        format,
+    })
 }
 
 /// `exo://cloud-upload-progress` for this handle, at most 4 per second (plus the last).

@@ -53,6 +53,8 @@ import {
   createLocalTranscriptSaver,
   KeptRecordingError,
   localStorageKeptRecordingStore,
+  localStoragePendingCloudStore,
+  unfinishedTranscriptOwners,
   normalizeLocalTranscript,
   LOCAL_KEPT_RECORDING_KEY,
   LOCAL_MEETING_SOURCE,
@@ -70,6 +72,7 @@ import {
   type OnDeviceTranscriptResult,
 } from "./localTranscriber";
 import { transcriptKvKey } from "./connectors/connectorStore";
+import { legacyPendingCloudStore, PRIVATE_CLOUD_PENDING_KEY, type PendingCloudJob } from "./privateCloud";
 import type {
   CaptureLifecycleEvent,
   TranscriptionEvent,
@@ -1360,6 +1363,55 @@ describe("kept on-device recordings across a relaunch", () => {
   });
 });
 
+describe("private cloud pending records in localStorage", () => {
+  test("are keyed per account; the old shared key is read only as the legacy record", () => {
+    const items = new Map<string, string>();
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (k: string) => items.get(k) ?? null,
+        setItem: (k: string, v: string) => void items.set(k, v),
+        removeItem: (k: string) => void items.delete(k),
+      },
+    });
+    try {
+      const record: PendingCloudJob = {
+        attemptId: "7d0b6f0e-3c1a-4b8e-9f2d-5a6b7c8d9e0f",
+        transcriptionId: null,
+        sessionId: "cloud-1",
+        startedAt: "2026-10-05T09:00:00.000Z",
+        language: "en",
+        audioPath: "/vault/sessions/cloud-1/audio.mp3",
+        submitted: false,
+      };
+      const a = localStoragePendingCloudStore(ACCOUNT_A);
+      a.write(record);
+      expect(JSON.parse(items.get(`${PRIVATE_CLOUD_PENDING_KEY}:${ACCOUNT_A}`)!)).toEqual(record);
+      expect(a.read()).toEqual(record);
+      // Another account neither sees nor clears it.
+      const b = localStoragePendingCloudStore(ACCOUNT_B);
+      expect(b.read()).toBeNull();
+      b.clear();
+      expect(a.read()).toEqual(record);
+      // The pre-TC-772 shared key is not any account's record.
+      expect(items.has(PRIVATE_CLOUD_PENDING_KEY)).toBe(false);
+      items.set(
+        PRIVATE_CLOUD_PENDING_KEY,
+        JSON.stringify({ attemptId: "a-1", transcriptionId: "trn_1", sessionId: "cloud-0", startedAt: "2026-10-01T09:00:00.000Z", language: "en" }),
+      );
+      expect(b.read()).toBeNull();
+      // It was written as its upload began, and knew no audio path.
+      expect(legacyPendingCloudStore.read()).toMatchObject({ sessionId: "cloud-0", audioPath: "", submitted: true });
+      a.clear();
+      expect(items.has(`${PRIVATE_CLOUD_PENDING_KEY}:${ACCOUNT_A}`)).toBe(false);
+    } finally {
+      if (original) Object.defineProperty(globalThis, "localStorage", original);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+});
+
 describe("kept on-device recordings: accounts, closed views and saves in flight", () => {
   test("another account is never offered a kept recording, nor blocked by it; its owner is offered it on return", async () => {
     const kept = memoryKept();
@@ -1440,8 +1492,25 @@ describe("kept on-device recordings: accounts, closed views and saves in flight"
     bridge.emitTranscription(completedEvent(sessionId));
     const result = (await transcribing) as OnDeviceTranscriptResult;
     expect(result).toMatchObject({ sessionId, model: "QuantizedSmallEn" });
+    expect(unfinishedTranscriptOwners(bridge)).toBe(1);
     next.finishOnDeviceTranscript(result);
     expect(kept.value).toBeNull();
+    expect(unfinishedTranscriptOwners(bridge)).toBe(0);
+  });
+
+  test("a recording is kept under the account that started it, even if another signs in before the view closes", async () => {
+    const kept = memoryKept();
+    let signedIn = ACCOUNT_A;
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge, keptOptions(kept, () => signedIn));
+    const { sessionId } = await closed.start({ model: "QuantizedSmallEn", language: "en" });
+    signedIn = ACCOUNT_B;
+    const closing = closed.stopCaptureOnUnmount();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await closing;
+    expect(kept.value).toMatchObject({ sessionId });
+    expect(kept.records.get(ACCOUNT_B)).toBeUndefined();
   });
 
   test("closing the view keeps a partial recording too, but nothing when capture left no audio file", async () => {

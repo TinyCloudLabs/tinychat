@@ -30,7 +30,9 @@ export type TranscriptionEngine = "on-device" | "private-cloud";
 
 export const ENGINE_STORAGE_KEY = "exo.transcriber.engine";
 export const PRIVATE_CLOUD_CONSENT_KEY = "exo.transcriber.privateCloudConsent";
-/** The one cloud job this Mac is waiting on, so a relaunch can finish it. */
+/** Each account's private cloud recording this Mac has not saved yet, so a
+ *  relaunch can finish it. Suffixed with the account's DID (accountStorageKey);
+ *  the bare key is the pre-TC-772 record shared by every account. */
 export const PRIVATE_CLOUD_PENDING_KEY = "exo.transcriber.privateCloudPending";
 
 export const PRIVATE_CLOUD_BASE_PATH = "/api/transcriber/private-cloud";
@@ -831,6 +833,12 @@ export interface CaptureReadyEvent {
   error?: { code: string; message: string };
 }
 
+export interface ReopenedCapture {
+  captureHandle: string;
+  sizeBytes: number;
+  format: string;
+}
+
 export interface UploadProgressEvent {
   captureHandle: string;
   sentBytes: number;
@@ -852,6 +860,10 @@ export interface PrivateCloudNative {
   submit(args: PrivateCloudSubmitArgs): Promise<{ transcriptionId: string; status: string | null }>;
   /** Abort an upload in flight and release the handle; the recording stays on disk. */
   cancel(captureHandle: string): Promise<void>;
+  /** A new handle for a stopped `cloud-` session's recording that native no
+   *  longer holds (a relaunch, or a released handle). Native finds the file
+   *  inside its own sessions folder; the webview names no path. */
+  reopen(sessionId: string): Promise<ReopenedCapture>;
   onCaptureReady(cb: (e: CaptureReadyEvent) => void): Promise<Unlisten>;
   onUploadProgress(cb: (e: UploadProgressEvent) => void): Promise<Unlisten>;
 }
@@ -884,6 +896,7 @@ export async function loadPrivateCloudNative(): Promise<PrivateCloudNative> {
     status: () => call("cloud_transcription_status"),
     submit: (args) => call("cloud_transcription_submit", { ...args }),
     cancel: (captureHandle) => call("cloud_transcription_cancel", { captureHandle }),
+    reopen: (sessionId) => call("cloud_transcription_reopen", { sessionId }),
     onCaptureReady: (cb) => listen<CaptureReadyEvent>("exo://capture-ready", (e) => cb(e.payload)),
     onUploadProgress: (cb) => listen<UploadProgressEvent>("exo://cloud-upload-progress", (e) => cb(e.payload)),
   };
@@ -933,12 +946,23 @@ export function hasPrivateCloudConsent(): boolean {
 
 // ── Pending job (relaunch) ─────────────────────────────────────────────
 
+/** A private cloud recording not yet saved: written at Stop (or when its view
+ *  closes mid-recording), before any upload, and kept until its transcript is
+ *  saved or it is discarded. */
 export interface PendingCloudJob {
+  /** The create call's Idempotency-Key, reused by every upload of this recording. */
   attemptId: string;
+  /** Null until the backend names the job (no upload has been accepted yet). */
   transcriptionId: string | null;
   sessionId: string;
   startedAt: string;
   language: string;
+  /** The recording's audio file, for "Transcribe on this Mac"; "" when unknown
+   *  (a record from before TC-772). Uploads re-open it by session id instead. */
+  audioPath: string;
+  /** An upload was started with `attemptId`, so a job may exist even while
+   *  `transcriptionId` is null (its create answer was lost). */
+  submitted: boolean;
 }
 
 /** One JSON record kept across relaunches (a job or recording Exo must not forget). */
@@ -981,7 +1005,8 @@ export function localStorageRecordStore<T>(key: string, parse: (v: Record<string
   };
 }
 
-export const localStoragePendingCloudStore: PendingCloudStore = localStorageRecordStore(PRIVATE_CLOUD_PENDING_KEY, (v) => {
+/** A pending record as stored, or null when malformed. */
+export function parsePendingCloudJob(v: Record<string, unknown>): PendingCloudJob | null {
   if (typeof v.attemptId !== "string" || typeof v.sessionId !== "string" || typeof v.startedAt !== "string") return null;
   return {
     attemptId: v.attemptId,
@@ -989,5 +1014,16 @@ export const localStoragePendingCloudStore: PendingCloudStore = localStorageReco
     sessionId: v.sessionId,
     startedAt: v.startedAt,
     language: typeof v.language === "string" ? v.language : "en",
+    audioPath: typeof v.audioPath === "string" ? v.audioPath : "",
+    // Before TC-772 a record was written only as its upload started.
+    submitted: typeof v.submitted === "boolean" ? v.submitted : true,
   };
-});
+}
+
+/** The record under the old key shared by every account (before TC-772). It
+ *  names no account, so only the account whose backend can read its job
+ *  adopts it (localTranscriber's legacy migration). */
+export const legacyPendingCloudStore: PendingCloudStore = localStorageRecordStore(
+  PRIVATE_CLOUD_PENDING_KEY,
+  parsePendingCloudJob,
+);
