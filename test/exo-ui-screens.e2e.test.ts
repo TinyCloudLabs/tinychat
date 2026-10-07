@@ -281,7 +281,26 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   }, 60_000);
 
   afterAll(async () => {
-    for (const browser of browsers) await browser.close();
+    // A dead Chromium DevTools pipe can leave close() pending after every
+    // capture passed. Bound cleanup so it cannot hide the screen results.
+    await Promise.all(browsers.map(async (browser) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          browser.close(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              console.warn("exo-ui: browser close timed out");
+              resolve();
+            }, 10_000);
+          }),
+        ]);
+      } catch (caught) {
+        console.warn("exo-ui: browser close failed", caught);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }));
     server?.stop(true);
     writeFileSync(`${outDir}report.json`, JSON.stringify({ engine: engineName, motion, captures }, null, 2));
     writeFileSync(`${outDir}index.html`, contactSheet(captures));
