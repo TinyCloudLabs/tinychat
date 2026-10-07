@@ -1,0 +1,81 @@
+package xyz.tinycloud.exo.capture
+
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import xyz.tinycloud.exo.capture.core.BITRATE
+import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
+import java.nio.ByteBuffer
+
+/** A single AAC-LC encoder; output is raw access units with ADTS headers. */
+class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
+    private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+    private val info = MediaCodec.BufferInfo()
+    private var samples = 0L
+    init {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, 1)
+        format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8192)
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        codec.start()
+    }
+    fun offer(pcm: ByteArray, size: Int) {
+        var offset = 0
+        while (offset < size) {
+            val slot = codec.dequeueInputBuffer(10_000)
+            if (slot < 0) { drain(false); continue }
+            val input = codec.getInputBuffer(slot)!!
+            input.clear()
+            val count = minOf(input.remaining() and -2, size - offset)
+            if (count == 0) throw IllegalStateException("AAC input buffer cannot hold a sample")
+            input.put(pcm, offset, count)
+            codec.queueInputBuffer(slot, 0, count, samples * 1_000_000L / SAMPLE_RATE, 0)
+            samples += count / 2
+            offset += count
+            drain(false)
+        }
+    }
+    fun finish() {
+        val slot = codec.dequeueInputBuffer(1_000_000)
+        if (slot >= 0) codec.queueInputBuffer(slot, 0, 0, samples * 1_000_000L / SAMPLE_RATE, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+        drain(true)
+        codec.stop(); codec.release()
+    }
+    fun abort() { codec.stop(); codec.release() }
+    private fun drain(final: Boolean) {
+        var tries = 0
+        while (true) {
+            val index = codec.dequeueOutputBuffer(info, if (final) 100_000 else 0)
+            if (index == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (!final) return
+                if (++tries >= 20) throw IllegalStateException("AAC encoder did not finish")
+                continue
+            }
+            if (index < 0) continue
+            val end = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+            if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                val buffer = codec.getOutputBuffer(index)!!
+                buffer.position(info.offset); buffer.limit(info.offset + info.size)
+                val payload = ByteArray(info.size)
+                buffer.get(payload)
+                onFrame(adts(payload))
+            }
+            codec.releaseOutputBuffer(index, false)
+            if (end) return
+        }
+    }
+    private fun adts(data: ByteArray): ByteArray {
+        val length = data.size + 7
+        require(length <= 8191) { "AAC frame too large" }
+        val out = ByteArray(length)
+        out[0] = 0xff.toByte(); out[1] = 0xf1.toByte()
+        out[2] = ((1 shl 6) or (4 shl 2) or 0).toByte() // AAC-LC, 44100 Hz, mono
+        out[3] = ((1 shl 6) or (length shr 11)).toByte()
+        out[4] = ((length shr 3) and 0xff).toByte()
+        out[5] = (((length and 7) shl 5) or 0x1f).toByte()
+        out[6] = 0xfc.toByte()
+        System.arraycopy(data, 0, out, 7, data.size)
+        return out
+    }
+}
