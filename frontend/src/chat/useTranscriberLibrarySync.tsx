@@ -4,6 +4,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createTranscriberClient, type TranscriberClient, type TranscriberMeeting, type TranscriberTranscript } from "@/lib/transcriberApi";
 import { listSavedTranscriberMeetingIds, saveTranscriberMeeting } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
+import { secretsAvailable } from "@/lib/openkeyNative";
 import { enqueueDrainWork } from "./useBackgroundDrain";
 
 export type TranscriberSaveState = "saving" | "saved" | "error";
@@ -60,8 +61,11 @@ export function useTranscriberLibrarySync(input: {
   useEffect(() => {
     let cancelled = false;
     setSaved({});
+    // This sync writes the user's space but never touches the vault; on native
+    // OpenKey sessions the secrets check is skipped rather than blocking a
+    // write path that works fine without it.
     const isCurrent = () => enabled && !cancelled && !!sessionStore.getToken()
-      && !sessionStore.isExpired() && isSecretsUnlocked(tcw);
+      && !sessionStore.isExpired() && (secretsAvailable() ? isSecretsUnlocked(tcw) : true);
     const run = () => {
       if (!isCurrent() || running.current) return;
       running.current = true;

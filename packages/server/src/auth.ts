@@ -11,7 +11,8 @@ export interface NonceEntry {
 }
 
 export interface NonceStore {
-  generate(address: string): string;
+  /** Omit `address` for an unbound nonce: the /verify call binds it to the recovered signer. */
+  generate(address?: string): string;
   validate(address: string, nonce: string): boolean;
 }
 
@@ -28,7 +29,8 @@ const NONCE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  *
  * Nonces are:
  * - Cryptographically random (32 bytes hex)
- * - Bound to a specific address
+ * - Bound to a specific address, or unbound (native sign-in: the delegation's
+ *   address isn't known until OpenKey signs; the nonce is bound at /verify)
  * - Single-use (deleted after validation)
  * - Short-lived (5 minute TTL)
  */
@@ -46,9 +48,17 @@ export function createNonceStore(): NonceStore {
   }, 60_000);
   cleanupInterval.unref();
 
+  const tryConsume = (key: string): boolean => {
+    const entry = store.get(key);
+    if (!entry) return false;
+    // Delete immediately — single use
+    store.delete(key);
+    return Date.now() - entry.createdAt <= NONCE_TTL_MS;
+  };
+
   return {
-    generate(address: string): string {
-      const normalizedAddress = address.toLowerCase();
+    generate(address?: string): string {
+      const normalizedAddress = address?.toLowerCase() ?? "";
       const nonce = randomBytes(32).toString("hex");
       const key = `${normalizedAddress}:${nonce}`;
 
@@ -63,20 +73,9 @@ export function createNonceStore(): NonceStore {
 
     validate(address: string, nonce: string): boolean {
       const normalizedAddress = address.toLowerCase();
-      const key = `${normalizedAddress}:${nonce}`;
-      const entry = store.get(key);
-
-      if (!entry) return false;
-
-      // Delete immediately — single use
-      store.delete(key);
-
-      // Check TTL
-      if (Date.now() - entry.createdAt > NONCE_TTL_MS) {
-        return false;
-      }
-
-      return true;
+      // An unbound nonce validates under the address the SIWE recovered; the
+      // address embedded in the message is what the backend session binds to.
+      return tryConsume(`${normalizedAddress}:${nonce}`) || tryConsume(`:${nonce}`);
     },
   };
 }
