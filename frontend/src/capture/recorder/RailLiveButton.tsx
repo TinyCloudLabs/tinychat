@@ -12,8 +12,9 @@ export function RailLiveButtonView(props: { recorder: RecorderValue; className?:
   const { recorder } = props;
   const state = islandState(recorder);
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
+  const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
   const label =
-    state === "live" ? "Recording. Open recorder" : state === "saving" ? "Saving. Open recorder" : state === "landed" ? "Saved. Open recorder" : "Not saved yet. Open recorder";
+    state === "live" ? `${paused ? "Paused" : "Recording"}. Open recorder` : state === "saving" ? "Saving. Open recorder" : state === "landed" ? "Saved. Open recorder" : "Not saved yet. Open recorder";
   return (
     <button
       type="button"
@@ -27,12 +28,12 @@ export function RailLiveButtonView(props: { recorder: RecorderValue; className?:
       )}
     >
       {state === "live" && (
-        <span className={cn("size-2.5 rounded-full", warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
+        <span className={cn("size-2.5 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
       )}
       {state === "saving" && <Loader2Icon className="size-4 animate-spin text-muted-foreground" aria-hidden="true" />}
       {state === "landed" && <CheckIcon className="size-4 text-primary" aria-hidden="true" />}
       {state === "failed" && <AlertCircleIcon className="size-4 text-warning" aria-hidden="true" />}
-      {state === "live" && <RecorderTimer startedAt={recorder.startedAt} className="text-label" />}
+      {state === "live" && <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="text-label" />}
     </button>
   );
 }

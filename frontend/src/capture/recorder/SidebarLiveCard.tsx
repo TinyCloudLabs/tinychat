@@ -13,6 +13,7 @@ export function SidebarLiveCardView(props: { recorder: RecorderValue; className?
   const { recorder } = props;
   const state = islandState(recorder);
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
+  const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
   return (
     <div
       data-testid="sidebar-live"
@@ -22,9 +23,9 @@ export function SidebarLiveCardView(props: { recorder: RecorderValue; className?
       <p role="status" className="flex min-w-0 flex-1 items-center gap-2 text-callout">
         {state === "live" && (
           <>
-            <span className={cn("size-2.5 shrink-0 rounded-full", warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
-            <RecorderTimer startedAt={recorder.startedAt} className="font-semibold" />
-            <span className="sr-only">{warning ? "Recording, mic problem" : "Recording"}</span>
+            <span className={cn("size-2.5 shrink-0 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live motion-safe:animate-live-pulse")} aria-hidden="true" />
+            <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} className="font-semibold" />
+            <span className="sr-only">{paused ? "Paused" : warning ? "Recording, mic problem" : "Recording"}</span>
           </>
         )}
         {state === "saving" && (

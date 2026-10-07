@@ -2,7 +2,7 @@
 // (voiceNoteRecorderController.ts) per signed-in session, its listeners
 // attached while mounted. RecorderProvider calls this exactly once; every
 // recorder view reads it through useRecorder().
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -15,7 +15,7 @@ import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController
 
 export interface VoiceNoteRecorderOptions {
   tcw: TinyCloudWeb;
-  /** False turns the recorder off for this session (local validation). Read once. */
+  /** False turns the recorder off until the session's native defaults are set. */
   enabled?: boolean;
   backendUrl?: string;
   sessionStore?: SessionStore;
@@ -31,17 +31,20 @@ export interface VoiceNoteRecorder {
   transcription: VoiceNoteTranscriptionProps | undefined;
   record(): void;
   stop(): void;
+  pause(): void;
+  resume(): void;
   /** Stop the live recording and delete it; nothing is saved. */
   discard(): void;
   retryPending(): void;
   /** The receipt was read. */
   dismissOutcome(): void;
+  setOnPresent(onPresent: (() => void) | undefined): void;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
 export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
-  const [available] = useState(() => enabled && nativeVoiceNotesAvailable());
+  const available = enabled && nativeVoiceNotesAvailable();
 
   // Private cloud transcription for this account (null without one), shared across mounts.
   const transcriber = useMemo(
@@ -70,9 +73,12 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       transcription: transcriptionProps(transcriber, snapshot),
       record: () => void controller.record(),
       stop: () => void controller.stop(),
+      pause: () => void controller.pause(),
+      resume: () => void controller.resume(),
       discard: () => void controller.discard(),
       retryPending: () => void controller.retryPending(),
       dismissOutcome: controller.dismissOutcome,
+      setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
     }),
     [available, controller, pending, snapshot, state, transcriber],

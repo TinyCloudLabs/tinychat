@@ -8,10 +8,13 @@ interface MeetingAudioPlayerProps {
    * Reads the stored audio. The caller owns serializing it with its other
    * storage reads; `onProgress` reports bytes read so far.
    */
-  load: (
+  load?: (
     signal: AbortSignal,
     onProgress: (loadedBytes: number, totalBytes: number) => void,
   ) => Promise<Blob | null>;
+  /** A local native file URL. It is handed straight to the audio element. */
+  url?: string;
+  onPlayingChange?: (playing: boolean) => void;
 }
 
 export type PlayerState =
@@ -27,20 +30,29 @@ export type PlayerState =
  * Unmounting (closing the meeting) aborts an in-flight read and releases the
  * object URL.
  */
-export function MeetingAudioPlayer({ load }: MeetingAudioPlayerProps) {
+export function MeetingAudioPlayer({ load, url, onPlayingChange }: MeetingAudioPlayerProps) {
   const [state, setState] = useState<PlayerState>({ phase: "idle" });
   const controllerRef = useRef<AbortController | null>(null);
   const urlRef = useRef<string | null>(null);
+  const onPlayingChangeRef = useRef(onPlayingChange);
+  onPlayingChangeRef.current = onPlayingChange;
 
   useEffect(
     () => () => {
       controllerRef.current?.abort();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      onPlayingChangeRef.current?.(false);
     },
     [],
   );
 
   const onPlay = useCallback(async () => {
+    if (url) {
+      onPlayingChange?.(true);
+      setState({ phase: "ready", url });
+      return;
+    }
+    if (!load) return;
     const controller = new AbortController();
     controllerRef.current = controller;
     setState({ phase: "loading", percent: null });
@@ -61,15 +73,16 @@ export function MeetingAudioPlayer({ load }: MeetingAudioPlayerProps) {
     } catch {
       if (!controller.signal.aborted) setState({ phase: "failed" });
     }
-  }, [load]);
+  }, [load, onPlayingChange, url]);
 
-  return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} />;
+  return <MeetingAudioPlayerView state={state} onPlay={() => void onPlay()} onPlayingChange={onPlayingChange}
+    onError={() => { onPlayingChange?.(false); setState({ phase: "failed" }); }} />;
 }
 
 /** What the player shows in each state (rendered on the server in the tests). */
-export function MeetingAudioPlayerView({ state, onPlay }: { state: PlayerState; onPlay: () => void }) {
+export function MeetingAudioPlayerView({ state, onPlay, onPlayingChange, onError }: { state: PlayerState; onPlay: () => void; onPlayingChange?: (playing: boolean) => void; onError?: () => void }) {
   if (state.phase === "ready") {
-    return <audio controls autoPlay src={state.url} className="h-11 w-full" data-testid="note-audio-player" />;
+    return <audio controls autoPlay src={state.url} onPlay={() => onPlayingChange?.(true)} onPause={() => onPlayingChange?.(false)} onEnded={() => onPlayingChange?.(false)} onError={onError} className="h-11 w-full" data-testid="note-audio-player" />;
   }
   if (state.phase === "loading") {
     return (

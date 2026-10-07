@@ -9,11 +9,12 @@ import { RecorderTimer } from "./RecorderTimer";
 export function HeaderLiveChipView(props: { recorder: RecorderValue; className?: string }) {
   const { recorder } = props;
   const warning = recorder.phase === "recording" && micWarning(recorder.mic) !== null;
+  const paused = recorder.phase === "recording" && (recorder.mic.state === "paused" || recorder.mic.state === "interrupted" || recorder.mic.state === "needs_user");
   return (
     <button
       type="button"
       onClick={recorder.openSheet}
-      aria-label="Recording. Open recorder"
+      aria-label={`${paused ? "Paused" : "Recording"}. Open recorder`}
       data-testid="header-live-chip"
       className={cn(
         "tap-transparent hidden h-11 shrink-0 items-center px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [html[data-keyboard=open]_&]:inline-flex",
@@ -21,8 +22,8 @@ export function HeaderLiveChipView(props: { recorder: RecorderValue; className?:
       )}
     >
       <span className="flex h-8 items-center gap-1.5 rounded-full bg-surface-2 px-3 text-meta font-semibold">
-        <span className={cn("size-2 rounded-full", warning ? "bg-warning" : "bg-live")} aria-hidden="true" />
-        <RecorderTimer startedAt={recorder.startedAt} />
+        <span className={cn("size-2 rounded-full", paused ? "bg-muted-foreground" : warning ? "bg-warning" : "bg-live")} aria-hidden="true" />
+        <RecorderTimer startedAt={recorder.startedAt} audioMs={recorder.audioMs} running={!paused && recorder.phase === "recording"} />
       </span>
     </button>
   );

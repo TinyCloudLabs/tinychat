@@ -19,7 +19,7 @@ mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
   saveVoiceNote: (...args: Parameters<typeof realStore.saveVoiceNote>) => (fakeVoiceNoteStore.save ?? realStore.saveVoiceNote)(...args),
 }));
 const { createVoiceNoteRecorderController } = await import("./voiceNoteRecorderController");
-const { isDiscarded } = await import("@/lib/voiceNotes/recorderSaves");
+const { isDiscarded, saveRecording } = await import("@/lib/voiceNotes/recorderSaves");
 
 const tcw = {} as TinyCloudWeb;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -32,10 +32,12 @@ let noted: string[];
 // The save guards are module-wide and outlive a test: every recording gets its own id.
 let serial = 0;
 let currentId: string | null = null;
+let paused = false;
 
 async function stopNatively(): Promise<VoiceNoteRecording> {
   const recording = { ...(await fake.plugin.stop()), id: currentId! };
   currentId = null;
+  paused = false;
   onPhone.push(recording);
   return recording;
 }
@@ -49,6 +51,8 @@ function earlier(): VoiceNoteRecording {
 
 /** deleteAudio calls that fail before the phone lets a copy go. */
 let deleteFailures: number;
+let deleteCalls: number;
+let nativeDiscards: number;
 
 function controller() {
   return createVoiceNoteRecorderController({
@@ -74,6 +78,8 @@ beforeEach(() => {
   noted = [];
   currentId = null;
   deleteFailures = 0;
+  deleteCalls = 0;
+  nativeDiscards = 0;
   const plugin: VoiceNotesPlugin = {
     ...fake.plugin,
     async start(options) {
@@ -84,12 +90,24 @@ beforeEach(() => {
     stop: stopNatively,
     async status() {
       const status = await fake.plugin.status();
-      return { ...status, id: status.id === null ? null : currentId };
+      return { ...status, state: paused ? "paused" as const : status.state, id: status.id === null ? null : currentId, audioMs: 42_000 };
+    },
+    async pause() { paused = true; },
+    async resume() { paused = false; },
+    async discard() {
+      nativeDiscards++;
+      if (!currentId) throw Object.assign(new Error("Not recording"), { code: "not_recording" });
+      const id = currentId;
+      await fake.plugin.stop();
+      currentId = null;
+      onPhone = onPhone.filter((recording) => recording.id !== id);
+      return { id };
     },
     async listPending() {
       return { recordings: [...onPhone] };
     },
     async deleteAudio({ id }) {
+      deleteCalls++;
       if (deleteFailures > 0) {
         deleteFailures--;
         throw new Error("the file is busy");
@@ -112,9 +130,9 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
-  test("listeners: three while attached, none after teardown", async () => {
+  test("listeners: four while attached, none after teardown", async () => {
     const { detach } = await attached();
-    expect(fake.stats().active).toBe(3);
+    expect(fake.stats().active).toBe(4);
     detach();
     await tick();
     expect(fake.stats().active).toBe(0);
@@ -141,7 +159,77 @@ describe("voice-note recorder controller", () => {
 
     const second = await attached();
     expect(second.recorder.getState()).toMatchObject({ phase: "recording", recordingId: id });
-    expect(fake.stats().adds).toBe(6);
+    expect(fake.stats().adds).toBe(8);
+  });
+
+  test("Stop shows a phone receipt before cloud upload resolves", async () => {
+    let release!: () => void;
+    fakeVoiceNoteStore.save = async (_tcw, recording) => {
+      saves.push(recording.id);
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { ok: true, data: { inserted: true } } as never;
+    };
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.stop();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: "local" });
+    expect(onPhone).toHaveLength(1);
+    release();
+    await tick();
+    expect(recorder.getState().outcome).toBe("saved");
+    expect(onPhone).toHaveLength(1);
+    expect(deleteCalls).toBe(0);
+  });
+
+  test("an upload already in flight cannot erase the phone receipt", async () => {
+    let release!: () => void;
+    fakeVoiceNoteStore.save = async (_tcw, recording) => {
+      saves.push(recording.id);
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { ok: true, data: { inserted: true } } as never;
+    };
+    const { recorder } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    const competing = saveRecording(tcw, {
+      id, startedAt: 1, durationMs: 42_000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0,
+    });
+    await tick();
+    await recorder.stop();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: "local", lastSaved: { id } });
+    expect(saves).toEqual([id]);
+    release();
+    await competing;
+  });
+
+  test("Pause and Resume follow native state and keep audio time", async () => {
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.pause();
+    expect(recorder.getState()).toMatchObject({ phase: "recording", mic: { state: "paused" }, audioMs: 42_000 });
+    await recorder.resume();
+    expect(recorder.getState()).toMatchObject({ phase: "recording", mic: { state: "recording" }, audioMs: 42_000 });
+  });
+
+  test("presentRecorder opens only for the live native recording", async () => {
+    const { recorder } = await attached();
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    const emit = fake.emit as unknown as (event: string, payload: { id: string }) => void;
+    emit("presentRecorder", { id: "stale" });
+    await tick();
+    expect(presented).toBe(0);
+    await recorder.record();
+    emit("presentRecorder", { id: recorder.getState().recordingId! });
+    await tick();
+    expect(presented).toBe(1);
+    await recorder.stop();
+    emit("presentRecorder", { id: "stale" });
+    await tick();
+    expect(presented).toBe(1);
   });
 
   test("Stop racing the limit's auto-stop saves exactly once, whichever arrives first", async () => {
@@ -178,7 +266,7 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({ phase: "recording", recordingId: live, outcome: null, limitNotice: null });
     expect(saves).toEqual([old.id]);
     expect(noted).toEqual([old.id]);
-    expect(onPhone.map((recording) => recording.id)).toEqual([]);
+    expect(onPhone.map((recording) => recording.id)).toEqual([old.id]);
     expect(fake.stats().recording).toBe(true);
   });
 
@@ -196,7 +284,7 @@ describe("voice-note recorder controller", () => {
     const old = earlier();
     fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording: old });
     await tick();
-    expect(recorder.getState()).toMatchObject({ phase: "saving", recordingId: old.id });
+    expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: "local", lastSaved: { id: old.id } });
     // ...a second copy of the event (heard again after a remount) is not another save...
     fake.emit("autoStopped", { reason: "max_duration", maxDurationMs: 60_000, at: Date.now(), recording: old });
     await tick();
@@ -213,6 +301,7 @@ describe("voice-note recorder controller", () => {
     const { recorder } = await attached();
     await recorder.record();
     await recorder.stop();
+    await tick();
     const failed = recorder.getState();
     expect(failed.outcome).toBe("failed");
     expect(failed.failedRecording?.id).toBe(onPhone[0]?.id);
@@ -225,7 +314,7 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({ outcome: "saved", error: null, failedRecording: null });
     expect(recorder.getState().lastSaved?.id).toBe(failed.failedRecording!.id);
     expect(noted).toEqual([failed.failedRecording!.id]);
-    expect(onPhone).toEqual([]);
+    expect(onPhone.map((recording) => recording.id)).toEqual([failed.failedRecording!.id]);
   });
 
   test("discard stops the recording and deletes it; nothing is saved", async () => {
@@ -241,6 +330,8 @@ describe("voice-note recorder controller", () => {
     expect(onPhone).toEqual([]);
     expect(saves).toEqual([]);
     expect(noted).toEqual([]);
+    expect(nativeDiscards).toBe(1);
+    expect(deleteCalls).toBe(0);
   });
 
   test("discard racing the limit's auto-stop: discard first deletes it, the limit first saves it", async () => {
@@ -278,6 +369,7 @@ describe("voice-note recorder controller", () => {
     deleteFailures = 1;
     const { recorder } = await attached();
     await recorder.record();
+    await stopNatively();
     await recorder.discard();
     expect(recorder.getState()).toMatchObject({ phase: "idle", outcome: null, error: "Discarded, but this phone kept its copy: the file is busy" });
     const kept = onPhone[0]!;
@@ -287,5 +379,6 @@ describe("voice-note recorder controller", () => {
     expect(onPhone).toEqual([]);
     expect(saves).toEqual([]);
     expect(isDiscarded(kept.id)).toBe(false);
+    expect(deleteCalls).toBe(2);
   });
 });
