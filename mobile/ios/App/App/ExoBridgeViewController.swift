@@ -1,4 +1,6 @@
 import Capacitor
+import Darwin
+import ExoCapture
 import UIKit
 #if DEBUG
 import os
@@ -35,43 +37,32 @@ class ExoBridgeViewController: CAPBridgeViewController {
         const headers = (cap && cap.PluginHeaders) || [];
         const probe = {
           href: location.href,
-          readyState: document.readyState,
           platform: cap && cap.getPlatform ? cap.getPlatform() : null,
           mounted: !!root && root.childElementCount > 0,
           voiceNotesHeader: headers.some((h) => h.name === "VoiceNotes"),
           voiceNotesAvailable: !!(cap && cap.isPluginAvailable && cap.isPluginAvailable("VoiceNotes")),
           healthHeader: headers.some((h) => h.name === "Health"),
           locationAvailable: !!(cap && cap.isPluginAvailable && cap.isPluginAvailable("Location")),
-          title: document.title,
           // The web app's PWA service worker must never register in the shell (frontend/src/lib/pwa.ts).
           serviceWorkerDecision: document.documentElement.dataset.exoSw || null,
-          serviceWorkerRegistrations: navigator.serviceWorker ? (await navigator.serviceWorker.getRegistrations()).length : 0,
+          serviceWorkerRegistrations: navigator.serviceWorker ?
+            await Promise.race([navigator.serviceWorker.getRegistrations().then((items) => items.length),
+              new Promise((resolve) => setTimeout(() => resolve(-1), 2000))]) : 0,
         };
         if (probe.mounted && probe.voiceNotesHeader && cap.nativePromise) {
           const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000));
           try {
-            probe.voiceNotesStatus = await Promise.race([cap.nativePromise("VoiceNotes", "status", {}), timeout]);
+            const status = await Promise.race([cap.nativePromise("VoiceNotes", "status", {}), timeout]);
+            probe.voiceNotesStatus = { state: status.state, maxDurationMs: status.maxDurationMs };
           } catch (error) {
             probe.voiceNotesStatus = { error: String((error && error.message) || error) };
           }
           try {
-            const chunk = cap.nativePromise("VoiceNotes", "readAudioChunk", { id: "smoke-missing", offset: 0, length: 16 });
+            const chunk = cap.nativePromise("VoiceNotes", "readAudioChunk", { id: "00000000-0000-0000-0000-000000000001", offset: 0, length: 16 });
             probe.voiceNotesReadChunk = { resolved: await Promise.race([chunk, timeout]) };
           } catch (error) {
             probe.voiceNotesReadChunk = { code: (error && error.code) || null, error: String((error && error.message) || error) };
           }
-        }
-        // Health spike (TC-525), informational: the smoke test reports it but does not gate on it.
-        if (probe.mounted && probe.healthHeader && cap.nativePromise) {
-          const ask = async (method) => {
-            const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 5000));
-            try {
-              return await Promise.race([cap.nativePromise("Health", method, {}), timeout]);
-            } catch (error) {
-              return { error: String((error && error.message) || error), code: (error && error.code) || null };
-            }
-          };
-          probe.health = { availability: await ask("availability"), authorization: await ask("authorizationStatus") };
         }
         // Location spike (TC-524). Only the fields the smoke checks: unified logging truncates a line past about 1 KB.
         if (probe.mounted && probe.locationAvailable && cap.nativePromise) {
@@ -111,8 +102,25 @@ class ExoBridgeViewController: CAPBridgeViewController {
             guard line.contains(#""mounted":true"#) || lastAttempt else { return }
             self.smokeProbeTimer?.invalidate()
             self.smokeProbeTimer = nil
-            print("EXO_SMOKE \(line)")
-            Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_SMOKE \(line, privacy: .public)")
+            let publish: (String) -> Void = { value in
+                print("EXO_SMOKE \(value)")
+                fflush(stdout)
+                Logger(subsystem: "xyz.tinycloud.exo", category: "smoke").notice("EXO_SMOKE \(value, privacy: .public)")
+                if ProcessInfo.processInfo.environment["EXO_QUICK_ACTION_SMOKE"] == "cold_warm" {
+                    _ = AppLifecycleHooks.performShortcut(UIApplicationShortcutItem(
+                        type: "xyz.tinycloud.exo.record", localizedTitle: "Record"))
+                }
+            }
+            if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? [:]
+                    do { object["capture"] = try CaptureProbe.run() }
+                    catch { object["capture"] = ["error": String(describing: error)] }
+                    let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                    let result = data.map { String(decoding: $0, as: UTF8.self) } ?? line
+                    DispatchQueue.main.async { publish(result) }
+                }
+            } else { publish(line) }
             #if EXO_HEALTH
             self.startHealthProbe()
             #endif
