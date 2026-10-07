@@ -1,6 +1,11 @@
 import groovy.json.JsonSlurper
 
 apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+kotlin {
+    jvmToolchain(21)
+}
 
 // Release inputs, each a Gradle property (-PNAME=..., ~/.gradle/gradle.properties) or an environment variable of the
 // same name. CI sets them in .github/workflows/mobile-release-android.yml; see mobile/README.md, "Android release".
@@ -64,7 +69,15 @@ android {
         }
     }
     buildTypes {
+        debug {
+            ndk {
+                abiFilters 'arm64-v8a', 'x86_64'
+            }
+        }
         release {
+            ndk {
+                abiFilters 'arm64-v8a'
+            }
             if (signGradleRelease) {
                 signingConfig signingConfigs.release
             }
@@ -133,6 +146,7 @@ dependencies {
     implementation "androidx.health.connect:connect-client:$healthConnectClientVersion"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
     testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

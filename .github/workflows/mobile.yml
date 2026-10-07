@@ -72,9 +72,9 @@ jobs:
       - name: Sync Capacitor
         run: bun run --cwd mobile sync android
 
-      - name: Build debug APK
+      - name: Test and build debug APK
         working-directory: mobile/android
-        run: ./gradlew --no-daemon assembleDebug --console=plain
+        run: ./gradlew --no-daemon :app:testDebugUnitTest assembleDebug --console=plain
 
       - name: Upload APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
