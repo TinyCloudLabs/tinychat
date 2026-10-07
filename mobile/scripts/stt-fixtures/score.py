@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """DER with 250 ms collar, overlap scored, and timed word attribution."""
 import argparse
-import itertools
 import json
 import math
 from pathlib import Path
@@ -53,21 +52,27 @@ def frames(turns):
 def best_mapping(ref, hyp, ref_frames, hyp_frames):
     references = sorted({turn[2] for turn in ref})
     hypotheses = sorted({turn[2] for turn in hyp})
-    # The fixture has four speakers. Keep mapping exact and explicit.
-    if len(hypotheses) > 8:
-        raise ValueError("more than 8 hypothesis speakers")
     counts = {(h, r): 0 for h in hypotheses for r in references}
     for r, h in zip(ref_frames, hyp_frames):
         for hs in h:
             for rs in r:
                 counts[(hs, rs)] += 1
-    best, best_value = {}, -1
-    targets = references + [None] * max(0, len(hypotheses) - len(references))
-    for permutation in itertools.permutations(targets, len(hypotheses)):
-        score = sum(counts.get((hs, rs), 0) for hs, rs in zip(hypotheses, permutation) if rs is not None)
-        if score > best_value:
-            best, best_value = dict(zip(hypotheses, permutation)), score
-    return best
+    # Exact one-to-one assignment. Most extra local speakers remain unmatched.
+    states = {0: (0, {})}
+    for hypothesis in hypotheses:
+        next_states = {mask: (score, {**mapping, hypothesis: None})
+                       for mask, (score, mapping) in states.items()}
+        for mask, (score, mapping) in states.items():
+            for index, reference in enumerate(references):
+                bit = 1 << index
+                if mask & bit:
+                    continue
+                target = mask | bit
+                candidate = score + counts[(hypothesis, reference)]
+                if target not in next_states or candidate > next_states[target][0]:
+                    next_states[target] = candidate, {**mapping, hypothesis: reference}
+        states = next_states
+    return max(states.values(), key=lambda state: state[0])[1]
 
 
 def diarization_error(ref, ref_frames, hyp_frames, mapping):
