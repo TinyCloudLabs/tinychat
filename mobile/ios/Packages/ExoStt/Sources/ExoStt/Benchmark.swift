@@ -27,7 +27,7 @@ public enum SttBenchmark {
                 let result = try recognize(samples: samples, model: model, threads: threadCount)
                 let stem = threadCount == 4 ? name : "\(name)-t\(threadCount)"
                 try result.text.write(to: output.appendingPathComponent("\(stem).hyp.txt"), atomically: true, encoding: .utf8)
-                try writeJSON(result.words, to: output.appendingPathComponent("\(stem).words.json"))
+                var words = result.words
                 var metrics: [String: Any] = [
                     "fixture": name, "threads": threadCount, "audioSeconds": Double(samples.count) / 16_000,
                     "loadSeconds": result.loadSeconds, "decodeSeconds": result.decodeSeconds,
@@ -37,6 +37,7 @@ public enum SttBenchmark {
                 if name != "ls-1089-10m" {
                     let diar = try diarize(samples: samples, model: directory.appendingPathComponent("models/diarization"), threads: threadCount)
                     try diar.rttm.write(to: output.appendingPathComponent("\(stem).rttm"), atomically: true, encoding: .utf8)
+                    words = SpeakerAttribution.assign(words, turns: diar.turns)
                     metrics["diarizationSeconds"] = diar.seconds
                     metrics["maxWindowSeconds"] = diar.maxWindowSeconds
                     metrics["diarizationExtraFootprintBytes"] = diar.peakPhysFootprintBytes > result.peakPhysFootprintBytes
@@ -44,6 +45,7 @@ public enum SttBenchmark {
                 } else {
                     try "".write(to: output.appendingPathComponent("\(stem).rttm"), atomically: true, encoding: .utf8)
                 }
+                try writeJSON(words, to: output.appendingPathComponent("\(stem).words.json"))
                 let metricData = try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys])
                 try metricData.write(to: output.appendingPathComponent("\(stem).metrics.json"), options: .atomic)
                 summary.append(metrics)
@@ -117,6 +119,7 @@ public enum SttBenchmark {
         let seconds: Double
         let maxWindowSeconds: Double
         let peakPhysFootprintBytes: UInt64
+        let turns: [SpeakerTurn]
     }
 
     private static func diarize(samples: [Float], model: URL, threads: Int) throws -> Diarization {
@@ -135,6 +138,7 @@ public enum SttBenchmark {
         var maxWindow = 0.0
         var peak = footprint()
         var lines: [String] = []
+        var attributedTurns: [SpeakerTurn] = []
         let window = 60 * 16_000
         for offset in stride(from: 0, to: samples.count, by: window) {
             let began = CFAbsoluteTimeGetCurrent()
@@ -145,11 +149,13 @@ public enum SttBenchmark {
                 let origin = Double(offset) / 16_000
                 lines.append(String(format: "SPEAKER benchmark 1 %.3f %.3f <NA> <NA> speaker_%d <NA> <NA>",
                                     origin + Double(turn.start), Double(turn.end - turn.start), turn.speaker))
+                attributedTurns.append(.init(start: origin + Double(turn.start), end: origin + Double(turn.end),
+                                             speaker: "speaker_\(turn.speaker)"))
             }
         }
         return Diarization(rttm: lines.joined(separator: "\n") + "\n",
                            seconds: CFAbsoluteTimeGetCurrent() - start, maxWindowSeconds: maxWindow,
-                           peakPhysFootprintBytes: peak)
+                           peakPhysFootprintBytes: peak, turns: attributedTurns)
     }
 
     private static func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {

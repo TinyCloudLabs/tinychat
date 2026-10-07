@@ -17,4 +17,13 @@ final class TimedWordTests: XCTestCase {
         XCTAssertTrue(SttTiming.validate([.init(start: 0, end: 600, text: "ok")], duration: 600))
         XCTAssertFalse(SttTiming.validate([.init(start: 599, end: 601, text: "late")], duration: 600))
     }
+
+    func testSpeakerAttributionAcrossOverlapAndGap() {
+        let turns = [SpeakerTurn(start: 0, end: 2, speaker: "A"),
+                     SpeakerTurn(start: 1.5, end: 3, speaker: "B")]
+        let words = [TimedWord(start: 1.7, end: 1.9, text: "overlap"),
+                     TimedWord(start: 2.3, end: 2.5, text: "second"),
+                     TimedWord(start: 3.1, end: 3.2, text: "near")]
+        XCTAssertEqual(SpeakerAttribution.assign(words, turns: turns).map(\.speaker), ["A", "B", "B"])
+    }
 }

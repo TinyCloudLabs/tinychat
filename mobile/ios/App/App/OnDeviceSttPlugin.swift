@@ -16,7 +16,12 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func status(_ call: CAPPluginCall) {
         call.resolve([
-            "models": [],
+            "models": [
+                ["id": "parakeet-tdt-0.6b-v3-int8", "state": "absent", "bytes": 0, "totalBytes": 670_478_772, "error": NSNull()],
+                ["id": "parakeet-tdt-110m-en-int8", "state": "absent", "bytes": 0, "totalBytes": 136_490_421, "error": NSNull()],
+                ["id": "silero-vad", "state": "absent", "bytes": 0, "totalBytes": 643_854, "error": NSNull()],
+                ["id": "diarization", "state": "absent", "bytes": 0, "totalBytes": 31_137_484, "error": NSNull()]
+            ],
             "pack": ProcessInfo.processInfo.physicalMemory >= 6_000_000_000 ? "full" : "small",
             "autoDownload": false,
             "download": ["policy": "wifi", "state": "idle"],

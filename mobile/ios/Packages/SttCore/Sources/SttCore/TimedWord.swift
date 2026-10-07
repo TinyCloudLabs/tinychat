@@ -46,3 +46,26 @@ public enum SttTiming {
         words.allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end <= duration && $0.end >= $0.start }
     }
 }
+
+public enum SpeakerAttribution {
+    /// Uses the earlier-started floor holder when turns overlap.
+    public static func assign(_ words: [TimedWord], turns: [SpeakerTurn]) -> [TimedWord] {
+        let ordered = turns.sorted { $0.start == $1.start ? $0.speaker < $1.speaker : $0.start < $1.start }
+        var previous: String?
+        return words.map { word in
+            let middle = (word.start + word.end) / 2
+            let covering = ordered.first { $0.start <= middle && middle < $0.end }
+            let nearest = ordered.min { left, right in
+                distance(middle, to: left) < distance(middle, to: right)
+            }
+            let speaker = covering?.speaker ?? ((nearest.map { distance(middle, to: $0) <= 0.5 } ?? false)
+                ? nearest?.speaker : previous)
+            previous = speaker
+            return TimedWord(start: word.start, end: word.end, text: word.text, speaker: speaker)
+        }
+    }
+
+    private static func distance(_ time: Double, to turn: SpeakerTurn) -> Double {
+        max(turn.start - time, time - turn.end, 0)
+    }
+}
