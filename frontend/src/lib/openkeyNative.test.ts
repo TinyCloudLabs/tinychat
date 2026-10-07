@@ -26,6 +26,8 @@ import {
   isNativeOpenKeySignIn,
   logNativeOpenKeyError,
   nativeSessionWasActive,
+  isNativeStorageError,
+  resetNativeOpenKeyClientForTests,
   retireNativeSessionAtBoot,
   secretsAvailable,
   setNativeSessionActive,
@@ -37,6 +39,8 @@ import {
   NATIVE_SIGN_IN_NONCE_MESSAGE,
   NATIVE_SIGN_IN_SERVER_MESSAGE,
   NATIVE_SIGN_IN_SPACE_MESSAGE,
+  NATIVE_SIGN_IN_STORAGE_MESSAGE,
+  NATIVE_SIGN_OUT_STORAGE_WARNING,
   type NativeSignInDeps,
 } from "./openkeyNative";
 import APP_MANIFEST from "../../../manifest.json";
@@ -152,7 +156,10 @@ const config = {
   env: { VITE_OPENKEY_NATIVE_CLIENT_ID: "exo-native" },
 };
 
-afterEach(() => setNativeSessionActive(false));
+afterEach(() => {
+  setNativeSessionActive(false);
+  resetNativeOpenKeyClientForTests();
+});
 
 describe("native sign-in gate", () => {
   test("runs only on ios/android with the build flag", () => {
@@ -341,6 +348,7 @@ describe("signInNative", () => {
 
   test("save, activate, restore and verify failures all revoke the new grant", async () => {
     for (const failed of ["save", "activate", "restore", "verify"]) {
+      resetNativeOpenKeyClientForTests();
       const flow = makeFlow();
       if (failed === "save") flow.storage.save = async () => { throw new Error("secure store failed"); };
       if (failed === "activate") flow.deps.activateSession = async () => { throw new Error("activation failed"); };
@@ -354,11 +362,20 @@ describe("signInNative", () => {
     }
   });
 
-  test("revokes an existing SDK session before requesting a new nonce", async () => {
+  test("a failed new sign-in leaves an existing SDK session for the SDK to keep", async () => {
     const flow = makeFlow();
     flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
-    await signInNative(config, flow.deps);
-    expect(flow.order.slice(0, 2)).toEqual(["signOut", "nonce"]);
+    flow.openkey.signIn = async () => { throw new OpenKeyNativeError("ACCESS_DENIED", "denied"); };
+    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_DENIED_MESSAGE);
+    expect(flow.order).toEqual(["nonce"]);
+    expect(await flow.openkey.current()).not.toBeNull();
+  });
+
+  test("a failed immediate renewal is handled by the SDK without another revoke", async () => {
+    const flow = makeFlow();
+    flow.openkey.signIn = async () => { throw new OpenKeyNativeError("NETWORK", "renew failed"); };
+    await expect(signInNative(config, flow.deps)).rejects.toThrow(NATIVE_SIGN_IN_NETWORK_MESSAGE);
+    expect(flow.order).toEqual(["nonce"]);
   });
 
   test("a failed cleanup revoke leaves the handoff error visible", async () => {
@@ -391,6 +408,17 @@ describe("native boot", () => {
     expect(constructed).toBe(1);
     expect(flow.order).toEqual([]);
   });
+
+  test("reuses the same SDK client for boot, sign-in and sign-out", async () => {
+    const flow = makeFlow();
+    let constructed = 0;
+    const createOpenKeyNative = () => { constructed++; return flow.openkey; };
+    expect(await retireNativeSessionAtBoot(config, { createOpenKeyNative })).toBe(false);
+    await signInNative(config, { ...flow.deps, createOpenKeyNative });
+    await signOutNative({ env: config.env, createOpenKeyNative });
+    expect(constructed).toBe(1);
+    expect(flow.order.at(-1)).toBe("signOut");
+  });
 });
 
 describe("error message mapping", () => {
@@ -404,6 +432,7 @@ describe("error message mapping", () => {
     expect(nativeSignInErrorMessage(new Error("SIWE verification failed: Nonce is invalid, expired, or already used"))).toBe(NATIVE_SIGN_IN_NONCE_MESSAGE);
     expect(nativeSignInErrorMessage(new OpenKeyNativeError("SPACE_UNAVAILABLE", "x"))).toBe(NATIVE_SIGN_IN_SPACE_MESSAGE);
     expect(nativeSignInErrorMessage(new OpenKeyNativeError("NETWORK", "x"))).toBe(NATIVE_SIGN_IN_NETWORK_MESSAGE);
+    expect(nativeSignInErrorMessage(new OpenKeyNativeError("STORAGE", "network-looking detail"))).toBe(NATIVE_SIGN_IN_STORAGE_MESSAGE);
     expect(nativeSignInErrorMessage(new OpenKeyNativeError("SERVER", "x"))).toBe(NATIVE_SIGN_IN_SERVER_MESSAGE);
     expect(nativeSignInErrorMessage(new Error("boom"))).toMatch(/failed/i);
     expect(nativeSignInErrorMessage("boom")).toMatch(/failed/i);
@@ -417,14 +446,23 @@ describe("error message mapping", () => {
       const sdkError = new OpenKeyNativeError("SERVER", "secret detail");
       sdkError.rotatedRefreshToken = "secret refresh token";
       logNativeOpenKeyError("sign-in", sdkError);
+      logNativeOpenKeyError("sign-out", new OpenKeyNativeError("STORAGE", "secret storage detail"));
       logNativeOpenKeyError("verify", new Error("verification failed"));
     } finally {
       console.warn = prior;
     }
     expect(lines).toEqual([
       "[OpenKey native] sign-in: SERVER",
+      "[OpenKey native] sign-out: STORAGE",
       "[OpenKey native] verify: verification failed",
     ]);
+  });
+
+  test("storage sign-out failures keep the session available for retry", () => {
+    expect(isNativeStorageError(new OpenKeyNativeError("STORAGE", "read failed"))).toBe(true);
+    expect(isNativeStorageError(new OpenKeyNativeError("NETWORK", "offline"))).toBe(false);
+    expect(NATIVE_SIGN_OUT_STORAGE_WARNING).toMatch(/session may still be stored/i);
+    expect(NATIVE_SIGN_OUT_STORAGE_WARNING).toMatch(/try signing out again/i);
   });
 });
 
@@ -464,6 +502,7 @@ describe("platform routing (source)", () => {
     const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
     expect(signOut).toContain("signOutNative()");
     expect(signOut.indexOf("isNativeOpenKeySession()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
+    expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("sessionStoreRef.current.clear()"));
   });
 
   test("boot retires native grants before trying the legacy widget restore", () => {
