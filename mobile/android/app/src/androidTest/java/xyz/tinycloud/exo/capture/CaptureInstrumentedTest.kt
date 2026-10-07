@@ -9,6 +9,7 @@ import android.app.NotificationManager
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
+import org.json.JSONObject
 import androidx.core.content.ContextCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -32,6 +33,23 @@ import kotlin.math.sin
 @RunWith(AndroidJUnit4::class)
 class CaptureInstrumentedTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private fun awaitState(engine: CaptureEngine, state: String, timeoutMs: Long = 10_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (engine.status().optString("state") != state && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        assertEquals(state, engine.status().getString("state"))
+    }
+    private fun captureNotification(): android.app.Notification =
+        context.getSystemService(NotificationManager::class.java).activeNotifications
+            .firstOrNull { it.id == 7201 }?.notification ?: error("Capture notification missing")
+    private fun awaitAction(title: String): android.app.Notification.Action {
+        val deadline = System.currentTimeMillis() + 5000
+        while (System.currentTimeMillis() < deadline) {
+            val action = runCatching { captureNotification().actions.firstOrNull { it.title.toString() == title } }.getOrNull()
+            if (action != null) return action
+            Thread.sleep(50)
+        }
+        error("Capture notification action missing: $title")
+    }
     private fun grant(permission: String) {
         android.os.ParcelFileDescriptor.AutoCloseInputStream(
             InstrumentationRegistry.getInstrumentation().uiAutomation
@@ -180,6 +198,96 @@ class CaptureInstrumentedTest {
             context.stopService(Intent(context, CaptureService::class.java))
             engine.library.delete(note.getString("id"))
         } finally { activity.finish() }
+    }
+    @Test fun writerAppendFailureAutoStopsAndPublishesDurableRevisionOne() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        val stopped = AtomicReference<JSONObject?>()
+        val listener = object : CaptureEngine.Listener {
+            override fun event(name: String, data: JSONObject) { if (name == "autoStopped") stopped.set(data) }
+        }
+        engine.addListener(listener)
+        try {
+            awaitState(engine, "recording")
+            val id = engine.status().getString("id")
+            Thread.sleep(600)
+            engine.library.ops.failOnce("seg.write")
+            awaitState(engine, "idle", 15_000)
+            val eventDeadline = System.currentTimeMillis() + 2000
+            while (stopped.get() == null && System.currentTimeMillis() < eventDeadline) Thread.sleep(20)
+            val event = stopped.get() ?: error("autoStopped was not emitted after the commit")
+            assertEquals("write_failed", event.getString("reason"))
+            assertEquals(id, event.getJSONObject("recording").getString("id"))
+            val note = engine.library.read(id) ?: error("durable frames were not committed")
+            assertTrue(note.getLong("durationMs") > 0)
+            assertEquals(1, note.getInt("rev"))
+            engine.library.delete(id)
+        } finally {
+            engine.removeListener(listener)
+            if (!engine.status().isNull("id")) engine.stop("write_failed")
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+    @Test fun secondShortcutKeepsForegroundNotificationAndActionsWork() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            awaitState(engine, "recording")
+            val id = engine.status().getString("id")
+            awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_pause))
+            assertEquals(2, captureNotification().actions.size)
+            context.startActivity(Intent(context, MainActivity::class.java)
+                .setAction(CaptureService.RECORD)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            Thread.sleep(300)
+            assertEquals(id, engine.status().getString("id"))
+            val pause = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_pause))
+            pause.actionIntent.send()
+            awaitState(engine, "paused")
+            val resume = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_resume))
+            resume.actionIntent.send()
+            awaitState(engine, "recording")
+            val stop = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_stop))
+            stop.actionIntent.send()
+            awaitState(engine, "idle", 15_000)
+            assertNotNull(engine.library.read(id))
+            engine.library.delete(id)
+        } finally {
+            if (!engine.status().isNull("id")) engine.stop()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+    @Test fun staleForegroundNotificationStopDoesNotKillTheProcess() {
+        assumeTrue("Foreground service timeout starts on Android 8", Build.VERSION.SDK_INT >= 26)
+        grant(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) grant(Manifest.permission.POST_NOTIFICATIONS)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            awaitState(engine, "recording")
+            val id = engine.status().getString("id")
+            engine.stop()
+            context.stopService(Intent(context, CaptureService::class.java))
+            val stale = Intent(context, CaptureService::class.java).setAction(CaptureService.ACTION_STOP).putExtra("id", id)
+            ContextCompat.startForegroundService(context, stale)
+            Thread.sleep(6_000) // Android's foreground-service deadline would kill the process.
+            assertEquals("idle", engine.status().getString("state"))
+            engine.library.delete(id)
+        } finally {
+            if (!engine.status().isNull("id")) engine.stop()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
     }
     @Test fun motoScreenOffStopThroughNotificationAction() {
         assumeTrue("Moto hardware check", Build.MANUFACTURER.equals("motorola", ignoreCase = true))

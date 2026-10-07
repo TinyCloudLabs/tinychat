@@ -41,16 +41,16 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     private fun journal(id: String) = File(session(id), "journal.jsonl")
     private fun appendJournal(id: String, event: JSONObject, point: String) = ops.write(journal(id), jsonLine(event), true, point)
 
-    fun start(id: String, source: String, owner: String?, transitionGen: Long, options: JSONObject, maxMs: Long) = lock.withLock {
+    fun start(id: String, source: String, owner: String?, transitionGen: Long, options: JSONObject, maxMs: Long,
+              at: Long = System.currentTimeMillis()) = lock.withLock {
         requireId(id); ensureAlive(id)
         val dir = session(id)
         ops.mkdir(dir, "start.mkdir"); ops.syncDir(sessions)
-        val now = System.currentTimeMillis()
         val first = event("session", 0, JSONObject().put("v", 1).put("id", id).put("platform", "android")
             .put("codec", "aac-lc").put("container", "adts").put("rate", SAMPLE_RATE).put("channels", 1)
             .put("bitrate", BITRATE).put("maxDurationMs", maxMs).put("source", source)
             .put("owner", owner ?: JSONObject.NULL).put("transitionGen", transitionGen).put("options", options))
-        first.put("t", now)
+        first.put("t", at)
         ops.write(journal(id), jsonLine(first), false, "start.journal"); ops.syncDir(dir)
     }
     fun openFirstSegment(id: String, audioMs: Long, gen: Long, at: Long = System.currentTimeMillis()) = lock.withLock {
@@ -80,12 +80,12 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     fun transition(id: String, name: String, audioMs: Long, extra: JSONObject, at: Long = System.currentTimeMillis()) = lock.withLock {
         appendJournal(id, event(name, audioMs, extra, at), "transition.$name")
     }
-    fun roll(id: String, index: Int, audioMs: Long) = lock.withLock {
+    fun roll(id: String, index: Int, audioMs: Long, at: Long = System.currentTimeMillis()) = lock.withLock {
         val dir = session(id)
         ops.sync(File(dir, "seg-%05d.aac".format(index - 1)), true, "roll.sync")
         val next = File(dir, "seg-%05d.aac".format(index))
         ops.write(next, byteArrayOf(), false, "roll.create"); ops.syncDir(dir)
-        appendJournal(id, event("segment", audioMs, JSONObject().put("index", index).put("file", next.name)), "roll.journal")
+        appendJournal(id, event("segment", audioMs, JSONObject().put("index", index).put("file", next.name), at), "roll.journal")
     }
     fun stopJournal(id: String, audioMs: Long, reason: String, at: Long = System.currentTimeMillis()) = lock.withLock {
         val by = when (reason) { "max_duration" -> "limit"; "disk_full" -> "disk";
@@ -108,7 +108,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     private fun end(id: String) = lock.withLock { active[id] = (active[id] ?: 1) - 1 }
 
     /** Staging may block on MediaMuxer. The publish transaction rechecks deletion and generation. */
-    fun commit(id: String, mux: (File) -> Unit, recovered: Boolean = false, exitReason: String? = null): JSONObject {
+    fun commit(id: String, mux: (File) -> Unit, recovered: Boolean = false, exitReason: String? = null,
+               metrics: JSONObject = JSONObject()): JSONObject {
         requireId(id)
         val opGen = begin(id)
         val staged = File(staging, "$id.$opGen.m4a")
@@ -134,8 +135,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             val inputValue = inputEvent?.let { JSONObject().put("id", it.getString("id"))
                 .put("name", it.getString("name")).put("kind", it.getString("kind")) } ?: JSONObject.NULL
             val result = JSONObject().put("id", id).put("startedAt", startedAt).put("durationMs", audioMs)
-                .put("mimeType", "audio/mp4").put("sizeBytes", staged.length()).put("silencedMs", 0)
-                .put("silencedEvents", 0).put("noSignalMs", 0).put("version", 2).put("rev", 1)
+                .put("mimeType", "audio/mp4").put("sizeBytes", staged.length())
+                .put("silencedMs", metrics.optLong("silencedMs"))
+                .put("silencedEvents", metrics.optInt("silencedEvents"))
+                .put("noSignalMs", metrics.optLong("noSignalMs")).put("version", 2).put("rev", 1)
                 .put("wallMs", (last?.optLong("t") ?: System.currentTimeMillis()) - startedAt)
                 .put("pausedMs", pausedMs).put("spans", spans(history))
                 .put("recovered", recovered).put("endedUnexpectedly", history.none { it.optString("e") == "stop" })
@@ -203,7 +206,11 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     }
     fun list(): List<JSONObject> = lock.withLock {
         root.listFiles { f -> f.name.endsWith(".json") && f.name.removeSuffix(".json").isNoteId() }
-            ?.map { file -> read(file.name.removeSuffix(".json")) ?: throw IOException("Missing ${file.name}") } ?: emptyList()
+            .orEmpty().mapNotNull { file ->
+                val id = file.name.removeSuffix(".json")
+                if (tombstone(id).exists()) null
+                else try { read(id) } catch (_: Exception) { null } // Recovery quarantines malformed sidecars.
+            }
     }
     fun mutate(id: String, point: String, block: (JSONObject) -> Unit): JSONObject = lock.withLock {
         ensureAlive(id)
@@ -323,19 +330,21 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         for (file in root.listFiles().orEmpty().filter { it.name.endsWith(".json") && it.name.removeSuffix(".json").isNoteId() }) {
             try { JSONObject(file.readText()) } catch (_: Exception) {
                 val id = file.name.removeSuffix(".json")
-                lock.withLock {
+                try { lock.withLock {
                     if (!tombstone(id).exists()) ops.rename(file, File(quarantine, "$id.sidecar.json"), "import.sidecar")
-                }
+                } } catch (e: Exception) { failures.add("$id: ${e.message}") }
             }
         }
         for (dir in sessions.listFiles().orEmpty().filter { it.isDirectory && it.name.isNoteId() }) {
             val id = dir.name
-            if (tombstone(id).exists()) { lock.withLock { gcArtifacts(id); retire(id) }; continue }
-            if (sidecar(id).exists()) { gcSession(id); continue }
-            if (dir.listFiles().orEmpty().filter { it.name.endsWith(".aac") }.sumOf { scanAdts(it).frames } == 0L) {
-                gcSession(id); continue
+            try {
+                if (tombstone(id).exists()) { lock.withLock { gcArtifacts(id); retire(id) }; continue }
+                if (sidecar(id).exists()) { gcSession(id); continue }
+                if (dir.listFiles().orEmpty().filter { it.name.endsWith(".aac") }.sumOf { scanAdts(it).frames } == 0L) {
+                    gcSession(id); continue
+                }
+                commit(id, { mux(id, it) }, recovered = true, exitReason = exitReason)
             }
-            try { commit(id, { mux(id, it) }, recovered = true, exitReason = exitReason) }
             catch (e: Exception) { failures.add("$id: ${e.message}") /* session remains durable for retry */ }
         }
         for (file in root.listFiles().orEmpty().filter { it.name.endsWith(".m4a") && it.name.removeSuffix(".m4a").isNoteId() }) {
@@ -352,15 +361,29 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                         ops.write(File(quarantine, "$id.json"), jsonLine(JSONObject().put("id", id)
                             .put("reason", "no_audio_track").put("sizeBytes", file.length())), false, "import.quarantine")
                     } else if (!sidecar(id).exists()) {
+                        val startedAt = note.optLong("startedAt", file.lastModified())
+                        val durationMs = note.optLong("durationMs")
                         note.put("id", id).put("version", 2).put("rev", 1).put("legacyImport", true)
                             .put("recovered", true).put("ownerUnknown", true).put("owner", JSONObject.NULL)
+                            .put("wallMs", durationMs).put("pausedMs", 0).put("spans", JSONArray())
+                            .put("endedUnexpectedly", false).put("lastHeartbeatAt", JSONObject.NULL)
+                            .put("exitReason", JSONObject.NULL).put("source", "in_app")
+                            .put("transitionGen", 0).put("options", defaultOptions())
+                            .put("input", JSONObject.NULL)
+                            .put("sampleRate", note.opt("sampleRate") ?: JSONObject.NULL)
+                            .put("bitrate", note.opt("bitrate") ?: JSONObject.NULL)
+                            .put("startedAt", startedAt)
+                            .put("silencedMs", note.optLong("silencedMs"))
+                            .put("silencedEvents", note.optInt("silencedEvents"))
+                            .put("noSignalMs", note.optLong("noSignalMs"))
                             .put("ledger", defaultLedger()).put("stt", defaultStt())
                         val tmp = File(root, "$id.json.tmp")
                         ops.write(tmp, jsonLine(note), false, "import.sidecar")
                         ops.rename(tmp, sidecar(id), "import.sidecar")
                     }
                 }
-            } finally { end(id) }
+            } catch (e: Exception) { failures.add("$id: ${e.message}") }
+            finally { end(id) }
         }
         for (marker in tombstones.listFiles().orEmpty()) if (marker.name.isNoteId()) lock.withLock {
             try { gcArtifacts(marker.name); retire(marker.name) }

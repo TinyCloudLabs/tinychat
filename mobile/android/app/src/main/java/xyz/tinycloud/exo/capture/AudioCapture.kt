@@ -52,9 +52,13 @@ class AudioCapture(
             record.registerAudioRecordingCallback(android.os.Handler(android.os.Looper.getMainLooper())::post, callback)
         }
     }
-    fun start() {
+    fun start(afterRecordStarted: () -> Unit = {}) {
         record.startRecording()
         if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("AudioRecord did not start")
+        try { afterRecordStarted() } catch (e: Exception) {
+            try { record.stop(); inputStopped = true } catch (_: Exception) { }
+            throw e
+        }
         running.set(true)
         writer = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -63,6 +67,8 @@ class AudioCapture(
                 try { onPcm(pcm) } catch (e: Exception) {
                     writerFailure = e
                     onError("write_failed: ${e.message}"); running.set(false); producerDone.set(true)
+                    queue.clear()
+                    break
                 }
             }
         }.also { it.name = "ExoAACWriter"; it.start() }
@@ -130,15 +136,29 @@ class AudioCapture(
             }
         }
         producerDone.set(true)
-        writer?.join(3000)
+        writer?.join(30_000)
         if (writer?.isAlive == true) throw IllegalStateException("Audio writer did not drain")
         writerFailure?.let { throw IllegalStateException("Audio writer failed", it) }
         drained = true
     }
+    /** The reader has already exited on an AudioRecord error; retain queued PCM before teardown. */
+    fun drainAfterReadFailure() {
+        if (drained) return
+        running.set(false)
+        try { record.stop() } catch (_: Exception) { }
+        inputStopped = true
+        reader?.join(2000)
+        producerDone.set(true)
+        writer?.join(30_000)
+        if (writer?.isAlive == true) throw IllegalStateException("Audio writer did not drain after read failure")
+        writerFailure?.let { throw IllegalStateException("Audio writer failed", it) }
+        drained = true
+    }
     fun release() {
-        if (Build.VERSION.SDK_INT >= 29) record.unregisterAudioRecordingCallback(
-            recordingCallback as android.media.AudioManager.AudioRecordingCallback)
-        record.release()
+        try {
+            if (Build.VERSION.SDK_INT >= 29) record.unregisterAudioRecordingCallback(
+                recordingCallback as android.media.AudioManager.AudioRecordingCallback)
+        } finally { record.release() }
     }
     fun stop() { drain(); release() }
 }

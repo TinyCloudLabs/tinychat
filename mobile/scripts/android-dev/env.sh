@@ -17,4 +17,8 @@ esac
 export EXO_VITE_PORT=${EXO_VITE_PORT:-5391}
 export EXO_DEVTOOLS_PORT=${EXO_DEVTOOLS_PORT:-9333}
 export EXO_STATE=${EXO_STATE:-/tmp/exo-android-dev}
+if [ "$(uname -s)" = Linux ]; then
+  export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  export PULSE_SERVER=${PULSE_SERVER:-unix:$XDG_RUNTIME_DIR/pulse/native}
+fi
 ADB="$ANDROID_HOME/platform-tools/adb -s $EXO_SERIAL"

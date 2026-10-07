@@ -31,12 +31,19 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         new ActivityResultContracts.RequestPermission(), granted -> {
             askingPermission = false;
             if (granted) main.post(this::handlePending);
-            // Denial leaves the command until expiry; the recorder UI can show the permission error.
+            else {
+                LaunchCommandStore.Command command = commands.pending();
+                if (command != null) commands.clear(command.getId());
+                consumedCommandId = null;
+                CaptureEngine.get(this).presentRecorder(null, "permission_denied");
+            }
         });
 
     @Override public void onCreate(Bundle savedInstanceState) {
         registerPlugin(VoiceNotesPlugin.class);
         registerPlugin(HealthPlugin.class);
+        // TC-524 location spike. Registered in every build, but only the debug manifest declares
+        // location permissions and the location foreground service; release cannot capture location.
         registerPlugin(LocationPlugin.class);
         commands = new LaunchCommandStore(this);
         if (savedInstanceState != null) consumedCommandId = savedInstanceState.getString("consumedCommandId");
@@ -65,7 +72,12 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         LaunchCommandStore.Command command = commands.pending();
         if (command == null) return;
         if (command.getId().equals(consumedCommandId)) return;
-        if ("SHOW_RECORDER".equals(command.getAction())) { commands.clear(command.getId()); return; }
+        CaptureEngine engine = CaptureEngine.get(this);
+        if ("SHOW_RECORDER".equals(command.getAction()) || !engine.status().isNull("id")) {
+            commands.clear(command.getId());
+            engine.presentRecorder();
+            return;
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             if (!askingPermission) { askingPermission = true; requestMic.launch(Manifest.permission.RECORD_AUDIO); }
             return;
@@ -79,15 +91,14 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
         }
         consumedCommandId = command.getId();
         CaptureService.startFromVisibleActivity(this, command.getId(), command.getSource());
-        main.postDelayed(() -> {
-            if (command.getId().equals(consumedCommandId) && commands.pending() != null) {
-                consumedCommandId = null; // a failed foreground start can be retried while still visible
-            }
-        }, 3000);
     }
     @Override public void event(String name, JSONObject data) {
         if ("started".equals(name) && data.optString("commandId").equals(consumedCommandId)) {
             commands.clear(consumedCommandId);
+        } else if ("startFailed".equals(name) && data.optString("commandId").equals(consumedCommandId)) {
+            commands.clear(consumedCommandId);
+            consumedCommandId = null;
+            CaptureEngine.get(this).presentRecorder(null, data.optString("code", "start_failed"));
         }
     }
     @Override public void onSaveInstanceState(Bundle out) {

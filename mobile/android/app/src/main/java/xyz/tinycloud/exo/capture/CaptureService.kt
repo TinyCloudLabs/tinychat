@@ -15,41 +15,61 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import xyz.tinycloud.exo.MainActivity
 import xyz.tinycloud.exo.R
+import java.util.concurrent.Executors
 
 /** The service enters foreground before CaptureEngine can construct AudioRecord. */
 class CaptureService : Service() {
+    private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "ExoCaptureService") }
     override fun onBind(intent: Intent?): IBinder? = null
+    override fun onDestroy() { worker.shutdown(); super.onDestroy() }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: return START_NOT_STICKY
         val engine = CaptureEngine.get(this)
         try {
-            if (action in listOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD)) {
-                val currentId = engine.status().optString("id")
-                if (intent.getStringExtra("id")?.let { it != currentId } == true) return START_NOT_STICKY
-                // gen is diagnostic; a valid tap remains usable after an automatic retry.
-            }
             ensureChannel()
             val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(engine.status().optString("state") == "paused"), type)
-            when (action) {
-                ACTION_START -> {
-                    engine.start(intent.getLongExtra("maxDurationMs", 0).takeIf { it > 0 }, null,
-                        intent.getStringExtra("source") ?: "in_app", intent.getStringExtra("commandId"))
-                    update(false)
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type)
+            worker.execute {
+                try {
+                    val status = engine.status()
+                    if (action in listOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD) &&
+                        intent.getStringExtra("id")?.let { it != status.optString("id") } == true) {
+                        if (status.isNull("id")) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                        else update()
+                        return@execute
+                    }
+                    // gen is diagnostic; a valid tap remains usable after an automatic retry.
+                    when (action) {
+                        ACTION_START -> {
+                            if (!status.isNull("id")) engine.presentRecorder(intent.getStringExtra("commandId"))
+                            else engine.start(intent.getLongExtra("maxDurationMs", 0).takeIf { it > 0 },
+                                intent.getStringExtra("options")?.let { org.json.JSONObject(it) },
+                                intent.getStringExtra("source") ?: "in_app", intent.getStringExtra("commandId"))
+                            update()
+                        }
+                        ACTION_PAUSE -> { engine.pause(); update() }
+                        ACTION_RESUME -> { engine.resume(); update() }
+                        ACTION_STOP -> { engine.stop(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                        ACTION_DISCARD -> { engine.discard(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                    }
+                } catch (e: Exception) {
+                    Log.e("ExoCapture", "Service action $action failed", e)
+                    if (action == ACTION_START) engine.startFailed(intent.getStringExtra("commandId"), e)
+                    if (engine.status().isNull("id")) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                    else update()
                 }
-                ACTION_PAUSE -> { engine.pause(); update(true) }
-                ACTION_RESUME -> { engine.resume(); update(false) }
-                ACTION_STOP -> { engine.stop(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
-                ACTION_DISCARD -> { engine.discard(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
             }
         } catch (e: Exception) {
             Log.e("ExoCapture", "Service action $action failed", e)
-            if (action == ACTION_START) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
+            if (action == ACTION_START) engine.startFailed(intent.getStringExtra("commandId"), e)
+            if (engine.status().isNull("id")) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
         }
         return START_NOT_STICKY
     }
-    private fun update(paused: Boolean) { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(paused)) }
-    private fun notification(paused: Boolean): Notification {
+    private fun update() { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification()) }
+    private fun notification(): Notification {
+        val status = CaptureEngine.get(this).status()
+        val paused = status.optString("state") == "paused"
         val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java).setAction(SHOW_RECORDER),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val toggle = action(if (paused) ACTION_RESUME else ACTION_PAUSE, 2)
@@ -60,7 +80,7 @@ class CaptureService : Service() {
             .setContentText(if (paused) getString(R.string.capture_resume_hint) else getString(R.string.capture_running_hint))
             .setContentIntent(open).setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .setUsesChronometer(!paused).setWhen(System.currentTimeMillis())
+            .setUsesChronometer(!paused).setWhen(System.currentTimeMillis() - status.optLong("elapsedMs"))
             .addAction(0, if (paused) getString(R.string.capture_resume) else getString(R.string.capture_pause), toggle)
             .addAction(0, getString(R.string.capture_stop), stop).build()
     }
@@ -93,9 +113,10 @@ class CaptureService : Service() {
                 .putExtra("commandId", commandId).putExtra("source", source)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
-        @JvmStatic fun startFromPlugin(context: Context, maxMs: Long, commandId: String) {
+        @JvmStatic fun startFromPlugin(context: Context, maxMs: Long, commandId: String, options: org.json.JSONObject?) {
             val intent = Intent(context, CaptureService::class.java).setAction(ACTION_START)
                 .putExtra("maxDurationMs", maxMs).putExtra("source", "in_app").putExtra("commandId", commandId)
+                .putExtra("options", options?.toString())
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
         @JvmStatic fun send(context: Context, action: String) {

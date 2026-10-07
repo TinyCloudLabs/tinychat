@@ -5,7 +5,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import xyz.tinycloud.exo.capture.core.BITRATE
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
-import java.nio.ByteBuffer
+import xyz.tinycloud.exo.capture.core.Adts
 
 /** A single AAC-LC encoder; output is raw access units with ADTS headers. */
 class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
@@ -59,23 +59,10 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
                 buffer.position(info.offset); buffer.limit(info.offset + info.size)
                 val payload = ByteArray(info.size)
                 buffer.get(payload)
-                onFrame(adts(payload))
+                onFrame(Adts.wrap(payload))
             }
             codec.releaseOutputBuffer(index, false)
             if (end) return
         }
-    }
-    private fun adts(data: ByteArray): ByteArray {
-        val length = data.size + 7
-        require(length <= 8191) { "AAC frame too large" }
-        val out = ByteArray(length)
-        out[0] = 0xff.toByte(); out[1] = 0xf1.toByte()
-        out[2] = ((1 shl 6) or (4 shl 2) or 0).toByte() // AAC-LC, 44100 Hz, mono
-        out[3] = ((1 shl 6) or (length shr 11)).toByte()
-        out[4] = ((length shr 3) and 0xff).toByte()
-        out[5] = (((length and 7) shl 5) or 0x1f).toByte()
-        out[6] = 0xfc.toByte()
-        System.arraycopy(data, 0, out, 7, data.size)
-        return out
     }
 }

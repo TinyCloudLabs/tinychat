@@ -1,8 +1,10 @@
 package xyz.tinycloud.exo.capture
 
 import android.content.Context
-import org.json.JSONObject
+import android.util.Log
 import java.util.UUID
+import xyz.tinycloud.exo.capture.core.LaunchCommandCodec
+import xyz.tinycloud.exo.capture.core.LaunchCommandValue
 
 /** One durable pending launch command. Expiry avoids recording after an old permission dialog. */
 class LaunchCommandStore(context: Context) {
@@ -11,19 +13,25 @@ class LaunchCommandStore(context: Context) {
     @Synchronized fun put(action: String, source: String): Command {
         require(action == "RECORD" || action == "SHOW_RECORDER")
         val command = Command(UUID.randomUUID().toString(), action, source, System.currentTimeMillis())
-        prefs.edit().putString("slot", JSONObject().put("commandId", command.id).put("action", action)
-            .put("source", source).put("createdAt", command.createdAt).toString()).commit()
+        prefs.edit().putString("slot", LaunchCommandCodec.encode(
+            LaunchCommandValue(command.id, action, source, command.createdAt))).commit()
         return command
     }
     @JvmOverloads @Synchronized fun pending(now: Long = System.currentTimeMillis()): Command? {
         val raw = prefs.getString("slot", null) ?: return null
-        val json = JSONObject(raw)
-        val value = Command(json.getString("commandId"), json.getString("action"), json.getString("source"), json.getLong("createdAt"))
-        if (now - value.createdAt >= 30_000 || now < value.createdAt) { clear(value.id); return null }
-        return value
+        val value = try { LaunchCommandCodec.decode(raw) } catch (e: Exception) {
+            Log.e("ExoCapture", "Dropped invalid launch command", e)
+            prefs.edit().remove("slot").commit()
+            return null
+        }
+        if (LaunchCommandCodec.pending(raw, now) == null) {
+            Log.i("ExoCapture", "Dropped expired launch command ${value.id}")
+            clear(value.id); return null
+        }
+        return Command(value.id, value.action, value.source, value.createdAt)
     }
     @Synchronized fun clear(id: String) {
-        if (prefs.getString("slot", null)?.let { JSONObject(it).optString("commandId") } == id)
+        if (prefs.getString("slot", null)?.let { runCatching { LaunchCommandCodec.decode(it).id }.getOrNull() } == id)
             prefs.edit().remove("slot").commit()
     }
 }

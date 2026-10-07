@@ -16,6 +16,10 @@ object LegacyProbe {
             if (duration < 500) return null
             return JSONObject().put("startedAt", file.lastModified()).put("durationMs", duration)
                 .put("mimeType", "audio/mp4").put("sizeBytes", file.length())
+                .put("sampleRate", if (audio.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+                    audio.getInteger(MediaFormat.KEY_SAMPLE_RATE) else JSONObject.NULL)
+                .put("bitrate", if (audio.containsKey(MediaFormat.KEY_BIT_RATE))
+                    audio.getInteger(MediaFormat.KEY_BIT_RATE) else JSONObject.NULL)
                 .put("silencedMs", 0).put("silencedEvents", 0).put("noSignalMs", 0)
         } catch (_: Exception) { return null } finally { extractor.release() }
     }

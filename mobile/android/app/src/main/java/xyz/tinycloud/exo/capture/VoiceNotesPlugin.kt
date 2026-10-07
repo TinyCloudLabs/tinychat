@@ -26,8 +26,12 @@ import java.util.UUID
 class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     private lateinit var engine: CaptureEngine
     private val main = Handler(Looper.getMainLooper())
-    private var pendingStart: Pair<String, PluginCall>? = null
-    override fun load() { engine = CaptureEngine.get(context); engine.addConsumerListener(this); engine.recover() }
+    @Volatile private var pendingStart: Pair<String, PluginCall>? = null
+    override fun load() {
+        engine = CaptureEngine.get(context)
+        engine.addConsumerListener(this)
+        Thread({ engine.recover() }, "ExoCapturePluginRecovery").start()
+    }
     override fun handleOnDestroy() { engine.removeListener(this); super.handleOnDestroy() }
     override fun event(name: String, data: JSONObject) {
         if (name == "started") {
@@ -35,10 +39,17 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
             if (pending != null && pending.first == data.optString("commandId")) {
                 pendingStart = null
                 val status = engine.status()
-                pending.second.resolve(JSObject().put("id", data.getString("id"))
-                    .put("startedAt", status.getLong("startedAt")).put("maxDurationMs", status.getLong("maxDurationMs")))
+                main.post { pending.second.resolve(JSObject().put("id", data.getString("id"))
+                    .put("startedAt", status.getLong("startedAt")).put("maxDurationMs", status.getLong("maxDurationMs"))) }
             }
-        } else notifyListeners(name, JSObject.fromJSONObject(data), name in listOf("micState", "autoStopped", "presentRecorder", "recovered", "committed"))
+        } else if (name == "startFailed") {
+            val pending = pendingStart
+            if (pending != null && pending.first == data.optString("commandId")) {
+                pendingStart = null
+                val code = data.optString("code", "start_failed")
+                main.post { pending.second.reject(code, code) }
+            }
+        } else notifyListeners(name, JSObject.fromJSONObject(data), name in listOf("micState", "autoStopped", "autoStopFailed", "presentRecorder", "recovered", "recoveryFailed", "committed"))
     }
     @PluginMethod fun start(call: PluginCall) {
         if (getPermissionState("microphone") != PermissionState.GRANTED) { requestPermissionForAlias("microphone", call, "afterMic"); return }
@@ -59,11 +70,8 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         val commandId = UUID.randomUUID().toString()
         pendingStart = commandId to call
         val max = (call.data.opt("maxDurationMs") as? Number)?.toLong()?.coerceIn(1000, MAX_DURATION_MS) ?: MAX_DURATION_MS
-        CaptureService.startFromPlugin(context, max, commandId)
-        main.postDelayed({
-            if (pendingStart?.first != commandId) return@postDelayed
-            pendingStart = null; call.reject("Capture service did not start", "start_failed")
-        }, 3000)
+        try { CaptureService.startFromPlugin(context, max, commandId, call.data.optJSONObject("options")) }
+        catch (e: Exception) { pendingStart = null; call.reject(e.message ?: "start_failed", e.message ?: "start_failed") }
     }
     @PermissionCallback private fun afterNotification(call: PluginCall) { startReady(call) }
     private fun async(call: PluginCall, body: () -> JSONObject?) {

@@ -81,12 +81,83 @@ class RecordingLibraryTest {
         ops.failOnce("delete.unlink")
         try { lib.delete(note); fail("expected injected failure") } catch (_: IOException) { }
         assertTrue(lib.tombstone(note).exists())
+        assertTrue("tombstoned sidecar must not poison list", lib.list().isEmpty())
         lib.tombstone(note).setLastModified(System.currentTimeMillis() - 8L * 24 * 3_600_000)
         val relaunched = RecordingLibrary(dir)
         relaunched.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null })
         assertFalse(relaunched.audio(note).exists()); assertFalse(relaunched.sidecar(note).exists())
         relaunched.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null })
         assertTrue(relaunched.list().isEmpty())
+    }
+    @Test fun unrecoverableSessionDoesNotHideCommittedNotesOrPreventANewStart() {
+        val dir = temp.newFolder(); val lib = RecordingLibrary(dir)
+        val saved = id(); begin(lib, saved); commit(lib, saved)
+        val broken = id(); begin(lib, broken)
+        File(lib.session(broken), "journal.jsonl").appendText("{invalid complete line}\n")
+        repeat(2) {
+            try { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null }); fail("recovery must surface the broken session") }
+            catch (e: IOException) { assertTrue(e.message!!.contains(broken)) }
+            assertEquals(saved, lib.list().single().getString("id"))
+        }
+        val fresh = id()
+        lib.start(fresh, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        assertTrue(lib.session(fresh).isDirectory)
+        assertTrue(lib.session(broken).isDirectory)
+    }
+    @Test fun invalidLegacyOrphanIsQuarantinedAndValidImportHasEveryV2Key() {
+        val lib = library(); val invalid = id(); val valid = id()
+        lib.audio(invalid).writeBytes(byteArrayOf(1, 2, 3))
+        lib.audio(valid).writeBytes(byteArrayOf(4, 5, 6))
+        lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { file ->
+            if (file.name.startsWith(invalid)) null else JSONObject().put("startedAt", 10_000)
+                .put("durationMs", 800).put("mimeType", "audio/mp4").put("sizeBytes", 3)
+        })
+        assertTrue(File(lib.quarantine, "$invalid.m4a").isFile)
+        val imported = lib.read(valid)!!
+        assertTrue(imported.getBoolean("legacyImport"))
+        assertTrue(imported.getBoolean("ownerUnknown"))
+        assertEquals(1, imported.getInt("rev"))
+        for (key in listOf("wallMs", "pausedMs", "spans", "endedUnexpectedly", "lastHeartbeatAt",
+            "exitReason", "source", "transitionGen", "options", "input", "sampleRate", "bitrate"))
+            assertTrue("missing v2 field $key", imported.has(key))
+        assertTrue(lib.sidecar(valid).readText().endsWith("\n"))
+    }
+    @Test fun sidecarMetricsArePublishedAtRevisionOne() {
+        val lib = library(); val note = id(); begin(lib, note)
+        lib.commit(note, { it.writeBytes(byteArrayOf(1, 2, 3)) }, metrics = JSONObject()
+            .put("silencedMs", 501).put("silencedEvents", 2).put("noSignalMs", 2001))
+        val sidecar = lib.read(note)!!
+        assertEquals(1, sidecar.getInt("rev"))
+        assertEquals(501, sidecar.getInt("silencedMs"))
+        assertEquals(2, sidecar.getInt("silencedEvents"))
+        assertEquals(2001, sidecar.getInt("noSignalMs"))
+    }
+    @Test fun everyPublicationBoundaryRecoversTwiceWithoutLosingOrRevisingTheNote() {
+        for (point in listOf("stage.write", "publish.m4aRename", "publish.sidecarTmp",
+            "publish.sidecarRename", "publish.gc")) {
+            val ops = FileOps(); val lib = RecordingLibrary(temp.newFolder(), ops)
+            val note = id(); begin(lib, note)
+            ops.failOnce(point)
+            try { commit(lib, note); fail("$point did not fail") } catch (_: IOException) { }
+            lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1, 2, 3)) }, { null })
+            val first = lib.sidecar(note).readBytes()
+            assertEquals("$point must publish rev 1", 1, lib.read(note)!!.getInt("rev"))
+            lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(9)) }, { null })
+            assertArrayEquals("$point recovery must be idempotent", first, lib.sidecar(note).readBytes())
+            assertTrue("$point lost the committed audio", lib.audio(note).isFile)
+        }
+    }
+    @Test fun tornAdtsTailDoesNotAdvanceAudioTimeOrCheckpointBytes() {
+        val lib = library(); val note = id()
+        lib.start(note, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        lib.openFirstSegment(note, 0, 1)
+        val full = byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0)
+        lib.append(note, 0, full)
+        File(lib.session(note), "seg-00000.aac").appendBytes(full.copyOfRange(0, 5))
+        lib.checkpoint(note, 0, 1024L * 1000 / SAMPLE_RATE, "recording", "available")
+        assertEquals(full.size.toLong(), lib.events(note).last().getLong("segBytes"))
+        lib.stopJournal(note, 1024L * 1000 / SAMPLE_RATE, "user")
+        assertEquals(1024L * 1000 / SAMPLE_RATE, commit(lib, note).getLong("durationMs"))
     }
     @Test fun legacyPairIsNeverAutomaticallyClaimedAndOrphanIsUnknown() {
         val lib = library(); val paired = id(); val orphan = id()

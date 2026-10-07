@@ -7,6 +7,10 @@ const val MAX_DURATION_MS = 3L * 3_600_000L
 const val SAMPLE_RATE = 44_100
 const val BITRATE = 64_000
 
+fun requireTransitionGeneration(next: Long, current: Long) {
+    if (next < current) throw IllegalStateException("stale_transition")
+}
+
 fun defaultOptions() = JSONObject().put("transcriber", "on-device").put("identifySpeakers", false)
 fun defaultLedger() = JSONObject()
     .put("spaceId", JSONObject.NULL)
