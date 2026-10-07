@@ -21,7 +21,7 @@ export interface RecorderState {
   startedAt: number | null;
   maxDurationMs: number;
   mic: RecorderMic;
-  /** Set when the recorder stopped itself at the limit, e.g. "Stopped at the 60-minute limit." */
+  /** Set when the recorder stopped itself at the limit, e.g. "Stopped at the 3-hour limit." */
   limitNotice: string | null;
   /** How much of the note being saved is stored. */
   savePercent: number | null;
@@ -51,6 +51,10 @@ export type RecorderEvent =
   /** A recording was already running (a WebView reload, or one started offline). */
   | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs?: number; mic: RecorderMic }
   | { type: "MIC_STATE"; mic: RecorderMic }
+  | { type: "PAUSE_REQUESTED" }
+  | { type: "PAUSE_FAILED"; error: string }
+  | { type: "RESUME_REQUESTED" }
+  | { type: "RESUME_FAILED"; error: string }
   | { type: "STOP_REQUESTED" }
   /** stop() rejected; `error` is null for `not_recording` (the limit's save takes over). */
   | { type: "STOP_FAILED"; error: string | null }
@@ -162,6 +166,19 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "MIC_STATE":
       if (state.phase !== "recording") return state;
       return { ...state, mic: event.mic };
+    case "PAUSE_REQUESTED":
+      if (state.phase !== "recording" || state.mic.state === "paused") return state;
+      // The native engine confirms release via MIC_STATE. Keep showing a live mic until then.
+      return { ...state, error: null };
+    case "PAUSE_FAILED":
+      if (state.phase !== "recording") return state;
+      return { ...state, error: event.error };
+    case "RESUME_REQUESTED":
+      if (state.phase !== "recording" || !["paused", "interrupted", "needs_user"].includes(state.mic.state)) return state;
+      return { ...state, error: null };
+    case "RESUME_FAILED":
+      if (state.phase !== "recording") return state;
+      return { ...state, mic: { state: "needs_user", reason: "resume_blocked" }, error: event.error };
     case "STOP_REQUESTED":
       if (state.phase !== "recording") return state;
       return { ...state, phase: "stopping" };

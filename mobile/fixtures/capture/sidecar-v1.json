@@ -1,0 +1,10 @@
+{
+  "id": "11111111-1111-4111-8111-111111111111",
+  "startedAt": 1759800000000,
+  "durationMs": 4000,
+  "mimeType": "audio/mp4",
+  "sizeBytes": 32000,
+  "silencedMs": 0,
+  "silencedEvents": 0,
+  "noSignalMs": 0
+}

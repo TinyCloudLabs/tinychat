@@ -1,0 +1,122 @@
+{
+  "role": "expected-journal-events",
+  "platform": "android",
+  "rate": 44100,
+  "bitrate": 64000,
+  "id": "11111111-1111-4111-8111-111111111111",
+  "startedAt": 1759800000000,
+  "frameBytes": 107,
+  "steps": [
+    {
+      "at": 0,
+      "e": "session"
+    },
+    {
+      "at": 0,
+      "e": "avail",
+      "value": "available",
+      "reason": null,
+      "gen": 1
+    },
+    {
+      "at": 0,
+      "e": "input"
+    },
+    {
+      "at": 0,
+      "e": "segment",
+      "index": 0
+    },
+    {
+      "at": 2000,
+      "e": "hb",
+      "seg": 0,
+      "frames": 86
+    },
+    {
+      "at": 2500,
+      "e": "hb",
+      "seg": 0,
+      "frames": 107
+    },
+    {
+      "at": 2500,
+      "e": "span_open"
+    },
+    {
+      "at": 2500,
+      "e": "avail",
+      "value": "interrupted",
+      "reason": "call",
+      "gen": 2
+    },
+    {
+      "at": 4500,
+      "e": "span_close"
+    },
+    {
+      "at": 4500,
+      "e": "avail",
+      "value": "available",
+      "reason": null,
+      "gen": 3
+    },
+    {
+      "at": 4500,
+      "e": "segment",
+      "index": 1
+    },
+    {
+      "at": 5000,
+      "e": "hb",
+      "seg": 1,
+      "frames": 21
+    },
+    {
+      "at": 5000,
+      "e": "intent",
+      "value": "paused"
+    },
+    {
+      "at": 10000,
+      "e": "intent",
+      "value": "recording"
+    },
+    {
+      "at": 10000,
+      "e": "avail",
+      "value": "available",
+      "reason": null,
+      "gen": 5
+    },
+    {
+      "at": 10000,
+      "e": "segment",
+      "index": 2
+    },
+    {
+      "at": 11000,
+      "e": "hb",
+      "seg": 2,
+      "frames": 43
+    },
+    {
+      "at": 11000,
+      "e": "intent",
+      "value": "stopped"
+    },
+    {
+      "at": 11000,
+      "e": "stop"
+    }
+  ],
+  "totalFrames": 171,
+  "m4aSizeBytes": 19000,
+  "inputName": "Built-in microphone",
+  "pauseStartAt": 5000,
+  "pauseEndAt": 10000,
+  "interruptionStartAt": 2500,
+  "interruptionEndAt": 4500,
+  "framesAtInterruption": 107,
+  "stoppedAt": 11000
+}

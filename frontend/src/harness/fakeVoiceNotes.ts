@@ -5,6 +5,7 @@
 // can emit `level` and `micState` like the shells do, and it lists the
 // recordings deleted from the "phone".
 import type {
+  CaptureStatus,
   MicState,
   MicStateEvent,
   VoiceNoteAutoStopEvent,
@@ -30,15 +31,20 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   let current: { id: string; startedAt: number } | null = null;
   let state: MicState = "idle";
   let counter = 0;
+  let maxDurationMs = 10_800_000;
   const deleted: string[] = [];
+  const unsupported = async (): Promise<never> => {
+    throw Object.assign(new Error("This action is not implemented in the browser harness"), { code: "not_implemented_in_harness" });
+  };
 
   const plugin: VoiceNotesPlugin = {
-    async start(options) {
+    async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
       if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
       counter += 1;
       current = { id: `fake-${counter}`, startedAt: Date.now() };
+      maxDurationMs = options?.maxDurationMs ?? 10_800_000;
       state = "recording";
-      return { ...current, maxDurationMs: options?.maxDurationMs };
+      return { ...current, maxDurationMs };
     },
     async stop() {
       if (!current) throw Object.assign(new Error("Not recording"), { code: "not_recording" });
@@ -56,25 +62,52 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       state = "idle";
       return recording;
     },
-    async status() {
+    async status(): Promise<CaptureStatus> {
+      const elapsedMs = current ? Date.now() - current.startedAt : 0;
       return {
         state,
         reason: null,
         id: current?.id ?? null,
-        elapsedMs: current ? Date.now() - current.startedAt : 0,
+        intent: current ? "recording" : "stopped",
+        availability: "available",
+        startedAt: current?.startedAt ?? null,
+        elapsedMs,
+        audioMs: elapsedMs,
+        pausedMs: 0,
+        maxDurationMs,
+        spans: [],
+        openSpan: null,
+        transitionGen: 0,
       };
     },
-    async readAudioChunk({ id, offset, length }) {
+    async readAudioChunk({ id, offset, length }: Parameters<VoiceNotesPlugin["readAudioChunk"]>[0]) {
       const size = 4;
       const bytesRead = Math.max(0, Math.min(length, size - offset));
       return { id, offset, base64: btoa("\u0000".repeat(bytesRead)), bytesRead, size, eof: offset + bytesRead >= size };
     },
-    async deleteAudio({ id }) {
+    async deleteAudio({ id }: Parameters<VoiceNotesPlugin["deleteAudio"]>[0]) {
       deleted.push(id);
     },
     async listPending() {
       return { recordings: [] };
     },
+    pause: unsupported,
+    resume: unsupported,
+    discard: unsupported,
+    setRecordingOptions: unsupported,
+    getCaptureDefaults: unsupported,
+    setCaptureDefaults: unsupported,
+    claim: unsupported,
+    updateLedger: unsupported,
+    localAudioUrl: unsupported,
+    putTranscript: unsupported,
+    getTranscript: unsupported,
+    listInputs: unsupported,
+    selectInput: unsupported,
+    listQuarantine: unsupported,
+    deleteQuarantined: unsupported,
+    listOutbox: unsupported,
+    completeOutbox: unsupported,
     addListener(event: string, listener: Listener) {
       adds += 1;
       active += 1;
@@ -94,7 +127,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         },
       });
     },
-  } as VoiceNotesPlugin;
+  };
 
   return {
     plugin,
