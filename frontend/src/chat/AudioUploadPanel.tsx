@@ -43,6 +43,7 @@ import {
   type UploadState,
 } from "@/lib/audioUpload";
 import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
+import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 import type { PrivateCloudCapabilities } from "@/lib/privateCloud";
 import { PATHS } from "@/shell/routes";
 import { FilePicker } from "./FilePicker";
@@ -434,6 +435,10 @@ export function assemblyAiStatus(
   keyStatus: AssemblyAiKeyStatus,
 ): EngineStatus {
   if (mode === "own") {
+    // Native OpenKey sessions have no vault for the key.
+    if (!secretsAvailable()) {
+      return { state: "unavailable", reason: SECRETS_UNAVAILABLE_IN_APP_MESSAGE };
+    }
     return keyStatus === "saved"
       ? { state: "available" }
       : { state: "unavailable", reason: "AssemblyAI with your own account needs your API key, saved in Settings → Transcription.", action: "settings" };
@@ -498,7 +503,9 @@ export const AudioUploadPanel: FC<AudioUploadPanelProps> = ({ tcw, backendUrl, s
   }, [api, origin, capsRound]);
 
   // AssemblyAI: TinyCloud's account when the backend has it (capabilities), or the user's own saved key.
-  const [assemblyAiMode] = useState<AssemblyAiKeyMode>(readAssemblyAiKeyMode);
+  const [assemblyAiMode] = useState<AssemblyAiKeyMode>(() =>
+    secretsAvailable() ? readAssemblyAiKeyMode() : "hosted",
+  );
   const [hostedCaps, setHostedCaps] = useState<{ state: "checking" } | { state: "ok"; caps: HostedAssemblyAiCapabilities } | { state: "failed" }>({
     state: "checking",
   });

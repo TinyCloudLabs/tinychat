@@ -60,6 +60,7 @@ import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync"
 import { CalendarAutojoinSection } from "./CalendarAutojoinSection";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
+import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 
 interface ConnectorsCardProps {
   tcw: TinyCloudWeb;
@@ -341,6 +342,13 @@ export function ConnectorsCard({
         });
         return;
       }
+      if (!secretsAvailable()) {
+        patchRow(d.id, {
+          syncing: false,
+          actionError: SECRETS_UNAVAILABLE_IN_APP_MESSAGE,
+        });
+        return;
+      }
       patchRow(d.id, {
         syncing: true,
         joinedBackgroundSync: false,
@@ -478,7 +486,7 @@ export function ConnectorsCard({
                   <CalendarAutojoinSection backendUrl={backendUrl} sessionStore={sessionStore} revision={autojoinRevision}
                     onEnable={() => setDialog({ kind: "autojoin", id: d.id })} />
                 )}
-                {supportsBackgroundNotifications(d, rows[d.id].connection) && (
+                {supportsBackgroundNotifications(d, rows[d.id].connection) && secretsAvailable() && (
                   <BackgroundSyncSection
                     tcw={tcw}
                     descriptor={d}
@@ -610,7 +618,12 @@ const ConnectorRow: FC<{
                 className="h-8 w-24 animate-pulse rounded-md bg-muted/50"
               />
             )}
-            {state.loaded && !connected && (
+            {state.loaded && !secretsAvailable() && (
+              <p className="max-w-52 text-right text-xs text-muted-foreground">
+                {SECRETS_UNAVAILABLE_IN_APP_MESSAGE}
+              </p>
+            )}
+            {state.loaded && !connected && secretsAvailable() && (
               <Button
                 size="sm"
                 onClick={onConnect}
@@ -619,7 +632,7 @@ const ConnectorRow: FC<{
                 Connect
               </Button>
             )}
-            {state.loaded && connected && (
+            {state.loaded && connected && secretsAvailable() && (
               <>
                 {d.id === GMEET_CONNECTOR_ID && onFullRescan && (
                   <Button

@@ -40,3 +40,6 @@ smithers.db-wal
 # Signing keys (the Android upload key lives only in CI secrets and the team password manager)
 *.jks
 *.keystore
+
+# Local @openkey/sdk-capacitor build for TC-775 E1; publish as 0.1.0 before merging.
+/vendor/openkey-sdk-capacitor-*.tgz

@@ -10,3 +10,6 @@ project(':capacitor-browser').projectDir = new File('../../node_modules/.bun/@ca
 
 include ':capacitor-haptics'
 project(':capacitor-haptics').projectDir = new File('../../node_modules/.bun/@capacitor+haptics@8.0.2+8c735c3c6e2ff3c1/node_modules/@capacitor/haptics/android')
+
+include ':openkey-sdk-capacitor'
+project(':openkey-sdk-capacitor').projectDir = new File('../node_modules/@openkey/sdk-capacitor/android')

@@ -511,7 +511,7 @@ describe("google-meet gets no background-sync surface", () => {
     const at = card.indexOf("<BackgroundSyncSection");
     expect(at).toBeGreaterThan(0);
     expect(card.slice(0, at)).toContain(
-      "supportsBackgroundNotifications(d, rows[d.id].connection) && (",
+      "supportsBackgroundNotifications(d, rows[d.id].connection) && secretsAvailable() && (",
     );
   });
 });

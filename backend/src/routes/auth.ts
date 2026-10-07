@@ -10,8 +10,14 @@ interface AuthRoutesConfig {
 export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
 
+  // Without `address` the nonce is unbound (native OpenKey sign-in binds it to
+  // the recovered signer at /verify); it stays single-use and short-lived.
   router.get("/nonce", (req: Request, res: Response) => {
     const address = req.query.address;
+    if (address === undefined) {
+      res.json({ nonce: config.nonceStore.generate() });
+      return;
+    }
     if (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
       res.status(400).json({ error: "invalid_address", message: "A valid address is required" });
       return;
