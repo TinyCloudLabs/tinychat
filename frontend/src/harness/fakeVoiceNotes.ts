@@ -5,6 +5,7 @@
 // can emit `level` and `micState` like the shells do, and it lists the
 // recordings deleted from the "phone".
 import type {
+  CaptureDefaults,
   CaptureStatus,
   MicState,
   MicStateEvent,
@@ -32,6 +33,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   let state: MicState = "idle";
   let counter = 0;
   let maxDurationMs = 10_800_000;
+  let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
   const deleted: string[] = [];
   const unsupported = async (): Promise<never> => {
     throw Object.assign(new Error("This action is not implemented in the browser harness"), { code: "not_implemented_in_harness" });
@@ -57,6 +59,9 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         silencedMs: 0,
         silencedEvents: 0,
         noSignalMs: 0,
+        version: 2,
+        owner: defaults.accountDid,
+        rev: 1,
       };
       current = null;
       state = "idle";
@@ -93,10 +98,22 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     },
     pause: unsupported,
     resume: unsupported,
-    discard: unsupported,
+    async discard() {
+      const id = current?.id ?? null;
+      if (id) {
+        current = null;
+        state = "idle";
+        deleted.push(id);
+      }
+      return { id };
+    },
     setRecordingOptions: unsupported,
-    getCaptureDefaults: unsupported,
-    setCaptureDefaults: unsupported,
+    async getCaptureDefaults() { return { ...defaults }; },
+    async setCaptureDefaults(next) {
+      if (next.transitionGen < defaults.transitionGen) throw Object.assign(new Error("Stale transition"), { code: "stale_transition" });
+      defaults = { ...next };
+      return { claimed: [] };
+    },
     claim: unsupported,
     updateLedger: unsupported,
     localAudioUrl: unsupported,
