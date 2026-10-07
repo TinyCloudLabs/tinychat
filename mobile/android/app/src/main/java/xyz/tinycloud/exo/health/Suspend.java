@@ -13,7 +13,8 @@ import kotlinx.coroutines.future.FutureKt;
  * Health Connect's client API is Kotlin {@code suspend} functions. Java sees each one as a method with a trailing
  * {@link Continuation} that returns either the result or COROUTINE_SUSPENDED. {@link FutureKt#future} runs such a
  * call inside a coroutine (the lambda only passes the continuation through) and hands back a CompletableFuture,
- * so the plugin can wait for it on its own worker thread. The app stays Java-only: no Kotlin Gradle plugin.
+ * so the plugin can wait for it on its own worker thread. The Health Connect plugin remains Java code,
+ * even though the app also compiles Kotlin sources.
  */
 final class Suspend {
 
