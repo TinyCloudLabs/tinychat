@@ -440,6 +440,7 @@
 		E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "../Packages/ExoCapture";
+		};
 		E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Packages/ExoStt;
@@ -455,6 +456,7 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E0A1C0DE000000000000001F /* XCLocalSwiftPackageReference "ExoCapture" */;
 			productName = ExoCapture;
+		};
 		E0A1C0DE0000000000000204 /* ExoStt */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = E0A1C0DE0000000000000205 /* XCLocalSwiftPackageReference "ExoStt" */;
