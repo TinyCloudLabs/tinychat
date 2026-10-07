@@ -897,6 +897,10 @@ interface TranscriptionJob {
 
 const transcriptionJobs = new WeakMap<object, TranscriptionJob>();
 
+/** The account that owns each transcript taken from a job (session → DID), per
+ *  native identity, so finishing it clears that account's record. */
+const transcriptOwners = new WeakMap<object, Map<string, string | null>>();
+
 /** On-device transcripts being saved (session → settles with the save), per native identity. */
 const savingTranscripts = new WeakMap<object, Map<string, Promise<void>>>();
 
@@ -919,6 +923,12 @@ async function takeTranscription(
   if (job.owner !== owner || transcriptionJobs.get(nativeKey) !== job) throw new Error(HANDED_OFF_MESSAGE);
   if (!outcome.ok) throw outcome.error;
   transcriptionJobs.delete(nativeKey);
+  let owners = transcriptOwners.get(nativeKey);
+  if (owners === undefined) {
+    owners = new Map();
+    transcriptOwners.set(nativeKey, owners);
+  }
+  owners.set(outcome.result.sessionId, job.account);
   return outcome.result;
 }
 
@@ -1144,7 +1154,7 @@ export function createLocalTranscriber(
   const keepOnClose = (session: string, at: string | null, stopped: CaptureStoppedEvent) => {
     if (!stopped.audio_path || at === null) return;
     if (sessionEngine === "private-cloud") {
-      pendingStore(account())?.write({
+      pendingStore(sessionAccount)?.write({
         attemptId: newAttemptId(),
         transcriptionId: null,
         sessionId: session,
@@ -1157,7 +1167,7 @@ export function createLocalTranscriber(
     }
     keepRecording(
       { sessionId: session, startedAt: at, audioPath: stopped.audio_path, model, language, engine: "on-device" },
-      account(),
+      sessionAccount,
     );
   };
   const readyStore = captureReadyStore(nativeKey);
@@ -1173,6 +1183,15 @@ export function createLocalTranscriber(
     }
     return withTimeout(cloudNativePromise, timeouts.listenMs, "the private cloud commands to load");
   };
+  /** The account owning a transcript this native identity handed out; the
+   *  signed-in account for one it never did (a recovered job). */
+  const ownerOf = (session: string): string | null => {
+    const owners = transcriptOwners.get(nativeKey);
+    return owners?.has(session) ? (owners.get(session) ?? null) : account();
+  };
+  /** The last availability answer (null before the first). While private cloud
+   *  is hidden or unreachable, a job it has named is offered as kept too. */
+  let cloudReach: PrivateCloudAvailability | null = null;
   const requireCloud = (): PrivateCloudDeps => {
     if (cloud === null) throw new Error("Private cloud transcription is not available");
     return cloud;
@@ -1180,6 +1199,9 @@ export function createLocalTranscriber(
 
   let sessionId: string | null = null;
   let sessionEngine: TranscriptionEngine = "on-device";
+  /** The account signed in when this recording started: it owns the recording,
+   *  even if another account signs in before it stops or its view closes. */
+  let sessionAccount: string | null = null;
   let model: WhisperModel = DEFAULT_LOCAL_MODEL;
   let language = "en";
   let baseUrl: string | null = null;
@@ -1731,13 +1753,25 @@ export function createLocalTranscriber(
     })();
   };
 
-  /** `did`'s private cloud recording that was never uploaded (its view closed
-   *  mid-recording, or Exo quit before the upload began), offered like a kept
-   *  on-device one: Transcribe uploads it with the record's attempt id. */
+  /** `did`'s private cloud recording without a job the backend has named (its
+   *  view closed mid-recording, or Exo quit before its upload was accepted),
+   *  offered like a kept on-device one: Transcribe uploads it with the
+   *  record's attempt id. While private cloud is hidden or unreachable, one
+   *  with a job is offered too, so it can be moved to this Mac or discarded
+   *  (Transcribe asks the job's status first). */
   const resumeKeptCloudRecording = (did: string | null): Promise<LocalTranscriptResult> | null => {
     if (cloud === null) return null;
     const pending = pendingStore(did)?.read() ?? null;
-    if (pending === null || pending.transcriptionId !== null) return null;
+    if (pending === null) return null;
+    const unreachable = cloudReach === "hidden" || cloudReach === "failed";
+    if (pending.transcriptionId !== null && !unreachable) return null;
+    const title = localRecordingTitle(pending.startedAt);
+    const message =
+      pending.transcriptionId !== null
+        ? `"${title}" was uploaded, but private cloud transcription can't be reached to finish it. The recording was kept on this Mac.`
+        : pending.submitted
+          ? `"${title}" was being uploaded when Exo quit or its view closed, and its transcript was never saved. The recording was kept on this Mac.`
+          : `"${title}" stopped before it was uploaded for transcription. The recording was kept on this Mac.`;
     const job: TranscriptionJob = {
       recording: {
         sessionId: pending.sessionId,
@@ -1755,15 +1789,12 @@ export function createLocalTranscriber(
         handleLost: true,
         attemptId: pending.attemptId,
         submitted: pending.submitted,
-        transcriptionId: null,
-        next: "submit",
+        transcriptionId: pending.transcriptionId,
+        next: pending.transcriptionId === null ? "submit" : "resolve",
       },
       attempt: Promise.resolve({
         ok: false,
-        error: new KeptRecordingError(
-          `"${localRecordingTitle(pending.startedAt)}" stopped before it was uploaded for transcription. The recording was kept on this Mac.`,
-          { engine: "private-cloud", offerOnDevice: pending.audioPath !== "" },
-        ),
+        error: new KeptRecordingError(message, { engine: "private-cloud", offerOnDevice: pending.audioPath !== "" }),
       }),
       running: false,
     };
@@ -1849,10 +1880,12 @@ export function createLocalTranscriber(
             : "A stopped recording is waiting to be transcribed or saved; finish or discard it first",
         );
       }
-      // Nor one a previous launch or closed view kept (resumeKeptRecording offers
-      // it), or whose save is still running, or a private cloud one not yet uploaded.
+      // Nor one a previous launch or closed view kept, or whose save is still
+      // running, or a private cloud one not yet saved: a new recording's record
+      // would replace it. Each is offered (resumeKeptRecording, or
+      // resumeCloudTranscription while private cloud is available).
       const pendingCloud = cloud === null ? null : (pendingStore(account())?.read() ?? null);
-      if (keptStore(account())?.read() != null || (pendingCloud !== null && pendingCloud.transcriptionId === null)) {
+      if (keptStore(account())?.read() != null || pendingCloud !== null) {
         throw new Error("A stopped recording is waiting to be transcribed or saved; finish or discard it first");
       }
       const engine = opts.engine ?? "on-device";
@@ -1861,6 +1894,7 @@ export function createLocalTranscriber(
       model = opts.model;
       language = opts.language;
       sessionEngine = engine;
+      sessionAccount = account();
       emit({ kind: "starting" });
       const run = (async () => {
         const b = await bridge();
@@ -1984,7 +2018,7 @@ export function createLocalTranscriber(
             recording,
             owner: open ? ownerId : null,
             report: open ? emit : null,
-            account: account(),
+            account: sessionAccount,
             cloud:
               sessionEngine === "private-cloud"
                 ? {
@@ -2033,6 +2067,9 @@ export function createLocalTranscriber(
         if (job.recording.engine !== "private-cloud" || job.recording.audioPath === "") {
           throw new Error("This recording cannot be transcribed on this Mac");
         }
+        // Known gap: if an upload began but its job id was never learned, the
+        // job (if it landed) is no longer held back from tenant-list recovery,
+        // which may save it as a second meeting; nothing links it to this session.
         releaseCloud(job);
         job.cloud = null;
         job.recording = { ...job.recording, engine: "on-device", model: opts.onDevice.model };
@@ -2140,19 +2177,22 @@ export function createLocalTranscriber(
       if (cloud === null) return "hidden";
       try {
         const { configured } = await (await cloudNative()).status();
-        if (!configured) return "hidden";
-        if ((await cloud.api.capabilities()) === null) {
-          // Dark, or this account left the cohort: a pending job cannot be
-          // finished here (tenant-list recovery picks it up if it comes back).
-          // A recording never uploaded stays kept: it can still be transcribed
-          // on this Mac or discarded.
-          const store = pendingStore(account());
-          if (store?.read()?.transcriptionId != null) store.clear();
+        if (!configured) {
+          cloudReach = "hidden";
           return "hidden";
         }
+        if ((await cloud.api.capabilities()) === null) {
+          // Dark, or this account left the cohort. Its pending record is kept
+          // (an interrupted upload is one tenant-list recovery cannot finish):
+          // resumeKeptRecording offers it for Transcribe on this Mac or Discard.
+          cloudReach = "hidden";
+          return "hidden";
+        }
+        cloudReach = "available";
         return "available";
       } catch (err) {
         console.warn("Checking private cloud transcription failed", err);
+        cloudReach = "failed";
         return "failed";
       }
     },
@@ -2223,7 +2263,7 @@ export function createLocalTranscriber(
     },
 
     finishOnDeviceTranscript(result) {
-      forgetRecording(result.sessionId, account());
+      forgetRecording(result.sessionId, ownerOf(result.sessionId));
     },
 
     async recoverCloudTranscripts() {
@@ -2260,7 +2300,7 @@ export function createLocalTranscriber(
       await deps.api.remove(result.transcriptionId);
       // Only once PTX has deleted it: until then a relaunch resumes (and
       // idempotently re-saves) the job instead of recovering it as a stranger.
-      forgetPending(result.sessionId, account());
+      forgetPending(result.sessionId, ownerOf(result.sessionId));
     },
   };
 }

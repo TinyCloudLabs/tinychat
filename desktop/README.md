@@ -181,10 +181,13 @@ Native side (`src-tauri/src/cloud/`):
   the attempt id, the job id once known, the session, and the audio path. It is
   written at Stop, or when the view closes mid-recording, before any upload,
   and cleared once the transcript is saved (and deleted from PTX) or
-  discarded. A recording that was never uploaded is offered again (Transcribe in private cloud /
-  Transcribe on this Mac / Discard). A job that already has an id resumes by
-  itself, and an upload that never completed is re-sent from the re-opened
-  recording. Every upload of a recording reuses its attempt id, the create
+  discarded. The record belongs to the account that started the recording,
+  even if another signs in before it stops. A recording that was never
+  uploaded is offered again (Transcribe in private cloud / Transcribe on this
+  Mac / Discard). A job that already has an id resumes by itself, and an
+  upload that never completed is re-sent from the re-opened recording. While
+  private cloud is hidden (404) or unreachable, a recording with a job is kept
+  and offered the same way. No new recording starts while a record waits. Every upload of a recording reuses its attempt id, the create
   call's `Idempotency-Key`, so a replay re-joins the same job. While a record
   whose upload began has no job id yet, tenant-list recovery waits, so it can't
   save that job's transcript a second time. A record under the old shared key (before TC-772) is

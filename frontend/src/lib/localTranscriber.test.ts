@@ -1495,6 +1495,21 @@ describe("kept on-device recordings: accounts, closed views and saves in flight"
     expect(kept.value).toBeNull();
   });
 
+  test("a recording is kept under the account that started it, even if another signs in before the view closes", async () => {
+    const kept = memoryKept();
+    let signedIn = ACCOUNT_A;
+    const bridge = makeBridge({ modelDownloaded: true });
+    const closed = createLocalTranscriber(bridge, keptOptions(kept, () => signedIn));
+    const { sessionId } = await closed.start({ model: "QuantizedSmallEn", language: "en" });
+    signedIn = ACCOUNT_B;
+    const closing = closed.stopCaptureOnUnmount();
+    await tick();
+    bridge.emitCaptureLifecycle(stoppedEvent(sessionId));
+    await closing;
+    expect(kept.value).toMatchObject({ sessionId });
+    expect(kept.records.get(ACCOUNT_B)).toBeUndefined();
+  });
+
   test("closing the view keeps a partial recording too, but nothing when capture left no audio file", async () => {
     const kept = memoryKept();
     const bridge = makeBridge({ modelDownloaded: true });

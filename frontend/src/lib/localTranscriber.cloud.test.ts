@@ -28,8 +28,8 @@
 //     resumes polling without re-uploading;
 //   - a job left by a relaunch resumes from the persisted pending record;
 //   - availability needs both native configuration and the backend's 200; a
-//     failed check is "failed", not hidden; a clean 404 forgets the pending job
-//     (but keeps a recording never uploaded);
+//     failed check is "failed", not hidden; a clean 404 keeps the pending
+//     record, offered for Transcribe on this Mac or Discard;
 //   - cloud recordings use `cloud-` session ids (native opens only those);
 //   - TC-772: the pending record is per account and written at Stop or when the
 //     view closes mid-recording (also after capture ended on its own). The next
@@ -333,6 +333,8 @@ function setup(
   const t = createLocalTranscriber(b.bridge, options);
   /** Another view on the same Mac, signed in as `account` (e.g. after sign-out and sign-in). */
   const remount = (account: string) => createLocalTranscriber(b.bridge, { ...options, account: () => account });
+  /** Another view whose signed-in account is read live (a test can switch it). */
+  const remountWith = (account: () => string | null) => createLocalTranscriber(b.bridge, { ...options, account });
   /** Exo relaunched, signed in as `account`: same localStorage and backend, but
    *  a new process (no capture-ready handles from before, a new native identity). */
   const relaunch = (account: string = ACCOUNT_A) => {
@@ -344,7 +346,7 @@ function setup(
   };
   const statuses: LocalTranscriberStatus[] = [];
   t.onStatus((s) => statuses.push(s));
-  return { t, ...b, n, a, pending, pendingFor, legacy, kept, clock, statuses, recovered, remount, relaunch };
+  return { t, ...b, n, a, pending, pendingFor, legacy, kept, clock, statuses, recovered, remount, remountWith, relaunch };
 }
 
 /** A pending record as Exo writes it (submitted: an upload began). */
@@ -809,13 +811,14 @@ describe("private cloud engine", () => {
     });
     expect(await offline.t.privateCloudAvailability()).toBe("failed");
     expect(offline.pending.value).not.toBeNull();
-    // A clean 404 (dark, or not in the cohort) forgets the pending job.
+    // A clean 404 (dark, or not in the cohort) hides the engine but keeps the
+    // pending job's record (TC-772: an interrupted upload is otherwise lost).
     const dark = setup({
       capabilities: async () => null,
       pending: { attemptId: "a-1", transcriptionId: ID, sessionId: "cloud-s", startedAt: "2026-09-29T10:00:00.000Z", language: "en" },
     });
     expect(await dark.t.privateCloudAvailability()).toBe("hidden");
-    expect(dark.pending.value).toBeNull();
+    expect(dark.pending.value?.transcriptionId).toBe(ID);
     await expect(
       createLocalTranscriber(makeBridge().bridge).start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" }),
     ).rejects.toThrow("Private cloud transcription is not available");
@@ -1085,6 +1088,88 @@ describe("private cloud recordings kept across a closed view or relaunch (TC-772
     expect(s.pending.value).not.toBeNull();
     const offered = (await s.t.resumeKeptRecording()!.catch((e) => e)) as KeptRecordingError;
     expect(offered.offerOnDevice).toBe(true);
+  });
+
+  test("a clean 404 keeps an interrupted upload (a named job) and offers it for this Mac or Discard", async () => {
+    const s = setup({ capabilities: async () => null, pending: { transcriptionId: ID, audioPath: AUDIO } });
+    // Before any availability answer a named job is left for resumeCloudTranscription.
+    expect(s.t.resumeKeptRecording()).toBeNull();
+    expect(await s.t.privateCloudAvailability()).toBe("hidden");
+    expect(s.pending.value?.transcriptionId).toBe(ID);
+    const offered = (await s.t.resumeKeptRecording()!.catch((e) => e)) as KeptRecordingError;
+    expect(offered.engine).toBe("private-cloud");
+    expect(offered.offerOnDevice).toBe(true);
+    expect(offered.message).toContain("can't be reached to finish it");
+    void s.t.retryTranscription({ onDevice: { model: "QuantizedTinyEn" } }).catch(() => {});
+    await settle();
+    expect(s.kept.value).toMatchObject({ sessionId: "cloud-s", audioPath: AUDIO });
+    expect(s.pending.value).toBeNull();
+  });
+
+  test("offline, a named job is offered too, nothing new starts over it, and Transcribe finishes it once back", async () => {
+    const s = setup({
+      capabilities: async () => {
+        throw new PrivateCloudError("offline", "Could not reach the backend");
+      },
+      pending: { transcriptionId: ID, audioPath: AUDIO },
+    });
+    expect(await s.t.privateCloudAvailability()).toBe("failed");
+    await expect(s.t.start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" })).rejects.toThrow(
+      "finish or discard it first",
+    );
+    await expect(s.t.start({ model: "QuantizedTinyEn", language: "en" })).rejects.toThrow("finish or discard it first");
+    void s.t.resumeKeptRecording()!.catch(() => {});
+    await settle();
+    // Back online: Transcribe asks the job's status first; it was accepted, so no upload.
+    s.a.gets.push(job("processing"), job("completed"));
+    const result = (await s.t.retryTranscription()) as CloudTranscriptResult;
+    expect(result).toMatchObject({ sessionId: "cloud-s", transcriptionId: ID });
+    expect(s.n.submits).toHaveLength(0);
+  });
+
+  test("the kept message says what happened: never uploaded, or an upload that did not finish", async () => {
+    const never = setup({ pending: { transcriptionId: null, submitted: false } });
+    expect(((await never.t.resumeKeptRecording()!.catch((e) => e)) as Error).message).toContain("stopped before it was uploaded");
+    const began = setup({ pending: { transcriptionId: null, submitted: true } });
+    const msg = ((await began.t.resumeKeptRecording()!.catch((e) => e)) as Error).message;
+    expect(msg).toContain("was being uploaded when Exo quit or its view closed");
+    expect(msg).not.toContain("before it was uploaded");
+  });
+
+  test("a recording belongs to the account that started it, even if another signs in before it is kept", async () => {
+    // Closed view, cloud.
+    let signedIn: string | null = ACCOUNT_A;
+    const s = setup();
+    const t = s.remountWith(() => signedIn);
+    await t.start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" });
+    signedIn = ACCOUNT_B;
+    await t.stopCaptureOnUnmount();
+    expect(s.pending.value).toMatchObject({ transcriptionId: null, audioPath: AUDIO });
+    expect(s.pendingFor(ACCOUNT_B).value).toBeNull();
+
+    // Signed out before the view closed: still kept, under A.
+    signedIn = ACCOUNT_A;
+    const u = setup();
+    const ut = u.remountWith(() => signedIn);
+    await ut.start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" });
+    signedIn = null;
+    await ut.stopCaptureOnUnmount();
+    expect(u.pending.value).toMatchObject({ transcriptionId: null });
+
+    // Stop, cloud: the job and its record are A's.
+    signedIn = ACCOUNT_A;
+    const v = setup();
+    const vt = v.remountWith(() => signedIn);
+    v.a.gets.push(job("completed"));
+    const { sessionId } = await vt.start({ model: "QuantizedTinyEn", language: "en", engine: "private-cloud" });
+    v.state.onStopped = (session) => v.n.emitReady({ sessionId: session, captureHandle: "h1", partial: false });
+    signedIn = ACCOUNT_B;
+    const result = (await vt.stop()) as CloudTranscriptResult;
+    expect(v.pending.value).toMatchObject({ sessionId, transcriptionId: ID });
+    expect(v.pendingFor(ACCOUNT_B).value).toBeNull();
+    // Finishing it clears A's record, whoever is signed in now.
+    await vt.finishCloudTranscript(result);
+    expect(v.pending.value).toBeNull();
   });
 
   test("the pre-TC-772 shared record is adopted only by the account that can read its job", async () => {
