@@ -40,12 +40,13 @@ describe("recorderReducer", () => {
       id: "rec-9",
       startedAt: 500,
       maxDurationMs: 60_000,
+      audioMs: 5000,
       mic: { state: "silenced", reason: "os_silenced" },
     });
     expect(picked).toMatchObject({ phase: "recording", recordingId: "rec-9", startedAt: 500, maxDurationMs: 60_000, mic: { state: "silenced" } });
     // Never over a save in progress.
     const saving = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: null }], recording());
-    expect(recorderReducer(saving, { type: "PICKED_UP", id: "x", startedAt: 0, mic: { state: "recording", reason: null } })).toBe(saving);
+    expect(recorderReducer(saving, { type: "PICKED_UP", id: "x", startedAt: 0, maxDurationMs: 60_000, audioMs: 0, mic: { state: "recording", reason: null } })).toBe(saving);
   });
 
   test("mic state applies only while recording", () => {
@@ -56,14 +57,19 @@ describe("recorderReducer", () => {
 
   test("pause waits for native confirmation; Resume and a failed reacquisition are surfaced", () => {
     const requested = recorderReducer(recording(), { type: "PAUSE_REQUESTED" });
-    expect(requested.mic).toEqual({ state: "recording", reason: null });
+    expect(requested).toMatchObject({ mic: { state: "recording", reason: null }, controlPending: "pause" });
+    expect(recorderReducer(requested, { type: "PAUSE_REQUESTED" })).toBe(requested);
     expect(recorderReducer(requested, { type: "PAUSE_FAILED", error: "busy" })).toMatchObject({ mic: { state: "recording" }, error: "busy" });
     const paused = recorderReducer(requested, { type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
-    expect(paused).toMatchObject({ phase: "recording", mic: { state: "paused", reason: "user" } });
-    expect(recorderReducer(paused, { type: "RESUME_REQUESTED" }).error).toBeNull();
-    const failed = recorderReducer(paused, { type: "RESUME_FAILED", error: "microphone_busy" });
+    expect(paused).toMatchObject({ phase: "recording", mic: { state: "paused", reason: "user" }, controlPending: "pause" });
+    const confirmed = recorderReducer(paused, { type: "PAUSE_CONFIRMED" });
+    expect(confirmed.controlPending).toBeNull();
+    const resuming = recorderReducer(confirmed, { type: "RESUME_REQUESTED" });
+    expect(resuming).toMatchObject({ controlPending: "resume", error: null });
+    expect(recorderReducer(resuming, { type: "RESUME_REQUESTED" })).toBe(resuming);
+    const failed = recorderReducer(resuming, { type: "RESUME_FAILED", error: "microphone_busy" });
     expect(failed).toMatchObject({ mic: { state: "needs_user", reason: "resume_blocked" }, error: "microphone_busy" });
-    expect(recorderReducer(failed, { type: "MIC_STATE", mic: { state: "recording", reason: null } }).mic.state).toBe("recording");
+    expect(recorderReducer(failed, { type: "MIC_STATE", mic: { state: "needs_user", reason: "resume_blocked" } })).toMatchObject({ error: "microphone_busy" });
     expect(recorderReducer(paused, { type: "STOP_REQUESTED" }).phase).toBe("stopping");
     expect(recorderReducer(paused, { type: "DISCARD_REQUESTED", id: "rec-1" }).phase).toBe("discarding");
   });
@@ -96,17 +102,20 @@ describe("recorderReducer", () => {
     expect(recorderReducer(failed, { type: "DISMISSED" })).toMatchObject({ outcome: null, error: null });
   });
 
-  test("a failed stop is told; not_recording leaves the error alone", () => {
+  test("a failed stop uses the checked native status, and unknown remains visible", () => {
     const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED" });
-    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "no_audio_captured" })).toMatchObject({ phase: "recording", error: "no_audio_captured" });
-    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: null })).toMatchObject({ phase: "idle", error: null });
+    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "busy", status: "active", mic: { state: "paused", reason: "user" }, audioMs: 41_000 }))
+      .toMatchObject({ phase: "recording", mic: { state: "paused" }, audioMs: 41_000, error: "busy" });
+    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: null, status: "idle" })).toMatchObject({ phase: "idle", error: null });
+    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "Could not check", status: "unknown" }))
+      .toMatchObject({ phase: "stopping", error: "Could not check" });
   });
 
   test("AUTO_STOPPED during stopping: the limit's save takes over and a late not_recording cannot reset it", () => {
     const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED" });
     const auto = recorderReducer(stopping, { type: "AUTO_STOPPED", id: "rec-1", notice: "Stopped at the 60-minute limit.", captured: true });
     expect(auto).toMatchObject({ phase: "saving", autoSaving: true, limitNotice: "Stopped at the 60-minute limit." });
-    expect(recorderReducer(auto, { type: "STOP_FAILED", error: null })).toBe(auto);
+    expect(recorderReducer(auto, { type: "STOP_FAILED", error: null, status: "idle" })).toBe(auto);
     const saved = recorderReducer(auto, { type: "SAVED", id: "rec-1", durationMs: 3_600_000, at: 1 });
     expect(saved).toMatchObject({ phase: "idle", outcome: "saved", autoSaving: false, limitNotice: "Stopped at the 60-minute limit." });
   });
@@ -185,7 +194,7 @@ describe("recorderReducer", () => {
       { type: "SAVED", id: "rec-1", durationMs: 1, at: 1 },
       { type: "SAVE_FAILED", error: "x", recording: null },
       { type: "RESET" },
-      { type: "STOP_FAILED", error: null },
+      { type: "STOP_FAILED", error: null, status: "idle" },
     ] satisfies RecorderEvent[]) {
       expect(recorderReducer(discarding, event)).toBe(discarding);
     }
