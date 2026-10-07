@@ -9,6 +9,7 @@ public enum SttBenchmarkError: Error {
     case missingFixture(String)
     case invalidAudio(String)
     case invalidThreads
+    case invalidFixture(String)
 }
 
 public enum SttBenchmark {
@@ -20,7 +21,10 @@ public enum SttBenchmark {
         let output = directory.appendingPathComponent("results/ios", isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         var summary: [[String: Any]] = []
-        for name in ["ls-1089-10m", "ami-es2004a-10m", "ls-alt-2spk-10m"] {
+        let fixtureNames = ["ls-1089-10m", "ami-es2004a-10m", "ls-alt-2spk-10m"]
+        let only = ProcessInfo.processInfo.environment["EXO_STT_BENCH_ONLY"]
+        if let only, !fixtureNames.contains(only) { throw SttBenchmarkError.invalidFixture(only) }
+        for name in only.map({ [$0] }) ?? fixtureNames {
             let samples = try readWav(directory.appendingPathComponent("\(name).wav"))
             for threadCount in threads {
                 let model = directory.appendingPathComponent("models/full", isDirectory: true)
@@ -32,7 +36,8 @@ public enum SttBenchmark {
                     "fixture": name, "threads": threadCount, "audioSeconds": Double(samples.count) / 16_000,
                     "loadSeconds": result.loadSeconds, "decodeSeconds": result.decodeSeconds,
                     "rtf": result.decodeSeconds / (Double(samples.count) / 16_000),
-                    "peakPhysFootprintBytes": result.peakPhysFootprintBytes
+                    "peakPhysFootprintBytes": result.peakPhysFootprintBytes,
+                    "speechSegments": result.speechSegments
                 ]
                 if name != "ls-1089-10m" {
                     let diar = try diarize(samples: samples, model: directory.appendingPathComponent("models/diarization"), threads: threadCount)
@@ -73,6 +78,7 @@ public enum SttBenchmark {
         let loadSeconds: Double
         let decodeSeconds: Double
         let peakPhysFootprintBytes: UInt64
+        let speechSegments: Int
     }
 
     private static func recognize(samples: [Float], model: URL, threads: Int) throws -> Recognition {
@@ -93,25 +99,62 @@ public enum SttBenchmark {
                                                        modelConfig: modelConfig, decodingMethod: "greedy_search")
         let recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         let loaded = CFAbsoluteTimeGetCurrent()
+        let chunks = try speechChunks(samples: samples,
+                                      model: model.deletingLastPathComponent().appendingPathComponent("silero_vad.onnx"),
+                                      threads: threads)
         var peak = footprint()
         var texts: [String] = []
         var words: [TimedWord] = []
-        let chunk = 25 * 16_000
-        for offset in stride(from: 0, to: samples.count, by: chunk) {
-            let result = recognizer.decode(samples: Array(samples[offset..<min(offset + chunk, samples.count)]))
+        for chunk in chunks {
+            let result = recognizer.decode(samples: chunk.samples)
             peak = max(peak, footprint())
             texts.append(result.text)
             let tokens = result.text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
             for (index, token) in tokens.enumerated() {
                 let start = index < result.timestamps.count ? Double(result.timestamps[index]) : 0
                 let duration = index < result.durations.count ? Double(result.durations[index]) : 0
-                let origin = Double(offset) / 16_000
+                let origin = Double(chunk.start) / 16_000
                 words.append(.init(start: origin + start, end: origin + start + max(0, duration), text: token))
             }
         }
         return Recognition(text: texts.joined(separator: " "), words: words,
                            loadSeconds: loaded - loadStart, decodeSeconds: CFAbsoluteTimeGetCurrent() - loaded,
-                           peakPhysFootprintBytes: peak)
+                           peakPhysFootprintBytes: peak, speechSegments: chunks.count)
+    }
+
+    private struct SpeechChunk {
+        let start: Int
+        let samples: [Float]
+    }
+
+    private static func speechChunks(samples: [Float], model: URL, threads: Int) throws -> [SpeechChunk] {
+        guard FileManager.default.fileExists(atPath: model.path) else {
+            throw SttBenchmarkError.missingFixture(model.path)
+        }
+        // The production path uses Silero before ASR. Short speech units avoid
+        // Parakeet dropping the latter half of a fixed 25-second audio slice.
+        var config = sherpaOnnxVadModelConfig(
+            sileroVad: sherpaOnnxSileroVadModelConfig(model: model.path,
+                                                     minSilenceDuration: 0.4,
+                                                     minSpeechDuration: 0.1,
+                                                     maxSpeechDuration: 10.0),
+            numThreads: threads)
+        let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: 30)
+        var chunks: [SpeechChunk] = []
+        func drain() {
+            while !vad.isEmpty() {
+                let segment = vad.front()
+                chunks.append(.init(start: segment.start, samples: segment.samples))
+                vad.pop()
+            }
+        }
+        for offset in stride(from: 0, to: samples.count, by: 512) {
+            vad.acceptWaveform(samples: Array(samples[offset..<min(offset + 512, samples.count)]))
+            drain()
+        }
+        vad.flush()
+        drain()
+        return chunks
     }
 
     private struct Diarization {
