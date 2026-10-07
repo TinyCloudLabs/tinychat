@@ -60,6 +60,8 @@
 	<string>Exo's development preview can add sample steps, sleep and heart rate to Health for testing. Exo never writes health data otherwise.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Exo records voice notes you start, and saves them to your TinyCloud space.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

@@ -141,7 +141,7 @@ log "collecting screenshot and logs"
 xcrun simctl io "$udid" screenshot "$out/screenshot.png" >/dev/null 2>&1 || fail "screenshot failed"
 xcrun simctl spawn "$udid" log show --style compact --last 10m --info --debug \
   --predicate 'process == "App" OR subsystem == "xyz.tinycloud.exo"' >"$out/unified.log" 2>&1 || true
-crashes=$(find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' \) 2>/dev/null || true)
+crashes=$(find "$reports" -newer "$marker" -type f \( -name 'App-*' -o -name 'App_*' -o -name 'ExoWidgets*' \) 2>/dev/null || true)
 if [ -n "$crashes" ]; then
   fail "crash report(s): $(echo "$crashes" | xargs -n1 basename | tr '\n' ' ')"
   mkdir -p "$out/crashes"
