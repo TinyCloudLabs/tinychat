@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { deserializeDelegation, type TinyCloudNode } from "@tinycloud/node-sdk";
 import type { ServerInfoPermission } from "@tinyboilerplate/core";
 import type { VerifiedTranscriptWriter } from "./delegation-verify.js";
@@ -84,7 +85,7 @@ export async function activateVerifiedDelegation(
   for (const resource of verified.resources) {
     await options.beforeNodeWrite?.();
     const actions = [...resource.actions];
-    const access = await node.useDelegation({
+    const access = await observeActivation(options.host, () => node.useDelegation({
       cid: verified.cid,
       delegationHeader: { Authorization: verified.authorization },
       spaceId: verified.spaceId,
@@ -96,7 +97,7 @@ export async function activateVerifiedDelegation(
       ownerAddress: verified.ownerAddress,
       chainId: verified.chainId,
       host: options.host,
-    });
+    }));
     activated.push({ service: normalizeResourceService(resource.service), resource, access });
   }
   const combined = activated[0].access as DelegatedAccess & Record<string, unknown>;
@@ -107,6 +108,69 @@ export async function activateVerifiedDelegation(
   const sqlResource = activated.find(({ service }) => service === "sql");
   if (sqlResource) Object.defineProperty(combined, "sql", { value: sqlResource.access.sql, configurable: true });
   return combined;
+}
+
+/**
+ * The node refused (or failed) a delegated-session activation. `useDelegation()` in the pinned
+ * SDK throws a plain `Error("Failed to activate delegated session: <body>")` and drops the HTTP
+ * status of its `POST {host}/delegate`; this carries the status it actually observed, so a
+ * revoked grant (401/403) can be told apart from a node outage (5xx).
+ */
+export class DelegationActivationError extends Error {
+  readonly status: number;
+  constructor(status: number, options: { cause: unknown }) {
+    super(`Delegated session activation failed with HTTP ${status}`, options);
+    this.name = "DelegationActivationError";
+    this.status = status;
+  }
+}
+
+interface ActivationScope { url: string; statuses: number[] }
+const activationScope = new AsyncLocalStorage<ActivationScope>();
+const ACTIVATION_OBSERVER = Symbol.for("tinychat.delegation-activation-observer");
+type ObservedFetch = typeof fetch & { [ACTIVATION_OBSERVER]?: true };
+
+/**
+ * The SDK resolves the global `fetch` at call time and accepts no injected one, so the status is
+ * captured by a pass-through wrapper. It records only inside an `observeActivation` scope, only
+ * for `POST {host}/delegate`, and never alters a request or response. Re-wrapped when something
+ * else has replaced `globalThis.fetch` since.
+ */
+function installActivationObserver(): void {
+  const current = globalThis.fetch as ObservedFetch;
+  if (current[ACTIVATION_OBSERVER]) return;
+  const observed = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await current(input, init);
+    const scope = activationScope.getStore();
+    if (scope && requestMethod(input, init) === "POST" && requestUrl(input) === scope.url) {
+      scope.statuses.push(response.status);
+    }
+    return response;
+  }, current, { [ACTIVATION_OBSERVER]: true as const });
+  globalThis.fetch = observed;
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+}
+
+function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  return (init?.method ?? (typeof input === "object" && "method" in input ? input.method : "GET")).toUpperCase();
+}
+
+/** Run one activation; if it throws after the node answered non-2xx, rethrow with that status. */
+async function observeActivation<T>(host: string, activate: () => Promise<T>): Promise<T> {
+  installActivationObserver();
+  // The same template the SDK uses for its activation request.
+  const scope: ActivationScope = { url: `${host}/delegate`, statuses: [] };
+  try {
+    return await activationScope.run(scope, activate);
+  } catch (error) {
+    const rejected = [...scope.statuses].reverse().find((status) => status < 200 || status > 299);
+    // No observed answer (network failure, or a throw before the request) keeps the original.
+    if (rejected !== undefined) throw new DelegationActivationError(rejected, { cause: error });
+    throw error;
+  }
 }
 
 type KvAccess = DelegatedAccess["kv"];
