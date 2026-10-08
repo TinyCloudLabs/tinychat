@@ -197,10 +197,13 @@ describe("the cohort off state (B-ingest)", () => {
 
   test("the disconnect note renders, below the bullets that point at it", () => {
     const body = text(cohortOff);
-    expect(body).toContain("Disconnecting undoes all of it");
-    expect(body.indexOf("Disconnecting undoes all of it")).toBeGreaterThan(
+    // Both variants open the note this way; the render here has no observed delivery status, so it
+    // shows the transcript-writer variant, which qualifies "all of it".
+    expect(body).toContain("Disconnecting undoes all of");
+    expect(body.indexOf("Disconnecting undoes all of")).toBeGreaterThan(
       body.indexOf("see below"),
     );
+    expect(body).toContain("Disconnecting Fireflies does not remove the separate Notetaker permission");
   });
 
   test("a real checkbox exists under B-ingest — and does NOT exist under C", () => {
