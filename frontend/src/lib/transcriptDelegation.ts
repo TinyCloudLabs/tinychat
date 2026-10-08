@@ -23,8 +23,8 @@ export { serverDeliveryActive };
 export type EnsureResult = "active" | "disabled" | "busy" | "unavailable";
 
 interface Options { tcw: TinyCloudWeb; backendUrl: string; sessionStore: SessionStore }
-/** `rejected`: the last failure was a definite rejection, so even an urgent need waits long. */
-interface Backoff { failures: number; lastFailureAt: number; jitter: number; rejected?: boolean }
+/** `rejections`: how many of the latest failures, in a row, were definite rejections. */
+interface Backoff { failures: number; lastFailureAt: number; jitter: number; rejections?: number }
 
 function sessionExpiration(siwe: string): number {
   const value = /^Expiration Time:\s*(\S+)/im.exec(siwe)?.[1];
@@ -50,20 +50,23 @@ function readBackoff(key: string): Backoff | null {
     const b = JSON.parse(raw) as Backoff;
     if (Number.isInteger(b.failures) && b.failures > 0 && Number.isFinite(b.lastFailureAt)
       && Number.isFinite(b.jitter) && b.jitter >= 0 && b.jitter < 1
-      && (b.rejected === undefined || typeof b.rejected === "boolean")) return b;
+      && (b.rejections === undefined || (Number.isInteger(b.rejections) && b.rejections > 0 && b.rejections <= b.failures))) return b;
   } catch { /* Invalid/old records are reset. */ }
   storage().removeItem(key);
   return null;
 }
 
 /**
- * Recompute from urgency on every evaluation: an urgent renewal cannot inherit a six-hour wait,
- * unless the last failure was a definite rejection, which five more minutes will not change.
+ * Recompute from urgency on every evaluation: an urgent renewal cannot inherit a six-hour wait.
+ * A run of definite rejections, which five more minutes will not change, earns the long cap, but
+ * only that run counts toward it: earlier outages do not stretch an urgent renewal's wait.
  */
 export function nextTranscriptAttempt(backoff: Backoff | null, urgent: boolean): number {
   if (!backoff) return 0;
-  const cap = urgent && !backoff.rejected ? 5 * 60_000 : 6 * 60 * 60_000;
-  const base = 60_000 * 2 ** Math.min(backoff.failures - 1, 20);
+  const rejections = backoff.rejections ?? 0;
+  const cap = urgent && rejections === 0 ? 5 * 60_000 : 6 * 60 * 60_000;
+  const count = urgent && rejections > 0 ? rejections : backoff.failures;
+  const base = 60_000 * 2 ** Math.min(count - 1, 20);
   return backoff.lastFailureAt + Math.min(cap, base * (1 + 0.2 * backoff.jitter));
 }
 
@@ -92,7 +95,8 @@ function recordFailure(key: string, options: Options, urgent: boolean, rejected 
     const previous = readBackoff(key);
     const backoff: Backoff = {
       failures: (previous?.failures ?? 0) + 1, lastFailureAt: Date.now(), jitter: Math.random(),
-      ...(rejected ? { rejected: true } : {}),
+      // Any other failure ends the run of rejections.
+      ...(rejected ? { rejections: (previous?.rejections ?? 0) + 1 } : {}),
     };
     storage().setItem(key, JSON.stringify(backoff));
     if (options.sessionStore.getAddress()?.toLowerCase() === options.tcw.address()?.toLowerCase()) {
