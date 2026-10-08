@@ -1,6 +1,10 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { DelegationResponse } from "@tinyboilerplate/core";
+import {
+  beginTranscriptConsentStatus, clearTranscriptConsentStatus, resolveTranscriptConsentStatus,
+  subscribeTranscriptConsent, transcriptConsentState,
+} from "./transcriptDeliveryState";
 const previousHTMLElement = globalThis.HTMLElement;
 const previousCustomElements = globalThis.customElements;
 globalThis.HTMLElement ??= class {} as never;
@@ -40,6 +44,32 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "navigator");
   if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
   else Reflect.deleteProperty(globalThis, "localStorage");
+});
+
+describe("per-account transcript consent status", () => {
+  it("requires an observed active grant, keeps unknown conservative, and ignores a previous account", () => {
+    const other = "0x0000000000000000000000000000000000000def";
+    const observed: string[] = [];
+    const unsubscribe = subscribeTranscriptConsent(() => observed.push(transcriptConsentState()));
+    try {
+      beginTranscriptConsentStatus(address);
+      resolveTranscriptConsentStatus(address, { status: "none", verified: false, delivery: "enabled", expiresAt: null });
+      expect(transcriptConsentState()).toBe("inactive");
+      beginTranscriptConsentStatus(other);
+      resolveTranscriptConsentStatus(address, { status: "active", verified: true, delivery: "enabled", expiresAt: null });
+      expect(transcriptConsentState()).toBe("unknown");
+      resolveTranscriptConsentStatus(other, { status: "active", verified: true, delivery: "schema_missing", expiresAt: null });
+      expect(transcriptConsentState()).toBe("unknown");
+      resolveTranscriptConsentStatus(other, { status: "active", verified: true, delivery: "enabled", expiresAt: null });
+      clearTranscriptConsentStatus(address);
+      expect(transcriptConsentState()).toBe("active");
+      clearTranscriptConsentStatus(other);
+      expect(observed).toEqual(["inactive", "unknown", "active", "unknown"]);
+    } finally {
+      clearTranscriptConsentStatus(other);
+      unsubscribe();
+    }
+  });
 });
 
 function setup(schemaFails: boolean, status: "none" | "schema_missing" = "none") {
@@ -183,6 +213,39 @@ describe("silent transcript-writer renewal", () => {
       siwe: expect.stringContaining("Expiration Time:"),
       signature: "0xsigned",
     });
+  });
+  it("uses observed grant status for consent and discloses during an uncertain POST", async () => {
+    const disabled = mintHarness({ delivery: "disabled" });
+    expect(transcriptConsentState()).toBe("unknown");
+    expect(await disabled.run()).toBe("disabled");
+    expect(transcriptConsentState()).toBe("inactive");
+
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const enabled = mintHarness({}, 30, {
+      onPost: async () => { entered.resolve(); await release.promise; },
+    });
+    const pending = enabled.run();
+    await entered.promise;
+    expect(transcriptConsentState()).toBe("unknown");
+    release.resolve();
+    expect(await pending).toBe("active");
+    expect(transcriptConsentState()).toBe("active");
+  });
+
+  it("keeps the inactive consent when schema repair fails before any grant POST", async () => {
+    const { tcw, sessionStore } = setup(true);
+    expect(await ensureTranscriptWriterDelegation({ tcw, sessionStore, backendUrl: "https://localhost:31314" })).toBe("unavailable");
+    expect(transcriptConsentState()).toBe("inactive");
+  });
+
+  it("uses the conservative consent state when a later status request fails", async () => {
+    const f = mintHarness({ delivery: "disabled" });
+    expect(await f.run()).toBe("disabled");
+    expect(transcriptConsentState()).toBe("inactive");
+    globalThis.fetch = (async () => { throw new Error("Status unavailable"); }) as typeof fetch;
+    expect(await f.run()).toBe("unavailable");
+    expect(transcriptConsentState()).toBe("unknown");
   });
   it("does not re-mint a grant near the end of a three-day session without useful extension", async () => {
     const f = mintHarness({}, 3);

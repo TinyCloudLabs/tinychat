@@ -1,7 +1,7 @@
 /**
  * Background-sync consent copy — the shipped variants, centralized for renderers.
- * Do not restate or extend these sentences in JSX. TC-641 did not change user-facing
- * copy; Sam's decision on its relationship to server transcript delivery is pending.
+ * Do not restate or extend these sentences in JSX. Inactive transcript delivery
+ * preserves the original copy; an active grant selects the separate disclosure.
  *
  * The operator chose **Option C** for Fireflies (recorded in
  * `docs/connector-webhooks-delegation-gate.md`): its webhook queues meeting ids
@@ -16,8 +16,8 @@
  * your chats", "only your connectors data"). The node cannot confine a SQL delegation to a
  * path (§0a); `test/connectors/fixtures/V3_VERDICT.json` still records the escape.
  * Option C's "no new permission" wording refers to Fireflies webhook ingestion,
- * not to the backend's whole policy. TC-641 separately advertises a
- * transcript-writer grant; acceptance is gated, and Sam's copy decision is pending.
+ * not to the backend's whole policy. TC-641's independent transcript-writer
+ * grant is disclosed when its status is active or cannot be determined.
  *
  * INGEST-CUTOVER(plan §11): this file now carries a SECOND text,
  * `BACKEND_INGEST_CONSENT_COPY`, for the backend-ingest dark cohort. Option C below is unchanged
@@ -30,7 +30,12 @@
  * It renders through the same interface, so the text lives here instead of JSX.
  */
 
-export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin";
+import type { TranscriptConsentState } from "../transcriptDeliveryState";
+
+export type ConsentCopyVariant =
+  | "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin"
+  | "C-transcript-writer" | "B-ingest-transcript-writer"
+  | "google-oauth-transcript-writer" | "google-calendar-autojoin-transcript-writer";
 
 export interface BackgroundSyncConsentCopy {
   /** Identifies the copy variant for renderers. */
@@ -115,13 +120,13 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
  *
  * The Option-C "no new permission on your space" sentence concerns Fireflies ingestion:
  * that path mints no Fireflies connector delegation and holds its credential out of band.
- * TC-641 separately advertises a transcript-writer grant on `connectors` SQL read/write
- * and transcriber KV get/put, though acceptance defaults off. The unchanged wording's
- * broader implication is pending Sam's consent-copy decision.
+ * TC-641 separately advertises a transcript-writer grant on `connectors` SQL
+ * read/write and transcriber KV get/put. The active-grant variant below
+ * discloses its distinct custody; the original text remains the inactive copy.
  *
- * **The words below ARE the Gate 6 approval artifact.**
- * `docs/connector-webhooks-backend-ingest-consent-copy.md` mirrors them for the operator;
- * keep that document aligned if Sam approves a copy change.
+ * **The original words below ARE the Gate 6 approval artifact.**
+ * `docs/connector-webhooks-backend-ingest-consent-copy.md` mirrors the inactive
+ * Fireflies wording; the transcript-writer variant changes its permission sentence.
  *
  * **RENDERED (residual F011 — CLOSED 2026-08-11, operator-approved unfreeze).** The renderer,
  * `frontend/src/chat/BackgroundSyncSection.tsx`, probes the cohort-gated
@@ -319,3 +324,64 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
   consentCheckbox: "I authorize unattended Calendar reading and encrypted server storage of my Google refresh token to autojoin eligible meetings.",
   disconnectNote: "Disconnecting also asks Google to revoke access and removes the browser token. A failed revoke is reported; local token copies are still removed. Your recordings remain available.",
 };
+
+/** A transcript-writer grant is separate from each connector's own permissions. */
+const TRANSCRIPT_WRITER_NOTICE =
+  "Separately, because the TinyCloud Private Notetaker is on, our server can save its meeting " +
+  "transcripts into your space when a meeting ends.";
+
+export const BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...BACKGROUND_SYNC_CONSENT_COPY,
+  variant: "C-transcript-writer",
+  bullets: BACKGROUND_SYNC_CONSENT_COPY.bullets.map((bullet, index) => index === 2
+    ? "Turning this on gives our server **no new permission** on your space. Background sync asks " +
+      `you to grant nothing. ${TRANSCRIPT_WRITER_NOTICE} Your browser still saves Fireflies ` +
+      "meetings into your space."
+    : bullet),
+};
+
+export const BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...BACKEND_INGEST_CONSENT_COPY,
+  variant: "B-ingest-transcript-writer",
+  bullets: BACKEND_INGEST_CONSENT_COPY.bullets.map((bullet, index) => index === 3
+    ? "Turning this on gives our server **no new permission on your space**. Background sync asks " +
+      "you to grant nothing — the credential above is held by our server, outside your space. " +
+      "Your browser still saves Fireflies meetings into your space when you are signed in with " +
+      "your vault unlocked, so your own copy lands where it always did — and it stays yours: it " +
+      `is not deleted when our 90-day window closes. ${TRANSCRIPT_WRITER_NOTICE} What changed ` +
+      "with this Fireflies toggle is what our server now *has*: your Fireflies token, and a copy " +
+      "of your meetings."
+    : bullet),
+};
+
+export const GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...GOOGLE_MEET_CONSENT_COPY,
+  variant: "google-oauth-transcript-writer",
+  bullets: GOOGLE_MEET_CONSENT_COPY.bullets.map((bullet, index) => index === 3
+    ? "Connecting gives our server **no new permission** on your space. This Google connection " +
+      "asks you to grant nothing on your space — the synced Google meetings are written by your " +
+      `browser, as they are today. ${TRANSCRIPT_WRITER_NOTICE}`
+    : bullet),
+};
+
+export const GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  ...GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
+  variant: "google-calendar-autojoin-transcript-writer",
+  bullets: GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY.bullets.map((bullet, index) =>
+    index === 3 ? `${bullet} ${TRANSCRIPT_WRITER_NOTICE}` : bullet),
+};
+
+/** Unknown status uses the disclosure; inactive preserves every original byte. */
+export function transcriptAwareConsentCopy(
+  copy: BackgroundSyncConsentCopy,
+  state: TranscriptConsentState,
+): BackgroundSyncConsentCopy {
+  if (state === "inactive") return copy;
+  switch (copy.variant) {
+    case "C": return BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY;
+    case "B-ingest": return BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY;
+    case "google-oauth": return GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY;
+    case "google-calendar-autojoin": return GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY;
+    default: return copy;
+  }
+}
