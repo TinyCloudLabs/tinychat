@@ -76,6 +76,26 @@ import XCTest
         }
     }
 
+    func testAutomaticBackgroundRestartRefusalDoesNotBackOff() throws {
+        try withEngine { engine in
+            let id = try XCTUnwrap(engine.start()["id"] as? String)
+            engine.interruptionBegan()
+            let epoch = engine.debugEpoch
+            engine.debugForeground = false
+            engine.debugActivationError = NSError(domain: "test", code: 42)
+            engine.interruptionEnded()
+            XCTAssertEqual(engine.status()["state"] as? String, "needs_user")
+            XCTAssertEqual(engine.status()["reason"] as? String, "resume_not_allowed")
+            XCTAssertFalse(engine.debugRetryPending)
+            XCTAssertEqual(engine.debugResumeNotices.count, 1)
+            XCTAssertEqual(engine.debugResumeNotices.first?.epoch, epoch)
+            XCTAssertTrue(try events(engine, id).contains {
+                $0["e"] as? String == "avail" && $0["value"] as? String == "blocked" &&
+                $0["reason"] as? String == "resume_not_allowed"
+            })
+        }
+    }
+
     func testBackoffCapStaleNotificationAndStop() throws {
         try withEngine { engine in
             let id = try XCTUnwrap(engine.start()["id"] as? String)
