@@ -46,7 +46,9 @@ paused foreground notification remains the route for locked-screen Resume.
   13.444 s with 1.486 s before Pause. The pulled AAC file is in
   `/tmp/exo-capture/evidence/T14/api34-background-note.m4a`; `ffprobe`
   reports mono 44.1 kHz AAC. Its post-pause audio has `mean_volume: -37.0 dB`
-  and `max_volume: -2.8 dB` (`ffmpeg -ss 1.6 -af volumedetect`).
+  and `max_volume: -2.8 dB` (`ffmpeg -ss 1.6 -af volumedetect`). This run
+  preceded the final first-PCM/state-publication fix and must be repeated on
+  the final build before closing the emulator gate.
 - API 36: stale action and injected read error tests passed (2/2). A later
   five-minute run reached Pause, but the emulator stopped answering guest
   commands before Resume and the runner never returned an assertion. The
