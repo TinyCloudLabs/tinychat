@@ -587,10 +587,10 @@ describe("durable transcript delivery", () => {
     await worker.stop();
   });
 
-  it("counts grant-store reads for non-cohort addresses against the sweep's call cap", async () => {
-    const f = await fixture();
-    const addresses = Array.from({ length: 250 }, (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}`);
-    const stored = new Map(addresses.map((address) => [address, `envelope-${address}`]));
+  /** Non-cohort addresses, some holding a stored grant, behind a grant store that logs each read. */
+  async function nonCohortSweep(f: Fixture, holders: (index: number) => boolean, count: number) {
+    const addresses = Array.from({ length: count }, (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}`);
+    const stored = new Map(addresses.filter((_, i) => holders(i)).map((address) => [address, `envelope-${address}`]));
     for (const address of addresses) await f.index.add(address, "m");
     const reads: string[] = [];
     const worker = f.worker({
@@ -604,20 +604,46 @@ describe("durable transcript delivery", () => {
         async remove(address) { stored.delete(address); },
       },
     });
-    await worker.sweep();
-    // A removal reads twice (find, then compare-and-delete): at most 200 reads, so 100 addresses.
-    expect(reads.length).toBeGreaterThan(0);
-    expect(reads.length).toBeLessThanOrEqual(200);
-    for (let pass = 0; pass < 6 && stored.size > 0; pass++) {
-      const before = reads.length;
-      await worker.sweep();
-      expect(reads.length - before).toBeLessThanOrEqual(200);
-    }
+    /** One sweep; returns the reads it made. */
+    const sweep = async () => { const before = reads.length; await worker.sweep(); return reads.slice(before); };
+    return { addresses, stored, reads, worker, sweep };
+  }
+
+  it("spends every scheduled sweep on non-cohort cleanup: 250 holders take three working sweeps", async () => {
+    const f = await fixture();
+    const { stored, reads, worker, sweep } = await nonCohortSweep(f, () => true, 250);
+    // Each holder costs two reads (find, then compare-and-delete): 100 + 100 + 50 holders.
+    const perSweep = [(await sweep()).length, (await sweep()).length, (await sweep()).length];
+    expect(perSweep).toEqual([200, 200, 100]);
     expect(stored.size).toBe(0);
-    // Checked once each: a later pass does not re-read an address it already cleared.
-    expect(reads.length).toBe(500);
+    // Checked once each: no pass re-reads an address an earlier pass cleared.
     expect(new Set(reads).size).toBe(250);
+    expect(reads.length).toBe(500);
     await worker.stop();
+  });
+
+  it("never lets a two-read grant check overrun the cap: it waits for the next pass instead", async () => {
+    const f = await fixture();
+    const random = Math.random;
+    Math.random = () => 0;
+    try {
+      // 199 one-read misses, then a holder, so the holder's check would be reads 200 and 201.
+      const { addresses, stored, worker, sweep } = await nonCohortSweep(f, (i) => i === 199 || i >= 250, 300);
+      const first = await sweep();
+      expect(first.length).toBe(199);
+      expect(first).not.toContain(addresses[199]);
+      expect(stored.has(addresses[199]!)).toBe(true);
+      // The next pass resumes at the deferred holder and still stays within the cap.
+      const second = await sweep();
+      expect(second.slice(0, 2)).toEqual([addresses[199], addresses[199]]);
+      expect(second.length).toBeLessThanOrEqual(200);
+      expect(stored.has(addresses[199]!)).toBe(false);
+      for (let pass = 0; pass < 3 && stored.size > 0; pass++) expect((await sweep()).length).toBeLessThanOrEqual(200);
+      expect(stored.size).toBe(0);
+      await worker.stop();
+    } finally {
+      Math.random = random;
+    }
   });
 
   it("removes foreign stored envelopes under their own owner key, warm and cold, without B activation", async () => {

@@ -107,6 +107,11 @@ export interface TranscriptDeliveryOptions {
 }
 
 /** Single process writer. A webhook only admits an indexed id; the sweep is the durable queue. */
+/** Upstream calls and non-cohort grant-store reads one sweep pass may spend. */
+const SWEEP_CALL_CAP = 200;
+/** A non-cohort grant check reads once, and once more to compare-and-delete a grant it finds. */
+const GRANT_CHECK_READS = 2;
+
 /** Only the node refusing an activation of the grant itself proves the grant is revoked. */
 function refusedActivation(error: unknown): boolean {
   return error instanceof DelegationActivationError && (error.status === 401 || error.status === 403);
@@ -520,16 +525,14 @@ export class TranscriptDeliveryWorker {
       this.cursor = { addresses, ai: addresses.length ? Math.floor(Math.random() * addresses.length) : 0, idOffset: 0, pendingOffset: 0, scanned: 0, calls: 0 };
     }
     const cursor = this.cursor;
-    if (cursor.calls >= 200 || cursor.scanned >= cursor.addresses.length) {
-      if (cursor.scanned >= cursor.addresses.length) this.cursor = undefined;
-      else { cursor.calls = 0; cursor.scanned = 0; }
-      return null;
-    }
-    while (cursor.scanned < cursor.addresses.length && cursor.calls < 200) {
+    if (cursor.calls >= SWEEP_CALL_CAP || cursor.scanned >= cursor.addresses.length) return this.endPass(cursor);
+    while (cursor.scanned < cursor.addresses.length && cursor.calls < SWEEP_CALL_CAP) {
       const address = cursor.addresses[cursor.ai];
       if (!this.options.eligibility(address)) {
         // Each grant-store read counts against the pass's call cap, so the first sweep after a
-        // boot (or a cohort narrowing) does not read every non-cohort address at once.
+        // boot (or a cohort narrowing) does not read every non-cohort address at once. A check
+        // that may compare-and-delete needs both its reads in this pass, or it waits for the next.
+        if (!this.ineligibleWithoutGrant.has(address) && SWEEP_CALL_CAP - cursor.calls < GRANT_CHECK_READS) break;
         cursor.calls += await this.dropIneligibleGrant(address);
         this.advanceAddress(cursor);
         continue;
@@ -570,7 +573,16 @@ export class TranscriptDeliveryWorker {
       cursor.calls++;
       return { address, id };
     }
+    return this.endPass(cursor);
+  }
+  /**
+   * End this pass. A finished rotation drops the cursor (the next pass re-lists addresses); a pass
+   * that ran out of budget keeps its position and starts the next pass with a fresh budget, so
+   * every scheduled sweep does work rather than spending one just resetting the count.
+   */
+  private endPass(cursor: SweepCursor): null {
     if (cursor.scanned >= cursor.addresses.length) this.cursor = undefined;
+    else { cursor.calls = 0; cursor.scanned = 0; }
     return null;
   }
   private advanceAddress(cursor: SweepCursor): void {
