@@ -24,7 +24,7 @@ export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call
   | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
   | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
 
-export type TranscriberId = "on-device" | "private-cloud" | "assemblyai";
+export type TranscriberId = "off" | "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
 export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }

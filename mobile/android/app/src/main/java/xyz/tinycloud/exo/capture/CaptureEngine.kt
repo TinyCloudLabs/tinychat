@@ -682,6 +682,10 @@ class CaptureEngine private constructor(private val context: Context) {
         val now = System.currentTimeMillis()
         return now - startedAt - pausedMs - if (pausedAt > 0) now - pausedAt else 0
     }
+    /** Whether a capture session is live right now (recording or paused). The on-device STT queue
+     * checks this before and between work units, and releases its model instead of competing with
+     * capture for CPU/memory (plan capture-priority handoff, §2.5). */
+    fun isCapturing(): Boolean = intent != "stopped"
     @Synchronized fun status(): JSONObject {
         val mic = MicStateContract.snapshot(state, reason, reasonDetail,
             onViolation = { Log.e("ExoCapture", it) })

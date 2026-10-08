@@ -10,11 +10,13 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../SttCore"),
+        .package(path: "../ExoCapture"),
         .package(url: "https://github.com/k2-fsa/sherpa-onnx", exact: "1.13.8")
     ],
     targets: [
         .target(name: "ExoStt", dependencies: [
             .product(name: "SttCore", package: "SttCore"),
+            .product(name: "ExoCapture", package: "ExoCapture", condition: .when(platforms: [.iOS])),
             .product(name: "sherpa-onnx", package: "sherpa-onnx")
         ]),
         .executableTarget(name: "SttBenchMac", dependencies: ["ExoStt"])

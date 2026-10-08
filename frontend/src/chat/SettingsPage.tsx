@@ -8,6 +8,7 @@ import {
   CreditCardIcon,
   DatabaseIcon,
   LogOutIcon,
+  MicIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
   SunIcon,
@@ -30,6 +31,8 @@ import { useBackendAttestation } from "../lib/useBackendAttestation";
 import { BackendAttestationDetails } from "./BackendAttestationDetails";
 import { useConversationCanvasFeature } from "./useExperimentalFeatures";
 import { TranscriptionSettings } from "./TranscriptionSettings";
+import { VoiceNotesTranscriberSettings } from "./VoiceNotesTranscriberSettings";
+import { nativeVoiceNotesAvailable } from "../lib/voiceNotes/nativeVoiceNotes";
 import { useSizeClass } from "../lib/sizeClass";
 import { PageHeader } from "../shell/PageHeader";
 import { PATHS } from "../shell/routes";
@@ -158,6 +161,11 @@ export function SettingsPage({
             />
           </SectionCard>
           <TranscriptionSettings tcw={tcw} />
+          {nativeVoiceNotesAvailable() && (
+            <SectionCard icon={MicIcon} title="Voice notes">
+              <VoiceNotesTranscriberSettings />
+            </SectionCard>
+          )}
           <SectionCard icon={ShieldCheckIcon} title="Infrastructure">
             <BackendAttestationPanel
               backendUrl={backendUrl}
