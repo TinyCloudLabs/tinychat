@@ -24,15 +24,27 @@ export function beginTranscriptConsentStatus(address: string): void {
   publish("unknown");
 }
 
+/**
+ * Only an explicit, known delivery value turns the browser courier on. A backend that omits the
+ * field (or sends one this build does not know) must not trigger minting or the browser's
+ * ten-minute fallback deferral. `schema_missing` is still on: it is the browser's repair cue.
+ */
+export function transcriptDeliveryEnabled(status: DelegationResponse): boolean {
+  return status.delivery === "enabled" || status.delivery === "schema_missing";
+}
+
 export function resolveTranscriptConsentStatus(address: string, status: DelegationResponse | null): void {
   if (consentAddress !== address.toLowerCase()) return;
   if (!status) { publish("unknown"); return; }
-  if (status.delivery === "disabled" || status.status !== "active" || !status.verified) {
-    publish("inactive");
+  if (status.status === "active" && status.verified) {
+    if (status.delivery === "disabled") { publish("inactive"); return; }
+    // schema_missing is retryable; a signed, active grant still exists.
+    publish(status.delivery === "enabled" ? "active" : "unknown");
     return;
   }
-  // schema_missing is retryable; a signed, active grant still exists.
-  publish(status.delivery === "enabled" ? "active" : "unknown");
+  // No usable grant yet. With the courier on it is about to mint one without a prompt, so the
+  // copy must already disclose it; only a courier that will not act keeps the original copy.
+  publish(transcriptDeliveryEnabled(status) ? "unknown" : "inactive");
 }
 
 export function clearTranscriptConsentStatus(address: string | null): void {

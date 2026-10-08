@@ -9,7 +9,7 @@ import { fetchServerInfoDid } from "./backendAttestation";
 import { localValidationEnabled } from "./localValidation";
 import {
   beginTranscriptConsentStatus, clearTranscriptConsentStatus, resolveTranscriptConsentStatus,
-  serverDeliveryActive, setServerDeliveryActive,
+  serverDeliveryActive, setServerDeliveryActive, transcriptDeliveryEnabled,
 } from "./transcriptDeliveryState";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -39,15 +39,6 @@ function need(status: DelegationResponse, sessionExpiry: number, now = Date.now(
   const missing = status.status !== "active" || status.verified !== true;
   const needed = missing || (remaining < 7 * DAY && gain > DAY);
   return { needed, urgent: needed && (missing || remaining < DAY) };
-}
-
-/**
- * Only an explicit, known delivery value turns the browser courier on. A backend that omits the
- * field (or sends one this build does not know) must not trigger minting or the browser's
- * ten-minute fallback deferral. `schema_missing` is still on: it is the browser's repair cue.
- */
-function deliveryEnabled(status: DelegationResponse): boolean {
-  return status.delivery === "enabled" || status.delivery === "schema_missing";
 }
 
 function storage(): Storage { return localStorage; }
@@ -151,7 +142,7 @@ async function underLock(options: Options, address: string, key: string, session
       }
       resolveTranscriptConsentStatus(address, status);
       observed = true;
-      setServerDeliveryActive(deliveryEnabled(status));
+      setServerDeliveryActive(transcriptDeliveryEnabled(status));
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
       const repair = status.delivery === "schema_missing";
@@ -272,7 +263,7 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
       }
       resolveTranscriptConsentStatus(address, status);
       observed = true;
-      setServerDeliveryActive(deliveryEnabled(status));
+      setServerDeliveryActive(transcriptDeliveryEnabled(status));
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
       const repair = status.delivery === "schema_missing";
