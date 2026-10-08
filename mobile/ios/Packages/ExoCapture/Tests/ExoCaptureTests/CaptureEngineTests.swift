@@ -181,6 +181,50 @@ import XCTest
         }
     }
 
+    func testPersistentStallBacksOffAndBlocksAtTenMinutes() throws {
+        try withEngine { engine in
+            var clock = ProcessInfo.processInfo.systemUptime
+            engine.debugNow = { clock }
+            engine.debugSuppressTaps()
+            let id = try XCTUnwrap(engine.start()["id"] as? String)
+            engine.debugAgeLastTap(by: 4)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(engine.status()["state"] as? String, "recording")
+            XCTAssertFalse(engine.debugRetryPending)
+
+            engine.debugRecordDeliveredTap()
+            engine.debugWatchdogTick() // A delivered buffer starts a fresh stall sequence.
+            engine.debugAgeLastTap(by: 4)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(engine.status()["state"] as? String, "recording")
+            XCTAssertFalse(engine.debugRetryPending)
+
+            engine.debugAgeLastTap(by: 4)
+            engine.debugWatchdogTick()
+            XCTAssertTrue(engine.debugRetryPending)
+            XCTAssertEqual((engine.status()["openSpan"] as? [String: Any])?["reason"] as? String,
+                           "stalled")
+            clock += 599
+            engine.debugRetryTick()
+            XCTAssertEqual(engine.status()["state"] as? String, "recording")
+            engine.debugAgeLastTap(by: 4)
+            engine.debugWatchdogTick()
+            XCTAssertTrue(engine.debugRetryPending)
+            clock += 1
+            engine.debugRetryTick()
+            engine.debugAgeLastTap(by: 4)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(engine.status()["state"] as? String, "needs_user")
+            XCTAssertEqual(engine.status()["reason"] as? String, "stalled")
+            XCTAssertFalse(engine.debugRetryPending)
+            XCTAssertLessThanOrEqual(engine.debugSegmentOpenCount, 5)
+            XCTAssertTrue(try events(engine, id).contains {
+                $0["e"] as? String == "avail" && $0["value"] as? String == "blocked" &&
+                $0["reason"] as? String == "stalled"
+            })
+        }
+    }
+
     func testRecordedLimitExcludesPauseInLiveEngine() throws {
         try withEngine { engine in
             let id = try XCTUnwrap(engine.start(requestedLimitMs: 3_000)["id"] as? String)
@@ -188,17 +232,24 @@ import XCTest
             try engine.pause()
             RunLoop.current.run(until: Date().addingTimeInterval(2.1))
             XCTAssertEqual(engine.status()["state"] as? String, "paused")
-            try engine.resume()
             let stopped = expectation(description: "recorded time limit")
             var completed: [String: Any]?
+            var stateStoppedAt: Date?
             let token = engine.observe { name, data, _ in
+                if name == "micState", data["state"] as? String == "idle",
+                   data["reason"] as? String == "max_duration" {
+                    stateStoppedAt = Date()
+                }
                 if name == "autoStopped", data["reason"] as? String == "max_duration" {
                     completed = data
                     stopped.fulfill()
                 }
             }
             defer { engine.removeObserver(token) }
+            try engine.resume()
+            let resumedAt = Date()
             wait(for: [stopped], timeout: 20)
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(stateStoppedAt).timeIntervalSince(resumedAt), 1.2)
             let recording = try XCTUnwrap(completed?["recording"] as? [String: Any])
             XCTAssertEqual(recording["id"] as? String, id)
             let sidecar = try engine.library.readSidecar(id)
@@ -226,6 +277,11 @@ import XCTest
                 if let id, action == "pause" {
                     XCTAssertEqual(engine.status()["state"] as? String, "paused")
                     XCTAssertEqual(try segmentCount(engine, id), 0)
+                    XCTAssertTrue(engine.debugLimitTimerArmed,
+                                  "the timer also drives the stall watchdog and disk check")
+                    engine.debugBeforeAttach = nil
+                    try engine.resume()
+                    XCTAssertTrue(engine.debugLimitTimerArmed)
                 }
                 if let stopped { wait(for: [stopped], timeout: 10) }
             }

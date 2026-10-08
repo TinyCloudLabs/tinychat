@@ -22,6 +22,10 @@ public final class CaptureEngine {
     private let tapTimeLock = NSLock()
     private var lastTapEndSample: AVAudioFramePosition?
     private var lastTapAt: TimeInterval = 0
+    private var tapDeliveryCount: UInt64 = 0
+    private var observedTapDeliveryCount: UInt64 = 0
+    private var consecutiveStalls = 0
+    private var stallBackoffActive = false
     private var writer: AacAdtsWriter?
     private var info: SessionInfo?
     private var intent = "stopped"
@@ -53,6 +57,7 @@ public final class CaptureEngine {
     private var retainedEvents: [(String, [String: Any])] = []
     #if DEBUG
     private var debugTesting = false
+    private var debugSuppressTapDelivery = false
     private(set) var debugResetNotifications = 0
     private(set) var debugResumeNotices: [(id: String, epoch: Int, reason: String)] = []
     private(set) var debugSegmentOpenCount = 0
@@ -91,6 +96,7 @@ public final class CaptureEngine {
         debugTesting = true
     }
     var debugGraphActive: Bool { graphActive || audioEngine?.isRunning == true }
+    var debugLimitTimerArmed: Bool { limitTimer?.isValid == true }
     var debugRetryPending: Bool { retryTimer != nil }
     var debugEpoch: Int { attempts.epoch }
     func debugRetryTick() { retryTimer?.invalidate(); retryTimer = nil; try? attemptResume(automatic: true) }
@@ -99,6 +105,15 @@ public final class CaptureEngine {
         tapTimeLock.lock(); lastTapAt = retryNow - seconds; tapTimeLock.unlock()
     }
     func debugWatchdogTick() { checkDurationLimit() }
+    func debugSuppressTaps() {
+        tapTimeLock.lock(); debugSuppressTapDelivery = true; tapTimeLock.unlock()
+    }
+    func debugRecordDeliveredTap() {
+        tapTimeLock.lock()
+        tapDeliveryCount &+= 1
+        lastTapAt = retryNow
+        tapTimeLock.unlock()
+    }
     #endif
 
     public func observe(_ body: @escaping (String, [String: Any], Bool) -> Void) -> UUID {
@@ -211,9 +226,15 @@ public final class CaptureEngine {
         transitions = CaptureTransitionMachine()
         reason = nil; spans = []; openSpan = nil; audioMs = 0; pausedMs = 0; pausedSince = nil
         currentInput = nil; currentInputRate = nil
+        consecutiveStalls = 0; stallBackoffActive = false
+        tapTimeLock.lock(); observedTapDeliveryCount = tapDeliveryCount; tapTimeLock.unlock()
         noSignalMs = 0; zeroSince = nil
         lastDiskCheck = Date()
         let ticket = attempts.startSession(session.id)
+        limitTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkDurationLimit() }
+        RunLoop.main.add(timer, forMode: .common)
+        limitTimer = timer
         #if DEBUG
         if !debugTesting { CaptureNotifications.requestOnFirstRecording() }
         #else
@@ -222,16 +243,13 @@ public final class CaptureEngine {
         do { try activateGraph(ticket: ticket) }
         catch {
             if info?.id == session.id && intent == "recording" {
+                limitTimer?.invalidate(); limitTimer = nil
                 try? library.delete(session.id)
                 info = nil; intent = "stopped"; attempts.stop()
             }
             throw error
         }
         emitState()
-        limitTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkDurationLimit() }
-        RunLoop.main.add(timer, forMode: .common)
-        limitTimer = timer
         if source != "in_app" { presentRecorder() }
         return ["id": session.id, "startedAt": now, "maxDurationMs": limit]
     }
@@ -322,15 +340,22 @@ public final class CaptureEngine {
         node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, writer] buffer, when in
             self?.tapCallbacks.enter()
             defer { self?.tapCallbacks.leave() }
+            var delivered = true
             self?.tapTimeLock.lock()
+            #if DEBUG
+            if self?.debugSuppressTapDelivery == true { delivered = false }
+            #endif
             if let self {
-                self.lastTapAt = ProcessInfo.processInfo.systemUptime
-                if when.isSampleTimeValid {
-                    self.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
+                if delivered {
+                    self.lastTapAt = ProcessInfo.processInfo.systemUptime
+                    self.tapDeliveryCount &+= 1
+                    if when.isSampleTimeValid {
+                        self.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
+                    }
                 }
             }
             self?.tapTimeLock.unlock()
-            writer.enqueue(buffer, generation: attemptGeneration)
+            if delivered { writer.enqueue(buffer, generation: attemptGeneration) }
         }
         audioEngine = engine
         acquired = true
@@ -361,6 +386,7 @@ public final class CaptureEngine {
         tapCallbacks.wait()
         tapTimeLock.lock()
         let deliveredEnd = lastTapEndSample
+        observedTapDeliveryCount = tapDeliveryCount
         tapTimeLock.unlock()
         if let renderEnd, let deliveredEnd {
             log.notice("Pause/stop tap tail estimate samples=\(max(0, renderEnd - deliveredEnd)); bufferSize=1024")
@@ -410,9 +436,23 @@ public final class CaptureEngine {
         if info != nil, intent == "recording", availability == "available" {
             tapTimeLock.lock()
             let last = lastTapAt
+            let delivered = tapDeliveryCount
             tapTimeLock.unlock()
+            if delivered != observedTapDeliveryCount {
+                observedTapDeliveryCount = delivered
+                consecutiveStalls = 0
+                stallBackoffActive = false
+                backoff.reset()
+            }
             if last > 0 && retryNow - last > 3 {
-                rebuildForRoute("stalled")
+                consecutiveStalls += 1
+                if consecutiveStalls == 1 {
+                    rebuildForRoute("stalled")
+                } else {
+                    stallBackoffActive = true
+                    suspendForInterruption("stalled", notify: false)
+                    if availability == "interrupted" { scheduleRetry() }
+                }
                 return
             }
         }
@@ -453,6 +493,7 @@ public final class CaptureEngine {
         guard let session = info else { throw CaptureError.notRecording }
         if intent == "paused" { return }
         guard intent == "recording" else { throw CaptureError.notRecording }
+        consecutiveStalls = 0; stallBackoffActive = false
         cancelRetry()
         clearResumeNotification()
         var next = transitions ?? CaptureTransitionMachine()
@@ -520,11 +561,14 @@ public final class CaptureEngine {
             ticket = attempts.attempt()
         }
         guard let ticket else { throw CaptureError.cancelled }
-        if !automatic { cancelRetry() }
+        if !automatic {
+            consecutiveStalls = 0; stallBackoffActive = false
+            cancelRetry()
+        }
         do {
             try activateGraph(ticket: ticket)
             availability = "available"; reason = nil
-            cancelRetry()
+            cancelRetry(resetBackoff: !stallBackoffActive)
         } catch {
             log.error("Capture restart failed: \(String(describing: error), privacy: .public)")
             guard attempts.mayAttach(ticket) else { throw CaptureError.cancelled }
@@ -563,7 +607,8 @@ public final class CaptureEngine {
     private func suspendForInterruption(_ cause: String, notify: Bool) {
         guard let session = info, intent == "recording", availability == "available" else { return }
         let notice = attempts.interrupted()
-        cancelRetry()
+        if cause != "stalled" { consecutiveStalls = 0; stallBackoffActive = false }
+        cancelRetry(resetBackoff: !stallBackoffActive)
         guard stopInput() else {
             log.error("Could not stop capture input during interruption")
             return
@@ -603,7 +648,8 @@ public final class CaptureEngine {
     private func scheduleRetry() {
         guard info != nil, intent == "recording" else { return }
         guard let delay = backoff.nextDelay(at: retryNow) else {
-            cancelRetry(); markBlocked("resume_blocked"); return
+            let reason = stallBackoffActive ? "stalled" : "resume_blocked"
+            cancelRetry(); markBlocked(reason); return
         }
         retryTimer?.invalidate()
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
@@ -614,8 +660,9 @@ public final class CaptureEngine {
         emitState()
     }
 
-    private func cancelRetry() {
-        retryTimer?.invalidate(); retryTimer = nil; backoff.reset()
+    private func cancelRetry(resetBackoff: Bool = true) {
+        retryTimer?.invalidate(); retryTimer = nil
+        if resetBackoff { backoff.reset() }
     }
 
     private func clearResumeNotification() {
