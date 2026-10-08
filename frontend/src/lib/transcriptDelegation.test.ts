@@ -53,7 +53,17 @@ describe("per-account transcript consent status", () => {
     const unsubscribe = subscribeTranscriptConsent(() => observed.push(transcriptConsentState()));
     try {
       beginTranscriptConsentStatus(address);
-      resolveTranscriptConsentStatus(address, { status: "none", verified: false, delivery: "enabled", expiresAt: null });
+      resolveTranscriptConsentStatus(address, { status: "none", verified: false, delivery: "disabled", expiresAt: null });
+      expect(transcriptConsentState()).toBe("inactive");
+      // No grant yet, but the courier is on and will mint without a prompt: disclose already.
+      for (const grant of ["none", "expired", "stale"] as const) {
+        for (const delivery of ["enabled", "schema_missing"] as const) {
+          resolveTranscriptConsentStatus(address, { status: grant, verified: false, delivery, expiresAt: null });
+          expect({ grant, delivery, state: transcriptConsentState() }).toEqual({ grant, delivery, state: "unknown" });
+        }
+      }
+      // A delivery value the courier does not act on keeps the original copy.
+      resolveTranscriptConsentStatus(address, { status: "none", verified: false, expiresAt: null } as unknown as DelegationResponse);
       expect(transcriptConsentState()).toBe("inactive");
       beginTranscriptConsentStatus(other);
       resolveTranscriptConsentStatus(address, { status: "active", verified: true, delivery: "enabled", expiresAt: null });
@@ -64,7 +74,7 @@ describe("per-account transcript consent status", () => {
       clearTranscriptConsentStatus(address);
       expect(transcriptConsentState()).toBe("active");
       clearTranscriptConsentStatus(other);
-      expect(observed).toEqual(["inactive", "unknown", "active", "unknown"]);
+      expect(observed).toEqual(["inactive", "unknown", "inactive", "unknown", "active", "unknown"]);
     } finally {
       clearTranscriptConsentStatus(other);
       unsubscribe();
@@ -233,10 +243,11 @@ describe("silent transcript-writer renewal", () => {
     expect(transcriptConsentState()).toBe("active");
   });
 
-  it("keeps the inactive consent when schema repair fails before any grant POST", async () => {
-    const { tcw, sessionStore } = setup(true);
+  it("keeps disclosing when schema repair fails before any grant POST, since the courier will retry", async () => {
+    const { tcw, sessionStore, operations } = setup(true);
     expect(await ensureTranscriptWriterDelegation({ tcw, sessionStore, backendUrl: "https://localhost:31314" })).toBe("unavailable");
-    expect(transcriptConsentState()).toBe("inactive");
+    expect(operations).not.toContain("POST /api/delegations");
+    expect(transcriptConsentState()).toBe("unknown");
   });
 
   it("uses the conservative consent state when a later status request fails", async () => {
