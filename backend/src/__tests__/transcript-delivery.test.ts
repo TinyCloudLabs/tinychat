@@ -1164,6 +1164,22 @@ describe("durable transcript delivery", () => {
     }
   });
 
+  it("maps a storage 402 or 413 to the day-long quota backoff, whatever code the SDK gives it", async () => {
+    for (const [service, status] of [["sql", 402], ["sql", 413], ["kv", 402], ["kv", 413]] as const) {
+      const f = await fixture();
+      const answers: NodeAnswers = { delegate: 200, sql: 200, kv: 200, [service]: status };
+      await withStorageNode(f, answers, async (host) => {
+        const worker = f.worker({ configuredHost: host });
+        await admit(f, "quota");
+        await worker.deliver(f.grant.address, "quota");
+        expect({ service, status, code: f.state().retry.quota.code }).toEqual({ service, status, code: "storage_quota" });
+        expect(f.state().retry.quota.nextAt - Date.now()).toBeGreaterThan(23 * 3_600_000);
+        expect(f.counts.removal).toBe(0);
+        await worker.stop();
+      });
+    }
+  });
+
   it("governs each of the five fresh-space writes individually at one token per fake minute", async () => {
     const f = await fixture();
     await admit(f, "paced");
