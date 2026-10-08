@@ -334,6 +334,8 @@ describe("silent transcript-writer renewal", () => {
       expect(await otherTab.ensureTranscriptWriterDelegation({
         tcw: f.tcw, sessionStore: f.sessionStore, backendUrl: "https://localhost:31314",
       })).toBe("busy");
+      // The losing tab read "none" before the lock; the holder may be minting, so it discloses.
+      expect(transcriptConsentState()).toBe("unknown");
       release.resolve();
       expect(await first).toBe("active");
       expect(await otherTab.ensureTranscriptWriterDelegation({
@@ -346,6 +348,30 @@ describe("silent transcript-writer renewal", () => {
       otherTab.clearTranscriptDelegationSchedule(address);
     }
   });
+  it("discloses instead of the inactive copy while another tab holds the localStorage lease", async () => {
+    const f = mintHarness();
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+    const leaseKey = `tinychat.transcriptWriter.lease.${address}`;
+    f.storage.setItem(leaseKey, JSON.stringify({ owner: "other-tab", until: Date.now() + 60_000 }));
+    expect(await f.run()).toBe("busy");
+    expect(transcriptConsentState()).toBe("unknown");
+    expect(f.operations).not.toContain("delegateTo");
+
+    // Lost the lease while confirming it: another tab overwrote it during the settle window.
+    f.storage.removeItem(leaseKey);
+    const setItem = f.storage.setItem.bind(f.storage);
+    f.storage.setItem = (key, value) => {
+      setItem(key, value);
+      if (key === leaseKey && !value.includes("other-tab")) {
+        setTimeout(() => setItem(leaseKey, JSON.stringify({ owner: "other-tab", until: Date.now() + 60_000 })), 0);
+      }
+    };
+    clearTranscriptDelegationSchedule(address);
+    expect(await f.run()).toBe("busy");
+    expect(transcriptConsentState()).toBe("unknown");
+    expect(f.operations).not.toContain("delegateTo");
+  });
+
   it("keeps at most one mint in a simultaneous localStorage lease race", async () => {
     const f = mintHarness();
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
