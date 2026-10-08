@@ -124,3 +124,25 @@ reconcile = `retain`; cohort = operator-only dark cohort (`D5-cohort`).
 > delete it, delete every meeting we are holding for you, and stop accepting notifications. If
 > Fireflies is down and we cannot revoke upstream, we tell you so instead of pretending it worked —
 > so you can revoke it yourself from your Fireflies account.
+
+---
+
+## Transcript-writer variant (TC-641) — not covered by the approval above
+
+**Status: NOT APPROVED.** `BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY` renders in place of the text
+above only while TC-641 transcript delivery is active, or its status is unknown, for the signed-in
+address. It is the approved text with **bullet 4 replaced** by the paragraph below, which adds the
+Private Notetaker transcript-writer disclosure and drops "nothing is granted" and "our server
+writes no meeting into your space" (false once that grant is active). The Gate 6 approval above
+does not cover this paragraph. It is mirrored here so `consent-scope.test.ts` holds it to the
+shipped words, and so that it is visibly awaiting operator approval rather than approved.
+
+## transcript-writer bullet 4
+
+> Turning this on gives our server **no new permission on your space**. Background sync asks you to
+> grant nothing — the credential above is held by our server, outside your space. Your browser
+> still saves Fireflies meetings into your space when you are signed in with your vault unlocked,
+> so your own copy lands where it always did — and it stays yours: it is not deleted when our
+> 90-day window closes. Separately, because the TinyCloud Private Notetaker is on, our server can
+> save its meeting transcripts into your space when a meeting ends. What changed with this
+> Fireflies toggle is what our server now *has*: your Fireflies token, and a copy of your meetings.
