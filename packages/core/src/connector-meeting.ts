@@ -197,7 +197,8 @@ export async function normalizeTranscriberTranscript(
   };
 }
 
-export type PortResult<T> = { ok: true; data: T } | { ok: false; code: string; message: string };
+/** `status` is the storage HTTP status, when the adapter saw one (it may differ from `code`). */
+export type PortResult<T> = { ok: true; data: T } | { ok: false; code: string; message: string; status?: number };
 
 export interface ConnectorStorePort {
   query(sql: string, params: unknown[]): Promise<PortResult<{ rows: unknown[][] }>>;

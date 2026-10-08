@@ -10,13 +10,19 @@ export function delegatedConnectorPort(access: DelegatedAccess, meter: MeteredWr
   const assertKey = (key: string) => {
     if (!key.startsWith(prefix)) throw new Error("Transcript key outside delegated prefix");
   };
-  const convert = <T>(result: { ok: boolean; data?: T; error?: { code?: string; message?: string } }): PortResult<T> =>
-    result.ok ? { ok: true, data: result.data as T } : {
+  // Keep the SDK's HTTP status: a 403 surfaces as SQL_PERMISSION_DENIED or, for a KV put,
+  // KV_WRITE_FAILED with `meta.status = 403`, and only the status says the grant was refused.
+  const convert = <T>(result: { ok: boolean; data?: T; error?: { code?: string; message?: string; meta?: { status?: unknown } } }): PortResult<T> => {
+    if (result.ok) return { ok: true, data: result.data as T };
+    const status = result.error?.meta?.status;
+    return {
       ok: false,
       code: /no such table\b|relation [^\n]{1,128} does not exist\b/i.test(result.error?.message ?? "")
         ? "SCHEMA_MISSING" : result.error?.code ?? "STORAGE_ERROR",
       message: result.error?.message ?? "Storage operation failed",
+      ...(typeof status === "number" && Number.isInteger(status) ? { status } : {}),
     };
+  };
   return {
     async query(sql, params) {
       if (!/^\s*SELECT\b/i.test(sql) || sql.includes(";")) throw new Error("Delegated connector queries must be SELECT");

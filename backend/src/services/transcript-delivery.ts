@@ -449,9 +449,12 @@ export class TranscriptDeliveryWorker {
     return true;
   }
   private async portFailure(address: string, state: DeliveryState, id: string, envelope: string,
-    result: { code: string; message: string }): Promise<void> {
-    if (/^(?:401|403|AUTH_UNAUTHORIZED|AUTH_FORBIDDEN)$/.test(result.code)) await this.removeGrant(address, envelope);
-    else this.retry(address, state, id, result.code === "SCHEMA_MISSING" ? "schema_missing" :
+    result: { code: string; message: string; status?: number }): Promise<void> {
+    // The node refused the grant itself: by HTTP status, or by the SDK's refusal codes.
+    if (result.status === 401 || result.status === 403 ||
+      /^(?:401|403|AUTH_UNAUTHORIZED|AUTH_FORBIDDEN|SQL_PERMISSION_DENIED)$/.test(result.code)) {
+      await this.removeGrant(address, envelope);
+    } else this.retry(address, state, id, result.code === "SCHEMA_MISSING" ? "schema_missing" :
       /QUOTA|PAYMENT_REQUIRED|402/i.test(result.code) ? "storage_quota" : "storage_error");
   }
 
