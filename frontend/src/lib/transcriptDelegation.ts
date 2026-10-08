@@ -125,47 +125,49 @@ async function withAttemptTimeout<T>(run: (alive: () => void, signal: AbortSigna
 async function underLock(options: Options, address: string, key: string, sessionExpiry: number): Promise<EnsureResult> {
   let urgent = true;
   try {
-    const token = options.sessionStore.getToken();
-    if (!token || options.sessionStore.isExpired() || options.sessionStore.getAddress()?.toLowerCase() !== address) {
-      throw new Error("No current backend session for transcript delegation");
-    }
-    const status = await checkDelegationStatus(options.backendUrl, token);
-    setServerDeliveryActive(status.delivery !== "disabled");
-    if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
-    const current = need(status, sessionExpiry);
-    const repair = status.delivery === "schema_missing";
-    if (!current.needed && !repair) { cancel(key); return "active"; }
-    urgent = current.urgent || repair;
-    const allowedAt = nextTranscriptAttempt(readBackoff(key), urgent);
-    if (allowedAt > Date.now()) { schedule(key, allowedAt, options); return "busy"; }
+    return await withAttemptTimeout(async (alive, signal) => {
+      const token = options.sessionStore.getToken();
+      if (!token || options.sessionStore.isExpired() || options.sessionStore.getAddress()?.toLowerCase() !== address) {
+        throw new Error("No current backend session for transcript delegation");
+      }
+      const status = await checkDelegationStatus(options.backendUrl, token, signal);
+      alive();
+      setServerDeliveryActive(status.delivery !== "disabled");
+      if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
+      const current = need(status, sessionExpiry);
+      const repair = status.delivery === "schema_missing";
+      if (!current.needed && !repair) { cancel(key); return "active"; }
+      urgent = current.urgent || repair;
+      const allowedAt = nextTranscriptAttempt(readBackoff(key), urgent);
+      if (allowedAt > Date.now()) { schedule(key, allowedAt, options); return "busy"; }
 
-    await withAttemptTimeout(async (alive, signal) => {
       const schema = await ensureConnectorSchema(webConnectorPort(options.tcw));
       alive();
       if (!schema.ok) throw Object.assign(new Error("Connector schema unavailable"), { code: schema.code });
-      if (!current.needed) return;
-      const backendDid = await fetchServerInfoDid(options.backendUrl);
-      alive();
-      if (!backendDid?.startsWith("did:pkh:")) throw new Error("Backend DID unavailable");
-      const session = options.tcw.session();
-      if (!session?.siwe || !session.signature) throw new Error("TinyCloud session unavailable");
-      const lifetime = Math.min(GRANT_LIFETIME, sessionExpiry - Date.now());
-      if (lifetime <= 60_000) throw new Error("TinyCloud session expires too soon for delegation");
-      const result = await options.tcw.delegateTo(backendDid, TRANSCRIPT_WRITER_PERMISSIONS, { expiry: lifetime });
-      alive();
-      if (result.prompted) throw new Error("Transcript delegation unexpectedly requested wallet approval");
-      const portable = toPortableDelegation(result.delegation, address, options.tcw.chainId() ?? session.chainId, options.tcw.hosts[0] ?? "https://node.tinycloud.xyz");
-      const serialized = await serializePortableDelegation(portable);
-      alive();
-      if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {
-        throw new Error("Session changed during transcript delegation");
+      if (current.needed) {
+        const backendDid = await fetchServerInfoDid(options.backendUrl);
+        alive();
+        if (!backendDid?.startsWith("did:pkh:")) throw new Error("Backend DID unavailable");
+        const session = options.tcw.session();
+        if (!session?.siwe || !session.signature) throw new Error("TinyCloud session unavailable");
+        const lifetime = Math.min(GRANT_LIFETIME, sessionExpiry - Date.now());
+        if (lifetime <= 60_000) throw new Error("TinyCloud session expires too soon for delegation");
+        const result = await options.tcw.delegateTo(backendDid, TRANSCRIPT_WRITER_PERMISSIONS, { expiry: lifetime });
+        alive();
+        if (result.prompted) throw new Error("Transcript delegation unexpectedly requested wallet approval");
+        const portable = toPortableDelegation(result.delegation, address, options.tcw.chainId() ?? session.chainId, options.tcw.hosts[0] ?? "https://node.tinycloud.xyz");
+        const serialized = await serializePortableDelegation(portable);
+        alive();
+        if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {
+          throw new Error("Session changed during transcript delegation");
+        }
+        await sendDelegation(options.backendUrl, { serialized, siwe: session.siwe, signature: session.signature }, token, signal);
+        alive();
       }
-      await sendDelegation(options.backendUrl, { serialized, siwe: session.siwe, signature: session.signature }, token, signal);
-      alive();
+      storage().removeItem(key);
+      cancel(key);
+      return "active";
     });
-    storage().removeItem(key);
-    cancel(key);
-    return "active";
   } catch (error) {
     recordFailure(key, options, urgent);
     console.warn("[transcript-delegation] silent renewal unavailable", warningCode(error));
@@ -234,7 +236,11 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
         throw new Error("No active matching session");
       }
       const sessionExpiry = sessionExpiration(session.siwe);
-      const status = await checkDelegationStatus(options.backendUrl, token);
+      const status = await withAttemptTimeout(async (alive, signal) => {
+        const result = await checkDelegationStatus(options.backendUrl, token, signal);
+        alive();
+        return result;
+      });
       setServerDeliveryActive(status.delivery !== "disabled");
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
