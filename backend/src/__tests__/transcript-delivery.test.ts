@@ -15,6 +15,7 @@ import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 import type { JsonKv } from "../services/transcriber-index.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
+import { DelegationActivationError } from "../portable-delegation.js";
 import { KvTranscriptDeliveryStore, TranscriptDeliveryWorker, WriteGovernor, type DeliveryState, type TranscriptDeliveryOptions } from "../services/transcript-delivery.js";
 import { TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
 import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
@@ -216,12 +217,22 @@ async function withActivationNode(f: Fixture, answer: { status: number }, run: (
 }
 
 /**
- * A storage node behind a REAL SDK `DelegatedAccess`, so every failure is mapped by the SDK's own
- * services: SQL 403 → SQL_PERMISSION_DENIED, KV put 403 → KV_WRITE_FAILED with meta.status 403.
+ * A TinyCloud node behind the REAL SDK: activation is `activateSessionWithHost` on `POST /delegate`
+ * (failing exactly as `useDelegation` does), and storage is a real `DelegatedAccess`, so every
+ * storage failure is mapped by the SDK's own services: SQL 403 → SQL_PERMISSION_DENIED, KV put
+ * 403 → KV_WRITE_FAILED with meta.status 403, SQL 402 → NETWORK_ERROR with meta.status 402.
  * The stub `invoke` puts the service in the header so this node can answer SQL and KV apart.
+ * `delegate: 0` drops the activation connection (a network failure, no status). The stored grant
+ * is re-signed without a bundle host so it verifies against this node as the configured host.
  */
-async function withStorageNode(f: Fixture, answers: { sql: number; kv: number }, run: () => Promise<void>): Promise<void> {
+interface NodeAnswers { delegate: number; sql: number; kv: number }
+async function withStorageNode(f: Fixture, answers: NodeAnswers, run: (host: string) => Promise<void>): Promise<void> {
   const app = express();
+  app.post("/delegate", (_req, res) => {
+    if (answers.delegate === 0) { res.socket?.destroy(); return; }
+    if (answers.delegate < 300) res.status(answers.delegate).json({ activated: [] });
+    else res.status(answers.delegate).send("delegation refused");
+  });
   app.post("/invoke", express.raw({ type: () => true }), (req, res) => {
     const service = String(req.headers.authorization).split(" ")[1]!.split(":")[0];
     const status = service === "sql" ? answers.sql : answers.kv;
@@ -232,16 +243,25 @@ async function withStorageNode(f: Fixture, answers: { sql: number; kv: number },
     else if (/^\s*SELECT/i.test(body.sql ?? "")) res.json({ columns: ["id"], rows: [] });
     else res.json({ changes: 1, lastInsertRowId: 1 });
   });
+  const hostless = await makeSignedTranscriptGrant({ host: null });
+  f.records.set(hostless.address.toLowerCase(), {
+    serialized: hostless.envelope, expiresAt: hostless.expiresAt.toISOString(), grantedAt: new Date().toISOString(),
+    actions: [], path: "connectors",
+  });
   await withServer(app, async (host) => {
-    const node = f.node as unknown as { useDelegation: (delegation: { spaceId: string }) => Promise<unknown> };
+    const node = f.node as unknown as { useDelegation: (delegation: { spaceId: string; host: string }) => Promise<unknown> };
     const original = node.useDelegation;
+    let session = 0;
     node.useDelegation = async (delegation) => {
       f.counts.activation++;
-      const session = { delegationHeader: { Authorization: "Bearer session" }, delegationCid: "cid", spaceId: delegation.spaceId, verificationMethod: "did:key:z#z", jwk: {} };
+      const result = await activateSessionWithHost(delegation.host, { Authorization: `Bearer invoker-session-${++session}` });
+      // Verbatim from @tinycloud/node-sdk 2.11.0 `TinyCloudNode.useDelegation`.
+      if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+      const sessionData = { delegationHeader: { Authorization: "Bearer session" }, delegationCid: "cid", spaceId: delegation.spaceId, verificationMethod: "did:key:z#z", jwk: {} };
       const invoke = (_session: unknown, service: string, _path: string, action: string) => ({ Authorization: `Bearer ${service}:${action}` });
-      return new (DelegatedAccess as unknown as new (...args: unknown[]) => unknown)(session, { path: "", spaceId: delegation.spaceId }, host, invoke, invoke, undefined);
+      return new (DelegatedAccess as unknown as new (...args: unknown[]) => unknown)(sessionData, { path: "", spaceId: delegation.spaceId }, delegation.host, invoke, invoke, undefined);
     };
-    try { await run(); } finally { node.useDelegation = original; }
+    try { await run(host); } finally { node.useDelegation = original; }
   });
 }
 
@@ -595,7 +615,8 @@ describe("durable transcript delivery", () => {
     await admit(f, "stale");
     const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
     const original = node.useDelegation;
-    node.useDelegation = async () => { throw Object.assign(new Error("revoked"), { status: 403 }); };
+    // What the activation boundary throws when the node refuses the grant (its SDK path is tested with a real node).
+    node.useDelegation = async () => { throw new DelegationActivationError(403, { cause: new Error("Failed to activate delegated session: revoked") }); };
     let entered!: () => void;
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { entered = resolve; });
@@ -1063,26 +1084,28 @@ describe("durable transcript delivery", () => {
     await worker.stop();
   });
 
-  it("removes a grant whose cached activation the storage node refuses with SQL 403 or KV-put 403", async () => {
-    for (const refused of ["sql", "kv"] as const) {
+  it("confirms a storage 403 with a fresh activation: a refused activation (401/403) deletes the grant", async () => {
+    for (const [refused, confirmation] of [["sql", 403], ["kv", 403], ["sql", 401]] as const) {
       const f = await fixture();
-      const answers = { sql: 200, kv: 200 };
-      await withStorageNode(f, answers, async () => {
+      const answers: NodeAnswers = { delegate: 200, sql: 200, kv: 200 };
+      await withStorageNode(f, answers, async (host) => {
         const cache = new DelegationCache();
-        const worker = f.worker({ delegationCache: cache });
+        const worker = f.worker({ configuredHost: host, delegationCache: cache });
         const address = f.grant.address.toLowerCase();
+        const envelope = f.records.get(address)!.serialized;
         await admit(f, "warm");
         await worker.deliver(address, "warm");
         expect(f.state().done.warm.how).toBe("written");
-        const key = verificationCacheKey(address, f.grant.envelope, f.grant.backendDid, f.grant.configuredHost);
+        const key = verificationCacheKey(address, envelope, f.grant.backendDid, host);
         expect(cache.get(key)).not.toBeNull();
         const activations = f.counts.activation;
 
-        // Revoked upstream: the cached activation is reused and the node refuses the operation.
+        // Revoked upstream: the cached activation is refused, and so is the confirming activation.
         answers[refused] = 403;
+        answers.delegate = confirmation;
         await admit(f, "refused");
         await worker.deliver(address, "refused");
-        expect(f.counts.activation).toBe(activations);
+        expect(f.counts.activation).toBe(activations + 1);
         expect(f.counts.removal).toBe(1);
         expect(f.records.has(address)).toBe(false);
         expect(cache.get(key)).toBeNull();
@@ -1092,12 +1115,45 @@ describe("durable transcript delivery", () => {
     }
   });
 
+  it("keeps the grant when the confirming activation succeeds, or fails by 5xx or network, and retries", async () => {
+    for (const confirmation of [200, 503, 0]) {
+      const f = await fixture();
+      const answers: NodeAnswers = { delegate: 200, sql: 200, kv: 200 };
+      await withStorageNode(f, answers, async (host) => {
+        const cache = new DelegationCache();
+        const worker = f.worker({ configuredHost: host, delegationCache: cache });
+        const address = f.grant.address.toLowerCase();
+        const envelope = f.records.get(address)!.serialized;
+        await admit(f, "warm");
+        await worker.deliver(address, "warm");
+        const key = verificationCacheKey(address, envelope, f.grant.backendDid, host);
+        const stale = cache.get(key);
+        expect(stale).not.toBeNull();
+
+        // An operational 403 (say, an ingress) on a still-valid grant.
+        answers.sql = 403;
+        answers.delegate = confirmation;
+        await admit(f, "operational");
+        await worker.deliver(address, "operational");
+        expect({ confirmation, removed: f.counts.removal, kept: f.records.get(address)?.serialized === envelope })
+          .toEqual({ confirmation, removed: 0, kept: true });
+        expect(f.state().retry.operational.code).toBe("storage_error");
+        expect(f.state().retry.operational.nextAt).toBeGreaterThan(Date.now());
+        // The refused activation was dropped; a confirmed one replaces it.
+        if (confirmation === 200) expect(cache.get(key)).not.toBe(stale);
+        if (confirmation === 200) expect(cache.get(key)).not.toBeNull();
+        else expect(cache.get(key)).toBeNull();
+        await worker.stop();
+      });
+    }
+  });
+
   it("keeps the grant and retries when the storage node fails transiently (SQL 503, KV-put 500)", async () => {
     for (const [service, status] of [["sql", 503], ["kv", 500]] as const) {
       const f = await fixture();
-      const answers = { sql: 200, kv: 200, [service]: status };
-      await withStorageNode(f, answers, async () => {
-        const worker = f.worker();
+      const answers: NodeAnswers = { delegate: 200, sql: 200, kv: 200, [service]: status };
+      await withStorageNode(f, answers, async (host) => {
+        const worker = f.worker({ configuredHost: host });
         await admit(f, "transient");
         await worker.deliver(f.grant.address, "transient");
         expect(f.counts.removal).toBe(0);
