@@ -473,6 +473,69 @@ describe("durable transcript delivery", () => {
     await fourth.stop();
   });
 
+  it("an observed completion reopens a cancelled meeting after a restart; a sweep alone does not", async () => {
+    const f = await fixture();
+    await admit(f, "late");
+    f.api.getMeeting = async () => ({ ...f.meeting("late"), status: "cancelled" });
+    const first = f.worker();
+    await first.deliver(f.grant.address, "late", "observed");
+    expect(f.state().done.late.how).toBe("cancelled");
+    await first.stop();
+    // It completed later and its webhook was lost.
+    f.api.getMeeting = async (id) => f.meeting(id);
+    const restarted = f.worker();
+    await restarted.sweep();
+    expect(f.state().done.late.how).toBe("cancelled");
+    expect(f.counts.transcript).toBe(0);
+    await restarted.wake(f.grant.address, "late", "observed");
+    await restarted.sweep();
+    expect(f.state().done.late.how).toBe("written");
+    expect(f.counts.transcript).toBe(1);
+    await restarted.stop();
+  });
+
+  it("an observed completion reopens a failed meeting after a restart without waiting out its watch", async () => {
+    const f = await fixture();
+    await admit(f, "flaky");
+    f.api.getMeeting = async () => ({ ...f.meeting("flaky"), status: "failed" });
+    const first = f.worker();
+    await first.deliver(f.grant.address, "flaky", "observed");
+    expect(f.state().watch.flaky.nextAt).toBeGreaterThan(Date.now() + 14 * 60_000);
+    await first.stop();
+    f.api.getMeeting = async (id) => f.meeting(id);
+    const restarted = f.worker();
+    await restarted.sweep();
+    expect(f.state().watch.flaky).toBeDefined();
+    await restarted.wake(f.grant.address, "flaky", "observed");
+    await restarted.sweep();
+    expect(f.state().done.flaky.how).toBe("written");
+    expect(f.state().watch.flaky).toBeUndefined();
+    await restarted.stop();
+  });
+
+  it("an observed completion does not bypass a storage-error retry backoff, across a restart", async () => {
+    const f = await fixture();
+    await admit(f, "backoff");
+    const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
+    const original = node.useDelegation;
+    node.useDelegation = async () => { throw Object.assign(new Error("node unavailable"), { status: 503 }); };
+    const first = f.worker();
+    await first.deliver(f.grant.address, "backoff", "observed");
+    const backoff = structuredClone(f.state().retry.backoff);
+    expect(backoff.code).toBe("storage_error");
+    expect(backoff.nextAt).toBeGreaterThan(Date.now());
+    await first.stop();
+    node.useDelegation = original;
+    const restarted = f.worker();
+    const reads = f.counts.meeting;
+    await restarted.wake(f.grant.address, "backoff", "observed");
+    await restarted.sweep();
+    expect(f.counts.meeting).toBe(reads);
+    expect(f.state().retry.backoff).toEqual(backoff);
+    expect(f.state().done.backoff).toBeUndefined();
+    await restarted.stop();
+  });
+
   it("removes foreign stored envelopes under their own owner key, warm and cold, without B activation", async () => {
     for (const warm of [true, false]) {
       const f = await fixture();

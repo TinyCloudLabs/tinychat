@@ -365,15 +365,19 @@ export class TranscriptDeliveryWorker {
     const indexed = this.prune(address, state, ids);
     if (!indexed.has(id)) return false;
     const previous = state.done[id];
-    if (previous && (previous.how !== "cancelled" || kind !== "completed")) return false;
-    // A completion wake reopens cancelled/failed meetings even when the throttle
-    // postpones the upstream read; retry history remains until actual success.
-    if (kind === "completed" && (previous || state.watch[id])) {
+    if (previous && (previous.how !== "cancelled" || !kind)) return false;
+    // A completion wake, or an observation of completion (our own owner-checked upstream read),
+    // reopens cancelled/failed meetings even when the throttle postpones the upstream read;
+    // retry history remains until actual success.
+    if (kind && (previous || state.watch[id])) {
       delete state.done[id]; delete state.watch[id];
       this.changed(address, state);
     }
     const now = Date.now();
-    if (kind !== "completed" && ((state.retry[id]?.nextAt ?? 0) > now || (state.watch[id]?.nextAt ?? 0) > now || (this.nextCheckAt.get(`${address}:${id}`) ?? 0) > now)) return false;
+    // Only a completion wake skips the durable retry backoff (storage errors included); an
+    // observation still skips the not-yet-completed re-check, which it has just disproved.
+    if (kind !== "completed" && (state.retry[id]?.nextAt ?? 0) > now) return false;
+    if (!kind && ((state.watch[id]?.nextAt ?? 0) > now || (this.nextCheckAt.get(`${address}:${id}`) ?? 0) > now)) return false;
     const grant = await this.grant(address);
     if (!grant) return false;
     const throttleKey = `${address}:${id}`;

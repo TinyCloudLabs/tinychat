@@ -196,8 +196,10 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
           const found = await api.getMeeting(id);
           const shared = Object.hasOwn(shares, id);
           meetings[i] = shared ? sharedMeetingView(found, shares[id]!) : found;
-          // A shared meeting is the owner's to deliver; waking it here would only end in owner_mismatch.
-          if (!shared && found.status === "completed") {
+          // A trusted observation: our own upstream read says completed, for this session's owner.
+          // A meeting shared into this list (TC-581) is never this session's to deliver.
+          const recordedOwner = found.metadata?.tinychat_address;
+          if (!shared && found.status === "completed" && typeof recordedOwner === "string" && recordedOwner.toLowerCase() === owner.toLowerCase()) {
             try { await options.onObservedCompletion?.(owner, id); }
             catch { console.warn("[transcriber] completion wake failed"); }
           }
