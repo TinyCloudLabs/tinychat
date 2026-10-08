@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { DEFAULT_MANIFEST_SPACE } from "@tinycloud/node-sdk/core";
-import { APP_ID, type DelegationResponse, type ServerInfoPermission } from "@tinyboilerplate/core";
+import { APP_ID, SESSION_EXPIRATION_MS, type DelegationResponse, type ServerInfoPermission } from "@tinyboilerplate/core";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { backendDelegationResolvedPermissions } from "../manifest.js";
 import { verifyTranscriptWriterGrant } from "../delegation-verify.js";
@@ -261,8 +261,31 @@ const SERVER_WRITE_DENIALS: ReadonlyArray<{ pattern: RegExp; label: string }> = 
   { pattern: /\bonly your browser (?:writes|saves|stores)\b/, label: "only your browser writes" },
 ];
 
-/** The disclosure an active-or-unknown transcript-writer grant must carry. */
-const TRANSCRIPT_WRITER_DISCLOSURE = "our server can save its meeting transcripts into your space";
+/**
+ * What an active-or-unknown transcript-writer disclosure must say, each part pinned to the grant:
+ * `sql/write` on the whole connectors database is read, add, change AND delete (the ability table
+ * below), over every connector's meetings, plus the Notetaker transcripts, for the grant lifetime.
+ */
+const GRANT_LIFETIME_DAYS = SESSION_EXPIRATION_MS / 86_400_000 - 1;
+const TRANSCRIPT_WRITER_DISCLOSURE = [
+  "our server holds a permission on your space",
+  "read, add, change and delete the meeting records in your connectors library",
+  "every connector's meetings, fireflies and google included",
+  "save notetaker transcripts there",
+  `each grant lasts up to ${GRANT_LIFETIME_DAYS} days`,
+  "renews it without asking while you are signed in",
+];
+const disclosesTranscriptWriter = (text: string) => TRANSCRIPT_WRITER_DISCLOSURE.every((part) => text.includes(part));
+
+/**
+ * Sentences the original copies carry that an active grant makes false, so no active-or-unknown
+ * disclosure may keep them (the inactive copies must, which keeps each pattern live).
+ */
+const GRANT_FALSIFIED_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bnever receives the meeting itself\b/, label: "never receives the meeting itself" },
+  { pattern: /\bnever passes through tinychat's server\b/, label: "never passes through tinychat's server" },
+  { pattern: /\bstay in your space unless you also choose to delete them\b/, label: "stays unless you delete it" },
+];
 
 function normalize(text: string): string {
   return text
@@ -516,15 +539,19 @@ describe("copy ↔ transcript-writer policy", () => {
       expect(transcriptAwareConsentCopy(base, "inactive")).toBe(base);
       const text = normalize(consentCopyText(base));
       expect(text).toContain("no new permission");
-      expect(text).not.toContain(TRANSCRIPT_WRITER_DISCLOSURE);
+      expect(disclosesTranscriptWriter(text)).toBe(false);
     }
+    expect(GRANT_LIFETIME_DAYS).toBe(29);
+    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKGROUND_SYNC_CONSENT_COPY)))).toEqual(["never receives the meeting itself"]);
+    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(GOOGLE_MEET_CONSENT_COPY))))
+      .toEqual(["never passes through tinychat's server", "stays unless you delete it"]);
     // The originals' write denials are exactly the sentences an active grant would falsify.
     for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY, GOOGLE_MEET_CONSENT_COPY]) {
       expect(matched(SERVER_WRITE_DENIALS, normalize(consentCopyText(base)))).toContain("nothing is granted");
     }
   });
 
-  it("delivery active: the copy discloses that the server can write transcripts, and claims nothing to the contrary", async () => {
+  it("delivery active: the copy discloses the whole transcript-writer grant, and keeps no sentence it falsifies", async () => {
     const grant = await makeSignedTranscriptGrant();
     const { fixture, accept, status } = await acceptAndReport(grant, DELIVERY_ON);
     // The policy the disclosure describes: the signed grant is accepted and activates exactly the
@@ -546,8 +573,10 @@ describe("copy ↔ transcript-writer policy", () => {
         expect(copy.variant).toBe(`${base.variant}-transcript-writer` as typeof copy.variant);
         for (const rendered of [copy, googleConsentCopyForSystemBrowser(copy)]) {
           const text = normalize(consentCopyText(rendered));
-          expect({ variant: rendered.variant, state, discloses: text.includes(TRANSCRIPT_WRITER_DISCLOSURE) })
+          expect({ variant: rendered.variant, state, discloses: disclosesTranscriptWriter(text) })
             .toEqual({ variant: rendered.variant, state, discloses: true });
+          expect({ variant: rendered.variant, state, falsified: matched(GRANT_FALSIFIED_CLAIMS, text) })
+            .toEqual({ variant: rendered.variant, state, falsified: [] });
           expect({ variant: rendered.variant, state, denials: matched(SERVER_WRITE_DENIALS, text) })
             .toEqual({ variant: rendered.variant, state, denials: [] });
         }
@@ -673,7 +702,12 @@ describe("Option C consent copy (§3.8), in every delivery state", () => {
       expect(COPY.variant).toBe(state === "inactive" ? "C" : "C-transcript-writer");
       expect(COPY_TEXT).toContain("which meetings are ready");
       expect(COPY_TEXT).toContain("never sees your fireflies key");
-      expect(COPY_TEXT).toContain("it never receives the meeting itself");
+      if (state === "inactive") expect(COPY_TEXT).toContain("it never receives the meeting itself");
+      else {
+        // Qualified: the notification still carries nothing, but the grant can read saved meetings.
+        expect(COPY_TEXT).toContain("the notification itself carries no title, no transcript, no summary and no attendees");
+        expect(COPY_TEXT).toContain("lets our server read it in your space");
+      }
     }
   });
 
@@ -839,7 +873,8 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
     const section = doc.slice(doc.indexOf("## Transcript-writer variant"));
     expect(section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`)).toBeGreaterThan(0);
     expect(section.slice(0, section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`))).toContain("**Status: NOT APPROVED.**");
-    expect(doc.slice(0, doc.indexOf("## Transcript-writer variant"))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
+    expect(normalize(doc.slice(0, doc.indexOf("## Transcript-writer variant")))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
+    expect(normalize(section)).toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
   });
 
   it("records the consent surface's wiring state honestly in both directions", () => {
@@ -861,7 +896,7 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
 });
 
 /** The transcript-writer notice as the frontend renders it (normalized). */
-const TRANSCRIPT_WRITER_NOTICE_TEXT = "can save its meeting transcripts into your space";
+const TRANSCRIPT_WRITER_NOTICE_TEXT = "read, add, change and delete the meeting records in your connectors";
 
 describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in every delivery state and surface", () => {
   const scopes = GOOGLE_MEET_SCOPES.split(" ");
@@ -904,11 +939,16 @@ describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in ev
   });
 
   it("says the browser fetches the meeting itself, and where the data lands", () => {
-    for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
+    for (const { state, text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
       expect(GOOGLE_TEXT).toMatch(/browser talks to google directly/);
-      expect(GOOGLE_TEXT).toMatch(/never passes through tinychat's server/);
       expect(GOOGLE_TEXT).toMatch(/written straight into your space/);
       expect(GOOGLE_TEXT).toMatch(/we keep no copy of it/);
+      if (state === "inactive") expect(GOOGLE_TEXT).toMatch(/never passes through tinychat's server/);
+      else {
+        // Qualified: the Google fetch bypasses our server, but the grant reaches the saved meetings.
+        expect(GOOGLE_TEXT).toMatch(/the fetch from google does not go through tinychat's server/);
+        expect(GOOGLE_TEXT).toMatch(/lets our server read, change or delete them there/);
+      }
     }
   });
 
@@ -956,11 +996,13 @@ describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in ev
   });
 
   it("does not disturb the two background-sync texts", () => {
+    // The shared transcript-writer notice names both connectors on purpose; nothing else may.
+    const notice = "every connector's meetings, fireflies and google included";
     for (const { text: GOOGLE_TEXT } of selectable(GOOGLE_MEET_CONSENT_COPY, "both")) {
-      expect(GOOGLE_TEXT).not.toContain("fireflies");
+      expect(GOOGLE_TEXT.replace(notice, "")).not.toContain("fireflies");
     }
     for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY]) {
-      for (const { text } of selectable(base)) expect(text).not.toContain("google");
+      for (const { text } of selectable(base)) expect(text.replace(notice, "")).not.toContain("google");
     }
   });
 });
