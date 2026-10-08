@@ -27,7 +27,9 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
             if (slot < 0) { drain(false); continue }
             val input = codec.getInputBuffer(slot)!!
             input.clear()
-            val count = minOf(input.remaining() and -2, size - offset)
+            // Some platform AAC encoders emit only one 1024-sample access unit per
+            // queued buffer, even when the buffer has room for more PCM.
+            val count = minOf(input.remaining() and -2, 1024 * 2, size - offset)
             if (count == 0) throw IllegalStateException("AAC input buffer cannot hold a sample")
             input.put(pcm, offset, count)
             codec.queueInputBuffer(slot, 0, count, samples * 1_000_000L / SAMPLE_RATE, 0)

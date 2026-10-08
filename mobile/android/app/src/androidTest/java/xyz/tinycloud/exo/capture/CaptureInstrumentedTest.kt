@@ -334,7 +334,7 @@ class CaptureInstrumentedTest {
                 pcm[i * 2] = value.toByte(); pcm[i * 2 + 1] = (value shr 8).toByte()
             }
             encoder.offer(pcm, pcm.size); encoder.finish()
-            assertTrue(packets > 40)
+            assertTrue("AAC packets=$packets for $samples PCM samples", packets > 40)
             val audioMs = packets * 1024L * 1000 / 44_100
             library.checkpoint(id, 0, audioMs, "recording", "available")
             library.stopJournal(id, audioMs, "user")
