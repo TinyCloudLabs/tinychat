@@ -54,6 +54,7 @@ export interface TranscriberMeeting {
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
+  completed_at?: string | null;
   error?: { type: string; code: string; message: string } | null;
   capture?: TranscriberCapture;
   transcript_provider?: string;

@@ -5,7 +5,7 @@ import {
   type PortableDelegation,
   type ResourceCapability,
 } from "@tinycloud/web-sdk";
-import { type DelegationResponse } from "@tinyboilerplate/core";
+import type { DelegationResponse } from "@tinyboilerplate/core";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE } from "./request-headers.js";
 
 // ── Create Delegation ────────────────────────────────────────────────
@@ -104,8 +104,9 @@ function serializeDelegationBundle(delegations: readonly PortableDelegation[]): 
 
 export async function sendDelegation(
   backendUrl: string,
-  serialized: string,
+  envelope: { serialized: string; siwe: string; signature: string },
   sessionToken: string,
+  signal?: AbortSignal,
 ): Promise<DelegationResponse> {
   const res = await fetch(`${backendUrl}/api/delegations`, {
     method: "POST",
@@ -114,7 +115,8 @@ export async function sendDelegation(
       Authorization: `Bearer ${sessionToken}`,
       [DEFAULT_REQUEST_HEADER_NAME]: DEFAULT_REQUEST_HEADER_VALUE,
     },
-    body: JSON.stringify({ serialized }),
+    body: JSON.stringify(envelope),
+    signal,
   });
 
   if (!res.ok) {

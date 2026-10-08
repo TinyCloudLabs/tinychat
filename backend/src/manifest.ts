@@ -9,12 +9,14 @@ import {
   type Manifest,
   type PermissionEntry,
 } from "@tinycloud/node-sdk/core";
-import type { NonEmptyServerInfoPermissions, ServerInfoPermission } from "@tinyboilerplate/core";
+import {
+  APP_ID,
+  TRANSCRIPT_WRITER_POLICY,
+  type NonEmptyServerInfoPermissions,
+  type ServerInfoPermission,
+} from "@tinyboilerplate/core";
 import { isCanonicalResourcePath } from "./portable-delegation.js";
 
-export const APP_ID = "xyz.tinycloud.tinychat";
-export const THREADS_KV_PATH = "threads/";
-export const THREADS_KV_PREFIX = `${APP_ID}/${THREADS_KV_PATH}`;
 
 interface TinychatManifest extends Omit<Manifest, "permissions"> {
   manifest_version?: 1;
@@ -41,10 +43,14 @@ export const BACKEND_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 function backendDelegationPermissions(): NonEmptyServerInfoPermissions {
   return [
     {
-      service: "tinycloud.kv",
-      path: THREADS_KV_PATH,
-      actions: ["get", "put", "del", "list"],
-      description: "Read and write chat threads and messages.",
+      ...TRANSCRIPT_WRITER_POLICY[0],
+      actions: [...TRANSCRIPT_WRITER_POLICY[0].actions],
+      description: "Store completed transcription meetings in your connectors database.",
+    },
+    {
+      ...TRANSCRIPT_WRITER_POLICY[1],
+      actions: [...TRANSCRIPT_WRITER_POLICY[1].actions],
+      description: "Store completed transcription bodies in your transcriber connector.",
     },
   ];
 }
@@ -216,6 +222,7 @@ export function backendDelegationPolicyHash(backendDid: string): string {
   if (memoized !== undefined) return memoized;
 
   const policy = {
+    verifier: "ucan-siwe-v1",
     delegateDid: backendDid,
     permissions: backendDelegationResolvedPermissions(backendDid)
       .map((permission) => ({

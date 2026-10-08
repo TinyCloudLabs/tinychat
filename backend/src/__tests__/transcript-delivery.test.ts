@@ -1,0 +1,665 @@
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, it } from "bun:test";
+import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { CONNECTOR_SCHEMA, transcriptKvKey, TRANSCRIBER_MEETING_SOURCE, type StoredDelegation } from "@tinyboilerplate/core";
+import { generatePrivateKey } from "viem/accounts";
+import type { JsonKv } from "../services/transcriber-index.js";
+import { BackendStorageLane } from "../services/backend-storage-lane.js";
+import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
+import { KvTranscriptDeliveryStore, TranscriptDeliveryWorker, WriteGovernor, type DeliveryState, type TranscriptDeliveryOptions } from "../services/transcript-delivery.js";
+import { TranscriptionApiError, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
+import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers/transcript-grant.js";
+
+const databases: Database[] = [];
+afterEach(() => { for (const db of databases.splice(0)) db.close(); });
+
+class MemoryJson implements JsonKv {
+  readonly values = new Map<string, unknown>();
+  readonly puts: string[] = [];
+  reads = 0;
+  onPut?: (key: string) => void;
+  async get<T>(key: string): Promise<T | null> {
+    this.reads++;
+    return (this.values.get(key) as T | undefined) ?? null;
+  }
+  async put(key: string, value: unknown): Promise<void> {
+    this.puts.push(key);
+    this.onPut?.(key);
+    this.values.set(key, structuredClone(value));
+  }
+  async remove(key: string): Promise<void> { this.values.delete(key); }
+  async keys(prefix: string): Promise<string[]> { return [...this.values.keys()].filter((key) => key.startsWith(prefix)); }
+}
+
+const notFound = (key: string) => ({ ok: false as const, error: { code: "KV_NOT_FOUND", service: "kv", message: `Key not found: ${key}` } });
+
+interface Fixture {
+  grant: SignedTranscriptGrant;
+  index: MemoryTranscriberIndexStore;
+  meetings: Map<string, TranscriptionMeeting>;
+  backend: MemoryJson;
+  bodies: Map<string, string>;
+  db: Database;
+  node: TinyCloudNode;
+  api: TranscriptionApiClient;
+  meeting: (id: string, address?: string) => TranscriptionMeeting;
+  events: string[];
+  counts: { meeting: number; transcript: number; activation: number; removal: number; execute: number; put: number };
+  records: Map<string, StoredDelegation>;
+  worker: (options?: Partial<TranscriptDeliveryOptions>) => TranscriptDeliveryWorker;
+  state: (address?: string) => DeliveryState;
+}
+
+async function fixture(schema = true): Promise<Fixture> {
+  const grant = await makeSignedTranscriptGrant();
+  const backend = new MemoryJson();
+  const index = new MemoryTranscriberIndexStore();
+  const bodies = new Map<string, string>();
+  const db = new Database(":memory:");
+  databases.push(db);
+  if (schema) for (const table of CONNECTOR_SCHEMA) db.exec(table.sql);
+  const events: string[] = [];
+  backend.onPut = (key) => { if (key.startsWith("transcriber/delivery/")) events.push("state-put"); };
+  const counts = { meeting: 0, transcript: 0, activation: 0, removal: 0, execute: 0, put: 0 };
+  const records = new Map<string, StoredDelegation>();
+  records.set(grant.address.toLowerCase(), {
+    serialized: grant.envelope, expiresAt: grant.expiresAt.toISOString(), grantedAt: new Date().toISOString(),
+    actions: [], path: "connectors",
+  });
+  const meetings = new Map<string, TranscriptionMeeting>();
+  const meeting = (id: string, address = grant.address): TranscriptionMeeting => ({
+    id, status: "completed", platform: "jitsi", meeting_url: "https://meet.example/room", created_at: new Date().toISOString(),
+    metadata: { tinychat_address: address },
+  });
+  const api: TranscriptionApiClient = {
+    async getMeeting(id) {
+      counts.meeting++;
+      const value = meetings.get(id);
+      if (!value) throw new TranscriptionApiError(404, "meeting_not_found", "Not found");
+      return value;
+    },
+    async getTranscript(id) {
+      counts.transcript++;
+      return { pending: false, transcript: {
+        meeting_id: id, status: "completed", segments: [{ id: "seg", speaker_id: "sp", speaker_name: "Alice", start: 1, end: 3, text: "hello" }],
+      } };
+    },
+    async lookupMeetingByIdempotencyKey() { return null; },
+    async createMeeting() { throw new Error("unused"); },
+    async stopMeeting() { throw new Error("unused"); },
+    async deleteMeeting() { throw new Error("unused"); },
+  };
+  const sql = { db: (_name: string) => ({
+    async query(text: string, params: unknown[]) {
+      events.push("query");
+      try { return { ok: true, data: { rows: db.query(text).all(...params as (string | number | null)[]).map((row) => Object.values(row as object)) } }; }
+      catch (error) { return { ok: false, error: { code: "SQL_ERROR", message: String(error) } }; }
+    },
+    async execute(text: string, params: unknown[] = []) {
+      counts.execute++; events.push("execute");
+      if (/\b(?:CREATE|ALTER|DROP|PRAGMA)\b/i.test(text)) throw new Error("Backend attempted DDL");
+      try { db.query(text).run(...params as (string | number | null)[]); return { ok: true, data: {} }; }
+      catch (error) { return { ok: false, error: { code: "SQL_ERROR", message: String(error) } }; }
+    },
+  }) };
+  const kv = {
+    async get(key: string) { return bodies.has(key) ? { ok: true, data: bodies.get(key) } : notFound(key); },
+    async put(key: string, value: string) {
+      counts.put++; events.push("put");
+      if (bodies.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "exists" } };
+      bodies.set(key, value); return { ok: true, data: {} };
+    },
+  };
+  const node = {
+    computeDelegationCid: grant.computeDelegationCid,
+    async useDelegation() { counts.activation++; events.push("activation"); return { sql, kv }; },
+  } as unknown as TinyCloudNode;
+  const storageLane = new BackendStorageLane();
+  const worker = (options: Partial<TranscriptDeliveryOptions> = {}) =>
+    new TranscriptDeliveryWorker({
+      api, index, node, backendDid: grant.backendDid, configuredHost: grant.configuredHost,
+      eligibility: () => true, storageLane, sweepMs: 60_000,
+      delegationStore: {
+        async load(address) { return records.get(address) ?? null; },
+        async remove(address) { counts.removal++; events.push("remove"); records.delete(address); },
+      },
+      deliveryStore: new KvTranscriptDeliveryStore(backend, storageLane),
+      governor: { take: async () => { events.push("take"); } } as WriteGovernor,
+      ...options,
+    });
+  const state = (address = grant.address): DeliveryState =>
+    backend.values.get(`transcriber/delivery/${address.toLowerCase()}`) as DeliveryState;
+  return { grant, index, backend, bodies, db, node, api, meeting, meetings, events, counts, records, worker, state };
+}
+
+async function admit(f: Fixture, id: string, meeting = f.meeting(id), owner = f.grant.address): Promise<void> {
+  await f.index.add(owner, id);
+  f.meetings.set(id, meeting);
+}
+
+async function wakeAndDrain(worker: TranscriptDeliveryWorker, address: string, id: string): Promise<void> {
+  await worker.wake(address, id, "completed");
+  await worker.sweep();
+}
+
+describe("durable transcript delivery", () => {
+  it("caches both missing and present backend-KV state for sixty seconds, writing through updates", async () => {
+    const json = new MemoryJson();
+    const store = new KvTranscriptDeliveryStore(json, new BackendStorageLane());
+    const owner = "0x0000000000000000000000000000000000000001";
+    const key = `transcriber/delivery/${owner}`;
+    const originalNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    try {
+      expect((await store.read(owner)).done).toEqual({});
+      json.values.set(key, { v: 1, done: { old: { at: now, how: "existing" } }, watch: {}, retry: {} });
+      expect((await store.read(owner)).done).toEqual({});
+      expect(json.reads).toBe(1);
+      now += 60_001;
+      expect((await store.read(owner)).done.old.how).toBe("existing");
+      expect(json.reads).toBe(2);
+      await store.write(owner, { v: 1, done: { fresh: { at: now, how: "written" } }, watch: {}, retry: {} });
+      expect((await store.read(owner)).done.fresh.how).toBe("written");
+      expect(json.reads).toBe(2);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("writes a single SQLite row and immutable body, with no DDL, then skips duplicate wakes", async () => {
+    const f = await fixture();
+    await admit(f, "m-1");
+    const worker = f.worker();
+    await wakeAndDrain(worker, f.grant.address, "m-1");
+    expect(f.db.query("SELECT source_id FROM connector_meeting").all()).toEqual([{ source_id: "m-1" }]);
+    expect(JSON.parse(f.bodies.get(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "m-1"))!)).toHaveLength(1);
+    expect(f.state().done["m-1"].how).toBe("written");
+    expect(f.counts.activation).toBe(2);
+    expect(f.counts.execute).toBe(1);
+    await wakeAndDrain(worker, f.grant.address, "m-1");
+    expect(f.counts.meeting).toBe(1);
+    await worker.stop();
+  });
+
+  it("serializes concurrent wakes for one owner without overlapping upstream operations", async () => {
+    const f = await fixture();
+    for (let i = 0; i < 20; i++) await admit(f, `concurrent-${i}`);
+    let active = 0;
+    let highWater = 0;
+    const getMeeting = f.api.getMeeting.bind(f.api);
+    f.api.getMeeting = async (id) => {
+      active++;
+      highWater = Math.max(highWater, active);
+      await Promise.resolve();
+      try { return await getMeeting(id); }
+      finally { active--; }
+    };
+    const worker = f.worker();
+    await Promise.all(Array.from({ length: 20 }, (_, i) => worker.wake(f.grant.address, `concurrent-${i}`, "completed")));
+    await worker.sweep();
+    expect(highWater).toBe(1);
+    expect(f.db.query("SELECT COUNT(*) AS total FROM connector_meeting").get()).toEqual({ total: 20 });
+    await worker.stop();
+  });
+
+  it("throttles repeated upstream meeting reads per id for 60 seconds across wake and sweep", async () => {
+    const f = await fixture();
+    await admit(f, "throttled");
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    try {
+      const meeting = f.meeting("throttled");
+      f.api.getMeeting = async () => {
+        f.counts.meeting++;
+        return { ...meeting, status: "processing" };
+      };
+      const worker = f.worker();
+      await worker.deliver(f.grant.address, "throttled");
+      now += 59_999;
+      await worker.wake(f.grant.address, "throttled", "completed");
+      await worker.sweep();
+      expect(f.counts.meeting).toBe(1);
+      now += 2;
+      await worker.deliver(f.grant.address, "throttled");
+      expect(f.counts.meeting).toBe(2);
+      await worker.stop();
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("recovers a lost webhook on restart and persists pending backoff across restarts", async () => {
+    const f = await fixture();
+    await admit(f, "lost");
+    const initial = f.worker();
+    initial.start(); await initial.stop();
+    const restarted = f.worker();
+    await restarted.sweep();
+    expect(f.state().done.lost.how).toBe("written");
+    await restarted.stop();
+    await admit(f, "pending");
+    f.api.getTranscript = async () => ({ pending: true, status: "processing" });
+    const pending = f.worker();
+    await wakeAndDrain(pending, f.grant.address, "pending");
+    expect(f.state().retry.pending.code).toBe("transcript_pending");
+    await pending.stop();
+    const calls = f.counts.meeting;
+    const later = f.worker();
+    await later.sweep();
+    expect(f.counts.meeting).toBe(calls);
+    await later.stop();
+  });
+
+  it("keeps retrying after ten pending attempts, moving to a durable daily interval", async () => {
+    const f = await fixture();
+    await admit(f, "slow");
+    f.api.getTranscript = async () => ({ pending: true, status: "processing" });
+    for (let attempt = 1; attempt <= 11; attempt++) {
+      const worker = f.worker();
+      await worker.deliver(f.grant.address, "slow");
+      expect(f.state().retry.slow.attempts).toBe(attempt);
+      if (attempt >= 10) expect(f.state().retry.slow.nextAt - Date.now()).toBeGreaterThan(23 * 3_600_000);
+      await worker.stop();
+    }
+    expect(f.state().done.slow).toBeUndefined();
+  });
+
+  it("refuses no grant, wrong owner, and missing metadata before activating or writing user space", async () => {
+    const f = await fixture();
+    await admit(f, "absent");
+    f.records.clear();
+    const worker = f.worker();
+    await wakeAndDrain(worker, f.grant.address, "absent");
+    expect(f.counts.meeting).toBe(0);
+    expect(f.counts.transcript).toBe(0);
+    expect(f.counts.activation).toBe(0);
+    await worker.stop();
+    f.records.set(f.grant.address.toLowerCase(), { serialized: f.grant.envelope, expiresAt: f.grant.expiresAt.toISOString(), actions: [], path: "connectors", grantedAt: "now" });
+    await admit(f, "foreign", f.meeting("foreign", "0x0000000000000000000000000000000000000001"));
+    await f.index.add(f.grant.address, "foreign");
+    await admit(f, "unknown-owner", { ...f.meeting("unknown-owner"), metadata: {} });
+    const second = f.worker();
+    await second.deliver(f.grant.address, "foreign");
+    await second.deliver(f.grant.address, "unknown-owner");
+    expect(f.state().done.foreign.how).toBe("owner_mismatch");
+    expect(f.state().done["unknown-owner"].how).toBe("owner_mismatch");
+    expect(f.counts.activation).toBe(0);
+    await second.stop();
+  });
+
+  it("marks 404 gone, repairs a legacy row body-only and marks already-present existing", async () => {
+    const f = await fixture();
+    await f.index.add(f.grant.address, "deleted");
+    const worker = f.worker();
+    await worker.deliver(f.grant.address, "deleted");
+    expect(f.state().done.deleted.how).toBe("gone");
+    await admit(f, "legacy");
+    f.db.query("INSERT INTO connector_meeting (id, source, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("old-random", TRANSCRIBER_MEETING_SOURCE, "legacy", "now", "now");
+    await worker.deliver(f.grant.address, "legacy");
+    expect(f.state().done.legacy.how).toBe("written");
+    expect(f.db.query("SELECT id FROM connector_meeting WHERE source_id = 'legacy'").get()).toEqual({ id: "old-random" });
+    expect(f.counts.execute).toBe(0);
+    await admit(f, "present");
+    f.db.query("INSERT INTO connector_meeting (id, source, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("existing", TRANSCRIBER_MEETING_SOURCE, "present", "now", "now");
+    f.bodies.set(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, "present"), "[]");
+    await worker.deliver(f.grant.address, "present");
+    expect(f.state().done.present.how).toBe("existing");
+    expect(f.counts.transcript).toBe(1);
+    await worker.stop();
+  });
+
+  it("watches failed meetings, retries on completion wake and on a due watch without a wake", async () => {
+    const f = await fixture();
+    await admit(f, "failed");
+    const completed = f.meeting("failed");
+    f.api.getMeeting = async () => ({ ...completed, status: "failed", metadata: {} });
+    const first = f.worker();
+    await first.deliver(f.grant.address, "failed");
+    expect(f.state().watch.failed.checks).toBe(1);
+    await first.stop();
+    const second = f.worker();
+    f.api.getMeeting = async () => completed;
+    await wakeAndDrain(second, f.grant.address, "failed");
+    expect(f.state().done.failed.how).toBe("written");
+    expect(f.state().watch.failed).toBeUndefined();
+    await second.stop();
+    await admit(f, "watch");
+    f.api.getMeeting = async (id) => ({ ...f.meeting(id), status: "failed" });
+    const third = f.worker();
+    await third.deliver(f.grant.address, "watch");
+    await third.stop();
+    const persisted = f.state();
+    persisted.watch.watch.nextAt = Date.now() - 1;
+    f.backend.values.set(`transcriber/delivery/${f.grant.address.toLowerCase()}`, structuredClone(persisted));
+    f.api.getMeeting = async (id) => f.meeting(id);
+    const fourth = f.worker();
+    await fourth.sweep();
+    expect(f.state().done.watch.how).toBe("written");
+    await fourth.stop();
+  });
+
+  it("reopens cancelled upon completion wake and persists schema_missing until browser schema repair", async () => {
+    const f = await fixture(false);
+    await admit(f, "schema");
+    const first = f.worker();
+    await first.deliver(f.grant.address, "schema");
+    expect(f.state().retry.schema.code).toBe("schema_missing");
+    expect(await first.hasSchemaMissing(f.grant.address)).toBe(true);
+    expect(f.events).not.toContain("execute");
+    await first.stop();
+    const second = f.worker();
+    expect(await second.hasSchemaMissing(f.grant.address)).toBe(true);
+    for (const table of CONNECTOR_SCHEMA) f.db.exec(table.sql);
+    await wakeAndDrain(second, f.grant.address, "schema");
+    expect(f.state().done.schema.how).toBe("written");
+    expect(await second.hasSchemaMissing(f.grant.address)).toBe(false);
+    await second.stop();
+    await admit(f, "cancel");
+    f.api.getMeeting = async () => ({ ...f.meeting("cancel"), status: "cancelled" });
+    const third = f.worker();
+    await third.deliver(f.grant.address, "cancel");
+    await third.stop();
+    f.api.getMeeting = async (id) => f.meeting(id);
+    const fourth = f.worker();
+    await wakeAndDrain(fourth, f.grant.address, "cancel");
+    expect(f.state().done.cancel.how).toBe("written");
+    await fourth.stop();
+  });
+
+  it("removes foreign stored envelopes under their own owner key, warm and cold, without B activation", async () => {
+    for (const warm of [true, false]) {
+      const f = await fixture();
+      const b = await makeSignedTranscriptGrant({ wallet: "B" });
+      await admit(f, "a");
+      await f.index.add(b.address, "b");
+      const a = f.worker();
+      if (warm) await a.deliver(f.grant.address, "a");
+      await a.stop();
+      f.records.set(b.address.toLowerCase(), { serialized: f.grant.envelope, expiresAt: f.grant.expiresAt.toISOString(), actions: [], path: "connectors", grantedAt: "now" });
+      const activations = f.counts.activation;
+      const bWorker = f.worker();
+      await bWorker.deliver(b.address, "b");
+      expect(f.records.has(b.address.toLowerCase())).toBe(false);
+      expect(f.counts.activation).toBe(activations);
+      expect(f.events.slice(-2)).toEqual(["take", "remove"]);
+      expect(f.backend.puts.filter((key) => key.endsWith(b.address.toLowerCase()))).toEqual([]);
+      await bWorker.stop();
+    }
+  });
+
+  it("drops ten thousand forged and final wakes without contacting ptx", async () => {
+    const f = await fixture();
+    await f.index.add(f.grant.address, "done");
+    await f.backend.put(`transcriber/delivery/${f.grant.address.toLowerCase()}`, {
+      v: 1, done: { done: { at: Date.now(), how: "written" } }, watch: {}, retry: {},
+    });
+    const worker = f.worker();
+    for (let i = 0; i < 10_000; i++) await worker.wake(i % 2 ? f.grant.address : `0x${i.toString(16).padStart(40, "0")}`, `forged-${i}`, "completed");
+    await worker.wake(f.grant.address, "done", "completed");
+    expect(f.counts.meeting).toBe(0);
+    expect(f.counts.activation).toBe(0);
+    expect(worker.overflow.dropped).toBe(0);
+    await worker.stop();
+  });
+
+  it("prunes stale delivery markers on a sweep with no due IDs in one state write", async () => {
+    const f = await fixture();
+    await f.index.add(f.grant.address, "retained");
+    const address = f.grant.address.toLowerCase();
+    await f.backend.put(`transcriber/delivery/${address}`, {
+      v: 1, done: { retained: { at: Date.now(), how: "written" }, removed: { at: Date.now(), how: "gone" } },
+      watch: {}, retry: { removed: { attempts: 1, nextAt: Date.now(), code: "transcript_pending" } },
+    });
+    const worker = f.worker();
+    await worker.sweep();
+    expect(Object.keys(f.state().done)).toEqual(["retained"]);
+    expect(f.state().retry).toEqual({});
+    expect(f.counts.meeting).toBe(0);
+    expect(f.backend.puts.filter((key) => key === `transcriber/delivery/${address}`)).toHaveLength(2);
+    await worker.stop();
+  });
+
+  it("deduplicates admitted wakes at a 1,000-item FIFO before any extra upstream call", async () => {
+    const f = await fixture();
+    for (let i = 0; i < 1002; i++) await admit(f, `queued-${i}`);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    f.api.getMeeting = async (id) => {
+      f.counts.meeting++;
+      entered();
+      await held;
+      return f.meetings.get(id)!;
+    };
+    const worker = f.worker();
+    await worker.wake(f.grant.address, "queued-0", "completed");
+    await started;
+    for (let i = 1; i < 1002; i++) await worker.wake(f.grant.address, `queued-${i}`, "completed");
+    for (let i = 0; i < 100; i++) await worker.wake(f.grant.address, "queued-1", "completed");
+    expect(worker.overflow.dropped).toBe(1);
+    expect(f.counts.meeting).toBe(1);
+    release();
+    await worker.stop();
+  });
+
+  it("resolves an idempotent pending-create intent with a governed index write before delivery", async () => {
+    const f = await fixture();
+    const address = f.grant.address.toLowerCase();
+    const meeting = f.meeting("recovered", address);
+    f.meetings.set(meeting.id, meeting);
+    await f.index.beginCreate(address, { key: "manual-v1-crashed", hash: "a".repeat(64), createdAt: Date.now() });
+    let lookups = 0;
+    f.api.lookupMeetingByIdempotencyKey = async (key) => {
+      expect(key).toBe("manual-v1-crashed");
+      lookups++;
+      return { meeting, requestHash: "a".repeat(64) };
+    };
+    const worker = f.worker();
+    await worker.sweep();
+    expect(lookups).toBe(1);
+    expect(await f.index.list(address)).toContain("recovered");
+    expect(await f.index.listPending(address)).toEqual([]);
+    expect(f.state().done.recovered.how).toBe("written");
+    expect(f.events.filter((event) => event === "take")).toHaveLength(6);
+    await worker.stop();
+  });
+
+  it("interleaves one wake with one pending-intent lookup while both sources stay busy", async () => {
+    const f = await fixture();
+    const address = f.grant.address.toLowerCase();
+    for (let i = 0; i < 5; i++) {
+      await admit(f, `wake-${i}`);
+      await f.index.beginCreate(address, { key: `intent-${i}`, hash: "a".repeat(64), createdAt: Date.now() });
+    }
+    const sources: string[] = [];
+    f.api.lookupMeetingByIdempotencyKey = async () => { sources.push("lookup"); return null; };
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    f.api.getMeeting = async (id) => {
+      sources.push("wake");
+      if (id === "wake-0") { entered(); await held; }
+      return f.meetings.get(id)!;
+    };
+    const worker = f.worker();
+    await worker.wake(address, "wake-0", "completed");
+    await started;
+    for (let i = 1; i < 5; i++) await worker.wake(address, `wake-${i}`, "completed");
+    const sweep = worker.sweep();
+    release();
+    await sweep;
+    expect(sources.slice(0, 10)).toEqual([
+      "wake", "lookup", "wake", "lookup", "wake", "lookup", "wake", "lookup", "wake", "lookup",
+    ]);
+    expect(await f.index.listPending(address)).toHaveLength(5);
+    await worker.stop();
+  });
+
+  it("never indexes or delivers a recovered create with a mismatched hash or owner", async () => {
+    for (const mismatch of ["hash", "owner"]) {
+      const f = await fixture();
+      const address = f.grant.address.toLowerCase();
+      await f.index.beginCreate(address, { key: `manual-v1-${mismatch}`, hash: "a".repeat(64), createdAt: Date.now() });
+      f.api.lookupMeetingByIdempotencyKey = async () => ({
+        meeting: f.meeting("foreign-recovery", mismatch === "owner" ? "0x0000000000000000000000000000000000000001" : address),
+        requestHash: mismatch === "hash" ? "b".repeat(64) : "a".repeat(64),
+      });
+      const worker = f.worker();
+      await worker.sweep();
+      expect(await f.index.list(address)).toEqual([]);
+      expect(await f.index.listPending(address)).toEqual([]);
+      expect(f.counts.meeting).toBe(0);
+      expect(f.counts.activation).toBe(0);
+      expect(f.events.filter((event) => event === "take")).toHaveLength(1);
+      await worker.stop();
+    }
+  });
+
+
+  it("continues a 1,500-meeting sweep across 60 signed owners under wake floods and restarts", async () => {
+    const f = await fixture();
+    const owners = [f.grant];
+    for (let i = 1; i < 60; i++) owners.push(await makeSignedTranscriptGrant({ privateKey: generatePrivateKey() }));
+    const ids: { address: string; id: string }[] = [];
+    for (let owner = 0; owner < owners.length; owner++) {
+      const grant = owners[owner];
+      const address = grant.address.toLowerCase();
+      f.records.set(address, { serialized: grant.envelope, expiresAt: grant.expiresAt.toISOString(), actions: [], path: "connectors", grantedAt: "now" });
+      for (let item = 0; item < 25; item++) {
+        const id = `sweep-${owner}-${item}`;
+        ids.push({ address, id });
+        await admit(f, id, f.meeting(id, address), address);
+      }
+    }
+    const first = f.worker();
+    for (let pass = 0; pass < 3; pass++) {
+      for (const item of ids.slice(pass * 30, (pass + 1) * 30)) await first.wake(item.address, item.id, "completed");
+      await first.sweep();
+    }
+    await first.stop();
+    const second = f.worker();
+    for (let pass = 0; pass < 5; pass++) {
+      for (const item of ids.slice((pass + 3) * 30, (pass + 4) * 30)) await second.wake(item.address, item.id, "completed");
+      await second.sweep();
+    }
+    expect(f.db.query("SELECT COUNT(*) AS total FROM connector_meeting").get()).toEqual({ total: 1500 });
+    expect(f.bodies.size).toBe(1500);
+    expect(f.counts.meeting).toBe(1500);
+    expect(ids.every(({ address, id }) => f.state(address).done[id]?.how === "written")).toBe(true);
+    await second.stop();
+  });
+
+  it("batches 50×40 already-imported meetings into activation pair plus state put per owner", async () => {
+    const f = await fixture();
+    const owners = [f.grant];
+    for (let i = 1; i < 50; i++) owners.push(await makeSignedTranscriptGrant({ privateKey: generatePrivateKey() }));
+    for (let owner = 0; owner < owners.length; owner++) {
+      const grant = owners[owner];
+      const address = grant.address.toLowerCase();
+      f.records.set(address, { serialized: grant.envelope, expiresAt: grant.expiresAt.toISOString(), actions: [], path: "connectors", grantedAt: "now" });
+      for (let item = 0; item < 40; item++) {
+        const id = `import-${owner}-${item}`;
+        await admit(f, id, f.meeting(id, address), address);
+        f.db.query("INSERT INTO connector_meeting (id, source, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+          .run(id, TRANSCRIBER_MEETING_SOURCE, id, "now", "now");
+        f.bodies.set(transcriptKvKey(TRANSCRIBER_MEETING_SOURCE, id), "[]");
+      }
+    }
+    let now = 0;
+    const tokens: number[] = [];
+    const governor = new WriteGovernor(6, () => now, async (delay) => { now += delay; });
+    const metered = { take: async () => { await governor.take(); tokens.push(now); } } as WriteGovernor;
+    const worker = f.worker({ governor: metered });
+    for (let pass = 0; pass < 10; pass++) await worker.sweep();
+    expect(f.counts.meeting).toBe(2000);
+    expect(f.counts.transcript).toBe(0);
+    expect(f.counts.activation).toBe(100);
+    expect(f.backend.puts.filter((key) => key.startsWith("transcriber/delivery/"))).toHaveLength(50);
+    expect(tokens).toHaveLength(150);
+    expect(tokens.slice(0, 6)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(tokens.slice(6).every((at, index) => at - tokens[index + 5] >= 10_000)).toBe(true);
+    await worker.stop();
+  });
+
+  it("persists storage 5xx, quota 402 and upstream Retry-After as distinct retry classes", async () => {
+    const f = await fixture();
+    for (const id of ["storage", "quota", "upstream"]) await admit(f, id);
+    const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
+    const original = node.useDelegation;
+    node.useDelegation = async () => { throw Object.assign(new Error("temporary"), { status: 503 }); };
+    const worker = f.worker();
+    await worker.deliver(f.grant.address, "storage");
+    expect(f.state().retry.storage.code).toBe("storage_error");
+    node.useDelegation = async () => { throw Object.assign(new Error("quota"), { status: 402 }); };
+    await worker.deliver(f.grant.address, "quota");
+    expect(f.state().retry.quota.code).toBe("storage_quota");
+    expect(f.state().retry.quota.nextAt - Date.now()).toBeGreaterThan(23 * 3_600_000);
+    node.useDelegation = original;
+    f.api.getMeeting = async () => { throw new TranscriptionApiError(429, "slow_down", "slow down", 3_600_000); };
+    await worker.deliver(f.grant.address, "upstream");
+    expect(f.state().retry.upstream.code).toBe("upstream_unavailable");
+    expect(f.state().retry.upstream.nextAt - Date.now()).toBeGreaterThan(3_590_000);
+    await worker.stop();
+  });
+
+  it("meters rejected-grant removal and leaves the shared user lane free while a take waits", async () => {
+    const f = await fixture();
+    await admit(f, "rejected");
+    const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
+    const original = node.useDelegation;
+    node.useDelegation = async () => { throw Object.assign(new Error("forbidden"), { status: 403 }); };
+    const worker = f.worker();
+    await worker.deliver(f.grant.address, "rejected");
+    expect(f.counts.removal).toBe(1);
+    expect(f.events.filter((event) => event === "take")).toHaveLength(2);
+    expect(f.backend.puts).toEqual([]);
+    await worker.stop();
+    node.useDelegation = original;
+    await admit(f, "lane");
+    f.records.set(f.grant.address.toLowerCase(), {
+      serialized: f.grant.envelope, expiresAt: f.grant.expiresAt.toISOString(), actions: [], path: "connectors", grantedAt: "now",
+    });
+    const lane = new BackendStorageLane();
+    let waiting!: () => void;
+    const reached = new Promise<void>((resolve) => { waiting = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let taken = 0;
+    const governor = { async take() { if (++taken === 3) { waiting(); await blocked; } } } as WriteGovernor;
+    const second = f.worker({ governor, runInWriteLane: (operation) => lane.run(operation) });
+    const delivery = second.deliver(f.grant.address, "lane");
+    await reached;
+    let independent = false;
+    await lane.run(async () => { independent = true; });
+    expect(independent).toBe(true);
+    release();
+    await delivery;
+    expect(f.state().done.lane.how).toBe("written");
+    await second.stop();
+  });
+
+  it("governs each of the five fresh-space writes individually at one token per fake minute", async () => {
+    const f = await fixture();
+    await admit(f, "paced");
+    let now = 0;
+    const takes: number[] = [];
+    const governor = new WriteGovernor(1, () => now, async (ms) => { now += ms; });
+    const metered = { take: async () => { await governor.take(); takes.push(now); f.events.push("take"); } } as WriteGovernor;
+    let laneReleased = false;
+    const worker = f.worker({ governor: metered, runInWriteLane: async (operation) => { laneReleased = true; return operation(); } });
+    await worker.deliver(f.grant.address, "paced");
+    expect(takes).toEqual([0, 60_000, 120_000, 180_000, 240_000]);
+    expect(f.events.filter((event) => event !== "query")).toEqual([
+      "take", "activation", "take", "activation", "take", "execute", "take", "put", "take", "state-put",
+    ]);
+    expect(laneReleased).toBe(true);
+    expect(f.state().done.paced.how).toBe("written");
+    await worker.stop();
+  });
+});
