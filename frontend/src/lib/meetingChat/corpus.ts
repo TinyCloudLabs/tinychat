@@ -16,6 +16,7 @@ import type {
   ConnectorMeetingsResult,
 } from "../connectors/meetingsApi";
 import { DEFAULT_MEETINGS_SOURCE } from "../connectors/meetingsView";
+import { hasTranscriptCommitTable, LEGACY_WINNER_SQL_ORDER } from "../voiceNotes/voiceNoteCommits";
 import type { MeetingCandidate, MeetingCorpus, MeetingLaneHealth, MeetingRef } from "./types";
 
 /**
@@ -75,10 +76,30 @@ export const SQL_MEETING_METADATA_QUERY = `SELECT
   title,
   started_at,
   organizer_email,
-  participants,
+  CASE WHEN m.source = 'exo-voice-note' THEN COALESCE(
+    (SELECT t.participants FROM voice_note_transcript t WHERE t.source_id = m.source_id), m.participants)
+    ELSE m.participants END AS participants,
   CASE WHEN summary_overview IS NOT NULL OR summary_action_items IS NOT NULL THEN 1 ELSE 0 END AS has_sql_summary,
   created_at,
   updated_at
+FROM connector_meeting m
+WHERE m.source IN (${SUPPORTED_MEETING_SOURCES_SQL})
+  AND CASE
+    WHEN m.source NOT IN (${TRANSCRIBED_ONLY_SOURCES_SQL}) THEN 1
+    WHEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = m.source_id)
+      THEN EXISTS (SELECT 1 FROM voice_note_transcript t WHERE t.source_id = m.source_id AND t.outcome = 'transcribed')
+    ELSE COALESCE((SELECT json_extract(g.metadata, '$.transcription_outcome') = 'transcribed'
+      FROM connector_meeting g WHERE g.source_id = m.source_id AND g.source IN ('exo-voice-note', 'exo-voice-note-dup')
+        AND json_valid(g.metadata) AND json_extract(g.metadata, '$.transcription_outcome') IS NOT NULL
+      ${LEGACY_WINNER_SQL_ORDER}), 0)
+  END
+ORDER BY started_at DESC, id ASC
+LIMIT ${SQL_DISCOVERY_MAX_MEETINGS + 1}`;
+
+export const SQL_MEETING_METADATA_LEGACY_QUERY = `SELECT
+  id, source, source_id, title, started_at, organizer_email, participants,
+  CASE WHEN summary_overview IS NOT NULL OR summary_action_items IS NOT NULL THEN 1 ELSE 0 END AS has_sql_summary,
+  created_at, updated_at
 FROM connector_meeting
 WHERE source IN (${SUPPORTED_MEETING_SOURCES_SQL})
   AND CASE
@@ -720,7 +741,8 @@ export async function discoverSqlMeetings(
 ): Promise<SqlMeetingDiscovery> {
   let result: SqlQueryResult;
   try {
-    result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(SQL_MEETING_METADATA_QUERY, [], { signal }) as SqlQueryResult;
+    const query = await hasTranscriptCommitTable(tcw) ? SQL_MEETING_METADATA_QUERY : SQL_MEETING_METADATA_LEGACY_QUERY;
+    result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(query, [], { signal }) as SqlQueryResult;
   } catch {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     return { candidates: [], lane: { state: "failed", reason: "transport" } };

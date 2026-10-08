@@ -21,12 +21,19 @@ export type MicState = "idle" | "recording" | "silenced" | "paused" | "interrupt
  */
 export type MicStateReason = "os_silenced" | "no_signal" | "input_muted" | "call" | "user" | "interruption"
   | "route_change" | "media_services_reset" | "read_error" | "stalled" | "app_suspended" | "writer_stalled"
-  | "resume_blocked" | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
+  | "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | "pause_timeout"
+  | "max_duration" | "disk_full" | "write_failed" | "permission_revoked" | null;
 
 export type TranscriberId = "on-device" | "private-cloud" | "assemblyai";
 export type CaptureSource = "in_app" | "quick_action" | "app_shortcut" | "intent" | "control" | "tile" | "widget" | "notification";
 export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: boolean }
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
+export type AccountStatus = "signed_in" | "transitioning" | "signed_out";
+export interface RemoteOpReceipt {
+  id: string; did: string; opId: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
+  kind: "hosted_create" | "hosted_submit" | "own_upload" | "own_create" | "ptx_create";
+  fingerprint: string; startedAt: number;
+}
 export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
 export interface MissingAudioSpan {
   kind: "omitted" | "silenced";
@@ -38,8 +45,10 @@ export interface MissingAudioSpan {
 }
 export interface OutboxEntry {
   entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
-  kind: "transcript" | "hosted_upload" | "ptx_job" | "own_upload_lookup";
-  handle: string; createdAt: number; attempts: number;
+  kind: "transcript" | "hosted_upload" | "hosted_submit" | "ptx_job" | "own_upload_lookup" | "unknown";
+  handle: string | null; handleExpiresAt: number | null;
+  state: "pending" | "lookup" | "unknown" | "authority_expired" | "done";
+  createdAt: number; attempts: number;
 }
 export type ClaimOptions =
   | { id: string; did: string; evidence: "signed_out_v2" | "user_choice" }
@@ -182,8 +191,14 @@ export interface VoiceNotesPlugin {
   resume(): Promise<void>;
   discard(): Promise<{ id: string | null }>;
   setRecordingOptions(options: Partial<CaptureOptions>): Promise<void>;
-  getCaptureDefaults(): Promise<CaptureDefaults>;
+  getCaptureDefaults(): Promise<CaptureDefaults & { status: AccountStatus }>;
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;
+  setAccountState(options: { status: AccountStatus; accountDid: string | null; transitionGen: number }): Promise<void>;
+  beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
+  recordRemoteResult(options: { id: string; did: string; opId: string; result: {
+    handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
+    outcome: "created" | "failed" | "unknown";
+  } }): Promise<{ destination: "ledger" | "outbox" }>;
   claim(options: ClaimOptions): Promise<{ owner: string | null }>;
   updateLedger(options: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;
   localAudioUrl(options: { id: string }): Promise<{ url: string }>;
@@ -194,7 +209,7 @@ export interface VoiceNotesPlugin {
   listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
   deleteQuarantined(options: { id: string }): Promise<void>;
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
-  completeOutbox(options: { entryId: string; result: "done" | "retry" }): Promise<void>;
+  completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
   addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "level", listener: (event: { level: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;

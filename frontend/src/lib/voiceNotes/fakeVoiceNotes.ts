@@ -1,7 +1,7 @@
 import type { PluginListenerHandle } from "@capacitor/core";
 import type {
-  AudioInput, CaptureDefaults, CaptureOptions, CaptureSource, CaptureStatus, ClaimOptions, LocalTranscript, MicState,
-  MicStateReason, MissingAudioSpan, NoteLedger, OutboxEntry, VoiceNoteRecording, VoiceNotesPlugin,
+  AccountStatus, AudioInput, CaptureDefaults, CaptureOptions, CaptureSource, CaptureStatus, ClaimOptions, LocalTranscript, MicState,
+  MicStateReason, MissingAudioSpan, NoteLedger, OutboxEntry, RemoteOpReceipt, VoiceNoteRecording, VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
 
 type EventName = "micState" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "committed" | "inputs";
@@ -42,9 +42,10 @@ export interface FakeVoiceNotes {
     /** Audio captured before input stop, delivered from the OS during Pause drain. */
     queueCapturedBuffer(ms: number): void;
     failNextPause(): void;
+    failNextPauseTimeout(): void;
     failNextRelease(): void;
     releaseFailureCount(): number;
-    failNextResume(): void;
+    failNextResume(reason?: "resume_blocked" | "resume_not_allowed" | "mic_unavailable"): void;
     routeChange(): void;
     mediaReset(): void;
     stall(): void;
@@ -62,6 +63,9 @@ export interface FakeVoiceNotes {
     addRemote(id: string, resource: NoteLedger["remote"][number]): void;
     tombstoned(id: string): boolean;
     startFromSource(source: CaptureSource): Promise<string>;
+    failNextAccountState(): void;
+    failNextRemoteBegin(): void;
+    failNextRemoteResult(): void;
   };
 }
 
@@ -72,17 +76,25 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   const transcripts = new Map<string, LocalTranscript>();
   const tombstones = new Set<string>();
   const outbox = new Map<string, OutboxEntry>();
+  const receipts = new Map<string, RemoteOpReceipt>();
+  const receiptResults = new Map<string, { destination: "ledger" | "outbox"; handle: string | null;
+    handleExpiresAt: number | null; outcome: "created" | "failed" | "unknown" }>();
   const quarantine = new Map<string, { id: string; reason: string; sizeBytes: number }>();
   const inputs: AudioInput[] = [{ id: "built-in", name: "Built-in microphone", kind: "built_in" }];
   let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
+  let accountStatus: AccountStatus = "signed_out";
+  let accountStateFailure = false;
+  let remoteBeginFailure = false;
+  let remoteResultFailure = false;
   let session: Session | null = null;
   let counter = 0;
   let outboxCounter = 0;
   let generation = 0;
   let pauseShouldFail = false;
+  let pauseShouldTimeOut = false;
   let releaseShouldFail = false;
   let releaseFailures = 0;
-  let resumeShouldFail = false;
+  let resumeShouldFail: "resume_blocked" | "resume_not_allowed" | "mic_unavailable" | null = null;
   let pendingNotification: { id: string; gen: number } | null = null;
   let selectedId: string | null = null;
 
@@ -155,11 +167,12 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     s.backoffAttempt = 0;
     s.nextRetryMs = null;
     if (resumeShouldFail) {
-      resumeShouldFail = false;
+      const reason = resumeShouldFail;
+      resumeShouldFail = null;
       s.availability = "blocked";
-      s.reason = "resume_blocked";
+      s.reason = reason;
       stateChanged();
-      throw failure("resume_failed");
+      throw failure(reason === "resume_blocked" ? "resume_failed" : reason);
     }
     applyRestartResult(s, true);
   };
@@ -227,15 +240,32 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     return { owner: note.owner };
   };
 
+  const outboxFor = (receipt: RemoteOpReceipt, handle: string | null, result: {
+    handleExpiresAt?: number; outcome: "created" | "failed" | "unknown";
+  }): OutboxEntry => {
+    const entryId = `${receipt.id}:${receipt.opId}`;
+    const kind: OutboxEntry["kind"] = receipt.kind === "ptx_create" ? "ptx_job"
+      : receipt.kind === "hosted_create" ? "hosted_upload"
+      : receipt.kind === "hosted_submit" ? "hosted_submit"
+      : receipt.kind === "own_upload" ? "own_upload_lookup" : "transcript";
+    const entry: OutboxEntry = { entryId, did: receipt.did, provider: receipt.provider, mode: receipt.mode,
+      kind, handle, handleExpiresAt: result.handleExpiresAt ?? null,
+      state: result.outcome === "unknown" ? "unknown" : handle ? "pending" : "lookup",
+      createdAt: receipt.startedAt, attempts: 0 };
+    outbox.set(entryId, entry);
+    return entry;
+  };
+
   const plugin: VoiceNotesPlugin = {
     async start(options) {
       if (session) throw failure("already_recording");
       const id = `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;
       if (tombstones.has(id)) throw failure("tombstoned");
-      const opts: CaptureOptions = { transcriber: defaults.accountDid ? (options?.transcriber ?? defaults.transcriber) : "on-device",
+      const signedIn = accountStatus === "signed_in" && !!defaults.accountDid;
+      const opts: CaptureOptions = { transcriber: signedIn ? (options?.transcriber ?? defaults.transcriber) : "on-device",
         identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers };
       session = { id, startedAt: now(), audioMs: 0, pausedMs: 0, pauseStarted: null, intent: "recording", availability: "available",
-        reason: null, gen: ++generation, source: "in_app", owner: defaults.accountDid, transitionGen: defaults.transitionGen,
+        reason: null, gen: ++generation, source: "in_app", owner: signedIn ? defaults.accountDid : null, transitionGen: defaults.transitionGen,
         options: opts, spans: [], openSpan: null, maxDurationMs: Math.min(10_800_000, Math.max(1000, options?.maxDurationMs ?? 10_800_000)),
         backoffAttempt: 0, nextRetryMs: null, osSilenced: false, pendingCapturedMs: 0 };
       stateChanged();
@@ -265,8 +295,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         if (remote.cleanup === "done") continue;
         const add = (kind: OutboxEntry["kind"], handle: string) => {
           const entryId = `${id}:${++outboxCounter}`;
+          const receipt = [...receiptResults.values()].find((item) => item.handle === handle);
           outbox.set(entryId, { entryId, did: note.owner!, provider: remote.provider, mode: remote.mode,
-            kind, handle, createdAt: now(), attempts: 0 });
+            kind, handle, handleExpiresAt: receipt?.handleExpiresAt ?? null, state: "pending", createdAt: now(), attempts: 0 });
         };
         if (remote.provider === "ptx") {
           if (remote.jobId) add("ptx_job", remote.jobId);
@@ -279,6 +310,12 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       }
       notes.delete(id);
       transcripts.delete(id);
+      for (const receipt of receipts.values()) if (receipt.id === id && !outbox.has(`${id}:${receipt.opId}`)) {
+        const settled = receiptResults.get(`${id}:${receipt.opId}`);
+        if (settled?.handle && [...outbox.values()].some((entry) => entry.did === receipt.did && entry.handle === settled.handle)) continue;
+        outboxFor(receipt, settled?.handle ?? null,
+          { outcome: settled?.outcome ?? "unknown", handleExpiresAt: settled?.handleExpiresAt ?? undefined });
+      }
     },
     async listPending() { return { recordings: [...notes.values()].map((note) => structuredClone(note)) }; },
     async pause() {
@@ -287,6 +324,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (s.intent === "paused") return;
       // A failed input stop leaves the same segment live and every queued buffer intact.
       if (pauseShouldFail) { pauseShouldFail = false; throw failure("pause_failed"); }
+      if (pauseShouldTimeOut) { pauseShouldTimeOut = false; throw failure("pause_timeout"); }
       drainCapturedBuffers(s);
       s.intent = "paused"; s.pauseStarted = now(); s.gen = ++generation;
       s.backoffAttempt = 0; s.nextRetryMs = null;
@@ -312,10 +350,11 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       if (!s) throw failure("not_recording");
       s.options = { ...s.options, ...options, transcriber: s.owner ? (options.transcriber ?? s.options.transcriber) : "on-device" };
     },
-    async getCaptureDefaults() { return { ...defaults }; },
+    async getCaptureDefaults() { return { ...defaults, status: accountStatus }; },
     async setCaptureDefaults(next) {
       if (next.transitionGen < defaults.transitionGen) throw failure("stale_transition");
       defaults = { ...next, transcriber: next.accountDid ? next.transcriber : "on-device" };
+      accountStatus = next.accountDid ? "signed_in" : "signed_out";
       const claimed: string[] = [];
       if (next.accountDid) {
         if (session && !session.owner) { session.owner = next.accountDid; claimed.push(session.id); }
@@ -326,6 +365,46 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         }
       }
       return { claimed };
+    },
+    async setAccountState(next) {
+      if (accountStateFailure) { accountStateFailure = false; throw failure("account_state_write_failed"); }
+      if (next.transitionGen < defaults.transitionGen) throw failure("stale_transition");
+      defaults = { ...defaults, accountDid: next.accountDid, transitionGen: next.transitionGen,
+        transcriber: next.status === "signed_in" ? defaults.transcriber : "on-device" };
+      accountStatus = next.status;
+    },
+    async beginRemoteOp(receipt) {
+      if (remoteBeginFailure) { remoteBeginFailure = false; throw failure("receipt_begin_failed"); }
+      const existing = receipts.get(`${receipt.id}:${receipt.opId}`);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(receipt)) throw failure("receipt_conflict");
+      receipts.set(`${receipt.id}:${receipt.opId}`, structuredClone(receipt));
+      if (tombstones.has(receipt.id)) outboxFor(receipt, null, { outcome: "unknown" });
+    },
+    async recordRemoteResult({ id, did, opId, result }) {
+      if (remoteResultFailure) { remoteResultFailure = false; throw failure("receipt_result_failed"); }
+      const receipt = receipts.get(`${id}:${opId}`);
+      if (!receipt || receipt.did !== did) throw failure("receipt_not_found");
+      const previous = receiptResults.get(`${id}:${opId}`);
+      if (previous) return { destination: tombstones.has(id) ? "outbox" : previous.destination };
+      const note = notes.get(id);
+      const handle = result.handle ?? result.jobId ?? result.uploadId ?? result.uploadUrl ?? null;
+      if (!note || tombstones.has(id) || note.owner !== did) {
+        outboxFor(receipt, handle, result);
+        receiptResults.set(`${id}:${opId}`, { destination: "outbox", handle,
+          handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });
+        return { destination: "outbox" };
+      }
+      note.ledger ??= ledger();
+      note.ledger.remote.push({ provider: receipt.provider, mode: receipt.mode,
+        stage: result.outcome !== "created"
+          ? receipt.kind === "hosted_submit" ? "submit_unknown" : "create_unknown"
+          : receipt.kind === "hosted_submit" ? "submitted" : "uploaded",
+        uploadId: result.uploadId ?? null, uploadUrl: result.uploadUrl ?? null,
+        jobId: result.handle ?? result.jobId ?? null, cleanup: "pending" });
+      note.rev = (note.rev ?? 0) + 1;
+      receiptResults.set(`${id}:${opId}`, { destination: "ledger", handle,
+        handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });
+      return { destination: "ledger" };
     },
     async claim(options) { return claim(options); },
     async updateLedger({ id, did, rev, patch }) {
@@ -357,7 +436,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const entry = outbox.get(entryId);
       if (!entry) throw failure("not_found");
       if (result === "done") outbox.delete(entryId);
-      else entry.attempts++;
+      else { entry.state = result === "retry" ? "pending" : result; entry.attempts++; }
     },
     addListener: ((event: EventName, listener: Listener): Promise<PluginListenerHandle> => {
       let set = listeners.get(event);
@@ -385,9 +464,10 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     retryAutomatic(success = true) { const s = session; if (s?.intent === "recording" && s.nextRetryMs !== null) automaticRestart(s, success); },
     queueCapturedBuffer(ms) { const s = session; if (s?.intent === "recording" && s.availability === "available") s.pendingCapturedMs += Math.max(0, ms); },
     failNextPause() { pauseShouldFail = true; },
+    failNextPauseTimeout() { pauseShouldTimeOut = true; },
     failNextRelease() { releaseShouldFail = true; },
     releaseFailureCount: () => releaseFailures,
-    failNextResume() { resumeShouldFail = true; },
+    failNextResume(reason = "resume_blocked") { resumeShouldFail = reason; },
     routeChange() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "route_change"); restart(s, true); } } },
     mediaReset() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "media_services_reset"); restart(s, true); } } },
     stall() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "stalled"); restart(s, true); } } },
@@ -416,6 +496,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     quarantine(id, reason, sizeBytes) { quarantine.set(id, { id, reason, sizeBytes }); },
     addRemote(id, resource) { const note = checked(id); note.ledger ??= ledger(); note.ledger.remote.push(structuredClone(resource)); },
     tombstoned: (id) => tombstones.has(id),
+    failNextAccountState() { accountStateFailure = true; },
+    failNextRemoteBegin() { remoteBeginFailure = true; },
+    failNextRemoteResult() { remoteResultFailure = true; },
     async startFromSource(source) {
       const { id } = await plugin.start();
       if (session) session.source = source;

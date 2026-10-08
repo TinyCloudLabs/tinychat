@@ -325,6 +325,20 @@ describe("readTranscript", () => {
     sentence({ index: 1, speaker_name: null, text: "Morning back." }),
   ];
 
+  it("reads a committed body key instead of the fixed key", async () => {
+    const { tcw, kvKeys } = fakeTcw({ kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } } });
+    const key = "xyz.tinycloud.tinychat/connectors/exo-voice-note/transcript-rev/rec/hash";
+    expect(await readTranscript(tcw, "exo-voice-note", "rec", key)).toEqual({ status: "ok", sentences: stored });
+    expect(kvKeys).toEqual([key]);
+  });
+
+  it("shows the winning legacy row text when the fixed body is stale", async () => {
+    const { tcw } = fakeTcw({ kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } } });
+    expect(await readTranscript(tcw, "exo-voice-note", "rec", undefined, "Newer words")).toEqual({
+      status: "ok", sentences: [{ index: 0, speaker_name: null, text: "Newer words", start_time: 0, end_time: 0 }],
+    });
+  });
+
   it("parses a JSON-stringified payload", async () => {
     const { tcw } = fakeTcw({
       kv: { ok: true, data: { data: JSON.stringify(stored), headers: {} } },

@@ -108,12 +108,15 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       return { id };
     },
     setRecordingOptions: unsupported,
-    async getCaptureDefaults() { return { ...defaults }; },
+    async getCaptureDefaults() { return { ...defaults, status: defaults.accountDid ? "signed_in" as const : "signed_out" as const }; },
     async setCaptureDefaults(next) {
       if (next.transitionGen < defaults.transitionGen) throw Object.assign(new Error("Stale transition"), { code: "stale_transition" });
       defaults = { ...next };
       return { claimed: [] };
     },
+    setAccountState: unsupported,
+    beginRemoteOp: unsupported,
+    recordRemoteResult: unsupported,
     claim: unsupported,
     updateLedger: unsupported,
     localAudioUrl: unsupported,

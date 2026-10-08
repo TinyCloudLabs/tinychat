@@ -6,6 +6,7 @@ import {
   SERVER_DISCOVERY_PAGE_SIZE,
   SQL_DISCOVERY_MAX_MEETINGS,
   SQL_MEETING_METADATA_QUERY,
+  SQL_MEETING_METADATA_LEGACY_QUERY,
   SUPPORTED_MEETING_SOURCES,
   TRANSCRIBED_ONLY_SOURCES,
   discoverKvMeetings,
@@ -29,10 +30,11 @@ type QueryResult =
   | { ok: true; data: { rows: unknown } }
   | { ok: false; error: { code: string; message: string } };
 
-function fakeTcw(query: () => Promise<QueryResult>): TinyCloudWeb {
+function fakeTcw(query: (sql: string) => Promise<QueryResult>): TinyCloudWeb {
   return {
     sql: {
-      db: () => ({ query }),
+      db: () => ({ query: (sql: string) => sql.includes("sqlite_schema")
+        ? Promise.resolve({ ok: true, data: { rows: [] } }) : query(sql) }),
     },
   } as unknown as TinyCloudWeb;
 }
@@ -129,21 +131,20 @@ function fakeKvTcw(kv: DiscoveryKv): TinyCloudWeb {
 describe("SQL meeting metadata discovery", () => {
   test("runs one strict read-only metadata query and produces content-free candidates", async () => {
     const queries: string[] = [];
-    const result = await discoverSqlMeetings(fakeTcw(async () => {
-      queries.push(SQL_MEETING_METADATA_QUERY);
+    const result = await discoverSqlMeetings(fakeTcw(async (sql) => {
+      queries.push(sql);
       return { ok: true, data: { rows: [validRow] } };
     }));
 
-    expect(queries).toEqual([SQL_MEETING_METADATA_QUERY]);
+    expect(queries).toEqual([SQL_MEETING_METADATA_LEGACY_QUERY]);
     expect(SQL_MEETING_METADATA_QUERY).toMatch(/^SELECT\b/i);
     // Provider metadata is never selected: it appears only in the WHERE predicate that admits a
     // transcribed voice note, as two references inside json_valid/json_extract of one field.
-    const [selectList, predicate] = SQL_MEETING_METADATA_QUERY.split(/\bFROM connector_meeting\b/);
+    const [selectList, predicate] = SQL_MEETING_METADATA_QUERY.split(/\bFROM connector_meeting m\b/);
     expect(selectList).not.toMatch(/\bmetadata\b/i);
-    expect(predicate!.match(/\bmetadata\b/gi)).toHaveLength(2);
-    expect(predicate).toContain("json_valid(metadata)");
-    expect(predicate).toContain("json_extract(metadata, '$.transcription_outcome')");
-    expect(SQL_MEETING_METADATA_QUERY).not.toMatch(/\btranscript\b/i);
+    expect(predicate).toContain("voice_note_transcript");
+    expect(predicate).toContain("json_valid(g.metadata)");
+    expect(predicate).toContain("json_extract(g.metadata, '$.transcription_outcome')");
     expect(SQL_MEETING_METADATA_QUERY).not.toMatch(/\bsummary_overview\s*,|\bsummary_action_items\s*,/i);
     expect(result.lane).toEqual({ state: "healthy" });
     expect(result.candidates).toEqual([{

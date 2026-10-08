@@ -32,6 +32,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { CONNECTORS_SQL_DB_NAME, transcriptKvKey } from "./connectorStore";
+import { normalizeTranscriptText } from "../voiceNotes/voiceNoteCommits";
 import type { FirefliesSentence } from "./firefliesClient";
 import { GMEET_MEETING_SOURCE } from "./gmeetNormalize";
 import {
@@ -260,14 +261,18 @@ export async function readTranscript(
   tcw: TinyCloudWeb,
   source: string,
   sourceId: string,
+  bodyKey: string = transcriptKvKey(source, sourceId),
+  expectedText?: string | null,
 ): Promise<TranscriptRead> {
-  const res = await tolerate(() => tcw.kv.get(transcriptKvKey(source, sourceId)));
+  const untimed = (): TranscriptRead => ({ status: "ok", sentences: [{ index: 0, speaker_name: null,
+    text: expectedText ?? "", start_time: 0, end_time: 0 }] });
+  const res = await tolerate(() => tcw.kv.get(bodyKey));
   if (!res) return { status: "failed" };
   if (!res.ok) {
     // A missing key is the ordinary "no transcript stored" answer; every other
     // error (auth, transport, store) is a miss worth retrying.
     return /NOT_FOUND/i.test(errorCode(res))
-      ? { status: "absent" }
+      ? expectedText ? untimed() : { status: "absent" }
       : { status: "failed" };
   }
 
@@ -276,19 +281,24 @@ export async function readTranscript(
     try {
       payload = JSON.parse(payload);
     } catch {
-      return { status: "absent" };
+      return expectedText ? untimed() : { status: "absent" };
     }
   }
-  if (!Array.isArray(payload)) return { status: "absent" };
+  if (!Array.isArray(payload)) return expectedText ? untimed() : { status: "absent" };
 
+  const sentences = payload.filter(
+    (s): s is FirefliesSentence =>
+      typeof s === "object"
+      && s !== null
+      && typeof (s as { text?: unknown }).text === "string",
+  );
+  if (expectedText != null && normalizeTranscriptText(sentences.map((s) => s.text).join(" ")) !== normalizeTranscriptText(expectedText)) {
+    console.info("[VoiceNotes] legacy_body_mismatch", { sourceId });
+    return untimed();
+  }
   return {
     status: "ok",
-    sentences: payload.filter(
-      (s): s is FirefliesSentence =>
-        typeof s === "object"
-        && s !== null
-        && typeof (s as { text?: unknown }).text === "string",
-    ),
+    sentences,
   };
 }
 

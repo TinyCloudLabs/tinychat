@@ -13,6 +13,7 @@ import { meetingKvKey, transcriptKvKey } from "../connectors/connectorStore";
 import type { ConnectorMeetingContent, ConnectorMeetingsClient } from "../connectors/meetingsApi";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
 import { USER_SPACE_MEETING_VERSION, type ReconciledMeetingKvRecordV1 } from "../connectors/backendReconcile";
+import { normalizeTranscriptText, voiceNoteTranscriptLocator } from "../voiceNotes/voiceNoteCommits";
 import {
   buildMeetingContext,
   normalizeAndChunkTranscript,
@@ -575,16 +576,25 @@ export async function readMeetingEvidence(
   // A transcript is a separate KV value. It follows the record only when the
   // preceding sources did not provide usable evidence, and still consumes the
   // same hard read budget.
-  if (meeting.hasLocalTranscript && canRead()) {
+  let voiceLocator: Awaited<ReturnType<typeof voiceNoteTranscriptLocator>> | null = null;
+  if (meeting.source === "exo-voice-note" && meeting.hasLocalTranscript) {
+    try { voiceLocator = await voiceNoteTranscriptLocator(options.tcw, meeting.sourceId); }
+    catch { return { status: "storage-error", partial: true }; }
+  }
+  if (meeting.hasLocalTranscript && (meeting.source !== "exo-voice-note" || voiceLocator?.bodyKey) && canRead()) {
     readStarted();
     let result: LocalReadResult;
     try {
-      result = await options.tcw.kv.get(transcriptKvKey(meeting.source, meeting.sourceId), { signal: options.signal }) as LocalReadResult;
+      result = await options.tcw.kv.get(voiceLocator?.bodyKey ?? transcriptKvKey(meeting.source, meeting.sourceId), { signal: options.signal }) as LocalReadResult;
     } catch {
       if (aborted(options.signal)) return { status: "aborted" };
       return { status: "storage-error", partial: true };
     }
     if (aborted(options.signal)) return { status: "aborted" };
+    if (voiceLocator?.expectedText && result && result.ok !== true && errorIsNotFound(result)) {
+      result = { ok: true, data: { data: [{ index: 0, text: voiceLocator.expectedText,
+        speaker_name: null, start_time: 0, end_time: 0 }] } };
+    }
     if (!result || result.ok !== true) {
       if (errorIsNotFound(result)) {
         markPartial();
@@ -598,7 +608,16 @@ export async function readMeetingEvidence(
         markPartial();
         evidence = withUnavailable(evidence, "local-kv-transcript");
       } else {
-        const normalized = normalizedTranscript(decoded.value);
+        let transcriptValue = decoded.value;
+        if (voiceLocator?.expectedText != null) {
+          const text = Array.isArray(transcriptValue) ? transcriptValue.map((s) =>
+            s && typeof s === "object" && "text" in s ? String(s.text) : "").join(" ") : "";
+          if (normalizeTranscriptText(text) !== normalizeTranscriptText(voiceLocator.expectedText)) {
+            console.info("[VoiceNotes] legacy_body_mismatch", { sourceId: meeting.sourceId });
+            transcriptValue = [{ index: 0, text: voiceLocator.expectedText, speaker_name: null, start_time: 0, end_time: 0 }];
+          }
+        }
+        const normalized = normalizedTranscript(transcriptValue);
         const readability = normalized.readability;
       if (normalized.partial) markPartial();
       if (readability !== "readable") {
@@ -607,7 +626,7 @@ export async function readMeetingEvidence(
       } else {
         evidence = {
           ...evidence,
-          transcript: decoded.value,
+          transcript: transcriptValue,
           transcriptChunks: normalized.chunks,
           transcriptLocator: locator("local-kv-transcript", meeting),
         };

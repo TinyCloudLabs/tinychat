@@ -154,7 +154,8 @@ export const FOCUS_DEBOUNCE_MS = 45 * 60 * 1000;
  *  as "no attempt yet", and it is the only thing the mount path asks. */
 let lastAttemptStartedAt = 0;
 let featureDark = false;
-let drainLane: Promise<unknown> = Promise.resolve();
+import { resetSpaceLaneForTests, runOnSpaceLane } from "@/lib/spaceWriteLane";
+export { runOnSpaceLane } from "@/lib/spaceWriteLane";
 let record: BackgroundDrainRecord | null = null;
 const recordListeners = new Set<() => void>();
 /** The record's account boundary. Advanced by every clear (sign-out) and test
@@ -174,14 +175,7 @@ let storeGeneration = 0;
  * than corrupting — this makes it not happen.)
  */
 export function enqueueDrainWork<T>(work: () => Promise<T>): Promise<T> {
-  const run = drainLane.then(() => work());
-  // The lane itself never rejects; the caller's promise still carries the
-  // caller's failure.
-  drainLane = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+  return runOnSpaceLane(work);
 }
 
 /** The clock, seam-first. Read exactly once per decision, so a tick can never
@@ -532,7 +526,7 @@ export function badgePillLabel(count: number): string {
 export function resetBackgroundDrainForTests(): void {
   lastAttemptStartedAt = 0;
   featureDark = false;
-  drainLane = Promise.resolve();
+  resetSpaceLaneForTests();
   record = null;
   recordListeners.clear();
   storeGeneration += 1;

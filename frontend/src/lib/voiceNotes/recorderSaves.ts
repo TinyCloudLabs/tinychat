@@ -22,6 +22,8 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { saveVoiceNote, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
+import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
+import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -45,8 +47,8 @@ const savesInFlight = new Set<string>();
 const savedThisSession = new Set<string>();
 
 /**
- * Bridge-reload guard for recordings saved to the space, kept across reloads
- * (localStorage). The phone retains their local audio for playback.
+ * Old bridge-reload marker. It is kept for migration, never used as evidence
+ * that the durable native ledger was updated.
  */
 export const VOICE_NOTE_CLOUD_SAVED_KEY = "exo.voiceNotes.cloudSaved";
 
@@ -205,7 +207,8 @@ export async function saveRecording(
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
-  if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: null };
+  // Old localStorage markers are never authority: a lost marker must be safe,
+  // and a stale marker must not suppress a note whose native ledger is pending.
   if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   savesInFlight.add(recording.id);
   try {
@@ -224,11 +227,10 @@ export async function saveRecording(
       : native;
     const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress });
     if (!saved.ok) return { kind: "failed", failure: saved.error.message };
-    // The device copy remains playable. Keep a bridge-reload guard until the
-    // native ledger is observed; an upload must never run twice for this id.
+    // The device copy remains playable. This old marker is informational;
+    // the indexed row and the native ledger decide idempotence.
     cloudSaved.add(recording.id);
     persistCloudSaved();
-    savedThisSession.add(recording.id);
     let cleanupError: string | null = null;
     if (recording.version === 2 && recording.owner) {
       try {
@@ -243,6 +245,7 @@ export async function saveRecording(
             await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
           }
         }
+        savedThisSession.add(recording.id);
       } catch (caught) {
         cleanupError = `Saved to your space, but this phone could not update its note status: ${messageOf(caught)}`;
       }
@@ -253,6 +256,51 @@ export async function saveRecording(
       audio: whole ? { mimeType: recording.mimeType, base64: bytesToBase64(concatBytes(kept)) } : null,
       cleanupError,
     };
+  } catch (caught) {
+    return { kind: "failed", failure: messageOf(caught) };
+  } finally {
+    savesInFlight.delete(recording.id);
+  }
+}
+
+/** The one owner-aware upload entry point used by the T18 pipeline. */
+export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
+  recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
+  const check = () => { assertCurrent(ctx); checkpoint(); };
+  check();
+  if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) return { kind: "held", reason: "other-account" };
+  if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
+  if (!recording.owner) return { kind: "held", reason: "unowned" };
+  if (recording.owner !== ctx.did) return { kind: "held", reason: "other-account" };
+  if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
+  if (savesInFlight.has(recording.id)) return { kind: "in-flight" };
+  savesInFlight.add(recording.id);
+  try {
+    const source = nativeRecordingSource(recording);
+    const checkedSource: VoiceNoteAudioSource = { ...source, readPart: async (offset, length) => {
+      check();
+      return source.readPart(offset, length);
+    } };
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: check });
+    if (!saved.ok) return { kind: "failed", failure: saved.error.message };
+    check();
+    const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
+    let fresh = recording;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      check();
+      try {
+        await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
+        return { kind: "saved", audio: null, cleanupError: null };
+      } catch (caught) {
+        if (errorCode(caught) !== "rev_conflict") throw caught;
+        check();
+        const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
+        if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
+        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null };
+        fresh = current;
+      }
+    }
+    return { kind: "failed", failure: "Could not update this phone's saved-note status" };
   } catch (caught) {
     return { kind: "failed", failure: messageOf(caught) };
   } finally {
@@ -365,7 +413,7 @@ async function relistPending(lastError: string | null): Promise<void> {
   try {
     const { recordings } = await VoiceNotes.listPending();
     publishPending({ listing: { state: "ok", count: recordings.filter((recording) =>
-      isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !cloudSaved.has(recording.id) && !savedThisSession.has(recording.id)),
+      isDiscarded(recording.id) || (recording.ledger?.audio.state !== "saved" && !savedThisSession.has(recording.id)),
     ).length }, lastError });
   } catch (caught) {
     publishPending({ listing: { state: "error", message: listingFailure(caught) }, lastError });

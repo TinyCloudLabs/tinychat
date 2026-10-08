@@ -10,6 +10,7 @@
 //      mismatched audio fails closed.
 
 import { beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { _resetConnectorSchemaMemoForTests } from "../connectors/connectorStore";
@@ -40,6 +41,7 @@ type Call =
   | { kind: "sql.execute" | "sql.query"; target: string; params: unknown[] }
   | { kind: "kv.put"; target: string; value: KvValue; contentType?: string }
   | { kind: "kv.get" | "kv.list"; target: string; options?: unknown };
+let fakeSpaceNumber = 0;
 
 /**
  * A space with in-memory KV and a minimal SQL fake (rows by source_id). `failPut(key, n)` lets a
@@ -48,36 +50,47 @@ type Call =
 function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {}) {
   const calls: Call[] = [];
   const kv = opts.kv ?? new Map<string, KvValue>();
+  const sqlite = new Database(":memory:");
+  let seeded = false;
   let putFailure: ((key: string) => KvFailure | null) | null = null;
   let listFailure: KvFailure | null = null;
   const inserted: string[] = [];
   const tcw = {
-    did: "did:pkh:eip155:1:0xabc",
+    did: `did:pkh:eip155:1:0xabc${++fakeSpaceNumber}`,
     sql: {
       db(name: string) {
         return {
           async execute(sql: string, params: unknown[] = []) {
             calls.push({ kind: "sql.execute", target: name, params: [sql, ...params] });
             if (sql.includes("INSERT INTO connector_meeting")) inserted.push(String(params.find((p) => p === "rec-1" || p === "rec-2")));
-            return { ok: true, data: {} };
+            try {
+              const changes = sqlite.prepare(sql).run(...params as never[]).changes;
+              if (!seeded && opts.rows && sql.includes("CREATE TABLE IF NOT EXISTS connector_meeting")) {
+                seeded = true;
+                for (const r of opts.rows) sqlite.prepare(`INSERT INTO connector_meeting
+                  (id, source, source_id, title, started_at, duration_secs, participants, metadata, created_at, updated_at)
+                  VALUES (?, 'exo-voice-note', ?, ?, ?, ?, '[]', ?, ?, ?)`).run(
+                    r[0] as string, r[1] as string, r[2] as string, r[3] as string, r[4] as number,
+                    (r[5] ?? "{}") as string, "2026-09-29T05:40:00.000Z", "2026-09-29T05:40:00.000Z");
+              }
+              return { ok: true, data: { changes } };
+            } catch (e) { return { ok: false, error: { code: "SQL_ERROR", message: String(e) } }; }
           },
           async query(sql: string, params: unknown[] = []) {
             calls.push({ kind: "sql.query", target: name, params: [sql, ...params] });
-            if (sql.includes("SELECT id, source_id")) return { ok: true, data: { rows: opts.rows ?? [] } };
-            // upsertMeeting's lookup: an inserted note is found again on a retry.
-            if (sql.includes("FROM connector_meeting") && sql.includes("source_id = ?") && inserted.includes(String(params[1]))) {
-              return { ok: true, data: { rows: [["row-1", "2026-09-29T05:40:00.000Z", "Voice note", null, 12, null, "[]", null, null, null, null, "{}"]] } };
-            }
-            return { ok: true, data: { rows: [] } };
+            try { return { ok: true, data: { rows: sqlite.prepare(sql).all(...params as never[]).map((r) => Object.values(r as object)) } }; }
+            catch (e) { return { ok: false, error: { code: "SQL_ERROR", message: String(e) } }; }
           },
         };
       },
     },
     kv: {
-      async put(key: string, value: KvValue, options?: { contentType?: string }) {
+      async put(key: string, value: KvValue, options?: { contentType?: string; ifNoneMatch?: string }) {
         calls.push({ kind: "kv.put", target: key, value, contentType: options?.contentType });
         const failure = putFailure?.(key) ?? null;
         if (failure) return { ok: false, error: failure };
+        if (options?.ifNoneMatch === "*" && kv.has(key))
+          return { ok: false, error: { code: "KV_PRECONDITION_FAILED", message: "412" } };
         kv.set(key, value);
         return { ok: true, data: { data: undefined, headers: { etag: `"etag-${key.split("/").pop()}"` } } };
       },
@@ -143,7 +156,7 @@ const AUDIO_BASE = `${APP_ID}/connectors/exo-voice-note/audio/rec-1`;
 beforeEach(() => _resetConnectorSchemaMemoForTests());
 
 describe("saveVoiceNote", () => {
-  test("writes audio parts and the manifest under the granted connectors prefix, then the meeting row", async () => {
+  test("creates the indexed identity, then patches audio after its manifest", async () => {
     const { tcw, calls } = fakeSpace();
     const res = await saveVoiceNote(tcw, recording, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
     expect(res.ok).toBe(true);
@@ -151,18 +164,18 @@ describe("saveVoiceNote", () => {
     expect(voiceNoteAudioKvKey("rec-1")).toBe(AUDIO_BASE);
     expect(voiceNoteAudioPartKey("rec-1", 0)).toBe(`${AUDIO_BASE}/p/000000`);
     expect(voiceNoteAudioManifestKey("rec-1")).toBe(`${AUDIO_BASE}/manifest`);
-    expect(puts(calls).map((c) => c.target)).toEqual([`${AUDIO_BASE}/p/000000`, `${AUDIO_BASE}/manifest`, expect.stringContaining("/transcript/rec-1")]);
-    expect(puts(calls)[0]).toEqual(expect.objectContaining({ value: new Uint8Array([0, 0, 0]), contentType: "application/octet-stream" }));
-    // The row comes only after the manifest.
+    expect(puts(calls).map((c) => c.target)).toEqual([expect.stringContaining("/transcript/rec-1"), `${AUDIO_BASE}/p/000000`, `${AUDIO_BASE}/manifest`]);
+    expect(puts(calls)[1]).toEqual(expect.objectContaining({ value: new Uint8Array([0, 0, 0]), contentType: "application/octet-stream" }));
     const firstSql = calls.findIndex((c) => c.kind === "sql.execute" && String(c.params[0]).includes("INSERT INTO connector_meeting"));
     const manifestPut = calls.findIndex((c) => c.kind === "kv.put" && c.target.endsWith("/manifest"));
     expect(manifestPut).toBeGreaterThanOrEqual(0);
-    expect(firstSql).toBeGreaterThan(manifestPut);
+    expect(firstSql).toBeLessThan(manifestPut);
 
     const insert = calls.find((c) => c.kind === "sql.execute" && String(c.params[0]).includes("INSERT INTO connector_meeting"))!;
-    expect(insert.params).toContain(VOICE_NOTE_SOURCE);
     expect(insert.params).toContain("rec-1");
-    const metadata = JSON.parse(String((insert.params as unknown[]).find((p) => typeof p === "string" && p.includes("audio_kv_key"))));
+    expect(insert.params).toContain("vn-rec-1");
+    const patch = calls.find((c) => c.kind === "sql.execute" && String(c.params[1]).includes("audio_kv_key"))!;
+    const metadata = JSON.parse(String(patch.params[1]));
     expect(metadata).toEqual(expect.objectContaining({
       audio_kv_key: AUDIO_BASE,
       audio_format: "parts-v1",
@@ -180,13 +193,13 @@ describe("saveVoiceNote", () => {
     });
   });
 
-  test("a failed audio write writes no manifest and no row", async () => {
+  test("a failed audio write leaves the identity row pending without a manifest", async () => {
     const space = fakeSpace();
-    space.failPut(() => ({ code: "KV_ERROR", message: "boom" }));
+    space.failPut((key) => key.includes("/audio/") ? { code: "KV_ERROR", message: "boom" } : null);
     const res = await saveVoiceNote(space.tcw, recording, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android", noWait);
     expect(res.ok).toBe(false);
-    expect(space.calls.filter((c) => c.kind.startsWith("sql"))).toEqual([]);
-    expect([...space.kv.keys()]).toEqual([]);
+    expect(space.calls.some((c) => c.kind === "sql.execute" && String(c.params[0]).includes("INSERT INTO connector_meeting"))).toBe(true);
+    expect([...space.kv.keys()]).toEqual([expect.stringContaining("/transcript/rec-1")]);
   });
 });
 
@@ -248,8 +261,9 @@ describe("a save that fails part-way stays pending and retries without duplicate
     const failed = await saveVoiceNote(space.tcw, recording, first.source, "android", { partSize: 1_000, ...noWait });
     expect(failed.ok).toBe(false);
     expect(space.kv.has(`${AUDIO_BASE}/manifest`)).toBe(false);
-    expect(space.calls.some((c) => c.kind === "sql.execute" && String(c.params[0]).includes("INSERT"))).toBe(false);
-    expect([...space.kv.keys()].sort()).toEqual([`${AUDIO_BASE}/p/000000`, `${AUDIO_BASE}/p/000001`]);
+    expect(space.calls.some((c) => c.kind === "sql.execute" && String(c.params[0]).includes("INSERT INTO connector_meeting"))).toBe(true);
+    expect([...space.kv.keys()].sort()).toEqual([`${AUDIO_BASE}/p/000000`, `${AUDIO_BASE}/p/000001`,
+      `${APP_ID}/connectors/exo-voice-note/transcript/rec-1`]);
 
     // Attempt 2 (Save now): resumes at part 2.
     space.failPut(null);
@@ -259,16 +273,16 @@ describe("a save that fails part-way stays pending and retries without duplicate
     expect(saved.ok).toBe(true);
     expect(second.reads).toEqual([[2_000, 1_000], [3_000, 1_000], [4_000, 500]]);
     expect(puts(space.calls).map((c) => c.target.replace(`${AUDIO_BASE}/`, ""))).toEqual([
+      `${APP_ID}/connectors/exo-voice-note/transcript/rec-1`,
       "p/000002",
       "p/000003",
       "p/000004",
       "manifest",
-      expect.stringContaining("/transcript/rec-1"),
     ]);
     const manifest = parseAudioManifest(space.kv.get(`${AUDIO_BASE}/manifest`))!;
     expect(manifest.parts.map((p) => p.size)).toEqual([1_000, 1_000, 1_000, 1_000, 500]);
     expect(manifest.parts.map((p) => p.etag)).toEqual([null, null, '"etag-000002"', '"etag-000003"', '"etag-000004"']);
-    expect(space.inserted).toEqual(["rec-1"]);
+    expect(space.inserted).toEqual(["rec-1", "rec-1"]);
 
     // The whole file reads back byte for byte.
     const blob = await loadVoiceNoteAudioBlob(space.tcw, "rec-1");
@@ -287,7 +301,7 @@ describe("a save that fails part-way stays pending and retries without duplicate
 
     // And once more after the row exists (the device delete failed): still one row.
     expect((await saveVoiceNote(space.tcw, recording, trackedSource(bytes).source, "android", { partSize: 1_000 })).ok).toBe(true);
-    expect(space.inserted).toEqual(["rec-1"]);
+    expect(space.inserted).toEqual(["rec-1", "rec-1"]);
   });
 
   test("a resume whose list of stored parts fails writes nothing and stays pending", async () => {
@@ -301,9 +315,9 @@ describe("a save that fails part-way stays pending and retries without duplicate
     // Retried in place (two retries), then reported.
     expect(space.calls.filter((c) => c.kind === "kv.list")).toHaveLength(3);
     expect(source.reads).toEqual([]);
-    expect(puts(space.calls)).toEqual([]);
-    expect(space.calls.filter((c) => c.kind.startsWith("sql"))).toEqual([]);
-    expect([...space.kv.keys()]).toEqual([]);
+    expect(puts(space.calls).map((c) => c.target)).toEqual([expect.stringContaining("/transcript/rec-1")]);
+    expect(space.calls.some((c) => c.kind === "sql.execute" && String(c.params[0]).includes("INSERT INTO connector_meeting"))).toBe(true);
+    expect([...space.kv.keys()]).toEqual([expect.stringContaining("/transcript/rec-1")]);
   });
 });
 
@@ -333,14 +347,14 @@ describe("listVoiceNotes", () => {
       return res.ok ? res.data[0]!.transcript : null;
     };
     expect(await state(JSON.stringify({ audio_kv_key: "k" }))).toEqual({ status: "none", preview: null });
-    expect(await state(JSON.stringify({ transcript_text: "Book the venue.\nSend the budget." }))).toEqual({
+    expect(await state(JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "Book the venue.\nSend the budget." }))).toEqual({
       status: "transcribed",
       preview: "Book the venue.\nSend the budget.",
     });
     expect(await state(JSON.stringify({ transcription_outcome: "no_speech", transcript_text: null }))).toEqual({ status: "no_speech", preview: null });
     expect(await state("not json")).toEqual({ status: "none", preview: null });
     expect(await state(null)).toEqual({ status: "none", preview: null });
-    const long = await state(JSON.stringify({ transcript_text: "word ".repeat(200) }));
+    const long = await state(JSON.stringify({ transcription_outcome: "transcribed", transcript_text: "word ".repeat(200) }));
     expect(long!.status).toBe("transcribed");
     expect(long!.preview!.length).toBeLessThanOrEqual(281);
     expect(long!.preview!.endsWith("…")).toBe(true);

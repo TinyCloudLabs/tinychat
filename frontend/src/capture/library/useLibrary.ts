@@ -32,6 +32,7 @@ import {
 } from "@/lib/connectors/meetingExplorer";
 import { scheduledSpace } from "@/lib/spaceQueue";
 import { loadVoiceNoteAudioBlob, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
+import { voiceNoteTranscriptLocator } from "@/lib/voiceNotes/voiceNoteCommits";
 import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
@@ -164,13 +165,22 @@ export function useLibrary(
       bump();
       void enqueue(async () => {
         try {
+          const locator = note.source === VOICE_NOTE_SOURCE
+            ? await voiceNoteTranscriptLocator(space, note.sourceId) : null;
           if (!settled(reads.current.get(note.id)?.metadata)) {
-            const metadata = await readMeetingMetadata(space, note.id);
+            let metadata = await readMeetingMetadata(space, note.id);
+            if (locator && metadata.status === "ok") metadata = { status: "ok", metadata: {
+              ...metadata.metadata, transcription_outcome: locator.outcome,
+              transcript_text: locator.outcome === "transcribed" ? locator.preview : null,
+            } };
             reads.current.set(note.id, { ...reads.current.get(note.id), metadata });
             if (mounted.current) bump();
           }
           if (!settled(reads.current.get(note.id)?.transcript)) {
-            const transcript = await readTranscript(space, note.source, note.sourceId);
+            const transcript = locator
+              ? locator.bodyKey ? await readTranscript(space, note.source, note.sourceId, locator.bodyKey, locator.expectedText)
+                : { status: "absent" as const }
+              : await readTranscript(space, note.source, note.sourceId);
             reads.current.set(note.id, { ...reads.current.get(note.id), transcript });
             if (mounted.current) bump();
           }

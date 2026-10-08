@@ -1,0 +1,91 @@
+import { expect, test } from "bun:test";
+import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { associateLegacyNotes, migrateLegacyDiscardLedger } from "./legacyMigration";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
+import { saveNoteForAccount } from "./recorderSaves";
+
+const did = "did:example:owner";
+test("durable account acknowledgement fails closed and claims only signed-out v2 notes", async () => {
+  const fake = createFakeVoiceNotes();
+  fake.controls.failNextAccountState();
+  await expect(fake.plugin.setAccountState({ status: "signed_in", accountDid: did, transitionGen: 1 })).rejects.toMatchObject({ code: "account_state_write_failed" });
+  expect((await fake.plugin.getCaptureDefaults()).status).toBe("signed_out");
+  await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
+  const start = await fake.plugin.start();
+  expect((await fake.plugin.status()).owner).toBeNull();
+  expect((await fake.plugin.stop()).owner).toBeNull();
+  const claimed = await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 2,
+    transcriber: "private-cloud", identifySpeakers: false });
+  expect(claimed.claimed).toEqual([start.id]);
+  expect((await fake.plugin.listPending()).recordings[0]?.owner).toBe(did);
+  await expect(fake.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 1 })).rejects.toMatchObject({ code: "stale_transition" });
+});
+
+test("a late provider result for a tombstoned note reaches its owner's outbox", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  const receipt = { id, did, opId: "submit-1", provider: "assemblyai" as const, mode: "hosted" as const,
+    kind: "hosted_submit" as const, fingerprint: "sha256:abc", startedAt: 10 };
+  await fake.plugin.beginRemoteOp(receipt);
+  await fake.plugin.deleteAudio({ id });
+  expect(await fake.plugin.recordRemoteResult({ id, did, opId: receipt.opId,
+    result: { outcome: "created", handle: "remote-handle", handleExpiresAt: 123 } })).toEqual({ destination: "outbox" });
+  const entries = (await fake.plugin.listOutbox({ did })).entries;
+  expect(entries).toEqual([expect.objectContaining({ entryId: `${id}:submit-1`, handle: "remote-handle",
+    state: "pending", handleExpiresAt: 123 })]);
+  await fake.plugin.completeOutbox({ entryId: entries[0]!.entryId, result: "authority_expired" });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]?.state).toBe("authority_expired");
+});
+
+test("legacy notes require matching space-row evidence; old discard markers become tombstones", async () => {
+  const original = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const note = { id: "legacy-note", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  fake.controls.commitLegacy(note);
+  const discard = { ...note, id: "discard-legacy" };
+  fake.controls.commitLegacy(discard);
+  try {
+    expect((await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false })).claimed).toEqual([]);
+    const tcw = { sql: { db: () => ({ query: async (_sql: string, params: unknown[]) => ({ ok: true,
+      data: { rows: params[0] === note.id ? [["old-row-id"]] : [] } }) }) } } as unknown as TinyCloudWeb;
+    expect(await associateLegacyNotes(tcw, did, (await fake.plugin.listPending()).recordings)).toEqual([note.id]);
+    const associated = (await fake.plugin.listPending()).recordings.find((r) => r.id === note.id);
+    expect(associated?.ledger?.audio).toMatchObject({ state: "saved", rowId: "old-row-id" });
+    const storage = { value: JSON.stringify([discard.id]), getItem() { return this.value; }, removeItem() { this.value = ""; } };
+    await migrateLegacyDiscardLedger(storage as never);
+    expect(fake.controls.tombstoned(discard.id)).toBe(true);
+    expect(storage.value).toBe("");
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a stale account context makes no storage or native call", async () => {
+  const generation = currentAccountGeneration();
+  advanceAccountGeneration();
+  let calls = 0;
+  const tcw = { did, spaceId: "space", get sql() { calls++; throw new Error("external SQL call"); },
+    get kv() { calls++; throw new Error("external KV call"); } } as unknown as TinyCloudWeb;
+  await expect(saveNoteForAccount(tcw, { did, spaceId: "space", generation },
+    { id: "stale", startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 2, owner: did })).rejects.toThrow("account changed");
+  expect(calls).toBe(0);
+});
+
+test("the fake exposes pause timeout and explicit resume refusal reasons", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.start();
+  fake.controls.failNextPauseTimeout();
+  await expect(fake.plugin.pause()).rejects.toMatchObject({ code: "pause_timeout" });
+  await fake.plugin.pause();
+  fake.controls.failNextResume("mic_unavailable");
+  await expect(fake.plugin.resume()).rejects.toMatchObject({ code: "mic_unavailable" });
+  expect((await fake.plugin.status()).reason).toBe("mic_unavailable");
+});

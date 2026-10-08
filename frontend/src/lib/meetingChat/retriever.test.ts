@@ -445,6 +445,7 @@ describe("browser meeting turn retriever", () => {
     }));
     expect(calls).toEqual([
       "sql",
+      "sql", // per-session transcript table format detection
       "list:server",
       "list:xyz.tinycloud.tinychat/connectors/fireflies/meeting/",
       "list:xyz.tinycloud.tinychat/connectors/fireflies/transcript/",
