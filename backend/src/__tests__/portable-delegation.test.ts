@@ -93,6 +93,10 @@ describe("activateVerifiedDelegation", () => {
         sql: {},
         kv: {
           get: async (key: string) => { seen.push(key); return { ok: true, data: { data: "body" } }; },
+          put: async (key: string, _value: unknown, options?: { prefix?: string }) => {
+            seen.push(`put:${key}:prefix=${options?.prefix}`);
+            return { ok: true, data: {} };
+          },
           list: async (options: { prefix?: string }) => { seen.push(`list:${options.prefix}`); return { ok: true, data: [] }; },
         },
       }),
@@ -100,10 +104,20 @@ describe("activateVerifiedDelegation", () => {
     const access = await activateVerifiedDelegation(node as unknown as TinyCloudNode, verifiedGrant(), { host: HOST });
     const good = "xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/transcript/meeting";
     await access.kv.get(good);
+    await access.kv.put(good, "body", { prefix: "xyz.tinycloud.tinychat/threads/" });
+    await access.kv.withPrefix("xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/")
+      .put("transcript/nested", "body", { prefix: "xyz.tinycloud.tinychat/threads/" });
     expect(() => access.kv.get("xyz.tinycloud.tinychat/connectors/other/transcript/meeting")).toThrow();
     expect(() => access.kv.get("xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/../secrets")).toThrow();
     expect(() => access.kv.list({ prefix: "xyz.tinycloud.tinychat/threads/" })).toThrow();
-    expect(seen).toEqual([good]);
+    expect(() => access.kv.put("xyz.tinycloud.tinychat/connectors/tinycloud-transcriber%2fthreads/secret", "body")).toThrow();
+    expect(() => access.kv.put("xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/%5csecrets", "body")).toThrow();
+    expect(() => access.kv.put("xyz.tinycloud.tinychat/connectors/tinycloud-transcriber-other/transcript/meeting", "body")).toThrow();
+    expect(seen).toEqual([
+      good,
+      `put:${good}:prefix=`,
+      "put:xyz.tinycloud.tinychat/connectors/tinycloud-transcriber/transcript/nested:prefix=",
+    ]);
   });
 
   it("rejects unexpected resource shapes before any governor token or activation", async () => {

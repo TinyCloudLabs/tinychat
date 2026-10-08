@@ -1,33 +1,23 @@
 /**
- * Background-sync consent copy — the verbatim §3.8 text for the shipped option.
+ * Background-sync consent copy — the shipped variants, centralized for renderers.
+ * Do not restate or extend these sentences in JSX. TC-641 did not change user-facing
+ * copy; Sam's decision on its relationship to server transcript delivery is pending.
  *
- * This lives as a constant, not as JSX, for one reason: `backend/src/__tests__/consent-scope.test.ts`
- * (build task B2) asserts every factual claim below against the scope the backend delegation
- * actually activates, so widening the scope without updating this text fails CI, and softening
- * this text without narrowing the scope fails it too. The renderer must not restate, paraphrase,
- * or extend any sentence in it.
- *
- * The variant is chosen by the operator's answers to §10.1 / §10.2, never by a builder. This
- * build ships **Option C** (operator decision 2026-08-04, recorded in
- * `docs/connector-webhooks-delegation-gate.md`): the server receives signed notifications and
- * queues meeting ids only. It never receives the Fireflies API key, never writes meeting content,
- * and holds **no connector delegation** — `backendDelegationPermissions()` stays at v1's
- * non-connector scope. The A and B variants are drafted in §3.8 and are deliberately absent here:
- * whichever is chosen is shipped verbatim and the others are deleted rather than kept around to
- * drift. **Option B's consent checkbox went with Option B** — under C the user grants no
- * permission, so there is no permission to attest to, and a dormant checkbox string would be an
- * invitation to render a consent gate for a grant that does not exist.
+ * The operator chose **Option C** for Fireflies (recorded in
+ * `docs/connector-webhooks-delegation-gate.md`): its webhook queues meeting ids
+ * without minting a Fireflies connector delegation. TC-641 is a separate,
+ * default-off transcript-writer grant; this comment does not describe that policy.
+ * Option B's consent checkbox went with Option B and is absent here.
  *
  * Inline `**bold**` / `*emphasis*` markers are part of the drafted copy and are preserved so the
  * text stays comparable to §3.8 line by line. The renderer is responsible for them.
  *
  * DO NOT add a sentence claiming a permission cannot reach something ("and nothing else", "not
- * your chats", "only your connectors data"). Dropping the grant does not license that sentence:
- * the node cannot confine a SQL delegation to a path (§0a), the escape is unpatched, and B2's
- * deny-list fails the build on any such sentence until `test/connectors/fixtures/V3_VERDICT.json`
- * records the node fix as live. What C *may* say — and does — is that no permission is granted at
- * all, because that is a fact about our own policy, and B2 checks it against
- * `backendDelegationResolvedPermissions()` on every run.
+ * your chats", "only your connectors data"). The node cannot confine a SQL delegation to a
+ * path (§0a); `test/connectors/fixtures/V3_VERDICT.json` still records the escape.
+ * Option C's "no new permission" wording refers to Fireflies webhook ingestion,
+ * not to the backend's whole policy. TC-641 separately advertises a
+ * transcript-writer grant; acceptance is gated, and Sam's copy decision is pending.
  *
  * INGEST-CUTOVER(plan §11): this file now carries a SECOND text,
  * `BACKEND_INGEST_CONSENT_COPY`, for the backend-ingest dark cohort. Option C below is unchanged
@@ -35,30 +25,25 @@
  * byte-identical. The cohort text is not a softening of C; it is C's two custody sentences
  * replaced by what is actually true once the server holds the credential and the meeting.
  *
- * GMEET(connector plan §4.1/§4.3, WP-C): and a THIRD, `GOOGLE_MEET_CONSENT_COPY`, for the Google
- * Meet OAuth connect dialog. It is not a background-sync variant — google-meet has no webhook lane
- * at all — but it is the same KIND of text (a pinned disclosure checked claim-by-claim against
- * what the code does), it renders through the same interface, and it is bound by the same
- * deny-list, so it lives here rather than as loose JSX in the dialog. The deny-list is what makes
- * this file's home a decision rather than a filing choice: a sentence about what a permission
- * cannot reach fails B2 wherever it is written.
+ * GMEET(connector plan §4.1/§4.3, WP-C): `GOOGLE_MEET_CONSENT_COPY` is for the
+ * Google Meet OAuth connect dialog, not the Fireflies background-sync path.
+ * It renders through the same interface, so the text lives here instead of JSX.
  */
 
 export type ConsentCopyVariant = "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin";
 
 export interface BackgroundSyncConsentCopy {
-  /** Which §3.8 branch this text is. Read by B2 to pick its assertion set. */
+  /** Identifies the copy variant for renderers. */
   readonly variant: ConsentCopyVariant;
   readonly heading: string;
   readonly intro: string;
   readonly changesHeading: string;
   readonly bullets: readonly string[];
   /**
-   * INGEST-CUTOVER(plan §11): the attestation sentence, present ONLY on the cohort variant.
-   * Option C still has none and must keep none — under C nothing is granted and nothing is held,
-   * so there is nothing to attest to (see the header note). Under backend ingestion there are two
-   * disclosures the user should have to acknowledge in one sentence: the full-account token and
-   * the 90-day content copy. Optional on the interface so Option C stays byte-identical.
+   * INGEST-CUTOVER(plan §11): the attestation sentence is present only for
+   * the Fireflies backend-ingest cohort. Option C has no Fireflies grant or
+   * server-held Fireflies credential; the cohort acknowledges both its
+   * credential custody and the 90-day content copy.
    */
   readonly consentCheckbox?: string;
   /**
@@ -124,19 +109,19 @@ export const BACKGROUND_SYNC_CONSENT_COPY: BackgroundSyncConsentCopy = {
  *  2. meeting content is stored server-side, encrypted, for the D2a retention window
  *     (`RETENTION_WINDOW_DAYS = 90`, `backend/src/services/content-store.ts`), and deleted on
  *     disconnect/purge (requirement 2);
- *  3. no confinement claim — the INTERNAL escape (plan §3 item 3 / `V3_VERDICT.json`) is
- *     unpatched, so B2's deny-list applies to this variant exactly as it does to C — and no
- *     promise of capture beyond the meetings the user OWNS (plan §10, requirement 3).
+ *  3. no confinement claim — the SQL escape recorded in `V3_VERDICT.json` remains
+ *     unpatched; this variant also must not promise capture beyond meetings the
+ *     user OWNS (plan §10, requirement 3).
  *
- * The one Option-C sentence that survives verbatim in substance is "no new permission on your
- * space": B mints no connector delegation (plan §9 row 3), custody is out-of-band, and the
- * backend policy stays `threads/`-only. That is a fact about our own policy, checked on every run
- * by `backend/src/__tests__/consent-scope.test.ts`.
+ * The Option-C "no new permission on your space" sentence concerns Fireflies ingestion:
+ * that path mints no Fireflies connector delegation and holds its credential out of band.
+ * TC-641 separately advertises a transcript-writer grant on `connectors` SQL read/write
+ * and transcriber KV get/put, though acceptance defaults off. The unchanged wording's
+ * broader implication is pending Sam's consent-copy decision.
  *
- * **The words below ARE the Gate 6 approval artifact.** `docs/connector-webhooks-backend-ingest-
- * consent-copy.md` mirrors them for the operator to approve, and consent-scope.test.ts compares
- * the two sentence for sentence — so the text the operator signs off and the text the product
- * would render cannot decouple again (the divergence the cutover audit found).
+ * **The words below ARE the Gate 6 approval artifact.**
+ * `docs/connector-webhooks-backend-ingest-consent-copy.md` mirrors them for the operator;
+ * keep that document aligned if Sam approves a copy change.
  *
  * **RENDERED (residual F011 — CLOSED 2026-08-11, operator-approved unfreeze).** The renderer,
  * `frontend/src/chat/BackgroundSyncSection.tsx`, probes the cohort-gated
@@ -222,21 +207,18 @@ export const BACKEND_INGEST_CONSENT_COPY: BackgroundSyncConsentCopy = {
  *
  * The other four things it must carry, per the plan:
  *
- *  1. Google and OAuth NAMED, and every requested scope is described in plain language.
- *     `backend/src/__tests__/consent-scope.test.ts` matches these sentences against
- *     `GOOGLE_MEET_SCOPES` itself, so scope and copy cannot drift.
+ *  1. Google and OAuth NAMED, and every requested scope described in plain language.
  *  2. The browser fetches meeting content DIRECTLY from Google; it does not pass through the
  *     TinyChat backend, and the data lands only in the user's space.
  *  3. The coverage cliff, D5's tone: cause named, no dead ends. A Google transcript exists only
  *     when the HOST was on a paid Workspace edition AND transcription was on for that meeting.
  *     The sentence names what closes the gap instead of leaving the user at a wall.
- *  4. No confinement claim (header note, deny-list): the node cannot confine a SQL delegation to a
- *     path and `V3_VERDICT.json` records the escape unpatched. This copy has less reason than
- *     most to reach for one — this connector mints no backend delegation whatsoever — and it
- *     states that as a fact about our policy, which B2 re-checks against the activated scope.
+ *  4. No confinement claim: `V3_VERDICT.json` records the SQL escape unpatched.
+ *     Google Meet OAuth mints no Google-specific backend delegation; this is
+ *     distinct from TC-641's separate transcript-writer policy.
  *
- * No `consentCheckbox`: nothing is granted to our server, so there is nothing to attest to — the
- * same reasoning that deleted Option B's. The `disconnectNote` IS present, because disconnect has
+ * No `consentCheckbox`: Google OAuth mints no Google-specific backend delegation,
+ * so there is nothing to attest to here. The `disconnectNote` IS present, because disconnect has
  * a real failure mode worth naming up front (an upstream revoke Google may refuse).
  */
 export const GOOGLE_MEET_CONSENT_COPY: BackgroundSyncConsentCopy = {
@@ -307,11 +289,8 @@ export const GOOGLE_TESTING_MODE_REAUTH_COPY =
   "reconnect within Google's 30-day record window.";
 
 /**
- * Every sentence of the shipped copy as one string — what B2's claim patterns are matched against.
- *
- * INGEST-CUTOVER(plan §11): the optional attestation and disconnect sentences are folded in when
- * present, so the confinement / delete-capability deny-lists scan them too. A sentence that only
- * appears in the checkbox is still a sentence we show the user.
+ * Concatenate the rendered copy fields, including optional checkbox and
+ * disconnect text.
  */
 export function consentCopyText(copy: BackgroundSyncConsentCopy): string {
   return [
