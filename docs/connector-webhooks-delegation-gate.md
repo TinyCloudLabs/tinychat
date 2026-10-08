@@ -303,7 +303,9 @@ and derives the owner and applications space from the signed chain rather than
 from the portable bundle's unsigned fields. Its narrow SQL `[read, write]`
 grant is for `xyz.tinycloud.tinychat/connectors`; KV `[get, put]` is limited
 to `connectors/tinycloud-transcriber/`. Fireflies custody and the browser
-drain are unchanged. The consent copy is unchanged, and
+drain are unchanged. Fireflies and Google consent copy is grant-status-aware:
+the original bytes render when delivery is inactive, while an active grant (or
+unknown status) discloses the separate Private Notetaker transcript writer.
 `test/connectors/fixtures/V3_VERDICT.json` is unchanged.
 
 **The scope-escape gate is still open.** Node SQL/DuckDB exact-database

@@ -113,8 +113,9 @@ plan §9 row 3):
 - **Fireflies Option C mints no Fireflies connector delegation into user spaces.**
   Its credential custody remains out of band (plan §6). TC-641 separately
   advertises a transcript-writer grant on connector SQL read/write and
-  transcriber KV get/put. Acceptance is off by default; the unchanged consent
-  copy awaits Sam's decision.
+  transcriber KV get/put. Acceptance is off by default. With delivery enabled and
+  an active grant, Fireflies and Google consent surfaces disclose this separate
+  transcript-writer permission; the inactive copy remains unchanged.
 - No fail-open consumption of `req.delegatedAccess`: the middleware stays unwired-or-strict.
   Full `att` verification remains the A-branch item (plan §13), never a B dependency.
 
