@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import express from "express";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { DelegatedAccess, type TinyCloudNode } from "@tinycloud/node-sdk";
 import { activateSessionWithHost } from "@tinycloud/sdk-core";
 import { generatePrivateKey } from "viem/accounts";
 import { CONNECTOR_SCHEMA, transcriptKvKey, TRANSCRIBER_MEETING_SOURCE, type StoredDelegation } from "@tinyboilerplate/core";
@@ -213,6 +213,36 @@ async function withActivationNode(f: Fixture, answer: { status: number }, run: (
   };
   try { await withServer(app, run); } finally { node.useDelegation = access; }
   expect(requests.length).toBeGreaterThan(0);
+}
+
+/**
+ * A storage node behind a REAL SDK `DelegatedAccess`, so every failure is mapped by the SDK's own
+ * services: SQL 403 → SQL_PERMISSION_DENIED, KV put 403 → KV_WRITE_FAILED with meta.status 403.
+ * The stub `invoke` puts the service in the header so this node can answer SQL and KV apart.
+ */
+async function withStorageNode(f: Fixture, answers: { sql: number; kv: number }, run: () => Promise<void>): Promise<void> {
+  const app = express();
+  app.post("/invoke", express.raw({ type: () => true }), (req, res) => {
+    const service = String(req.headers.authorization).split(" ")[1]!.split(":")[0];
+    const status = service === "sql" ? answers.sql : answers.kv;
+    if (status >= 300) { res.status(status).send("capability refused"); return; }
+    if (service === "kv") { res.status(200).end(); return; }
+    const body = JSON.parse(req.body.toString("utf8")) as { sql?: string };
+    if (/sqlite_master/.test(body.sql ?? "")) res.json({ columns: ["name"], rows: [["connector_meeting"]] });
+    else if (/^\s*SELECT/i.test(body.sql ?? "")) res.json({ columns: ["id"], rows: [] });
+    else res.json({ changes: 1, lastInsertRowId: 1 });
+  });
+  await withServer(app, async (host) => {
+    const node = f.node as unknown as { useDelegation: (delegation: { spaceId: string }) => Promise<unknown> };
+    const original = node.useDelegation;
+    node.useDelegation = async (delegation) => {
+      f.counts.activation++;
+      const session = { delegationHeader: { Authorization: "Bearer session" }, delegationCid: "cid", spaceId: delegation.spaceId, verificationMethod: "did:key:z#z", jwk: {} };
+      const invoke = (_session: unknown, service: string, _path: string, action: string) => ({ Authorization: `Bearer ${service}:${action}` });
+      return new (DelegatedAccess as unknown as new (...args: unknown[]) => unknown)(session, { path: "", spaceId: delegation.spaceId }, host, invoke, invoke, undefined);
+    };
+    try { await run(); } finally { node.useDelegation = original; }
+  });
 }
 
 describe("durable transcript delivery", () => {
@@ -937,6 +967,51 @@ describe("durable transcript delivery", () => {
     expect(f.records.has(f.grant.address.toLowerCase())).toBe(true);
     expect(f.state().retry.offline.code).toBe("upstream_unavailable");
     await worker.stop();
+  });
+
+  it("removes a grant whose cached activation the storage node refuses with SQL 403 or KV-put 403", async () => {
+    for (const refused of ["sql", "kv"] as const) {
+      const f = await fixture();
+      const answers = { sql: 200, kv: 200 };
+      await withStorageNode(f, answers, async () => {
+        const cache = new DelegationCache();
+        const worker = f.worker({ delegationCache: cache });
+        const address = f.grant.address.toLowerCase();
+        await admit(f, "warm");
+        await worker.deliver(address, "warm");
+        expect(f.state().done.warm.how).toBe("written");
+        const key = verificationCacheKey(address, f.grant.envelope, f.grant.backendDid, f.grant.configuredHost);
+        expect(cache.get(key)).not.toBeNull();
+        const activations = f.counts.activation;
+
+        // Revoked upstream: the cached activation is reused and the node refuses the operation.
+        answers[refused] = 403;
+        await admit(f, "refused");
+        await worker.deliver(address, "refused");
+        expect(f.counts.activation).toBe(activations);
+        expect(f.counts.removal).toBe(1);
+        expect(f.records.has(address)).toBe(false);
+        expect(cache.get(key)).toBeNull();
+        expect(f.state().retry.refused).toBeUndefined();
+        await worker.stop();
+      });
+    }
+  });
+
+  it("keeps the grant and retries when the storage node fails transiently (SQL 503, KV-put 500)", async () => {
+    for (const [service, status] of [["sql", 503], ["kv", 500]] as const) {
+      const f = await fixture();
+      const answers = { sql: 200, kv: 200, [service]: status };
+      await withStorageNode(f, answers, async () => {
+        const worker = f.worker();
+        await admit(f, "transient");
+        await worker.deliver(f.grant.address, "transient");
+        expect(f.counts.removal).toBe(0);
+        expect(f.records.has(f.grant.address.toLowerCase())).toBe(true);
+        expect(f.state().retry.transient.code).toBe("storage_error");
+        await worker.stop();
+      });
+    }
   });
 
   it("governs each of the five fresh-space writes individually at one token per fake minute", async () => {
