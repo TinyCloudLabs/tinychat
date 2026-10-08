@@ -1,5 +1,6 @@
 import { randomBytes } from "crypto";
 import { SignJWT, jwtVerify } from "jose";
+import { SESSION_EXPIRATION_MS } from "@tinyboilerplate/core";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -84,12 +85,12 @@ export function createNonceStore(): NonceStore {
 
 /**
  * Verify a SIWE message and signature using the `siwe` package.
- * Returns the recovered address and nonce from the message.
+ * Returns the signed address, nonce and optional expiration time.
  */
 export async function verifySIWE(
   message: string,
   signature: string,
-): Promise<{ address: string; nonce: string }> {
+): Promise<{ address: string; nonce: string; expirationTime?: string }> {
   // Dynamic import to avoid requiring siwe at module load time
   const { SiweMessage } = await import("siwe");
 
@@ -103,27 +104,37 @@ export async function verifySIWE(
   return {
     address: result.data.address,
     nonce: result.data.nonce,
+    expirationTime: result.data.expirationTime,
   };
 }
 
 // ── Session Token ───────────────────────────────────────────────────
 
 /**
- * Issue a session JWT signed with HS256.
- * Subject is the wallet address.
+ * Issue a session JWT signed with HS256. Subject is the wallet address.
+ * A new token lasts at most 30 days, and never beyond the signed SIWE expiry.
  */
 export async function issueSessionToken(
   address: string,
   privateKey: string,
+  options?: { notAfter?: Date },
 ): Promise<{ token: string; expiresIn: number }> {
-  const secret = new TextEncoder().encode(privateKey);
-  const expiresIn = 24 * 60 * 60; // 24 hours in seconds
+  const now = Math.floor(Date.now() / 1000);
+  let exp = now + SESSION_EXPIRATION_MS / 1000;
+  if (options?.notAfter) {
+    const notAfter = options.notAfter.getTime();
+    if (!Number.isFinite(notAfter)) throw new Error("Invalid session expiration");
+    exp = Math.min(exp, Math.floor(notAfter / 1000));
+  }
+  const expiresIn = exp - now;
+  if (expiresIn <= 0) throw new Error("Session expiration must be in the future");
 
+  const secret = new TextEncoder().encode(privateKey);
   const token = await new SignJWT({ address: address.toLowerCase() })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(address.toLowerCase())
-    .setIssuedAt()
-    .setExpirationTime("24h")
+    .setIssuedAt(now)
+    .setExpirationTime(exp)
     .sign(secret);
 
   return { token, expiresIn };
