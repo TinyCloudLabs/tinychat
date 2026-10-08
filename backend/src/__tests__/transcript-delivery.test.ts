@@ -4,6 +4,7 @@ import express from "express";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { activateSessionWithHost } from "@tinycloud/sdk-core";
 import { generatePrivateKey } from "viem/accounts";
 import { CONNECTOR_SCHEMA, transcriptKvKey, TRANSCRIBER_MEETING_SOURCE, type StoredDelegation } from "@tinyboilerplate/core";
 import { DelegationCache, type DelegationMetadata } from "@tinyboilerplate/server";
@@ -164,10 +165,10 @@ async function withServer<T>(app: express.Express, run: (base: string) => Promis
   }
 }
 
-function delegationApp(f: Fixture, worker: TranscriptDeliveryWorker, coordinator: TenantCoordinator): express.Express {
+function delegationApp(f: Fixture, worker: TranscriptDeliveryWorker, coordinator: TenantCoordinator, configuredHost = f.grant.configuredHost): express.Express {
   const app = express();
   app.use("/api/delegations", createDelegationRouter({
-    backendDid: f.grant.backendDid, configuredHost: f.grant.configuredHost,
+    backendDid: f.grant.backendDid, configuredHost,
     eligibility: () => true, node: f.node, coordinator,
     store: {
       load: async (address) => f.records.get(address) ?? null,
@@ -180,6 +181,38 @@ function delegationApp(f: Fixture, worker: TranscriptDeliveryWorker, coordinator
     onGrantChanged: (address, previous) => worker.invalidateGrant(address, previous),
   }));
   return app;
+}
+
+/**
+ * A real node activation endpoint. The fixture node's `useDelegation` runs the SDK's own
+ * `activateSessionWithHost` against it and, on failure, throws exactly what the pinned SDK throws
+ * — a plain Error whose message carries the response body and no status. The stored grant is
+ * re-signed without a bundle host so it verifies against this server as the configured host.
+ */
+async function withActivationNode(f: Fixture, answer: { status: number }, run: (host: string) => Promise<void>): Promise<void> {
+  const app = express();
+  const requests: string[] = [];
+  app.post("/delegate", (req, res) => {
+    requests.push(String(req.headers.authorization));
+    if (answer.status < 300) res.status(answer.status).json({ activated: [] });
+    else res.status(answer.status).send("delegation revoked");
+  });
+  const hostless = await makeSignedTranscriptGrant({ host: null });
+  f.records.set(hostless.address.toLowerCase(), {
+    serialized: hostless.envelope, expiresAt: hostless.expiresAt.toISOString(), grantedAt: new Date().toISOString(),
+    actions: [], path: "connectors",
+  });
+  const node = f.node as unknown as { useDelegation: (delegation: { host: string }) => Promise<unknown> };
+  const access = node.useDelegation;
+  let session = 0;
+  node.useDelegation = async (delegation) => {
+    const result = await activateSessionWithHost(delegation.host, { Authorization: `Bearer invoker-session-${++session}` });
+    // Verbatim from @tinycloud/node-sdk 2.11.0 `TinyCloudNode.useDelegation`.
+    if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+    return access.call(node, delegation);
+  };
+  try { await withServer(app, run); } finally { node.useDelegation = access; }
+  expect(requests.length).toBeGreaterThan(0);
 }
 
 describe("durable transcript delivery", () => {
@@ -797,16 +830,14 @@ describe("durable transcript delivery", () => {
   it("meters rejected-grant removal and leaves the shared user lane free while a take waits", async () => {
     const f = await fixture();
     await admit(f, "rejected");
-    const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
-    const original = node.useDelegation;
-    node.useDelegation = async () => { throw Object.assign(new Error("forbidden"), { status: 403 }); };
-    const worker = f.worker();
-    await worker.deliver(f.grant.address, "rejected");
-    expect(f.counts.removal).toBe(1);
-    expect(f.events.filter((event) => event === "take")).toHaveLength(2);
-    expect(f.backend.puts).toEqual([]);
-    await worker.stop();
-    node.useDelegation = original;
+    await withActivationNode(f, { status: 403 }, async (host) => {
+      const worker = f.worker({ configuredHost: host });
+      await worker.deliver(f.grant.address, "rejected");
+      expect(f.counts.removal).toBe(1);
+      expect(f.events.filter((event) => event === "take")).toHaveLength(2);
+      expect(f.backend.puts).toEqual([]);
+      await worker.stop();
+    });
     await admit(f, "lane");
     f.records.set(f.grant.address.toLowerCase(), {
       serialized: f.grant.envelope, expiresAt: f.grant.expiresAt.toISOString(), actions: [], path: "connectors", grantedAt: "now",
@@ -828,6 +859,84 @@ describe("durable transcript delivery", () => {
     await delivery;
     expect(f.state().done.lane.how).toBe("written");
     await second.stop();
+  });
+
+  it("removes a grant the node rejects at activation (401/403), so status reports none and renewal follows", async () => {
+    for (const rejected of [401, 403]) {
+      const f = await fixture();
+      const answer = { status: 200 };
+      await withActivationNode(f, answer, async (host) => {
+        const coordinator = new TenantCoordinator();
+        const cache = new DelegationCache();
+        const worker = f.worker({ configuredHost: host, coordinator, delegationCache: cache });
+        const address = f.grant.address.toLowerCase();
+        const hostless = await makeSignedTranscriptGrant({ host: null });
+        await withServer(delegationApp(f, worker, coordinator, host), async (base) => {
+          // Accepted while the node still honours it, so status starts active and verified.
+          const accepted = await fetch(`${base}/api/delegations`, {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(hostless),
+          });
+          expect(accepted.status).toBe(200);
+          expect(await (await fetch(`${base}/api/delegations/status`)).json()).toMatchObject({ status: "active", verified: true });
+
+          answer.status = rejected;
+          await admit(f, "revoked");
+          await worker.deliver(address, "revoked");
+          // Compare-and-delete removed it, caches are evicted, and no retry was recorded in its place.
+          expect(f.records.has(address)).toBe(false);
+          expect(cache.get(verificationCacheKey(address, hostless.envelope, f.grant.backendDid, host))).toBeNull();
+          expect(f.state()?.retry?.revoked).toBeUndefined();
+          expect(f.db.query("SELECT source_id FROM connector_meeting").all()).toEqual([]);
+
+          // The browser reads absence, which `need()` treats as missing and urgent: it mints again.
+          expect(await (await fetch(`${base}/api/delegations/status`)).json())
+            .toEqual({ status: "none", expiresAt: null, verified: false, delivery: "enabled" });
+          answer.status = 200;
+          const renewed = await makeSignedTranscriptGrant({ host: null });
+          const renewal = await fetch(`${base}/api/delegations`, {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(renewed),
+          });
+          expect(renewal.status).toBe(200);
+          // A fresh id: "revoked" itself is inside the worker's 60 s per-id upstream throttle.
+          await admit(f, "renewed");
+          await worker.deliver(address, "renewed");
+          expect(f.state().done.renewed.how).toBe("written");
+        });
+        await worker.stop();
+      });
+    }
+  });
+
+  it("keeps the grant and retries when activation fails with a node 5xx or a network error", async () => {
+    const f = await fixture();
+    const answer = { status: 503 };
+    let host = "";
+    await withActivationNode(f, answer, async (url) => {
+      host = url;
+      const worker = f.worker({ configuredHost: host });
+      await admit(f, "outage");
+      await worker.deliver(f.grant.address, "outage");
+      expect(f.counts.removal).toBe(0);
+      expect(f.records.has(f.grant.address.toLowerCase())).toBe(true);
+      expect(f.state().retry.outage.code).toBe("storage_error");
+      await worker.stop();
+    });
+    // The node is gone: the SDK's fetch rejects before any status exists.
+    const node = f.node as unknown as { useDelegation: (delegation: { host: string }) => Promise<unknown> };
+    const access = node.useDelegation;
+    node.useDelegation = async (delegation) => {
+      const result = await activateSessionWithHost(delegation.host, { Authorization: "Bearer invoker-session-offline" });
+      if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+      return access.call(node, delegation);
+    };
+    const worker = f.worker({ configuredHost: host });
+    await admit(f, "offline");
+    await worker.deliver(f.grant.address, "offline");
+    node.useDelegation = access;
+    expect(f.counts.removal).toBe(0);
+    expect(f.records.has(f.grant.address.toLowerCase())).toBe(true);
+    expect(f.state().retry.offline.code).toBe("upstream_unavailable");
+    await worker.stop();
   });
 
   it("governs each of the five fresh-space writes individually at one token per fake minute", async () => {
