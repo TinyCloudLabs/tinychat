@@ -247,6 +247,17 @@ describe("silent transcript-writer renewal", () => {
     expect(await f.run()).toBe("unavailable");
     expect(transcriptConsentState()).toBe("unknown");
   });
+  it("re-mints at once when the backend drops a node-rejected grant and status flips to none", async () => {
+    const f = mintHarness();
+    expect(await f.run()).toBe("active");
+    expect(transcriptConsentState()).toBe("active");
+    // What the worker leaves behind after a 401/403 at activation (backend transcript-delivery test).
+    f.setStatus({ status: "none", expiresAt: null, verified: false, delivery: "enabled" });
+    expect(await f.run()).toBe("active");
+    expect(f.operations.filter((op) => op === "delegateTo")).toHaveLength(2);
+    expect(f.payloads).toHaveLength(2);
+    expect(transcriptConsentState()).toBe("active");
+  });
   it("does not re-mint a grant near the end of a three-day session without useful extension", async () => {
     const f = mintHarness({}, 3);
     expect(await f.run()).toBe("active");
