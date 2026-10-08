@@ -35,6 +35,14 @@ public enum SttBenchmark {
         guard let hardSplit, hardSplit == 0 || (5...25).contains(hardSplit) else {
             throw SttBenchmarkError.invalidConfiguration("hard split must be 0 or 5–25 seconds")
         }
+        let blankPenalty = Float(ProcessInfo.processInfo.environment["EXO_STT_BENCH_BLANK_PENALTY"] ?? "0")
+        guard let blankPenalty, blankPenalty.isFinite, (0...2).contains(blankPenalty) else {
+            throw SttBenchmarkError.invalidConfiguration("blank penalty must be 0–2")
+        }
+        let chunkPad = Double(ProcessInfo.processInfo.environment["EXO_STT_BENCH_CHUNK_PAD_SECONDS"] ?? "0")
+        guard let chunkPad, chunkPad.isFinite, (0...2).contains(chunkPad) else {
+            throw SttBenchmarkError.invalidConfiguration("chunk pad must be 0–2 seconds")
+        }
         let asrOnly = ProcessInfo.processInfo.environment["EXO_STT_BENCH_ASR_ONLY"] == "1"
         #if os(macOS)
         let output = directory.appendingPathComponent("results/mac", isDirectory: true)
@@ -53,7 +61,8 @@ public enum SttBenchmark {
                 let model = directory.appendingPathComponent("models/full", isDirectory: true)
                 let cold = summary.isEmpty
                 let result = try recognize(samples: samples, model: model, threads: threadCount,
-                                           vadCap: cap, hardSplit: hardSplit)
+                                           vadCap: cap, hardSplit: hardSplit,
+                                           blankPenalty: blankPenalty, chunkPad: chunkPad)
                 let stem = threadCount == 4 ? name : "\(name)-t\(threadCount)"
                 try result.text.write(to: output.appendingPathComponent("\(stem).hyp.txt"), atomically: true, encoding: .utf8)
                 guard let wer = WordErrorRate.score(reference: reference, hypothesis: result.text) else {
@@ -71,6 +80,8 @@ public enum SttBenchmark {
                     "maxAsrWindowSeconds": result.maxAsrWindowSeconds,
                     "asrWindowCount": result.asrWindows.count,
                     "hardSplitSeconds": hardSplit,
+                    "blankPenalty": blankPenalty, "chunkPadSeconds": chunkPad,
+                    "emptyVadSegments": result.emptyVadSegments,
                     "vadCoverageSeconds": result.vadCoverageSeconds,
                     "vadSegments": result.vadSegments,
                     "asrWindows": result.asrWindows,
@@ -142,6 +153,7 @@ public enum SttBenchmark {
         let peakPhysFootprintBytes: UInt64
         let sampledPeakPhysFootprintBytes: UInt64
         let speechSegments: Int
+        let emptyVadSegments: Int
         let maxSpeechSegmentSeconds: Double
         let maxAsrWindowSeconds: Double
         let vadCoverageSeconds: Double
@@ -151,7 +163,8 @@ public enum SttBenchmark {
     }
 
     private static func recognize(samples: [Float], model: URL, threads: Int,
-                                  vadCap: Float, hardSplit: Double) throws -> Recognition {
+                                  vadCap: Float, hardSplit: Double,
+                                  blankPenalty: Float, chunkPad: Double) throws -> Recognition {
         for file in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"] {
             guard FileManager.default.fileExists(atPath: model.appendingPathComponent(file).path) else {
                 throw SttBenchmarkError.missingFixture(model.appendingPathComponent(file).path)
@@ -167,7 +180,8 @@ public enum SttBenchmark {
                 joiner: model.appendingPathComponent("joiner.int8.onnx").path),
             numThreads: threads, provider: "cpu", modelType: "nemo_transducer")
         var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(),
-                                                       modelConfig: modelConfig, decodingMethod: "greedy_search")
+                                                       modelConfig: modelConfig, decodingMethod: "greedy_search",
+                                                       blankPenalty: blankPenalty)
         let recognizer = SherpaOnnxOfflineRecognizer(config: &config)
         let loaded = CFAbsoluteTimeGetCurrent()
         let segmented = try speechChunks(samples: samples,
@@ -176,8 +190,11 @@ public enum SttBenchmark {
         var words: [TimedWord] = []
         var windows: [[String: Any]] = []
         var wordsPerSegment = [Int](repeating: 0, count: segmented.vadSegments.count)
+        let padSamples = Int((chunkPad * 16_000).rounded())
+        let silence = [Float](repeating: 0, count: padSamples)
         for chunk in segmented.chunks {
-            let result = recognizer.decode(samples: chunk.samples)
+            let input = padSamples == 0 ? chunk.samples : silence + chunk.samples + silence
+            let result = recognizer.decode(samples: input)
             var tokens: [String] = []
             if result.count > 0 {
                 guard let tokenPointers = result.result.pointee.tokens_arr else {
@@ -191,10 +208,16 @@ public enum SttBenchmark {
             guard tokens.count == result.count else { throw SttBenchmarkError.missingTokenData }
             let decoded = try TokenWordAlignment.align(tokens: tokens, timestamps: result.timestamps,
                                                         durations: result.durations,
-                                                        origin: Double(chunk.start) / 16_000)
+                                                        origin: Double(chunk.start - padSamples) / 16_000)
+            let sourceSegment = segmented.vadSegments[chunk.sourceSegment]
+            // Padding distorts edge timestamps; only shared hard-split boundaries own words.
+            let lowerBound = chunk.ownedStart == sourceSegment.start
+                ? -Double.infinity : Double(chunk.ownedStart)
+            let upperBound = chunk.ownedEnd == sourceSegment.end
+                ? Double.infinity : Double(chunk.ownedEnd)
             let kept = decoded.filter { word in
                 let middle = (word.start + word.end) * 8_000 // seconds to midpoint sample.
-                return middle >= Double(chunk.ownedStart) && middle < Double(chunk.ownedEnd)
+                return middle >= lowerBound && middle < upperBound
             }
             words += kept
             wordsPerSegment[chunk.sourceSegment] += kept.count
@@ -220,6 +243,7 @@ public enum SttBenchmark {
                            peakPhysFootprintBytes: memory.lifetimePeak,
                            sampledPeakPhysFootprintBytes: memory.sampledPeak,
                            speechSegments: segmented.vadSegments.count,
+                           emptyVadSegments: wordsPerSegment.filter { $0 == 0 }.count,
                            maxSpeechSegmentSeconds: Double(segmented.vadSegments.map { $0.end - $0.start }.max() ?? 0) / 16_000,
                            maxAsrWindowSeconds: Double(segmented.chunks.map { $0.end - $0.start }.max() ?? 0) / 16_000,
                            vadCoverageSeconds: Double(segmented.vadSegments.reduce(0) { $0 + $1.end - $1.start }) / 16_000,
