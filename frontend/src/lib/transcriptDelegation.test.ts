@@ -269,6 +269,18 @@ describe("silent transcript-writer renewal", () => {
     expect(f.payloads).toHaveLength(2);
     expect(transcriptConsentState()).toBe("active");
   });
+  it("keeps disclosing a grant the server still reports while delivery is disabled, then restores the original", async () => {
+    const f = mintHarness({ status: "active", verified: true, delivery: "disabled", expiresAt: new Date(Date.now() + 20 * DAY).toISOString() });
+    expect(await f.run()).toBe("disabled");
+    expect(serverDeliveryActive()).toBe(false);
+    expect(f.operations).not.toContain("delegateTo");
+    expect(transcriptConsentState()).toBe("unknown");
+    // The backend removed it on that read: the next status is grant-free and disabled.
+    f.setStatus({ status: "none", expiresAt: null, verified: false, delivery: "disabled" });
+    expect(await f.run()).toBe("disabled");
+    expect(transcriptConsentState()).toBe("inactive");
+  });
+
   it("does not re-mint a grant near the end of a three-day session without useful extension", async () => {
     const f = mintHarness({}, 3);
     expect(await f.run()).toBe("active");

@@ -536,6 +536,37 @@ describe("durable transcript delivery", () => {
     await restarted.stop();
   });
 
+  it("a sweep removes the grant of an address narrowed out of the cohort, and delivers again once re-widened", async () => {
+    const f = await fixture();
+    let eligible = true;
+    const worker = f.worker({ eligibility: () => eligible });
+    const address = f.grant.address.toLowerCase();
+    await admit(f, "narrowed");
+    eligible = false;
+    await worker.sweep();
+    expect(f.records.has(address)).toBe(false);
+    expect(f.counts.removal).toBe(1);
+    expect(f.counts.meeting).toBe(0);
+    await worker.sweep();
+    expect(f.counts.removal).toBe(1);
+
+    // Re-widened and re-granted (the router's accept signals the change to the worker).
+    eligible = true;
+    f.records.set(address, {
+      serialized: f.grant.envelope, expiresAt: f.grant.expiresAt.toISOString(), grantedAt: new Date().toISOString(), actions: [], path: "connectors",
+    });
+    worker.invalidateGrant(address);
+    await worker.sweep();
+    expect(f.state().done.narrowed.how).toBe("written");
+
+    // Narrowed again: the change cleared the "already checked" mark, so it is removed again.
+    eligible = false;
+    await worker.sweep();
+    expect(f.records.has(address)).toBe(false);
+    expect(f.counts.removal).toBe(2);
+    await worker.stop();
+  });
+
   it("removes foreign stored envelopes under their own owner key, warm and cold, without B activation", async () => {
     for (const warm of [true, false]) {
       const f = await fixture();

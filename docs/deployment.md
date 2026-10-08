@@ -285,6 +285,11 @@ The feature **ships off**. With the flag false, authenticated malformed
 `GET /api/delegations/status` reports `delivery: disabled`, and
 `POST /api/transcriber/webhooks/ptx` returns 404. Manual meeting-create
 intents still persist and recover through idempotency lookup.
+Turning the flag off, or removing an address from
+`TRANSCRIPT_SERVER_DELIVERY_ADDRESSES`, removes that address's stored grant
+(compare-and-delete) on its next `GET /api/delegations/status` or, while the
+flag is on, the next worker sweep; until removal succeeds, status keeps
+reporting the grant and the consent copy keeps disclosing it.
 
 For a **dev-only** rollout after explicit approval, use a dedicated generated
 backend identity, an explicit test-address cohort, the ptx project key and a
