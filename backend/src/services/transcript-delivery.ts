@@ -484,8 +484,10 @@ export class TranscriptDeliveryWorker {
       await this.confirmRefusal(address, state, id, grant);
       return;
     }
+    // SQL 402 surfaces as the SDK's NETWORK_ERROR, so the HTTP status decides quota first.
     this.retry(address, state, id, result.code === "SCHEMA_MISSING" ? "schema_missing" :
-      /QUOTA|PAYMENT_REQUIRED|402/i.test(result.code) ? "storage_quota" : "storage_error");
+      result.status === 402 || result.status === 413 || /QUOTA|PAYMENT_REQUIRED|402/i.test(result.code)
+        ? "storage_quota" : "storage_error");
   }
   /**
    * A storage-time 401/403 may be operational (an ingress, a passing node refusal), and with no tab
