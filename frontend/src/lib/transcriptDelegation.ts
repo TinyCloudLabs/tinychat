@@ -7,7 +7,10 @@ import { toPortableDelegation, serializePortableDelegation } from "./agentDelega
 import { webConnectorPort } from "./connectors/connectorPort";
 import { fetchServerInfoDid } from "./backendAttestation";
 import { localValidationEnabled } from "./localValidation";
-import { serverDeliveryActive, setServerDeliveryActive } from "./transcriptDeliveryState";
+import {
+  beginTranscriptConsentStatus, clearTranscriptConsentStatus, resolveTranscriptConsentStatus,
+  serverDeliveryActive, setServerDeliveryActive,
+} from "./transcriptDeliveryState";
 
 const DAY = 24 * 60 * 60 * 1000;
 const GRANT_LIFETIME = SESSION_EXPIRATION_MS - DAY;
@@ -68,6 +71,7 @@ function cancel(key: string): void {
 export function clearTranscriptDelegationSchedule(address: string | null): void {
   if (address) cancel(`tinychat.transcriptWriter.${address.toLowerCase()}`);
   setServerDeliveryActive(false);
+  clearTranscriptConsentStatus(address);
 }
 
 function schedule(key: string, at: number, options: Options): void {
@@ -124,6 +128,7 @@ async function withAttemptTimeout<T>(run: (alive: () => void, signal: AbortSigna
 /** Once inside a cross-tab lock, re-fetch everything rather than trusting the pre-lock snapshot. */
 async function underLock(options: Options, address: string, key: string, sessionExpiry: number): Promise<EnsureResult> {
   let urgent = true;
+  let observed = false;
   try {
     return await withAttemptTimeout(async (alive, signal) => {
       const token = options.sessionStore.getToken();
@@ -132,6 +137,11 @@ async function underLock(options: Options, address: string, key: string, session
       }
       const status = await checkDelegationStatus(options.backendUrl, token, signal);
       alive();
+      if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {
+        throw new Error("Session changed during transcript delegation");
+      }
+      resolveTranscriptConsentStatus(address, status);
+      observed = true;
       setServerDeliveryActive(status.delivery !== "disabled");
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
@@ -161,14 +171,18 @@ async function underLock(options: Options, address: string, key: string, session
         if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {
           throw new Error("Session changed during transcript delegation");
         }
-        await sendDelegation(options.backendUrl, { serialized, siwe: session.siwe, signature: session.signature }, token, signal);
+        // A lost POST response can follow a successful store; disclose until status is known again.
+        resolveTranscriptConsentStatus(address, null);
+        const accepted = await sendDelegation(options.backendUrl, { serialized, siwe: session.siwe, signature: session.signature }, token, signal);
         alive();
+        resolveTranscriptConsentStatus(address, accepted);
       }
       storage().removeItem(key);
       cancel(key);
       return "active";
     });
   } catch (error) {
+    if (!observed) resolveTranscriptConsentStatus(address, null);
     recordFailure(key, options, urgent);
     console.warn("[transcript-delegation] silent renewal unavailable", warningCode(error));
     return "unavailable";
@@ -228,6 +242,8 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
   const key = `tinychat.transcriptWriter.${address}`;
   const ongoing = pending.get(key);
   if (ongoing) return ongoing;
+  beginTranscriptConsentStatus(address);
+  let observed = false;
   const run = (async (): Promise<EnsureResult> => {
     try {
       const session = options.tcw.session();
@@ -241,6 +257,11 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
         alive();
         return result;
       });
+      if (options.sessionStore.getToken() !== token || options.sessionStore.getAddress()?.toLowerCase() !== address) {
+        throw new Error("Session changed during transcript delegation");
+      }
+      resolveTranscriptConsentStatus(address, status);
+      observed = true;
       setServerDeliveryActive(status.delivery !== "disabled");
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
@@ -250,6 +271,7 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
       if (allowedAt > Date.now()) { schedule(key, allowedAt, options); return "busy"; }
       return attempt(options, address, key, sessionExpiry);
     } catch (error) {
+      if (!observed) resolveTranscriptConsentStatus(address, null);
       console.warn("[transcript-delegation] status unavailable", warningCode(error));
       recordFailure(key, options, true);
       return "unavailable";

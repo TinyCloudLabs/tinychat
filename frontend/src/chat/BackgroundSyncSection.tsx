@@ -17,11 +17,11 @@
 // to storage, never logged, never sent anywhere, and `GET /config` cannot
 // bring them back — losing them means rotating, which the copy says.
 //
-// CONSENT VARIANTS (residual F011). The off state renders one of two pinned
-// texts from `consentCopy.ts`, always verbatim — the renderer owns only the
-// `**bold**`/`*em*` markers: Option C for everyone, and the B-ingest cohort
-// text only when the cohort-gated meetings read API answers this session with
-// an affirmative "ok" (`consentVariantForProbe`). Every other answer — the 404
+// CONSENT VARIANTS (residual F011). The off state selects Fireflies Option C
+// or B-ingest from the cohort probe, then selects its transcript-writer disclosure
+// from the shared delegation status. Inactive keeps the pinned original bytes;
+// unknown shows the disclosure. The renderer owns only `**bold**`/`*em*` markers.
+// Only an affirmative "ok" (`consentVariantForProbe`) selects B-ingest. Every other answer — the 404
 // that means "not in the cohort", an auth or transport failure, a thrown
 // programmer error, no `meetings` client at all — fails closed to Option C: a
 // non-cohort user must never read the cohort's custody terms, and an error
@@ -30,7 +30,7 @@
 // custody (the token, the 90-day copy), so the button stays inert until the
 // box is checked.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FC } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CopyIcon, Loader2Icon, RadioIcon } from "lucide-react";
 
@@ -40,8 +40,12 @@ import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import {
   BACKEND_INGEST_CONSENT_COPY,
   BACKGROUND_SYNC_CONSENT_COPY,
+  transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
 } from "@/lib/connectors/consentCopy";
+import {
+  subscribeTranscriptConsent, transcriptConsentState, type TranscriptConsentState,
+} from "@/lib/transcriptDeliveryState";
 import {
   isSecretsUnlocked,
   unlockSecrets,
@@ -205,6 +209,9 @@ export function BackgroundSyncSection({
   // until proven otherwise, and the attestation starts unchecked.
   const [consentVariant, setConsentVariant] = useState<OffStateConsentVariant>("C");
   const [ingestConsentChecked, setIngestConsentChecked] = useState(false);
+  const transcriptConsent = useSyncExternalStore(
+    subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
+  );
 
   // The cohort probe — deliberately its OWN effect, NOT a rider on the drain
   // lane above: it is a read of a different API (the cohort-gated meetings
@@ -255,6 +262,7 @@ export function BackgroundSyncSection({
       state={state}
       connectorName={descriptor.name}
       consentVariant={consentVariant}
+      transcriptConsent={transcriptConsent}
       ingestConsentChecked={ingestConsentChecked}
       onIngestConsentChange={setIngestConsentChecked}
       onEnable={() => void enableBackgroundSync(deps, emit)}
@@ -289,12 +297,12 @@ export interface BackgroundSyncViewProps {
   state: BackgroundSyncState;
   connectorName: string;
   /**
-   * F011: which pinned consent text the off state renders. Optional with a C
-   * default so every pre-cohort call site — and every frozen test — keeps
-   * producing byte-identical Option-C markup; only the container's probe ever
-   * passes "B-ingest", and only on an affirmative cohort signal.
+   * F011's cohort choice. C is the default; only an affirmative probe passes
+   * B-ingest. The independent transcript status defaults to the disclosure.
    */
   consentVariant?: OffStateConsentVariant;
+  /** Unknown status shows the transcript-writer disclosure, not an untrue denial. */
+  transcriptConsent?: TranscriptConsentState;
   /** The B-ingest attestation's checked state. Unrendered (and inert) under C. */
   ingestConsentChecked?: boolean;
   onIngestConsentChange?: (checked: boolean) => void;
@@ -316,6 +324,7 @@ export function BackgroundSyncView({
   state,
   connectorName,
   consentVariant = "C",
+  transcriptConsent = "unknown",
   ingestConsentChecked = false,
   onIngestConsentChange,
   onEnable,
@@ -336,6 +345,10 @@ export function BackgroundSyncView({
   const status = backgroundSyncStatus(state);
   const notices = queueNotices(state);
   const busy = state.busy;
+  const consentCopy = transcriptAwareConsentCopy(
+    consentVariant === "B-ingest" ? BACKEND_INGEST_CONSENT_COPY : BACKGROUND_SYNC_CONSENT_COPY,
+    transcriptConsent,
+  );
 
   return (
     <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3">
@@ -395,12 +408,11 @@ export function BackgroundSyncView({
         </div>
       )}
 
-      {/* Anything that is not an affirmed cohort verdict renders Option C —
-          the same JSX it always rendered, so the non-cohort surface stays
-          byte-identical to the frozen drain-UX increment. */}
+      {/* Without an affirmative cohort verdict, select Option C. Its inactive
+          rendering preserves the original copy byte for byte. */}
       {state.phase === "off" && consentVariant !== "B-ingest" && (
         <>
-          <ConsentCopyBlock copy={BACKGROUND_SYNC_CONSENT_COPY} />
+          <ConsentCopyBlock copy={consentCopy} />
           <div>
             <Button size="sm" onClick={onEnable} disabled={busy !== null} className="gap-1.5">
               {busy === "enabling" && (
@@ -417,13 +429,13 @@ export function BackgroundSyncView({
           verbatim like everything else from consentCopy.ts. */}
       {state.phase === "off" && consentVariant === "B-ingest" && (
         <>
-          <ConsentCopyBlock copy={BACKEND_INGEST_CONSENT_COPY} />
+          <ConsentCopyBlock copy={consentCopy} />
           {/* The disconnect note sits BELOW the bullets — the last bullet
               points forward at it — as its own paragraph, markers resolved by
               the same Emphasized the bullets use. */}
-          {BACKEND_INGEST_CONSENT_COPY.disconnectNote && (
+          {consentCopy.disconnectNote && (
             <p className="text-xs text-muted-foreground">
-              <Emphasized text={BACKEND_INGEST_CONSENT_COPY.disconnectNote} />
+              <Emphasized text={consentCopy.disconnectNote} />
             </p>
           )}
           {/* A real, controlled checkbox, not decoration: under B-ingest the
@@ -438,7 +450,7 @@ export function BackgroundSyncView({
               checked={ingestConsentChecked}
               onChange={(event) => onIngestConsentChange?.(event.target.checked)}
             />
-            <span>{BACKEND_INGEST_CONSENT_COPY.consentCheckbox}</span>
+            <span>{consentCopy.consentCheckbox}</span>
           </label>
           <div>
             <Button
