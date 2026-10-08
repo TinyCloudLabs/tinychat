@@ -121,7 +121,11 @@ export async function sendDelegation(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "unknown", message: res.statusText }));
-    throw new Error(`Failed to send delegation: ${err.message ?? err.error}`);
+    // The status and code let callers tell a rejection (4xx) from an outage (5xx).
+    throw Object.assign(new Error(`Failed to send delegation: ${err.message ?? err.error}`), {
+      status: res.status,
+      code: typeof err.error === "string" ? err.error : "unknown",
+    });
   }
 
   return res.json() as Promise<DelegationResponse>;

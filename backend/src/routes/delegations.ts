@@ -4,7 +4,7 @@ import type { DelegationStore } from "@tinyboilerplate/server";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { backendDelegationPolicyHash } from "../manifest.js";
 import { evictStoredGrantVerification, parseStoredGrant, verifyTranscriptWriterGrant } from "../delegation-verify.js";
-import { activateVerifiedDelegation, normalizeDid } from "../portable-delegation.js";
+import { activateVerifiedDelegation, DelegationActivationError, normalizeDid } from "../portable-delegation.js";
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 
 export const MAX_SERIALIZED_DELEGATION_BYTES = 64 * 1024;
@@ -132,7 +132,12 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
         return { expiresAt };
       });
       res.json({ status: "active", expiresAt: result.expiresAt, verified: true, delivery: "enabled" });
-    } catch {
+    } catch (error) {
+      // The node refused the grant itself: a rejection, not an outage, so the browser backs off.
+      if (error instanceof DelegationActivationError && (error.status === 401 || error.status === 403)) {
+        res.status(403).json({ error: "delegation_rejected" });
+        return;
+      }
       res.status(503).json({ error: "unavailable" });
     }
   });

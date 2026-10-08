@@ -198,7 +198,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
-          description: "`delivery_disabled` — flag off or address outside the configured cohort; checked before parsing the body."
+          description: "`delivery_disabled` — flag off or address outside the configured cohort; checked before parsing the body. `delegation_rejected` — the TinyCloud node refused the grant's activation (401/403); nothing is stored."
           content:
             application/json:
               schema:
