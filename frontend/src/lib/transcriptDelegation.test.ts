@@ -281,6 +281,38 @@ describe("silent transcript-writer renewal", () => {
     expect(transcriptConsentState()).toBe("inactive");
   });
 
+  it("waits out the long cap after a definite rejection, even for an urgent need, but not after an outage", async () => {
+    for (const [postStatus, longWait] of [[403, true], [503, false]] as const) {
+      const f = mintHarness();
+      const key = `tinychat.transcriptWriter.${address}`;
+      // Many earlier failures, the last one ten minutes ago: an urgent need may retry now.
+      f.storage.setItem(key, JSON.stringify({ failures: 8, lastFailureAt: Date.now() - 10 * 60_000, jitter: 0 }));
+      const harnessFetch = globalThis.fetch;
+      let posts = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (new URL(String(input)).pathname === "/api/delegations" && init?.method === "POST") {
+          posts++;
+          return Response.json({ error: postStatus === 403 ? "delegation_rejected" : "unavailable" }, { status: postStatus });
+        }
+        return harnessFetch(input, init);
+      }) as typeof fetch;
+      expect(await f.run()).toBe("unavailable");
+      expect(posts).toBe(1);
+      const backoff = JSON.parse(f.storage.getItem(key)!) as { failures: number; lastFailureAt: number; rejected?: boolean };
+      expect(backoff.failures).toBe(9);
+      expect(backoff.rejected === true).toBe(longWait);
+      // The grant is still missing, so the need is urgent; only a rejection lengthens the wait.
+      const wait = nextTranscriptAttempt(backoff as never, true) - backoff.lastFailureAt;
+      if (longWait) expect(wait).toBeGreaterThan(60 * 60_000);
+      else expect(wait).toBeLessThanOrEqual(5 * 60_000);
+      clearTranscriptDelegationSchedule(address);
+      // A reload re-evaluates urgency, and a rejection still holds the long cap.
+      expect(await f.run()).toBe("busy");
+      expect(posts).toBe(1);
+      clearTranscriptDelegationSchedule(address);
+    }
+  });
+
   it("does not re-mint a grant near the end of a three-day session without useful extension", async () => {
     const f = mintHarness({}, 3);
     expect(await f.run()).toBe("active");

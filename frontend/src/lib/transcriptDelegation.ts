@@ -23,7 +23,8 @@ export { serverDeliveryActive };
 export type EnsureResult = "active" | "disabled" | "busy" | "unavailable";
 
 interface Options { tcw: TinyCloudWeb; backendUrl: string; sessionStore: SessionStore }
-interface Backoff { failures: number; lastFailureAt: number; jitter: number }
+/** `rejected`: the last failure was a definite rejection, so even an urgent need waits long. */
+interface Backoff { failures: number; lastFailureAt: number; jitter: number; rejected?: boolean }
 
 function sessionExpiration(siwe: string): number {
   const value = /^Expiration Time:\s*(\S+)/im.exec(siwe)?.[1];
@@ -48,16 +49,20 @@ function readBackoff(key: string): Backoff | null {
   try {
     const b = JSON.parse(raw) as Backoff;
     if (Number.isInteger(b.failures) && b.failures > 0 && Number.isFinite(b.lastFailureAt)
-      && Number.isFinite(b.jitter) && b.jitter >= 0 && b.jitter < 1) return b;
+      && Number.isFinite(b.jitter) && b.jitter >= 0 && b.jitter < 1
+      && (b.rejected === undefined || typeof b.rejected === "boolean")) return b;
   } catch { /* Invalid/old records are reset. */ }
   storage().removeItem(key);
   return null;
 }
 
-/** Recompute from urgency on every evaluation: an urgent renewal cannot inherit a six-hour wait. */
+/**
+ * Recompute from urgency on every evaluation: an urgent renewal cannot inherit a six-hour wait,
+ * unless the last failure was a definite rejection, which five more minutes will not change.
+ */
 export function nextTranscriptAttempt(backoff: Backoff | null, urgent: boolean): number {
   if (!backoff) return 0;
-  const cap = urgent ? 5 * 60_000 : 6 * 60 * 60_000;
+  const cap = urgent && !backoff.rejected ? 5 * 60_000 : 6 * 60 * 60_000;
   const base = 60_000 * 2 ** Math.min(backoff.failures - 1, 20);
   return backoff.lastFailureAt + Math.min(cap, base * (1 + 0.2 * backoff.jitter));
 }
@@ -82,10 +87,13 @@ function schedule(key: string, at: number, options: Options): void {
   }, Math.max(0, at - Date.now())));
 }
 
-function recordFailure(key: string, options: Options, urgent: boolean): void {
+function recordFailure(key: string, options: Options, urgent: boolean, rejected = false): void {
   try {
     const previous = readBackoff(key);
-    const backoff: Backoff = { failures: (previous?.failures ?? 0) + 1, lastFailureAt: Date.now(), jitter: Math.random() };
+    const backoff: Backoff = {
+      failures: (previous?.failures ?? 0) + 1, lastFailureAt: Date.now(), jitter: Math.random(),
+      ...(rejected ? { rejected: true } : {}),
+    };
     storage().setItem(key, JSON.stringify(backoff));
     if (options.sessionStore.getAddress()?.toLowerCase() === options.tcw.address()?.toLowerCase()) {
       schedule(key, nextTranscriptAttempt(backoff, urgent), options);
@@ -93,6 +101,11 @@ function recordFailure(key: string, options: Options, urgent: boolean): void {
   } catch {
     // Storage can be disabled; focus remains a retry opportunity.
   }
+}
+
+function definiteRejection(error: unknown): boolean {
+  const status = error && typeof error === "object" && "status" in error ? error.status : undefined;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
 /** Error messages and objects may contain signed capability material. Log only bounded codes. */
@@ -183,7 +196,8 @@ async function underLock(options: Options, address: string, key: string, session
     });
   } catch (error) {
     if (!observed) resolveTranscriptConsentStatus(address, null);
-    recordFailure(key, options, urgent);
+    // A definite rejection (4xx other than 408/429) will not change in five minutes: long cap.
+    recordFailure(key, options, urgent, definiteRejection(error));
     console.warn("[transcript-delegation] silent renewal unavailable", warningCode(error));
     return "unavailable";
   }

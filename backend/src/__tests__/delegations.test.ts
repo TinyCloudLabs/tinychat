@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
+import { activateSessionWithHost } from "@tinycloud/sdk-core";
 import type { StoredDelegation } from "@tinyboilerplate/core";
 import type { DelegationMetadata } from "@tinyboilerplate/server";
 import { APP_ID } from "@tinyboilerplate/core";
@@ -39,6 +40,7 @@ function post(base: string, body: Partial<GrantBody>) {
 }
 
 function appFor(grant: SignedTranscriptGrant, options: {
+  configuredHost?: string;
   address?: string;
   eligible?: boolean;
   eligibility?: (address: string) => boolean;
@@ -76,7 +78,7 @@ function appFor(grant: SignedTranscriptGrant, options: {
   };
   const app = express();
   app.use("/api/delegations", createDelegationRouter({
-    backendDid: grant.backendDid, configuredHost: grant.configuredHost,
+    backendDid: grant.backendDid, configuredHost: options.configuredHost ?? grant.configuredHost,
     eligibility: (address) => options.eligibility?.(address) ?? options.eligible ?? true,
     schemaMissing: () => options.schemaMissing ?? false,
     node, store,
@@ -275,6 +277,27 @@ describe("signed transcript-writer delegation acceptance", () => {
       expect((await post(base, grant)).status).toBe(200);
       expect(await status()).toEqual({ ...active, delivery: "enabled" });
     });
+  });
+
+  it("answers a node-refused activation with a 403 rejection, and a node outage with 503", async () => {
+    for (const [nodeStatus, status, error] of [[401, 403, "delegation_rejected"], [403, 403, "delegation_rejected"], [503, 503, "unavailable"]] as const) {
+      const node = express();
+      node.post("/delegate", (_req, res) => { res.status(nodeStatus).send("refused"); });
+      await withServer(node, async (host) => {
+        const grant = await makeSignedTranscriptGrant({ host: null });
+        // The pinned SDK's activation step, verbatim: its real request and its status-less Error.
+        const fixture = appFor(grant, { configuredHost: host, onActivation: async (dto) => {
+          const result = await activateSessionWithHost(dto.host!, { Authorization: "Bearer invoker-session" });
+          if (!result.success) throw new Error(`Failed to activate delegated session: ${result.error}`);
+        } });
+        await withServer(fixture.app, async (base) => {
+          const response = await post(base, grant);
+          expect({ nodeStatus, status: response.status, body: await response.json() }).toEqual({ nodeStatus, status, body: { error } });
+        });
+        expect(fixture.calls.store).toBe(0);
+        expect(fixture.records.size).toBe(0);
+      });
+    }
   });
 
   it("evicts a stored grant whose signed envelope no longer verifies", async () => {
