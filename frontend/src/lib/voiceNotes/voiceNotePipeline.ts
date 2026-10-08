@@ -2,7 +2,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { assertCurrent, type AccountContext } from "./accountContext";
 import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedger } from "./legacyMigration";
 import { VoiceNotes } from "./nativeVoiceNotes";
-import { saveNoteForAccount } from "./recorderSaves";
+import { isDiscarded, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 
 export interface VoiceNotePipeline {
@@ -41,6 +41,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     check();
     const result = await saveNoteForAccount(tcw, ctx, note, check);
     if (result.kind === "failed") throw new Error(result.failure);
+    if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
   };
   return {
     process(ctx, id) {
@@ -52,8 +53,9 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
       return run(async () => {
         const check = checkFor(ctx, epoch);
         check();
+        let migrationError: unknown;
         try { await migrateLegacyDiscardLedger(undefined, check); }
-        catch (error) { check(); console.warn("[VoiceNotes] legacy discard migration failed; marker retained", error); }
+        catch (error) { check(); migrationError = error; }
         check();
         const gate = await ensureVoiceNoteIdentity(tcw, check);
         if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status });
@@ -63,10 +65,21 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         const notes = markLegacyOwnerUnknown((await VoiceNotes.listPending()).recordings);
         check();
         await associateLegacyNotes(tcw, ctx.did, notes, check);
+        let discardError: unknown;
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
-          if (note.owner === ctx.did && !note.ownerUnknown) await processOne(ctx, note.id, epoch);
+          if (note.owner === ctx.did && !note.ownerUnknown) {
+            try { await processOne(ctx, note.id, epoch); }
+            catch (error) {
+              check();
+              if (!isDiscarded(note.id)) throw error;
+              discardError ??= error;
+            }
+          }
         }
+        if (migrationError) throw Object.assign(new Error(`Voice-note discard migration failed: ${String(migrationError)}`),
+          { code: "discard_migration_failed", cause: migrationError });
+        if (discardError) throw discardError;
       });
     },
     cancelAll() { cancellation++; },

@@ -132,7 +132,7 @@ else test("voice-note identity gate repairs a failed unique index, then create, 
   expect((await ensureVoiceNoteIdentity(oldSession as never)).status).toBe("needs_authorization");
 }, 120_000);
 
-if (host) test("two SDK sessions reconcile different observed sets without losing the live row", async () => {
+if (host) test("two SDK sessions see different keepers and a stale keeper cannot archive a live row", async () => {
   const credentials = { privateKey: `0x${randomBytes(32).toString("hex")}`,
     prefix: `exo-t18-race-${randomBytes(5).toString("hex")}` };
   const first = await signedIn(manifest, credentials);
@@ -157,13 +157,13 @@ if (host) test("two SDK sessions reconcile different observed sets without losin
   const observed = new Promise<void>((resolve) => { reached = resolve; });
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  let archived!: () => void;
-  const atArchive = new Promise<void>((resolve) => { archived = resolve; });
+  let guardedSkips = 0;
   first.sql.db = ((name: string) => {
     const database = originalDb(name);
     return { execute: async (statement: string, params: unknown[] = []) => {
       const result = await database.execute(statement, params as never[]);
-      if (statement.includes("SET source = 'exo-voice-note-dup'") && params[2] === "race-c") archived();
+      if (statement.includes("SET source = 'exo-voice-note-dup'") && params[2] === "race-c"
+        && result.ok && result.data.changes === 0) guardedSkips++;
       return result;
     }, query: async (statement: string, params: unknown[] = []) => {
       const result = await database.query(statement, params as never[]);
@@ -176,12 +176,20 @@ if (host) test("two SDK sessions reconcile different observed sets without losin
       return result;
     } };
   }) as typeof first.sql.db;
-  const a = reconcileDuplicates(first as never);
+  const a = reconcileDuplicates(first as never, undefined, false);
   await observed;
   await seed(second, "race-a", "race", JSON.stringify({ note: "a" }));
+  // This independent session archives the old keeper while the first client still holds its
+  // observed (race-b, race-c) group. Its pending attempt on race-c must change zero rows.
+  await run(second, `UPDATE connector_meeting SET source = 'exo-voice-note-dup',
+    metadata = json_set(COALESCE(metadata,'{}'), '$.dup_of', 'race-a', '$.archived_at', ?)
+    WHERE id = 'race-b' AND source = 'exo-voice-note'`, [new Date().toISOString()]);
   release();
-  await atArchive;
-  await Promise.all([a, reconcileDuplicates(second as never)]);
+  await a;
+  expect(guardedSkips).toBe(1);
+  expect(await select(second, "SELECT id FROM connector_meeting WHERE id = 'race-c' AND source = 'exo-voice-note'"))
+    .toEqual([["race-c"]]);
+  await reconcileDuplicates(second as never);
   expect(observedFirst).toEqual([["race", "race-b"]]);
   expect(observedSecond).toEqual([["race", "race-a"]]);
   expect(await select(second, "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = 'race'"))

@@ -123,7 +123,8 @@ describe("voice-note identity and transcript authority", () => {
     const originalDb = tcw.sql.db.bind(tcw.sql);
     tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) =>
       statement.includes("CREATE TABLE IF NOT EXISTS voice_note_transcript")
-        ? { ok: false, error: { code: "SQL_ERROR", message: "StorageWouldGrow: space full" } }
+        ? { ok: false, error: { code: "NETWORK_ERROR", message: "Storage quota exceeded. Used: 1048576. Limit: 1048576.",
+          meta: { status: 402 } } }
         : originalDb(name).execute(statement, params as never[]),
     })) as typeof tcw.sql.db;
     expect(await ensureVoiceNoteIdentity(tcw)).toMatchObject({ status: "storage_full",
@@ -433,6 +434,49 @@ test("a stale checkpoint prevents queued create and archive sweep SQL", async ()
   } finally { release(); }
 });
 
+test("a cancelled schema caller does not cancel another caller's bootstrap", async () => {
+  const { tcw } = space();
+  const originalDb = tcw.sql.db.bind(tcw.sql);
+  let entered!: () => void;
+  const atProbe = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void;
+  const probeGate = new Promise<void>((resolve) => { release = resolve; });
+  tcw.sql.db = ((name: string) => ({ ...originalDb(name), query: async (statement: string, params: unknown[] = []) => {
+    if (statement.includes("FROM sqlite_master")) { entered(); await probeGate; }
+    return originalDb(name).query(statement, params as never[]);
+  } })) as typeof tcw.sql.db;
+  let cancelled = false;
+  const first = ensureSchema(tcw, () => { if (cancelled) throw new Error("first caller cancelled"); });
+  await atProbe;
+  const second = ensureSchema(tcw);
+  cancelled = true;
+  release();
+  await expect(first).rejects.toThrow("first caller cancelled");
+  expect((await second).ok).toBe(true);
+});
+
+test("a cancelled identity caller does not cancel another caller's gate", async () => {
+  const { tcw } = space();
+  await ensureSchema(tcw);
+  const originalDb = tcw.sql.db.bind(tcw.sql);
+  let entered!: () => void;
+  const atDDL = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void;
+  const ddlGate = new Promise<void>((resolve) => { release = resolve; });
+  tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) => {
+    if (statement.startsWith("CREATE TABLE IF NOT EXISTS voice_note_transcript")) { entered(); await ddlGate; }
+    return originalDb(name).execute(statement, params as never[]);
+  } })) as typeof tcw.sql.db;
+  let cancelled = false;
+  const first = ensureVoiceNoteIdentity(tcw, () => { if (cancelled) throw new Error("first caller cancelled"); });
+  await atDDL;
+  const second = ensureVoiceNoteIdentity(tcw);
+  cancelled = true;
+  release();
+  await expect(first).rejects.toThrow("first caller cancelled");
+  expect((await second).status).toBe("established");
+});
+
 test("a malformed old discard marker stays available for repair while owned uploads continue", async () => {
   const original = VoiceNotes;
   const storage = globalThis.localStorage;
@@ -445,21 +489,51 @@ test("a malformed old discard marker stays available for repair while owned uplo
   const { tcw, sqlite } = space();
   const fake = createFakeVoiceNotes();
   __setVoiceNotesForTests(fake.plugin, { available: true });
-  const warn = console.warn;
-  const warnings: unknown[][] = [];
-  console.warn = (...args) => { warnings.push(args); };
   try {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
     const { id } = await fake.plugin.start();
     await fake.plugin.stop();
     const pipeline = createVoiceNotePipeline(tcw);
-    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    await expect(pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
+      generation: currentAccountGeneration() })).rejects.toMatchObject({ code: "discard_migration_failed" });
     expect(marker.get("exo.voiceNotes.discarded")).toBe("{broken");
-    expect(warnings.some(([message]) => String(message).includes("discard migration failed"))).toBe(true);
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(id)).toEqual([{ id: `vn-${id}` }]);
   } finally {
-    console.warn = warn;
+    __setVoiceNotesForTests(original, { available: null });
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  }
+});
+
+test("a discarded note cannot upload when discard migration cannot delete its audio", async () => {
+  const original = VoiceNotes;
+  const storage = globalThis.localStorage;
+  const marker = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => marker.get(key) ?? null,
+    setItem: (key: string, value: string) => void marker.set(key, value),
+    removeItem: (key: string) => void marker.delete(key),
+  } });
+  const { tcw, sqlite } = space();
+  await ensureSchema(tcw);
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const { id: keptId } = await fake.plugin.start();
+    await fake.plugin.stop();
+    marker.set("exo.voiceNotes.discarded", JSON.stringify([id]));
+    fake.plugin.deleteAudio = async () => { throw Object.assign(new Error("io"), { code: "io_error" }); };
+    await expect(createVoiceNotePipeline(tcw).reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
+      generation: currentAccountGeneration() })).rejects.toMatchObject({ code: "discard_migration_failed" });
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(id)).toEqual([]);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(keptId))
+      .toEqual([{ id: `vn-${keptId}` }]);
+    expect(marker.get("exo.voiceNotes.discarded")).toBe(JSON.stringify([id]));
+  } finally {
     __setVoiceNotesForTests(original, { available: null });
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
   }

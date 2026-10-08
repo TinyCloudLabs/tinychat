@@ -51,7 +51,8 @@ function identityFailure(e: unknown): IdentityResult {
     return { status: "storage_full", reason: "Your TinyCloud storage is full; this note remains on your phone" };
   return { status: "retry", reason: String(e) };
 }
-const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult> }>();
+const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult>;
+  checkpoints: Set<() => void> }>();
 const identityReady = new WeakMap<TinyCloudWeb, string>();
 function identityKey(tcw: TinyCloudWeb): string { return JSON.stringify([tcw.did, tcw.spaceId]); }
 
@@ -61,11 +62,23 @@ export function ensureVoiceNoteIdentity(tcw: TinyCloudWeb, checkpoint: () => voi
   const key = identityKey(tcw);
   if (identityReady.get(tcw) === key) return Promise.resolve({ status: "established" });
   const existing = identityInFlight.get(tcw);
-  if (existing?.key === key) return existing.promise.then((result) => { checkpoint(); return result; });
-  const pending = establish(tcw, key, checkpoint).finally(() => {
+  if (existing?.key === key) {
+    existing.checkpoints.add(checkpoint);
+    return existing.promise.then((result) => { checkpoint(); return result; });
+  }
+  const checkpoints = new Set([checkpoint]);
+  const checkCallers = () => {
+    let cancelled: unknown;
+    for (const check of checkpoints) {
+      try { check(); return; }
+      catch (error) { cancelled = error; checkpoints.delete(check); }
+    }
+    throw cancelled ?? new Error("Voice-note identity has no active caller");
+  };
+  const pending = establish(tcw, key, checkCallers).finally(() => {
     if (identityInFlight.get(tcw)?.promise === pending) identityInFlight.delete(tcw);
   });
-  identityInFlight.set(tcw, { key, promise: pending });
+  identityInFlight.set(tcw, { key, promise: pending, checkpoints });
   return pending.then((result) => { checkpoint(); return result; });
 }
 async function establish(tcw: TinyCloudWeb, key: string, checkpoint: () => void): Promise<IdentityResult> {

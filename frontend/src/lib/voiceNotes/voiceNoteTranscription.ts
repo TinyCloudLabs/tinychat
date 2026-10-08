@@ -47,6 +47,7 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { nativeHttpFileUploadSupported, VoiceNotes } from "./nativeVoiceNotes";
+import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   MAX_ENCODED_BYTES_PER_SECOND,
   prepareTranscriptionAudio,
@@ -827,12 +828,18 @@ export async function transcribeVoiceNote(args: {
     return note.data.transcript.status;
   }
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
-  if (!nativeNote?.ledger || !Number.isSafeInteger(nativeNote.ledger.transcriptSync.rev))
-    throw new PrivateCloudError("transcript_save_failed", "The phone's transcript revision is unavailable");
-  if (nativeNote.owner !== tcw.did || nativeNote.ownerUnknown)
+  if (nativeNote?.owner && nativeNote.owner !== tcw.did)
     throw new PrivateCloudError("transcript_save_failed", "This voice note is not owned by the current account");
-  const local = (await VoiceNotes.getTranscript({ id: sourceId })).transcript;
-  const rev = Math.max(nativeNote.ledger.transcriptSync.rev, local?.rev ?? 0) + 1;
+  const local = nativeNote ? (await VoiceNotes.getTranscript({ id: sourceId })).transcript : null;
+  const commit = await readTranscriptCommit(tcw, sourceId);
+  const ledgerRev = nativeNote?.ledger?.transcriptSync.rev ?? 0;
+  const localRev = local?.rev ?? 0;
+  if (![commit?.rev ?? 0, ledgerRev, localRev].every((value) => Number.isSafeInteger(value) && value >= 0))
+    throw new PrivateCloudError("transcript_save_failed", "The voice note has an invalid transcript revision");
+  const rev = Math.max(commit?.rev ?? 0, ledgerRev, localRev) + 1;
+  if (!Number.isSafeInteger(rev))
+    throw new PrivateCloudError("transcript_save_failed", "The voice note has no remaining transcript revisions");
+  // T22 writes the committed rev and hash back to native transcriptSync after this cloud save.
 
   const loadAudio = async (): Promise<VoiceNoteAudio> => {
     if (args.audio) return args.audio;

@@ -268,6 +268,7 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
   check();
+  if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
   if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) return { kind: "held", reason: "other-account" };
   if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
   if (!recording.owner) return { kind: "held", reason: "unowned" };

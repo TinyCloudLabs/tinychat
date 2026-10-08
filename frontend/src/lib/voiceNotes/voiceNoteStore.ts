@@ -370,7 +370,8 @@ export async function saveVoiceNoteTranscript(
       provider: typeof m.transcript_provider === "string" ? m.transcript_provider : null,
       model: typeof m.model === "string" ? m.model : null,
       language: typeof m.language === "string" ? m.language : null,
-      speakerLabels: m.speaker_labels == null ? null : Boolean(m.speaker_labels) && m.speaker_labels !== "none",
+      speakerLabels: m.speaker_labels == null ? null
+        : ["diarized", "channels", "channel-you-others"].includes(String(m.speaker_labels)),
       participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
     });

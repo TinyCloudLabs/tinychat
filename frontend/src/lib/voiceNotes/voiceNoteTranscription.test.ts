@@ -687,6 +687,7 @@ function sqliteSpace() {
     }
   };
   return {
+    sqlite,
     kv,
     tcw: {
       did: "did:test:voice",
@@ -737,6 +738,44 @@ describe("transcribeVoiceNote (one note end to end)", () => {
     expect(h.calls).toEqual([]);
   });
 
+  test("Library Transcribe saves other-device and old random-id notes absent from this phone", async () => {
+    for (const rowId of ["vn-rec-1", "older-random-row"]) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+      if (rowId !== "vn-rec-1") space.sqlite.query("UPDATE connector_meeting SET id = ? WHERE id = 'vn-rec-1'").run(rowId);
+      VoiceNotes.listPending = async () => ({ recordings: [] });
+      VoiceNotes.getTranscript = async () => { throw new Error("No phone transcript read expected"); };
+      const h = harness({});
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect(h.creates).toHaveLength(1);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
+    }
+  });
+
+  test("a claimed iOS v1 phone copy without a ledger can be transcribed", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, version: 1,
+      owner: "did:test:voice", ownerUnknown: false } as never] });
+    const h = harness({});
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+      sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+  });
+
+  test("only diarizing metadata sets the commit's speaker-label flag", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    for (const [index, label] of ["single-speaker", "diarized", "channels", "channel-you-others", "none"].entries()) {
+      const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", index + 1);
+      prepared.metadata.speaker_labels = label;
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+      expect((await readTranscriptCommit(space.tcw, "rec-1"))?.speakerLabels).toBe(index > 0 && index < 4);
+    }
+  });
+
   test("the transcript lands on the note's transcript key and row, then the PTX job is deleted", async () => {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
@@ -750,7 +789,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       now: () => new Date("2026-10-03T10:00:00.000Z"),
     });
     expect(outcome).toBe("transcribed");
-    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: true });
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
     expect(JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1")) as string)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
     ]);

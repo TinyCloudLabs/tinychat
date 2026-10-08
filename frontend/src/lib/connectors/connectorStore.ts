@@ -138,7 +138,8 @@ function cellNum(row: unknown[], idx: number, fallback: number | null): number |
 // ── Schema bootstrap (memoized per space, keyed by tcw.did) ─────────────
 
 const schemaReadySpaces = new Set<string>();
-const schemaInFlight = new Map<string, Promise<StoreResult<void>>>();
+type SchemaFlight = { promise: Promise<StoreResult<void>>; checkpoints: Set<() => void> };
+const schemaInFlight = new Map<string, SchemaFlight>();
 
 /** For tests only — clear the per-process memo between cases. */
 export function _resetConnectorSchemaMemoForTests(): void {
@@ -155,12 +156,27 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
   if (memoKey && schemaReadySpaces.has(memoKey)) return { ok: true, data: undefined };
 
   const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
-  if (inFlight) { const result = await inFlight; checkpoint(); return result; }
+  if (inFlight) {
+    inFlight.checkpoints.add(checkpoint);
+    const result = await inFlight.promise;
+    checkpoint();
+    return result;
+  }
+
+  const checkpoints = new Set([checkpoint]);
+  const checkCallers = () => {
+    let cancelled: unknown;
+    for (const check of checkpoints) {
+      try { check(); return; }
+      catch (error) { cancelled = error; checkpoints.delete(check); }
+    }
+    throw cancelled ?? new Error("Schema bootstrap has no active caller");
+  };
 
   const run = (async (): Promise<StoreResult<void>> => {
     const db = store(tcw);
     const tables = SCHEMA.map(({ table }) => table);
-    checkpoint();
+    checkCallers();
     const existingResult = await db.query(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
       tables,
@@ -170,20 +186,24 @@ export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = (
     const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
     for (const { sql, table } of SCHEMA) {
       if (existing.has(table)) continue;
-      checkpoint();
+      checkCallers();
       const created = await db.execute(sql);
       if (!created.ok) return fail(created.error, `ensureSchema(${table})`);
     }
-    checkpoint();
+    checkCallers();
     if (memoKey) schemaReadySpaces.add(memoKey);
     return { ok: true, data: undefined };
   })();
 
   if (memoKey) {
-    schemaInFlight.set(memoKey, run);
-    void run.catch(() => {}).finally(() => schemaInFlight.delete(memoKey));
+    schemaInFlight.set(memoKey, { promise: run, checkpoints });
+    void run.catch(() => {}).finally(() => {
+      if (schemaInFlight.get(memoKey)?.promise === run) schemaInFlight.delete(memoKey);
+    });
   }
-  return run;
+  const result = await run;
+  checkpoint();
+  return result;
 }
 
 // ── Connector state ─────────────────────────────────────────────────────
