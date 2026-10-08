@@ -65,7 +65,7 @@ describe("delegation app parser ordering", () => {
     { name: "address excluded from the enabled cohort", eligibility: (address: string) => address === "0x0000000000000000000000000000000000000001", status: 403, error: "delivery_disabled" },
     { name: "eligible address", eligibility: (address: string) => address === ADDRESS, status: 400, error: "invalid_body" },
   ]) {
-    for (const path of ["/api/delegations", "/API/Delegations", "/aPi/DeLeGaTiOnS/", "/API/Delegations/?source=browser"]) {
+    for (const path of ["/api/delegations", "/API/Delegations", "/aPi/DeLeGaTiOnS/", "/API/Delegations/?source=browser", "/api/delegations//", "/API/DELEGATIONS//", "/api/delegations//?source=browser", "//api/delegations", "/api/./delegations/"]) {
       it(`${name}: ${path} gates before malformed JSON parsing`, async () => {
         const fixture = appWithEligibility(eligibility);
         await withServer(fixture.app, async (base) => {
@@ -82,6 +82,24 @@ describe("delegation app parser ordering", () => {
       });
     }
   }
+
+  // Express routes `/api/delegations//` to the POST handler (path-to-regexp's optional trailing
+  // slash), so the global parser must skip it too; `///` is not routed but is not read either.
+  it("leaves an unrouted repeated-slash POST unread while the flag is off", async () => {
+    for (const path of ["/api/delegations///", "/API/Delegations////"]) {
+      const fixture = appWithEligibility(() => false);
+      await withServer(fixture.app, async (base) => {
+        const response = await fetch(`${base}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-requested-with": "XMLHttpRequest" },
+          body: '{"serialized":',
+        });
+        expect(response.status).toBe(404);
+      });
+      expect(fixture.bodiesBeforeCsrf).toEqual([undefined]);
+      expect(fixture.calls).toEqual({ verify: 0, activate: 0, store: 0, load: 0 });
+    }
+  });
 
   it("the equivalent mixed-case POST retains the 96kb route limit", async () => {
     const fixture = appWithEligibility(() => true);
