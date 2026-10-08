@@ -10,6 +10,8 @@ import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
 import { currentAccountGeneration } from "./accountContext";
+import { runOnSpaceLane } from "../spaceWriteLane";
+import { associateLegacyNotes, markLegacyOwnerUnknown } from "./legacyMigration";
 
 let count = 0;
 function space() {
@@ -115,6 +117,18 @@ describe("voice-note identity and transcript authority", () => {
     expect((await ensureVoiceNoteIdentity(b.tcw)).status).toBe("blocked");
     expect(constraints).toBe(3);
   });
+  test("a full space leaves the note local with a specific identity state", async () => {
+    const { tcw } = space();
+    await ensureSchema(tcw);
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), execute: async (statement: string, params: unknown[] = []) =>
+      statement.includes("CREATE TABLE IF NOT EXISTS voice_note_transcript")
+        ? { ok: false, error: { code: "SQL_ERROR", message: "StorageWouldGrow: space full" } }
+        : originalDb(name).execute(statement, params as never[]),
+    })) as typeof tcw.sql.db;
+    expect(await ensureVoiceNoteIdentity(tcw)).toMatchObject({ status: "storage_full",
+      reason: expect.stringContaining("storage is full") });
+  });
 
   test("archives existing duplicates, keeps one live row and rejects late random-id inserts", async () => {
     const { tcw, sqlite } = space();
@@ -134,6 +148,27 @@ describe("voice-note identity and transcript authority", () => {
     expect(sqlite.query("SELECT id FROM connector_meeting WHERE source = 'exo-voice-note-dup' ORDER BY id").all())
       .toEqual([{ id: "b" }, { id: "c" }]);
     expect(row(sqlite, "b").metadata.note).toBe("b");
+  });
+  test("a legacy write to the keeper between sweep group reads keeps the newer transcript", async () => {
+    const { tcw, sqlite } = space();
+    await ensureSchema(tcw);
+    insert(sqlite, "a", "rec"); insert(sqlite, "b", "rec");
+    expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+    sqlite.prepare("UPDATE connector_meeting SET metadata = ?, updated_at = 't3' WHERE id = 'b'").run(JSON.stringify({
+      transcription_outcome: "transcribed", transcript_text: "T3 words", transcribed_at: "2026-03-01T00:00:00.000Z",
+    }));
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    let groupReads = 0;
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name), query: async (statement: string, params: unknown[] = []) => {
+      if (statement.includes("SELECT id, source, metadata, updated_at") && ++groupReads === 2) {
+        sqlite.prepare("UPDATE connector_meeting SET metadata = ?, updated_at = 't9' WHERE id = 'a'").run(JSON.stringify({
+          transcription_outcome: "transcribed", transcript_text: "T9 newest words", transcribed_at: "2026-09-01T00:00:00.000Z",
+        }));
+      }
+      return originalDb(name).query(statement, params as never[]);
+    } })) as typeof tcw.sql.db;
+    await sweepArchived(tcw);
+    expect(row(sqlite, "a").metadata.transcript_text).toBe("T9 newest words");
   });
   test("immutable bodies, CAS order, and commit survive old row and fixed-key writes", async () => {
     const { tcw, sqlite, values } = space();
@@ -273,5 +308,159 @@ test("cancelAll stops an upload at its next KV checkpoint and quiescent waits", 
     expect([...values.keys()].some((key) => key.endsWith("/manifest"))).toBe(false);
   } finally {
     __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
+test("a user-choice claimed legacy note uploads once and keeps its owner", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const legacy = { id: "chosen-legacy", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true };
+    fake.controls.commitLegacy(legacy);
+    await fake.plugin.claim({ id: legacy.id, did: tcw.did, evidence: "user_choice" });
+    const owned = (await fake.plugin.listPending()).recordings[0]!;
+    expect(markLegacyOwnerUnknown([owned])[0]?.owner).toBe(tcw.did);
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    await pipeline.process(ctx, legacy.id);
+    await pipeline.process(ctx, legacy.id);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = 'chosen-legacy'").all())
+      .toEqual([{ id: "vn-chosen-legacy" }]);
+    expect((await fake.plugin.listPending()).recordings[0]?.ledger?.audio.state).toBe("saved");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("a legacy owner mismatch is reported per note and another owned note still reconciles", async () => {
+  const original = VoiceNotes;
+  const { tcw, sqlite } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    const legacy = { id: "belongs-to-a", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+      silencedMs: 0, silencedEvents: 0, noSignalMs: 0, version: 1 as const, legacyImport: true };
+    fake.controls.commitLegacy(legacy);
+    const stale = (await fake.plugin.listPending()).recordings[0]!;
+    await fake.plugin.claim({ id: legacy.id, did: "did:other", evidence: "user_choice" });
+    await ensureSchema(tcw);
+    insert(sqlite, "other-row", legacy.id);
+    const warnings: unknown[][] = [];
+    const warn = console.warn;
+    console.warn = (...args) => { warnings.push(args); };
+    try { expect(await associateLegacyNotes(tcw, tcw.did, [stale])).toEqual([]); }
+    finally { console.warn = warn; }
+    expect(warnings.some(([message]) => String(message).includes("another account"))).toBe(true);
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const realList = fake.plugin.listPending.bind(fake.plugin);
+    let staleOnce = true;
+    fake.plugin.listPending = async () => {
+      const result = await realList();
+      if (!staleOnce) return result;
+      staleOnce = false;
+      return { recordings: result.recordings.map((note) => note.id === legacy.id ? stale : note) };
+    };
+    const pipeline = createVoiceNotePipeline(tcw);
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(id)).toEqual([{ id: `vn-${id}` }]);
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === legacy.id)?.owner).toBe("did:other");
+  } finally { __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("cancelAll prevents queued identity SQL from reaching the space", async () => {
+  const original = VoiceNotes;
+  const { tcw } = space();
+  await ensureSchema(tcw);
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const atLane = new Promise<void>((resolve) => { entered = resolve; });
+  const occupying = runOnSpaceLane(async () => { entered(); await blocked; });
+  try {
+    await atLane;
+    let calls = 0;
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name),
+      query: async (statement: string, params: unknown[] = []) => { calls++; return originalDb(name).query(statement, params as never[]); },
+      execute: async (statement: string, params: unknown[] = []) => { calls++; return originalDb(name).execute(statement, params as never[]); },
+    })) as typeof tcw.sql.db;
+    const pipeline = createVoiceNotePipeline(tcw);
+    const ctx = { did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() };
+    const job = pipeline.process(ctx, "missing");
+    await Promise.resolve();
+    pipeline.cancelAll();
+    release();
+    await expect(job).rejects.toThrow();
+    await occupying;
+    expect(calls).toBe(0);
+  } finally { release(); __setVoiceNotesForTests(original, { available: null }); }
+});
+
+test("a stale checkpoint prevents queued create and archive sweep SQL", async () => {
+  const { tcw } = space();
+  await ensureSchema(tcw);
+  expect((await ensureVoiceNoteIdentity(tcw)).status).toBe("established");
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const atLane = new Promise<void>((resolve) => { entered = resolve; });
+  const occupying = runOnSpaceLane(async () => { entered(); await blocked; });
+  try {
+    await atLane;
+    let calls = 0;
+    const originalDb = tcw.sql.db.bind(tcw.sql);
+    tcw.sql.db = ((name: string) => ({ ...originalDb(name),
+      query: async (statement: string, params: unknown[] = []) => { calls++; return originalDb(name).query(statement, params as never[]); },
+      execute: async (statement: string, params: unknown[] = []) => { calls++; return originalDb(name).execute(statement, params as never[]); },
+    })) as typeof tcw.sql.db;
+    let current = true;
+    const checkpoint = () => { if (!current) throw new Error("cancelled"); };
+    const create = createVoiceNoteRow(tcw, { id: "queued", startedAt: 0, durationMs: 1000,
+      mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0 }, "Queued", checkpoint);
+    const sweep = sweepArchived(tcw, checkpoint);
+    await Promise.resolve();
+    current = false;
+    release();
+    expect((await Promise.allSettled([create, sweep])).map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    await occupying;
+    expect(calls).toBe(0);
+  } finally { release(); }
+});
+
+test("a malformed old discard marker stays available for repair while owned uploads continue", async () => {
+  const original = VoiceNotes;
+  const storage = globalThis.localStorage;
+  const marker = new Map([["exo.voiceNotes.discarded", "{broken"]]);
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => marker.get(key) ?? null,
+    setItem: (key: string, value: string) => void marker.set(key, value),
+    removeItem: (key: string) => void marker.delete(key),
+  } });
+  const { tcw, sqlite } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const warn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args) => { warnings.push(args); };
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const { id } = await fake.plugin.start();
+    await fake.plugin.stop();
+    const pipeline = createVoiceNotePipeline(tcw);
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() });
+    expect(marker.get("exo.voiceNotes.discarded")).toBe("{broken");
+    expect(warnings.some(([message]) => String(message).includes("discard migration failed"))).toBe(true);
+    expect(sqlite.query("SELECT id FROM connector_meeting WHERE source_id = ?").all(id)).toEqual([{ id: `vn-${id}` }]);
+  } finally {
+    console.warn = warn;
+    __setVoiceNotesForTests(original, { available: null });
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
   }
 });

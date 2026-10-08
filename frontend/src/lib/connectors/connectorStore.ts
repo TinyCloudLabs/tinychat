@@ -146,7 +146,8 @@ export function _resetConnectorSchemaMemoForTests(): void {
   schemaInFlight.clear();
 }
 
-export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+export async function ensureSchema(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<StoreResult<void>> {
+  checkpoint();
   const did = typeof tcw.did === "string" && tcw.did.length > 0 ? tcw.did : null;
   const space =
     typeof tcw.spaceId === "string" && tcw.spaceId.length > 0 ? tcw.spaceId : null;
@@ -154,11 +155,12 @@ export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>
   if (memoKey && schemaReadySpaces.has(memoKey)) return { ok: true, data: undefined };
 
   const inFlight = memoKey ? schemaInFlight.get(memoKey) : undefined;
-  if (inFlight) return inFlight;
+  if (inFlight) { const result = await inFlight; checkpoint(); return result; }
 
   const run = (async (): Promise<StoreResult<void>> => {
     const db = store(tcw);
     const tables = SCHEMA.map(({ table }) => table);
+    checkpoint();
     const existingResult = await db.query(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
       tables,
@@ -168,9 +170,11 @@ export async function ensureSchema(tcw: TinyCloudWeb): Promise<StoreResult<void>
     const existing = new Set(existingRows.map((row) => row[0]).filter((name): name is string => typeof name === "string"));
     for (const { sql, table } of SCHEMA) {
       if (existing.has(table)) continue;
+      checkpoint();
       const created = await db.execute(sql);
       if (!created.ok) return fail(created.error, `ensureSchema(${table})`);
     }
+    checkpoint();
     if (memoKey) schemaReadySpaces.add(memoKey);
     return { ok: true, data: undefined };
   })();

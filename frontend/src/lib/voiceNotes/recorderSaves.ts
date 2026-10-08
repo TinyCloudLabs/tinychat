@@ -203,7 +203,7 @@ export async function saveRecording(
   // Discarded (a pending run, the limit's "autoStopped" or a relaunch met it): deleted, never
   // saved. Before the cloudSaved path, so a discarded note marked as in the space loses both marks.
   if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
-  if (recording.ownerUnknown || recording.version !== 2) return { kind: "held", reason: "legacy" };
+  if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
   if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
@@ -232,7 +232,7 @@ export async function saveRecording(
     cloudSaved.add(recording.id);
     persistCloudSaved();
     let cleanupError: string | null = null;
-    if (recording.version === 2 && recording.owner) {
+    if (recording.owner) {
       try {
         const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
         try {
@@ -240,7 +240,7 @@ export async function saveRecording(
         } catch (caught) {
           if (errorCode(caught) !== "rev_conflict") throw caught;
           const fresh = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
-          if (!fresh || fresh.version !== 2 || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
+          if (!fresh || isLegacyNote(fresh) || fresh.owner !== recording.owner || fresh.rev === undefined) throw caught;
           if (fresh.ledger?.audio?.state !== "saved") {
             await VoiceNotes.updateLedger({ id: recording.id, did: recording.owner, rev: fresh.rev, patch });
           }

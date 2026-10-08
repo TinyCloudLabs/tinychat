@@ -46,7 +46,7 @@ import {
   type PrivateCloudTranscript,
   type PtxPutResponse,
 } from "../privateCloud";
-import { nativeHttpFileUploadSupported } from "./nativeVoiceNotes";
+import { nativeHttpFileUploadSupported, VoiceNotes } from "./nativeVoiceNotes";
 import {
   MAX_ENCODED_BYTES_PER_SECOND,
   prepareTranscriptionAudio,
@@ -260,10 +260,11 @@ function engineMetadata(transcribedAt: string) {
 }
 
 /** The transcript as it is saved onto the note. No sentences = the no-speech outcome. */
-export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string): VoiceNoteTranscriptSave {
+export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, transcribedAt: string, rev: number): VoiceNoteTranscriptSave {
   const sentences = voiceNoteSentences(transcript);
-  if (sentences.length === 0) return noSpeechTranscript(transcribedAt);
+  if (sentences.length === 0) return noSpeechTranscript(transcribedAt, rev);
   return {
+    rev,
     sentences,
     speakers: [VOICE_NOTE_SPEAKER],
     metadata: {
@@ -280,11 +281,13 @@ export function prepareVoiceNoteTranscript(transcript: PrivateCloudTranscript, t
 }
 
 /** PTX found no speech: recorded on the note so it is not offered again. */
-export function noSpeechTranscript(transcribedAt: string): VoiceNoteTranscriptSave {
+export function noSpeechTranscript(transcribedAt: string, rev: number): VoiceNoteTranscriptSave {
   return {
+    rev,
     sentences: [],
     speakers: [],
-    metadata: { ...engineMetadata(transcribedAt), transcript_text: null, transcription_outcome: "no_speech" },
+    metadata: { ...engineMetadata(transcribedAt), transcript_text: null, transcription_outcome: "no_speech",
+      speaker_labels: "none" },
   };
 }
 
@@ -823,6 +826,13 @@ export async function transcribeVoiceNote(args: {
     await finish();
     return note.data.transcript.status;
   }
+  const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+  if (!nativeNote?.ledger || !Number.isSafeInteger(nativeNote.ledger.transcriptSync.rev))
+    throw new PrivateCloudError("transcript_save_failed", "The phone's transcript revision is unavailable");
+  if (nativeNote.owner !== tcw.did || nativeNote.ownerUnknown)
+    throw new PrivateCloudError("transcript_save_failed", "This voice note is not owned by the current account");
+  const local = (await VoiceNotes.getTranscript({ id: sourceId })).transcript;
+  const rev = Math.max(nativeNote.ledger.transcriptSync.rev, local?.rev ?? 0) + 1;
 
   const loadAudio = async (): Promise<VoiceNoteAudio> => {
     if (args.audio) return args.audio;
@@ -855,11 +865,11 @@ export async function transcribeVoiceNote(args: {
   } catch (err) {
     if (voiceNoteErrorCode(err) !== "no_speech") throw err;
     // Silence is an outcome, not a failure: recorded so the note is not offered again.
-    await save(noSpeechTranscript(transcribedAt()));
+    await save(noSpeechTranscript(transcribedAt(), rev));
     await finish(err instanceof PrivateCloudError ? err.transcriptionId : null);
     return "no_speech";
   }
-  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt());
+  const prepared = prepareVoiceNoteTranscript(transcript, transcribedAt(), rev);
   try {
     await save(prepared);
   } catch (err) {

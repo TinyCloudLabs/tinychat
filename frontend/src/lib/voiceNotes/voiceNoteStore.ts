@@ -236,10 +236,10 @@ export async function saveVoiceNote(
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
   try {
     opts.checkpoint?.();
-    const before = await ensureVoiceNoteIdentity(tcw);
+    const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
     if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status } };
     opts.checkpoint?.();
-    const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt));
+    const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
     opts.checkpoint?.();
     const empty = await runOnSpaceLane(() => { opts.checkpoint?.(); return tcw.kv.put(transcriptKvKey(VOICE_NOTE_SOURCE, recording.id), "[]",
       { ifNoneMatch: "*", contentType: "application/json" }); });
@@ -327,7 +327,7 @@ export async function readVoiceNoteForTranscription(
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
 export interface VoiceNoteTranscriptSave {
-  rev?: number;
+  rev: number;
   /** Empty when no speech was found: the transcript key stays `[]`. */
   sentences: FirefliesSentence[];
   /** Merged into the row's metadata (engine, provider, model, transcript_text, ...). */
@@ -346,6 +346,8 @@ export async function saveVoiceNoteTranscript(
   sourceId: string,
   transcript: VoiceNoteTranscriptSave,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
+    return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const existing = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
@@ -361,14 +363,15 @@ export async function saveVoiceNoteTranscript(
   try {
     const m = transcript.metadata;
     await commitVoiceNoteTranscript(tcw, sourceId, {
-      rev: transcript.rev ?? Date.now(), sentences: transcript.sentences,
+      rev: transcript.rev, sentences: transcript.sentences,
       outcome: m.transcription_outcome === "no_speech" ? "no_speech" : "transcribed",
       text: typeof m.transcript_text === "string" ? m.transcript_text : null,
       engine: typeof m.transcription_engine === "string" ? m.transcription_engine : null,
       provider: typeof m.transcript_provider === "string" ? m.transcript_provider : null,
       model: typeof m.model === "string" ? m.model : null,
       language: typeof m.language === "string" ? m.language : null,
-      speakerLabels: transcript.speakers.length > 1, participants: transcript.speakers,
+      speakerLabels: m.speaker_labels == null ? null : Boolean(m.speaker_labels) && m.speaker_labels !== "none",
+      participants: transcript.speakers,
       transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
     });
     return { ok: true, data: { id: String(existing.data.rows[0]?.[0]), inserted: false,

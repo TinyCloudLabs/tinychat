@@ -363,10 +363,18 @@ describe("listVoiceNotes", () => {
 
 describe("saveVoiceNoteTranscript", () => {
   const prepared = {
+    rev: 1,
     sentences: [{ index: 0, speaker_name: "You", text: "Book the venue.", start_time: 0, end_time: 3 }],
     speakers: ["You"],
     metadata: { transcription_engine: "private-cloud", transcript_text: "Book the venue." },
   };
+
+  test("requires a ledger revision before any storage call", async () => {
+    const { tcw, calls } = fakeSpace();
+    const result = await saveVoiceNoteTranscript(tcw, "rec", { ...prepared, rev: undefined as never });
+    expect(result).toMatchObject({ ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED" } });
+    expect(calls).toEqual([]);
+  });
 
   test("refuses a note that no longer exists instead of creating a row without audio", async () => {
     const { tcw, calls } = fakeSpace();

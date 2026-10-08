@@ -4,10 +4,12 @@ The voice-note identity gate creates `voice_note_transcript` and then the partia
 
 ## Live node verification
 
-Node checkout: `/Users/samgbafa/.paseo/worktrees/2astgp1k/legal-panther/repositories/tinycloud-node`, commit `458137c`.
+The live test uses production-line `tinycloud-node-server` 1.19.2 at commit `a10b235`.
 
 ```sh
-N=/Users/samgbafa/.paseo/worktrees/2astgp1k/legal-panther/repositories/tinycloud-node
+NODE_REPO=/Users/samgbafa/.paseo/worktrees/2astgp1k/legal-panther/repositories/tinycloud-node
+git -C "$NODE_REPO" worktree add --detach /tmp/exo-t18-node-prod a10b235
+N=/tmp/exo-t18-node-prod
 # The checkout's unpinned LocalStack image now requires a license token. For
 # this local run, keep the checkout unchanged and pin the community image:
 cat > /tmp/exo-t18-localstack.override.yml <<'YAML'
@@ -26,9 +28,11 @@ TINYCLOUD_HOST=http://localhost:8000 bun test test/storage/voice-note-identity.l
 docker compose -f "$N/test/docker-compose.yml" -f /tmp/exo-t18-localstack.override.yml down -v
 ```
 
-The test signs in a throwaway key with this repo's `manifest.json`, then checks duplicate archival, the normalized table/index schema, rejected `PRAGMA`, a late duplicate insert, commit CAS order, discovery, and a second session whose connector grant lacks `schema`.
+The test signs in throwaway keys with this repo's `manifest.json`. It observes the identity gate's failed unique-index DDL on seeded duplicates, then checks archival and `merged_at`, the normalized table/index schema, rejected `PRAGMA`, a unique-constraint late insert, idempotent `vn-` and old random-id creates, the audio JSON patch, commit CAS order, positive legacy and committed discovery, and a session without `schema`. A second space runs reconcilers through separate SDK sessions with different observed keeper sets.
 
-Result on node checkout `458137c`: **1 pass, 0 fail, 17 assertions** (`/tmp/exo-t18-v-node-postmemo.log`; rerun after the final identity-memo change). The signed test confirmed both DDL definitions, rejected `PRAGMA`, duplicate archival and a concurrent reconcile, the partial index's rejection of a late insert, commit CAS including equal revisions, discovery with read authority, and `needs_authorization` without the schema grant. The first build ran out of Docker image space while extracting LocalStack; `docker builder prune -f` reclaimed 16.97 GB of build cache. The unpinned `localstack/localstack:latest` then exited with code 55 because it required `LOCALSTACK_AUTH_TOKEN`. The temporary pin to `4.14.0` and manual bucket creation above let the node start. Neither change was made to the sibling checkout.
+Result at `a10b235` (`tinycloud-node-server` 1.19.2): `2 pass, 0 fail, 39 expect() calls` in `/tmp/exo-t18-v-node-prod-r2.log`. The SDK emitted a non-fatal account-registry 404 warning during one throwaway sign-in; both SQL/KV test cases passed. The first live attempt had `1 pass, 1 fail` because the test's observed-set recorder overwrote its first snapshot with a later empty result; the corrected rerun is the result above.
+
+The transcript commit table is authoritative. The fixed transcript key and `connector_meeting` transcript metadata are legacy mirrors, and writes from two devices can leave a mirror on an older revision. Readers follow the committed body key. The identity layer classifies a full-space growth rejection as `storage_full` (unit tested); the recording stays on the phone for retry after space is freed.
 
 ## Device gate G2 (pending release of the Moto)
 

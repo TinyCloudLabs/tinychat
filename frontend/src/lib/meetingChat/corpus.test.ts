@@ -278,6 +278,17 @@ describe("SQL meeting metadata discovery", () => {
       expect.objectContaining({ hasLocalTranscript: true, localRowId: "row-v" }),
     );
   });
+  test("a versioned transcript body key never becomes a meeting candidate", async () => {
+    const source = VOICE_NOTE_SOURCE;
+    const kv = new DiscoveryKv(async ({ path }) => ({ ok: true, data: {
+      keys: path.endsWith("/transcript/")
+        ? [`${path}real-note`, `${CONNECTORS_KV_PREFIX}/${source}/transcript-rev/ghost/hash`]
+        : [],
+    } }));
+    const result = await discoverKvMeetings(fakeKvTcw(kv), source);
+    expect(result.candidates.map((candidate) => candidate.sourceId)).toEqual(["real-note"]);
+    expect(result.candidates.some((candidate) => candidate.sourceId.includes("transcript-rev"))).toBe(false);
+  });
 });
 
 describe("server meeting metadata discovery", () => {

@@ -34,8 +34,11 @@ export const LEGACY_WINNER_SQL_ORDER = "ORDER BY COALESCE(json_extract(g.metadat
 
 const formatKnown = new WeakMap<object, boolean>();
 /** Recheck until found: an older space may gain the table during this session. */
-export async function hasTranscriptCommitTable(tcw: Pick<TinyCloudWeb, "sql">): Promise<boolean> {
+export async function hasTranscriptCommitTable(tcw: Pick<TinyCloudWeb, "sql">,
+  checkpoint: () => void = () => undefined): Promise<boolean> {
+  checkpoint();
   if (formatKnown.get(tcw)) return true;
+  checkpoint();
   const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
     "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'voice_note_transcript'", [],
   );
@@ -45,8 +48,10 @@ export async function hasTranscriptCommitTable(tcw: Pick<TinyCloudWeb, "sql">): 
   return found;
 }
 
-export async function readTranscriptCommit(tcw: Pick<TinyCloudWeb, "sql">, sourceId: string): Promise<TranscriptCommit | null> {
-  if (!await hasTranscriptCommitTable(tcw)) return null;
+export async function readTranscriptCommit(tcw: Pick<TinyCloudWeb, "sql">, sourceId: string,
+  checkpoint: () => void = () => undefined): Promise<TranscriptCommit | null> {
+  if (!await hasTranscriptCommitTable(tcw, checkpoint)) return null;
+  checkpoint();
   const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
     `SELECT source_id, rev, hash, body_key, outcome, preview, engine, provider, model, language,
             speaker_labels, participants, transcribed_at FROM voice_note_transcript WHERE source_id = ?`, [sourceId],

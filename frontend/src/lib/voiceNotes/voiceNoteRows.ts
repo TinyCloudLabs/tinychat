@@ -10,7 +10,7 @@ export const TRANSCRIPT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS voice_note_trans
   outcome TEXT NOT NULL, preview TEXT, engine TEXT, provider TEXT, model TEXT, language TEXT,
   speaker_labels INTEGER, participants TEXT, transcribed_at TEXT, committed_at TEXT NOT NULL)`;
 export const VOICE_NOTE_INDEX_DDL = "CREATE UNIQUE INDEX IF NOT EXISTS uq_connector_meeting_voice_note ON connector_meeting(source_id) WHERE source = 'exo-voice-note'";
-export type VoiceNoteIdentity = "established" | "needs_authorization" | "blocked" | "retry";
+export type VoiceNoteIdentity = "established" | "needs_authorization" | "blocked" | "retry" | "storage_full";
 export interface IdentityResult { status: VoiceNoteIdentity; reason?: string }
 
 function db(tcw: TinyCloudWeb) { return tcw.sql.db(CONNECTORS_SQL_DB_NAME); }
@@ -20,8 +20,8 @@ function errorOf(result: { ok: boolean; error?: { code?: string; message?: strin
     code: e?.code ?? "STORE_ERROR", meta: e?.meta, requiredAction: e?.requiredAction,
   });
 }
-async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = []): Promise<unknown[][]> {
-  const result = await runOnSpaceLane(() => db(tcw).query(sql, params as never[]));
+async function query(tcw: TinyCloudWeb, sql: string, params: unknown[] = [], checkpoint: () => void = () => undefined): Promise<unknown[][]> {
+  const result = await runOnSpaceLane(() => { checkpoint(); return db(tcw).query(sql, params as never[]); });
   if (!result.ok) throw errorOf(result);
   return result.data.rows as unknown[][];
 }
@@ -44,49 +44,55 @@ function isConstraint(e: unknown): boolean {
   const x = e as { code?: string; message?: string };
   return /UNIQUE|CONSTRAINT/i.test(`${x.code ?? ""} ${x.message ?? ""}`);
 }
+function identityFailure(e: unknown): IdentityResult {
+  if (isAuthorization(e)) return { status: "needs_authorization", reason: String(e) };
+  const detail = `${(e as { code?: string }).code ?? ""} ${(e as { message?: string }).message ?? ""}`;
+  if (/QUOTA|STORAGE.*(FULL|GROW)|SPACE.*FULL/i.test(detail))
+    return { status: "storage_full", reason: "Your TinyCloud storage is full; this note remains on your phone" };
+  return { status: "retry", reason: String(e) };
+}
 const identityInFlight = new WeakMap<TinyCloudWeb, { key: string; promise: Promise<IdentityResult> }>();
 const identityReady = new WeakMap<TinyCloudWeb, string>();
 function identityKey(tcw: TinyCloudWeb): string { return JSON.stringify([tcw.did, tcw.spaceId]); }
 
 /** DDL requires the manifest's schema grant; an older delegation is a sign-in state. */
-export function ensureVoiceNoteIdentity(tcw: TinyCloudWeb): Promise<IdentityResult> {
+export function ensureVoiceNoteIdentity(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<IdentityResult> {
+  checkpoint();
   const key = identityKey(tcw);
   if (identityReady.get(tcw) === key) return Promise.resolve({ status: "established" });
   const existing = identityInFlight.get(tcw);
-  if (existing?.key === key) return existing.promise;
-  const pending = establish(tcw, key).finally(() => {
+  if (existing?.key === key) return existing.promise.then((result) => { checkpoint(); return result; });
+  const pending = establish(tcw, key, checkpoint).finally(() => {
     if (identityInFlight.get(tcw)?.promise === pending) identityInFlight.delete(tcw);
   });
   identityInFlight.set(tcw, { key, promise: pending });
-  return pending;
+  return pending.then((result) => { checkpoint(); return result; });
 }
-async function establish(tcw: TinyCloudWeb, key: string): Promise<IdentityResult> {
+async function establish(tcw: TinyCloudWeb, key: string, checkpoint: () => void): Promise<IdentityResult> {
   let schema: Awaited<ReturnType<typeof ensureSchema>>;
-  try { schema = await ensureSchema(tcw); }
-  catch (e) { return { status: isAuthorization(e) ? "needs_authorization" : "retry", reason: String(e) }; }
-  if (!schema.ok) return { status: isAuthorization(schema.error) ? "needs_authorization" : "retry", reason: schema.error.message };
+  try { schema = await ensureSchema(tcw, checkpoint); checkpoint(); }
+  catch (e) { return identityFailure(e); }
+  if (!schema.ok) return identityFailure(schema.error);
   for (let round = 0; round < 3; round++) {
     try {
-      await execute(tcw, TRANSCRIPT_TABLE_DDL);
-      await execute(tcw, VOICE_NOTE_INDEX_DDL);
+      await execute(tcw, TRANSCRIPT_TABLE_DDL, [], checkpoint);
+      await execute(tcw, VOICE_NOTE_INDEX_DDL, [], checkpoint);
       const definitions = await query(tcw,
-        "SELECT type, name, sql FROM sqlite_schema WHERE name IN ('voice_note_transcript', 'uq_connector_meeting_voice_note')");
+        "SELECT type, name, sql FROM sqlite_schema WHERE name IN ('voice_note_transcript', 'uq_connector_meeting_voice_note')", [], checkpoint);
       const wanted = new Map([["voice_note_transcript", ["table", TRANSCRIPT_TABLE_DDL]],
         ["uq_connector_meeting_voice_note", ["index", VOICE_NOTE_INDEX_DDL]]]);
       if (definitions.length !== 2 || definitions.some(([type, name, sql]) => {
         const expected = wanted.get(String(name));
         return !expected || type !== expected[0] || normalizedStoredDDL(String(sql)) !== normalizedStoredDDL(expected[1]);
       })) return { status: "blocked", reason: "Unexpected voice-note schema definition" };
-      await sweepArchived(tcw);
+      await sweepArchived(tcw, checkpoint);
       if (identityKey(tcw) !== key) return { status: "retry", reason: "Voice-note space changed during identity check" };
       identityReady.set(tcw, key);
       return { status: "established" };
     } catch (e) {
-      if (isAuthorization(e)) return { status: "needs_authorization", reason: String(e) };
-      if (!isConstraint(e)) return { status: "retry", reason: String(e) };
-      try { await reconcileDuplicates(tcw); }
-      catch (reconcileError) { return { status: isAuthorization(reconcileError) ? "needs_authorization" : "retry",
-        reason: String(reconcileError) }; }
+      if (!isConstraint(e)) return identityFailure(e);
+      try { await reconcileDuplicates(tcw, checkpoint); }
+      catch (reconcileError) { return identityFailure(reconcileError); }
       if (round === 2) return { status: "blocked", reason: "Voice-note duplicates persisted after three archive rounds" };
     }
   }
@@ -94,22 +100,22 @@ async function establish(tcw: TinyCloudWeb, key: string): Promise<IdentityResult
 }
 
 /** Archive only a row whose observed keeper is still live. */
-export async function reconcileDuplicates(tcw: TinyCloudWeb): Promise<void> {
+export async function reconcileDuplicates(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined, sweep = true): Promise<void> {
   const groups = await query(tcw, `SELECT source_id, MIN(id) AS keeper FROM connector_meeting
-    WHERE source = 'exo-voice-note' GROUP BY source_id HAVING COUNT(*) > 1`);
+    WHERE source = 'exo-voice-note' GROUP BY source_id HAVING COUNT(*) > 1`, [], checkpoint);
   for (const [sourceId, keeper] of groups) {
-    const rows = await query(tcw, "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? ORDER BY id", [sourceId]);
+    const rows = await query(tcw, "SELECT id FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? ORDER BY id", [sourceId], checkpoint);
     for (const [id] of rows) {
       if (id === keeper) continue;
       const changes = await execute(tcw, `UPDATE connector_meeting
         SET source = 'exo-voice-note-dup', metadata = json_set(COALESCE(metadata,'{}'), '$.dup_of', ?, '$.archived_at', ?)
         WHERE id = ? AND source = 'exo-voice-note'
           AND EXISTS (SELECT 1 FROM connector_meeting k WHERE k.id = ? AND k.source = 'exo-voice-note')`,
-      [keeper, new Date().toISOString(), id, keeper]);
+      [keeper, new Date().toISOString(), id, keeper], checkpoint);
       if (changes) console.info("[VoiceNotes] archived duplicate", { sourceId, id });
     }
   }
-  await sweepArchived(tcw);
+  if (sweep) await sweepArchived(tcw, checkpoint);
 }
 
 type GroupRow = { id: string; source: string; metadata: Record<string, unknown>; updatedAt: string; title: string | null;
@@ -118,9 +124,9 @@ function parseMetadata(raw: unknown): Record<string, unknown> {
   if (typeof raw !== "string") return raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; }
 }
-async function group(tcw: TinyCloudWeb, sourceId: string): Promise<GroupRow[]> {
+async function group(tcw: TinyCloudWeb, sourceId: string, checkpoint: () => void = () => undefined): Promise<GroupRow[]> {
   const rows = await query(tcw, `SELECT id, source, metadata, updated_at, title, started_at, duration_secs, participants
-    FROM connector_meeting WHERE source_id = ? AND source IN ('exo-voice-note', 'exo-voice-note-dup')`, [sourceId]);
+    FROM connector_meeting WHERE source_id = ? AND source IN ('exo-voice-note', 'exo-voice-note-dup')`, [sourceId], checkpoint);
   return rows.map((r) => ({ id: String(r[0]), source: String(r[1]), metadata: parseMetadata(r[2]), updatedAt: String(r[3]),
     title: r[4] as string | null, startedAt: r[5] as string | null, durationSecs: r[6] as number | null,
     participants: r[7] as string | null }));
@@ -135,11 +141,11 @@ function sameLegacy(a: Record<string, unknown>, b: Record<string, unknown>): boo
 /** Space-wide: repairs late writes even when this device has no sidecar. */
 export async function sweepArchived(tcw: TinyCloudWeb, checkpoint: () => void = () => undefined): Promise<void> {
   checkpoint();
-  const groups = await query(tcw, "SELECT DISTINCT source_id FROM connector_meeting WHERE source = 'exo-voice-note-dup'");
+  const groups = await query(tcw, "SELECT DISTINCT source_id FROM connector_meeting WHERE source = 'exo-voice-note-dup'", [], checkpoint);
   for (const [sourceId] of groups) {
     checkpoint();
-    const rows = await group(tcw, String(sourceId));
-    if (rows.filter((r) => r.source === "exo-voice-note").length > 1) { await reconcileDuplicates(tcw); continue; }
+    const rows = await group(tcw, String(sourceId), checkpoint);
+    if (rows.filter((r) => r.source === "exo-voice-note").length > 1) { await reconcileDuplicates(tcw, checkpoint, false); continue; }
     const keeper = rows.find((r) => r.source === "exo-voice-note");
     if (!keeper) continue;
     const archived = rows.filter((r) => r.source === "exo-voice-note-dup");
@@ -154,37 +160,40 @@ export async function sweepArchived(tcw: TinyCloudWeb, checkpoint: () => void = 
         started_at = COALESCE(started_at, (SELECT started_at FROM connector_meeting WHERE id = ?)),
         duration_secs = COALESCE(duration_secs, (SELECT duration_secs FROM connector_meeting WHERE id = ?)),
         participants = CASE WHEN COALESCE(participants,'[]') = '[]' THEN (SELECT participants FROM connector_meeting WHERE id = ?) ELSE participants END
-        WHERE id = ? AND source = 'exo-voice-note'`, [row.id, row.id, row.id, row.id, row.id, keeper.id]);
+        WHERE id = ? AND source = 'exo-voice-note'`, [row.id, row.id, row.id, row.id, row.id, keeper.id], checkpoint);
     }
-    const commit = await runOnSpaceLane(() => readTranscriptCommit(tcw, String(sourceId)));
-    checkpoint();
-    const winner = legacyTranscriptWinner(rows);
-    const current = (await group(tcw, String(sourceId))).find((r) => r.source === "exo-voice-note");
+    const commit = await runOnSpaceLane(() => { checkpoint(); return readTranscriptCommit(tcw, String(sourceId), checkpoint); });
+    const currentRows = await group(tcw, String(sourceId), checkpoint);
+    const winner = legacyTranscriptWinner(currentRows);
+    const current = currentRows.find((r) => r.source === "exo-voice-note");
     if (!current) continue;
     if (!commit && winner && !sameLegacy(current.metadata, winner.metadata)) {
       checkpoint();
       await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
         WHERE id = ? AND source = 'exo-voice-note' AND updated_at = ?`,
-      [JSON.stringify(legacyGroup(winner.metadata)), new Date().toISOString(), keeper.id, current.updatedAt]);
+      [JSON.stringify(legacyGroup(winner.metadata)), new Date().toISOString(), keeper.id, current.updatedAt], checkpoint);
     }
-    const reread = (await group(tcw, String(sourceId))).find((r) => r.source === "exo-voice-note");
-    if (!reread || (!commit && winner && !sameLegacy(reread.metadata, winner.metadata))) continue;
+    const afterRows = await group(tcw, String(sourceId), checkpoint);
+    const after = afterRows.find((r) => r.source === "exo-voice-note");
+    const afterWinner = legacyTranscriptWinner(afterRows);
+    if (!after || (!commit && afterWinner && !sameLegacy(after.metadata, afterWinner.metadata))) continue;
     for (const row of dirty) {
       checkpoint();
       await execute(tcw, `UPDATE connector_meeting SET metadata = json_set(metadata, '$.merged_at', updated_at)
-        WHERE id = ? AND source = 'exo-voice-note-dup' AND updated_at = ?`, [row.id, row.updatedAt]);
+        WHERE id = ? AND source = 'exo-voice-note-dup' AND updated_at = ?`, [row.id, row.updatedAt], checkpoint);
     }
   }
 }
 
 export interface VoiceNoteRow { id: string; sourceId: string; metadata: Record<string, unknown>; createdAt: string }
-export async function resolveVoiceNoteRow(tcw: TinyCloudWeb, sourceId: string): Promise<VoiceNoteRow | null> {
-  const rows = await query(tcw, "SELECT id, source_id, metadata, created_at FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [sourceId]);
+export async function resolveVoiceNoteRow(tcw: TinyCloudWeb, sourceId: string, checkpoint: () => void = () => undefined): Promise<VoiceNoteRow | null> {
+  const rows = await query(tcw, "SELECT id, source_id, metadata, created_at FROM connector_meeting WHERE source = 'exo-voice-note' AND source_id = ? LIMIT 1", [sourceId], checkpoint);
   const r = rows[0];
   return r ? { id: String(r[0]), sourceId: String(r[1]), metadata: parseMetadata(r[2]), createdAt: String(r[3]) } : null;
 }
-export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNoteRecording, title: string): Promise<VoiceNoteRow & { inserted: boolean }> {
-  const identity = await ensureVoiceNoteIdentity(tcw);
+export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNoteRecording, title: string,
+  checkpoint: () => void = () => undefined): Promise<VoiceNoteRow & { inserted: boolean }> {
+  const identity = await ensureVoiceNoteIdentity(tcw, checkpoint);
   if (identity.status !== "established") throw Object.assign(new Error(identity.reason ?? identity.status), { code: identity.status });
   const now = new Date().toISOString();
   const changes = await execute(tcw, `INSERT INTO connector_meeting
@@ -192,14 +201,14 @@ export async function createVoiceNoteRow(tcw: TinyCloudWeb, recording: VoiceNote
      summary_action_items, keywords, meeting_type, metadata, created_at, updated_at)
     VALUES (?, 'exo-voice-note', ?, ?, ?, ?, NULL, '[]', NULL, NULL, NULL, NULL, '{}', ?, ?)
     ON CONFLICT DO NOTHING`, [`vn-${recording.id}`, recording.id, title, new Date(recording.startedAt).toISOString(),
-    Math.round(recording.durationMs / 1000), now, now]);
-  const row = await resolveVoiceNoteRow(tcw, recording.id);
+    Math.round(recording.durationMs / 1000), now, now], checkpoint);
+  const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("The voice-note identity index was established but its row is missing");
   return { ...row, inserted: changes > 0 };
 }
 export async function patchVoiceNoteAudio(tcw: TinyCloudWeb, recording: VoiceNoteRecording, platform: string,
   audio: { base: string; mimeType: string; size: number; parts: number }, checkpoint: () => void = () => undefined): Promise<VoiceNoteRow> {
-  const row = await resolveVoiceNoteRow(tcw, recording.id);
+  const row = await resolveVoiceNoteRow(tcw, recording.id, checkpoint);
   if (!row) throw new Error("Voice note row is missing");
   checkpoint();
   await execute(tcw, `UPDATE connector_meeting SET metadata = json_patch(COALESCE(metadata,'{}'), ?), updated_at = ?
@@ -255,7 +264,7 @@ export async function commitVoiceNoteTranscript(tcw: TinyCloudWeb, sourceId: str
     input.transcribedAt ?? new Date().toISOString(), new Date().toISOString()]);
   const committed = await verifyVoiceNoteTranscript(tcw, sourceId, input.rev, hash);
   const mirror = { ...legacyGroup(input.metadata ?? {}), transcript_text: input.outcome === "transcribed" ? input.text : null,
-    transcription_outcome: input.outcome, speaker_labels: input.speakerLabels ?? null,
+    transcription_outcome: input.outcome, speaker_labels: input.metadata?.speaker_labels ?? input.speakerLabels ?? null,
     transcribed_at: input.transcribedAt ?? new Date().toISOString(), transcription_engine: input.engine ?? null,
     transcript_provider: input.provider ?? null, model: input.model ?? null, language: input.language ?? null };
   if (committed.rev === input.rev && committed.hash === hash) {

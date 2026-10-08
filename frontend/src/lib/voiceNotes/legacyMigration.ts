@@ -19,16 +19,18 @@ export async function migrateLegacyDiscardLedger(storage: Pick<Storage, "getItem
     checkpoint();
     await VoiceNotes.deleteAudio({ id });
   }
+  checkpoint();
   storage?.removeItem(LEGACY_DISCARD_KEY);
 }
 
+/** A legacy format needs owner evidence only until native claim records an owner. */
 export function isLegacyNote(note: VoiceNoteRecording): boolean {
-  return note.version !== 2 || note.ownerUnknown === true || note.legacyImport === true;
+  return note.ownerUnknown === true || ((note.version !== 2 || note.legacyImport === true) && !note.owner);
 }
 
-/** An old sidecar's owner field is never claim evidence, even after localStorage loss. */
+/** Keep native claims; only ownerless legacy notes await space-row or user evidence. */
 export function markLegacyOwnerUnknown(notes: readonly VoiceNoteRecording[]): VoiceNoteRecording[] {
-  return notes.map((note) => isLegacyNote(note)
+  return notes.map((note) => isLegacyNote(note) && !note.owner
     ? { ...note, ownerUnknown: true, owner: null } : note);
 }
 
@@ -45,8 +47,13 @@ export async function associateLegacyNotes(tcw: TinyCloudWeb, did: string,
     const id = found.data.rows[0]?.[0];
     if (typeof id !== "string") continue;
     checkpoint();
-    await VoiceNotes.claim({ id: note.id, did, evidence: "space_row", rowId: id });
-    associated.push(note.id);
+    try {
+      await VoiceNotes.claim({ id: note.id, did, evidence: "space_row", rowId: id });
+      associated.push(note.id);
+    } catch (error) {
+      if ((error as { code?: string }).code !== "owner_mismatch") throw error;
+      console.warn("[VoiceNotes] legacy note belongs to another account", { id: note.id, did });
+    }
   }
   return associated;
 }

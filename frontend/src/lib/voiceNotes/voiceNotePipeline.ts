@@ -7,6 +7,7 @@ import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
 
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string): Promise<void>;
+  /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
   reconcileAll(ctx: AccountContext): Promise<void>;
   cancelAll(): void;
   quiescent(timeoutMs: number): Promise<boolean>;
@@ -30,7 +31,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
   const processOne = async (ctx: AccountContext, id: string, epoch: number) => {
     const check = checkFor(ctx, epoch);
     check();
-    const gate = await ensureVoiceNoteIdentity(tcw);
+    const gate = await ensureVoiceNoteIdentity(tcw, check);
     if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status });
     check();
     await sweepArchived(tcw, check);
@@ -51,9 +52,10 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
       return run(async () => {
         const check = checkFor(ctx, epoch);
         check();
-        await migrateLegacyDiscardLedger(undefined, check);
+        try { await migrateLegacyDiscardLedger(undefined, check); }
+        catch (error) { check(); console.warn("[VoiceNotes] legacy discard migration failed; marker retained", error); }
         check();
-        const gate = await ensureVoiceNoteIdentity(tcw);
+        const gate = await ensureVoiceNoteIdentity(tcw, check);
         if (gate.status !== "established") throw Object.assign(new Error(gate.reason ?? gate.status), { code: gate.status });
         check();
         await sweepArchived(tcw, check);
@@ -63,7 +65,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         await associateLegacyNotes(tcw, ctx.did, notes, check);
         for (const note of [...notes].sort((a, b) => a.startedAt - b.startedAt)) {
           check();
-          if (note.version === 2 && !note.ownerUnknown && note.owner === ctx.did) await processOne(ctx, note.id, epoch);
+          if (note.owner === ctx.did && !note.ownerUnknown) await processOne(ctx, note.id, epoch);
         }
       });
     },
