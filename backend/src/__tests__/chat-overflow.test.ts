@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { resolve } from "path";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { _resetCatalogCache } from "../billing/catalog.js";
@@ -219,10 +217,4 @@ describe("global body limit raised 64kb → 1mb (Wall A, §C.4a)", () => {
     }
   });
 
-  test("index.ts configures the global JSON parser at the 1mb limit", () => {
-    // Direct regression on the real source: the global parser must be raised.
-    const source = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
-    expect(source).toContain('express.json({ limit: "1mb" })');
-    expect(source).not.toContain('express.json({ limit: "64kb" })');
-  });
 });

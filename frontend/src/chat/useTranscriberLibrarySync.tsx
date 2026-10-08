@@ -5,9 +5,11 @@ import { createTranscriberClient, type TranscriberClient, type TranscriberMeetin
 import { listSavedTranscriberMeetingIds, saveTranscriberMeeting } from "@/lib/transcriberSave";
 import { isSecretsUnlocked, onSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
 import { enqueueDrainWork } from "./useBackgroundDrain";
+import { serverDeliveryActive } from "@/lib/transcriptDeliveryState";
 
 export type TranscriberSaveState = "saving" | "saved" | "error";
 export const TRANSCRIBER_LIBRARY_RETRY_MS = 30_000;
+const SERVER_DELIVERY_GRACE_MS = 10 * 60_000;
 const SavedContext = createContext<Readonly<Record<string, TranscriberSaveState>>>({});
 export const useTranscriberSavedState = () => useContext(SavedContext);
 
@@ -24,8 +26,11 @@ export async function syncTranscriberLibrary(input: {
   saver?: TranscriberLibrarySaver;
   isCurrent?: () => boolean;
   onState?: (id: string, state: TranscriberSaveState) => void;
+  deliveryActive?: () => boolean;
+  now?: () => number;
 }): Promise<void> {
-  const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {} } = input;
+  const { tcw, client, saver = defaultSaver, isCurrent = () => true, onState = () => {},
+    deliveryActive = serverDeliveryActive, now = Date.now } = input;
   if (!isCurrent()) return;
   const listed = await client.list();
   if (listed.status !== "ok" || !isCurrent()) return;
@@ -36,6 +41,11 @@ export async function syncTranscriberLibrary(input: {
     if (!isCurrent()) return;
     if ("unavailable" in row || row.status !== "completed") continue;
     if (saved.has(row.id)) { onState(row.id, "saved"); continue; }
+    const completedAt = Date.parse(row.completed_at ?? row.ended_at ?? "");
+    if (deliveryActive() && Number.isFinite(completedAt) && now() - completedAt < SERVER_DELIVERY_GRACE_MS) {
+      onState(row.id, "saving");
+      continue;
+    }
     onState(row.id, "saving");
     try {
       const result = await client.transcript(row.id);

@@ -1,12 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
 
 import {
   TranscriptionApiError,
+  computeCreateRequestHash,
   type TranscriptionApiClient,
   type TranscriptionMeeting,
 } from "../services/transcription-api.js";
-import type { TranscriberIndexStore } from "../services/transcriber-index.js";
+import {
+  resolvePendingCreates,
+  TooManyPendingCreatesError,
+  type TranscriberIndexStore,
+} from "../services/transcriber-index.js";
 import { redactedErrorMessage } from "../services/webhook-tokens.js";
 
 /**
@@ -31,9 +37,12 @@ export interface TranscriberRouterOptions {
   index: TranscriberIndexStore;
   /** Bot display name when the caller does not give one. */
   defaultBotName?: string;
+  /** Omit when server delivery is disabled. */
+  webhookUrl?: string;
+  onCompleted?: (address: string, meetingId: string) => Promise<void>;
 }
 
-const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_URL_LENGTH = 2048;
 const MAX_BOT_NAME_LENGTH = 64;
 const LIST_CONCURRENCY = 8;
@@ -111,6 +120,13 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
   router.get("/", async (req, res) => {
     const address = addressOf(req, res);
     if (address === null) return;
+    try {
+      await resolvePendingCreates(address, api, index);
+    } catch (error) {
+      console.warn(`[transcriber] index recovery failed err=${redactedErrorMessage(error)}`);
+      res.status(503).json({ error: "transcriber_unavailable" });
+      return;
+    }
     const owner: string = address;
     let ids: string[];
     try {
@@ -131,7 +147,12 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         const i = cursor++;
         const id = ids[i]!;
         try {
-          meetings[i] = await api.getMeeting(id);
+          const meeting = await api.getMeeting(id);
+          meetings[i] = meeting;
+          if (meeting.status === "completed") {
+            try { await options.onCompleted?.(owner, id); }
+            catch { console.warn("[transcriber] completion wake failed"); }
+          }
         } catch (error) {
           if (error instanceof TranscriptionApiError && error.status === 404) {
             // Gone upstream (deleted out of band): drop it from the index rather than
@@ -167,35 +188,63 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
       typeof body.language === "string" && /^[a-z]{2}(-[A-Za-z]{2})?$/.test(body.language)
         ? body.language
         : undefined;
+    const createBody = {
+      meeting_url: body.meeting_url,
+      bot_name: botName,
+      ...(language ? { language } : {}),
+      ...(options.webhookUrl ? { webhook_url: options.webhookUrl } : {}),
+      metadata: { tinychat_address: address },
+    };
+
+    const key = `manual-v1-${randomUUID()}`;
+    const intent = { key, hash: computeCreateRequestHash(createBody), createdAt: Date.now() };
+    try {
+      await index.beginCreate(address, intent);
+    } catch (error) {
+      if (error instanceof TooManyPendingCreatesError) {
+        res.status(429).json({ error: "too_many_pending_creates" });
+        return;
+      }
+      console.warn(`[transcriber] index begin failed err=${redactedErrorMessage(error)}`);
+      res.status(503).json({ error: "transcriber_unavailable" });
+      return;
+    }
 
     let meeting: TranscriptionMeeting;
     try {
-      meeting = await api.createMeeting({
-        meeting_url: body.meeting_url,
-        bot_name: botName,
-        ...(language ? { language } : {}),
-        // Opaque, echoed back on every read; lets an operator attribute a meeting to a tenant.
-        metadata: { tinychat_address: address },
-      });
+      meeting = await api.createMeeting(createBody, { idempotencyKey: key });
     } catch (error) {
+      if (error instanceof TranscriptionApiError && error.status >= 400
+        && error.status < 500 && error.status !== 429) {
+        try {
+          await index.abandonCreate(address, key);
+        } catch {
+          // Recovery will later see the missing idempotency key and clear the intent.
+        }
+      }
       upstreamFailure(res, error, "create");
       return;
     }
+
     if (typeof meeting?.id !== "string" || !MEETING_ID_RE.test(meeting.id)) {
+      // The durable intent stays available for a verified idempotency lookup during recovery.
       console.warn("[transcriber] create returned an unusable id");
       res.status(502).json({ error: "transcriber_bad_response" });
       return;
     }
     try {
-      await index.add(address, meeting.id);
+      await index.completeCreate(address, key, meeting.id);
     } catch (error) {
-      // The bot is already on its way; the caller must not think it is not. Best effort to
-      // undo upstream so the meeting does not become an orphan nobody can see.
       console.warn(`[transcriber] index write failed err=${redactedErrorMessage(error)}`);
       try {
         await api.deleteMeeting(meeting.id);
+        try {
+          await index.abandonCreate(address, key);
+        } catch {
+          // A subsequent lookup sees 404 and abandons after the grace period.
+        }
       } catch {
-        /* best effort */
+        // Deletion failed: retain the durable intent so the bot remains discoverable.
       }
       res.status(503).json({ error: "transcriber_unavailable" });
       return;

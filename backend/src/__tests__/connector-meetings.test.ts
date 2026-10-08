@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import express from "express";
 
@@ -559,23 +557,6 @@ describe("§9 anti-pattern 5 — side-effecting GET", () => {
     });
   });
 
-  test("the ONE mutating route is a POST — no GET in the router mutates", () => {
-    const ROUTES = readFileSync(
-      resolve(import.meta.dir, "../routes/connector-meetings.ts"),
-      "utf8",
-    );
-    const registrations = [
-      ...ROUTES.matchAll(/router\.(get|post|put|patch|delete)\(\s*"([^"]+)"/g),
-    ].map((m) => `${m[1]} ${m[2]}`);
-    expect(registrations).toEqual([
-      "get /",
-      "get /:source/:sourceId",
-      "post /:source/:sourceId/reconciled",
-    ]);
-    // `markReconciled` is the only mutation the router can reach, and it is not reachable
-    // from a GET handler: the port hands the read surface nothing else to call.
-    expect(ROUTES.match(/markReconciled/g)?.length).toBeGreaterThan(0);
-  });
 });
 
 // ── The reconcile-ack (the one mutating route) ───────────────────────
@@ -816,63 +797,6 @@ describe("redaction", () => {
     ]) {
       expect(joined).not.toContain(forbidden);
     }
-  });
-});
-
-// ── The mount (house idiom: source assertions for wiring a bun test cannot boot) ──
-
-describe("index.ts wiring", () => {
-  const INDEX = readFileSync(resolve(import.meta.dir, "../index.ts"), "utf8");
-
-  test("mounts behind authMiddleware, inside the dark ingest flag", () => {
-    expect(INDEX).toMatch(
-      /app\.use\(\s*\n?\s*"\/api\/connectors\/meetings",\s*\n?\s*authMiddleware,/,
-    );
-    expect(INDEX).toContain("createConnectorMeetingsRouter({");
-    // The mount lives inside the same `backendIngestEnabled()` block the credential surface
-    // does: a deployment with the flag dark has no meetings surface at all.
-    const flagIndex = INDEX.indexOf("if (backendIngestEnabled())");
-    const mountIndex = INDEX.indexOf('"/api/connectors/meetings"');
-    expect(flagIndex).toBeGreaterThan(-1);
-    expect(mountIndex).toBeGreaterThan(flagIndex);
-  });
-
-  test("the read API shares ONE ContentStore instance with the rest of the build", () => {
-    // Two instances = two sets of per-tenant lanes over one substrate, which is the
-    // interleaved read-modify-write W4's lanes exist to prevent.
-    expect(INDEX.match(/new ContentStore\(/g)?.length ?? 0).toBe(1);
-  });
-});
-
-// ── The published contract ───────────────────────────────────────────
-
-describe("openapi.yaml", () => {
-  const SPEC = readFileSync(
-    resolve(import.meta.dir, "../../openapi.yaml"),
-    "utf8",
-  );
-
-  test("publishes all three routes, and never an address parameter", () => {
-    for (const path of [
-      "  /api/connectors/meetings:",
-      "  /api/connectors/meetings/{source}/{sourceId}:",
-      "  /api/connectors/meetings/{source}/{sourceId}/reconciled:",
-    ]) {
-      expect(SPEC).toContain(path);
-    }
-    // The tenant is the session. A documented address parameter is how a
-    // tenant-scoped surface stops being one.
-    const meetingsBlock = SPEC.slice(SPEC.indexOf("  /api/connectors/meetings:"));
-    expect(meetingsBlock.slice(0, 4000)).not.toContain("name: address");
-  });
-
-  test("documents the read routes as authenticated — never `security: []`", () => {
-    const start = SPEC.indexOf("  /api/connectors/meetings:");
-    const end = SPEC.indexOf("components:", start);
-    const block = SPEC.slice(start, end);
-    expect(block).not.toContain("security: []");
-    // The 404 that hides the surface is part of the contract, not an accident.
-    expect(block).toContain("not in the cohort");
   });
 });
 

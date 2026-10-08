@@ -1,6 +1,6 @@
 import { isStorageFullError, reportStorageError, storageSaveMessage, trackStorageWrites } from "./storageStatus";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
+import { APP_ID, DEFAULT_CHAT_MODEL } from "@tinyboilerplate/core";
 import type { ExportedMessageRepositoryItem } from "@assistant-ui/react";
 import { historyPrefetch } from "./historyPrefetch";
 import { MEMORY_TEMPLATE } from "./memory";
@@ -27,7 +27,6 @@ import type { CompactionCheckpoint } from "../chat/compaction";
 // space (no backend delegation). Every SQL op returns a Result (never throws);
 // auth failures surface as `error.code === "AUTH_UNAUTHORIZED"`.
 
-export const APP_ID = "xyz.tinycloud.tinychat";
 export const DEFAULT_TITLE = "New chat";
 // New-chat default — the backend's single offered confidential model. Keep it
 // in sync with backend PICKER_MODELS and REDPILL_DEFAULT_MODEL. Response-level

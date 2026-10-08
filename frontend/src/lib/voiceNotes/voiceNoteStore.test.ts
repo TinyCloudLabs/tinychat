@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { _resetConnectorSchemaMemoForTests } from "../connectors/connectorStore";
-import { APP_ID } from "../threadStore";
+import { APP_ID } from "@tinyboilerplate/core";
 import { bytesToBase64 } from "./voiceNoteAudio";
 import { MAX_AUDIO_PART_SIZE, parseAudioManifest } from "../audio/audioStore";
 import {

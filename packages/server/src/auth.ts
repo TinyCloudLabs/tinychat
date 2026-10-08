@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import { SiweMessage } from "siwe";
 import { SignJWT, jwtVerify } from "jose";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -82,28 +83,46 @@ export function createNonceStore(): NonceStore {
 
 // ── SIWE Verification ───────────────────────────────────────────────
 
+export interface VerifiedSiweSession {
+  address: string;
+  chainId: number;
+  uri: string;
+  expirationTime: string;
+  nonce: string;
+}
+
 /**
- * Verify a SIWE message and signature using the `siwe` package.
- * Returns the recovered address and nonce from the message.
+ * Verify a SIWE signature locally, without consulting the login nonce store.
+ * An expired signature is checked at its last valid instant so callers can
+ * distinguish a valid expired session from a forged signature.
  */
+export async function verifySiweSession(
+  message: string,
+  signature: string,
+): Promise<VerifiedSiweSession> {
+  const parsed = new SiweMessage(message);
+  const expiry = Date.parse(parsed.expirationTime ?? "");
+  const time = Number.isFinite(expiry) && expiry <= Date.now()
+    ? new Date(expiry - 1).toISOString() : undefined;
+  const result = await parsed.verify({ signature, ...(time ? { time } : {}) });
+  if (!result.success) throw new Error("SIWE signature verification failed");
+  if (!result.data.expirationTime) throw new Error("SIWE session has no expiration");
+  return {
+    address: result.data.address,
+    chainId: result.data.chainId,
+    uri: result.data.uri,
+    expirationTime: result.data.expirationTime,
+    nonce: result.data.nonce,
+  };
+}
+
 export async function verifySIWE(
   message: string,
   signature: string,
 ): Promise<{ address: string; nonce: string }> {
-  // Dynamic import to avoid requiring siwe at module load time
-  const { SiweMessage } = await import("siwe");
-
-  const siweMessage = new SiweMessage(message);
-  const result = await siweMessage.verify({ signature });
-
-  if (!result.success) {
-    throw new Error("SIWE signature verification failed");
-  }
-
-  return {
-    address: result.data.address,
-    nonce: result.data.nonce,
-  };
+  const { address, nonce, expirationTime } = await verifySiweSession(message, signature);
+  if (Date.parse(expirationTime) <= Date.now()) throw new Error("SIWE session expired");
+  return { address, nonce };
 }
 
 // ── Session Token ───────────────────────────────────────────────────

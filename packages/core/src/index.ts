@@ -1,4 +1,28 @@
 // ── Delegation ───────────────────────────────────────────────────────
+export {
+  APP_ID,
+  CONNECTORS_SQL_DB_NAME,
+  CONNECTORS_KV_PREFIX,
+  CONNECTOR_SCHEMA,
+  TRANSCRIBER_MEETING_SOURCE,
+  TRANSCRIPT_WRITER_POLICY,
+  TRANSCRIPT_WRITER_PERMISSIONS,
+  transcriptKvKey,
+  connectorMeetingId,
+  transcriberMeetingTitle,
+  normalizeTranscriberTranscript,
+  ensureConnectorSchema,
+  writeTranscriberMeeting,
+  transcriberMeetingInSpace,
+  type NormalizedMeeting,
+  type TranscriptSentence,
+  type TranscriberMeetingJson,
+  type TranscriberTranscriptJson,
+  type PortResult,
+  type ConnectorStorePort,
+  type NormalizedTranscriberMeeting,
+  type WrittenTranscriberMeeting,
+} from "./connector-meeting.js";
 
 export type DelegationStatus = "active" | "expired" | "none" | "stale";
 
@@ -88,6 +112,8 @@ export interface DelegatingServerInfo extends ServerInfo {
 export interface DelegationResponse {
   status: DelegationStatus;
   expiresAt: string | null;
+  verified: boolean;
+  delivery: "enabled" | "disabled" | "schema_missing";
 }
 
 export interface ApiError {

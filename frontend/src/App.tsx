@@ -120,6 +120,7 @@ import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
+import { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation } from "./lib/transcriptDelegation";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
 import type { ThreadDoc, StoredMessageItem } from "./lib/threadStore";
 import { useLocalCanvasStorage } from "./lib/conversationCanvasStore";
@@ -319,6 +320,7 @@ export function App() {
           setDid(restored.tcw.did ?? `did:pkh:eip155:1:${restored.address}`);
           setSpaceId(restored.tcw.spaceId ?? null);
           setState("ready");
+          void ensureTranscriptWriterDelegation({ tcw: restored.tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
           return;
         case "unavailable":
           setError(restored.message);
@@ -351,6 +353,20 @@ export function App() {
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
   }, [state, restoreSession]);
+
+  useEffect(() => {
+    if (state !== "ready" || !tcw || LOCAL_VALIDATION) return;
+    const recheck = () => void ensureTranscriptWriterDelegation({
+      tcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current,
+    });
+    const visible = () => { if (document.visibilityState === "visible") recheck(); };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [state, tcw]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -594,6 +610,7 @@ export function App() {
       setDid(signedTcw.did ?? null);
       setSpaceId(signedTcw.spaceId ?? null);
       setState("ready");
+      void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
     } catch (caught) {
       setError(errorMessage(caught));
       setState("recoverableError");
@@ -638,6 +655,7 @@ export function App() {
       // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
       // directly as well so a client cleanup failure cannot restore this user.
       if (address) clearPersistedSession(address);
+      clearTranscriptDelegationSchedule(address);
       sessionStoreRef.current.clear();
       // Drop the in-memory history prefetch cache and stop its queue — it holds
       // the signed-out account's message docs.

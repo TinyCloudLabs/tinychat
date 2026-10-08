@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CalendarAutojoinWorker } from "../services/calendar-autojoin-worker.js";
+import { CalendarAutojoinWorker, type CalendarAutojoinWorkerOptions } from "../services/calendar-autojoin-worker.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { calendarOccurrenceIdentity, eligibleCalendarEvent, ExternalOperationLimiter, GoogleCalendarError, type GoogleCalendarEvent, type GoogleCalendarPort } from "../services/google-calendar.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
@@ -19,7 +19,7 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-async function fixture() {
+async function fixture(config: Pick<CalendarAutojoinWorkerOptions, "webhookUrl" | "onRecordingCompleted"> = {}) {
   let now = START - 30_000;
   const store = new MemoryCalendarAutojoinStore();
   const index = new MemoryTranscriberIndexStore();
@@ -76,7 +76,7 @@ async function fixture() {
     },
   };
   const worker = () => new CalendarAutojoinWorker({ store, index, coordinator, calendar, api, connection,
-    now: () => now, random: () => 0, sleep: async ms => { sleeps.push(ms); now += ms; } });
+    now: () => now, random: () => 0, sleep: async ms => { sleeps.push(ms); now += ms; }, ...config });
   await store.putConnection({ tenant: TENANT, subject: SUBJECT, state: "enabled", generation: 1,
     scopes: [], nextScanAt: 0, scanComplete: true });
   const id = calendarOccurrenceIdentity(TENANT, SUBJECT, current.events[0]!)!;
@@ -105,6 +105,33 @@ async function fixture() {
 }
 
 describe("calendar dispatch crash and policy boundaries", () => {
+  test("new calendar intents carry the webhook in their hash and completion wakes once", async () => {
+    const wakes: Array<[string, string]> = [];
+    const webhookUrl = "https://tinychat.example/api/transcriber/webhooks/ptx";
+    const f = await fixture({ webhookUrl, onRecordingCompleted: async (tenant, id) => { wakes.push([tenant, id]); } });
+    await f.worker().tick();
+    const sent = f.posts[0]!;
+    expect(sent.input.webhook_url).toBe(webhookUrl);
+    expect(f.hashes.get(sent.key)).toBe(computeCreateRequestHash(sent.input));
+    f.records.get(sent.key)!.status = "completed";
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(wakes).toEqual([[TENANT, "mtg_1"]]);
+    f.advance(60_000);
+    await f.worker().tick();
+    expect(wakes).toEqual([[TENANT, "mtg_1"]]);
+  });
+
+  test("pre-existing frozen calendar intents retain their exact body across a webhook deployment", async () => {
+    const f = await fixture({ webhookUrl: "https://tinychat.example/api/transcriber/webhooks/ptx" });
+    const frozen = await f.seedUnknown();
+    await f.worker().tick();
+    expect(f.posts).toHaveLength(1);
+    expect(f.posts[0]!.input).toEqual(frozen.createBody);
+    expect(f.posts[0]!.input.webhook_url).toBeUndefined();
+    expect(f.hashes.get(f.posts[0]!.key)).toBe(frozen.requestHash);
+  });
+
   test("a failed intent write cannot POST; the next tick can retry safely", async () => {
     const f = await fixture();
     const put = f.store.putOccurrence.bind(f.store);

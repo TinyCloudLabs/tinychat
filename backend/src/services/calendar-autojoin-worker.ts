@@ -22,6 +22,8 @@ export interface CalendarAutojoinWorkerOptions {
   };
   api: TranscriptionApiClient;
   index: TranscriberIndexStore;
+  webhookUrl?: string;
+  onRecordingCompleted?: (tenant: string, meetingId: string) => Promise<void>;
   limiter?: ExternalOperationLimiter;
   botName?: string;
   now?: () => number;
@@ -221,6 +223,7 @@ export class CalendarAutojoinWorker {
             const body = {
               meeting_url: row.meetingUrl, platform: "google_meet", bot_name: this.options.botName ?? "TinyCloud Private Notetaker",
               metadata: { tinychat_address: row.tenant, source: "google-calendar-autojoin", calendar_occurrence_id: row.id, calendar_title: row.title, scheduled_start: new Date(row.start).toISOString() },
+              ...(this.options.webhookUrl ? { webhook_url: this.options.webhookUrl } : {}),
             };
             row = { ...row, generation: current!.generation, createBody: body, requestHash: computeCreateRequestHash(body), idempotencyKey: `calendar-v1-${row.id}` };
           }
@@ -314,6 +317,9 @@ export class CalendarAutojoinWorker {
   private async finish(row: CalendarOccurrence, disposition: string): Promise<void> {
     if (row.meetingId || row.idempotencyKey) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
     await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: disposition === "completed" && !current.stopRequested ? undefined : current.errorCode });
+    if (disposition === "completed" && row.meetingId) {
+      await this.options.onRecordingCompleted?.(row.tenant, row.meetingId);
+    }
   }
   private retryable(error: unknown): boolean {
     return !(error instanceof TranscriptionApiError) || error.status === 429 || error.status >= 500;

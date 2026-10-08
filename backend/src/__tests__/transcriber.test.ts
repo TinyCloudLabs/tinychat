@@ -8,17 +8,20 @@
 //   6. the api client speaks the SPEC.md contract (paths, bearer, 202 handling).
 
 import { describe, expect, test } from "bun:test";
+import type { Server } from "node:http";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import express from "express";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
 
-import { createTranscriberRouter } from "../routes/transcriber.js";
+import { createTranscriberRouter, type TranscriberRouterOptions } from "../routes/transcriber.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { KvTranscriberIndexStore, MemoryTranscriberIndexStore, type TranscriberIndexStore } from "../services/transcriber-index.js";
 import {
   createTranscriptionApiClient,
+  computeCreateRequestHash,
+  transcriptDeliveryConfigFromEnv,
   TranscriptionApiError,
   type TranscriptionApiClient,
   type TranscriptionMeeting,
@@ -43,19 +46,25 @@ function meeting(id: string, patch: Partial<TranscriptionMeeting> = {}): Transcr
 function fakeApi() {
   const calls: { method: string; args: unknown[] }[] = [];
   const store = new Map<string, TranscriptionMeeting>();
+  const lookup = new Map<string, { id: string; hash: string }>();
   let nextId = 1;
   const api: TranscriptionApiClient = {
-    async lookupMeetingByIdempotencyKey() {
-      return null;
+    async lookupMeetingByIdempotencyKey(key) {
+      const found = lookup.get(key);
+      const m = found && store.get(found.id);
+      return m && found ? { meeting: m, requestHash: found.hash } : null;
     },
-    async createMeeting(input) {
-      calls.push({ method: "createMeeting", args: [input] });
+    async createMeeting(input, options) {
+      calls.push({ method: "createMeeting", args: [input, options] });
       const m = meeting(`mtg_${nextId++}`, {
         meeting_url: input.meeting_url,
         bot: { name: input.bot_name ?? "" },
         metadata: input.metadata ?? {},
       });
       store.set(m.id, m);
+      if (options?.idempotencyKey) lookup.set(options.idempotencyKey, {
+        id: m.id, hash: computeCreateRequestHash(input),
+      });
       return m;
     },
     async getMeeting(id) {
@@ -99,7 +108,8 @@ function fakeApi() {
   return { api, calls, store };
 }
 
-function harness(address: string | null = ADDRESS_A, index: TranscriberIndexStore = new MemoryTranscriberIndexStore()) {
+function harness(address: string | null = ADDRESS_A, index: TranscriberIndexStore = new MemoryTranscriberIndexStore(),
+  options: Pick<TranscriberRouterOptions, "webhookUrl" | "onCompleted"> = {}) {
   const { api, calls, store } = fakeApi();
   const session: { address: string | null } = { address };
   const app = express();
@@ -108,12 +118,12 @@ function harness(address: string | null = ADDRESS_A, index: TranscriberIndexStor
     if (session.address !== null) req.user = { address: session.address };
     next();
   });
-  app.use("/api/transcriber/meetings", createTranscriberRouter({ api, index }));
+  app.use("/api/transcriber/meetings", createTranscriberRouter({ api, index, ...options }));
   return { app, api, calls, store, index, session };
 }
 
 async function withServer<T>(app: express.Express, fn: (base: string) => Promise<T>): Promise<T> {
-  const server = await new Promise<import("http").Server>((r) => {
+  const server = await new Promise<Server>((r) => {
     const s = app.listen(0, () => r(s));
   });
   const { port } = server.address() as { port: number };
@@ -164,17 +174,37 @@ describe("POST /api/transcriber/meetings", () => {
       expect(r.body.id).toBe("mtg_1");
       expect(r.body.status).toBe("queued");
     });
-    expect(h.calls[0]).toEqual({
-      method: "createMeeting",
-      args: [
-        {
-          meeting_url: "https://meet.jit.si/tinycloud-demo",
-          bot_name: "Notetaker",
-          metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
-        },
-      ],
+    expect(h.calls[0]?.method).toBe("createMeeting");
+    expect(h.calls[0]?.args[0]).toEqual({
+      meeting_url: "https://meet.jit.si/tinycloud-demo",
+      bot_name: "Notetaker",
+      metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
     });
+    expect(h.calls[0]?.args[1]).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-[0-9a-f-]{36}$/) });
     expect(await h.index.list(ADDRESS_A)).toEqual(["mtg_1"]);
+  });
+
+  test("adds webhook_url only for configured delivery, preserving the hashed create body", async () => {
+    const h = harness();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { address: ADDRESS_A }; next(); });
+    app.use("/api/transcriber/meetings", createTranscriberRouter({
+      api: h.api, index: h.index, webhookUrl: "https://tinychat.example/api/transcriber/webhooks/ptx",
+    }));
+    await withServer(app, async base => {
+      const created = await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/x" });
+      expect(created.status).toBe(201);
+    });
+    const body = h.calls[0]?.args[0];
+    const options = h.calls[0]?.args[1];
+    expect(body).toEqual({
+      meeting_url: "https://meet.jit.si/x", bot_name: "TinyCloud Private Notetaker",
+      webhook_url: "https://tinychat.example/api/transcriber/webhooks/ptx",
+      metadata: { tinychat_address: ADDRESS_A.toLowerCase() },
+    });
+    expect(options).toEqual({ idempotencyKey: expect.stringMatching(/^manual-v1-/) });
+    expect(await h.index.listPending(ADDRESS_A)).toEqual([]);
   });
 
   test("recovers an expired backend KV session and keeps the created meeting", async () => {
@@ -233,6 +263,25 @@ describe("POST /api/transcriber/meetings", () => {
 });
 
 describe("GET /api/transcriber/meetings", () => {
+  test("listing an owned completed meeting wakes delivery without leaking another owner's row", async () => {
+    const wakes: Array<[string, string]> = [];
+    const h = harness(ADDRESS_A, new MemoryTranscriberIndexStore(), {
+      onCompleted: async (address, id) => { wakes.push([address, id]); },
+    });
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      h.store.get("mtg_1")!.status = "completed";
+      h.store.set("mtg_other", meeting("mtg_other", { status: "completed" }));
+      h.session.address = ADDRESS_B;
+      expect((await call(base, "/api/transcriber/meetings")).body.meetings).toEqual([]);
+      h.session.address = ADDRESS_A;
+      const response = await call(base, "/api/transcriber/meetings");
+      expect(response.status).toBe(200);
+      expect(response.body.meetings.map((item: TranscriptionMeeting) => item.id)).toEqual(["mtg_1"]);
+      expect(wakes).toEqual([[ADDRESS_A.toLowerCase(), "mtg_1"]]);
+    });
+  });
+
   test("lists only the address's meetings, newest first, refreshed upstream", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {
@@ -490,5 +539,37 @@ describe("transcription api client — transient upstream blips", () => {
     const api3 = createTranscriptionApiClient({ baseUrl: "https://t.example", apiKey: "k", fetchImpl: http503, sleep: async () => {} });
     await expect(api3.getMeeting("mtg_1")).rejects.toMatchObject({ status: 503, code: "provider_unavailable" });
     expect(calls).toBe(1);
+  });
+});
+
+describe("server transcript delivery configuration", () => {
+  const api = { TRANSCRIPTION_API_URL: "https://ptx.example", TRANSCRIPTION_API_KEY: "test-key" };
+  test("an empty compose cohort keeps the feature dark; an explicit cohort admits only its addresses", () => {
+    const dark = transcriptDeliveryConfigFromEnv({ ...api, TRANSCRIPT_SERVER_DELIVERY_ADDRESSES: "" });
+    expect(dark.enabled).toBe(false);
+    expect(dark.allowlist).toBeUndefined();
+    const address = ADDRESS_A.toLowerCase();
+    const enabled = transcriptDeliveryConfigFromEnv({
+      ...api, TRANSCRIPT_SERVER_DELIVERY_ENABLED: "true",
+      TRANSCRIPT_SERVER_DELIVERY_ADDRESSES: ` ${ADDRESS_A} , ${ADDRESS_B} `,
+    });
+    expect(enabled.allowlist?.has(address)).toBe(true);
+    expect(enabled.allowlist?.has(ADDRESS_B.toLowerCase())).toBe(true);
+    expect(enabled.allowlist?.has("0x0000000000000000000000000000000000000000")).toBe(false);
+  });
+
+  test("rejects a flag without ptx credentials, untrusted webhooks and invalid governor rates", () => {
+    expect(() => transcriptDeliveryConfigFromEnv({ TRANSCRIPT_SERVER_DELIVERY_ENABLED: "true" })).toThrow();
+    for (const [key, value] of [
+      ["TRANSCRIPT_SERVER_DELIVERY_ENABLED", "yes"],
+      ["TRANSCRIPT_SERVER_DELIVERY_ADDRESSES", "0x123"],
+      ["TRANSCRIPTION_WEBHOOK_URL", "http://evil.example/webhook"],
+      ["TRANSCRIPTION_WEBHOOK_URL", "https://user:pass@ptx.example/webhook"],
+      ["TRANSCRIPTION_WEBHOOK_SECRET", "whsec_not_hex"],
+      ["TRANSCRIPT_DELIVERY_SWEEP_MS", "59999"],
+      ["TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN", "0"],
+    ]) {
+      expect(() => transcriptDeliveryConfigFromEnv({ ...api, [key]: value })).toThrow();
+    }
   });
 });

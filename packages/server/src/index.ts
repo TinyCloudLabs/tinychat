@@ -22,10 +22,12 @@ export type { DelegatedAccess } from "@tinycloud/node-sdk";
 export {
   createNonceStore,
   verifySIWE,
+  verifySiweSession,
   issueSessionToken,
   verifySessionToken,
   type NonceStore,
   type NonceEntry,
+  type VerifiedSiweSession,
   type SessionTokenPayload,
 } from "./auth.js";
 

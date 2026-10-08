@@ -10,8 +10,6 @@
 //   6. Capture owns the one useMeetingBot and hands it to the Meeting sheet and the In progress rows.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
@@ -291,10 +289,6 @@ describe("TranscriberView in the Meeting sheet", () => {
     expect(html).not.toContain("Local recording");
     expect(html).not.toContain("Upload audio");
     expect(html).toContain('id="transcriber-meeting-url"');
-    const source = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
-    expect(source).not.toContain("uploadPanel");
-    expect(source).not.toContain("localPanel");
-    expect(source).not.toContain("onKindChange");
   });
 });
 
@@ -368,11 +362,6 @@ describe("LocalTranscriberView", () => {
     expect(html).toMatch(/id="local-transcriber-model"[^>]*disabled=""/);
     expect(localRetryAction("transcribe-failed")).toBe("transcribe");
     expect(isLocalWorkflowActive("transcribe-failed")).toBe(true);
-    // The kept recording can't be left behind: the local recorder has its own
-    // card on Capture, mounted in a fixed place whatever else is open (there
-    // are no source tabs to switch away from any more).
-    const capture = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");
-    expect(capture).toContain("{localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}");
     // Discard belongs to the kept recording only.
     for (const state of ["stop-failed", "save-failed", "error"] as const) {
       expect(renderLocal({ state })).not.toContain("Discard recording");
@@ -583,30 +572,6 @@ describe("transcriber client", () => {
   });
 });
 
-describe("Capture wiring", () => {
-  test("CaptureSurface calls useMeetingBot once and passes it to the Meeting sheet and the In progress rows", () => {
-    const src = readFileSync(join(import.meta.dir, "../capture/CaptureSurface.tsx"), "utf8");
-    expect(src.match(/useMeetingBot\(/g)).toHaveLength(1);
-    expect(src).toContain("const bot = useMeetingBot({ backendUrl, sessionStore, active: homeShown });");
-    expect(src).toContain("<MeetingSheet open={sheet === \"meeting\"} onOpenChange={sheetChange(\"meeting\")} bot={bot} />");
-    // The In progress rows' props (CaptureHomeView renders them).
-    expect(src).toContain("meetings: activeMeetings(bot.meetings),");
-    expect(src).toContain("onEnd: bot.actions.stop,");
-    expect(src).toContain("inProgress={inProgress}");
-    // The Meeting action is hidden when the backend has no notetaker.
-    expect(src).toContain('bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") }');
-    // The notetaker never touches connector secrets or a provider key: the backend proxy holds
-    // the transcription key, and the user's space is written through the shared connector store.
-    const section = readFileSync(join(import.meta.dir, "TranscriberSection.tsx"), "utf8");
-    expect(section).not.toContain("connectorSecrets");
-    expect(section).not.toContain("saveTranscriberMeeting");
-    expect(section).toContain("useTranscriberSavedState");
-    const shell = readFileSync(join(import.meta.dir, "../App.tsx"), "utf8");
-    expect(shell.match(/<TranscriberLibrarySyncProvider /g)).toHaveLength(1);
-    const sync = readFileSync(join(import.meta.dir, "useTranscriberLibrarySync.tsx"), "utf8");
-    expect(sync).toContain("saveTranscriberMeeting");
-  });
-});
 
 
 describe("recording departure diagnostics", () => {

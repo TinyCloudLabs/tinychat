@@ -32,8 +32,9 @@ the same window — a same-address 50-delivery burst still acking < 10 s each �
 Shipped in `backend/src/services/webhook-verify.ts`; the regression suite stays green in this
 build: `backend/src/__tests__/webhook-verify.test.ts`. `JSON.parse` runs strictly **after** verify
 — the route reads `express.raw` bytes, verifies, and only then parses, so an unverified body is
-never handed to a parser. The mount stays inside the raw-body window (`inflate:false`, 64 kb),
-pinned by `backend/src/__tests__/index-wiring.test.ts`.
+never handed to a parser. The `index.ts` mount precedes the shared JSON parser with
+`inflate:false` and a 64 kb cap; signed raw ingress is exercised in
+`backend/src/__tests__/connector-gate5-hardening.test.ts`.
 
 ## 3. V-b — the 16–32 character webhook secret — **CLOSED by amendment**
 
