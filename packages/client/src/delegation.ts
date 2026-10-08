@@ -132,12 +132,14 @@ export async function sendDelegation(
 export async function checkDelegationStatus(
   backendUrl: string,
   sessionToken: string,
+  signal?: AbortSignal,
 ): Promise<DelegationResponse> {
   const res = await fetch(`${backendUrl}/api/delegations/status`, {
     headers: {
       Authorization: `Bearer ${sessionToken}`,
       [DEFAULT_REQUEST_HEADER_NAME]: DEFAULT_REQUEST_HEADER_VALUE,
     },
+    signal,
   });
 
   if (!res.ok) {

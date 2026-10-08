@@ -6,7 +6,7 @@ const previousCustomElements = globalThis.customElements;
 globalThis.HTMLElement ??= class {} as never;
 globalThis.customElements ??= { define: () => {}, get: () => undefined } as never;
 // Test-only module-loading boundary: web-sdk defines a custom element at import time.
-const { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation, nextTranscriptAttempt } = await import("./transcriptDelegation");
+const { clearTranscriptDelegationSchedule, ensureTranscriptWriterDelegation, nextTranscriptAttempt, serverDeliveryActive } = await import("./transcriptDelegation");
 const DAY = 86_400_000;
 
 const address = "0x0000000000000000000000000000000000000abc";
@@ -328,6 +328,108 @@ describe("silent transcript-writer renewal", () => {
     expect(f.payloads).toHaveLength(1);
     expect(f.storage.getItem(`tinychat.transcriptWriter.${address}`)).toBeNull();
   });
+  it("bounds the pre-lock status request, aborts it, and clears the pending attempt", async () => {
+    const f = mintHarness();
+    const fetchStatus = globalThis.fetch;
+    const entered = Promise.withResolvers<void>();
+    const late = Promise.withResolvers<Response>();
+    let signal: AbortSignal | undefined;
+    let requests = 0;
+    let locks = 0;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { locks: { request: async () => { locks++; throw new Error("Unexpected Web Lock"); } } },
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === "/api/delegations/status" && ++requests === 1) {
+        signal = init?.signal ?? undefined;
+        entered.resolve();
+        return late.promise; // Deliberately ignore abort: the caller must still settle.
+      }
+      return fetchStatus(input, init);
+    }) as typeof fetch;
+    const realSetTimeout = globalThis.setTimeout;
+    let expire: (() => void) | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay === 90_000) {
+        expire = () => { if (typeof handler === "function") handler(...args); };
+        return realSetTimeout(() => {}, 1_000_000);
+      }
+      return realSetTimeout(handler, delay, ...args);
+    }) as typeof setTimeout;
+    try {
+      const running = f.run();
+      await entered.promise;
+      expect(signal?.aborted).toBe(false);
+      expect(expire).toBeDefined();
+      expire!();
+      expect(await running).toBe("unavailable");
+      expect(signal?.aborted).toBe(true);
+      expect(locks).toBe(0);
+      expect(JSON.parse(f.storage.getItem(`tinychat.transcriptWriter.${address}`)!).failures).toBe(1);
+      late.resolve(Response.json({ status: "none", expiresAt: null, verified: false, delivery: "enabled" }));
+      await new Promise<void>((resolve) => realSetTimeout(resolve, 0));
+      expect(locks).toBe(0);
+      expect(f.operations).not.toContain("delegateTo");
+      expect(await f.run()).toBe("busy");
+      expect(requests).toBe(2);
+    } finally { globalThis.setTimeout = realSetTimeout; }
+  });
+
+  it("bounds a suspended in-lock status request, aborts it, and releases the Web Lock", async () => {
+    const f = mintHarness();
+    const fetchStatus = globalThis.fetch;
+    const entered = Promise.withResolvers<void>();
+    const late = Promise.withResolvers<Response>();
+    let signal: AbortSignal | undefined;
+    let requests = 0;
+    let held = false;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { locks: { request: async (_name: string, _options: unknown, action: (lock: object) => Promise<unknown>) => {
+        held = true;
+        try { return await action({}); }
+        finally { held = false; }
+      } } },
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === "/api/delegations/status" && ++requests === 2) {
+        signal = init?.signal ?? undefined;
+        entered.resolve();
+        return late.promise; // An uncooperative fetch must not hold the Web Lock indefinitely.
+      }
+      return fetchStatus(input, init);
+    }) as typeof fetch;
+    const realSetTimeout = globalThis.setTimeout;
+    let expire: (() => void) | undefined;
+    globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay === 90_000) {
+        expire = () => { if (typeof handler === "function") handler(...args); };
+        return realSetTimeout(() => {}, 1_000_000);
+      }
+      return realSetTimeout(handler, delay, ...args);
+    }) as typeof setTimeout;
+    try {
+      const running = f.run();
+      await entered.promise;
+      expect(held).toBe(true);
+      expect(signal?.aborted).toBe(false);
+      expect(expire).toBeDefined();
+      expire!();
+      expect(await running).toBe("unavailable");
+      expect(signal?.aborted).toBe(true);
+      expect(held).toBe(false);
+      expect(JSON.parse(f.storage.getItem(`tinychat.transcriptWriter.${address}`)!).failures).toBe(1);
+      late.resolve(Response.json({ status: "none", expiresAt: null, verified: false, delivery: "disabled" }));
+      await new Promise<void>((resolve) => realSetTimeout(resolve, 0));
+      expect(serverDeliveryActive()).toBe(true);
+      expect(f.operations).not.toContain("delegateTo");
+      expect(f.operations).not.toContain("POST /api/delegations");
+      expect(await f.run()).toBe("busy");
+      expect(requests).toBe(3);
+    } finally { globalThis.setTimeout = realSetTimeout; }
+  });
+
   it("times out a hung POST, records a retry, and releases the Web Lock", async () => {
     const f = mintHarness({}, 30, { onPost: () => new Promise<void>(() => {}) });
     let held = false;
