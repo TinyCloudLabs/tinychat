@@ -1220,6 +1220,24 @@ test('ios-signing.sh verify-ipa refuses development, ad hoc and in-house (Provis
   assert.match(verify, /Entitlements:get-task-allow/);
 });
 
+test('iOS release checks the embedded WidgetKit extension and its own App Store profile', () => {
+  const build = read(repo, '.github/workflows/ios-build.yml');
+  const check = stepNamed(jobText(build, 'archive'), 'Check the archive');
+  assert.match(check, /PlugIns\/ExoWidgets\.appex/);
+  assert.match(check, /CFBundleIdentifier.*xyz\.tinycloud\.exo\.widgets/);
+  assert.match(check, /NSExtensionPointIdentifier.*com\.apple\.widgetkit-extension/);
+  assert.match(check, /NSSupportsLiveActivities/);
+  assert.match(check, /ExoWidgets privacy manifest/);
+
+  const signing = read(repo, 'scripts/release/ios-signing.sh');
+  const verify = signing.slice(signing.indexOf('verify_ipa() {'));
+  assert.match(verify, /for signed in "\$app" "\$appex"; do/);
+  assert.match(verify, /codesign --verify --strict --verbose=2 "\$signed"/);
+  assert.match(verify, /security cms -D -i "\$signed\/embedded\.mobileprovision"/);
+  assert.match(verify, /bundle="\$BUNDLE_ID\.widgets"/);
+  assert.match(verify, /APPLE_TEAM_ID\.\$bundle/);
+});
+
 // Android: the build job runs all build code with no environment and no secret and makes an unsigned release (the one
 // exception the Gradle gate allows). Only the sign job, which checks out nothing but scripts/release at the workflow
 // commit, is in android-release; it signs outside Gradle, against a certificate pinned in vars, and verifies before
