@@ -1,6 +1,7 @@
 import UIKit
 import Capacitor
 import UserNotifications
+import ExoCapture
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -35,6 +36,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        CaptureNotifications.handleDelivery(notification)
         completionHandler([.banner, .sound])
     }
 
