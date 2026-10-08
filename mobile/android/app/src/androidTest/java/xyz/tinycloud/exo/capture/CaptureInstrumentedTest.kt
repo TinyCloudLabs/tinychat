@@ -517,6 +517,7 @@ class CaptureInstrumentedTest {
             val resume = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_resume))
             resume.actionIntent.send()
             awaitState(engine, "recording")
+            awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_pause))
             val stop = awaitAction(context.getString(xyz.tinycloud.exo.R.string.capture_stop))
             stop.actionIntent.send()
             awaitState(engine, "idle", 15_000)
