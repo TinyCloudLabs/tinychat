@@ -5,10 +5,8 @@ import OSLog
 import UIKit
 
 public enum CaptureResumeError: Error, LocalizedError {
-    case resumeNotAllowed, micUnavailable
-    public var code: String {
-        switch self { case .resumeNotAllowed: "resume_not_allowed"; case .micUnavailable: "mic_unavailable" }
-    }
+    case failed
+    public var code: String { "resume_failed" }
     public var errorDescription: String? { code }
 }
 
@@ -23,6 +21,7 @@ public final class CaptureEngine {
     private let tapCallbacks = DispatchGroup()
     private let tapTimeLock = NSLock()
     private var lastTapEndSample: AVAudioFramePosition?
+    private var lastTapAt: TimeInterval = 0
     private var writer: AacAdtsWriter?
     private var info: SessionInfo?
     private var intent = "stopped"
@@ -32,8 +31,7 @@ public final class CaptureEngine {
     private var generation: Int { attempts.generation }
     private let inputRouter = InputRouter()
     private var retryTimer: Timer?
-    private var retryStartedAt: Date?
-    private var retryIndex = 0
+    private var backoff = CaptureBackoffSchedule()
     private var notificationPending = false
     private var graphActive = false
     private var pausedSince: Int64?
@@ -47,12 +45,36 @@ public final class CaptureEngine {
     private var noSignalMs: Int64 = 0
     private var options = CaptureOptions()
     private var currentInput: [String: Any]?
+    private var currentInputRate: Double?
     private var transitions: CaptureTransitionMachine?
     private var limitTimer: Timer?
     private var lastDiskCheck = Date.distantPast
     private var observers: [UUID: (String, [String: Any], Bool) -> Void] = [:]
     private var retainedEvents: [(String, [String: Any])] = []
-    private var isForeground: Bool { appActive || UIApplication.shared.applicationState == .active }
+    #if DEBUG
+    private var debugTesting = false
+    private(set) var debugResetNotifications = 0
+    private(set) var debugResumeNotices: [(id: String, epoch: Int, reason: String)] = []
+    private(set) var debugSegmentOpenCount = 0
+    var debugForeground: Bool?
+    var debugActivationError: Error?
+    var debugActivationAttempts = 0
+    var debugBeforeAttach: (() -> Void)?
+    var debugInputRoute: (id: String?, sampleRate: Double?)?
+    var debugNow: (() -> TimeInterval)?
+    #endif
+    private var isForeground: Bool {
+        #if DEBUG
+        if let debugForeground { return debugForeground }
+        #endif
+        return appActive || UIApplication.shared.applicationState == .active
+    }
+    private var retryNow: TimeInterval {
+        #if DEBUG
+        if let debugNow { return debugNow() }
+        #endif
+        return ProcessInfo.processInfo.systemUptime
+    }
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -63,6 +85,22 @@ public final class CaptureEngine {
         catch { fatalError("Voice-note library unavailable: \(error)") }
     }
 
+    #if DEBUG
+    init(testRoot: URL) throws {
+        library = try RecordingLibrary(root: testRoot)
+        debugTesting = true
+    }
+    var debugGraphActive: Bool { graphActive || audioEngine?.isRunning == true }
+    var debugRetryPending: Bool { retryTimer != nil }
+    var debugEpoch: Int { attempts.epoch }
+    func debugRetryTick() { retryTimer?.invalidate(); retryTimer = nil; try? attemptResume(automatic: true) }
+    func debugStopEngineWithoutTransition() { audioEngine?.stop() }
+    func debugAgeLastTap(by seconds: TimeInterval) {
+        tapTimeLock.lock(); lastTapAt = retryNow - seconds; tapTimeLock.unlock()
+    }
+    func debugWatchdogTick() { checkDurationLimit() }
+    #endif
+
     public func observe(_ body: @escaping (String, [String: Any], Bool) -> Void) -> UUID {
         let token = UUID(); observers[token] = body
         for (name, data) in retainedEvents { body(name, data, true) }
@@ -71,9 +109,10 @@ public final class CaptureEngine {
     }
     public func removeObserver(_ token: UUID) { observers.removeValue(forKey: token) }
     public func setAppActive(_ active: Bool) {
+        let becameActive = active && !appActive
         appActive = active
-        if active, info != nil, intent == "recording", availability != "available" {
-            try? attemptResume(automatic: true)
+        if becameActive, info != nil, intent == "recording", availability != "available" {
+            try? attemptResume(automatic: true, retryOnFailure: availability != "blocked")
         }
     }
     public func presentRecorder() {
@@ -171,14 +210,21 @@ public final class CaptureEngine {
         info = session; options = selected; intent = "recording"; availability = "available"
         transitions = CaptureTransitionMachine()
         reason = nil; spans = []; openSpan = nil; audioMs = 0; pausedMs = 0; pausedSince = nil
+        currentInput = nil; currentInputRate = nil
         noSignalMs = 0; zeroSince = nil
         lastDiskCheck = Date()
         let ticket = attempts.startSession(session.id)
+        #if DEBUG
+        if !debugTesting { CaptureNotifications.requestOnFirstRecording() }
+        #else
         CaptureNotifications.requestOnFirstRecording()
+        #endif
         do { try activateGraph(ticket: ticket) }
         catch {
-            try? library.delete(session.id)
-            info = nil; intent = "stopped"; attempts.stop()
+            if info?.id == session.id && intent == "recording" {
+                try? library.delete(session.id)
+                info = nil; intent = "stopped"; attempts.stop()
+            }
             throw error
         }
         emitState()
@@ -192,6 +238,10 @@ public final class CaptureEngine {
 
     private func activateGraph(ticket: CaptureAttemptGate.Ticket) throws {
         guard let session = info else { throw CaptureError.notRecording }
+        #if DEBUG
+        debugActivationAttempts += 1
+        if let debugActivationError { throw debugActivationError }
+        #endif
         let audioSession = AVAudioSession.sharedInstance()
         var acquired = false
         var pendingEngine: AVAudioEngine?
@@ -219,6 +269,9 @@ public final class CaptureEngine {
         // Verify the input can actually start before recording a successful acquisition.
         engine.prepare()
         try engine.start()
+        #if DEBUG
+        debugBeforeAttach?()
+        #endif
         // `start.beforeAttach`: no journal event, writer segment or tap belongs to a cancelled
         // attempt. The pending engine is the only instance this cleanup may stop.
         guard attempts.mayAttach(ticket), info?.id == ticket.id, intent == "recording" else {
@@ -230,6 +283,7 @@ public final class CaptureEngine {
         if let input {
             currentInput = ["id": input.id, "name": input.name, "kind": input.kind]
         }
+        currentInputRate = audioSession.sampleRate
         var next = transitions ?? CaptureTransitionMachine()
         for event in next.acquired(at: acquiredAt, audioMs: audioMs, generation: generation, input: input) {
             try library.appendJournal(session.id, event)
@@ -244,6 +298,9 @@ public final class CaptureEngine {
             writer = try AacAdtsWriter(library: library, id: session.id, segmentOpenedAt: openedAt)
             self.writer = writer
         }
+        #if DEBUG
+        debugSegmentOpenCount += 1
+        #endif
         writer.onLevel = { [weak self] level, peak in
             DispatchQueue.main.async { self?.receiveLevel(level, peak: peak) }
         }
@@ -260,16 +317,19 @@ public final class CaptureEngine {
             DispatchQueue.main.async { self?.log.error("Stale tap frames rejected: \(frames)") }
         }
         writer.setGeneration(generation)
-        tapTimeLock.lock(); lastTapEndSample = nil; tapTimeLock.unlock()
+        tapTimeLock.lock(); lastTapEndSample = nil; lastTapAt = retryNow; tapTimeLock.unlock()
         let attemptGeneration = generation
         node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, writer] buffer, when in
             self?.tapCallbacks.enter()
             defer { self?.tapCallbacks.leave() }
-            if when.isSampleTimeValid {
-                self?.tapTimeLock.lock()
-                self?.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
-                self?.tapTimeLock.unlock()
+            self?.tapTimeLock.lock()
+            if let self {
+                self.lastTapAt = ProcessInfo.processInfo.systemUptime
+                if when.isSampleTimeValid {
+                    self.lastTapEndSample = when.sampleTime + AVAudioFramePosition(buffer.frameLength)
+                }
             }
+            self?.tapTimeLock.unlock()
             writer.enqueue(buffer, generation: attemptGeneration)
         }
         audioEngine = engine
@@ -347,6 +407,15 @@ public final class CaptureEngine {
             }
             return
         }
+        if info != nil, intent == "recording", availability == "available" {
+            tapTimeLock.lock()
+            let last = lastTapAt
+            tapTimeLock.unlock()
+            if last > 0 && retryNow - last > 3 {
+                rebuildForRoute("stalled")
+                return
+            }
+        }
         if info != nil, Date().timeIntervalSince(lastDiskCheck) >= 5 {
             lastDiskCheck = Date()
             do {
@@ -411,7 +480,7 @@ public final class CaptureEngine {
         closeNoSignal()
         if openSpan != nil { closeSpan(at: paused.at, journal: false) }
         transitions = next
-        intent = "paused"; reason = "user"; pausedSince = paused.at
+        intent = "paused"; availability = "available"; reason = "user"; pausedSince = paused.at
         attempts.pause()
         emitState()
     }
@@ -420,7 +489,8 @@ public final class CaptureEngine {
         try attemptResume(automatic: false)
     }
 
-    private func attemptResume(automatic: Bool, allowedBackgroundIntent: Bool = false) throws {
+    private func attemptResume(automatic: Bool, allowedBackgroundIntent: Bool = false,
+                               retryOnFailure: Bool = true) throws {
         guard let session = info else { throw CaptureError.notRecording }
         guard intent == "paused" || availability != "available" else { return }
         let wasPaused = intent == "paused"
@@ -434,7 +504,7 @@ public final class CaptureEngine {
                 _ = attempts.resumePaused()
             }
             markBlocked("resume_not_allowed")
-            throw CaptureResumeError.resumeNotAllowed
+            throw CaptureResumeError.failed
         }
         let ticket: CaptureAttemptGate.Ticket?
         if wasPaused {
@@ -458,19 +528,36 @@ public final class CaptureEngine {
         } catch {
             log.error("Capture restart failed: \(String(describing: error), privacy: .public)")
             guard attempts.mayAttach(ticket) else { throw CaptureError.cancelled }
-            if automatic { scheduleRetry(); return }
-            if error is CaptureError {
-                markBlocked("resume_blocked")
-                throw error
+            let failureReason = Self.failureReason(error)
+            if automatic && (!isForeground || failureReason == "resume_not_allowed") {
+                cancelRetry()
+                markBlocked("resume_not_allowed")
+                return
             }
-            markBlocked("mic_unavailable")
-            throw CaptureResumeError.micUnavailable
+            if automatic && retryOnFailure { scheduleRetry(); return }
+            cancelRetry()
+            markBlocked(failureReason)
+            if automatic { return }
+            throw CaptureResumeError.failed
         }
         emitState()
     }
 
     public func interruptionBegan() {
         suspendForInterruption("interruption", notify: true)
+    }
+
+    public func appWasSuspended() { suspendForInterruption("app_suspended", notify: false) }
+
+    private static func failureReason(_ error: Error) -> String {
+        let code = (error as NSError).code
+        if code == AVAudioSession.ErrorCode.cannotStartRecording.rawValue { return "resume_not_allowed" }
+        if [AVAudioSession.ErrorCode.insufficientPriority.rawValue,
+            AVAudioSession.ErrorCode.isBusy.rawValue,
+            AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue].contains(code) {
+            return "mic_unavailable"
+        }
+        return "resume_blocked"
     }
 
     private func suspendForInterruption(_ cause: String, notify: Bool) {
@@ -501,7 +588,7 @@ public final class CaptureEngine {
         }
         catch { log.error("Journal interruption failed: \(String(describing: error), privacy: .public)") }
         if notify, let notice {
-            CaptureNotifications.schedule(id: notice.id, epoch: notice.epoch)
+            scheduleResumeNotification(id: notice.id, epoch: notice.epoch, reason: cause)
             notificationPending = true
         }
         emitState()
@@ -515,11 +602,9 @@ public final class CaptureEngine {
 
     private func scheduleRetry() {
         guard info != nil, intent == "recording" else { return }
-        if retryStartedAt == nil { retryStartedAt = Date() }
-        guard Date().timeIntervalSince(retryStartedAt!) < 600 else { markBlocked("resume_blocked"); return }
-        let delays: [TimeInterval] = [0.5, 1, 2, 5, 10, 30]
-        let delay = delays[min(retryIndex, delays.count - 1)]
-        retryIndex += 1
+        guard let delay = backoff.nextDelay(at: retryNow) else {
+            cancelRetry(); markBlocked("resume_blocked"); return
+        }
         retryTimer?.invalidate()
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             try? self?.attemptResume(automatic: true)
@@ -530,17 +615,38 @@ public final class CaptureEngine {
     }
 
     private func cancelRetry() {
-        retryTimer?.invalidate(); retryTimer = nil; retryStartedAt = nil; retryIndex = 0
+        retryTimer?.invalidate(); retryTimer = nil; backoff.reset()
     }
 
     private func clearResumeNotification() {
         guard notificationPending, let id = info?.id else { return }
         notificationPending = false
+        #if DEBUG
+        if debugTesting { return }
+        #endif
         CaptureNotifications.remove(id: id)
+    }
+
+    private func scheduleResumeNotification(id: String, epoch: Int, reason: String) {
+        #if DEBUG
+        if debugTesting {
+            debugResumeNotices.append((id, epoch, reason))
+            return
+        }
+        #endif
+        CaptureNotifications.schedule(id: id, epoch: epoch, reason: reason)
+    }
+
+    private func notifyMediaServicesRestarted(id: String) {
+        #if DEBUG
+        if debugTesting { debugResetNotifications += 1; return }
+        #endif
+        CaptureNotifications.mediaServicesRestarted(id: id)
     }
 
     private func markBlocked(_ why: String) {
         guard let session = info else { return }
+        if openSpan == nil { openOmittedSpan(why) }
         availability = "blocked"; reason = why; attempts.blocked()
         var next = transitions ?? CaptureTransitionMachine()
         do {
@@ -550,8 +656,10 @@ public final class CaptureEngine {
             }
             transitions = next
         } catch { log.error("Blocked-state journal failed: \(String(describing: error), privacy: .public)") }
-        CaptureNotifications.schedule(id: session.id, epoch: attempts.epoch)
-        notificationPending = true
+        if !notificationPending {
+            scheduleResumeNotification(id: session.id, epoch: attempts.epoch, reason: why)
+            notificationPending = true
+        }
         emitState()
     }
 
@@ -744,8 +852,10 @@ public final class CaptureEngine {
     public func listInputs() throws -> [String: Any] { try inputRouter.list() }
 
     public func selectInput(_ id: String?) throws {
+        let selected = inputRouter.selectedID
         try inputRouter.select(id)
-        if info != nil && intent == "recording" && availability == "available" {
+        let active = currentInput?["id"] as? String
+        if selected != id, id != active, info != nil && intent == "recording" && availability == "available" {
             rebuildForRoute("route_change")
         }
     }
@@ -755,20 +865,39 @@ public final class CaptureEngine {
         if intent == "paused" {
             // The list is read afresh at Resume; an OS route event cannot activate the input.
             emitState()
-        } else if availability == "available" { rebuildForRoute("route_change") }
+        } else if availability == "available" {
+            #if DEBUG
+            let route = debugInputRoute ?? (inputRouter.active()?.id, AVAudioSession.sharedInstance().sampleRate)
+            #else
+            let route = (inputRouter.active()?.id, AVAudioSession.sharedInstance().sampleRate)
+            #endif
+            guard route.0 != currentInput?["id"] as? String ||
+                    (route.1 != nil && route.1 != currentInputRate) else { return }
+            rebuildForRoute("route_change")
+        }
+    }
+
+    public func engineConfigurationChanged(_ engine: AVAudioEngine?) {
+        guard engine != nil, engine === audioEngine else { return }
+        if intent == "recording", availability == "available" { rebuildForRoute("route_change") }
     }
 
     public func mediaServicesReset() {
         guard info != nil else { return }
         if intent == "paused" { return }
-        if availability == "available" { rebuildForRoute("media_services_reset") }
+        if availability == "available", rebuildForRoute("media_services_reset"), let id = info?.id {
+            notifyMediaServicesRestarted(id: id)
+            emit("captureAlert", ["id": id, "reason": "media_services_reset",
+                                  "message": "Recording restarted after an audio system reset"], retained: true)
+        }
     }
 
-    private func rebuildForRoute(_ cause: String) {
+    @discardableResult private func rebuildForRoute(_ cause: String) -> Bool {
         suspendForInterruption(cause, notify: false)
-        guard availability == "interrupted" else { return }
+        guard availability == "interrupted" else { return false }
         do { try attemptResume(automatic: true) }
         catch { log.error("Route restart failed: \(String(describing: error), privacy: .public)") }
+        return availability == "available"
     }
 
     /// Deterministic simulator probe of the same generation/epoch gate used at attach and on tap.
@@ -837,6 +966,16 @@ public final class CaptureEngine {
         let events = try library.readJournal(id)
         let segments = events.filter { $0["e"] as? String == "segment" }.count
         let noPauseSpan = !events.contains { $0["e"] as? String == "span_open" }
+        let beforeUnchangedRoute = segments
+        routeChanged()
+        let routeUnchanged = try library.readJournal(id).filter { $0["e"] as? String == "segment" }.count == beforeUnchangedRoute
+        audioEngine?.stop() // Simulate a graph that stopped without an interruption notification.
+        tapTimeLock.lock(); lastTapAt = retryNow - 4; tapTimeLock.unlock()
+        checkDurationLimit()
+        let stalledEvents = try library.readJournal(id)
+        let stalledRebuild = stalledEvents.contains {
+            $0["e"] as? String == "span_open" && $0["reason"] as? String == "stalled"
+        } && stalledEvents.filter { $0["e"] as? String == "segment" }.count == segments + 1
         inputMuteChanged(true)
         interruptionBegan()
         let silencedClosedForCall = spans.last?.kind == "silenced" &&
@@ -844,7 +983,8 @@ public final class CaptureEngine {
         _ = try discard()
         return ["inactiveOnPause": inactiveOnPause, "stayedPaused": stayedPaused,
                 "resumedRecording": resumedRecording, "newSegment": segments >= 2,
-                "noPauseSpan": noPauseSpan, "silencedClosedForCall": silencedClosedForCall,
+                "noPauseSpan": noPauseSpan, "routeUnchanged": routeUnchanged,
+                "stalledRebuild": stalledRebuild, "silencedClosedForCall": silencedClosedForCall,
                 "inactiveAfterDiscard": audioEngine == nil && !graphActive]
     }
 
@@ -951,7 +1091,12 @@ public enum ExoCaptureBootstrap {
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let kind = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-            if kind == .began { CaptureEngine.shared.interruptionBegan() }
+            if kind == .began {
+                let reason = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
+                if reason == AVAudioSession.InterruptionReason.appWasSuspended.rawValue {
+                    CaptureEngine.shared.appWasSuspended()
+                } else { CaptureEngine.shared.interruptionBegan() }
+            }
             else { CaptureEngine.shared.interruptionEnded() }
         }
         center.addObserver(forName: AVAudioApplication.inputMuteStateChangeNotification, object: nil, queue: .main) { _ in
@@ -962,6 +1107,9 @@ public enum ExoCaptureBootstrap {
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
                   reason != .categoryChange else { return }
             CaptureEngine.shared.routeChanged()
+        }
+        center.addObserver(forName: Notification.Name("AVAudioEngineConfigurationChangeNotification"), object: nil, queue: .main) { note in
+            CaptureEngine.shared.engineConfigurationChanged(note.object as? AVAudioEngine)
         }
         center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { _ in
             CaptureEngine.shared.mediaServicesReset()

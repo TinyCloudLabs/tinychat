@@ -11,6 +11,9 @@ While recording, an interruption closes the segment and opens an omitted-audio
 span. Exo schedules a notification for 45 seconds later with the recording ID
 and a notification epoch. An ended interruption tries an immediate restart and
 then retries at 0.5, 1, 2, 5, 10, and 30-second intervals for up to ten minutes.
+The final retry is clipped to the ten-minute deadline. A refused background
+restart moves directly to `needs_user`; returning to the foreground makes one
+attempt. A tap on a current resume notice attempts a manual restart.
 Retries change the start generation without changing the notification epoch.
 Pause, Stop, Discard, and a successful start invalidate and remove the notice.
 A tap only resumes the same recording when its epoch still matches and the
@@ -24,14 +27,27 @@ selected; automatic routing is used until it returns. `activeId` comes from
 recording closes the old segment, records a route-change gap, and starts a new
 segment. Selecting while paused takes effect at Resume. Media-services reset
 while paused is handled by rebuilding at Resume.
+Output-only route changes and selection of the already active input leave the
+segment alone. A three-second gap in tap delivery triggers a `stalled` span and
+a graph rebuild. A successful media-services reset rebuild posts "Recording
+restarted after an audio system reset" and emits `captureAlert`.
+
+Resume failures reject with the cross-platform `resume_failed` code. The
+`status().reason` explains `resume_not_allowed`, `mic_unavailable`, or
+`resume_blocked`. T14 and T21 should preserve this code and show the reason in
+the recorder. T11 should seed the notification epoch from the adopted session's
+journal generation so a notice from the previous process cannot match it.
 
 ## Simulator evidence
 
 `swift test --package-path mobile/ios/Packages/CaptureCore` covers stale start
 completion, notification epoch, paused interruption, blocked reasons, and the
-recorded-time limit. `EXO_CAPTURE_SMOKE=1 mobile/scripts/ios-simulator-smoke.sh
+backoff deadline. `xcodebuild -scheme ExoCapture … test` also drives the live
+engine's background refusal, retry cap, notification tap, route rebuild,
+watchdog, media reset, recorded-time limit with Pause, and `start.beforeAttach`
+invalidations. `EXO_CAPTURE_SMOKE=1 mobile/scripts/ios-simulator-smoke.sh
 run …` checks the deterministic transition probe, a live `AVAudioEngine`
-start → Pause → simulated call → Resume → Discard sequence, and the AAC journal,
+start → Pause → simulated call → Resume → stalled graph rebuild → Discard sequence, and the AAC journal,
 segment, mux, and sidecar path. It also calls `listInputs` and
 `selectInput(null)` through the Capacitor bridge. Simulator audio does not prove the indicator,
 phone call behavior, or external input routing.
@@ -44,7 +60,7 @@ count, and playback gap in this table.
 
 | Scenario | Expected result | Observed |
 | --- | --- | --- |
-| Incoming call answered, then ended | Interruption and gap; automatic restart or tap to resume | Pending G2 |
+| Incoming call answered, then ended | Interruption and gap; iOS may omit `.ended`, so expect a notice at about 45 s and a restart on foreground | Pending G2 |
 | Incoming call declined | Interruption resolves; new segment | Pending G2 |
 | Outgoing call | Interruption resolves; new segment | Pending G2 |
 | FaceTime audio | Interruption resolves; new segment | Pending G2 |
@@ -55,6 +71,8 @@ count, and playback gap in this table.
 | AirPods connect, disconnect, reconnect | Input list and active UID update; segments remain playable | Pending G2 |
 | Select AirPods, then built-in microphone | Selected and active UID agree; new segment each switch | Pending G2 |
 | Reset Media Services | New segment after rebuild; no lost prior audio | Pending G2 |
+| Reset Media Services while paused | Stays paused; app Resume rebuilds the graph and opens a segment | Pending G2 |
+| First recording notification prompt | Prompt appears once; later recordings do not prompt again | Pending G2 |
 | Pause while recording | Orange indicator off within 1 s; Apple Music plays normally | Pending G2 |
 | Call answered and ended while paused | Still paused and indicator off; app Resume creates a new segment with no pause span | Pending G2 |
 | AirPods connected while paused, then app Resume | New segment uses AirPods | Pending G2 |

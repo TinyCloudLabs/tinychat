@@ -13,17 +13,31 @@ public enum CaptureNotifications {
         }
     }
 
-    public static func schedule(id: String, epoch: Int) {
+    public static func schedule(id: String, epoch: Int, reason: String) {
         queue.async {
             let content = UNMutableNotificationContent()
             content.title = "Recording paused"
-            content.body = "Recording paused by a call or Siri. Tap to resume."
+            content.body = reason == "interruption"
+                ? "Recording paused by a call or Siri. Tap to resume."
+                : "Recording needs your attention. Tap to resume."
             content.sound = .default
             content.userInfo = ["id": id, "epoch": epoch]
             center.add(UNNotificationRequest(identifier: identifier(id), content: content,
                                              trigger: UNTimeIntervalNotificationTrigger(timeInterval: 45, repeats: false))) { error in
                 if let error { NSLog("Exo capture notification scheduling failed: %@", String(describing: error)) }
             }
+        }
+    }
+
+    public static func mediaServicesRestarted(id: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Recording restarted"
+        content.body = "Recording restarted after an audio system reset"
+        content.sound = .default
+        content.userInfo = ["id": id, "reason": "media_services_reset"]
+        center.add(UNNotificationRequest(identifier: "capture.reset.\(id).\(UUID().uuidString)",
+                                         content: content, trigger: nil)) { error in
+            if let error { NSLog("Exo capture reset notification failed: %@", String(describing: error)) }
         }
     }
 
@@ -47,9 +61,11 @@ public enum CaptureNotifications {
         completion()
     }
 
-    public static func handleDelivery(_ notification: UNNotification) {
+    @discardableResult public static func handleDelivery(_ notification: UNNotification) -> Bool {
+        guard notification.request.identifier.hasPrefix("capture.resume.") else { return false }
         let info = notification.request.content.userInfo
-        guard let id = info["id"] as? String, let epoch = info["epoch"] as? Int else { return }
+        guard let id = info["id"] as? String, let epoch = info["epoch"] as? Int else { return true }
         DispatchQueue.main.async { CaptureEngine.shared.resumeFromNotification(id: id, epoch: epoch) }
+        return true
     }
 }

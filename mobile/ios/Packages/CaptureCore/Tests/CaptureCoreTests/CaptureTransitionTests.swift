@@ -260,4 +260,18 @@ final class CaptureTransitionTests: XCTestCase {
         XCTAssertEqual(muted.closedSpan(at: 1_200, audioMs: 500).count, 1)
         XCTAssertNil(muted.openSpan)
     }
+
+    func testBackoffScheduleCapsTheFinalTickAtTenMinutes() {
+        var schedule = CaptureBackoffSchedule()
+        XCTAssertEqual(schedule.nextDelay(at: 100), 0.5)
+        XCTAssertEqual(schedule.nextDelay(at: 100.5), 1)
+        XCTAssertEqual(schedule.nextDelay(at: 101.5), 2)
+        XCTAssertEqual(schedule.nextDelay(at: 103.5), 5)
+        XCTAssertEqual(schedule.nextDelay(at: 108.5), 10)
+        XCTAssertEqual(schedule.nextDelay(at: 118.5), 30)
+        XCTAssertEqual(schedule.nextDelay(at: 698), 2)
+        XCTAssertNil(schedule.nextDelay(at: 700))
+        schedule.reset()
+        XCTAssertEqual(schedule.nextDelay(at: 700), 0.5)
+    }
 }

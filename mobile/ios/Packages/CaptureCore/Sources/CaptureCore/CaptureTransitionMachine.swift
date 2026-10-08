@@ -180,3 +180,22 @@ public struct CaptureAttemptGate {
         id == notice.id && epoch == notice.epoch && intent == "recording" && availability != "available"
     }
 }
+
+/// Delays are measured from the first failed restart; no timer may extend the ten-minute window.
+public struct CaptureBackoffSchedule {
+    public static let maximumSeconds: TimeInterval = 600
+    private static let delays: [TimeInterval] = [0.5, 1, 2, 5, 10, 30]
+    public private(set) var startedAt: TimeInterval?
+    public private(set) var index = 0
+
+    public init() {}
+    public mutating func reset() { startedAt = nil; index = 0 }
+    public mutating func nextDelay(at now: TimeInterval) -> TimeInterval? {
+        if startedAt == nil { startedAt = now }
+        let remaining = Self.maximumSeconds - (now - startedAt!)
+        guard remaining > 0 else { return nil }
+        let delay = min(Self.delays[min(index, Self.delays.count - 1)], remaining)
+        index += 1
+        return delay
+    }
+}
