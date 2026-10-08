@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="capture_input_automatic">Automatic microphone</string>
+    <string name="capture_input_missing">The selected microphone is unavailable</string>
+    <string name="capture_bluetooth_permission">Allow Bluetooth access to use this microphone</string>
+    <string name="capture_tap_to_resume">Tap to resume recording</string>
+    <string name="capture_paused_recorded">Paused · %1$d:%2$02d recorded</string>
+</resources>

@@ -3,7 +3,6 @@ package xyz.tinycloud.exo.capture
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -11,30 +10,53 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import xyz.tinycloud.exo.MainActivity
 import xyz.tinycloud.exo.R
 import java.util.concurrent.Executors
 
 /** The service enters foreground before CaptureEngine can construct AudioRecord. */
 class CaptureService : Service() {
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "ExoCaptureService") }
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var observing = false
+    @Volatile private var foregroundStarted = false
+    private val stateListener = object : CaptureEngine.Listener {
+        override fun event(name: String, data: org.json.JSONObject) {
+            if (name == "micState" && !data.isNull("id")) main.post {
+                if (observing && !CaptureEngine.get(this@CaptureService).status().isNull("id")) update()
+            }
+        }
+    }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { worker.shutdown(); super.onDestroy() }
+    override fun onDestroy() {
+        if (observing) CaptureEngine.get(this).removeListener(stateListener)
+        observing = false
+        foregroundStarted = false
+        worker.shutdown()
+        super.onDestroy()
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: return START_NOT_STICKY
         val engine = CaptureEngine.get(this)
         try {
             ensureChannel()
-            val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type)
+            if (!observing) { observing = true; engine.addListener(stateListener) }
+            if (!foregroundStarted) {
+                if (action != ACTION_START && engine.status().isNull("id")) {
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+                ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type)
+                foregroundStarted = true
+            }
             worker.execute {
                 try {
                     val status = engine.status()
                     if (action in listOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD) &&
-                        intent.getStringExtra("id")?.let { it != status.optString("id") } == true) {
-                        if (status.isNull("id")) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                        (intent.getStringExtra("id") != status.optString("id") ||
+                            !intent.hasExtra("epoch") || intent.getLongExtra("epoch", -1) != status.optLong("epoch"))) {
+                        if (status.isNull("id")) stopNow(startId)
                         else update()
                         return@execute
                     }
@@ -49,49 +71,30 @@ class CaptureService : Service() {
                         }
                         ACTION_PAUSE -> { engine.pause(); update() }
                         ACTION_RESUME -> { engine.resume(); update() }
-                        ACTION_STOP -> { engine.stop(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
-                        ACTION_DISCARD -> { engine.discard(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                        ACTION_STOP -> { engine.stop(); stopNow(startId) }
+                        ACTION_DISCARD -> { engine.discard(); stopNow(startId) }
                     }
                 } catch (e: Exception) {
                     Log.e("ExoCapture", "Service action $action failed", e)
                     if (action == ACTION_START) engine.startFailed(intent.getStringExtra("commandId"), e)
-                    if (engine.status().isNull("id")) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+                    if (engine.status().isNull("id")) stopNow(startId)
                     else update()
                 }
             }
         } catch (e: Exception) {
             Log.e("ExoCapture", "Service action $action failed", e)
             if (action == ACTION_START) engine.startFailed(intent.getStringExtra("commandId"), e)
-            if (engine.status().isNull("id")) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
+            if (engine.status().isNull("id")) stopNow(startId)
         }
         return START_NOT_STICKY
     }
     private fun update() { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification()) }
-    private fun notification(): Notification {
-        val status = CaptureEngine.get(this).status()
-        val paused = status.optString("state") == "paused"
-        val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java).setAction(SHOW_RECORDER),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val toggle = action(if (paused) ACTION_RESUME else ACTION_PAUSE, 2)
-        val stop = action(ACTION_STOP, 3)
-        return NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle(if (paused) getString(R.string.capture_paused) else getString(R.string.capture_recording))
-            .setContentText(if (paused) getString(R.string.capture_resume_hint) else getString(R.string.capture_running_hint))
-            .setContentIntent(open).setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .setUsesChronometer(!paused).setWhen(System.currentTimeMillis() - status.optLong("elapsedMs"))
-            .addAction(0, if (paused) getString(R.string.capture_resume) else getString(R.string.capture_pause), toggle)
-            .addAction(0, getString(R.string.capture_stop), stop).build()
+    private fun stopNow(startId: Int) {
+        foregroundStarted = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
     }
-    private fun action(value: String, request: Int): PendingIntent {
-        val status = CaptureEngine.get(this).status()
-        val intent = Intent(this, CaptureService::class.java).setAction(value)
-            .putExtra("id", status.optString("id")).putExtra("gen", status.optLong("gen"))
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        return if (Build.VERSION.SDK_INT >= 26) PendingIntent.getForegroundService(this, request, intent, flags)
-            else PendingIntent.getService(this, request, intent, flags)
-    }
+    private fun notification(): Notification = CaptureNotifications.foreground(this, CaptureEngine.get(this).status())
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = getSystemService(NotificationManager::class.java)
@@ -120,7 +123,9 @@ class CaptureService : Service() {
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
         @JvmStatic fun send(context: Context, action: String) {
+            val status = CaptureEngine.get(context).status()
             val intent = Intent(context, CaptureService::class.java).setAction(action)
+                .putExtra("id", status.optString("id")).putExtra("epoch", status.optLong("epoch"))
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
     }

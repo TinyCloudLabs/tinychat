@@ -15,7 +15,9 @@ class AudioCapture(
     private val onPcm: (ByteArray) -> Unit,
     private val onLevel: (Double, Double) -> Unit,
     private val onSilenced: (Boolean) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val inputs: InputDevices? = null,
+    private val onRoute: () -> Unit = {}
 ) {
     private val running = AtomicBoolean(false)
     private val producerDone = AtomicBoolean(false)
@@ -25,12 +27,15 @@ class AudioCapture(
     private val record: AudioRecord
     private var reader: Thread? = null
     private var writer: Thread? = null
+    private var watchdog: Thread? = null
+    @Volatile private var lastReadAt = 0L
     private var drained = false
     @Volatile private var tailLost = false
     @Volatile private var writerFailure: Exception? = null
     @Volatile var inputStopped = false
         private set
     private var recordingCallback: Any? = null
+    private val routingListener = android.media.AudioRouting.OnRoutingChangedListener { onRoute() }
     init {
         require(minBytes > 0) { "Unsupported capture format" }
         val size = maxOf(minBytes * 4, SAMPLE_RATE * 2 / 5)
@@ -41,6 +46,10 @@ class AudioCapture(
         if (Build.VERSION.SDK_INT >= 30) builder.setPrivacySensitive(true)
         record = builder.build()
         require(record.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord initialization failed" }
+        try { inputs?.apply(record) } catch (e: Exception) {
+            inputs?.clearCommunicationDevice(record); record.release(); throw e
+        }
+        record.addOnRoutingChangedListener(routingListener, android.os.Handler(android.os.Looper.getMainLooper()))
         if (Build.VERSION.SDK_INT >= 29) {
             val callback = object : android.media.AudioManager.AudioRecordingCallback() {
                 override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>) {
@@ -54,12 +63,16 @@ class AudioCapture(
     }
     fun start(afterRecordStarted: () -> Unit = {}) {
         record.startRecording()
-        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("AudioRecord did not start")
+        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("mic_unavailable")
         try { afterRecordStarted() } catch (e: Exception) {
             try { record.stop(); inputStopped = true } catch (_: Exception) { }
             throw e
         }
+    }
+    /** Called while the engine's control lock is held, before this input is visible to Pause. */
+    fun startWorkers() {
         running.set(true)
+        lastReadAt = System.currentTimeMillis()
         writer = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             while (!producerDone.get() || queue.isNotEmpty()) {
@@ -84,6 +97,7 @@ class AudioCapture(
                     break
                 }
                 if (n == 0) continue
+                lastReadAt = System.currentTimeMillis()
                 val chunk = scratch.copyOf(n)
                 var accepted = queue.offer(chunk)
                 if (!accepted && cutting.get()) {
@@ -107,6 +121,15 @@ class AudioCapture(
                 }
             }
         }.also { it.name = "ExoAudioRead"; it.start() }
+        watchdog = Thread {
+            while (running.get()) {
+                try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
+                if (running.get() && !cutting.get() && System.currentTimeMillis() - lastReadAt >= 3000) {
+                    onError("stalled")
+                    return@Thread
+                }
+            }
+        }.also { it.name = "ExoAudioWatchdog"; it.start() }
     }
     fun drain() {
         if (drained) return
@@ -122,6 +145,7 @@ class AudioCapture(
             inputStopped = true
         }
         running.set(false)
+        watchdog?.interrupt()
         reader?.join(2000)
         if (reader?.isAlive == true) throw IllegalStateException("AudioRecord reader did not stop")
         if (tailLost) throw IllegalStateException("Audio tail could not reach the writer")
@@ -145,6 +169,7 @@ class AudioCapture(
     fun drainAfterReadFailure() {
         if (drained) return
         running.set(false)
+        watchdog?.interrupt()
         try { record.stop() } catch (_: Exception) { }
         inputStopped = true
         reader?.join(2000)
@@ -156,11 +181,14 @@ class AudioCapture(
     }
     fun release() {
         running.set(false)
+        watchdog?.interrupt()
         producerDone.set(true)
         try {
+            record.removeOnRoutingChangedListener(routingListener)
             if (Build.VERSION.SDK_INT >= 29) record.unregisterAudioRecordingCallback(
                 recordingCallback as android.media.AudioManager.AudioRecordingCallback)
-        } finally { record.release() }
+        } finally { record.release(); inputs?.clearCommunicationDevice(record) }
     }
+    fun activeInputId(): String? = inputs?.activeId(record)
     fun stop() { drain(); release() }
 }

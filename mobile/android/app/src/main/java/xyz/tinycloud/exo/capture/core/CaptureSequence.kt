@@ -78,9 +78,9 @@ class CaptureSequence(
         openNextSegment(at)
     }
 
-    fun resumeFailed(gen: Long, at: Long = clock()) {
+    fun resumeFailed(gen: Long, at: Long = clock(), reason: String = "resume_blocked") {
         library.transition(id, "avail", audioMs, JSONObject().put("value", "blocked")
-            .put("reason", "resume_blocked").put("gen", gen), at)
+            .put("reason", reason).put("gen", gen), at)
     }
 
     fun interrupt(reason: String, availabilityReason: String, gen: Long, at: Long = clock()) {
