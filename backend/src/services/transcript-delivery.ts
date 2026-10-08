@@ -360,17 +360,21 @@ export class TranscriptDeliveryWorker {
    * Delivery was turned off for this address (flag off, or narrowed out of the cohort): its stored
    * grant must not stay valid for the rest of its life. Compare-and-delete under the tenant lane.
    */
-  private async dropIneligibleGrant(address: string): Promise<void> {
-    if (this.ineligibleWithoutGrant.has(address)) return;
+  /** Returns how many grant-store reads it made (removeGrant re-reads to compare-and-delete). */
+  private async dropIneligibleGrant(address: string): Promise<number> {
+    if (this.ineligibleWithoutGrant.has(address)) return 0;
+    let reads = 0;
     try {
       await this.coordinator.run(address, async () => {
+        reads++;
         const stored = await this.options.delegationStore.load(address);
-        if (stored) await this.removeGrant(address, stored.serialized);
+        if (stored) { reads++; await this.removeGrant(address, stored.serialized); }
       });
       this.ineligibleWithoutGrant.add(address);
     } catch {
       console.warn("[transcript-delivery] op=remove_ineligible result=error");
     }
+    return reads;
   }
   private async removeGrant(address: string, envelope: string): Promise<void> {
     this.invalidateGrant(address, envelope);
@@ -524,7 +528,9 @@ export class TranscriptDeliveryWorker {
     while (cursor.scanned < cursor.addresses.length && cursor.calls < 200) {
       const address = cursor.addresses[cursor.ai];
       if (!this.options.eligibility(address)) {
-        await this.dropIneligibleGrant(address);
+        // Each grant-store read counts against the pass's call cap, so the first sweep after a
+        // boot (or a cohort narrowing) does not read every non-cohort address at once.
+        cursor.calls += await this.dropIneligibleGrant(address);
         this.advanceAddress(cursor);
         continue;
       }
