@@ -30,7 +30,7 @@ export interface SignedGrantOverrides {
   wallet?: "A" | "B";
   privateKey?: `0x${string}`;
   now?: number;
-  expirationTime?: string;
+  expirationTime?: string | null;
   expiresAt?: number;
   sessionUri?: string;
   audience?: string;
@@ -75,7 +75,8 @@ export async function makeSignedTranscriptGrant(overrides: SignedGrantOverrides 
   const keyId = `z${base58(Buffer.concat([Buffer.from([0xed, 0x01]), rawPublicKey]))}`;
   const sessionDid = `did:key:${keyId}`;
   const sessionUri = overrides.sessionUri ?? `${sessionDid}#${keyId}`;
-  const expirationTime = overrides.expirationTime ?? new Date(now + 30 * 86_400_000).toISOString();
+  const expirationTime = overrides.expirationTime === null ? undefined :
+    overrides.expirationTime ?? new Date(now + 30 * 86_400_000).toISOString();
   const siwe = new SiweMessage({
     domain: "localhost",
     address,

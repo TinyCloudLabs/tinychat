@@ -132,6 +132,7 @@ describe("signed transcript grant verifier", () => {
     await expectCode(await makeSignedTranscriptGrant({ now, expiresAt: Math.floor((now - 1000) / 1000) }), "expired");
     await expectCode(await makeSignedTranscriptGrant({ now, expiresAt: Math.floor((now + 30 * 86_400_000 + 360_000) / 1000) }), "expiry_too_long");
     await expectCode(await makeSignedTranscriptGrant({ now, expirationTime: new Date(now + 2 * 86_400_000).toISOString() }), "expiry_too_long");
+    await expectCode(await makeSignedTranscriptGrant({ now, expirationTime: null }), "session_expired");
     await expectCode(await makeSignedTranscriptGrant({ now, nbf: Math.floor((now + 120_000) / 1000) }), "not_yet_valid");
     const session = await makeSignedTranscriptGrant({ now, expirationTime: new Date(now + 86_400_000).toISOString(), expiresAt: Math.floor((now + 3600_000) / 1000) });
     await expectCode(session, "session_expired", session.address, now + 86_400_001);

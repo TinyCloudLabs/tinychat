@@ -2,7 +2,7 @@ import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { makePkhSpaceId } from "@tinycloud/node-sdk/core";
 import { normalizeTranscriberTranscript, transcriberMeetingInSpace, writeTranscriberMeeting } from "@tinyboilerplate/core";
 import { DelegationCache, type DelegationStore } from "@tinyboilerplate/server";
-import { parseStoredGrant, verificationCacheKey, type VerifiedTranscriptWriter } from "../delegation-verify.js";
+import { evictStoredGrantVerification, parseStoredGrant, verificationCacheKey, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation } from "../portable-delegation.js";
 import { BackendStorageLane } from "./backend-storage-lane.js";
 import { TenantCoordinator } from "./calendar-autojoin-store.js";
@@ -84,7 +84,7 @@ export class WriteGovernor {
   }
 }
 
-type WakeKind = "completed";
+type WakeKind = "completed" | "observed";
 type Item = { address: string; id: string; kind?: WakeKind };
 type SweepAction = Item | { kind: "intent" };
 interface SweepCursor { addresses: string[]; ai: number; idOffset: number; pendingOffset: number; scanned: number; calls: number; }
@@ -143,6 +143,18 @@ export class TranscriptDeliveryWorker {
     this.governor = options.governor ?? new WriteGovernor(6);
     this.accessCache = options.delegationCache ?? new DelegationCache();
     this.sweepMs = options.sweepMs ?? 600_000;
+  }
+
+  /** Called under the same tenant coordinator as delivery after a grant changes. */
+  invalidateGrant(address: string, envelope?: string): void {
+    address = address.toLowerCase();
+    const cached = this.grants.get(address)?.envelope;
+    this.grants.delete(address);
+    for (const stale of [cached, envelope]) {
+      if (!stale) continue;
+      this.accessCache.evict(verificationCacheKey(address, stale, this.options.backendDid, this.options.configuredHost));
+      evictStoredGrantVerification(address, stale, this.options.backendDid, this.options.configuredHost);
+    }
   }
 
   start(): void {
@@ -337,10 +349,13 @@ export class TranscriptDeliveryWorker {
     return { envelope, verified: result.verified };
   }
   private async removeGrant(address: string, envelope: string): Promise<void> {
-    this.grants.delete(address);
-    this.accessCache.evict(verificationCacheKey(address, envelope, this.options.backendDid, this.options.configuredHost));
+    this.invalidateGrant(address, envelope);
     await this.governor.take();
-    await this.storageLane.run(() => this.options.delegationStore.remove(address));
+    await this.storageLane.run(async () => {
+      if ((await this.options.delegationStore.load(address))?.serialized === envelope) {
+        await this.options.delegationStore.remove(address);
+      }
+    });
   }
 
   private async deliverOne(address: string, id: string, kind?: WakeKind): Promise<boolean> {
@@ -486,7 +501,7 @@ export class TranscriptDeliveryWorker {
         (this.nextCheckAt.get(`${address}:${id}`) ?? 0) > now ||
         (this.lastUpstream.get(`${address}:${id}`) ?? -Infinity) + 60_000 > now) continue;
       // An address with no verified grant is skipped without contacting ptx.
-      if (!await this.grant(address)) { this.advanceAddress(cursor); continue; }
+      if (!await this.coordinator.run(address, () => this.grant(address))) { this.advanceAddress(cursor); continue; }
       cursor.calls++;
       return { address, id };
     }

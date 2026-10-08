@@ -1,8 +1,16 @@
+import { once } from "node:events";
+import type { Server } from "node:http";
+import express from "express";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
-import { CONNECTOR_SCHEMA, transcriptKvKey, TRANSCRIBER_MEETING_SOURCE, type StoredDelegation } from "@tinyboilerplate/core";
 import { generatePrivateKey } from "viem/accounts";
+import { CONNECTOR_SCHEMA, transcriptKvKey, TRANSCRIBER_MEETING_SOURCE, type StoredDelegation } from "@tinyboilerplate/core";
+import { DelegationCache, type DelegationMetadata } from "@tinyboilerplate/server";
+import { verificationCacheKey } from "../delegation-verify.js";
+import { createDelegationRouter } from "../routes/delegations.js";
+import { createTranscriberRouter } from "../routes/transcriber.js";
+import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 import type { JsonKv } from "../services/transcriber-index.js";
 import { BackendStorageLane } from "../services/backend-storage-lane.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
@@ -140,6 +148,38 @@ async function admit(f: Fixture, id: string, meeting = f.meeting(id), owner = f.
 async function wakeAndDrain(worker: TranscriptDeliveryWorker, address: string, id: string): Promise<void> {
   await worker.wake(address, id, "completed");
   await worker.sweep();
+}
+
+async function withServer<T>(app: express.Express, run: (base: string) => Promise<T>): Promise<T> {
+  const server: Server = app.listen(0);
+  await once(server, "listening");
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP server address");
+    return await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    const closed = once(server, "close");
+    server.close();
+    await closed;
+  }
+}
+
+function delegationApp(f: Fixture, worker: TranscriptDeliveryWorker, coordinator: TenantCoordinator): express.Express {
+  const app = express();
+  app.use("/api/delegations", createDelegationRouter({
+    backendDid: f.grant.backendDid, configuredHost: f.grant.configuredHost,
+    eligibility: () => true, node: f.node, coordinator,
+    store: {
+      load: async (address) => f.records.get(address) ?? null,
+      remove: async (address) => { f.counts.removal++; f.records.delete(address); },
+      store: async (address: string, serialized: string, metadata: DelegationMetadata) => {
+        f.records.set(address, { serialized, grantedAt: new Date().toISOString(), ...metadata });
+      },
+    },
+    authMiddleware: (req, _res, next) => { req.user = { address: f.grant.address }; next(); },
+    onGrantChanged: (address, previous) => worker.invalidateGrant(address, previous),
+  }));
+  return app;
 }
 
 describe("durable transcript delivery", () => {
@@ -388,6 +428,152 @@ describe("durable transcript delivery", () => {
       expect(f.events.slice(-2)).toEqual(["take", "remove"]);
       expect(f.backend.puts.filter((key) => key.endsWith(b.address.toLowerCase()))).toEqual([]);
       await bWorker.stop();
+    }
+  });
+
+  it("preserves a replacement grant when removal of a stale envelope is paused", async () => {
+    const f = await fixture();
+    const replacement = await makeSignedTranscriptGrant({ expiresAt: Math.floor((f.grant.expiresAt.getTime() + 2 * 3_600_000) / 1000) });
+    const address = f.grant.address.toLowerCase();
+    await admit(f, "stale");
+    const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
+    const original = node.useDelegation;
+    node.useDelegation = async () => { throw Object.assign(new Error("revoked"), { status: 403 }); };
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const worker = f.worker({ governor: { take: async () => { entered(); await held; } } as WriteGovernor });
+    const delivery = worker.deliver(address, "stale");
+    await waiting;
+    f.records.set(address, { ...f.records.get(address)!, serialized: replacement.envelope, expiresAt: replacement.expiresAt.toISOString() });
+    release();
+    await delivery;
+    expect(f.records.get(address)?.serialized).toBe(replacement.envelope);
+    expect(f.counts.removal).toBe(0);
+    node.useDelegation = original;
+    await admit(f, "new");
+    await worker.deliver(address, "new");
+    expect(f.state().done.new.how).toBe("written");
+    await worker.stop();
+  });
+
+  it("accepting a replacement evicts the warm grant and reloads access from the new envelope", async () => {
+    const f = await fixture();
+    const coordinator = new TenantCoordinator();
+    const cache = new DelegationCache();
+    const worker = f.worker({ coordinator, delegationCache: cache });
+    const address = f.grant.address.toLowerCase();
+    await admit(f, "before");
+    await worker.deliver(address, "before");
+    const staleKey = verificationCacheKey(address, f.grant.envelope, f.grant.backendDid, f.grant.configuredHost);
+    expect(cache.get(staleKey)).not.toBeNull();
+    const replacement = await makeSignedTranscriptGrant({ expiresAt: Math.floor((f.grant.expiresAt.getTime() + 2 * 3_600_000) / 1000) });
+    await withServer(delegationApp(f, worker, coordinator), async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(replacement),
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json()).expiresAt).toBe(replacement.expiresAt.toISOString());
+    });
+    expect(cache.get(staleKey)).toBeNull();
+    const activations = f.counts.activation;
+    await admit(f, "after");
+    await worker.deliver(address, "after");
+    expect(f.state().done.after.how).toBe("written");
+    expect(f.counts.activation).toBe(activations + 2);
+    await worker.stop();
+  });
+
+  it("accepting a grant clears a cached absence so the next indexed meeting can deliver", async () => {
+    const f = await fixture();
+    const coordinator = new TenantCoordinator();
+    const worker = f.worker({ coordinator });
+    const address = f.grant.address.toLowerCase();
+    f.records.delete(address);
+    await admit(f, "accepted");
+    await worker.deliver(address, "accepted");
+    expect(f.counts.meeting).toBe(0);
+    await withServer(delegationApp(f, worker, coordinator), async (base) => {
+      const response = await fetch(`${base}/api/delegations`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(f.grant),
+      });
+      expect(response.status).toBe(200);
+    });
+    await worker.deliver(address, "accepted");
+    expect(f.state().done.accepted.how).toBe("written");
+    await worker.stop();
+  });
+
+  it("DELETE revokes a warm worker grant before another meeting can write", async () => {
+    const f = await fixture();
+    const coordinator = new TenantCoordinator();
+    const cache = new DelegationCache();
+    const worker = f.worker({ coordinator, delegationCache: cache });
+    const address = f.grant.address.toLowerCase();
+    await admit(f, "before-delete");
+    await worker.deliver(address, "before-delete");
+    const key = verificationCacheKey(address, f.grant.envelope, f.grant.backendDid, f.grant.configuredHost);
+    expect(cache.get(key)).not.toBeNull();
+    await admit(f, "after-delete");
+    const calls = f.counts.meeting;
+    const writes = f.counts.execute;
+    await withServer(delegationApp(f, worker, coordinator), async (base) => {
+      const response = await fetch(`${base}/api/delegations`, { method: "DELETE" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: "none", expiresAt: null });
+    });
+    expect(cache.get(key)).toBeNull();
+    await worker.deliver(address, "after-delete");
+    expect(f.counts.meeting).toBe(calls);
+    expect(f.counts.execute).toBe(writes);
+    expect(f.db.query("SELECT source_id FROM connector_meeting WHERE source_id = 'after-delete'").all()).toEqual([]);
+    await worker.stop();
+  });
+
+  it("GET meetings observes completion without consuming storage quota retry backoff each minute", async () => {
+    const f = await fixture();
+    const worker = f.worker();
+    await admit(f, "quota-observed");
+    const node = f.node as unknown as { useDelegation: () => Promise<unknown> };
+    const original = node.useDelegation;
+    node.useDelegation = async () => { throw Object.assign(new Error("quota"), { status: 402 }); };
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    const app = express();
+    app.use((req, _res, next) => { req.user = { address: f.grant.address }; next(); });
+    app.use("/api/transcriber/meetings", createTranscriberRouter({
+      api: f.api, index: f.index, onObservedCompletion: (address, id) => worker.wake(address, id, "observed"),
+    }));
+    try {
+      await withServer(app, async (base) => {
+        const url = `${base}/api/transcriber/meetings`;
+        expect((await fetch(url)).status).toBe(200);
+        await worker.sweep();
+        const backoff = f.state().retry["quota-observed"];
+        expect(backoff.code).toBe("storage_quota");
+        const attempts = backoff.attempts;
+        const nextAt = backoff.nextAt;
+        for (let minute = 0; minute < 3; minute++) {
+          now += 60_001;
+          const response = await fetch(url);
+          expect(response.status).toBe(200);
+          expect((await response.json()).meetings[0].status).toBe("completed");
+          await worker.sweep();
+          expect(f.state().retry["quota-observed"]).toEqual({ code: "storage_quota", attempts, nextAt });
+        }
+        node.useDelegation = original;
+        await worker.wake(f.grant.address, "quota-observed", "completed");
+        await worker.sweep();
+        expect(f.state().done["quota-observed"].how).toBe("written");
+      });
+    } finally {
+      Date.now = originalNow;
+      node.useDelegation = original;
+      await worker.stop();
     }
   });
 

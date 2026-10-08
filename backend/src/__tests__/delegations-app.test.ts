@@ -65,22 +65,37 @@ describe("delegation app parser ordering", () => {
     { name: "address excluded from the enabled cohort", eligibility: (address: string) => address === "0x0000000000000000000000000000000000000001", status: 403, error: "delivery_disabled" },
     { name: "eligible address", eligibility: (address: string) => address === ADDRESS, status: 400, error: "invalid_body" },
   ]) {
-    it(`${name}: eligibility precedes the route-local malformed JSON parser`, async () => {
-      const fixture = appWithEligibility(eligibility);
-      await withServer(fixture.app, async (base) => {
-        const response = await fetch(`${base}/api/delegations`, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-requested-with": "XMLHttpRequest" },
-          body: '{"serialized":',
+    for (const path of ["/api/delegations", "/API/Delegations", "/aPi/DeLeGaTiOnS/", "/API/Delegations/?source=browser"]) {
+      it(`${name}: ${path} gates before malformed JSON parsing`, async () => {
+        const fixture = appWithEligibility(eligibility);
+        await withServer(fixture.app, async (base) => {
+          const response = await fetch(`${base}${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-requested-with": "XMLHttpRequest" },
+            body: '{"serialized":',
+          });
+          expect(response.status).toBe(status);
+          expect((await response.json()).error).toBe(error);
         });
-        expect(response.status).toBe(status);
-        expect((await response.json()).error).toBe(error);
+        expect(fixture.bodiesBeforeCsrf).toEqual([undefined]);
+        expect(fixture.calls).toEqual({ verify: 0, activate: 0, store: 0, load: 0 });
       });
-      // The global parser would have rejected malformed JSON before even reaching this spy.
-      expect(fixture.bodiesBeforeCsrf).toEqual([undefined]);
-      expect(fixture.calls).toEqual({ verify: 0, activate: 0, store: 0, load: 0 });
-    });
+    }
   }
+
+  it("the equivalent mixed-case POST retains the 96kb route limit", async () => {
+    const fixture = appWithEligibility(() => true);
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/API/Delegations/`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-requested-with": "XMLHttpRequest" },
+        body: JSON.stringify({ serialized: "x".repeat(97 * 1024) }),
+      });
+      expect(response.status).toBe(413);
+    });
+    expect(fixture.bodiesBeforeCsrf).toEqual([undefined]);
+    expect(fixture.calls).toEqual({ verify: 0, activate: 0, store: 0, load: 0 });
+  });
 
   it("CSRF rejects the POST before authentication, parsing or storage", async () => {
     const fixture = appWithEligibility(() => true);

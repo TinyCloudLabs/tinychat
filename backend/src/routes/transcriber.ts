@@ -39,7 +39,7 @@ export interface TranscriberRouterOptions {
   defaultBotName?: string;
   /** Omit when server delivery is disabled. */
   webhookUrl?: string;
-  onCompleted?: (address: string, meetingId: string) => Promise<void>;
+  onObservedCompletion?: (address: string, meetingId: string) => Promise<void>;
 }
 
 export const MEETING_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -150,7 +150,7 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
           const meeting = await api.getMeeting(id);
           meetings[i] = meeting;
           if (meeting.status === "completed") {
-            try { await options.onCompleted?.(owner, id); }
+            try { await options.onObservedCompletion?.(owner, id); }
             catch { console.warn("[transcriber] completion wake failed"); }
           }
         } catch (error) {

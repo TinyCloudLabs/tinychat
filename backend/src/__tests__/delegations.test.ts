@@ -46,11 +46,13 @@ function appFor(grant: SignedTranscriptGrant, options: {
   onActivation?: (dto: DelegationDto) => Promise<void>;
   onCid?: (count: number) => void;
   onStore?: () => Promise<void>;
+  onLoad?: () => Promise<void>;
+  onRemove?: () => Promise<void>;
+  onGrantChanged?: (address: string, previousEnvelope?: string) => void;
 } = {}) {
-  const calls = { cid: 0, activate: [] as DelegationDto[], store: 0, cache: 0 };
-  const records = new Map<string, StoredDelegation>();
-  const cached = new Map<string, unknown>();
+  const calls = { cid: 0, activate: [] as DelegationDto[], store: 0 };
   const access = { sql: { db: () => ({}) }, kv: { get: async () => ({ ok: true }) } };
+  const records = new Map<string, StoredDelegation>();
   const node = {
     computeDelegationCid: (authorization: string) => {
       calls.cid++;
@@ -67,28 +69,24 @@ function appFor(grant: SignedTranscriptGrant, options: {
     store: async (address: string, serialized: string, metadata: DelegationMetadata) => {
       calls.store++;
       await options.onStore?.();
-      records.set(address, { serialized, grantedAt: new Date().toISOString(), ...metadata });
+      records.set(address.toLowerCase(), { serialized, grantedAt: new Date().toISOString(), ...metadata });
     },
-    load: async (address: string) => records.get(address) ?? null,
-    remove: async (address: string) => { records.delete(address); },
-  };
-  const cache = {
-    get: (address: string) => cached.get(address) ?? null,
-    set: (address: string, value: unknown) => { calls.cache++; cached.set(address, value); },
-    evict: (address: string) => { cached.delete(address); },
+    load: async (address: string) => { await options.onLoad?.(); return records.get(address.toLowerCase()) ?? null; },
+    remove: async (address: string) => { await options.onRemove?.(); records.delete(address.toLowerCase()); },
   };
   const app = express();
   app.use("/api/delegations", createDelegationRouter({
     backendDid: grant.backendDid, configuredHost: grant.configuredHost,
     eligibility: (address) => options.eligibility?.(address) ?? options.eligible ?? true,
     schemaMissing: () => options.schemaMissing ?? false,
-    node, store, cache: cache as unknown as Parameters<typeof createDelegationRouter>[0]["cache"],
+    node, store,
     authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
       req.user = { address: options.address ?? grant.address };
       next();
     },
+    onGrantChanged: options.onGrantChanged,
   }));
-  return { app, store, cache, calls, records, cached };
+  return { app, store, calls, records };
 }
 
 function att(spaceId: string): TranscriptAtt {
@@ -130,7 +128,6 @@ describe("signed transcript-writer delegation acceptance", () => {
     });
     expect(fixture.calls.activate).toHaveLength(2);
     expect(fixture.calls.store).toBe(1);
-    expect(fixture.calls.cache).toBe(1);
     const stored = await fixture.store.load(grant.address);
     expect(stored?.policyHash).toBe(backendDelegationPolicyHash(grant.backendDid));
     expect(stored?.delegateDid).toBe(grant.backendDid);
@@ -188,7 +185,6 @@ describe("signed transcript-writer delegation acceptance", () => {
       });
       expect(fixture.calls.activate).toEqual([]);
       expect(fixture.calls.store).toBe(0);
-      expect(fixture.calls.cache).toBe(0);
       expect(fixture.records.size).toBe(0);
     }
   });
@@ -207,7 +203,7 @@ describe("signed transcript-writer delegation acceptance", () => {
         expect(response.status).toBe(400);
         expect((await response.json()).error).toBe(error);
       });
-      expect(fixture.calls).toEqual({ cid: 0, activate: [], store: 0, cache: 0 });
+      expect(fixture.calls).toEqual({ cid: 0, activate: [], store: 0 });
     }
   });
 
@@ -223,7 +219,7 @@ describe("signed transcript-writer delegation acceptance", () => {
         expect(response.status).toBe(403);
         expect((await response.json()).error).toBe("delivery_disabled");
       });
-      expect(fixture.calls).toEqual({ cid: 0, activate: [], store: 0, cache: 0 });
+      expect(fixture.calls).toEqual({ cid: 0, activate: [], store: 0 });
     });
   }
 
@@ -250,20 +246,45 @@ describe("signed transcript-writer delegation acceptance", () => {
     const fixture = appFor(grant);
     const parsed: unknown = JSON.parse(grant.envelope);
     if (!parsed || typeof parsed !== "object" || !("signature" in parsed)) throw new Error("fixture lacks signature");
-    fixture.records.set(grant.address, {
+    fixture.records.set(grant.address.toLowerCase(), {
       serialized: JSON.stringify({ ...parsed, signature: mismatchedSignature }),
       grantedAt: new Date().toISOString(), expiresAt: grant.expiresAt.toISOString(),
       policyHash: backendDelegationPolicyHash(grant.backendDid), delegateDid: grant.backendDid,
       path: "", actions: [],
     });
-    fixture.cached.set(grant.address, {});
     await withServer(fixture.app, async (base) => {
       const status = await fetch(`${base}/api/delegations/status`);
       expect(await status.json()).toEqual({ status: "stale", expiresAt: null, verified: false, delivery: "enabled" });
     });
-    expect(fixture.records.has(grant.address)).toBe(false);
-    expect(fixture.cached.has(grant.address)).toBe(false);
+    expect(fixture.records.has(grant.address.toLowerCase())).toBe(false);
     expect(fixture.calls.activate).toEqual([]);
+  });
+
+  it("does not delete a newer grant while reporting a stale status observation", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const newer = await makeSignedTranscriptGrant({ expiresAt: Math.floor((grant.expiresAt.getTime() + 2 * HOUR) / 1000) });
+    const invalid = JSON.stringify({ ...JSON.parse(grant.envelope), signature: (await makeSignedTranscriptGrant({ wallet: "B" })).signature });
+    const fixture = appFor(grant, { onCid: (count) => {
+      if (count === 1) {
+        fixture.records.set(grant.address.toLowerCase(), {
+          serialized: newer.envelope, grantedAt: new Date().toISOString(),
+          expiresAt: newer.expiresAt.toISOString(), policyHash: backendDelegationPolicyHash(grant.backendDid),
+          delegateDid: grant.backendDid, path: "", actions: [],
+        });
+      }
+    } });
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: invalid, grantedAt: new Date().toISOString(), expiresAt: grant.expiresAt.toISOString(),
+      policyHash: backendDelegationPolicyHash(grant.backendDid), delegateDid: grant.backendDid,
+      path: "", actions: [],
+    });
+    await withServer(fixture.app, async (base) => {
+      const first = await fetch(`${base}/api/delegations/status`);
+      expect(await first.json()).toEqual({ status: "stale", expiresAt: null, verified: false, delivery: "enabled" });
+      expect(fixture.records.get(grant.address.toLowerCase())?.serialized).toBe(newer.envelope);
+      const next = await fetch(`${base}/api/delegations/status`);
+      expect(await next.json()).toEqual({ status: "active", expiresAt: newer.expiresAt.toISOString(), verified: true, delivery: "enabled" });
+    });
   });
 
   it("does not activate, store or replace a valid grant unless the new expiry gains at least one hour", async () => {
@@ -278,7 +299,6 @@ describe("signed transcript-writer delegation acceptance", () => {
     });
     expect(fixture.calls.activate).toHaveLength(2);
     expect(fixture.calls.store).toBe(1);
-    expect(fixture.calls.cache).toBe(1);
     expect(fingerprint((await fixture.store.load(grant.address))?.serialized)).toBe(fingerprint(grant.envelope));
   });
 
@@ -317,16 +337,19 @@ describe("signed transcript-writer delegation acceptance", () => {
       expect(maxActive).toBe(1);
       const expected = mode === "identical" ? first : extended;
       expect(fixture.calls.store).toBe(mode === "extension" ? 2 : 1);
-      expect(fixture.calls.cache).toBe(mode === "extension" ? 2 : 1);
       expect(fixture.calls.activate).toHaveLength(mode === "extension" ? 4 : 2);
       expect(fingerprint((await fixture.store.load(grant.address))?.serialized)).toBe(fingerprint(expected.envelope));
       expect((await fixture.store.load(grant.address))?.expiresAt).toBe(expected.expiresAt.toISOString());
     });
   }
 
-  it("does not warm the access cache if durable acceptance fails", async () => {
+  it("does not report a grant change if durable acceptance fails", async () => {
     const grant = await makeSignedTranscriptGrant();
-    const fixture = appFor(grant, { onStore: async () => { throw new Error("storage unavailable"); } });
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      onStore: async () => { throw new Error("storage unavailable"); },
+      onGrantChanged: (address) => { changed.push(address); },
+    });
     await withServer(fixture.app, async (base) => {
       const response = await post(base, grant);
       expect(response.status).toBe(503);
@@ -334,8 +357,76 @@ describe("signed transcript-writer delegation acceptance", () => {
     });
     expect(fixture.calls.activate).toHaveLength(2);
     expect(fixture.calls.store).toBe(1);
-    expect(fixture.calls.cache).toBe(0);
     expect(fixture.records.size).toBe(0);
+    expect(changed).toEqual([]);
+  });
+
+  it("returns a redacted 503 on status load failure without changing the grant", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const fixture = appFor(grant, { onLoad: async () => { throw new Error(grant.envelope); } });
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations/status`);
+      expect(response.status).toBe(503);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({ error: "unavailable" });
+      expect(body).not.toContain(grant.envelope);
+    });
+    expect(fixture.records.size).toBe(0);
+  });
+
+  it("returns a redacted 503 when expired-grant cleanup fails and does not signal revocation", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      onRemove: async () => { throw new Error(grant.envelope); },
+      onGrantChanged: (address) => { changed.push(address); },
+    });
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: grant.envelope, grantedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() - 1000).toISOString(), actions: [], path: "",
+    });
+    await withServer(fixture.app, async (base) => {
+      const response = await fetch(`${base}/api/delegations/status`);
+      expect(response.status).toBe(503);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({ error: "unavailable" });
+      expect(body).not.toContain(grant.envelope);
+    });
+    expect(fixture.records.get(grant.address.toLowerCase())?.serialized).toBe(grant.envelope);
+    expect(changed).toEqual([]);
+  });
+
+  it("returns a redacted 503 on DELETE failure and retains the grant for the worker", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      onRemove: async () => { throw new Error(grant.envelope); },
+      onGrantChanged: (address) => { changed.push(address); },
+    });
+    fixture.records.set(grant.address.toLowerCase(), {
+      serialized: grant.envelope, grantedAt: new Date().toISOString(),
+      expiresAt: grant.expiresAt.toISOString(), actions: [], path: "",
+    });
+    const logs: string[] = [];
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    console.warn = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+    console.error = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+    try {
+      await withServer(fixture.app, async (base) => {
+        const response = await fetch(`${base}/api/delegations`, { method: "DELETE" });
+        expect(response.status).toBe(503);
+        const body = await response.text();
+        expect(JSON.parse(body)).toEqual({ error: "unavailable" });
+        expect(body).not.toContain(grant.envelope);
+      });
+    } finally {
+      console.warn = originalWarn;
+      console.error = originalError;
+    }
+    expect(logs.join(" ")).not.toContain(grant.envelope);
+    expect(fixture.records.get(grant.address.toLowerCase())?.serialized).toBe(grant.envelope);
+    expect(changed).toEqual([]);
   });
 
   it("limits each wallet address to six attempts per hour before verifying the seventh", async () => {

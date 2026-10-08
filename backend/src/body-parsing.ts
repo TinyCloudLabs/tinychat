@@ -6,7 +6,7 @@ export function createApiBodyParser() {
   const parser = express.json({ limit: "1mb" });
   return ((req, res, next) => {
     if (
-      (req.method === "POST" && /^\/api\/delegations\/?$/.test(req.path)) ||
+      (req.method === "POST" && /^\/api\/delegations\/?$/i.test(req.path)) ||
       req.path === "/api/nras-proxy" ||
       req.path.startsWith("/api/nras-proxy/") ||
       isHostedPartPath(req.path)

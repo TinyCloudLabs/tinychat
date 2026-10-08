@@ -658,12 +658,12 @@ async function main() {
       node,
       backendDid: did,
       store: delegationStore,
-      cache: delegationCache,
       authMiddleware,
       configuredHost: TINYCLOUD_HOST,
       eligibility: transcriptEligibility,
       schemaMissing: (address) => transcriptWorker?.hasSchemaMissing(address) ?? false,
       coordinator: transcriptCoordinator,
+      onGrantChanged: (address, previousEnvelope) => transcriptWorker?.invalidateGrant(address, previousEnvelope),
     }),
   );
 
@@ -978,8 +978,8 @@ async function main() {
         api: transcriberApi!,
         index: transcriberIndex,
         webhookUrl: transcriptDeliveryConfig.enabled ? transcriptDeliveryConfig.webhookUrl : undefined,
-        onCompleted: transcriptWorker
-          ? (address, meetingId) => transcriptWorker.wake(address, meetingId, "completed")
+        onObservedCompletion: transcriptWorker
+          ? (address, meetingId) => transcriptWorker.wake(address, meetingId, "observed")
           : undefined,
         ...(process.env.TRANSCRIPTION_BOT_NAME
           ? { defaultBotName: process.env.TRANSCRIPTION_BOT_NAME }
