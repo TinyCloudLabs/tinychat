@@ -109,6 +109,15 @@ services:
       TRANSCRIPTION_API_URL: ${TRANSCRIPTION_API_URL:-}
       TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
       TRANSCRIPTION_BOT_NAME: ${TRANSCRIPTION_BOT_NAME:-}
+      # TC-641 server transcript writer. Keep OFF until TC-825 fixes node SQL
+      # exact-database scoping. Set a canary cohort before enabling; webhook
+      # signature is optional in unsigned-wake mode until ptx provisions whsec_.
+      TRANSCRIPT_SERVER_DELIVERY_ENABLED: ${TRANSCRIPT_SERVER_DELIVERY_ENABLED:-false}
+      TRANSCRIPT_SERVER_DELIVERY_ADDRESSES: ${TRANSCRIPT_SERVER_DELIVERY_ADDRESSES:-}
+      TRANSCRIPTION_WEBHOOK_URL: ${TRANSCRIPTION_WEBHOOK_URL:-}
+      TRANSCRIPTION_WEBHOOK_SECRET: ${TRANSCRIPTION_WEBHOOK_SECRET:-}
+      TRANSCRIPT_DELIVERY_SWEEP_MS: ${TRANSCRIPT_DELIVERY_SWEEP_MS:-}
+      TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN: ${TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN:-}
       # Exo private cloud transcription. Dark by default: false ⇒ /api/transcriber/private-cloud
       # is never mounted. Armed, URL + key + tenant key are mandatory (startup refuses otherwise).
       PRIVATE_CLOUD_TRANSCRIPTION_ENABLED: ${PRIVATE_CLOUD_TRANSCRIPTION_ENABLED:-false}

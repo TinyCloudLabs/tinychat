@@ -271,6 +271,50 @@ Repository **variables** (all optional — defaults shown):
 | `TRANSCRIPTION_API_URL` | _(empty — repo **variable**; the TinyCloud Private Transcription API base URL. With `TRANSCRIPTION_API_KEY` set, `/api/transcriber/meetings` mounts and Settings → Transcriber lights up; either empty ⇒ 404 and the card says it is not configured)_ |
 | `TRANSCRIPTION_API_KEY` | _(empty — repo **secret**; the `tc_live_…` project key minted with the transcription service's `create-key` CLI. Never reaches the browser)_ |
 | `TRANSCRIPTION_BOT_NAME` | `TinyCloud Private Notetaker` (repo variable; the bot's display name in the meeting) |
+| `TRANSCRIPT_SERVER_DELIVERY_ENABLED` | `false` (repo variable; gates the narrow user-space transcript writer, the ptx webhook and POST `/api/delegations`). Keep false in production until **TC-825** ships on the node. |
+| `TRANSCRIPT_SERVER_DELIVERY_ADDRESSES` | _(empty = all addresses when enabled; set a comma-separated test cohort first)_ |
+| `TRANSCRIPTION_WEBHOOK_URL` | _(empty = sweep/list/calendar hooks only; absolute HTTPS callback for new meetings, loopback HTTP allowed locally)_ |
+| `TRANSCRIPTION_WEBHOOK_SECRET` | _(empty = unsigned-wake mode; when set, a `whsec_` plus 48 lowercase hex chars requiring raw-body HMAC)_ |
+| `TRANSCRIPT_DELIVERY_SWEEP_MS` | `600000` (minimum `60000`; first pass after 30 s, at most 200 upstream calls per pass) |
+| `TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN` | `6` (minimum 1; one shared governor for each activation, SQL INSERT, KV PUT, state write, grant removal and recovered intent write) |
+
+### Private Transcription server delivery (TC-641) — dark rollout runbook
+
+The feature **ships off**. With the flag false, authenticated malformed
+`POST /api/delegations` returns `403 delivery_disabled` before body parsing,
+`GET /api/delegations/status` reports `delivery: disabled`, and
+`POST /api/transcriber/webhooks/ptx` returns 404. Manual meeting-create
+intents still persist and recover through idempotency lookup.
+
+For a **dev-only** rollout after explicit approval, use a dedicated generated
+backend identity, an explicit test-address cohort, the ptx project key and a
+public HTTPS `TRANSCRIPTION_WEBHOOK_URL` ending in
+`/api/transcriber/webhooks/ptx`. A missing webhook secret is allowed
+temporarily: receipt is a wake, not authority, and completion still requires
+the indexed id, signed owner-bound grant and upstream owner check. When ptx
+provisions its `whsec_`, set `TRANSCRIPTION_WEBHOOK_SECRET` and verify that
+unsigned requests now return 401. Do not log the key or signed envelope.
+Keep the browser fallback; it waits ten minutes after a recorded completion,
+then repairs a missing row/body on the next pass.
+
+In a fresh signed-in browser session, ensure the connector tables are created
+**before** a `[tinycloud.sql/read, tinycloud.sql/write]` and
+`[tinycloud.kv/get, tinycloud.kv/put]` grant is minted. The backend cannot run
+DDL with that grant. If status becomes `delivery: schema_missing`, a later
+browser visit re-ensures the tables without replacing a healthy grant; the
+worker retains the id and retries. Close all tabs, complete a dev ptx meeting,
+wait for `[transcript-delivery] op=deliver result=written`, then open Library
+and check both row and body. The sweep backs up lost webhooks. Observe retry
+codes, write-governor saturation and queue progress for the canary.
+
+**Production enable is blocked on TC-825**, the node SQL/DuckDB exact-database
+scoping fix. The verified delegation confines abilities but the current node
+does not confine SQL to the named database. No consent-copy change is part of
+TC-641; `V3_VERDICT.json` remains unchanged. Sign-out does not revoke an
+already minted grant: it expires with its parent SIWE session (at most 30 days),
+and the browser fallback remains available thereafter. See
+`docs/connector-webhooks-delegation-gate.md` §4 for the distinct Fireflies
+decision and this new feature's gate.
 
 ### Eliza task rollout
 

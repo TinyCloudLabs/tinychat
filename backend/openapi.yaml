@@ -119,7 +119,7 @@ paths:
   /api/delegations/status:
     get:
       operationId: getDelegationStatus
-      summary: Check stored delegation status
+      summary: Check the signed transcript-writer grant and delivery eligibility
       security:
         - bearerAuth: []
       responses:
@@ -133,7 +133,9 @@ paths:
                 active:
                   value:
                     status: active
-                    expiresAt: "2026-05-20T12:00:00.000Z"
+                    expiresAt: "2026-11-20T12:00:00.000Z"
+                    verified: true
+                    delivery: enabled
                 expired:
                   value:
                     status: expired
@@ -146,13 +148,25 @@ paths:
                   value:
                     status: none
                     expiresAt: null
+                schema_missing:
+                  value:
+                    status: active
+                    expiresAt: "2026-11-20T12:00:00.000Z"
+                    verified: true
+                    delivery: schema_missing
+                disabled:
+                  value:
+                    status: none
+                    expiresAt: null
+                    verified: false
+                    delivery: disabled
         "401":
           $ref: "#/components/responses/Unauthenticated"
 
   /api/delegations:
     post:
       operationId: storeDelegation
-      summary: Store and activate a portable delegation
+      summary: Verify, activate and store a narrowly scoped signed transcript-writer grant
       security:
         - bearerAuth: []
       requestBody:
@@ -161,10 +175,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [serialized]
+              required: [serialized, siwe, signature]
               properties:
                 serialized:
                   type: string
+                  description: One portable delegation; its signed UCAN grants only connector SQL read/write and transcriber KV get/put.
+                siwe:
+                  type: string
+                  description: The user's signed TinyCloud session SIWE message.
+                signature:
+                  type: string
+                  description: The wallet signature over siwe; the session key signs the delegation silently.
       responses:
         "200":
           description: Delegation active
@@ -176,6 +197,20 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          description: "`delivery_disabled` — flag off or address outside the configured cohort; checked before parsing the body."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: "`delegation_rate_limited` — more than six accepts per address per hour."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          $ref: "#/components/responses/UpstreamError"
     delete:
       operationId: revokeDelegation
       summary: Remove stored delegation
@@ -1512,6 +1547,63 @@ paths:
               schema:
                 $ref: "#/components/schemas/ConnectorError"
 
+  /api/transcriber/webhooks/ptx:
+    post:
+      operationId: receivePrivateTranscriptionCompletion
+      summary: Wake the backend transcript writer after a ptx meeting completion
+      description: >-
+        Public raw-body endpoint, mounted only with TRANSCRIPT_SERVER_DELIVERY_ENABLED=true.
+        A completion is a wake signal, not authority: the worker verifies the indexed
+        meeting, its signed user delegation, the upstream owner and the transcript before
+        writing to the user's connector SQL row and KV body. A sweep backs up lost wakes.
+        With TRANSCRIPTION_WEBHOOK_SECRET configured, X-Webhook-Signature must be
+        sha256=<lowercase hex HMAC-SHA256 over the exact raw JSON bytes>. Without it,
+        unsigned wakes are accepted; admission still cannot trigger upstream I/O.
+      security: []
+      parameters:
+        - name: X-Webhook-Signature
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, data]
+              properties:
+                type:
+                  type: string
+                  enum: [meeting.completed, meeting.failed]
+                data:
+                  type: object
+                  required: [meeting_id, metadata]
+                  properties:
+                    meeting_id:
+                      type: string
+                    metadata:
+                      type: object
+                      required: [tinychat_address]
+                      properties:
+                        tinychat_address:
+                          type: string
+                          pattern: "^0x[0-9a-fA-F]{40}$"
+      responses:
+        "202":
+          description: Valid wake accepted; no delivery is promised by the response.
+        "400":
+          description: Malformed JSON, unsupported event, gzip or non-JSON content.
+        "401":
+          description: Missing or invalid HMAC when a webhook secret is configured.
+        "404":
+          description: Server delivery disabled.
+        "413":
+          description: Raw body exceeds 16 KiB.
+        "429":
+          description: More than 60 requests/min/IP or 600 requests/min globally.
+
   /api/transcriber/meetings:
     get:
       operationId: listTranscriberMeetings
@@ -1523,6 +1615,8 @@ paths:
         the browser never sees; the tenant is ALWAYS the session address. Each
         row's status is refreshed upstream on read; a row whose upstream read
         failed is returned as `{id, unavailable: true}` rather than dropped.
+        A completed row also wakes server delivery; an unrecoverable create intent is
+        resolved through a matching ptx idempotency lookup before listing.
       security:
         - bearerAuth: []
       responses:
@@ -2482,6 +2576,8 @@ components:
           type: [string, "null"]
         ended_at:
           type: [string, "null"]
+        completed_at:
+          type: [string, "null"]
         error:
           type: [object, "null"]
           properties:
@@ -3076,11 +3172,15 @@ components:
         verified:
           type: boolean
           description: >-
-            Whether the stored delegation's `att` has been cryptographically verified. Present
-            and `false` on every `active` response today: the §9.2 verification chokepoint does
-            not exist yet, so `active` means stored, unexpired and addressed to this backend —
-            the resources, delegator and expiry behind it all come from the bundle's unsigned
-            top-level fields. Additive on purpose; the `status` enum is unchanged.
+            Cryptographic UCAN/SIWE verification of the stored grant, re-run at use time.
+            False for missing, expired or stale grants.
+        delivery:
+          type: string
+          enum: [enabled, disabled, schema_missing]
+          description: >-
+            Disabled when the feature flag or cohort excludes this address. schema_missing
+            means the browser should create the connector tables using its own session
+            before a retry; the backend never issues DDL.
 
     ChatMessage:
       type: object
