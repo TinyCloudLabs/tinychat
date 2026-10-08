@@ -167,6 +167,38 @@ delta. It is nearly free there and nowhere else.
 
 ---
 
+### 2.4 Private Transcription server delivery (TC-641; separate from Fireflies Option C)
+
+TC-641 does not change the Fireflies Option C accounting above. Its narrow
+transcript-writer grant is only for `connector_meeting` in the user's own
+`xyz.tinycloud.tinychat/connectors` SQL database and create-only transcript KV
+body. The browser creates the connector schema **before** minting; delegated
+SQL `[read, write]` cannot run DDL on the 1.19.2 node. The backend issues no
+`CREATE`, `ALTER`, `DROP` or PRAGMA write. A missing table is `schema_missing`,
+kept for retry after the browser repairs it.
+
+| Worker path | Metered node writes | Why |
+|---|---:|---|
+| First completed meeting, cold activation | **5** | 2 resource activations + 1 INSERT + 1 create-only KV PUT + 1 delivery-state write |
+| Later new meeting, cold activation | **5** | Same operations; no schema write on any attempt |
+| New meeting, warm activation | **3** | INSERT + PUT + state |
+| Already imported history, cold activation | **3 per pass** | 2 activations + one batched state write, independent of meeting count |
+| Already imported history, warm activation | **1 per pass** | One batched state write |
+| Invalid grant removal / recovered create intent | **1 per actual node write** | Each token is taken immediately before the operation |
+
+`TRANSCRIPT_DELIVERY_MAX_WRITES_PER_MIN` defaults to **6**, minimum 1.
+Each operation takes one token from a single governor; a throttled worker
+waits *outside* the process-global write lane. A webhook is only a wake and
+does not perform these writes on receipt. The sweep admits at most 200
+upstream calls/pass and alternates with the wake FIFO.
+
+The **~0.5 writes/s** ceiling in §1 is a **2026-06 SQLite probe**, not a
+production Postgres measurement. The node changelog reports 77–99 ops/s on
+Postgres. Re-measure the shared-node load before changing the governor; do
+not relax it on the strength of that changelog alone.
+
+---
+
 ## 3. Per consenting user per day
 
 Delivery volume: §5.4 establishes that "a heavy real user records well under 10 meetings a
