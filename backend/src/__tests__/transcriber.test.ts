@@ -282,6 +282,26 @@ describe("GET /api/transcriber/meetings", () => {
     });
   });
 
+  test("an upstream completion recorded for another owner, or for none, is not a trusted observation", async () => {
+    const wakes: Array<[string, string]> = [];
+    const h = harness(ADDRESS_A, new MemoryTranscriberIndexStore(), {
+      onObservedCompletion: async (address, id) => { wakes.push([address, id]); },
+    });
+    await withServer(h.app, async (base) => {
+      await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });
+      const row = h.store.get("mtg_1")!;
+      row.status = "completed";
+      for (const metadata of [{ tinychat_address: ADDRESS_B }, {}, { tinychat_address: 7 }]) {
+        row.metadata = metadata;
+        expect((await call(base, "/api/transcriber/meetings")).status).toBe(200);
+      }
+      expect(wakes).toEqual([]);
+      row.metadata = { tinychat_address: ADDRESS_A.toUpperCase().replace("0X", "0x") };
+      expect((await call(base, "/api/transcriber/meetings")).status).toBe(200);
+      expect(wakes).toEqual([[ADDRESS_A.toLowerCase(), "mtg_1"]]);
+    });
+  });
+
   test("lists only the address's meetings, newest first, refreshed upstream", async () => {
     const h = harness();
     await withServer(h.app, async (base) => {

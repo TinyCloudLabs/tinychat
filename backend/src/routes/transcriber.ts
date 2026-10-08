@@ -149,7 +149,9 @@ export function createTranscriberRouter(options: TranscriberRouterOptions): Rout
         try {
           const meeting = await api.getMeeting(id);
           meetings[i] = meeting;
-          if (meeting.status === "completed") {
+          // A trusted observation: our own upstream read says completed, for this session's owner.
+          const recordedOwner = meeting.metadata?.tinychat_address;
+          if (meeting.status === "completed" && typeof recordedOwner === "string" && recordedOwner.toLowerCase() === owner.toLowerCase()) {
             try { await options.onObservedCompletion?.(owner, id); }
             catch { console.warn("[transcriber] completion wake failed"); }
           }
