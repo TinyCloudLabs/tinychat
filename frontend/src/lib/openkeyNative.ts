@@ -22,8 +22,7 @@ import type {
   OpenKeyNative,
 } from "@openkey/sdk-capacitor";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { isTransientRestoreError } from "./sessionRestore";
-import { nativeRenewAt, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
+import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -385,7 +384,7 @@ export async function signInNative(
 
 export type NativeBootOutcome =
   | { kind: "none" }
-  | { kind: "restored"; address: string; tcw: TinyCloudWeb; session: NativeSession; openkey: OpenKeyNative; verified?: NativeSignInResult["verified"] }
+  | { kind: "restored"; address: string; tcw: TinyCloudWeb; session: NativeSession; openkey: OpenKeyNative; verified?: NativeSignInResult["verified"]; renewAt?: number }
   | { kind: "unavailable" }
   | { kind: "storage" }
   | { kind: "configuration" }
@@ -404,17 +403,32 @@ export async function restoreNativeAtBoot(
     let session = await openkey.current();
     if (!session) return { kind: "none" };
     let renewed = false;
-    if (!backendJwtValid || Date.now() >= nativeRenewAt(session)) {
+    let renewAt: number | undefined;
+    const expiresAt = new Date(session.delegation.expiresAt).getTime();
+    const issuedAt = session.delegation.issuedAt ? new Date(session.delegation.issuedAt).getTime() : NaN;
+    const minimumAt = Number.isFinite(issuedAt)
+      ? issuedAt + Math.min(60_000, renewalLeadMs(session.delegation)) : 0;
+    const wantsRenewal = !backendJwtValid || Date.now() >= nativeRenewAt(session);
+    if (wantsRenewal && Date.now() < minimumAt && Date.now() < expiresAt) {
+      // OpenKey rejects renewal inside its minimum interval. Restore the live
+      // delegation now and let the scheduler refresh the JWT at the first legal time.
+      renewAt = minimumAt;
+    } else if (wantsRenewal) {
       let siweNonce: string | undefined;
       try { siweNonce = await d.requestNonce(config.backendUrl, session.delegation.address); }
       catch { /* A nonce fetch outage does not prevent delegation renewal. */ }
-      session = await openkey.renew(siweNonce ? { siweNonce } : {});
-      renewed = true;
+      try {
+        session = await openkey.renew(siweNonce ? { siweNonce } : {});
+        renewed = true;
+      } catch (error) {
+        if (nativeCode(error) !== "RENEWAL_TOO_SOON" || Date.now() >= expiresAt) throw error;
+        const retryAfterSeconds = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+        renewAt = Date.now() + (typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1000 : 15_000);
+      }
     }
     const installed = await installNativeSession(openkey, session, config, d, undefined, !renewed);
     let verified: NativeSignInResult["verified"] | undefined;
-    if (!backendJwtValid || renewed) {
-      if (!renewed) throw new Error("Backend authentication needs a renewed SIWE nonce");
+    if (renewed) {
       try {
         verified = await d.verifySession(config.backendUrl, session.delegation.siwe!, session.delegation.signature!);
       } catch (error) {
@@ -423,13 +437,12 @@ export async function restoreNativeAtBoot(
         return { kind: "unavailable" };
       }
     }
-    return { kind: "restored", address: installed.address, tcw: installed.tcw, session, openkey, verified };
+    return { kind: "restored", address: installed.address, tcw: installed.tcw, session, openkey, verified, renewAt };
   } catch (error) {
     logNativeOpenKeyError("boot restore", error);
     if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) return { kind: "configuration" };
     if (nativeCode(error) === "STORAGE") return { kind: "storage" };
-    const transient = isTransientRestoreError(error) || ["NETWORK", "TEMPORARILY_UNAVAILABLE", "RENEWAL_TOO_SOON", "HANDOFF_RETRY"].includes(nativeCode(error) ?? "");
-    if (!terminalRenewalError(error) && transient) return { kind: "unavailable" };
+    if (!terminalRenewalError(error)) return { kind: "unavailable" };
     try { await openkey?.signOut(); }
     catch (signOutError) {
       if (nativeCode(signOutError) === "STORAGE") return { kind: "storage" };
@@ -494,8 +507,8 @@ export async function installNativeSession(
   }
 
   const storage = openkey.sessionStorageAdapter();
-  if (alreadyStored) await storage.load(address);
-  else await storage.save(address, {
+  const stored = alreadyStored ? await storage.load(address) : null;
+  if (!stored || stored.tinycloudSession?.delegationCid !== delegation.delegationCid) await storage.save(address, {
     address,
     chainId,
     sessionKey: JSON.stringify(sessionKey.privateJwk),

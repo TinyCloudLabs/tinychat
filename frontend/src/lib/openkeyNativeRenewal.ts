@@ -3,10 +3,10 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SessionStore } from "@tinyboilerplate/client";
 import { voiceNoteSaveBusy, whenVoiceNoteSavesIdle } from "./voiceNotes/recorderSaves";
 import { schedulePendingVoiceNotesRecovery } from "../chat/PendingVoiceNotesSaver";
-import { isTransientRestoreError } from "./sessionRestore";
 
 export const NATIVE_SESSION_ENDED_MESSAGE = "Your OpenKey session ended — sign in again.";
 export const NATIVE_STORAGE_MESSAGE = "Couldn't access secure storage on this device. Please try again.";
+export const NATIVE_RENEWAL_UNAVAILABLE_MESSAGE = "Can't renew your OpenKey session right now. We'll retry automatically.";
 
 type Delegation = NativeSession["delegation"];
 type Verified = { token: string; expiresIn: number; address: string };
@@ -31,20 +31,20 @@ export function nativeRenewAt(session: NativeSession, jitterMs = 0): number {
 
 export function nativeRetryDelay(error: unknown, attempt: number, remainingMs: number): number | null {
   const code = nativeCode(error);
-  if (remainingMs <= 0) return null;
-  if (code === "RENEWAL_TOO_SOON" || code === "TEMPORARILY_UNAVAILABLE") {
+  if (code === "RENEWAL_TOO_SOON") {
     const seconds = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
     if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
   }
-  // The SDK already reloads the secure-store token and retries a 409 once.
-  if (code === "RENEWAL_CONFLICT") return null;
-  if (code === "NETWORK" || code === "TEMPORARILY_UNAVAILABLE" || code === "RENEWAL_TOO_SOON" || code === "HANDOFF_RETRY" ||
-    isTransientRestoreError(error) ||
-    (typeof (error as { status?: unknown })?.status === "number" &&
-      (Number((error as { status: number }).status) >= 500 || Number((error as { status: number }).status) === 429))) {
-    return Math.max(15_000, Math.min(300_000, remainingMs / 2, 15_000 * 2 ** Math.min(attempt, 5)));
+  const backoff = Math.min(300_000, 15_000 * 2 ** Math.min(attempt, 5));
+  const seconds = (error as { retryAfterSeconds?: unknown })?.retryAfterSeconds;
+  // A 503's Retry-After adds a lower bound; it never removes the plan's 15 s floor.
+  if (code === "TEMPORARILY_UNAVAILABLE" && typeof seconds === "number" && Number.isFinite(seconds)) {
+    return Math.max(backoff, seconds * 1000);
   }
-  return null;
+  // Unknown failures are still recoverable. Keep retrying with a capped delay,
+  // including after the old delegation expires, and make the failure visible.
+  void remainingMs;
+  return backoff;
 }
 
 export function nativeCode(error: unknown): string | null {
@@ -52,7 +52,7 @@ export function nativeCode(error: unknown): string | null {
 }
 
 export function terminalRenewalError(error: unknown): boolean {
-  return ["INVALID_GRANT", "CONSENT_REQUIRED", "ACCESS_DENIED", "SPACE_UNAVAILABLE", "NOT_SIGNED_IN", "RENEWAL_CONFLICT"].includes(nativeCode(error) ?? "");
+  return ["INVALID_GRANT", "CONSENT_REQUIRED", "ACCESS_DENIED", "SPACE_UNAVAILABLE"].includes(nativeCode(error) ?? "");
 }
 
 export interface NativeRenewalDeps {
@@ -65,6 +65,7 @@ export interface NativeRenewalDeps {
   install: (session: NativeSession, tcw: TinyCloudWeb) => Promise<void>;
   onTerminal: (message: string) => void;
   onStorage: (message: string) => void;
+  onUnavailable?: (message: string) => void;
   saveBusy?: () => boolean;
   whenSaveIdle?: () => Promise<void>;
   recoverPendingSave?: () => void;
@@ -80,6 +81,8 @@ export class NativeRenewal {
   private retryAttempt = 0;
   private retryNotBefore = 0;
   private stopped = false;
+  private generation = 0;
+  private renewAtOverride: number | null = null;
   private readonly now: () => number;
   private readonly saveBusy: () => boolean;
   private readonly whenSaveIdle: () => Promise<void>;
@@ -93,18 +96,46 @@ export class NativeRenewal {
     this.recoverPendingSave = deps.recoverPendingSave ?? schedulePendingVoiceNotesRecovery;
   }
 
-  start(): void { this.schedule(nativeRenewAt(this.session, this.deps.jitter?.() ?? Math.random() * 10_000)); }
-  stop(): void { this.stopped = true; if (this.timer) clearTimeout(this.timer); this.timer = null; }
+  start(renewAtOverride?: number): void {
+    this.renewAtOverride = renewAtOverride ?? null;
+    this.schedule(this.nextRenewAt());
+  }
+  stop(): void { this.stopped = true; this.generation++; if (this.timer) clearTimeout(this.timer); this.timer = null; }
+  async resume(): Promise<void> {
+    this.stopped = false;
+    this.generation++;
+    const generation = this.generation;
+    this.flight = null;
+    try {
+      const current = await this.deps.openkey.current();
+      if (this.stopped || generation !== this.generation) return;
+      if (current && current.delegation.delegationCid !== this.session.delegation.delegationCid) {
+        this.pendingInstall = current;
+        this.retryNotBefore = 0;
+      }
+    } catch (error) {
+      if (this.stopped || generation !== this.generation) return;
+      if (nativeCode(error) === "STORAGE") this.deps.onStorage(NATIVE_STORAGE_MESSAGE);
+    }
+    this.schedule(this.pendingInstall ? this.now() : Math.max(this.nextRenewAt(), this.retryNotBefore));
+  }
+  private nextRenewAt(): number { return Math.min(nativeRenewAt(this.session, this.deps.jitter?.() ?? Math.random() * 10_000), this.renewAtOverride ?? Infinity); }
   /** Foreground and guarded TinyCloud calls use the same single flight as the timer. */
-  check(force = false): Promise<void> {
-    if (this.stopped) return Promise.resolve();
-    if (force && this.now() >= expiryMs(this.session.delegation.expiresAt)) this.retryNotBefore = 0;
+  check(_force = false): Promise<void> {
+    if (this.stopped) return Promise.reject(new Error("OpenKey session is signed out"));
     if (this.now() < this.retryNotBefore) {
       return this.now() >= expiryMs(this.session.delegation.expiresAt)
         ? Promise.reject(new Error("OpenKey renewal is temporarily unavailable")) : Promise.resolve();
     }
-    if (this.now() < nativeRenewAt(this.session) && !this.pendingInstall) return Promise.resolve();
-    if (!this.flight) this.flight = this.run().finally(() => { this.flight = null; });
+    if (this.retryNotBefore === 0 && this.now() < Math.min(nativeRenewAt(this.session), this.renewAtOverride ?? Infinity) && !this.pendingInstall) return Promise.resolve();
+    if (!this.flight) {
+      const generation = this.generation;
+      const flight = this.run(generation).finally(() => { if (this.flight === flight) this.flight = null; });
+      this.flight = flight;
+    }
+    // A save's next part must be able to use the old, still-valid graph while
+    // network renewal and the deferred install continue in the background.
+    if (this.saveBusy() && this.now() < expiryMs(this.session.delegation.expiresAt) - 60_000) return Promise.resolve();
     return this.flight.then(() => {
       if (this.now() >= expiryMs(this.session.delegation.expiresAt)) {
         throw new Error("OpenKey renewal is temporarily unavailable");
@@ -118,13 +149,16 @@ export class NativeRenewal {
     this.timer = setTimeout(() => { this.timer = null; void this.check().catch(() => {}); }, Math.max(0, at - this.now()));
   }
 
-  private async run(): Promise<void> {
+  private async run(generation: number): Promise<void> {
+    const active = () => !this.stopped && generation === this.generation;
     try {
       if (!this.pendingInstall) {
         let nonce: string | undefined;
         try { nonce = await this.deps.requestNonce(this.session.delegation.address!); }
         catch { /* A backend outage must not block OpenKey renewal. */ }
+        if (!active()) return;
         this.pendingInstall = await this.deps.openkey.renew(nonce ? { siweNonce: nonce } : {});
+        if (!active()) return;
       }
       const next = this.pendingInstall;
       const forceAt = expiryMs(this.session.delegation.expiresAt) - 60_000;
@@ -137,27 +171,32 @@ export class NativeRenewal {
           ]);
         } finally { if (deadline) clearTimeout(deadline); }
       }
-      if (this.stopped) return;
+      if (!active()) return;
       const forced = this.saveBusy();
       await this.deps.install(next, this.deps.tcw);
+      if (!active()) return;
       this.session = next;
       this.pendingInstall = null;
+      this.renewAtOverride = null;
+      if (forced) void this.whenSaveIdle().then(() => this.recoverPendingSave());
+      const verified = await this.deps.verifySession(next.delegation.siwe!, next.delegation.signature!);
+      if (!active()) return;
+      this.deps.sessionStore.setSession(verified.token, verified.expiresIn, verified.address);
       this.retryAttempt = 0;
       this.retryNotBefore = 0;
-      if (forced) void this.whenSaveIdle().then(() => this.recoverPendingSave());
-      try {
-        const verified = await this.deps.verifySession(next.delegation.siwe!, next.delegation.signature!);
-        this.deps.sessionStore.setSession(verified.token, verified.expiresIn, verified.address);
-      } catch { /* The delegation remains usable; retry backend auth on the next renewal. */ }
-      this.schedule(nativeRenewAt(next, this.deps.jitter?.() ?? Math.random() * 10_000));
+      if (!active()) return;
+      const nextAt = this.nextRenewAt();
+      console.info("[OpenKey native] renewal", { code: "OK", expiresAt: next.delegation.expiresAt, nextSchedule: new Date(nextAt).toISOString() });
+      this.schedule(nextAt);
     } catch (error) {
-      if (this.stopped) return;
+      if (!active()) return;
       if (terminalRenewalError(error)) {
+        console.warn("[OpenKey native] renewal", { code: nativeCode(error), expiresAt: this.session.delegation.expiresAt, nextSchedule: null });
         this.stop();
         this.deps.onTerminal(NATIVE_SESSION_ENDED_MESSAGE);
-        // The SDK wipes terminal renewals itself; a failed 409 reload still
-        // holds a grant, so retire it explicitly before a future boot.
-        if (nativeCode(error) === "RENEWAL_CONFLICT" || nativeCode(error) === "SPACE_UNAVAILABLE") {
+        // A local handoff failure can carry SPACE_UNAVAILABLE without the SDK
+        // having wiped its own grant, so revoke that one explicitly.
+        if (nativeCode(error) === "SPACE_UNAVAILABLE") {
           void this.deps.openkey.signOut?.().catch((signOutError: unknown) => {
             if (nativeCode(signOutError) === "STORAGE") this.deps.onStorage(NATIVE_STORAGE_MESSAGE);
           });
@@ -165,12 +204,15 @@ export class NativeRenewal {
       } else if (nativeCode(error) === "STORAGE") {
         this.deps.onStorage(NATIVE_STORAGE_MESSAGE);
         this.retryNotBefore = this.now() + 15_000;
+        console.warn("[OpenKey native] renewal", { code: "STORAGE", expiresAt: this.session.delegation.expiresAt, nextSchedule: new Date(this.retryNotBefore).toISOString() });
         this.schedule(this.retryNotBefore);
       } else {
         const remaining = expiryMs(this.session.delegation.expiresAt) - this.now();
         const delay = nativeRetryDelay(error, this.retryAttempt++, remaining);
-        this.retryNotBefore = delay === null ? Number.POSITIVE_INFINITY : this.now() + delay;
-        if (delay !== null) this.schedule(this.retryNotBefore);
+        this.deps.onUnavailable?.(NATIVE_RENEWAL_UNAVAILABLE_MESSAGE);
+        this.retryNotBefore = this.now() + (delay ?? 15_000);
+        console.warn("[OpenKey native] renewal", { code: nativeCode(error) ?? "UNEXPECTED", expiresAt: this.session.delegation.expiresAt, nextSchedule: new Date(this.retryNotBefore).toISOString() });
+        this.schedule(this.retryNotBefore);
       }
     }
   }
@@ -178,21 +220,45 @@ export class NativeRenewal {
 
 /** Intercept native KV/SQL calls at the last boundary before the SDK invocation. */
 export function guardNativeTinyCloudCalls(tcw: TinyCloudWeb, renewal: NativeRenewal): TinyCloudWeb {
-  const wrap = (service: object): object => new Proxy(service, {
-    get(target, key) {
+  // Each handle is an accessor, including handles retained by putAudio or
+  // returned by db()/withPrefix(). Never bind a service from a retired graph.
+  const wrap = (resolve: () => object): object => new Proxy({}, {
+    get(_target, key) {
+      const target = resolve();
       const value = Reflect.get(target, key, target) as unknown;
       if (typeof value !== "function") return value;
-      if (key === "db" || key === "withPrefix") return (...args: unknown[]) => {
-        const result = value.apply(target, args);
-        return result && typeof result === "object" ? wrap(result) : result;
+      if (key === "db" || key === "withPrefix") return (...args: unknown[]) => wrap(() => {
+        const current = resolve();
+        return (Reflect.get(current, key, current) as (...args: unknown[]) => object).apply(current, args);
+      });
+      return async (...args: unknown[]) => {
+        await renewal.check();
+        const invoke = () => {
+          const current = resolve();
+          return (Reflect.get(current, key, current) as (...args: unknown[]) => unknown).apply(current, args);
+        };
+        const retired = (value: unknown): boolean => {
+          const detail = value && typeof value === "object" && "error" in value ? value.error : value;
+          return detail instanceof Error ? /Service graph retired/i.test(detail.message)
+            : Boolean(detail && typeof detail === "object" && "message" in detail && /Service graph retired/i.test(String(detail.message)));
+        };
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const result = await invoke();
+            if (!retired(result)) return result;
+          } catch (error) {
+            if (!retired(error)) throw error;
+          }
+          await renewal.check();
+        }
+        throw new Error("TinyCloud session changed during the request. Please try again.");
       };
-      return async (...args: unknown[]) => { await renewal.check(); return value.apply(target, args); };
     },
   });
   return new Proxy(tcw, {
     get(target, key) {
       const value = Reflect.get(target, key, target) as unknown;
-      if ((key === "kv" || key === "sql" || key === "capabilities") && value && typeof value === "object") return wrap(value);
+      if ((key === "kv" || key === "sql" || key === "capabilities") && value && typeof value === "object") return wrap(() => Reflect.get(target, key, target) as object);
       return typeof value === "function" ? value.bind(target) : value;
     },
   });

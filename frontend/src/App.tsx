@@ -272,33 +272,48 @@ export function App() {
     tinycloudHosts: TINYCLOUD_HOSTS,
   };
 
-  const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSession, openkey: OpenKeyNative): Promise<TinyCloudWeb> => {
+  const clearLocalSession = (message: string | null, rawTcw?: TinyCloudWeb) => {
+    nativeRenewalRef.current?.stop();
+    nativeRenewalRef.current = null;
+    if (rawTcw) { try { rawTcw.cleanup(); } catch { /* Continue local cleanup. */ } }
+    resetNavigationMemory();
+    const storedAddress = sessionStoreRef.current.getAddress() ?? address;
+    if (storedAddress) clearPersistedSession(storedAddress);
+    sessionStoreRef.current.clear();
+    setNativeSessionActive(false);
+    historyPrefetch.clear();
+    clearAgentSessionCache();
+    clearBackgroundDrainRecord();
+    uploadRunner.reset();
+    selectionControllerRef.current = null;
+    memoryRef.current = null;
+    setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
+    setTcw(null);
+    setAddress(null);
+    setDid(null);
+    setSpaceId(null);
+    setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
+    setBillingStatus(null);
+    setPricingOpen(false);
+    setError(message);
+    setState(message ? "recoverableError" : "unauthenticated");
+  };
+
+  const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSession, openkey: OpenKeyNative, renewAt?: number): Promise<TinyCloudWeb> => {
     nativeRenewalRef.current?.stop();
     const services = await nativeRenewalServices(nativeConfig, openkey);
     const renewal = new NativeRenewal({
       openkey, tcw: rawTcw, session, sessionStore: sessionStoreRef.current,
       ...services,
       onTerminal: () => {
-        resetNavigationMemory();
-        historyPrefetch.clear();
-        clearAgentSessionCache();
-        clearBackgroundDrainRecord();
-        uploadRunner.reset();
-        try { rawTcw.cleanup(); } catch { /* Local sign-out still continues. */ }
-        sessionStoreRef.current.clear();
-        setNativeSessionActive(false);
-        nativeRenewalRef.current = null;
-        setTcw(null);
-        setAddress(null);
-        setDid(null);
-        setSpaceId(null);
-        setError(NATIVE_SESSION_ENDED_MESSAGE);
+        clearLocalSession(NATIVE_SESSION_ENDED_MESSAGE, rawTcw);
         setState("unauthenticated");
       },
       onStorage: () => { setError(NATIVE_STORAGE_MESSAGE); setBillingNotice(NATIVE_STORAGE_MESSAGE); },
+      onUnavailable: (message) => { setError(message); setBillingNotice(message); },
     });
     nativeRenewalRef.current = renewal;
-    renewal.start();
+    renewal.start(renewAt);
     return guardNativeTinyCloudCalls(rawTcw, renewal);
   };
 
@@ -339,7 +354,7 @@ export function App() {
         if (boot.kind === "restored") {
           if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
           setNativeSessionActive(true);
-          setTcw(await startNativeRenewal(boot.tcw, boot.session, boot.openkey));
+          setTcw(await startNativeRenewal(boot.tcw, boot.session, boot.openkey, boot.renewAt));
           setAddress(boot.address);
           setDid(boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`);
           setSpaceId(boot.tcw.spaceId ?? null);
@@ -732,12 +747,12 @@ export function App() {
     signOutInFlightRef.current = true;
     setSigningOut(true);
     setError(null);
-    // The next account must not reopen this one's Library or note addresses.
-    resetNavigationMemory();
     try {
       let openKeyWarning: string | null = null;
       const nativeSession = isNativeOpenKeySession();
       if (nativeSession) {
+        // Stop before the first await: an in-flight verify cannot republish a JWT.
+        nativeRenewalRef.current?.stop();
         // Native sign-out revokes the OpenKey delegation grant and clears the
         // secure-store session unless secure storage needs another attempt.
         try {
@@ -749,6 +764,7 @@ export function App() {
             // Keep the native marker and current session for another attempt.
             setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
             setState("ready");
+            await nativeRenewalRef.current?.resume();
             return;
           }
           if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
@@ -756,6 +772,7 @@ export function App() {
             // native client is configured again.
             setError(caught.message);
             setState("ready");
+            await nativeRenewalRef.current?.resume();
             return;
           }
           openKeyWarning = NATIVE_SIGN_OUT_WARNING;
@@ -788,37 +805,7 @@ export function App() {
           logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
       }
-      nativeRenewalRef.current?.stop();
-      nativeRenewalRef.current = null;
-      // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
-      // directly as well so a client cleanup failure cannot restore this user.
-      if (address) clearPersistedSession(address);
-      sessionStoreRef.current.clear();
-      if (nativeSession) setNativeSessionActive(false);
-      // Drop the in-memory history prefetch cache and stop its queue — it holds
-      // the signed-out account's message docs.
-      historyPrefetch.clear();
-      // Clear the agent session cache so the next sign-in re-probes.
-      clearAgentSessionCache();
-      // Drop the background-drain counts: they belong to the account that is
-      // leaving, and the next user must never inherit them. ONLY the record —
-      // this page load's attempt/dark latches are about the page, not the user.
-      clearBackgroundDrainRecord();
-      // Stop this tab's audio upload work: it runs with the leaving account's
-      // session and space. Its stored job stays for that account's next visit.
-      uploadRunner.reset();
-      selectionControllerRef.current = null;
-      memoryRef.current = null;
-      setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
-      setTcw(null);
-      setAddress(null);
-      setDid(null);
-      setSpaceId(null);
-      setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
-      setBillingStatus(null);
-      setPricingOpen(false);
-      setError(openKeyWarning);
-      setState(openKeyWarning ? "recoverableError" : "unauthenticated");
+      clearLocalSession(openKeyWarning, tcw ?? undefined);
     } finally {
       signOutInFlightRef.current = false;
       setSigningOut(false);

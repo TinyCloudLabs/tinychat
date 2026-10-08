@@ -781,12 +781,14 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     );
     expect(body).toContain('openKeyOutcome.status === "unverified"');
     expect(body).toContain('openKeyOutcome.status === "cancelled"');
-    expect(body).toContain("if (address) clearPersistedSession(address);");
-    expect(body).toContain("historyPrefetch.clear();");
-    expect(body).toContain("clearAgentSessionCache();");
-    expect(body).toContain("clearBackgroundDrainRecord();");
+    expect(body).toContain("clearLocalSession(openKeyWarning, tcw ?? undefined);");
+    const cleanup = app.slice(app.indexOf("const clearLocalSession ="), app.indexOf("const startNativeRenewal ="));
+    expect(cleanup).toContain("clearPersistedSession(storedAddress);");
+    expect(cleanup).toContain("historyPrefetch.clear();");
+    expect(cleanup).toContain("clearAgentSessionCache();");
+    expect(cleanup).toContain("clearBackgroundDrainRecord();");
     // The page load's latches are NOT reset here — only the record is.
-    expect(body).not.toContain("resetBackgroundDrainForTests");
+    expect(cleanup).not.toContain("resetBackgroundDrainForTests");
   });
 });
 

@@ -427,7 +427,7 @@ describe("native boot", () => {
     });
     expect(boot.kind).toBe("restored");
     expect(constructed).toBe(1);
-    expect(flow.order).toEqual(["load", "activate", "restore"]);
+    expect(flow.order).toEqual(["load", "save", "activate", "restore"]);
   });
 
   test("constructs the client even without a current session so pending revokes retry", async () => {
@@ -469,6 +469,64 @@ describe("native boot", () => {
     expect(expiredJwt.kind).toBe("restored");
     if (expiredJwt.kind === "restored") expect(expiredJwt.verified?.token).toBeDefined();
     expect(flow.order).toContain("verify");
+  });
+
+  test("a valid delegation renews to replace only an expired backend JWT", async () => {
+    const flow = makeFlow();
+    const live = { ...delegation, issuedAt: new Date(Date.now() - 300_000).toISOString(), expiresAt: new Date(Date.now() + 3_300_000).toISOString() };
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: live, sessionKey });
+    flow.openkey.renew = async () => {
+      flow.order.push("renew");
+      return { tokens: { accessToken: "a", refreshToken: "r2" }, delegation: { ...delegation, delegationCid: "jwt-renewed" }, sessionKey };
+    };
+    const boot = await restoreNativeAtBoot(config, false, flow.deps);
+    expect(boot.kind).toBe("restored");
+    if (boot.kind === "restored") expect(boot.verified?.token).toBe("jwt");
+    expect(flow.order.indexOf("renew")).toBeLessThan(flow.order.indexOf("activate"));
+    expect(flow.order).toContain("verify");
+  });
+
+  test("a renewal inside the minimum restores immediately and schedules background renewal", async () => {
+    const flow = makeFlow();
+    const live = { ...delegation, issuedAt: new Date(Date.now() - 5_000).toISOString(), expiresAt: new Date(Date.now() + 295_000).toISOString() };
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation: live, sessionKey });
+    flow.openkey.renew = async () => { throw new Error("boot must not wait for a too-soon renewal"); };
+    const boot = await restoreNativeAtBoot(config, false, flow.deps);
+    expect(boot.kind).toBe("restored");
+    if (boot.kind === "restored") {
+      expect(boot.verified).toBeUndefined();
+      expect(boot.renewAt).toBeGreaterThan(Date.now());
+      expect(boot.renewAt).toBeLessThan(Date.now() + 60_000);
+    }
+    expect(flow.order).not.toContain("renew");
+  });
+
+  test("reconciles a stale adapter CID from an interrupted renewal before activation", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
+    flow.storage.load = async () => ({
+      address: ADDRESS, chainId: 1, sessionKey: "{}", siwe: "old", signature: "old",
+      tinycloudSession: { delegationHeader: { Authorization: "old" }, delegationCid: "stale", spaceId: SPACE_ID },
+      expiresAt: delegation.expiresAt, createdAt: new Date().toISOString(), version: "1", tinycloudHosts: [HOST],
+    });
+    expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("restored");
+    expect(flow.order.slice(0, 3)).toEqual(["save", "activate", "restore"]);
+    expect(flow.storage.saved.at(-1)?.record.tinycloudSession?.delegationCid).toBe(delegation.delegationCid);
+  });
+
+  test("network, server, unavailable and unexpected boot errors preserve the SDK session", async () => {
+    for (const error of [
+      new OpenKeyNativeError("NETWORK", "offline"),
+      new OpenKeyNativeError("SERVER", "error", 503),
+      new OpenKeyNativeError("UNAVAILABLE", "offline"),
+      new Error("unexpected restore failure"),
+    ]) {
+      resetNativeOpenKeyClientForTests();
+      const flow = makeFlow();
+      flow.openkey.current = async () => { throw error; };
+      expect((await restoreNativeAtBoot(config, true, flow.deps)).kind).toBe("unavailable");
+      expect(flow.order).not.toContain("signOut");
+    }
   });
 
   test("classifies terminal and storage errors separately", async () => {
@@ -573,7 +631,14 @@ describe("platform routing (source)", () => {
     const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
     expect(signOut).toContain("signOutNative()");
     expect(signOut.indexOf("isNativeOpenKeySession()")).toBeLessThan(signOut.indexOf("signOutOpenKeySession("));
-    expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("sessionStoreRef.current.clear()"));
+    expect(signOut.indexOf("if (isNativeStorageError(caught))")).toBeLessThan(signOut.indexOf("clearLocalSession(openKeyWarning, tcw ?? undefined)"));
+    expect(signOut.indexOf("nativeRenewalRef.current?.stop()")).toBeLessThan(signOut.indexOf("await signOutNative()"));
+    const storageFailure = signOut.slice(signOut.indexOf("if (isNativeStorageError(caught))"), signOut.indexOf("if (caught instanceof Error"));
+    expect(storageFailure).toContain('setState("ready")');
+    expect(storageFailure).toContain("await nativeRenewalRef.current?.resume()");
+    expect(storageFailure).not.toContain("setNativeSessionActive(false)");
+    const terminal = app.slice(app.indexOf("onTerminal: () =>"), app.indexOf("onStorage: () =>"));
+    expect(terminal).toContain("clearLocalSession(NATIVE_SESSION_ENDED_MESSAGE, rawTcw)");
   });
 
   test("boot restores native grants before trying the legacy widget restore", () => {
