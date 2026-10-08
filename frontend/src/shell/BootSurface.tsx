@@ -1,3 +1,4 @@
+import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/info-tip";
 import type { AppState } from "../lib/appState";
@@ -26,10 +27,13 @@ export function BootSurface(props: {
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 
   return (
-    // Centred while it fits; scrolls (from the top) when it does not, as with
-    // the offline recorder on a phone on its side.
-    <div className="flex h-full overflow-y-auto p-6">
-      <div className="m-auto flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
+    // Content centred while it fits; scrolls (from the top) when it does not,
+    // as with the offline recorder on a phone on its side. The empty first row
+    // and the build line's row share the free space evenly, so the content
+    // stays centred and the line stays pinned to the foot (TC-840).
+    <div className="grid h-full grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] overflow-y-auto p-6">
+      <div aria-hidden />
+      <div className="mx-auto flex w-full min-w-0 max-w-sm flex-col items-center gap-5 text-center">
         <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
           T
         </span>
@@ -54,6 +58,9 @@ export function BootSurface(props: {
           <span className="text-xs text-muted-foreground">Working…</span>
         )}
         {props.voiceNotes}
+      </div>
+      <div className="mx-auto flex w-full max-w-sm items-end justify-center">
+        <BuildInfoLine />
       </div>
     </div>
   );

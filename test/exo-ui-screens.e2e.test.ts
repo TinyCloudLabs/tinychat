@@ -106,13 +106,19 @@ let bundle = "";
 let css = "";
 let html = "";
 
+// The build line's injected values (TC-840): the same `__EXO_BUILD_INFO__`
+// vite.config.ts defines, so captures show the real version, not "unknown".
+// package.json is a known file: the cast names its one field, nothing else.
+const frontendPkg: { version?: string } = JSON.parse(readFileSync(`${frontend}package.json`, "utf8"));
+const exoBuildInfo = { version: frontendPkg.version, channel: "dev" };
+
 beforeAll(async () => {
   const built = await Bun.build({
     entrypoints: [`${frontend}src/harness/exoUiHarness.tsx`],
     root: frontend,
     target: "browser",
     minify: false,
-    define: { "import.meta.env": "{}" },
+    define: { "import.meta.env": "{}", __EXO_BUILD_INFO__: JSON.stringify(exoBuildInfo) },
     // index.css's @font-face URLs point into frontend/public (served below).
     external: ["/fonts/*"],
   });

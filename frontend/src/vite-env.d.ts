@@ -40,3 +40,10 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/**
+ * The build line's baseline (TC-840), baked in by vite.config.ts: the shared
+ * product version, the commit being built and the release channel when the
+ * pipeline names one. `undefined` outside a Vite build (bun tests).
+ */
+declare const __EXO_BUILD_INFO__: { version?: string; commit?: string; channel?: string } | undefined;

@@ -9,7 +9,32 @@ import { VitePWA } from "vite-plugin-pwa";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
-export default defineConfig({
+// The build line's baseline (TC-840): the shared web/desktop/mobile version
+// frontend/package.json owns, the commit being built, and the channel
+// (VITE_EXO_CHANNEL for the pipeline; `vite dev` reports "dev"). Native
+// targets override the version and build with the bundle's own numbers.
+// package.json is a known file: the cast names its one field, nothing else.
+const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8")) as { version?: string };
+const exoBuildInfo = {
+  version: pkg.version,
+  commit:
+    process.env.VITE_EXO_BUILD_COMMIT ??
+    process.env.CF_PAGES_COMMIT_SHA ??
+    process.env.GITHUB_SHA ??
+    (() => {
+      try {
+        return execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir }).toString().trim();
+      } catch {
+        return undefined;
+      }
+    })(),
+  channel: process.env.VITE_EXO_CHANNEL,
+};
+
+export default defineConfig(({ command }) => ({
+  define: {
+    __EXO_BUILD_INFO__: JSON.stringify({ ...exoBuildInfo, channel: exoBuildInfo.channel ?? (command === "serve" ? "dev" : undefined) }),
+  },
   // The client-side TEE verifier (@redpill-ai/verifier + @peculiar/x509) is
   // Node-oriented and uses `Buffer` for base64↔bytes and ASN.1/cert parsing.
   // Vite externalizes Node builtins in the browser, which silently broke the
@@ -112,4 +137,4 @@ export default defineConfig({
       },
     }),
   },
-});
+}));
