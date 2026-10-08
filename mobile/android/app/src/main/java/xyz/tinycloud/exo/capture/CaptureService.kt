@@ -42,10 +42,6 @@ class CaptureService : Service() {
             ensureChannel()
             if (!observing) { observing = true; engine.addListener(stateListener) }
             if (!foregroundStarted) {
-                if (action != ACTION_START && engine.status().isNull("id")) {
-                    stopSelf(startId)
-                    return START_NOT_STICKY
-                }
                 val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
                 ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type)
                 foregroundStarted = true

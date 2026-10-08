@@ -236,7 +236,7 @@ class CaptureEngine private constructor(private val context: Context) {
         id = newId
         pausedMs = 0; pausedAt = 0; silencedMs = 0; silencedEvents = 0; noSignalMs = 0
         noSignalAt = 0; lastPeakAt = System.currentTimeMillis()
-        source = startSource; intent = "recording"; availability = "available"; state = "recording"; reason = null; gen++
+        source = startSource; intent = "recording"; availability = "available"; state = "idle"; reason = null; gen++
         spans = JSONArray(); openSpan = null
         try { acquire {
             sequence!!.firstInput(gen)
@@ -249,6 +249,7 @@ class CaptureEngine private constructor(private val context: Context) {
         }
         main.removeCallbacks(limitTick); main.postDelayed(limitTick, 1000)
         epoch++
+        state = if (silencedAt != 0L) "silenced" else "recording"
         publishState()
         if (commandId != null) emit("started", JSONObject().put("commandId", commandId).put("id", newId))
         if (startSource != "in_app") presentRecorder()
@@ -313,7 +314,7 @@ class CaptureEngine private constructor(private val context: Context) {
                 controlLock.withLock {
                     if (id != current || gen != attempt || intent != "recording") throw StaleStart()
                     input = localInput; encoder = localEncoder
-                    try { beforeStart(); afterStart(); localInput.startWorkers() }
+                    try { beforeStart(); afterStart(); localInput.startWorkers(); localInput.awaitFirstPcm() }
                     catch (e: Exception) { input = null; encoder = null; throw e }
                 }
             }
@@ -446,7 +447,7 @@ class CaptureEngine private constructor(private val context: Context) {
         if (pausedAt > 0) { pausedMs += at - pausedAt; pausedAt = 0 }
         gen++
         val attempt = gen
-        intent = "recording"; state = "recording"; reason = null
+        intent = "recording"
         if (wasPaused) sequence!!.resumeIntent(at)
         try {
             acquire(afterStart = {
@@ -462,13 +463,20 @@ class CaptureEngine private constructor(private val context: Context) {
         } catch (e: Exception) {
             if (id != current || gen != attempt || intent != "recording") return@withLock
             availability = "blocked"; state = "needs_user"
-            reason = if (e is SecurityException) "resume_not_allowed" else "mic_unavailable"
+            reason = when {
+                e is SecurityException -> "resume_not_allowed"
+                e is java.io.IOException -> "resume_blocked"
+                e.message == "input_unavailable" -> "input_unavailable"
+                else -> "mic_unavailable"
+            }
             sequence!!.resumeFailed(gen, at, reason!!)
             publishState()
             CaptureNotifications.showResumeAlert(context, status())
             throw IllegalStateException("resume_failed", e)
         }
         epoch++
+        reason = if (silencedAt != 0L) "os_silenced" else null
+        state = if (silencedAt != 0L) "silenced" else "recording"
         interruptedAt = 0; retryDelayMs = 500; main.removeCallbacks(retry)
         CaptureNotifications.cancelAlert(context)
         publishState()

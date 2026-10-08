@@ -40,20 +40,29 @@ paused foreground notification remains the route for locked-screen Resume.
 
 - API 34: stale notification action, injected read error with restart, and
   in-flight Resume invalidation by Pause/Stop/Discard passed in separate
-  instrumented runs. A five-minute background run reached its assertion, but
-  the test had not granted `POST_NOTIFICATIONS`, so the paused notification was
-  absent and Resume was not invoked. The test now grants that permission;
-  subsequent emulator boot attempts did not reach a usable guest. No resumed
-  audio result can be claimed from those attempts.
-- API 36: stale action and injected read error tests passed (2/2). During the
-  subsequent five-minute test launch, the emulator stopped answering guest
-  shell commands before the runner reported test startup. The test did not
-  reach Pause.
-- API 24 booted, but installation stalled in `dex2oat` on the emulator, so
-  no app assertion completed. The API 28 image was unavailable locally.
+  instrumented runs. The five-minute background run passed after the test
+  granted `POST_NOTIFICATIONS`. The notification action resumed the running
+  foreground service at 00:05:32 local time, and the saved note lasted
+  13.444 s with 1.486 s before Pause. The pulled AAC file is in
+  `/tmp/exo-capture/evidence/T14/api34-background-note.m4a`; `ffprobe`
+  reports mono 44.1 kHz AAC. Its post-pause audio has `mean_volume: -37.0 dB`
+  and `max_volume: -2.8 dB` (`ffmpeg -ss 1.6 -af volumedetect`).
+- API 36: stale action and injected read error tests passed (2/2). A later
+  five-minute run reached Pause, but the emulator stopped answering guest
+  commands before Resume and the runner never returned an assertion. The
+  background Resume and audio-level gate remains open for API 36.
+- API 24 and API 28: the stale notification, in-flight Resume invalidation,
+  and injected read-error tests passed (3/3 on each emulator). The existing
+  direct-start buffer and blocked-Resume regression cases also passed on
+  API 24 after fixes. A full connected suite attempt on API 24 lost the
+  emulator mid-run. On API 28 it completed with failures, including an
+  unrelated synthetic AAC packet-count assertion; the foreground-action
+  and immediate-Stop timing failures prompted the state publication fix.
+  Targeted foreground-action and stale-service retests then reported passes;
+  the API 28 guest stopped responding before the latter runner exited.
 - Unit tests, debug APK, unsigned release AAB/APK, and the throwaway-key
-  release signing rehearsal passed. The API 34/36 five-minute background
-  checks and host-audio `mean_volume` evidence remain open.
+  release signing rehearsal passed. The API 36 five-minute background check
+  and its host-audio `mean_volume` evidence remain open.
 
 ## Moto G Power gate G2 (pending device release)
 

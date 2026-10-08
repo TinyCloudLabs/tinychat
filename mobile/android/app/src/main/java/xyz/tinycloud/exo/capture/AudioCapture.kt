@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.Process
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
@@ -23,6 +25,7 @@ class AudioCapture(
     private val producerDone = AtomicBoolean(false)
     private val cutting = AtomicBoolean(false)
     private val queue = ArrayBlockingQueue<ByteArray>(200) // 200 × 50 ms = 10 s
+    private val firstPcm = CountDownLatch(1)
     private val minBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
     private val record: AudioRecord
     private var reader: Thread? = null
@@ -64,7 +67,10 @@ class AudioCapture(
     fun start(afterRecordStarted: () -> Unit = {}) {
         record.startRecording()
         if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("mic_unavailable")
-        try { afterRecordStarted() } catch (e: Exception) {
+        try {
+            afterRecordStarted()
+            if (writer == null) startWorkers()
+        } catch (e: Exception) {
             try { record.stop(); inputStopped = true } catch (_: Exception) { }
             throw e
         }
@@ -77,8 +83,9 @@ class AudioCapture(
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             while (!producerDone.get() || queue.isNotEmpty()) {
                 val pcm = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-                try { onPcm(pcm) } catch (e: Exception) {
+                try { onPcm(pcm); firstPcm.countDown() } catch (e: Exception) {
                     writerFailure = e
+                    firstPcm.countDown()
                     onError("write_failed: ${e.message}"); running.set(false); producerDone.set(true)
                     queue.clear()
                     break
@@ -130,6 +137,10 @@ class AudioCapture(
                 }
             }
         }.also { it.name = "ExoAudioWatchdog"; it.start() }
+    }
+    fun awaitFirstPcm() {
+        if (!firstPcm.await(3, TimeUnit.SECONDS)) throw IllegalStateException("mic_unavailable")
+        writerFailure?.let { throw IllegalStateException("write_failed", it) }
     }
     fun drain() {
         if (drained) return
