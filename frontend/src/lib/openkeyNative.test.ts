@@ -133,7 +133,7 @@ function makeFlow(): Flow {
     activateSession: async (host, header) => {
       flow.order.push("activate");
       flow.activation.push({ host, header });
-      return { success: true, activated: [SPACE_ID] };
+      return { success: true, status: 200, activated: [SPACE_ID], skipped: [], commitEventCid: "bafyreceipt" };
     },
     restoreSession: async (address, config) => {
       flow.order.push("restore");
@@ -243,7 +243,7 @@ describe("nativePermissions", () => {
 });
 
 describe("signInNative", () => {
-  test("runs nonce → sign-in → handoff → activate → restore → verify", async () => {
+  test("a fresh activation runs nonce → sign-in → handoff → activate → restore → verify", async () => {
     const flow = makeFlow();
     const result = await signInNative(config, flow.deps);
 
@@ -285,6 +285,35 @@ describe("signInNative", () => {
     ]);
     expect(result.address).toBe(ADDRESS);
     expect(result.verified.token).toBe("jwt");
+  });
+
+  test("an already active space with no new activation restores and verifies", async () => {
+    const flow = makeFlow();
+    const activate = flow.deps.activateSession;
+    flow.deps.activateSession = async (host, header) => ({
+      ...await activate(host, header), activated: [], skipped: [],
+    });
+
+    const result = await signInNative(config, flow.deps);
+    expect(result.verified.token).toBe("jwt");
+    expect(flow.order).toEqual(["nonce", "signIn", "save", "activate", "restore", "verify"]);
+  });
+
+  test("a skipped delegated space maps to SPACE_UNAVAILABLE and revokes the grant", async () => {
+    const flow = makeFlow();
+    const activate = flow.deps.activateSession;
+    flow.deps.activateSession = async (host, header) => ({
+      ...await activate(host, header), activated: [], skipped: [SPACE_ID],
+    });
+
+    let caught: unknown;
+    try { await signInNative(config, flow.deps); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe(NATIVE_SIGN_IN_SPACE_MESSAGE);
+    expect((caught as Error & { cause?: { code?: string } }).cause?.code).toBe("SPACE_UNAVAILABLE");
+    expect(flow.order.at(-1)).toBe("signOut");
+    expect(flow.restore).toEqual([]);
+    expect(flow.verify).toEqual([]);
   });
 
   test("never writes the session key or JWK to localStorage", async () => {
@@ -330,7 +359,7 @@ describe("signInNative", () => {
 
   test("an unspecified failure gets the generic message", async () => {
     const flow = makeFlow();
-    flow.deps.activateSession = async () => ({ success: false, error: "node unreachable" });
+    flow.deps.activateSession = async () => ({ success: false, status: 503, error: "node unreachable" });
     await expect(signInNative(config, flow.deps)).rejects.toThrow(/failed/i);
     expect(flow.verify).toEqual([]);
   });

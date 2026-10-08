@@ -17,7 +17,7 @@
 
 import { appPlatform, type AppPlatform } from "./platform";
 import type { EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
-import type { Manifest } from "@tinycloud/sdk-core";
+import type { Manifest, SpaceHostResult } from "@tinycloud/sdk-core";
 import type {
   NativeDelegationPermission,
   NativeSession,
@@ -168,21 +168,26 @@ export const NATIVE_SIGN_IN_SERVER_MESSAGE =
 export const NATIVE_SIGN_IN_FAILED_MESSAGE =
   "Native sign-in failed. Please try again.";
 
-function sdkErrorCode(error: unknown): string | null {
+class NativeSpaceUnavailableError extends Error {
+  readonly code = "SPACE_UNAVAILABLE";
+}
+
+function nativeErrorCode(error: unknown): string | null {
+  if (error instanceof NativeSpaceUnavailableError) return error.code;
   return error instanceof Error && error.name === "OpenKeyNativeError" &&
     "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
 /** SDK errors may carry a refresh token, so only their code is safe to log. */
 export function logNativeOpenKeyError(operation: string, error: unknown): void {
-  const code = sdkErrorCode(error);
+  const code = nativeErrorCode(error);
   if (code) console.warn(`[OpenKey native] ${operation}: ${code}`);
   else console.warn(`[OpenKey native] ${operation}: ${error instanceof Error ? error.message : "unknown error"}`);
 }
 
 /** Map an OpenKey native failure to a user-facing message. */
 export function nativeSignInErrorMessage(error: unknown): string {
-  const code = sdkErrorCode(error);
+  const code = nativeErrorCode(error);
   if (code === "USER_CANCELLED") return NATIVE_SIGN_IN_CANCELLED_MESSAGE;
   if (code === "ACCESS_DENIED") return NATIVE_SIGN_IN_DENIED_MESSAGE;
   if (error instanceof Error && /invalid_nonce|nonce.{0,45}(invalid|expired|already used)/i.test(error.message)) {
@@ -206,7 +211,7 @@ export const NATIVE_SIGN_OUT_STORAGE_WARNING =
   "Couldn't access secure storage on this device. Your OpenKey session may still be stored. Please try signing out again when storage is available.";
 
 export function isNativeStorageError(error: unknown): boolean {
-  return sdkErrorCode(error) === "STORAGE";
+  return nativeErrorCode(error) === "STORAGE";
 }
 
 // ── Sign-in ───────────────────────────────────────────────────────────
@@ -245,7 +250,7 @@ export interface NativeSignInDeps {
   activateSession: (
     host: string,
     delegationHeader: { Authorization: string },
-  ) => Promise<{ success: boolean; activated?: string[]; error?: string }>;
+  ) => Promise<SpaceHostResult>;
   restoreSession: (
     address: string,
     config: TinyCloudWebConfig & { provider?: EIP1193Provider },
@@ -422,8 +427,13 @@ async function handoffNativeSession(
   });
 
   const activation = await d.activateSession(delegation.tinycloudHost, delegation.delegationHeader);
-  if (!activation.success || !activation.activated?.includes(delegation.spaceId)) {
+  if (!activation.success) {
     throw new Error(activation.error ?? "TinyCloud space activation failed");
+  }
+  // OpenKey may already have hosted the space during consent. In that case
+  // /delegate returns a successful reconciliation with activated: [].
+  if (activation.skipped?.includes(delegation.spaceId)) {
+    throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
   }
 
   const restored = await d.restoreSession(address, {
