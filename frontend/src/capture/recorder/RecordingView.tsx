@@ -27,6 +27,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
   const audioElapsed = useAudioElapsed(recorder.audioMs, active && (mic.state === "recording" || mic.state === "silenced"));
   const transcribing = outcome === "saved" && recorder.transcription?.availability === "available" &&
     recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
+  const savedRoute = transcribing ? "private-cloud" : "off";
   const paused = mic.state === "paused" || mic.state === "interrupted" || mic.state === "needs_user";
 
   if (recorder.permissionDenied) return <MicrophoneAccessOff onMinimise={recorder.minimiseSheet} onOpenSettings={recorder.openSettings} />;
@@ -57,7 +58,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">
           {receipt ? (
-            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(outcome === "saved" && transcribing)} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
+            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(outcome === "saved" ? savedRoute : "off")} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
               onOpen={outcome === "saved" && onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
               onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} />
           ) : (

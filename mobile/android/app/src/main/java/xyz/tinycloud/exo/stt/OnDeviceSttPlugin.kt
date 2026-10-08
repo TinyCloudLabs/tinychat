@@ -15,16 +15,110 @@ class OnDeviceSttPlugin : Plugin() {
     private val benchmarkExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "stt-benchmark").apply { isDaemon = true }
     }
+    private lateinit var store: ModelStore
+    private lateinit var downloads: ModelDownloads
+    private lateinit var queue: TranscriptionQueue
+    private val autoDownloadPrefs by lazy { context.getSharedPreferences("exo.stt", android.content.Context.MODE_PRIVATE) }
+
+    override fun load() {
+        store = ModelStore.get(context)
+        downloads = ModelDownloads.get(context)
+        queue = TranscriptionQueue.get(context)
+        queue.onQueueChanged = { notifyListeners("status", statusObject(), true) }
+        queue.onProgress = { id, percent -> notifyListeners("progress", JSObject().put("id", id).put("percent", percent)) }
+        queue.onTranscribed = { id, outcome -> notifyListeners("transcribed", JSObject().put("id", id).put("outcome", outcome), true) }
+        queue.onFailed = { id, code, message -> notifyListeners("failed", JSObject().put("id", id).put("code", code).put("message", message), true) }
+    }
+
+    private fun primaryModelId(): String {
+        val manager = context.getSystemService(android.app.ActivityManager::class.java)
+        val info = android.app.ActivityManager.MemoryInfo().also { manager.getMemoryInfo(it) }
+        return ModelManifest.primaryModel(info.totalMem)
+    }
+
+    private fun statusObject(): JSObject {
+        val pack = if (primaryModelId() == ModelManifest.PARAKEET_FULL) "full" else "small"
+        val models = JSONArray()
+        for (id in ModelManifest.ALL_IDS) {
+            val (state, bytes, error) = store.status(id)
+            models.put(JSObject().put("id", id).put("state", state.wire()).put("bytes", bytes)
+                .put("totalBytes", ModelManifest.totalBytes(id)).put("error", error ?: JSObject.NULL))
+        }
+        val engine = if (store.isReady(ModelManifest.PARAKEET_FULL) || store.isReady(ModelManifest.PARAKEET_SMALL)) "parakeet" else "none"
+        return JSObject().put("models", models).put("pack", pack)
+            .put("autoDownload", autoDownloadPrefs.getBoolean("autoDownload", false))
+            .put("download", JSObject().put("policy", "wifi").put("state", downloads.downloadState().wire()))
+            .put("engine", engine).put("appleSpeech", "unsupported").put("queue", queue.queueSnapshot())
+    }
 
     @PluginMethod
-    fun status(call: PluginCall) {
-        val ids = arrayOf("parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-110m-en-int8", "silero-vad", "diarization")
-        val models = JSONArray()
-        for (id in ids) models.put(JSObject().put("id", id).put("state", "absent")
-            .put("bytes", 0).put("totalBytes", 0).put("error", JSObject.NULL))
-        call.resolve(JSObject().put("models", models).put("pack", "full").put("autoDownload", false)
-            .put("download", JSObject().put("policy", "wifi").put("state", "idle"))
-            .put("engine", "none").put("appleSpeech", "unsupported").put("queue", JSONArray()))
+    fun status(call: PluginCall) { call.resolve(statusObject()) }
+
+    @PluginMethod
+    fun setAutoDownload(call: PluginCall) {
+        // Stored, but has no automatic effect in this slice: downloads only start from
+        // `downloadNow` (manual, Settings/recorder "Download"). T17 wires background auto-start.
+        autoDownloadPrefs.edit().putBoolean("autoDownload", call.getBoolean("enabled") ?: false).apply()
+        call.resolve()
+        notifyListeners("status", statusObject(), true)
+    }
+
+    @PluginMethod
+    fun downloadNow(call: PluginCall) {
+        val modelId = primaryModelId()
+        if (ModelManifest.DOWNLOADABLE[modelId] == null) {
+            call.reject("The on-device model for this phone's memory tier is not downloadable yet", "small_pack_unsupported")
+            return
+        }
+        // Wi-Fi only in this slice, whatever `allowCellular` asks (TC-836 report, deviations).
+        downloads.start(ModelManifest.SILERO_VAD, { id, done, total -> emitDownloadProgress(id, done, total) }, { _, vadResult ->
+            vadResult.onFailure { error ->
+                call.reject("Could not download the speech-detection model", "download_failed", error as? Exception)
+                return@onFailure
+            }
+            downloads.start(modelId, { id, done, total -> emitDownloadProgress(id, done, total) }, { _, result ->
+                result.fold(
+                    onSuccess = { queue.reconcile(); call.resolve() },
+                    onFailure = { error -> call.reject("Could not download the on-device transcription model", "download_failed", error as? Exception) },
+                )
+                notifyListeners("status", statusObject(), true)
+            })
+        })
+        notifyListeners("status", statusObject(), true)
+    }
+
+    private fun emitDownloadProgress(id: String, done: Long, total: Long) {
+        store.setState(id, ModelState.DOWNLOADING, bytes = done)
+        notifyListeners("status", statusObject(), true)
+    }
+
+    @PluginMethod
+    fun cancelDownload(call: PluginCall) {
+        downloads.cancel()
+        call.resolve()
+        notifyListeners("status", statusObject(), true)
+    }
+
+    @PluginMethod
+    fun deleteModels(call: PluginCall) {
+        store.delete(ModelManifest.PARAKEET_FULL)
+        store.delete(ModelManifest.SILERO_VAD)
+        call.resolve()
+        notifyListeners("status", statusObject(), true)
+    }
+
+    @PluginMethod
+    fun enqueue(call: PluginCall) {
+        val id = call.getString("id") ?: run { call.reject("id is required", "invalid_argument"); return }
+        queue.enqueue(id)
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun cancel(call: PluginCall) {
+        val id = call.getString("id") ?: run { call.reject("id is required", "invalid_argument"); return }
+        queue.cancel(id)
+        call.resolve()
     }
 
     @PluginMethod

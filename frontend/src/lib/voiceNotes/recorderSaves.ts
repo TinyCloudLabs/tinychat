@@ -21,6 +21,7 @@ import {
   type VoiceNoteRecording,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
+import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
@@ -206,9 +207,13 @@ export async function saveRecording(
   if (isLegacyNote(recording)) return { kind: "held", reason: "legacy" };
   if (!recording.owner) return { kind: "held", reason: "unowned" };
   if (recording.owner !== tcw.did) return { kind: "held", reason: "other-account" };
-  if (recording.ledger?.audio.state === "saved") return { kind: "already-saved", cleanupError: null };
+  if (recording.ledger?.audio.state === "saved") {
+    void syncOnDeviceTranscript(tcw, recording);
+    return { kind: "already-saved", cleanupError: null };
+  }
   // Old localStorage markers are never authority: a lost marker must be safe,
   // and a stale marker must not suppress a note whose native ledger is pending.
+  if (cloudSaved.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   if (savedThisSession.has(recording.id)) return { kind: "already-saved", cleanupError: null };
   savesInFlight.add(recording.id);
   try {
@@ -249,6 +254,7 @@ export async function saveRecording(
       } catch (caught) {
         cleanupError = `Saved to your space, but this phone could not update its note status: ${messageOf(caught)}`;
       }
+      void syncOnDeviceTranscript(tcw, { id: recording.id, ledger: { audio: { state: "saved" } } });
     }
     const whole = keep && kept.reduce((n, c) => n + c.byteLength, 0) === native.size;
     return {

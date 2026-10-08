@@ -160,6 +160,10 @@ public final class CaptureEngine {
             try? attemptResume(automatic: true, retryOnFailure: availability != "blocked")
         }
     }
+    /// Whether a capture session is live right now (recording or paused). The on-device STT queue
+    /// checks this before and between work units, and releases its model instead of competing
+    /// with capture for CPU/memory (plan capture-priority handoff, §2.5).
+    public var isCapturing: Bool { intent != "stopped" }
     public func presentRecorder() {
         if let id = info?.id {
             log.notice("presentRecorder id=\(id, privacy: .public)")
