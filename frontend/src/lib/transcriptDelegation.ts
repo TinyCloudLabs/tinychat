@@ -41,6 +41,15 @@ function need(status: DelegationResponse, sessionExpiry: number, now = Date.now(
   return { needed, urgent: needed && (missing || remaining < DAY) };
 }
 
+/**
+ * Only an explicit, known delivery value turns the browser courier on. A backend that omits the
+ * field (or sends one this build does not know) must not trigger minting or the browser's
+ * ten-minute fallback deferral. `schema_missing` is still on: it is the browser's repair cue.
+ */
+function deliveryEnabled(status: DelegationResponse): boolean {
+  return status.delivery === "enabled" || status.delivery === "schema_missing";
+}
+
 function storage(): Storage { return localStorage; }
 function readBackoff(key: string): Backoff | null {
   const raw = storage().getItem(key);
@@ -142,7 +151,7 @@ async function underLock(options: Options, address: string, key: string, session
       }
       resolveTranscriptConsentStatus(address, status);
       observed = true;
-      setServerDeliveryActive(status.delivery !== "disabled");
+      setServerDeliveryActive(deliveryEnabled(status));
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
       const repair = status.delivery === "schema_missing";
@@ -262,7 +271,7 @@ export async function ensureTranscriptWriterDelegation(options: Options): Promis
       }
       resolveTranscriptConsentStatus(address, status);
       observed = true;
-      setServerDeliveryActive(status.delivery !== "disabled");
+      setServerDeliveryActive(deliveryEnabled(status));
       if (!serverDeliveryActive()) { cancel(key); return "disabled"; }
       const current = need(status, sessionExpiry);
       const repair = status.delivery === "schema_missing";
