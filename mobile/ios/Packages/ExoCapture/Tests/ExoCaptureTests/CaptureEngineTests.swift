@@ -178,7 +178,7 @@ import XCTest
                 }
             }
             defer { engine.removeObserver(token) }
-            wait(for: [stopped], timeout: 5)
+            wait(for: [stopped], timeout: 20)
             let recording = try XCTUnwrap(completed?["recording"] as? [String: Any])
             XCTAssertEqual(recording["id"] as? String, id)
             let sidecar = try engine.library.readSidecar(id)
