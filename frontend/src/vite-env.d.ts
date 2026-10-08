@@ -46,4 +46,4 @@ interface ImportMeta {
  * product version, the commit being built and the release channel when the
  * pipeline names one. `undefined` outside a Vite build (bun tests).
  */
-declare const __EXO_BUILD_INFO__: { version?: string; commit?: string; channel?: string } | undefined;
+declare const __EXO_BUILD_INFO__: { version?: string; commit?: string; build?: string; channel?: string } | undefined;

@@ -12,6 +12,7 @@ import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
+import { __setBuildInfoForTests } from "@/lib/buildInfo";
 import { PlatformContext, type AppPlatform } from "@/lib/platform";
 import { initSizeClass } from "@/lib/sizeClass";
 import { applyTheme } from "@/lib/theme";
@@ -64,8 +65,11 @@ if (params.get("freeze") === "1") freezeClock();
 applyTheme(params.get("theme") === "dark" ? "dark" : "light", false);
 document.documentElement.dataset.platform = platform;
 initSizeClass();
-// The phone app records through its native plugin; here a fake stands in.
+// The phone app records through its native plugin; here a fake stands in. A
+// fake App.getInfo() makes the build line resolve with the real native
+// segments (build number and bundle id), not just the web baseline (TC-840).
 if (platform === "ios" || platform === "android") {
+  __setBuildInfoForTests({ version: "", build: "160", id: "xyz.tinycloud.exo.dev" });
   const fake = createCaptureFakeVoiceNotes();
   if (params.get("screen")?.startsWith("recorder-")) {
     fake.controls.commitLegacy({

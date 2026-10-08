@@ -7,14 +7,17 @@
 //                  (frontend/package.json's version — the fixed web/desktop/
 //                  mobile version the release pipeline owns — plus the commit
 //                  and channel the build was cut from)
-//   ios / android  Capacitor App.getInfo(): the bundle id, versionName/
-//                  CFBundleShortVersionString and versionCode/
-//                  CFBundleVersion the native build stamped
-//   desktop-macos  Tauri's app version and identifier
+//   ios / android  the injected marketing version and channel (the archive
+//                  strips "-beta.N" from CFBundleShortVersionString, so the
+//                  bundle's own version string cannot tell beta from stable),
+//                  with Capacitor App.getInfo() supplying the bundle id and
+//                  build number and standing in for any missing baseline
+//   desktop-macos  Tauri's app version and identifier, plus the pipeline's
+//                  VITE_EXO_BUILD_NUMBER (CFBundleVersion) when it was set
 //
 // Nothing is hard-coded: a missing source leaves the segment out rather than
 // inventing a value.
-import { App as CapacitorApp } from "@capacitor/app";
+import { App as CapacitorApp, type AppInfo } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 
 import type { AppPlatform } from "./platform";
@@ -23,7 +26,7 @@ import type { AppPlatform } from "./platform";
 export interface BuildInfoInput {
   /** Marketing version, e.g. "0.6.0-beta.13". */
   version?: string;
-  /** Native build number (Android versionCode, iOS CFBundleVersion). */
+  /** Build number (Android versionCode, iOS/desktop CFBundleVersion). */
   build?: string;
   /** web | ios | android | desktop-macos. */
   target?: string;
@@ -67,32 +70,38 @@ export function formatBuildInfo(info: BuildInfoInput): string {
 }
 
 /** The web/desktop/mobile baseline vite.config.ts bakes into every bundle. */
-const INJECTED: { version?: string; commit?: string; channel?: string } =
+const INJECTED: { version?: string; commit?: string; build?: string; channel?: string } =
   typeof __EXO_BUILD_INFO__ === "object" && __EXO_BUILD_INFO__ !== null ? __EXO_BUILD_INFO__ : {};
 
+/** Harnesses and tests only: stands in for the installed app's getInfo(). */
+let appInfoForTests: Pick<AppInfo, "version" | "build" | "id"> | null = null;
+export function __setBuildInfoForTests(info: Pick<AppInfo, "version" | "build" | "id"> | null): void {
+  appInfoForTests = info;
+}
+
 /**
- * The line for the platform it is shown on. Native reads the real bundle at
- * runtime (Capacitor getInfo, Tauri app); anything those calls cannot answer —
- * a browser capture running as "ios", a failed plugin — falls back to the
- * injected web build so the line never disappears.
+ * The line for the platform it is shown on. On native the marketing version
+ * and channel come from the injected baseline — the bundle's own version is
+ * normalized (a TestFlight archive reports 0.6.0 for 0.6.0-beta.13) — and the
+ * bundle supplies only what the baseline cannot know: the id and build
+ * number, plus fallback values when the baseline is absent (a browser capture
+ * running as "ios").
  */
 export async function resolveBuildInfo(platform: AppPlatform): Promise<string> {
   const base = INJECTED;
   const target = targetLabel(platform);
 
-  if ((platform === "ios" || platform === "android") && Capacitor.isNativePlatform()) {
-    try {
-      const info = await CapacitorApp.getInfo();
+  if (platform === "ios" || platform === "android") {
+    const info = appInfoForTests ?? (Capacitor.isNativePlatform() ? await CapacitorApp.getInfo().catch(() => null) : null);
+    if (info) {
       return formatBuildInfo({
-        version: info.version || base.version,
+        version: base.version || info.version,
         build: info.build,
         target,
         appId: info.id,
         commit: base.commit,
         channel: base.channel,
       });
-    } catch {
-      // Fall through to the injected baseline.
     }
   }
 
@@ -102,7 +111,8 @@ export async function resolveBuildInfo(platform: AppPlatform): Promise<string> {
       const { getVersion, getIdentifier } = await import("@tauri-apps/api/app");
       const [version, appId] = await Promise.all([getVersion(), getIdentifier()]);
       return formatBuildInfo({
-        version: version || base.version,
+        version: base.version || version,
+        build: base.build,
         target,
         appId,
         commit: base.commit,
@@ -113,5 +123,5 @@ export async function resolveBuildInfo(platform: AppPlatform): Promise<string> {
     }
   }
 
-  return formatBuildInfo({ version: base.version, target, commit: base.commit, channel: base.channel });
+  return formatBuildInfo({ version: base.version, build: base.build, target, commit: base.commit, channel: base.channel });
 }

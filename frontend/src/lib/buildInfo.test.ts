@@ -30,6 +30,28 @@ describe("formatBuildInfo", () => {
     );
   });
 
+  test("an iOS beta archive keeps the beta label: the injected marketing version, not the bundle's stripped one", () => {
+    // CFBundleShortVersionString is "0.6.0" for a 0.6.0-beta.13 TestFlight
+    // archive; the resolver feeds App.getInfo()'s build and id while the
+    // define's full version and channel name the release.
+    expect(
+      formatBuildInfo({
+        version: "0.6.0-beta.13",
+        build: "1042",
+        target: "ios",
+        channel: "beta",
+        appId: "xyz.tinycloud.exo",
+        commit: "deadbeef99",
+      }),
+    ).toBe("Exo 0.6.0-beta.13 (1042) · ios · beta · xyz.tinycloud.exo · deadbee");
+  });
+
+  test("a desktop build carries its CFBundleVersion", () => {
+    expect(
+      formatBuildInfo({ version: "0.6.0-beta.13", build: "600013", target: "desktop-macos", appId: "xyz.tinycloud.exo" }),
+    ).toBe("Exo 0.6.0-beta.13 (600013) · desktop-macos · beta · xyz.tinycloud.exo");
+  });
+
   test("nothing is invented: missing sources leave segments out", () => {
     expect(formatBuildInfo({ target: "web" })).toBe("Exo unknown · web");
     expect(formatBuildInfo({})).toBe("Exo unknown");

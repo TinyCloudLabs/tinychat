@@ -6,21 +6,24 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
+import { firstNonEmpty } from "./src/lib/buildEnv";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 // The build line's baseline (TC-840): the shared web/desktop/mobile version
 // frontend/package.json owns, the commit being built, and the channel
-// (VITE_EXO_CHANNEL for the pipeline; `vite dev` reports "dev"). Native
-// targets override the version and build with the bundle's own numbers.
+// (VITE_EXO_CHANNEL for the pipeline; `vite dev` reports "dev"). The pipeline
+// may also inject VITE_EXO_BUILD_NUMBER (the desktop build does: its
+// CFBundleVersion); native builds read their own numbers at runtime.
 // package.json is a known file: the cast names its one field, nothing else.
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8")) as { version?: string };
 const exoBuildInfo = {
   version: pkg.version,
-  commit:
-    process.env.VITE_EXO_BUILD_COMMIT ??
-    process.env.CF_PAGES_COMMIT_SHA ??
-    process.env.GITHUB_SHA ??
+  // First non-empty wins: an exported-but-empty variable must not shadow the fallbacks.
+  commit: firstNonEmpty(
+    process.env.VITE_EXO_BUILD_COMMIT,
+    process.env.CF_PAGES_COMMIT_SHA,
+    process.env.GITHUB_SHA,
     (() => {
       try {
         return execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir }).toString().trim();
@@ -28,7 +31,9 @@ const exoBuildInfo = {
         return undefined;
       }
     })(),
-  channel: process.env.VITE_EXO_CHANNEL,
+  ),
+  build: firstNonEmpty(process.env.VITE_EXO_BUILD_NUMBER),
+  channel: firstNonEmpty(process.env.VITE_EXO_CHANNEL),
 };
 
 export default defineConfig(({ command }) => ({

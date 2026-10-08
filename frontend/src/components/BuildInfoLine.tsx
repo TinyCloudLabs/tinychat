@@ -11,8 +11,10 @@ import { cn } from "@/lib/utils";
 
 export function BuildInfoLine({ className }: { className?: string }) {
   const platform = useContext(PlatformContext);
-  // Empty until the first resolve lands: the 44 px target is the reserved
-  // space, so the line arriving never shifts the layout.
+  // Empty until the first resolve lands. min-h-[6em] reserves ~4 lines at the
+  // line's own font size: at 200% text on a phone the full native line (build
+  // number, bundle id and sha) still fits inside it, so the footer — and the
+  // centred content the footer's row shares space with — never moves.
   const [line, setLine] = useState("");
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -49,7 +51,7 @@ export function BuildInfoLine({ className }: { className?: string }) {
         });
       }}
       className={cn(
-        "tap-transparent flex min-h-11 w-full select-text items-center justify-center text-center text-meta leading-snug text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
+        "tap-transparent flex min-h-[6em] w-full select-text items-center justify-center text-center text-meta leading-snug text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
         className,
       )}
     >

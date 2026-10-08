@@ -100,8 +100,16 @@ jobs:
       - name: Install JS deps
         run: bun install --frozen-lockfile
 
+      # VITE_EXO_CHANNEL tells the bundled frontend its channel (TC-840): the archive strips
+      # "-beta.N" from CFBundleShortVersionString, so App.getInfo() alone would call a beta "stable".
       - name: Build workspace packages and the production frontend
-        run: bun run build:packages && bun run build:frontend
+        run: |
+          version=$(node -p 'require("./frontend/package.json").version')
+          case "$version" in
+            *-beta.*) export VITE_EXO_CHANNEL=beta ;;
+            *) export VITE_EXO_CHANNEL=stable ;;
+          esac
+          bun run build:packages && bun run build:frontend
 
       # Bundles frontend/dist into App/public; without EXO_DEV_SERVER_URL there is no server.url (no live reload).
       - name: Sync Capacitor

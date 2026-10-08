@@ -13,6 +13,7 @@
 // Exceptions a legacy screen still needs are in exo-ui/legacy-allowlist.json.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { chromium, webkit, type Browser, type BrowserContext, type BrowserType, type ConsoleMessage } from "playwright";
 import { OFFERED_CHAT_MODELS } from "../packages/core/src/chatModels";
@@ -110,7 +111,13 @@ let html = "";
 // vite.config.ts defines, so captures show the real version, not "unknown".
 // package.json is a known file: the cast names its one field, nothing else.
 const frontendPkg: { version?: string } = JSON.parse(readFileSync(`${frontend}package.json`, "utf8"));
-const exoBuildInfo = { version: frontendPkg.version, channel: "dev" };
+let harnessCommit: string | undefined;
+try {
+  harnessCommit = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: frontend }).toString().trim();
+} catch {
+  harnessCommit = undefined;
+}
+const exoBuildInfo = { version: frontendPkg.version, commit: harnessCommit, channel: "dev" };
 
 beforeAll(async () => {
   const built = await Bun.build({
