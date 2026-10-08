@@ -212,9 +212,16 @@ function readLease(key: string): { owner: string; until: number } | null {
 }
 
 async function attempt(options: Options, address: string, key: string, sessionExpiry: number): Promise<EnsureResult> {
+  // Another tab holds the lock and may be minting right now: this tab's pre-lock "inactive" is
+  // already stale, so disclose until a later status read observes the outcome.
+  const anotherTabHolds = (): EnsureResult => {
+    resolveTranscriptConsentStatus(address, null);
+    schedule(key, Date.now() + 30_000, options);
+    return "busy";
+  };
   if (typeof navigator !== "undefined" && navigator.locks?.request) {
     return navigator.locks.request(key, { mode: "exclusive", ifAvailable: true }, async (lock) => {
-      if (!lock) { schedule(key, Date.now() + 30_000, options); return "busy"; }
+      if (!lock) return anotherTabHolds();
       return underLock(options, address, key, sessionExpiry);
     });
   }
@@ -222,16 +229,10 @@ async function attempt(options: Options, address: string, key: string, sessionEx
   const owner = crypto.randomUUID();
   try {
     const previous = readLease(leaseKey);
-    if (previous && previous.until > Date.now()) {
-      schedule(key, Date.now() + 30_000, options);
-      return "busy";
-    }
+    if (previous && previous.until > Date.now()) return anotherTabHolds();
     storage().setItem(leaseKey, JSON.stringify({ owner, until: Date.now() + LEASE_LIFETIME }));
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    if (readLease(leaseKey)?.owner !== owner) {
-      schedule(key, Date.now() + 30_000, options);
-      return "busy";
-    }
+    if (readLease(leaseKey)?.owner !== owner) return anotherTabHolds();
     try { return await underLock(options, address, key, sessionExpiry); }
     finally {
       if (readLease(leaseKey)?.owner === owner) storage().removeItem(leaseKey);
