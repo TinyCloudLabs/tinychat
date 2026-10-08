@@ -587,6 +587,39 @@ describe("durable transcript delivery", () => {
     await worker.stop();
   });
 
+  it("counts grant-store reads for non-cohort addresses against the sweep's call cap", async () => {
+    const f = await fixture();
+    const addresses = Array.from({ length: 250 }, (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}`);
+    const stored = new Map(addresses.map((address) => [address, `envelope-${address}`]));
+    for (const address of addresses) await f.index.add(address, "m");
+    const reads: string[] = [];
+    const worker = f.worker({
+      eligibility: () => false,
+      delegationStore: {
+        async load(address) {
+          reads.push(address);
+          const serialized = stored.get(address);
+          return serialized ? { serialized, expiresAt: "", grantedAt: "", actions: [], path: "" } : null;
+        },
+        async remove(address) { stored.delete(address); },
+      },
+    });
+    await worker.sweep();
+    // A removal reads twice (find, then compare-and-delete): at most 200 reads, so 100 addresses.
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.length).toBeLessThanOrEqual(200);
+    for (let pass = 0; pass < 6 && stored.size > 0; pass++) {
+      const before = reads.length;
+      await worker.sweep();
+      expect(reads.length - before).toBeLessThanOrEqual(200);
+    }
+    expect(stored.size).toBe(0);
+    // Checked once each: a later pass does not re-read an address it already cleared.
+    expect(reads.length).toBe(500);
+    expect(new Set(reads).size).toBe(250);
+    await worker.stop();
+  });
+
   it("removes foreign stored envelopes under their own owner key, warm and cold, without B activation", async () => {
     for (const warm of [true, false]) {
       const f = await fixture();
