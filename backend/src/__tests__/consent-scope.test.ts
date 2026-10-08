@@ -268,10 +268,12 @@ const SERVER_WRITE_DENIALS: ReadonlyArray<{ pattern: RegExp; label: string }> = 
  */
 const GRANT_LIFETIME_DAYS = SESSION_EXPIRATION_MS / 86_400_000 - 1;
 const TRANSCRIPT_WRITER_DISCLOSURE = [
-  "our server holds a permission on your space",
-  "read, add, change and delete the meeting records in your connectors library",
-  "every connector's meetings, fireflies and google included",
-  "save notetaker transcripts there",
+  "our server holds a permission on your space over the meeting records in your connectors library",
+  "the titles, participants, summaries and other details stored for every connector's meetings, fireflies and google included",
+  // Voice notes and local recordings are connector_meeting rows too (voiceNoteStore, localTranscriber).
+  "and for your local recordings and voice notes",
+  "our server can read, add, change or delete those records",
+  "it can also read and save notetaker transcripts there",
   `each grant lasts up to ${GRANT_LIFETIME_DAYS} days`,
   "renews it without asking while you are signed in",
 ];
@@ -285,6 +287,15 @@ const GRANT_FALSIFIED_CLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> 
   { pattern: /\bnever receives the meeting itself\b/, label: "never receives the meeting itself" },
   { pattern: /\bnever passes through tinychat's server\b/, label: "never passes through tinychat's server" },
   { pattern: /\bstay in your space unless you also choose to delete them\b/, label: "stays unless you delete it" },
+  { pattern: /\bdisconnecting undoes all of it\b/, label: "disconnecting undoes all of it" },
+];
+
+/**
+ * The grant's KV half covers the Notetaker's transcript bodies, not other connectors': no sentence
+ * may give our server read, change or delete reach over transcripts other than the Notetaker's.
+ */
+const TRANSCRIPT_BODY_OVERCLAIMS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\b(?:read|change|delete)\b(?:(?!notetaker)[^.]){0,80}\btranscripts?\b/, label: "reach over non-Notetaker transcripts" },
 ];
 
 function normalize(text: string): string {
@@ -545,6 +556,10 @@ describe("copy ↔ transcript-writer policy", () => {
     expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKGROUND_SYNC_CONSENT_COPY)))).toEqual(["never receives the meeting itself"]);
     expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(GOOGLE_MEET_CONSENT_COPY))))
       .toEqual(["never passes through tinychat's server", "stays unless you delete it"]);
+    expect(matched(GRANT_FALSIFIED_CLAIMS, normalize(consentCopyText(BACKEND_INGEST_CONSENT_COPY)))).toEqual(["disconnecting undoes all of it"]);
+    // The overclaim pattern is live, and leaves the Notetaker's own transcripts alone.
+    expect(matched(TRANSCRIPT_BODY_OVERCLAIMS, "our server can read, change or delete your google meet transcripts")).toHaveLength(1);
+    expect(matched(TRANSCRIPT_BODY_OVERCLAIMS, "it can also read and save notetaker transcripts there")).toEqual([]);
     // The originals' write denials are exactly the sentences an active grant would falsify.
     for (const base of [BACKGROUND_SYNC_CONSENT_COPY, BACKEND_INGEST_CONSENT_COPY, GOOGLE_MEET_CONSENT_COPY]) {
       expect(matched(SERVER_WRITE_DENIALS, normalize(consentCopyText(base)))).toContain("nothing is granted");
@@ -577,6 +592,8 @@ describe("copy ↔ transcript-writer policy", () => {
             .toEqual({ variant: rendered.variant, state, discloses: true });
           expect({ variant: rendered.variant, state, falsified: matched(GRANT_FALSIFIED_CLAIMS, text) })
             .toEqual({ variant: rendered.variant, state, falsified: [] });
+          expect({ variant: rendered.variant, state, overclaims: matched(TRANSCRIPT_BODY_OVERCLAIMS, text) })
+            .toEqual({ variant: rendered.variant, state, overclaims: [] });
           expect({ variant: rendered.variant, state, denials: matched(SERVER_WRITE_DENIALS, text) })
             .toEqual({ variant: rendered.variant, state, denials: [] });
         }
@@ -628,6 +645,7 @@ const CONSENT_RENDERER = resolve(__dirname, "../../../frontend/src/chat/Backgrou
 /** The approval doc's mirror of the one paragraph the transcript-writer variant replaces. */
 const TRANSCRIPT_WRITER_BULLET = "transcript-writer bullet 4";
 const TRANSCRIPT_WRITER_BULLET_INDEX = 3;
+const TRANSCRIPT_WRITER_DISCONNECT = "transcript-writer disconnectNote";
 
 function readDoc(path: string): string {
   if (!existsSync(path)) throw new Error(`Missing record: ${path}`);
@@ -706,7 +724,7 @@ describe("Option C consent copy (§3.8), in every delivery state", () => {
       else {
         // Qualified: the notification still carries nothing, but the grant can read saved meetings.
         expect(COPY_TEXT).toContain("the notification itself carries no title, no transcript, no summary and no attendees");
-        expect(COPY_TEXT).toContain("lets our server read it in your space");
+        expect(COPY_TEXT).toContain("lets our server read its meeting record there");
       }
     }
   });
@@ -860,9 +878,13 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
       expect(approved[`bullet ${index + 1}`]).toBe(collapse(bullet));
     });
 
-    // The transcript-writer variant: the approved text except the one mirrored paragraph.
+    // The transcript-writer variant: the approved text except the two mirrored paragraphs.
     const active = transcriptAwareConsentCopy(COHORT_COPY, "active");
-    expect({ ...active, variant: COHORT_COPY.variant, bullets: [] }).toEqual({ ...COHORT_COPY, bullets: [] });
+    expect({ ...active, variant: COHORT_COPY.variant, bullets: [], disconnectNote: "" })
+      .toEqual({ ...COHORT_COPY, bullets: [], disconnectNote: "" });
+    expect(collapse(active.disconnectNote ?? "")).not.toBe(approved.disconnectNote);
+    expect(approved[TRANSCRIPT_WRITER_DISCONNECT]).toBe(collapse(active.disconnectNote ?? ""));
+    expect(normalize(active.disconnectNote ?? "")).toContain("disconnecting fireflies does not remove the separate notetaker permission");
     expect(active.bullets.length).toBe(COHORT_COPY.bullets.length);
     active.bullets.forEach((bullet, index) => {
       if (index === TRANSCRIPT_WRITER_BULLET_INDEX) expect(collapse(bullet)).not.toBe(approved[`bullet ${index + 1}`]);
@@ -873,8 +895,9 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
     const section = doc.slice(doc.indexOf("## Transcript-writer variant"));
     expect(section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`)).toBeGreaterThan(0);
     expect(section.slice(0, section.indexOf(`## ${TRANSCRIPT_WRITER_BULLET}`))).toContain("**Status: NOT APPROVED.**");
-    expect(normalize(doc.slice(0, doc.indexOf("## Transcript-writer variant")))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
-    expect(normalize(section)).toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
+    const prose = (markdown: string) => normalize(markdown.replace(/^> /gm, ""));
+    expect(prose(doc.slice(0, doc.indexOf("## Transcript-writer variant")))).not.toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
+    expect(prose(section)).toContain(TRANSCRIPT_WRITER_NOTICE_TEXT);
   });
 
   it("records the consent surface's wiring state honestly in both directions", () => {
@@ -896,7 +919,7 @@ describe("the cohort consent copy tells the new truth (plan §11 requirements 1-
 });
 
 /** The transcript-writer notice as the frontend renders it (normalized). */
-const TRANSCRIPT_WRITER_NOTICE_TEXT = "read, add, change and delete the meeting records in your connectors";
+const TRANSCRIPT_WRITER_NOTICE_TEXT = "our server can read, add, change or delete those records";
 
 describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in every delivery state and surface", () => {
   const scopes = GOOGLE_MEET_SCOPES.split(" ");
@@ -947,7 +970,7 @@ describe("the Google Meet consent copy (connector plan §4.1/§4.3, WP-C), in ev
       else {
         // Qualified: the Google fetch bypasses our server, but the grant reaches the saved meetings.
         expect(GOOGLE_TEXT).toMatch(/the fetch from google does not go through tinychat's server/);
-        expect(GOOGLE_TEXT).toMatch(/lets our server read, change or delete them there/);
+        expect(GOOGLE_TEXT).toMatch(/lets our server read, change or delete its meeting record there/);
       }
     }
   });
