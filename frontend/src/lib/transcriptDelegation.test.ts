@@ -281,36 +281,48 @@ describe("silent transcript-writer renewal", () => {
     expect(transcriptConsentState()).toBe("inactive");
   });
 
-  it("waits out the long cap after a definite rejection, even for an urgent need, but not after an outage", async () => {
-    for (const [postStatus, longWait] of [[403, true], [503, false]] as const) {
+  it("scopes the long cap to a run of definite rejections; outages neither earn nor stretch it", async () => {
+    type Stored = { failures: number; lastFailureAt: number; jitter: number; rejections?: number };
+    const key = `tinychat.transcriptWriter.${address}`;
+    async function attemptWith(previous: Stored, postStatus: number) {
       const f = mintHarness();
-      const key = `tinychat.transcriptWriter.${address}`;
-      // Many earlier failures, the last one ten minutes ago: an urgent need may retry now.
-      f.storage.setItem(key, JSON.stringify({ failures: 8, lastFailureAt: Date.now() - 10 * 60_000, jitter: 0 }));
+      f.storage.setItem(key, JSON.stringify(previous));
       const harnessFetch = globalThis.fetch;
       let posts = 0;
       globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         if (new URL(String(input)).pathname === "/api/delegations" && init?.method === "POST") {
           posts++;
-          return Response.json({ error: postStatus === 403 ? "delegation_rejected" : "unavailable" }, { status: postStatus });
+          return Response.json({ error: postStatus === 503 ? "unavailable" : "delegation_rejected" }, { status: postStatus });
         }
         return harnessFetch(input, init);
       }) as typeof fetch;
       expect(await f.run()).toBe("unavailable");
       expect(posts).toBe(1);
-      const backoff = JSON.parse(f.storage.getItem(key)!) as { failures: number; lastFailureAt: number; rejected?: boolean };
-      expect(backoff.failures).toBe(9);
-      expect(backoff.rejected === true).toBe(longWait);
-      // The grant is still missing, so the need is urgent; only a rejection lengthens the wait.
-      const wait = nextTranscriptAttempt(backoff as never, true) - backoff.lastFailureAt;
-      if (longWait) expect(wait).toBeGreaterThan(60 * 60_000);
-      else expect(wait).toBeLessThanOrEqual(5 * 60_000);
+      const stored = JSON.parse(f.storage.getItem(key)!) as Stored;
       clearTranscriptDelegationSchedule(address);
-      // A reload re-evaluates urgency, and a rejection still holds the long cap.
-      expect(await f.run()).toBe("busy");
-      expect(posts).toBe(1);
-      clearTranscriptDelegationSchedule(address);
+      // The grant is still missing, so every evaluation is urgent.
+      return { f, stored, wait: nextTranscriptAttempt(stored as never, true) - stored.lastFailureAt, posts: () => posts };
     }
+    const longAgo = Date.now() - 7 * 60 * 60_000;
+
+    // Six rejections in a row, then a seventh: the long cap holds, across a reload.
+    const run = await attemptWith({ failures: 6, rejections: 6, lastFailureAt: longAgo, jitter: 0 }, 403);
+    expect(run.stored).toMatchObject({ failures: 7, rejections: 7 });
+    expect(run.wait).toBeGreaterThan(60 * 60_000);
+    expect(await run.f.run()).toBe("busy");
+    expect(run.posts()).toBe(1);
+    clearTranscriptDelegationSchedule(address);
+
+    // A 400 after five 503s is one rejection: about a minute, not the ~32 min five outages imply.
+    const afterOutages = await attemptWith({ failures: 5, lastFailureAt: Date.now() - 10 * 60_000, jitter: 0 }, 400);
+    expect(afterOutages.stored).toMatchObject({ failures: 6, rejections: 1 });
+    expect(afterOutages.wait).toBeLessThanOrEqual(72_000);
+
+    // An outage ends the run: back to the five-minute urgent cap.
+    const outage = await attemptWith({ failures: 6, rejections: 6, lastFailureAt: longAgo, jitter: 0 }, 503);
+    expect(outage.stored.failures).toBe(7);
+    expect(outage.stored.rejections).toBeUndefined();
+    expect(outage.wait).toBeLessThanOrEqual(5 * 60_000);
   });
 
   it("does not re-mint a grant near the end of a three-day session without useful extension", async () => {
