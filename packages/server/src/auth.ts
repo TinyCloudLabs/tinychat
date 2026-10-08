@@ -87,7 +87,7 @@ export interface VerifiedSiweSession {
   address: string;
   chainId: number;
   uri: string;
-  expirationTime: string;
+  expirationTime?: string;
   nonce: string;
 }
 
@@ -106,7 +106,6 @@ export async function verifySiweSession(
     ? new Date(expiry - 1).toISOString() : undefined;
   const result = await parsed.verify({ signature, ...(time ? { time } : {}) });
   if (!result.success) throw new Error("SIWE signature verification failed");
-  if (!result.data.expirationTime) throw new Error("SIWE session has no expiration");
   return {
     address: result.data.address,
     chainId: result.data.chainId,
@@ -125,7 +124,7 @@ export async function verifySIWE(
   signature: string,
 ): Promise<{ address: string; nonce: string; expirationTime?: string }> {
   const { address, nonce, expirationTime } = await verifySiweSession(message, signature);
-  if (Date.parse(expirationTime) <= Date.now()) throw new Error("SIWE session expired");
+  if (expirationTime && Date.parse(expirationTime) <= Date.now()) throw new Error("SIWE session expired");
   return { address, nonce, expirationTime };
 }
 

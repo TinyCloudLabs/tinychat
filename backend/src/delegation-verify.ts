@@ -46,6 +46,10 @@ const verificationCache = new Map<string, { verified: VerifiedTranscriptWriter; 
 export function verificationCacheKey(address: string, envelope: string, backendDid: string, configuredHost: string): string {
   return sha256(JSON.stringify({ address: address.toLowerCase(), envelopeSha256: sha256(envelope), backendDid, configuredHost, policyHash: backendDelegationPolicyHash(backendDid) }));
 }
+/** Invalidate a previously verified stored envelope when its grant is replaced or revoked. */
+export function evictStoredGrantVerification(address: string, envelope: string, backendDid: string, configuredHost: string): void {
+  verificationCache.delete(verificationCacheKey(address, envelope, backendDid, configuredHost));
+}
 
 export async function verifyTranscriptWriterGrant(input: GrantInput, deps: GrantDependencies): Promise<GrantResult> {
   const now = input.now ?? Date.now();
@@ -75,7 +79,7 @@ export async function verifyTranscriptWriterGrant(input: GrantInput, deps: Grant
   let session: VerifiedSiweSession;
   try { session = await verifySiweSession(input.siwe, input.signature); } catch { return failure("bad_session_signature"); }
   if (session.address.toLowerCase() !== input.address.toLowerCase()) return failure("wrong_delegator");
-  const sessionExpiry = Date.parse(session.expirationTime);
+  const sessionExpiry = Date.parse(session.expirationTime ?? "");
   if (!Number.isFinite(sessionExpiry) || sessionExpiry <= now) return failure("session_expired");
   if (stripFragment(session.uri) !== sessionDid) return failure("session_mismatch");
   let proof: string;

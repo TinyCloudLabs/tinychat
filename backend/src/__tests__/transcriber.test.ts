@@ -109,7 +109,7 @@ function fakeApi() {
 }
 
 function harness(address: string | null = ADDRESS_A, index: TranscriberIndexStore = new MemoryTranscriberIndexStore(),
-  options: Pick<TranscriberRouterOptions, "webhookUrl" | "onCompleted"> = {}) {
+  options: Pick<TranscriberRouterOptions, "webhookUrl" | "onObservedCompletion"> = {}) {
   const { api, calls, store } = fakeApi();
   const session: { address: string | null } = { address };
   const app = express();
@@ -266,7 +266,7 @@ describe("GET /api/transcriber/meetings", () => {
   test("listing an owned completed meeting wakes delivery without leaking another owner's row", async () => {
     const wakes: Array<[string, string]> = [];
     const h = harness(ADDRESS_A, new MemoryTranscriberIndexStore(), {
-      onCompleted: async (address, id) => { wakes.push([address, id]); },
+      onObservedCompletion: async (address, id) => { wakes.push([address, id]); },
     });
     await withServer(h.app, async (base) => {
       await call(base, "/api/transcriber/meetings", "POST", { meeting_url: "https://meet.jit.si/one" });

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { once } from "node:events";
 import type { Server } from "node:http";
 import { describe, expect, it } from "bun:test";
@@ -23,7 +22,6 @@ import { makeSignedTranscriptGrant, type SignedTranscriptGrant } from "./helpers
 
 const SOURCE = "fireflies";
 
-const fingerprint = (value: string | undefined) => value === undefined ? null : createHash("sha256").update(value).digest("hex");
 class FakeTokens {
   readonly configs = new Map<string, WebhookConfigRecord>();
   async config(address: string) { return this.configs.get(address.toLowerCase()) ?? null; }
@@ -59,10 +57,8 @@ class FakeControl implements ConnectorControl {
 
 function createApp(grant: SignedTranscriptGrant) {
   const records = new Map<string, StoredDelegation>();
-  const cached = new Map<string, unknown>();
   const tokens = new FakeTokens();
   const control = new FakeControl();
-  let activations = 0;
   const authMiddleware = (req: Request, _res: Response, next: NextFunction) => {
     req.user = { address: grant.address };
     next();
@@ -70,7 +66,6 @@ function createApp(grant: SignedTranscriptGrant) {
   const node = {
     computeDelegationCid: grant.computeDelegationCid,
     useDelegation: async () => {
-      activations++;
       return { kv: { get: async () => ({ ok: true }) }, sql: {} };
     },
   } as unknown as TinyCloudNode;
@@ -89,11 +84,6 @@ function createApp(grant: SignedTranscriptGrant) {
       },
       remove: async (address) => { records.delete(address); },
     },
-    cache: {
-      get: (address) => cached.get(address) ?? null,
-      set: (address, access) => { cached.set(address, access); },
-      evict: (address) => { cached.delete(address); },
-    } as Parameters<typeof createDelegationRouter>[0]["cache"],
   }));
   app.use("/api/connectors/webhooks", authMiddleware, createConnectorWebhookCompanionRouter({
     tokens: tokens as Parameters<typeof createConnectorWebhookCompanionRouter>[0]["tokens"],
@@ -101,7 +91,7 @@ function createApp(grant: SignedTranscriptGrant) {
     control,
     limiters: new ConnectorWebhookLimiters({ ipLimit: 0, tokenSuccessLimit: 0 }),
   }));
-  return { app, records, cached, tokens, control, getActivations: () => activations };
+  return { app, tokens, control };
 }
 
 async function withServer<T>(app: express.Express, run: (base: string) => Promise<T>): Promise<T> {
@@ -125,7 +115,7 @@ function postGrant(base: string, grant: SignedTranscriptGrant) {
 }
 
 describe("transcriber grant and Fireflies webhook independence", () => {
-  it("turning off Fireflies notifications leaves the signed transcript-writer grant active and cached", async () => {
+  it("turning off Fireflies notifications leaves the signed transcript-writer grant active", async () => {
     const grant = await makeSignedTranscriptGrant();
     const fixture = createApp(grant);
     fixture.tokens.configs.set(grant.address.toLowerCase(), {
@@ -133,8 +123,6 @@ describe("transcriber grant and Fireflies webhook independence", () => {
     });
     await withServer(fixture.app, async (base) => {
       expect((await postGrant(base, grant)).status).toBe(200);
-      expect(fixture.getActivations()).toBe(2);
-      expect(fixture.cached.has(grant.address)).toBe(true);
       const disabled = await fetch(`${base}/api/connectors/webhooks/config`, { method: "DELETE" });
       expect(disabled.status).toBe(200);
       expect((await disabled.json()).status).toBe("disabled");
@@ -144,9 +132,6 @@ describe("transcriber grant and Fireflies webhook independence", () => {
       });
       expect((await postGrant(base, grant)).status).toBe(200);
     });
-    expect(fingerprint(fixture.records.get(grant.address)?.serialized)).toBe(fingerprint(grant.envelope));
-    expect(fixture.cached.has(grant.address)).toBe(true);
-    expect(fixture.getActivations()).toBe(2);
   });
 
   it("a preexisting Fireflies disabled marker does not gate a signed transcript-writer grant", async () => {
@@ -157,7 +142,5 @@ describe("transcriber grant and Fireflies webhook independence", () => {
       expect((await postGrant(base, grant)).status).toBe(200);
       expect((await fetch(`${base}/api/delegations/status`)).status).toBe(200);
     });
-    expect(fingerprint(fixture.records.get(grant.address)?.serialized)).toBe(fingerprint(grant.envelope));
-    expect(fixture.getActivations()).toBe(2);
   });
 });

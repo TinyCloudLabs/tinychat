@@ -1,9 +1,9 @@
 import express, { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
-import type { DelegationCache, DelegationStore } from "@tinyboilerplate/server";
+import type { DelegationStore } from "@tinyboilerplate/server";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { backendDelegationPolicyHash } from "../manifest.js";
-import { parseStoredGrant, verifyTranscriptWriterGrant } from "../delegation-verify.js";
+import { evictStoredGrantVerification, parseStoredGrant, verifyTranscriptWriterGrant } from "../delegation-verify.js";
 import { activateVerifiedDelegation, normalizeDid } from "../portable-delegation.js";
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
 
@@ -17,10 +17,10 @@ interface DelegationRoutesConfig {
   eligibility: (address: string) => boolean;
   schemaMissing?: (address: string) => Promise<boolean> | boolean;
   store: Pick<DelegationStore, "store" | "load" | "remove">;
-  cache: Pick<DelegationCache, "get" | "set" | "evict">;
   authMiddleware: RequestHandler;
   node: TinyCloudNode;
   coordinator?: TenantCoordinator;
+  onGrantChanged?: (address: string, previousEnvelope?: string) => void;
 }
 
 export function createDelegationRouter(config: DelegationRoutesConfig) {
@@ -33,35 +33,44 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
   router.get("/status", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
+    const address = user.address.toLowerCase();
     try {
-      const delivery = !config.eligibility(user.address) ? "disabled"
-        : await config.schemaMissing?.(user.address) ? "schema_missing" : "enabled";
-      const stored = await config.store.load(user.address);
-      if (!stored) { res.json({ status: "none", expiresAt: null, verified: false, delivery }); return; }
-      if (Date.parse(stored.expiresAt) <= Date.now()) {
-        await config.store.remove(user.address);
-        config.cache.evict(user.address);
-        res.json({ status: "expired", expiresAt: stored.expiresAt, verified: false, delivery });
-        return;
-      }
-      if (!storedDelegationMatchesBackend(stored, config.backendDid)) {
-        await config.store.remove(user.address);
-        config.cache.evict(user.address);
-        res.json({ status: "stale", expiresAt: null, verified: false, delivery });
-        return;
-      }
-      const result = await parseStoredGrant(user.address, stored.serialized, config, deps);
-      if (!result.ok) {
-        await config.store.remove(user.address);
-        config.cache.evict(user.address);
-        res.json({ status: "stale", expiresAt: null, verified: false, delivery });
-        return;
-      }
-      res.json({ status: "active", expiresAt: result.verified.expiresAt.toISOString(), verified: true, delivery });
+      const delivery = !config.eligibility(address) ? "disabled"
+        : await config.schemaMissing?.(address) ? "schema_missing" : "enabled";
+      const result = await coordinator.run(address, async () => {
+        const stored = await config.store.load(address);
+        if (!stored) return { status: "none", expiresAt: null, verified: false, delivery };
+        if (Date.parse(stored.expiresAt) <= Date.now()) {
+          await removeIfUnchanged(address, stored.serialized);
+          return { status: "expired", expiresAt: stored.expiresAt, verified: false, delivery };
+        }
+        if (!storedDelegationMatchesBackend(stored, config.backendDid)) {
+          await removeIfUnchanged(address, stored.serialized);
+          return { status: "stale", expiresAt: null, verified: false, delivery };
+        }
+        const verified = await parseStoredGrant(address, stored.serialized, config, deps);
+        if (!verified.ok) {
+          await removeIfUnchanged(address, stored.serialized);
+          return { status: "stale", expiresAt: null, verified: false, delivery };
+        }
+        return { status: "active", expiresAt: verified.verified.expiresAt.toISOString(), verified: true, delivery };
+      });
+      res.json(result);
     } catch {
       res.status(503).json({ error: "unavailable" });
     }
   });
+
+  function invalidateGrant(address: string, envelope?: string): void {
+    if (envelope) evictStoredGrantVerification(address, envelope, config.backendDid, config.configuredHost);
+    config.onGrantChanged?.(address, envelope);
+  }
+
+  async function removeIfUnchanged(address: string, envelope: string): Promise<void> {
+    if ((await config.store.load(address))?.serialized !== envelope) return;
+    await config.store.remove(address);
+    invalidateGrant(address, envelope);
+  }
 
   // Eligibility and the per-address quota precede the first read of the POST body.
   router.post("/", (req, res, next) => {
@@ -78,7 +87,7 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
     accepts.set(address, recent);
     next();
   }, express.json({ limit: "96kb" }), async (req: Request, res: Response) => {
-    const address = req.user!.address;
+    const address = req.user!.address.toLowerCase();
     const body: unknown = req.body;
     if (typeof body !== "object" || body === null || Array.isArray(body)) { res.status(400).json({ error: "invalid_body" }); return; }
     const { serialized, siwe, signature } = body as Record<string, unknown>;
@@ -103,13 +112,13 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
             return { expiresAt: previous.verified.expiresAt.toISOString() };
           }
         }
-        const access = await activateVerifiedDelegation(config.node, incoming.verified, { host: config.configuredHost, beforeNodeWrite: async () => {} });
+        await activateVerifiedDelegation(config.node, incoming.verified, { host: config.configuredHost, beforeNodeWrite: async () => {} });
         const expiresAt = incoming.verified.expiresAt.toISOString();
         await config.store.store(address, envelope, {
           expiresAt, actions: [], path: "", policyHash: backendDelegationPolicyHash(config.backendDid),
           delegateDid: config.backendDid, resources: incoming.verified.resources,
         });
-        config.cache.set(address, access);
+        invalidateGrant(address, stored?.serialized);
         return { expiresAt };
       });
       res.json({ status: "active", expiresAt: result.expiresAt, verified: true, delivery: "enabled" });
@@ -129,9 +138,13 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
   router.delete("/", async (req: Request, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
+    const address = user.address.toLowerCase();
     try {
-      await config.store.remove(user.address);
-      config.cache.evict(user.address);
+      await coordinator.run(address, async () => {
+        const stored = await config.store.load(address);
+        await config.store.remove(address);
+        invalidateGrant(address, stored?.serialized);
+      });
       res.json({ status: "none", expiresAt: null });
     } catch { res.status(503).json({ error: "unavailable" }); }
   });
