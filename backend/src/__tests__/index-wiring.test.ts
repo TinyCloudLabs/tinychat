@@ -486,7 +486,7 @@ describe("backend index middleware wiring", () => {
   test("createApiBodyParser leaves delegation acceptance, NRAS and hosted parts unread", () => {
     const PARSER = readFileSync(resolve(import.meta.dir, "../body-parsing.ts"), "utf8");
     // Delegation POSTs are gated on eligibility before their route-local parser reads a byte.
-    expect(PARSER).toContain('(req.method === "POST" && /^\\/api\\/delegations\\/?$/i.test(req.path))');
+    expect(PARSER).toContain('(req.method === "POST" && /^\\/api\\/delegations\\/*$/i.test(req.path))');
     expect(PARSER).toContain('req.path === "/api/nras-proxy"');
     expect(PARSER).toContain('req.path.startsWith("/api/nras-proxy/")');
     expect(PARSER).toContain("isHostedPartPath(req.path)");
