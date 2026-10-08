@@ -240,6 +240,43 @@ describe("signed transcript-writer delegation acceptance", () => {
     }
   });
 
+  it("removes a stored grant once delivery is disabled for the address, reporting it until removal succeeds", async () => {
+    const grant = await makeSignedTranscriptGrant();
+    let eligible = true;
+    let failRemoval = 0;
+    const changed: string[] = [];
+    const fixture = appFor(grant, {
+      eligibility: () => eligible,
+      onRemove: async () => { if (failRemoval-- > 0) throw new Error("store unavailable"); },
+      onGrantChanged: (address) => changed.push(address),
+    });
+    const address = grant.address.toLowerCase();
+    const active = { status: "active", expiresAt: grant.expiresAt.toISOString(), verified: true };
+    await withServer(fixture.app, async (base) => {
+      const status = async () => (await fetch(`${base}/api/delegations/status`)).json();
+      expect((await post(base, grant)).status).toBe(200);
+      expect(await status()).toEqual({ ...active, delivery: "enabled" });
+
+      // Narrowed out of the cohort while the store is failing: the grant is still there, so say so.
+      eligible = false;
+      failRemoval = 1;
+      expect(await status()).toEqual({ ...active, delivery: "disabled" });
+      expect(fixture.records.has(address)).toBe(true);
+      // The next read removes it (compare-and-delete) and signals the change.
+      const before = changed.length;
+      expect(await status()).toEqual({ status: "none", expiresAt: null, verified: false, delivery: "disabled" });
+      expect(fixture.records.has(address)).toBe(false);
+      expect(changed.length).toBe(before + 1);
+      expect((await post(base, grant)).status).toBe(403);
+
+      // Re-widened: no grant comes back by itself, and a fresh one is accepted again.
+      eligible = true;
+      expect(await status()).toEqual({ status: "none", expiresAt: null, verified: false, delivery: "enabled" });
+      expect((await post(base, grant)).status).toBe(200);
+      expect(await status()).toEqual({ ...active, delivery: "enabled" });
+    });
+  });
+
   it("evicts a stored grant whose signed envelope no longer verifies", async () => {
     const grant = await makeSignedTranscriptGrant();
     const mismatchedSignature = (await makeSignedTranscriptGrant({ wallet: "B" })).signature;

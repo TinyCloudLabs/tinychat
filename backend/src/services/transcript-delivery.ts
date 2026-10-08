@@ -121,6 +121,8 @@ export class TranscriptDeliveryWorker {
   private readonly dirty = new Map<string, DeliveryState>();
   private readonly lastUpstream = new Map<string, number>();
   private readonly nextCheckAt = new Map<string, number>();
+  /** Ineligible addresses already checked for a leftover grant; cleared when a grant changes. */
+  private readonly ineligibleWithoutGrant = new Set<string>();
   private cursor: SweepCursor | undefined;
   private sweepActive = false;
   private sweepWaiters: Array<() => void> = [];
@@ -148,6 +150,7 @@ export class TranscriptDeliveryWorker {
   /** Called under the same tenant coordinator as delivery after a grant changes. */
   invalidateGrant(address: string, envelope?: string): void {
     address = address.toLowerCase();
+    this.ineligibleWithoutGrant.delete(address);
     const cached = this.grants.get(address)?.envelope;
     this.grants.delete(address);
     for (const stale of [cached, envelope]) {
@@ -348,6 +351,22 @@ export class TranscriptDeliveryWorker {
     }
     return { envelope, verified: result.verified };
   }
+  /**
+   * Delivery was turned off for this address (flag off, or narrowed out of the cohort): its stored
+   * grant must not stay valid for the rest of its life. Compare-and-delete under the tenant lane.
+   */
+  private async dropIneligibleGrant(address: string): Promise<void> {
+    if (this.ineligibleWithoutGrant.has(address)) return;
+    try {
+      await this.coordinator.run(address, async () => {
+        const stored = await this.options.delegationStore.load(address);
+        if (stored) await this.removeGrant(address, stored.serialized);
+      });
+      this.ineligibleWithoutGrant.add(address);
+    } catch {
+      console.warn("[transcript-delivery] op=remove_ineligible result=error");
+    }
+  }
   private async removeGrant(address: string, envelope: string): Promise<void> {
     this.invalidateGrant(address, envelope);
     await this.governor.take();
@@ -475,7 +494,11 @@ export class TranscriptDeliveryWorker {
     }
     while (cursor.scanned < cursor.addresses.length && cursor.calls < 200) {
       const address = cursor.addresses[cursor.ai];
-      if (!this.options.eligibility(address)) { this.advanceAddress(cursor); continue; }
+      if (!this.options.eligibility(address)) {
+        await this.dropIneligibleGrant(address);
+        this.advanceAddress(cursor);
+        continue;
+      }
       if (cursor.idOffset === 0) {
         const pending = await this.options.index.listPending(address);
         const intent = pending[cursor.pendingOffset];

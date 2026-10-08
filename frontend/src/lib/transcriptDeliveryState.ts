@@ -37,8 +37,8 @@ export function resolveTranscriptConsentStatus(address: string, status: Delegati
   if (consentAddress !== address.toLowerCase()) return;
   if (!status) { publish("unknown"); return; }
   if (status.status === "active" && status.verified) {
-    if (status.delivery === "disabled") { publish("inactive"); return; }
-    // schema_missing is retryable; a signed, active grant still exists.
+    // A grant the server still holds is disclosed even with delivery off: the backend removes it
+    // on a later status read or sweep, and reports it until then. schema_missing is retryable.
     publish(status.delivery === "enabled" ? "active" : "unknown");
     return;
   }

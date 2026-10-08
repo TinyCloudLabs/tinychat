@@ -40,6 +40,16 @@ export function createDelegationRouter(config: DelegationRoutesConfig) {
       const result = await coordinator.run(address, async () => {
         const stored = await config.store.load(address);
         if (!stored) return { status: "none", expiresAt: null, verified: false, delivery };
+        // Delivery is off for this address (flag off, or narrowed out of the cohort): remove the
+        // grant rather than leave it valid for weeks. Until removal succeeds, report it as it is.
+        if (delivery === "disabled") {
+          try {
+            await removeIfUnchanged(address, stored.serialized);
+            return { status: "none", expiresAt: null, verified: false, delivery };
+          } catch {
+            console.warn("[delegations] op=remove_disabled result=error");
+          }
+        }
         if (Date.parse(stored.expiresAt) <= Date.now()) {
           await removeIfUnchanged(address, stored.serialized);
           return { status: "expired", expiresAt: stored.expiresAt, verified: false, delivery };
