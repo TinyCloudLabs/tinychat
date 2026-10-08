@@ -325,50 +325,80 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
   disconnectNote: "Disconnecting also asks Google to revoke access and removes the browser token. A failed revoke is reported; local token copies are still removed. Your recordings remain available.",
 };
 
-/** A transcript-writer grant is separate from each connector's own permissions. */
+/**
+ * The transcript-writer grant, as it really is: SQL read+write on the whole connectors database,
+ * which holds every connector's meeting records, and `write` includes UPDATE and DELETE at the
+ * node. So the notice names read, add, change and delete over the whole library, not just saving
+ * transcripts. It says what we ask for and claims no limit on what the grant can reach (V3).
+ */
 const TRANSCRIPT_WRITER_NOTICE =
-  "Separately, because the TinyCloud Private Notetaker is on, our server can save its meeting " +
-  "transcripts into your space when a meeting ends.";
+  "Separately, because the TinyCloud Private Notetaker is on, our server holds a permission on " +
+  "your space that lets it **read, add, change and delete the meeting records in your connectors " +
+  "library** — every connector's meetings, Fireflies and Google included — and save Notetaker " +
+  "transcripts there when a meeting ends. Each grant lasts up to 29 days, and your browser renews " +
+  "it without asking while you are signed in and enrolled in server delivery.";
+
+/** Replace the listed bullets; every other bullet keeps its original bytes. */
+function withBullets(copy: BackgroundSyncConsentCopy, replaced: Record<number, string>): readonly string[] {
+  return copy.bullets.map((bullet, index) => replaced[index] ?? bullet);
+}
 
 export const BACKGROUND_SYNC_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
   ...BACKGROUND_SYNC_CONSENT_COPY,
   variant: "C-transcript-writer",
-  bullets: BACKGROUND_SYNC_CONSENT_COPY.bullets.map((bullet, index) => index === 2
-    ? "Turning this on gives our server **no new permission** on your space. Background sync asks " +
-      `you to grant nothing. ${TRANSCRIPT_WRITER_NOTICE} Your browser still saves Fireflies ` +
-      "meetings into your space."
-    : bullet),
+  bullets: withBullets(BACKGROUND_SYNC_CONSENT_COPY, {
+    0: "Our server learns **which meetings are ready** and when: a meeting id and a timestamp, held " +
+      "in a short list until your browser collects them. The notification itself carries no title, " +
+      "no transcript, no summary and no attendees — but once your browser has saved a meeting, the " +
+      "Notetaker permission described below lets our server read it in your space.",
+    2: "Turning background sync on adds **no new permission** of its own, and asks you to grant " +
+      `nothing. ${TRANSCRIPT_WRITER_NOTICE} Your browser still saves Fireflies meetings into your ` +
+      "space.",
+  }),
 };
 
 export const BACKEND_INGEST_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
   ...BACKEND_INGEST_CONSENT_COPY,
   variant: "B-ingest-transcript-writer",
-  bullets: BACKEND_INGEST_CONSENT_COPY.bullets.map((bullet, index) => index === 3
-    ? "Turning this on gives our server **no new permission on your space**. Background sync asks " +
+  bullets: withBullets(BACKEND_INGEST_CONSENT_COPY, {
+    3: "Turning this on adds **no new permission on your space** of its own. Background sync asks " +
       "you to grant nothing — the credential above is held by our server, outside your space. " +
       "Your browser still saves Fireflies meetings into your space when you are signed in with " +
-      "your vault unlocked, so your own copy lands where it always did — and it stays yours: it " +
-      `is not deleted when our 90-day window closes. ${TRANSCRIPT_WRITER_NOTICE} What changed ` +
-      "with this Fireflies toggle is what our server now *has*: your Fireflies token, and a copy " +
-      "of your meetings."
-    : bullet),
+      "your vault unlocked, so your own copy lands where it always did, and it is not deleted " +
+      `when our 90-day window closes. ${TRANSCRIPT_WRITER_NOTICE} What changed with this Fireflies ` +
+      "toggle is what our server now *has*: your Fireflies token, and a copy of your meetings.",
+  }),
 };
 
 export const GOOGLE_MEET_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
   ...GOOGLE_MEET_CONSENT_COPY,
   variant: "google-oauth-transcript-writer",
-  bullets: GOOGLE_MEET_CONSENT_COPY.bullets.map((bullet, index) => index === 3
-    ? "Connecting gives our server **no new permission** on your space. This Google connection " +
-      "asks you to grant nothing on your space — the synced Google meetings are written by your " +
-      `browser, as they are today. ${TRANSCRIPT_WRITER_NOTICE}`
-    : bullet),
+  bullets: withBullets(GOOGLE_MEET_CONSENT_COPY, {
+    1: "**Your browser talks to Google directly.** Titles, transcripts and participants are fetched " +
+      "by this browser from Google's API and written straight into your space — the fetch from " +
+      "Google does not go through TinyChat's server, and we keep no copy of it. Once they are in " +
+      "your space, the Notetaker permission described below lets our server read, change or delete " +
+      "them there.",
+    3: "Connecting adds **no new permission** on your space of its own. This Google connection asks " +
+      "you to grant nothing on your space — the synced Google meetings are written by your " +
+      `browser, as they are today. ${TRANSCRIPT_WRITER_NOTICE}`,
+  }),
+  disconnectNote:
+    "**Disconnecting asks Google to revoke this access and deletes the saved token from your " +
+    "secrets.** If Google cannot be reached we say so instead of pretending the revoke worked, " +
+    "and you can always remove TinyChat yourself from your Google account's third-party access " +
+    "page. Disconnecting does not delete your already-synced meetings from your space.",
 };
 
 export const GOOGLE_CALENDAR_AUTOJOIN_TRANSCRIPT_CONSENT_COPY: BackgroundSyncConsentCopy = {
   ...GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
   variant: "google-calendar-autojoin-transcript-writer",
-  bullets: GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY.bullets.map((bullet, index) =>
-    index === 3 ? `${bullet} ${TRANSCRIPT_WRITER_NOTICE}` : bullet),
+  bullets: withBullets(GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY, {
+    3: "Enabling autojoin adds no new permission to write to your space of its own. " +
+      `${TRANSCRIPT_WRITER_NOTICE} So an autojoined meeting's transcript may be saved by our ` +
+      "server before you return; your browser also saves completed recordings into your own " +
+      "space after you return and unlock it.",
+  }),
 };
 
 /** Unknown status uses the disclosure; inactive preserves every original byte. */
