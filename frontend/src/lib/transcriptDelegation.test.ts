@@ -269,6 +269,27 @@ describe("silent transcript-writer renewal", () => {
     expect(disabled.operations).not.toContain("delegateTo");
   });
 
+  it("treats a status without a known delivery value as off: no mint and no browser deferral", async () => {
+    const on = mintHarness();
+    expect(await on.run()).toBe("active");
+    expect(serverDeliveryActive()).toBe(true);
+    for (const delivery of [undefined, "paused"]) {
+      const f = mintHarness({ delivery } as unknown as Partial<DelegationResponse>);
+      expect(await f.run()).toBe("disabled");
+      expect(f.operations).toEqual(["GET /api/delegations/status"]);
+      expect(f.operations).not.toContain("delegateTo");
+      expect(f.payloads).toEqual([]);
+      // `serverDeliveryActive` is what defers the browser's own save by ten minutes.
+      expect(serverDeliveryActive()).toBe(false);
+    }
+    // Schema repair stays a known, enabled value (the browser's cue to re-ensure tables).
+    const repair = mintHarness({ status: "active", verified: true, delivery: "schema_missing",
+      expiresAt: new Date(Date.now() + 28 * DAY).toISOString() });
+    expect(await repair.run()).toBe("active");
+    expect(serverDeliveryActive()).toBe(true);
+    expect(repair.operations).not.toContain("delegateTo");
+  });
+
   it("clamps jittered backoff after the cap and reconsiders urgency on each evaluation", async () => {
     const now = Date.now();
     for (let failures = 1; failures <= 20; failures++) {
