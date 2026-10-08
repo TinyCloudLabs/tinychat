@@ -3,7 +3,7 @@ import { makePkhSpaceId } from "@tinycloud/node-sdk/core";
 import { normalizeTranscriberTranscript, transcriberMeetingInSpace, writeTranscriberMeeting } from "@tinyboilerplate/core";
 import { DelegationCache, type DelegationStore } from "@tinyboilerplate/server";
 import { evictStoredGrantVerification, parseStoredGrant, verificationCacheKey, type VerifiedTranscriptWriter } from "../delegation-verify.js";
-import { activateVerifiedDelegation } from "../portable-delegation.js";
+import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
 import { BackendStorageLane } from "./backend-storage-lane.js";
 import { TenantCoordinator } from "./calendar-autojoin-store.js";
 import { ExternalOperationLimiter } from "./google-calendar.js";
@@ -107,6 +107,11 @@ export interface TranscriptDeliveryOptions {
 }
 
 /** Single process writer. A webhook only admits an indexed id; the sweep is the durable queue. */
+/** Only the node refusing an activation of the grant itself proves the grant is revoked. */
+function refusedActivation(error: unknown): boolean {
+  return error instanceof DelegationActivationError && (error.status === 401 || error.status === 403);
+}
+
 export class TranscriptDeliveryWorker {
   private readonly queue: Item[] = [];
   private readonly queued = new Set<string>();
@@ -451,7 +456,7 @@ export class TranscriptDeliveryWorker {
         return this.options.runInWriteLane ? this.options.runInWriteLane(operation) : operation();
       });
       const existing = await transcriberMeetingInSpace(port, id);
-      if (!existing.ok) { await this.portFailure(address, state, id, grant.envelope, existing); return true; }
+      if (!existing.ok) { await this.portFailure(address, state, id, grant, existing); return true; }
       if (existing.data) { this.done(address, state, id, "existing"); return true; }
       const transcript = await this.limiter.run(() => this.options.api.getTranscript(id)).catch((error: unknown) => {
         this.retry(address, state, id, "upstream_unavailable", this.retryAfter(error));
@@ -462,23 +467,45 @@ export class TranscriptDeliveryWorker {
       if (transcript.transcript.meeting_id !== id) { this.retry(address, state, id, "upstream_unavailable"); return true; }
       const normalized = await normalizeTranscriberTranscript(meeting, transcript.transcript);
       const result = await writeTranscriberMeeting(port, normalized, { ensureSchema: false });
-      if (!result.ok) { await this.portFailure(address, state, id, grant.envelope, result); return true; }
+      if (!result.ok) { await this.portFailure(address, state, id, grant, result); return true; }
       this.done(address, state, id, "written");
       console.info(`[transcript-delivery] op=deliver result=written id=${id}`);
     } catch (error) {
-      if (this.status(error) === 401 || this.status(error) === 403) await this.removeGrant(address, grant.envelope);
+      if (refusedActivation(error)) await this.removeGrant(address, grant.envelope);
       else this.retry(address, state, id, this.errorCode(error));
     }
     return true;
   }
-  private async portFailure(address: string, state: DeliveryState, id: string, envelope: string,
+  private async portFailure(address: string, state: DeliveryState, id: string,
+    grant: { envelope: string; verified: VerifiedTranscriptWriter },
     result: { code: string; message: string; status?: number }): Promise<void> {
-    // The node refused the grant itself: by HTTP status, or by the SDK's refusal codes.
     if (result.status === 401 || result.status === 403 ||
       /^(?:401|403|AUTH_UNAUTHORIZED|AUTH_FORBIDDEN|SQL_PERMISSION_DENIED)$/.test(result.code)) {
-      await this.removeGrant(address, envelope);
-    } else this.retry(address, state, id, result.code === "SCHEMA_MISSING" ? "schema_missing" :
+      await this.confirmRefusal(address, state, id, grant);
+      return;
+    }
+    this.retry(address, state, id, result.code === "SCHEMA_MISSING" ? "schema_missing" :
       /QUOTA|PAYMENT_REQUIRED|402/i.test(result.code) ? "storage_quota" : "storage_error");
+  }
+  /**
+   * A storage-time 401/403 may be operational (an ingress, a passing node refusal), and with no tab
+   * open a deleted grant has no recovery. So confirm it: drop the cached activation and activate
+   * the stored grant once more on the configured host. Only a refused activation deletes the
+   * grant; a working one, or a node outage, keeps it and retries with backoff.
+   */
+  private async confirmRefusal(address: string, state: DeliveryState, id: string,
+    grant: { envelope: string; verified: VerifiedTranscriptWriter }): Promise<void> {
+    const cacheKey = verificationCacheKey(address, grant.envelope, this.options.backendDid, this.options.configuredHost);
+    this.accessCache.evict(cacheKey);
+    try {
+      const access = await activateVerifiedDelegation(this.options.node, grant.verified, {
+        host: this.options.configuredHost, beforeNodeWrite: () => this.governor.take(),
+      });
+      this.accessCache.set(cacheKey, access);
+    } catch (error) {
+      if (refusedActivation(error)) { await this.removeGrant(address, grant.envelope); return; }
+    }
+    this.retry(address, state, id, "storage_error");
   }
 
   private async nextSweepItem(): Promise<SweepAction | null> {
