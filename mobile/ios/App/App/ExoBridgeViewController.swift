@@ -64,6 +64,15 @@ class ExoBridgeViewController: CAPBridgeViewController {
           } catch (error) {
             probe.voiceNotesReadChunk = { code: (error && error.code) || null, error: String((error && error.message) || error) };
           }
+          try {
+            const before = await Promise.race([cap.nativePromise("VoiceNotes", "listInputs", {}), timeout]);
+            await Promise.race([cap.nativePromise("VoiceNotes", "selectInput", { id: null }), timeout]);
+            const after = await Promise.race([cap.nativePromise("VoiceNotes", "listInputs", {}), timeout]);
+            probe.voiceNotesInputs = { listed: Array.isArray(before.inputs), reset: after.selectedId === null,
+              count: after.inputs.length };
+          } catch (error) {
+            probe.voiceNotesInputs = { error: String((error && error.message) || error) };
+          }
         }
         // Location spike (TC-524). Only the fields the smoke checks: unified logging truncates a line past about 1 KB.
         if (probe.mounted && probe.locationAvailable && cap.nativePromise) {
@@ -117,9 +126,11 @@ class ExoBridgeViewController: CAPBridgeViewController {
                     var object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? [:]
                     do { object["capture"] = try CaptureProbe.run() }
                     catch { object["capture"] = ["error": String(describing: error)] }
-                    let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-                    let result = data.map { String(decoding: $0, as: UTF8.self) } ?? line
-                    DispatchQueue.main.async { publish(result) }
+                    DispatchQueue.main.async {
+                        object["transitions"] = CaptureEngine.shared.simulate("transitions")
+                        let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                        publish(data.map { String(decoding: $0, as: UTF8.self) } ?? line)
+                    }
                 }
             } else { publish(line) }
             #if EXO_HEALTH

@@ -150,4 +150,128 @@ final class CaptureTransitionTests: XCTestCase {
         XCTAssertEqual(failures, ["broken"])
         XCTAssertEqual(recovered, ["healthy", "another"])
     }
+
+    func testNotificationEpochSurvivesRetriesButPauseAndSuccessfulRestartInvalidateIt() {
+        var gate = CaptureAttemptGate()
+        let id = UUID().uuidString
+        _ = gate.startSession(id)
+        let notice = gate.interrupted()!
+        let first = gate.attempt()!
+        gate.blocked()
+        let second = gate.attempt()!
+        XCTAssertNotEqual(first.generation, second.generation)
+        XCTAssertEqual(gate.epoch, notice.epoch)
+        XCTAssertTrue(gate.accepts(notice))
+        gate.pause()
+        XCTAssertFalse(gate.accepts(notice))
+        XCTAssertEqual(gate.intent, "paused")
+        XCTAssertNil(gate.interrupted(), "a call while paused must not reactivate the mic")
+        let resumed = gate.resumePaused()!
+        XCTAssertTrue(gate.succeeded(resumed))
+        XCTAssertFalse(gate.accepts(notice))
+    }
+
+    func testStartBeforeAttachIsInvalidatedByPauseStopAndDiscard() {
+        for action in ["pause", "stop", "discard"] {
+            var gate = CaptureAttemptGate()
+            let id = UUID().uuidString
+            _ = gate.startSession(id)
+            _ = gate.interrupted()
+            let pending = gate.attempt()! // start.beforeAttach suspension point
+            if action == "pause" { gate.pause() } else { gate.stop() }
+            XCTAssertFalse(gate.mayAttach(pending), "\(action) published a stale segment")
+            XCTAssertFalse(gate.succeeded(pending), "\(action) reactivated an old session")
+            XCTAssertTrue(gate.intent == "paused" || gate.intent == "stopped")
+            if action == "pause" {
+                let next = gate.resumePaused()!
+                XCTAssertTrue(gate.mayAttach(next))
+                XCTAssertFalse(gate.mayAttach(pending), "old cleanup must not affect new attempt")
+            }
+        }
+    }
+
+    func testPausedColumnAndRecordedTimeLimit() throws {
+        var machine = CaptureTransitionMachine()
+        _ = try machine.paused(at: 1_000, audioMs: 400, inputStopped: true)
+        XCTAssertEqual(machine.intent, "paused")
+        let noSpan = machine.openSpan
+        XCTAssertNil(noSpan)
+        _ = machine.resumed(at: 3_601_000, audioMs: 400)
+        XCTAssertEqual(machine.intent, "recording")
+        XCTAssertNil(machine.openSpan)
+        XCTAssertEqual(CaptureTiming.elapsedMilliseconds(startedAt: 0,
+            closedPaused: 3_600_000, pausedSince: nil, now: 14_400_000), 10_800_000)
+        XCTAssertEqual(CaptureTiming.elapsedMilliseconds(startedAt: 0,
+            closedPaused: 0, pausedSince: 1_000, now: 14_400_000), 1_000)
+    }
+
+    func testBlockedReasonsAreJournaledForRefusedResumeAndUnavailableMic() {
+        for reason in ["resume_not_allowed", "mic_unavailable"] {
+            var machine = CaptureTransitionMachine()
+            _ = machine.resumed(at: 1_000, audioMs: 0)
+            let events = machine.blocked(at: 1_001, audioMs: 0, generation: 2, reason: reason)
+            XCTAssertEqual(events.first?["reason"] as? String, reason)
+            XCTAssertEqual(machine.availability, "blocked")
+        }
+    }
+
+    func testStoppedSessionRejectsInterruptionRetryAndNoticeFromOldSession() {
+        var gate = CaptureAttemptGate()
+        _ = gate.startSession("first")
+        let notice = gate.interrupted()!
+        gate.stop()
+        XCTAssertNil(gate.attempt())
+        XCTAssertNil(gate.interrupted())
+        _ = gate.startSession("second")
+        gate.blocked()
+        XCTAssertFalse(gate.accepts(notice))
+    }
+
+    func testEventTableDoesNotChangePausedOrStoppedSession() throws {
+        var paused = CaptureTransitionMachine()
+        _ = try paused.paused(at: 1_000, audioMs: 300, inputStopped: true)
+        XCTAssertTrue(paused.interrupted(at: 2_000, audioMs: 300, generation: 2, reason: "call").isEmpty)
+        XCTAssertTrue(paused.openedSpan(at: 2_000, audioMs: 300, kind: "silenced", reason: "input_muted").isEmpty)
+        XCTAssertTrue(paused.blocked(at: 2_000, audioMs: 300, generation: 2).isEmpty)
+        XCTAssertTrue(paused.acquired(at: 2_000, audioMs: 300, generation: 2, input: nil).isEmpty)
+        XCTAssertEqual(paused.intent, "paused")
+        XCTAssertEqual(paused.availability, "available")
+        XCTAssertNil(paused.openSpan)
+        _ = paused.stopped(at: 3_000, audioMs: 300, reason: "pause_timeout")
+        XCTAssertTrue(paused.interrupted(at: 4_000, audioMs: 300, generation: 3, reason: "call").isEmpty)
+        XCTAssertTrue(paused.resumed(at: 4_000, audioMs: 300).isEmpty)
+        XCTAssertTrue(paused.stopped(at: 4_000, audioMs: 300, reason: "user").isEmpty)
+        XCTAssertEqual(paused.intent, "stopped")
+    }
+
+    func testRouteResetStallAndSilenceCellsProduceExpectedSpans() {
+        for reason in ["route_change", "media_services_reset", "stalled", "interruption"] {
+            var machine = CaptureTransitionMachine()
+            let began = machine.interrupted(at: 1_000, audioMs: 400, generation: 2, reason: reason)
+            XCTAssertEqual(began.map { $0["e"] as? String }, ["span_open", "avail"])
+            XCTAssertEqual(machine.openSpan?.reason, reason)
+            let resumed = machine.acquired(at: 1_200, audioMs: 400, generation: 3, input: nil)
+            XCTAssertEqual(resumed.map { $0["e"] as? String }, ["span_close", "avail"])
+            XCTAssertEqual(machine.availability, "available")
+        }
+        var muted = CaptureTransitionMachine()
+        XCTAssertEqual(muted.openedSpan(at: 1_000, audioMs: 400,
+                                        kind: "silenced", reason: "input_muted").count, 1)
+        XCTAssertEqual(muted.closedSpan(at: 1_200, audioMs: 500).count, 1)
+        XCTAssertNil(muted.openSpan)
+    }
+
+    func testBackoffScheduleCapsTheFinalTickAtTenMinutes() {
+        var schedule = CaptureBackoffSchedule()
+        XCTAssertEqual(schedule.nextDelay(at: 100), 0.5)
+        XCTAssertEqual(schedule.nextDelay(at: 100.5), 1)
+        XCTAssertEqual(schedule.nextDelay(at: 101.5), 2)
+        XCTAssertEqual(schedule.nextDelay(at: 103.5), 5)
+        XCTAssertEqual(schedule.nextDelay(at: 108.5), 10)
+        XCTAssertEqual(schedule.nextDelay(at: 118.5), 30)
+        XCTAssertEqual(schedule.nextDelay(at: 698), 2)
+        XCTAssertNil(schedule.nextDelay(at: 700))
+        schedule.reset()
+        XCTAssertEqual(schedule.nextDelay(at: 700), 0.5)
+    }
 }

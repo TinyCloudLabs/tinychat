@@ -166,6 +166,8 @@ check '.voiceNotesHeader == true and .voiceNotesAvailable == true' "VoiceNotes p
 check '.voiceNotesStatus.state == "idle"' "VoiceNotes.status() answered over the bridge (state idle)"
 check '.voiceNotesStatus.maxDurationMs == 10800000' "VoiceNotes reports the 3-hour recording limit"
 check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() answered over the bridge (missing id: not_found)"
+check '.voiceNotesInputs.listed == true and .voiceNotesInputs.reset == true and .voiceNotesInputs.count >= 0' \
+  "VoiceNotes.listInputs() and selectInput(null) answered over the bridge"
 if [ "$capture_smoke" = 1 ]; then
   check '.capture.committed == true and .capture.sampleRate == 48000 and .capture.channels == 1' \
     "synthetic sine passed the AAC writer, muxer and native commit"
@@ -173,6 +175,10 @@ if [ "$capture_smoke" = 1 ]; then
     "capture cleanup, v1 pair and runtime orphan import retain ownerUnknown"
   check '.capture.pauseSequenceValid == true' \
     "capture pause, resume and segment-close journal sequence"
+  check '.transitions.epochDuringRetry == true and .transitions.staleTapIgnored == true and .transitions.staleAttachRejected == true and .transitions.pausedCallIgnored == true and .transitions.newSegmentAllowed == true and .transitions.noOldNotice == true and .transitions.stopRejectsAttach == true and .transitions.noEndedNotice == true and .transitions.manualAfterFailedRestart == true and .transitions.stopDuringBackoff == true and .transitions.backgroundRefusal == true and .transitions.recordedLimitMs == 10800000 and .transitions.sessionInactive == true' \
+    "capture transition gate rejects stale starts and notifications, leaves the session inactive, and excludes pauses from the limit"
+  check '.transitions.live.inactiveOnPause == true and .transitions.live.stayedPaused == true and .transitions.live.resumedRecording == true and .transitions.live.newSegment == true and .transitions.live.noPauseSpan == true and .transitions.live.routeUnchanged == true and .transitions.live.stalledRebuild == true and .transitions.live.silencedClosedForCall == true and .transitions.live.inactiveAfterDiscard == true' \
+    "live iOS engine deactivates on Pause, ignores a call while paused, and resumes into a new segment"
   check '(.capture.probedDurationMs - .capture.durationMs | fabs) <= 100' \
     "capture duration matches the native file probe within 100 ms"
 fi

@@ -29,7 +29,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
     deinit { if let observer { capture.removeObserver(observer) } }
 
     private func reject(_ call: CAPPluginCall, _ error: Error) {
-        call.reject(error.localizedDescription, (error as? CaptureError)?.code ?? "native_error", error)
+        call.reject(error.localizedDescription,
+                    (error as? CaptureError)?.code ?? (error as? CaptureResumeError)?.code ?? "native_error", error)
     }
 
     @objc func start(_ call: CAPPluginCall) {
@@ -212,8 +213,21 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    @objc func listInputs(_ call: CAPPluginCall) { call.reject("Input routing arrives in T10", "unimplemented") }
-    @objc func selectInput(_ call: CAPPluginCall) { call.reject("Input routing arrives in T10", "unimplemented") }
+    @objc func listInputs(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            do { call.resolve(try self.capture.listInputs()) }
+            catch { self.reject(call, error) }
+        }
+    }
+    @objc func selectInput(_ call: CAPPluginCall) {
+        guard call.options["id"] is NSNull || call.getString("id") != nil else {
+            call.reject("id must be an input UID or null", "invalid_argument"); return
+        }
+        DispatchQueue.main.async {
+            do { try self.capture.selectInput(call.getString("id")); call.resolve() }
+            catch { self.reject(call, error) }
+        }
+    }
 
     @objc func listQuarantine(_ call: CAPPluginCall) {
         DispatchQueue.global(qos: .userInitiated).async {

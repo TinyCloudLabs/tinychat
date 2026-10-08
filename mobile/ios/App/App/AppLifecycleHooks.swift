@@ -38,6 +38,11 @@ enum AppLifecycleHooks {
         CaptureNotifications.handle(response: response, completion: completion)
     }
 
+    static func willPresent(_ notification: UNNotification,
+                            completion: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completion(CaptureNotifications.handleDelivery(notification) ? [] : [.banner, .sound])
+    }
+
     private static func runDeviceProbe(seconds: Int) {
         AVAudioApplication.requestRecordPermission { allowed in
             DispatchQueue.main.async {
