@@ -15,7 +15,13 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { voiceNoteTranscriberFor, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { savePendingRecordings, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { savePendingRecordings, whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+
+let recovery: (() => Promise<void>) | null = null;
+/** A forced native session swap can abort a save without remounting this component. */
+export function schedulePendingVoiceNotesRecovery(): void {
+  void whenVoiceNoteSavesIdle().then(() => recovery?.());
+}
 
 /**
  * Save what is on the phone, and hand each saved note to transcription. The availability check
@@ -42,7 +48,7 @@ export function PendingVoiceNotesSaver({
 }) {
   useEffect(() => {
     if (!nativeVoiceNotesAvailable()) return;
-    void savePendingVoiceNotes({
+    const run = () => savePendingVoiceNotes({
       save: () => savePendingRecordings(tcw),
       transcriber: voiceNoteTranscriberFor(tcw, backendUrl, sessionStore),
     })
@@ -50,6 +56,9 @@ export function PendingVoiceNotesSaver({
         if (run.lastError) console.warn("[VoiceNotes] Some notes are still on this phone:", run.lastError);
       })
       .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
+    recovery = run;
+    void run();
+    return () => { if (recovery === run) recovery = null; };
   }, [backendUrl, sessionStore, tcw]);
   return null;
 }

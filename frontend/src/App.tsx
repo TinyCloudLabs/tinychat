@@ -10,6 +10,7 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import OpenKey from "@openkey/sdk";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { NativeSession, OpenKeyNative } from "@openkey/sdk-capacitor";
 import {
   SessionStore,
   clearPersistedSession,
@@ -120,10 +121,12 @@ import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import {
   isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
-  nativeSessionWasActive, retireNativeSessionAtBoot, secretsAvailable,
+  nativeSessionWasActive, restoreNativeAtBoot, nativeRenewalServices, secretsAvailable,
   setNativeSessionActive, signInNative, signOutNative,
+  type NativeSignInConfig,
   NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
 } from "./lib/openkeyNative";
+import { NativeRenewal, guardNativeTinyCloudCalls, NATIVE_SESSION_ENDED_MESSAGE, NATIVE_STORAGE_MESSAGE } from "./lib/openkeyNativeRenewal";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
@@ -155,6 +158,7 @@ export function App() {
   const signOutInFlightRef = useRef(false);
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
+  const nativeRenewalRef = useRef<NativeRenewal | null>(null);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
   // Live ref the runtime reads at model-context request time. Initialized to
   // null and reconciled by useChatRuntime + MemoryPanel from the per-space
@@ -262,6 +266,42 @@ export function App() {
     }
   }, [tcw]);
 
+  const nativeConfig: NativeSignInConfig = {
+    backendUrl: BACKEND_URL,
+    tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+    tinycloudHosts: TINYCLOUD_HOSTS,
+  };
+
+  const startNativeRenewal = async (rawTcw: TinyCloudWeb, session: NativeSession, openkey: OpenKeyNative): Promise<TinyCloudWeb> => {
+    nativeRenewalRef.current?.stop();
+    const services = await nativeRenewalServices(nativeConfig, openkey);
+    const renewal = new NativeRenewal({
+      openkey, tcw: rawTcw, session, sessionStore: sessionStoreRef.current,
+      ...services,
+      onTerminal: () => {
+        resetNavigationMemory();
+        historyPrefetch.clear();
+        clearAgentSessionCache();
+        clearBackgroundDrainRecord();
+        uploadRunner.reset();
+        try { rawTcw.cleanup(); } catch { /* Local sign-out still continues. */ }
+        sessionStoreRef.current.clear();
+        setNativeSessionActive(false);
+        nativeRenewalRef.current = null;
+        setTcw(null);
+        setAddress(null);
+        setDid(null);
+        setSpaceId(null);
+        setError(NATIVE_SESSION_ENDED_MESSAGE);
+        setState("unauthenticated");
+      },
+      onStorage: () => { setError(NATIVE_STORAGE_MESSAGE); setBillingNotice(NATIVE_STORAGE_MESSAGE); },
+    });
+    nativeRenewalRef.current = renewal;
+    renewal.start();
+    return guardNativeTinyCloudCalls(rawTcw, renewal);
+  };
+
   // Dev-only probe seam. The browser-e2e lane (test/connectors/browser-lane.ts)
   // asserts against REAL space storage — SQL rows, KV bodies, secrets — through
   // this handle, because a UI-only assertion cannot tell "synced" from "looks
@@ -294,26 +334,42 @@ export function App() {
     try {
       if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
         const wasNative = nativeSessionWasActive();
-        try {
-          // Creating the SDK client retries any pending revocation. E1 retires
-          // surviving native sessions at boot; E2 will restore and renew them.
-          await retireNativeSessionAtBoot({
-            tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
-          });
-        } catch (caught) {
-          logNativeOpenKeyError("boot revoke", caught);
+        const boot = await restoreNativeAtBoot(nativeConfig,
+          sessionStoreRef.current.hasSession() && !sessionStoreRef.current.isExpired());
+        if (boot.kind === "restored") {
+          if (boot.verified) sessionStoreRef.current.setSession(boot.verified.token, boot.verified.expiresIn, boot.verified.address);
+          setNativeSessionActive(true);
+          setTcw(await startNativeRenewal(boot.tcw, boot.session, boot.openkey));
+          setAddress(boot.address);
+          setDid(boot.tcw.did ?? `did:pkh:eip155:1:${boot.address}`);
+          setSpaceId(boot.tcw.spaceId ?? null);
+          setState("ready");
+          return;
+        }
+        if (boot.kind === "storage") {
+          setError(NATIVE_STORAGE_MESSAGE);
+          setState("recoverableError");
+          return;
+        }
+        if (boot.kind === "configuration") {
           if (wasNative) {
-            sessionStoreRef.current.clear();
-            setError(isNativeStorageError(caught) ? NATIVE_SIGN_OUT_STORAGE_WARNING : NATIVE_SIGN_OUT_WARNING);
+            setError("Native sign-in is not configured in this build.");
             setState("recoverableError");
             return;
           }
+          // A legacy widget session can still be restored by the browser path.
         }
-        if (wasNative) {
+        if (boot.kind === "unavailable") {
+          setError("Can't reach Exo right now. You're still signed in.");
+          setState("offline");
+          return;
+        }
+        if (boot.kind === "terminal" || wasNative) {
           const storedAddress = sessionStoreRef.current.getAddress();
           if (storedAddress) clearPersistedSession(storedAddress);
           sessionStoreRef.current.clear();
           setNativeSessionActive(false);
+          if (boot.kind === "terminal") setError(NATIVE_SESSION_ENDED_MESSAGE);
           setState("unauthenticated");
           return;
         }
@@ -383,6 +439,26 @@ export function App() {
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
   }, [state, restoreSession]);
+
+  useEffect(() => {
+    if (state !== "ready" || !isNativeOpenKeySignIn() || !nativeRenewalRef.current) return;
+    let disposed = false;
+    let listener: { remove: () => Promise<void> } | undefined;
+    void import("@capacitor/app").then(async ({ App: CapacitorApp }) => {
+      const handle = await CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+        if (isActive) void nativeRenewalRef.current?.check(true).catch(() => {});
+      });
+      if (disposed) void handle.remove();
+      else listener = handle;
+    });
+    const online = () => void nativeRenewalRef.current?.check(true).catch(() => {});
+    window.addEventListener("online", online);
+    return () => {
+      disposed = true;
+      window.removeEventListener("online", online);
+      if (listener) void listener.remove();
+    };
+  }, [state]);
 
   // A1 — keep the policy-input refs in sync with render state.
   useEffect(() => {
@@ -582,11 +658,7 @@ export function App() {
         // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
         // keeps the session key in the device secure store; nothing wallet-shaped
         // signs in the WebView. Throws a user-facing message on cancel/deny.
-        const native = await signInNative({
-          backendUrl: BACKEND_URL,
-          tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
-          tinycloudHosts: TINYCLOUD_HOSTS,
-        });
+        const native = await signInNative(nativeConfig);
         setAddress(native.verified.address);
         sessionStoreRef.current.setSession(
           native.verified.token,
@@ -595,7 +667,7 @@ export function App() {
         );
         setNativeSessionActive(true);
         const nativeTcw = native.tcw as TinyCloudWeb;
-        setTcw(nativeTcw);
+        setTcw(await startNativeRenewal(nativeTcw, native.session, native.openkey));
         setDid(nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`);
         setSpaceId(nativeTcw.spaceId ?? null);
         setState("ready");
@@ -716,6 +788,8 @@ export function App() {
           logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
       }
+      nativeRenewalRef.current?.stop();
+      nativeRenewalRef.current = null;
       // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
       // directly as well so a client cleanup failure cannot restore this user.
       if (address) clearPersistedSession(address);
