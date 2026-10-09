@@ -161,6 +161,7 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
                     pending.addFirst(id)
                     break
                 } catch (e: Exception) {
+                    Log.e("ExoStt", "process() threw for id=$id", e)
                     fail(id, "decode_failed", e.message ?: e.toString())
                 }
             }
@@ -197,8 +198,10 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             onSegment = { chunk, words ->
                 if (words.isNotEmpty()) {
                     decodedAny = true
-                    segments.put(JSONObject().put("start", chunk.start.toDouble() / 16_000)
-                        .put("end", chunk.end.toDouble() / 16_000)
+                    // Milliseconds, not fractional seconds: CanonicalJson only accepts Byte/Short/Int/Long
+                    // (TC-836 — the only type every other timestamp in this schema already uses).
+                    segments.put(JSONObject().put("start", chunk.start.toLong() * 1000 / 16_000)
+                        .put("end", chunk.end.toLong() * 1000 / 16_000)
                         .put("text", words.joinToString(" ") { it.text }).put("speaker", JSONObject.NULL))
                 }
                 segmentsDone += 1
