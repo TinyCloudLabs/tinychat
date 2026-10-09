@@ -2,7 +2,7 @@ import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { FINAL_COPY } from "./finalCopy";
 
-export const SKIP_ENABLED = false;
+export const SKIP_ENABLED = true;
 export const POWERFUL_ENABLED = false;
 
 export interface ModeFeatures {
@@ -221,95 +221,6 @@ export function moveMode(
   return available[
     Math.max(0, Math.min(available.length - 1, from + direction))
   ]!.id;
-}
-
-export interface ModeStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-const CHOICE_KEY = "exo.recorder.transcription-mode";
-const SPEAKERS_KEY = "exo.recorder.identify-speakers";
-
-export function defaultMode(
-  shell: ModeShell,
-  model?: OnDeviceSttStatus | null,
-  whisperDownloaded = false,
-): ModeId {
-  if (
-    shell === "desktop" &&
-    modeAvailability("local", shell, model, whisperDownloaded).available
-  ) {
-    return "local";
-  }
-  return "private";
-}
-
-export function readMode(
-  shell: ModeShell,
-  model: OnDeviceSttStatus | null,
-  storage: Pick<ModeStorage, "getItem">,
-  whisperDownloaded = false,
-  features: ModeFeatures = DEFAULT_FEATURES,
-): ModeId {
-  const stored = storage.getItem(CHOICE_KEY);
-  if (stored && isModeId(stored)) {
-    const availability = modeAvailability(
-      stored,
-      shell,
-      model,
-      whisperDownloaded,
-      features,
-    );
-    if (availability.available) return stored;
-  }
-  return defaultMode(shell, model, whisperDownloaded);
-}
-
-export function writeMode(
-  id: ModeId,
-  shell: ModeShell,
-  storage: Pick<ModeStorage, "setItem">,
-  model: OnDeviceSttStatus | null = null,
-  whisperDownloaded = false,
-  features: ModeFeatures = DEFAULT_FEATURES,
-): void {
-  const availability = modeAvailability(
-    id,
-    shell,
-    model,
-    whisperDownloaded,
-    features,
-  );
-  if (!availability.available) {
-    throw new Error(`Mode is not available: ${availability.reason}`);
-  }
-  storage.setItem(CHOICE_KEY, id);
-}
-
-function isModeId(value: string): value is ModeId {
-  switch (value) {
-    case "skip":
-    case "local":
-    case "private":
-    case "powerful":
-      return true;
-    default:
-      return false;
-  }
-}
-
-export function readIdentifySpeakers(
-  storage: Pick<ModeStorage, "getItem">,
-): boolean {
-  return storage.getItem(SPEAKERS_KEY) === "true";
-}
-
-export function writeIdentifySpeakers(
-  enabled: boolean,
-  storage: Pick<ModeStorage, "setItem">,
-): void {
-  storage.setItem(SPEAKERS_KEY, String(enabled));
 }
 
 export function speakersEnabled(

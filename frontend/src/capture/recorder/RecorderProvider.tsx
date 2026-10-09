@@ -24,6 +24,10 @@ import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 /** How long a saved receipt stays before the sheet closes and the island lets go. */
 export const RECEIPT_MS = 3000;
 
+export function permissionDeniedAnnouncement(wasDenied: boolean, denied: boolean): string | null {
+  return !wasDenied && denied ? "Microphone access is off" : null;
+}
+
 export interface RecorderValue {
   available: boolean;
   /** The recorder has heard status() and its retained events; Record waits until then. */
@@ -149,7 +153,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   useEffect(() => {
     const before = previous.current;
     previous.current = state;
-    if (before.phase === "starting" && state.phase === "recording") {
+    const deniedAnnouncement = permissionDeniedAnnouncement(before.permissionDenied, state.permissionDenied);
+    if (deniedAnnouncement) {
+      hapticWarning();
+      setAnnouncement(deniedAnnouncement);
+    } else if (before.phase === "starting" && state.phase === "recording") {
       hapticRecordStarted();
       setAnnouncement("Recording started");
     } else if (before.phase === "recording" && state.phase === "recording" && before.mic.state !== state.mic.state) {
