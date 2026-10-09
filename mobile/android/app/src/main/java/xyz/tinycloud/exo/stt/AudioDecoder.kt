@@ -3,22 +3,24 @@ package xyz.tinycloud.exo.stt
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import xyz.tinycloud.exo.stt.core.StreamResampler
+import xyz.tinycloud.exo.stt.core.WindowAccumulator
 import java.io.File
-import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Decodes a committed note's `.m4a` to 16 kHz mono Float32 (plan §2.5 step 1), the format
+ * Decodes a committed note's `.m4a` to 16 kHz mono Float32 windows (plan §2.5 step 1), the format
  * sherpa-onnx's VAD and recognizer both expect. Android's own capture is already mono (§1.2), so
- * this only resamples; it does not down-mix channels. The whole note is decoded into memory at
- * once, as the T8 benchmark already does for its fixtures: correct for the recordings this slice
- * was verified against, but a multi-hour note can use several hundred MB doing this; T24 moves to
- * a blockwise decode to bound that.
+ * this only resamples; it does not down-mix channels beyond that. Unlike an earlier version of
+ * this file, it never materializes the whole note in memory: each MediaCodec output buffer is
+ * mixed down, resampled (carrying state across buffer boundaries) and handed to `onWindow` as
+ * fixed-size windows, so memory stays bounded by one window and one codec buffer regardless of
+ * note length (TC-836: a note left recording for a long time OOM'd the old whole-file decode).
  */
 object AudioDecoder {
     private const val TARGET_RATE = 16_000
 
-    fun decode16kMono(file: File): FloatArray {
+    fun decodeWindows(file: File, windowSize: Int, onWindow: (FloatArray) -> Unit) {
         val extractor = MediaExtractor()
         extractor.setDataSource(file.path)
         var trackIndex = -1
@@ -28,14 +30,19 @@ object AudioDecoder {
             val mime = candidate.getString(MediaFormat.KEY_MIME) ?: continue
             if (mime.startsWith("audio/")) { trackIndex = i; format = candidate; break }
         }
-        if (trackIndex < 0 || format == null) { extractor.release(); return FloatArray(0) }
+        if (trackIndex < 0 || format == null) { extractor.release(); return }
         extractor.selectTrack(trackIndex)
         val sourceRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1)
         val mime = format.getString(MediaFormat.KEY_MIME)!!
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
         codec.start()
-        val pcm = ArrayList<Short>(sourceRate * 60) // typical note is tens of seconds to minutes
+
+        val windows = WindowAccumulator(windowSize, onWindow)
+        val resampler = StreamResampler(sourceRate, TARGET_RATE)
+        var frameCarry = ShortArray(0) // leftover channel samples (< channelCount) from the previous buffer
+
         try {
             val bufferInfo = MediaCodec.BufferInfo()
             var sawInputEos = false
@@ -62,7 +69,23 @@ object AudioDecoder {
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                         val shortBuffer = outputBuffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                        while (shortBuffer.hasRemaining()) pcm.add(shortBuffer.get())
+                        val pcm = ShortArray(shortBuffer.remaining())
+                        shortBuffer.get(pcm)
+                        val combined = if (frameCarry.isEmpty()) pcm else frameCarry + pcm
+                        val usableFrames = combined.size / channelCount
+                        val usableSamples = usableFrames * channelCount
+                        val mono = FloatArray(usableFrames)
+                        if (channelCount <= 1) {
+                            for (f in 0 until usableFrames) mono[f] = combined[f] / 32_768f
+                        } else {
+                            for (f in 0 until usableFrames) {
+                                var sum = 0f
+                                for (c in 0 until channelCount) sum += combined[f * channelCount + c] / 32_768f
+                                mono[f] = sum / channelCount
+                            }
+                        }
+                        resampler.push(mono, windows::pushOne)
+                        frameCarry = combined.copyOfRange(usableSamples, combined.size)
                     }
                     codec.releaseOutputBuffer(outputIndex, false)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEos = true
@@ -71,30 +94,6 @@ object AudioDecoder {
         } finally {
             codec.stop(); codec.release(); extractor.release()
         }
-        val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1)
-        val mono = if (channelCount <= 1) {
-            FloatArray(pcm.size) { pcm[it] / 32_768f }
-        } else {
-            val frames = pcm.size / channelCount
-            FloatArray(frames) { frame ->
-                var sum = 0f
-                for (c in 0 until channelCount) sum += pcm[frame * channelCount + c] / 32_768f
-                sum / channelCount
-            }
-        }
-        return if (sourceRate == TARGET_RATE) mono else resample(mono, sourceRate, TARGET_RATE)
-    }
-
-    private fun resample(input: FloatArray, sourceRate: Int, targetRate: Int): FloatArray {
-        if (input.isEmpty()) return input
-        val ratio = sourceRate.toDouble() / targetRate
-        val outCount = (input.size / ratio).toInt()
-        return FloatArray(outCount) { i ->
-            val position = i * ratio
-            val low = position.toInt()
-            val high = minOf(low + 1, input.size - 1)
-            val fraction = (position - low).toFloat()
-            input[low] * (1 - fraction) + input[high] * fraction
-        }
+        windows.finish()
     }
 }
