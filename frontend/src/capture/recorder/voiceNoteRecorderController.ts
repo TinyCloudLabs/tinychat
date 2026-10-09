@@ -133,10 +133,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     notify();
   };
 
+  const sendMicState = (status: CaptureStatus | MicStateEvent) => {
+    const event = { type: "MIC_STATE" as const, mic: micFromStatus(status), audioMs: status.audioMs };
+    send(status.elapsedMs === undefined ? event : { ...event, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
+  };
+
   const activePickup = (status: Awaited<ReturnType<typeof VoiceNotes.status>>): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
     if (!status.id || status.startedAt === null) throw new Error("Native recording status has no active id or start time");
     return { type: "PICKED_UP", id: status.id, startedAt: status.startedAt,
-      maxDurationMs: status.maxDurationMs, audioMs: status.audioMs, elapsedMs: status.elapsedMs,
+      maxDurationMs: status.maxDurationMs, audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now(),
       mic: micFromStatus(status) };
   };
 
@@ -150,7 +155,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       } else if (status.id === state.recordingId) {
         acceptNativeOptions(status);
         send({ type: "STOP_FAILED", status: "active", error,
-          mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
+          mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
         send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone." });
         acceptNativeOptions(status);
@@ -172,7 +177,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       } else if (status.id === shown) {
         acceptNativeOptions(status);
         send({ type: "DISCARD_FAILED", id: shown, error });
-        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
+        sendMicState(status);
       } else {
         send({ type: "DISCARD_FAILED", id: shown, committed: true, error });
         acceptNativeOptions(status);
@@ -255,8 +260,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       if (recording) void saveInBackground(recording);
       return;
     }
+    const finalElapsed = recording && typeof recording.wallMs === "number" && typeof recording.pausedMs === "number"
+      ? Math.max(0, recording.wallMs - recording.pausedMs) : undefined;
     send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: limitNoticeText(event.maxDurationMs),
-      captured: recording !== null, error: event.error });
+      captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -329,7 +336,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         VoiceNotes.addListener("micState", (event) => {
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
           acceptNativeOptions(event);
-          send({ type: "MIC_STATE", mic: micFromStatus(event), audioMs: event.audioMs, elapsedMs: event.elapsedMs });
+          sendMicState(event);
         }),
         VoiceNotes.addListener("level", (event) => {
           for (const listener of levelListeners) listener(event.level);
@@ -428,6 +435,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       const requested = voiceNoteMaxDurationMs();
       try {
         const started = await VoiceNotes.start({ maxDurationMs: requested });
+        const elapsedAt = Date.now();
         nativeOptions = null;
         try {
           const status = await VoiceNotes.status();
@@ -439,6 +447,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           type: "STARTED",
           id: started.id,
           startedAt: started.startedAt,
+          elapsedAt,
           maxDurationMs: typeof started.maxDurationMs === "number" ? started.maxDurationMs : requested,
         });
       } catch (caught) {
@@ -464,7 +473,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         return;
       }
       if (state.phase !== "recording") return;
-      send({ type: "STOP_REQUESTED" });
+      send({ type: "STOP_REQUESTED", at: Date.now() });
       let recording: VoiceNoteRecording;
       try {
         recording = await VoiceNotes.stop();
@@ -496,7 +505,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const status = await VoiceNotes.status();
         acceptNativeOptions(status);
-        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
+        sendMicState(status);
       } catch (caught) {
         console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
         send({ type: "MIC_STATE", mic: { state: "paused", reason: "user" } });
@@ -515,7 +524,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       try {
         const status = await VoiceNotes.status();
         acceptNativeOptions(status);
-        send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
+        sendMicState(status);
       } catch (caught) {
         console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);
         send({ type: "MIC_STATE", mic: { state: "recording", reason: null } });

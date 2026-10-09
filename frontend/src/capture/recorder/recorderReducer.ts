@@ -30,6 +30,8 @@ export interface RecorderState {
   audioMs: number;
   /** Native recorded-time checkpoint: wall time minus user pauses, including interruptions. */
   elapsedMs: number;
+  /** Wall-clock time when this elapsed checkpoint reached the controller. */
+  elapsedAt: number | null;
   /** Native failures keyed by recording ID, including notes no longer on the recorder screen. */
   captureIssues: Record<string, RecorderCaptureIssue>;
   /** A recovery scan can fail before native knows which recording caused it. */
@@ -66,11 +68,12 @@ export interface RecorderState {
 
 export type RecorderEvent =
   | { type: "START_REQUESTED" }
-  | { type: "STARTED"; id: string; startedAt: number; maxDurationMs: number }
+  | { type: "STARTED"; id: string; startedAt: number; maxDurationMs: number; elapsedAt: number }
   | { type: "START_FAILED"; error: string }
   /** A recording was already running (a WebView reload, or one started offline). */
-  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; mic: RecorderMic }
-  | { type: "MIC_STATE"; mic: RecorderMic; audioMs?: number; elapsedMs?: number }
+  | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; elapsedAt: number; mic: RecorderMic }
+  | ({ type: "MIC_STATE"; mic: RecorderMic; audioMs?: number } & (
+    { elapsedMs: number; elapsedAt: number } | { elapsedMs?: never; elapsedAt?: never }))
   | { type: "CAPTURE_ISSUE"; id: string | null; issue: RecorderCaptureIssue }
   | { type: "CAPTURE_RESOLVED"; id: string }
   | { type: "PAUSE_REQUESTED" }
@@ -79,9 +82,9 @@ export type RecorderEvent =
   | { type: "RESUME_REQUESTED" }
   | { type: "RESUME_CONFIRMED" }
   | { type: "RESUME_FAILED"; error: string }
-  | { type: "STOP_REQUESTED" }
+  | { type: "STOP_REQUESTED"; at: number }
   /** A failed stop was checked against native status; unknown keeps the view in stopping. */
-  | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number; elapsedMs: number }
+  | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number; elapsedMs: number; elapsedAt: number }
   | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown" }
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
@@ -94,7 +97,7 @@ export type RecorderEvent =
    * A recorder stopped itself at its limit: `id` is that recording's (null when it
    * captured nothing). Applied only when it is the recording on screen (autoStopIsCurrent).
    */
-  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; error?: string | null }
+  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; at: number; elapsedMs?: number; error?: string | null }
   /** status() and the retained events have been heard: Record may start. */
   | { type: "RECONCILED" }
   | { type: "PERMISSION_DENIED" }
@@ -118,6 +121,7 @@ export const initialRecorderState: RecorderState = {
   startedAt: null,
   audioMs: 0,
   elapsedMs: 0,
+  elapsedAt: null,
   captureIssues: {},
   recoveryScanFailure: null,
   maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
@@ -139,6 +143,12 @@ export const initialRecorderState: RecorderState = {
 function toIdle(state: RecorderState): RecorderState {
   return { ...state, phase: "idle", recordingId: null, startedAt: null, mic: IDLE_MIC,
     controlPending: null, savePercent: null, autoSaving: false };
+}
+
+/** Preserve the displayed recorded time when a live view stops ticking. */
+function freezeElapsed(state: RecorderState, at: number): RecorderState {
+  if (state.phase !== "recording" || state.mic.state === "paused" || state.elapsedAt === null) return state;
+  return { ...state, elapsedMs: state.elapsedMs + Math.max(0, at - state.elapsedAt), elapsedAt: at };
 }
 
 /**
@@ -186,6 +196,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         startedAt: event.startedAt,
         audioMs: 0,
         elapsedMs: 0,
+        elapsedAt: event.elapsedAt,
         maxDurationMs: event.maxDurationMs,
         mic: { state: "recording", reason: null },
       };
@@ -202,6 +213,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         startedAt: event.startedAt,
         audioMs: event.audioMs,
         elapsedMs: event.elapsedMs,
+        elapsedAt: event.elapsedAt,
         maxDurationMs: event.maxDurationMs,
         mic: event.mic,
         outcome: null,
@@ -209,7 +221,9 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       };
     case "MIC_STATE":
       if (state.phase !== "recording") return state;
-      return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs, elapsedMs: event.elapsedMs ?? state.elapsedMs };
+      return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs,
+        elapsedMs: event.elapsedMs ?? state.elapsedMs,
+        elapsedAt: event.elapsedMs === undefined ? state.elapsedAt : event.elapsedAt };
     case "CAPTURE_ISSUE":
       if (event.id === null) return event.issue.kind === "recoveryFailed"
         ? { ...state, recoveryScanFailure: event.issue.detail } : state;
@@ -246,12 +260,13 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...state, controlPending: null };
     case "STOP_REQUESTED":
       if (state.phase !== "recording") return state;
-      return { ...state, phase: "stopping", controlPending: null, error: null };
+      return { ...freezeElapsed(state, event.at), phase: "stopping", controlPending: null, error: null };
     case "STOP_FAILED":
       if (state.autoSaving || state.phase === "discarding") return state;
       if (state.phase !== "stopping") return state;
       if (event.status === "unknown") return { ...state, error: event.error };
-      if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs, elapsedMs: event.elapsedMs, error: event.error };
+      if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs,
+        elapsedMs: event.elapsedMs, elapsedAt: event.elapsedAt, error: event.error };
       return { ...toIdle(state), error: event.error ?? state.error };
     case "SAVE_PROGRESS":
       if (state.phase === "idle" && state.outcome === "local") return { ...state, savePercent: event.percent };
@@ -288,6 +303,8 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...toIdle(state), outcome: "failed", localUpload: null, error: event.error, failedRecording: event.recording };
     case "AUTO_STOPPED":
       if (!autoStopIsCurrent(state, event.id)) return state;
+      state = freezeElapsed(state, event.at);
+      if (event.elapsedMs !== undefined) state = { ...state, elapsedMs: event.elapsedMs, elapsedAt: event.at };
       if (!event.captured) {
         const failed = { ...state, limitNotice: event.notice,
           error: event.error === "finalization_timed_out"

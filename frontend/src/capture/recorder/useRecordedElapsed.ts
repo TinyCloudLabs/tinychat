@@ -1,18 +1,15 @@
 import { useEffect, useState } from "react";
 import type { RecorderState } from "./recorderReducer";
 
-/** Native recorded time advances through interruptions and blocked resumes, but freezes on user Pause. */
-export function useRecordedElapsed(elapsedMs: number, recorder: Pick<RecorderState, "phase" | "mic">): number {
+/** Every view ticks from the controller's checkpoint receipt time, including views mounted later. */
+export function useRecordedElapsed(elapsedMs: number, recorder: Pick<RecorderState, "phase" | "mic" | "elapsedAt">): number {
   const running = recorder.phase === "recording" && recorder.mic.state !== "paused";
   const [clock, setClock] = useState(() => Date.now());
-  const [checkpointAt, setCheckpointAt] = useState(() => Date.now());
   useEffect(() => {
-    const at = Date.now();
-    setCheckpointAt(at);
-    setClock(at);
+    setClock(Date.now());
     if (!running) return;
     const timer = setInterval(() => setClock(Date.now()), 500);
     return () => clearInterval(timer);
-  }, [elapsedMs, running]);
-  return elapsedMs + (running ? Math.max(0, clock - checkpointAt) : 0);
+  }, [recorder.elapsedAt, running]);
+  return elapsedMs + (running && recorder.elapsedAt !== null ? Math.max(0, clock - recorder.elapsedAt) : 0);
 }

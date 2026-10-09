@@ -41,8 +41,9 @@ export interface RecorderValue {
   /** Wall-clock start of this recording. */
   startedAt: number | null;
   audioMs: number;
-  /** Native recorded-time checkpoint; useRecordedElapsed ticks it through interruptions and blocked resumes, except user Pause. */
+  /** Native recorded-time checkpoint; useRecordedElapsed ticks it from elapsedAt except during user Pause. */
   elapsedMs: number;
+  elapsedAt: number | null;
   captureIssues: Record<string, RecorderCaptureIssue>;
   recoveryScanFailure: string | null;
   controlPending: RecorderState["controlPending"];
@@ -230,6 +231,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       startedAt: state.startedAt,
       audioMs: state.audioMs,
       elapsedMs: state.elapsedMs,
+      elapsedAt: state.elapsedAt,
       captureIssues: state.captureIssues,
       recoveryScanFailure: state.recoveryScanFailure,
       controlPending: state.controlPending,
@@ -318,6 +320,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       startedAt: null,
       audioMs: 0,
       elapsedMs: 0,
+      elapsedAt: null,
       captureIssues: {},
       recoveryScanFailure: null,
       controlPending: null,
