@@ -16,12 +16,6 @@ buildscript {
     }
 }
 
-// OpenKey requests the 2.1.0 plugin marker; the buildscript above resolves its
-// Kotlin implementation to 2.3.0 for every Android module.
-plugins {
-    id 'org.jetbrains.kotlin.android' version '2.1.0' apply false
-}
-
 // Capacitor plugins use this version for their Kotlin buildscript dependencies.
 ext.kotlin_version = '2.3.0'
 
