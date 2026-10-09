@@ -1,4 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
+import { markKeyboardOpened } from "./inputModality";
 import { CloseIcon, CheckIcon, ModeIcon } from "./softIcons";
 import { identifySpeakersControl, type ModeId, type ModeShell } from "./transcriptionModes";
 import type { ScaleStop } from "./useTranscriptionChoice";
@@ -32,6 +33,7 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
   const rows = useRef(new Map<ModeId, HTMLButtonElement>());
   const speakers = identifySpeakersControl(mode, identifySpeakers);
 
+  useEffect(() => markKeyboardOpened(root.current), []);
   useEffect(() => {
     rows.current.get(mode)?.focus();
   }, [mode]);

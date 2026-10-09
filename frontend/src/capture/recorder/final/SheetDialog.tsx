@@ -1,3 +1,4 @@
+import { markKeyboardOpened } from "./inputModality";
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 export interface SheetDialogProps {
@@ -15,6 +16,7 @@ export interface SheetDialogProps {
 export function SheetDialog({ role, title, description, onCancel, children, titleId, descriptionId }: SheetDialogProps) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    markKeyboardOpened(root.current);
     root.current?.querySelector<HTMLElement>("[data-initial]")?.focus();
   }, []);
   const key = (event: KeyboardEvent) => {
