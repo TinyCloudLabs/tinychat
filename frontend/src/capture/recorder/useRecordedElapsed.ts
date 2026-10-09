@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import type { RecorderState } from "./recorderReducer";
 
-/** Tick a native recorded-time checkpoint only while recording or silenced; pauses freeze it. */
-export function useRecordedElapsed(elapsedMs: number, running: boolean): number {
+/** Native recorded time advances through interruptions and blocked resumes, but freezes on user Pause. */
+export function useRecordedElapsed(elapsedMs: number, recorder: Pick<RecorderState, "phase" | "mic">): number {
+  const running = recorder.phase === "recording" && recorder.mic.state !== "paused";
   const [clock, setClock] = useState(() => Date.now());
   const [checkpointAt, setCheckpointAt] = useState(() => Date.now());
   useEffect(() => {
