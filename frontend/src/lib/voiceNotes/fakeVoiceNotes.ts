@@ -126,7 +126,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   const stateChanged = () => {
     const s = session;
     const at = now();
-    emit("micState", { ...(s ? mic(s) : { state: "idle", reason: null }), detail: s?.detail, at, id: s?.id ?? null,
+    emit("micState", { ...(s ? mic(s) : { state: "idle", reason: null }), detail: s?.detail, options: s?.options, at, id: s?.id ?? null,
       audioMs: s?.audioMs ?? 0, elapsedMs: s ? Math.max(0, at - s.startedAt - s.pausedMs - (s.pauseStarted === null ? 0 : at - s.pauseStarted)) : 0,
       pausedMs: s ? s.pausedMs + (s.pauseStarted === null ? 0 : at - s.pauseStarted) : 0,
       openSpan: s?.openSpan ?? null });
@@ -361,6 +361,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const s = session;
       if (!s) throw failure("not_recording");
       s.options = { ...s.options, ...options, transcriber: s.owner ? (options.transcriber ?? s.options.transcriber) : "on-device" };
+      stateChanged();
     },
     async getCaptureDefaults() { return { ...defaults, status: accountStatus }; },
     async setCaptureDefaults(next) {
