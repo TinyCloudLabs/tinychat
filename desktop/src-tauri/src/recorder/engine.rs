@@ -445,9 +445,11 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
             return Err(error);
         }
     };
+    let mut recorded_elapsed = elapsed;
     let result = stopped.and_then(|_| {
         match import_finished_segment(&app, &segment_id, &id, current.system_audio) {
-            Err(error) if empty_capture(&error) && elapsed < 1_000 => {
+            Err(error) if empty_capture(&error) => {
+                recorded_elapsed = 0;
                 files::remove_source_session(&files::sessions_root(&app)?, &segment_id)
             }
             result => result,
@@ -483,7 +485,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         &app,
         &journal::Journal {
             segment_id: None,
-            recorded_ms: total_recorded,
+            recorded_ms: total_recorded - elapsed + recorded_elapsed,
             ..current
         },
     );
@@ -495,7 +497,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
         let state = app.state::<Engine>();
         let mut state = state.0.lock().unwrap();
         state.busy = false;
-        state.recorded_ms += elapsed;
+        state.recorded_ms += recorded_elapsed;
         state.segment_id = None;
         state.segment_started = None;
         state.paused_ms += state
