@@ -1,6 +1,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CONNECTORS_SQL_DB_NAME } from "../connectors/connectorStore";
 import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
+import { deleteNote } from "./recordingNotes";
 
 export const LEGACY_DISCARD_KEY = "exo.voiceNotes.discarded";
 
@@ -15,9 +16,12 @@ export async function migrateLegacyDiscardLedger(storage: Pick<Storage, "getItem
   checkpoint();
   const pending = (await VoiceNotes.listPending()).recordings;
   const present = new Set(pending.map((note) => note.id));
-  for (const id of new Set(parsed as string[])) if (present.has(id)) {
+  for (const id of new Set(parsed as string[])) {
     checkpoint();
-    await VoiceNotes.deleteAudio({ id });
+    if (present.has(id)) await VoiceNotes.deleteAudio({ id });
+    // Native discard may already have removed audio before the WebView died.
+    await deleteNote(id);
+    if (!present.has(id)) continue;
     // Keep markers written by a concurrent discard. Only remove the id whose
     // native tombstone was acknowledged.
     const current = storage?.getItem(LEGACY_DISCARD_KEY);

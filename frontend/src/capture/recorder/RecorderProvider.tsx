@@ -22,6 +22,7 @@ import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recor
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
@@ -72,6 +73,12 @@ export interface RecorderValue {
   transcription: VoiceNoteTranscriptionProps | undefined;
   /** Native options while recording; otherwise the signed-in effective JS default. */
   transcriber: RecorderTranscriberChoice;
+  /** The current recording's Markdown; moments are parsed from its timestamp lines. */
+  note: RecorderNote | null;
+  /** The editor can write only after this recording's local note has loaded. */
+  noteStatus: RecorderNoteStatus;
+  setNoteText(md: string): Promise<void>;
+  markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
@@ -292,6 +299,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       pending: recorder.pending,
       transcription: recorder.transcription,
       transcriber: recorder.transcriber,
+      note: recorder.note,
+      noteStatus: recorder.noteStatus,
+      setNoteText: recorder.setNoteText,
+      markMoment: recorder.markMoment,
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
       signedIn: tcw?.did != null,
@@ -318,6 +329,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.available,
       recorder.discard,
       recorder.dismissCaptureIssue,
+      recorder.note,
+      recorder.noteStatus,
+      recorder.setNoteText,
+      recorder.markMoment,
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
@@ -399,6 +414,10 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       pending: NO_PENDING,
       transcription: undefined,
       transcriber: { id: "on-device", identifySpeakers: false, source: "default" },
+      note: null,
+      noteStatus: "ready",
+      setNoteText: async () => {},
+      markMoment: () => 0,
       setTranscriber: async () => "unavailable",
       setIdentifySpeakers: async () => "unavailable",
       signedIn: true,
