@@ -4,10 +4,9 @@ import { useLocation } from "react-router-dom";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { PlatformContext } from "@/lib/platform";
-import {
-  LazyDesktopRecorder,
-  type DesktopRecorderLoader,
-} from "./final/desktop/LazyDesktopRecorder";
+import { DesktopRecorderHost } from "./final/desktop/DesktopRecorderHost";
+import type { DesktopRecorderLoader } from "./final/desktop/LazyDesktopRecorder";
+import type { NoteViewLoader } from "./final/desktop/LazyNoteView";
 import {
   LazyPhoneRecorder,
   type PhoneRecorderLoader,
@@ -49,21 +48,21 @@ function MinimizeOnNavigate() {
 export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
   /** The app's main region (AppShell's recorder host), where the desktop view is drawn; null until it mounts. Left out above the gate, where there is no shell, so the classic dialog stays. */
   desktopHost?: HTMLElement | null;
-  /** Opens the note view from the desktop view's Write notes / View notes. */
-  onOpenNotes?: () => void;
   /** Whether the Soft skin is on. The flag decides unless the caller is the final shell, which only renders with it on (the browser harness builds with no env). */
   finalSkin?: boolean;
   /** Where the desktop view is imported from; a test replaces it. */
   loadDesktopRecorder?: DesktopRecorderLoader;
+  /** Where the desktop note view is imported from; a test replaces it. */
+  loadNoteView?: NoteViewLoader;
   /** Where the phone view is imported from; a test replaces it. */
   loadPhoneRecorder?: PhoneRecorderLoader;
 };
 
 export function RecordingOverlay({
   desktopHost,
-  onOpenNotes,
   finalSkin = recorderFinalEnabled(),
   loadDesktopRecorder,
+  loadNoteView,
   loadPhoneRecorder,
   ...props
 }: RecordingOverlayProps) {
@@ -84,10 +83,10 @@ export function RecordingOverlay({
     return createPortal(
       <>
         <MinimizeOnNavigate />
-        <LazyDesktopRecorder
+        <DesktopRecorderHost
           layout={layout}
-          onOpenNotes={onOpenNotes}
-          load={loadDesktopRecorder}
+          loadDesktopRecorder={loadDesktopRecorder}
+          loadNoteView={loadNoteView}
         />
       </>,
       desktopHost,

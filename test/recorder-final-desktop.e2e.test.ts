@@ -240,11 +240,17 @@ describe.serial(`desktop recorder interactions (${engineName})`, () => {
     await shown(view(page));
   });
 
-  test("Write notes calls the notes handler", async () => {
+  test("Write notes opens the note view in Write, and Expand returns to the ring view", async () => {
     const { page } = await open();
-    expect(await page.getByTestId("notes-placeholder").count()).toBe(0);
+    expect(await page.getByTestId("desktop-note-view").count()).toBe(0);
     await view(page).getByRole("button", { name: "Write notes" }).click();
-    await shown(page.getByTestId("notes-placeholder"));
+    const noteView = page.getByTestId("desktop-note-view");
+    await shown(noteView);
+    await shown(noteView.getByRole("textbox"));
+    await gone(view(page));
+    await noteView.getByRole("button", { name: "Expand" }).click();
+    await shown(view(page));
+    await gone(noteView);
   });
 
   test("resizing 1280 → 700 → 1280 swaps to the phone recorder and back, keeping the timer running and the same recording", async () => {

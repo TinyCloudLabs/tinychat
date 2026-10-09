@@ -1,6 +1,7 @@
 import "./notes.css";
 import { useEffect, useState } from "react";
 import { NOTES_COPY } from "../notesCopy";
+import { buttonizeMoments } from "./momentButtons";
 import { renderNoteHtml } from "./renderMarkdown";
 
 type Rendered =
@@ -8,8 +9,16 @@ type Rendered =
   | { state: "ready"; html: string }
   | { state: "failed"; message: string };
 
-/** The note as rendered Markdown, drawn once the lazy renderer has loaded. */
-export function NoteRenderer({ md, label }: { md: string; label?: string }) {
+/** The note as rendered Markdown, drawn once the lazy renderer has loaded. With `onMoment`, each moment's time is a button that calls it with the seconds. */
+export function NoteRenderer({
+  md,
+  label,
+  onMoment,
+}: {
+  md: string;
+  label?: string;
+  onMoment?: (seconds: number) => void;
+}) {
   const [attempt, setAttempt] = useState(0);
   const [rendered, setRendered] = useState<Rendered>({ state: "loading" });
   const empty = md.trim() === "";
@@ -53,8 +62,19 @@ export function NoteRenderer({ md, label }: { md: string; label?: string }) {
     <div
       className="fmd"
       aria-label={label}
+      onClick={
+        onMoment &&
+        ((event) => {
+          const button = (event.target as Element).closest<HTMLElement>(
+            "button[data-at]",
+          );
+          if (button) onMoment(Number(button.dataset.at));
+        })
+      }
       // The renderer escapes raw HTML in the note and drops javascript: links.
-      dangerouslySetInnerHTML={{ __html: rendered.html }}
+      dangerouslySetInnerHTML={{
+        __html: onMoment ? buttonizeMoments(rendered.html) : rendered.html,
+      }}
     />
   );
 }

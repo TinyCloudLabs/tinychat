@@ -34,6 +34,7 @@ import { recorderFinalWebScreens } from "./screens/recorderFinalWeb";
 import { recorderFinalRibbonScreens } from "./screens/recorderFinalRibbon";
 import { recorderFinalPhoneScreens } from "./screens/recorderFinalPhone";
 import { recorderFinalPhoneInteractiveScreens } from "./screens/recorderFinalPhoneInteractive";
+import { savedNoteScreens } from "./screens/savedNote";
 import { sheetsScreens } from "./screens/sheets";
 import { shellScreens } from "./screens/shell";
 import { waitUntilReady } from "./readiness";
@@ -64,6 +65,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureHomeDesktopScreens,
   ...captureSettingsScreens,
   ...libraryScreens,
+  ...savedNoteScreens,
   ...localScreens,
   ...meetingSourcesScreens,
 ];
