@@ -56,3 +56,15 @@ export function savedNoteMeta(
     .filter((part): part is string => !!part)
     .join(" · ");
 }
+
+/** "Oct 9, 3:20 AM" for the note's last edit; null when the time cannot be read. */
+export function editedLabel(iso: string): string | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}

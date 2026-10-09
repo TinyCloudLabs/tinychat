@@ -124,6 +124,15 @@ describe("DesktopRecorderHost", () => {
     expect(noteView?.view).toBe("write");
   });
 
+  test("the phone sheet's Preview, widened to desktop, opens the note view in Write and keeps the draft", async () => {
+    updateNotesUi("1", () => ({ open: true, view: "preview", draft: "phone draft" }));
+    await mount();
+    expect(noteView?.view).toBe("write");
+    expect(noteView?.md).toBe("phone draft");
+    expect(readNotesUi("1")?.view).toBe("write");
+    expect(readNotesUi("1")?.draft).toBe("phone draft");
+  });
+
   test("Expand saves what was typed and returns to the ring view", async () => {
     updateNotesUi("1", () => ({ open: true, view: "write" }));
     await mount();

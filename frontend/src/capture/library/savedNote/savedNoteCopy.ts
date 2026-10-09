@@ -13,8 +13,8 @@ export const SAVED_NOTE_COPY = {
   cancel: "Cancel",
   shortcuts: "⌘S saves · esc cancels",
   noteField: "Note, Markdown",
-  nothingYet: "No note for this recording.",
   addNote: "Add a note",
+  edited: (when: string) => `Edited ${when}`,
   loading: "Loading note…",
   loadFailed: "The note could not be loaded.",
   saveFailed: (message: string) =>

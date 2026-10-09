@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SavedNotePage } from "./SavedNoteView";
+import { editedLabel } from "./savedNoteMeta";
 import type { SavedNoteViewProps } from "./SavedNoteView";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
 
@@ -81,11 +82,21 @@ describe("SavedNotePage", () => {
     expect(out).not.toContain(">Save<");
   });
 
-  test("an empty note says so and offers Edit but not Copy", () => {
-    const out = html(screenOf({ md: "" }));
-    expect(out).toContain("No note for this recording.");
-    expect(out).not.toContain(">Copy<");
-    expect(out).toContain(">Edit<");
+  test("an empty note offers Add a note, not Edit, Copy or the Edited line", () => {
+    for (const layout of ["page", "sheet"] as const) {
+      const out = html(screenOf({ md: "" }), { layout });
+      expect(out).toContain(">Add a note<");
+      expect(out).not.toContain(">Edit<");
+      expect(out).not.toContain(">Copy<");
+      expect(out).not.toContain("Edited");
+    }
+  });
+
+  test("a note with text shows when it was last edited, from the record", () => {
+    const out = html(screenOf({ md: "hi" }));
+    expect(out).toContain('data-testid="saved-note-edited"');
+    expect(out).toContain(`Edited ${editedLabel("2026-10-09T10:00:00Z")}`);
+    expect(html(screenOf({ md: "hi", editing: true }))).not.toContain("Edited");
   });
 
   test("editing: Cancel and Save replace Copy and Edit, and the shortcuts are listed", () => {

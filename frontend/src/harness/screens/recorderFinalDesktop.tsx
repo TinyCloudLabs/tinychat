@@ -241,6 +241,9 @@ const NOTED: Partial<RecorderValue> = {
   noteStatus: "ready",
 };
 
+// The note view is drawn at desktop layouts only; the phone viewports show the phone recorder's notes sheet instead.
+const NOTE_VIEWPORTS = ["tablet", "tablet-land", "desktop-min", "desktop", "text200-desktop"];
+
 export const recorderFinalDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   screen("recording", {}),
@@ -275,10 +278,12 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
   }),
   {
     ...screen("note-write", NOTED, {}, "tauri", { open: true, view: "write" }),
+    viewports: NOTE_VIEWPORTS,
     readyWhen: ".nv textarea",
   },
   {
     ...screen("note-preview", NOTED, {}, "tauri", { open: true, view: "preview" }),
+    viewports: NOTE_VIEWPORTS,
     readyWhen: ".nv .fmd",
   },
   {
@@ -287,6 +292,7 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
       view: "write",
       saveFailed: true,
     }),
+    viewports: NOTE_VIEWPORTS,
     readyWhen: ".nv .nv-err",
   },
   {
@@ -294,6 +300,7 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
       open: true,
       view: "write",
     }),
+    viewports: NOTE_VIEWPORTS,
     readyWhen: ".nv .pr-nwait",
   },
   screen("modes", {}, { defaultOpen: "modes" }),

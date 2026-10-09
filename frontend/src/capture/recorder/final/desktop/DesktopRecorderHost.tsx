@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRecorder } from "../../RecorderProvider";
 import { finishRecording, type DoneGate } from "../doneGate";
 import { updateNotesUi, useNotesUi } from "../notes/notesUiState";
@@ -32,6 +32,13 @@ export function DesktopRecorderHost({
   const ui = useNotesUi(key);
   const saving = useNoteSaver(key, recorder);
   const doneGate = useRef<DoneGate>({ acknowledged: null });
+  // Opened on the phone sheet in Preview, then widened: the desktop note view always opens in Write.
+  const [entering, setEntering] = useState(ui.open && ui.view !== "write");
+  useEffect(() => {
+    if (!entering) return;
+    setEntering(false);
+    ui.setView("write");
+  }, [entering, ui]);
   const recordingNow = recorder.phase === "recording";
   useEffect(() => {
     if (!recordingNow) return;
@@ -56,7 +63,7 @@ export function DesktopRecorderHost({
           updateNotesUi(key, () => ({ draft: md }));
           saving.change(md);
         }}
-        view={ui.view}
+        view={entering ? "write" : ui.view}
         onViewChange={(next) => {
           saving.saveNow();
           ui.setView(next);

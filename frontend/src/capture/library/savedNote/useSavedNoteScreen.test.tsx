@@ -1,6 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SavedNotePage } from "./SavedNoteView";
+import { editedLabel } from "./savedNoteMeta";
 import { clearSavedNoteDrafts, readSavedNoteDraft } from "./savedNoteDraft";
 import type { SavedNoteRecord, SavedNoteStore } from "./savedNoteStore";
 import { useSavedNoteScreen, type SavedNoteScreen } from "./useSavedNoteScreen";
@@ -144,5 +147,38 @@ describe("useSavedNoteScreen", () => {
     expect(closed).toBe(false);
     expect(screen.draft.confirming).toBe("close");
     expect(screen.draft.draft).toBe("changed");
+  });
+
+  test("Save turns the note view's Edited line to the time the store recorded", async () => {
+    const dated: SavedNoteStore = {
+      load: async () => ({ md: "first line", editedAt: "2026-10-08T09:00:00Z" }),
+      save: async (_id, md) => ({
+        record: { md, editedAt: "2026-10-09T03:20:00Z" },
+        synced: Promise.resolve(),
+      }),
+    };
+    const page = () =>
+      renderToStaticMarkup(
+        <SavedNotePage
+          screen={screen}
+          layout="page"
+          theme="night"
+          id="rec-1"
+          title="Standup"
+          meta=""
+          loadAudio={null}
+          transcript={null}
+          partialAudio={false}
+          onBack={() => {}}
+        />,
+      );
+    await show(<Probe store={dated} />);
+    expect(page()).toContain(`Edited ${editedLabel("2026-10-08T09:00:00Z")}`);
+    await act(async () => screen.startEdit());
+    await act(async () => screen.draft.type("first line\nsecond"));
+    await act(async () => screen.save());
+    const out = page();
+    expect(out).toContain(`Edited ${editedLabel("2026-10-09T03:20:00Z")}`);
+    expect(out).not.toContain(editedLabel("2026-10-08T09:00:00Z") + "<");
   });
 });

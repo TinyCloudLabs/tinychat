@@ -116,10 +116,14 @@
   font-size: 13px;
   line-height: 1.4;
 }
-.soft-skin .sn-hint {
+.soft-skin .sn-hint,
+.soft-skin .sn-foot {
   margin: 0;
   color: var(--dim);
   font-size: 12.5px;
+}
+.soft-skin .sn-add {
+  align-self: flex-start;
 }
 .soft-skin .sn-edit {
   display: flex;

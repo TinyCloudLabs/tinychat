@@ -17,6 +17,7 @@ import { NoteRenderer, NoteWriter } from "../../recorder/final/notes";
 import { SheetDialog } from "../../recorder/final/SheetDialog";
 import type { AudioLoad } from "../NoteDetailView";
 import { SAVED_NOTE_COPY as COPY } from "./savedNoteCopy";
+import { editedLabel } from "./savedNoteMeta";
 import type { SavedNoteScreen } from "./useSavedNoteScreen";
 
 export type SavedNoteLayout = "page" | "sheet";
@@ -60,6 +61,10 @@ function Notes({
   }, [editing, editButton]);
 
   const ready = note.load.status === "ready";
+  const editedWhen =
+    note.load.status === "ready" && note.load.record && savedMd.trim() !== ""
+      ? editedLabel(note.load.record.editedAt)
+      : null;
   const onKeys = (event: KeyboardEvent) => {
     const save =
       ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") ||
@@ -118,14 +123,16 @@ function Notes({
                 {copyState === "copied" ? COPY.copied : COPY.copy}
               </button>
             )}
-            <button
-              ref={editButton}
-              type="button"
-              className="sn-pill"
-              onClick={screen.startEdit}
-            >
-              {COPY.edit}
-            </button>
+            {savedMd.trim() !== "" && (
+              <button
+                ref={editButton}
+                type="button"
+                className="sn-pill"
+                onClick={screen.startEdit}
+              >
+                {COPY.edit}
+              </button>
+            )}
           </>
         )}
       </div>
@@ -173,9 +180,15 @@ function Notes({
             {layout === "page" && <p className="sn-hint">{COPY.shortcuts}</p>}
           </div>
         ) : savedMd.trim() === "" ? (
-          <p className="sn-hint" data-testid="saved-note-empty">
-            {COPY.nothingYet}
-          </p>
+          <button
+            ref={editButton}
+            type="button"
+            className="sn-pill sn-add"
+            data-testid="saved-note-add"
+            onClick={screen.startEdit}
+          >
+            {COPY.addNote}
+          </button>
         ) : (
           <div className="sn-read" data-testid="saved-note-rendered">
             <NoteRenderer
@@ -185,6 +198,11 @@ function Notes({
             />
           </div>
         ))}
+      {ready && !editing && editedWhen !== null && (
+        <p className="sn-foot" data-testid="saved-note-edited">
+          {COPY.edited(editedWhen)}
+        </p>
+      )}
     </section>
   );
 }
