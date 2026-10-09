@@ -441,6 +441,7 @@ public final class RecordingLibrary {
         }
         try queue.sync {
             try check("receipt.begin")
+            if FileManager.default.fileExists(atPath: receiptOutboxURL(id: id, opId: opId).path) { return }
             let account = try accountStateUnlocked()
             if account.status == "signed_in", account.accountDid == did,
                !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path),

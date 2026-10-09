@@ -754,6 +754,33 @@ final class RecordingLibraryTests: XCTestCase {
         }
     }
 
+    func testRepeatedBeginRemoteOpPreservesResultAlreadyInOutbox() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let receipt: [String: Any] = ["id": id, "did": "did:test", "opId": "create",
+            "provider": "assemblyai", "mode": "own", "kind": "own_create",
+            "fingerprint": "one", "startedAt": 100]
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+        _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+        try library.setAccountState(CaptureAccountState(status: "transitioning", accountDid: "did:test", transitionGen: 2))
+        try library.beginRemoteOp(receipt)
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "created", "jobId": "job-42"]), "outbox")
+        let path = library.url("outbox/\(id):create.json")
+        let before = try Data(contentsOf: path)
+
+        // This account can use the sidecar again, but the result still belongs to the outbox.
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 3))
+        try library.beginRemoteOp(receipt)
+
+        XCTAssertEqual(try Data(contentsOf: path), before)
+        let entry = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+        XCTAssertEqual(entry["kind"] as? String, "transcript")
+        XCTAssertEqual(entry["handle"] as? String, "job-42")
+        let remote = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertFalse(remote.contains { $0["opId"] as? String == "create" })
+    }
+
     func testJournalRecoveryCarriesCaptureIntervalMarkers() throws {
         let recovered = try JournalRecovery(events: [
             ["e": "session", "t": Int64(100), "a": Int64(0)],
