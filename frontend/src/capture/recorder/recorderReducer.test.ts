@@ -41,18 +41,37 @@ describe("recorderReducer", () => {
       startedAt: 500,
       maxDurationMs: 60_000,
       audioMs: 5000,
+      elapsedMs: 7000,
       mic: { state: "silenced", reason: "os_silenced" },
     });
-    expect(picked).toMatchObject({ phase: "recording", recordingId: "rec-9", startedAt: 500, maxDurationMs: 60_000, mic: { state: "silenced" } });
+    expect(picked).toMatchObject({ phase: "recording", recordingId: "rec-9", startedAt: 500, maxDurationMs: 60_000, audioMs: 5000, elapsedMs: 7000, mic: { state: "silenced" } });
     // Never over a save in progress.
     const saving = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: null }], recording());
-    expect(recorderReducer(saving, { type: "PICKED_UP", id: "x", startedAt: 0, maxDurationMs: 60_000, audioMs: 0, mic: { state: "recording", reason: null } })).toBe(saving);
+    expect(recorderReducer(saving, { type: "PICKED_UP", id: "x", startedAt: 0, maxDurationMs: 60_000, audioMs: 0, elapsedMs: 0, mic: { state: "recording", reason: null } })).toBe(saving);
   });
 
   test("mic state applies only while recording", () => {
     const silenced = recorderReducer(recording(), { type: "MIC_STATE", mic: { state: "silenced", reason: "os_silenced" } });
     expect(silenced.mic).toEqual({ state: "silenced", reason: "os_silenced" });
     expect(recorderReducer(initialRecorderState, { type: "MIC_STATE", mic: { state: "recording", reason: null } })).toBe(initialRecorderState);
+  });
+
+  test("recorded elapsed time freezes across Pause and resumes without counting the pause", () => {
+    const live = recorderReducer(recording(), { type: "MIC_STATE", mic: { state: "recording", reason: null }, audioMs: 1200, elapsedMs: 1200 });
+    const paused = recorderReducer(live, { type: "MIC_STATE", mic: { state: "paused", reason: "user" }, audioMs: 1200, elapsedMs: 1250 });
+    expect(paused.elapsedMs).toBe(1250);
+    const stillPaused = recorderReducer(paused, { type: "MIC_STATE", mic: { state: "paused", reason: "user" }, audioMs: 1200, elapsedMs: 1250 });
+    expect(stillPaused.elapsedMs).toBe(1250);
+    const resumed = recorderReducer(stillPaused, { type: "MIC_STATE", mic: { state: "recording", reason: null }, audioMs: 1400, elapsedMs: 1450 });
+    expect(resumed).toMatchObject({ audioMs: 1400, elapsedMs: 1450 });
+  });
+
+  test("an interruption gap counts toward recorded elapsed time without adding audio", () => {
+    const live = recorderReducer(recording(), { type: "MIC_STATE", mic: { state: "recording", reason: null }, audioMs: 2000, elapsedMs: 2000 });
+    const interrupted = recorderReducer(live, { type: "MIC_STATE", mic: { state: "interrupted", reason: "call" }, audioMs: 2000, elapsedMs: 12_000 });
+    expect(interrupted).toMatchObject({ audioMs: 2000, elapsedMs: 12_000 });
+    const resumed = recorderReducer(interrupted, { type: "MIC_STATE", mic: { state: "recording", reason: null }, audioMs: 2500, elapsedMs: 12_500 });
+    expect(resumed.elapsedMs).toBe(12_500);
   });
 
   test("pause waits for native confirmation; Resume and a failed reacquisition are surfaced", () => {
@@ -114,8 +133,8 @@ describe("recorderReducer", () => {
 
   test("a failed stop uses the checked native status, and unknown remains visible", () => {
     const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED" });
-    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "busy", status: "active", mic: { state: "paused", reason: "user" }, audioMs: 41_000 }))
-      .toMatchObject({ phase: "recording", mic: { state: "paused" }, audioMs: 41_000, error: "busy" });
+    expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "busy", status: "active", mic: { state: "paused", reason: "user" }, audioMs: 41_000, elapsedMs: 45_000 }))
+      .toMatchObject({ phase: "recording", mic: { state: "paused" }, audioMs: 41_000, elapsedMs: 45_000, error: "busy" });
     expect(recorderReducer(stopping, { type: "STOP_FAILED", error: null, status: "idle" })).toMatchObject({ phase: "idle", error: null });
     expect(recorderReducer(stopping, { type: "STOP_FAILED", error: "Could not check", status: "unknown" }))
       .toMatchObject({ phase: "stopping", error: "Could not check" });
