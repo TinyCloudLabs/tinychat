@@ -1,439 +1,444 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type {
   MicState,
   MicStateReason,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import {
-  initialRecorderState,
-  type RecorderPhase,
-  type RecorderState,
-} from "../recorderReducer";
+import { initialRecorderState, type RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
-import { selectRecorderView, type RecorderView } from "./recorderView";
+import { selectRecorderView, type RecorderViewInput } from "./recorderView";
 
-const reasons: MicStateReason[] = [
-  null,
-  "os_silenced",
-  "no_signal",
-  "input_muted",
-  "call",
-  "user",
-  "interruption",
-  "route_change",
-  "media_services_reset",
-  "read_error",
-  "stalled",
-  "app_suspended",
-  "writer_stalled",
-  "resume_blocked",
-  "resume_not_allowed",
-  "mic_unavailable",
-  "pause_timeout",
-  "max_duration",
-  "disk_full",
-  "write_failed",
-  "permission_revoked",
-];
-const micStates: MicState[] = [
-  "idle",
-  "recording",
-  "silenced",
-  "paused",
-  "interrupted",
-  "needs_user",
-];
-const phases: RecorderPhase[] = [
-  "idle",
-  "starting",
-  "recording",
-  "stopping",
-  "saving",
-  "discarding",
-];
+const input: RecorderViewInput = {
+  nowMs: 20_000,
+  elapsedMs: 30_000,
+  inputName: null,
+  silencedSinceMs: null,
+  isDevelopmentOrTest: true,
+};
 const base: RecorderState = {
   ...initialRecorderState,
   phase: "recording",
-  recordingId: "test",
-  ready: true,
-};
-const input = { nowMs: 10_000, elapsedMs: 12_345, shell: "phone" as const };
-
-type ExpectedMic = Pick<
-  RecorderView,
-  "ring" | "flat" | "statusLine" | "tapRingAction"
-> & {
-  pill: RecorderView["pill"];
+  recordingId: "recording-id",
 };
 
-// Each reason has a written expected result. Identical outcomes are still listed
-// separately so adding a native reason requires a deliberate product decision.
-const interruptedExpected: Record<
-  Exclude<MicStateReason, null>,
-  ExpectedMic
-> = {
-  os_silenced: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.inputMuted,
-    tapRingAction: null,
-  },
-  no_signal: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.noSignal,
-    tapRingAction: null,
-  },
-  input_muted: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.inputMuted,
-    tapRingAction: null,
-  },
-  call: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.resumesWhenCallEnds,
-    tapRingAction: null,
-  },
-  user: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.interruptedUnknown,
-    tapRingAction: null,
-  },
-  interruption: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.interruptionInProgress,
-    tapRingAction: null,
-  },
-  route_change: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.inputChanged,
-    tapRingAction: null,
-  },
-  media_services_reset: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.audioServicesReset,
-    tapRingAction: null,
-  },
-  read_error: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.microphoneReadFailed,
-    tapRingAction: null,
-  },
-  stalled: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.resumesWhenCallEnds,
-    tapRingAction: null,
-  },
-  app_suspended: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.appSuspended,
-    tapRingAction: null,
-  },
-  writer_stalled: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.audioWriterStalled,
-    tapRingAction: null,
-  },
-  resume_blocked: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.resumeBlockedReason,
-    tapRingAction: null,
-  },
-  resume_not_allowed: {
-    ring: "still-resumable",
-    flat: false,
-    pill: { label: FINAL_COPY.tapToResume, dot: "hollow" },
-    statusLine: null,
-    tapRingAction: "resume",
-  },
-  mic_unavailable: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.micUnavailable,
-    tapRingAction: null,
-  },
-  pause_timeout: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.pauseTimedOut,
-    tapRingAction: null,
-  },
-  max_duration: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.durationLimitReached,
-    tapRingAction: null,
-  },
-  disk_full: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.diskFull,
-    tapRingAction: null,
-  },
-  write_failed: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.audioWriteFailed,
-    tapRingAction: null,
-  },
-  permission_revoked: {
-    ring: "still",
-    flat: false,
-    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-    statusLine: FINAL_COPY.permissionRevoked,
-    tapRingAction: null,
-  },
-};
-
-function expectedMic(state: MicState, reason: MicStateReason): ExpectedMic {
-  switch (state) {
-    case "idle":
-      return {
-        ring: "still",
-        flat: false,
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.interruptedUnknown,
-        tapRingAction: null,
-      };
-    case "recording":
-      return {
-        ring: "live",
-        flat: reason === "no_signal",
-        pill: { label: FINAL_COPY.listening, dot: "red" },
-        statusLine: null,
-        tapRingAction: null,
-      };
-    case "silenced":
-      return {
-        ring: "live",
-        flat: true,
-        pill: { label: FINAL_COPY.listening, dot: "red" },
-        statusLine: null,
-        tapRingAction: null,
-      };
-    case "paused":
-      return {
-        ring: "paused",
-        flat: false,
-        pill: { label: FINAL_COPY.resting, dot: "filled-grey" },
-        statusLine: null,
-        tapRingAction: "resume",
-      };
-    case "interrupted":
-      if (reason === null) {
-        return {
-          ring: "still",
-          flat: false,
-          pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-          statusLine: FINAL_COPY.interruptedUnknown,
-          tapRingAction: null,
-        };
-      }
-      return interruptedExpected[reason];
-    case "needs_user":
-      if (reason === "resume_blocked" || reason === "mic_unavailable")
-        return interruptedExpected[reason];
-      if (reason === "resume_not_allowed") return interruptedExpected[reason];
-      return {
-        ring: "still-resumable",
-        flat: false,
-        pill: { label: FINAL_COPY.tapToResume, dot: "hollow" },
-        statusLine: null,
-        tapRingAction: "resume",
-      };
-    default: {
-      const exhaustive: never = state;
-      throw new Error(
-        `Missing expected microphone state: ${String(exhaustive)}`,
-      );
-    }
-  }
+function recordingView(
+  state: MicState,
+  reason: MicStateReason,
+  overrides: Partial<RecorderViewInput> = {},
+) {
+  return selectRecorderView(
+    { ...base, mic: { state, reason } },
+    { ...input, ...overrides },
+  );
 }
 
-function expectedPhase(
-  phase: RecorderPhase,
-  mic: ExpectedMic,
-): Pick<
-  RecorderView,
-  | "ring"
-  | "flat"
-  | "pill"
-  | "statusLine"
-  | "tapRingAction"
-  | "controls"
-  | "micDenied"
-> {
-  if (phase === "recording") {
-    const resume = mic.ring === "paused" || mic.ring === "still-resumable";
-    const pause = mic.ring === "live";
-    return {
-      ...mic,
+describe("selectRecorderView: native interrupted reasons", () => {
+  test.each([
+    ["call", "Resumes when the call ends"],
+    ["stalled", "The microphone stopped sending sound. Reconnecting…"],
+    ["interruption", "Paused by a call or Siri. Resumes when it ends."],
+    [
+      "route_change",
+      "The microphone input changed. Waiting for capture to recover.",
+    ],
+    [
+      "media_services_reset",
+      "Audio services restarted. Waiting for capture to recover.",
+    ],
+    [
+      "read_error",
+      "The microphone could not be read. Waiting for capture to recover.",
+    ],
+    ["app_suspended", "Recording was interrupted while the app was inactive."],
+  ] as const)("interrupted/%s", (reason, statusLine) => {
+    expect(recordingView("interrupted", reason)).toMatchObject({
+      ring: "still",
+      flat: false,
+      pill: { label: "Interrupted", dot: "hollow" },
+      statusLine,
+      tapRingAction: null,
       controls: {
-        pause,
-        resume,
+        pause: false,
+        resume: false,
         stop: true,
         discard: true,
         busy: false,
         openSettings: false,
       },
-      micDenied: false,
-      tapRingAction: resume ? "resume" : pause ? "pause" : null,
-    };
-  }
+    });
+  });
 
-  if (phase === "idle") {
-    return {
+  test.each([
+    "os_silenced",
+    "no_signal",
+    "input_muted",
+    "user",
+    "writer_stalled",
+    "resume_blocked",
+    "mic_unavailable",
+    "resume_not_allowed",
+    "pause_timeout",
+    "max_duration",
+    "disk_full",
+    "write_failed",
+    "permission_revoked",
+  ] as const)(
+    "throws for interrupted/%s, which native does not emit",
+    (reason) => {
+      expect(() => recordingView("interrupted", reason)).toThrow(
+        `Unexpected recorder mic combination: interrupted/${reason}`,
+      );
+    },
+  );
+});
+
+describe("selectRecorderView: needs_user reason decisions", () => {
+  test.each([
+    [
+      "resume_blocked",
+      "The microphone could not resume because the audio session is blocked.",
+      "still-resumable",
+      "Tap to try again",
+      true,
+      true,
+      false,
+    ],
+    [
+      "mic_unavailable",
+      "The microphone is unavailable. Choose another input or reconnect it.",
+      "still-resumable",
+      "Tap to try again",
+      true,
+      true,
+      false,
+    ],
+    [
+      "stalled",
+      "The microphone stopped sending sound.",
+      "still-resumable",
+      "Tap to resume",
+      true,
+      true,
+      false,
+    ],
+    [
+      "resume_not_allowed",
+      null,
+      "still-resumable",
+      "Tap to resume",
+      true,
+      true,
+      false,
+    ],
+    [
+      "write_failed",
+      "Stop and save what's recorded.",
+      "still",
+      "Interrupted",
+      false,
+      true,
+      false,
+    ],
+    [
+      "permission_revoked",
+      "Microphone permission was revoked. Open Settings to allow access.",
+      "still",
+      "Microphone off",
+      false,
+      true,
+      true,
+    ],
+  ] as const)(
+    "needs_user/%s",
+    (reason, statusLine, ring, label, resume, stop, openSettings) => {
+      expect(recordingView("needs_user", reason)).toMatchObject({
+        ring,
+        flat: false,
+        pill: { label, dot: "hollow" },
+        statusLine,
+        tapRingAction: resume ? "resume" : null,
+        controls: {
+          pause: false,
+          resume,
+          stop,
+          discard: true,
+          busy: false,
+          openSettings,
+        },
+        micDenied: openSettings,
+      });
+    },
+  );
+
+  test.each([
+    null,
+    "os_silenced",
+    "no_signal",
+    "input_muted",
+    "call",
+    "interruption",
+    "route_change",
+    "media_services_reset",
+    "read_error",
+    "app_suspended",
+    "writer_stalled",
+    "pause_timeout",
+    "max_duration",
+    "disk_full",
+  ] as const)("throws for unsupported needs_user/%s", (reason) => {
+    expect(() => recordingView("needs_user", reason)).toThrow(
+      `Unexpected recorder mic combination: needs_user/${String(reason)}`,
+    );
+  });
+});
+
+describe("selectRecorderView: idle reason decisions", () => {
+  test.each([
+    ["max_duration", "Saving at the limit…", "Saving…", true, false, false],
+    [null, null, "Saving…", true, false, false],
+    [
+      "disk_full",
+      "Saving the audio captured before storage ran out…",
+      "Saving…",
+      true,
+      false,
+      false,
+    ],
+    [
+      "write_failed",
+      "The recording could not be saved.",
+      "Interrupted",
+      false,
+      false,
+      true,
+    ],
+    [
+      "permission_revoked",
+      "Microphone permission was revoked. Open Settings to allow access.",
+      "Microphone off",
+      false,
+      true,
+      true,
+    ],
+  ] as const)(
+    "idle/%s while phase is recording",
+    (reason, statusLine, label, busy, openSettings, stop) => {
+      expect(recordingView("idle", reason)).toMatchObject({
+        ring: "idle",
+        flat: false,
+        pill: { label, dot: "hollow" },
+        statusLine,
+        tapRingAction: null,
+        controls: {
+          pause: false,
+          resume: false,
+          stop,
+          discard: !busy,
+          busy,
+          openSettings,
+        },
+        micDenied: openSettings,
+      });
+    },
+  );
+
+  test.each([
+    "os_silenced",
+    "no_signal",
+    "input_muted",
+    "call",
+    "interruption",
+    "route_change",
+    "media_services_reset",
+    "read_error",
+    "stalled",
+    "app_suspended",
+    "writer_stalled",
+    "resume_blocked",
+    "resume_not_allowed",
+    "mic_unavailable",
+    "pause_timeout",
+  ] as const)("logs/throws for unsupported idle/%s", (reason) => {
+    expect(() => recordingView("idle", reason)).toThrow(
+      `Unexpected recorder mic combination: idle/${reason}`,
+    );
+  });
+});
+
+describe("selectRecorderView: live, paused and transient phases", () => {
+  test("recording read_error uses the interrupted read-error presentation", () => {
+    expect(recordingView("recording", "read_error")).toMatchObject({
+      ring: "still",
+      flat: false,
+      pill: { label: "Interrupted", dot: "hollow" },
+      statusLine:
+        "The microphone could not be read. Waiting for capture to recover.",
+      emphasis: null,
+    });
+  });
+
+  test("recording write_failed uses the stop-and-save presentation", () => {
+    expect(recordingView("recording", "write_failed")).toMatchObject({
+      ring: "still",
+      statusLine: "Stop and save what's recorded.",
+      controls: { resume: false, stop: true },
+      emphasis: "stop",
+    });
+  });
+
+  test("raw Android reasons log as contract violations without throwing in dev", () => {
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const reason of [
+        "read_failed:9",
+        "write_failed: disk unavailable",
+      ]) {
+        const view = recordingView("recording", reason as MicStateReason, {
+          isDevelopmentOrTest: true,
+        });
+        expect(view.statusLine).toBe(
+          "The microphone state is unexpected. Check the recording.",
+        );
+      }
+      expect(consoleError).toHaveBeenCalledTimes(2);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  test("production logs impossible combinations and returns generic copy", () => {
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(
+        recordingView("recording", "call", {
+          isDevelopmentOrTest: false,
+        }),
+      ).toMatchObject({
+        ring: "still",
+        statusLine: "The microphone state is unexpected. Check the recording.",
+        emphasis: null,
+      });
+      expect(
+        recordingView("recording", "read_failed:9" as MicStateReason, {
+          isDevelopmentOrTest: false,
+        }),
+      ).toMatchObject({
+        ring: "still",
+        statusLine: "The microphone state is unexpected. Check the recording.",
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "Unexpected recorder mic combination: recording/call",
+        { state: "recording", reason: "call" },
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        "Native mic reason violates the contract: recording/read_failed:9",
+        { state: "recording", reason: "read_failed:9" },
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  test("idle/user after user Stop or Discard uses the saving view", () => {
+    expect(recordingView("idle", "user")).toMatchObject({
+      ring: "idle",
+      pill: { label: "Saving…", dot: "hollow" },
+      statusLine: null,
+      controls: { busy: true, stop: false, discard: false },
+    });
+  });
+
+  test("recording and writer_stalled remain live; no_signal is flat", () => {
+    expect(recordingView("recording", null)).toMatchObject({
+      ring: "live",
+      flat: false,
+      pill: { label: "Listening", dot: "red" },
+      statusLine: null,
+    });
+    expect(recordingView("recording", "writer_stalled")).toMatchObject({
+      ring: "live",
+      flat: false,
+      pill: { label: "Listening", dot: "red" },
+      statusLine: null,
+    });
+    expect(
+      recordingView("recording", "no_signal", {
+        nowMs: 5_000,
+        silencedSinceMs: 0,
+        inputName: null,
+      }),
+    ).toMatchObject({
+      ring: "live",
+      flat: true,
+      statusLine: "No sound from the microphone",
+    });
+  });
+
+  test.each(["os_silenced", "input_muted"] as const)(
+    "silenced/%s stays live, red and flat",
+    (reason) => {
+      expect(
+        recordingView("silenced", reason, {
+          nowMs: 5_000,
+          silencedSinceMs: 0,
+          inputName: "AirPods",
+        }),
+      ).toMatchObject({
+        ring: "live",
+        flat: true,
+        pill: { label: "Listening", dot: "red" },
+        statusLine: "No sound from AirPods",
+      });
+    },
+  );
+
+  test("paused/user is the only breathing treatment and remains resumable", () => {
+    expect(recordingView("paused", "user")).toMatchObject({
+      ring: "paused",
+      flat: false,
+      pill: { label: "Resting · tap to continue", dot: "filled-grey" },
+      controls: { pause: false, resume: true, stop: true, discard: true },
+      tapRingAction: "resume",
+    });
+  });
+
+  test.each([
+    ["starting", "Starting…", true],
+    ["stopping", "Saving…", true],
+    ["saving", "Saving…", true],
+    ["discarding", "Discarding…", true],
+  ] as const)("phase %s disables controls", (phase, label, busy) => {
+    const view = selectRecorderView({ ...base, phase }, input);
+    expect(view).toMatchObject({
       ring: "idle",
       flat: false,
-      pill: { label: FINAL_COPY.idle, dot: "hollow" },
-      statusLine: null,
+      pill: { label, dot: "hollow" },
       controls: {
         pause: false,
         resume: false,
         stop: false,
         discard: false,
-        busy: false,
+        busy,
         openSettings: false,
       },
-      micDenied: false,
-      tapRingAction: null,
-    };
-  }
-
-  const label =
-    phase === "starting"
-      ? FINAL_COPY.starting
-      : phase === "discarding"
-        ? FINAL_COPY.discarding
-        : FINAL_COPY.saving;
-  return {
-    ring: "idle",
-    flat: false,
-    pill: { label, dot: "hollow" },
-    statusLine: null,
-    controls: {
-      pause: false,
-      resume: false,
-      stop: false,
-      discard: false,
-      busy: true,
-      openSettings: false,
-    },
-    micDenied: false,
-    tapRingAction: null,
-  };
-}
-
-const fullExpectedTable = phases.flatMap((phase) =>
-  micStates.flatMap((micState) =>
-    reasons.map((reason) => {
-      const mic = expectedMic(micState, reason);
-      const presentation = expectedPhase(phase, mic);
-      return {
-        name: `${phase} / ${micState} / ${String(reason)}`,
-        phase,
-        micState,
-        reason,
-        expected: {
-          ...presentation,
-          timer: { text: "0:12" },
-        },
-      };
-    }),
-  ),
-);
-
-describe("selectRecorderView expected state table", () => {
-  test.each(fullExpectedTable)(
-    "$name",
-    ({ phase, micState, reason, expected }) => {
-      const state: RecorderState = {
-        ...base,
-        phase,
-        permissionDenied: false,
-        controlPending: null,
-        mic: { state: micState, reason },
-      };
-      expect(selectRecorderView(state, input)).toEqual(expected);
-    },
-  );
-
-  test("silence line appears exactly five seconds after the supplied start time", () => {
-    const state = {
-      ...base,
-      mic: { state: "silenced" as const, reason: "call" as const },
-    };
-    expect(
-      selectRecorderView(state, { ...input, nowMs: 4_999, silencedSinceMs: 0 })
-        .statusLine,
-    ).toBeNull();
-    expect(
-      selectRecorderView(state, {
-        ...input,
-        nowMs: 5_000,
-        silencedSinceMs: 0,
-        inputName: "AirPods",
-      }).statusLine,
-    ).toBe("No sound from AirPods");
-    expect(
-      selectRecorderView(
-        { ...base, mic: { state: "recording", reason: "no_signal" } },
-        { ...input, nowMs: 5_000, silencedSinceMs: 0, inputName: "AirPods" },
-      ).statusLine,
-    ).toBe("No sound from AirPods");
+    });
   });
 
-  test("elapsedMs drives timer and countdown at the exact ten-minute warning boundary", () => {
-    const beforeBoundary = selectRecorderView(base, {
-      ...input,
-      elapsedMs: 2 * 60 * 60 * 1000 + 49 * 60 * 1000 + 59_000,
-    });
-    const atBoundary = selectRecorderView(base, {
-      ...input,
-      elapsedMs: 2 * 60 * 60 * 1000 + 50 * 60 * 1000,
-    });
-    expect(beforeBoundary.timer).toEqual({ text: "2:49:59" });
-    expect(atBoundary.timer).toEqual({
-      text: "2:50:00",
-      countdown: { text: "Stops at 3:00:00" },
-    });
+  test("mic denial and phase-idle permission revocation open Settings", () => {
     expect(
       selectRecorderView(
-        { ...base, audioMs: 10_799_000 },
-        { ...input, elapsedMs: 10_000 },
-      ).timer,
-    ).toEqual({ text: "0:10" });
+        { ...initialRecorderState, permissionDenied: true },
+        input,
+      ),
+    ).toMatchObject({
+      ring: "idle",
+      pill: { label: "Microphone off", dot: "hollow" },
+      statusLine: FINAL_COPY.denied,
+      micDenied: true,
+      controls: { openSettings: true },
+    });
   });
 
-  test("pending pause and resume requests disable the matching controls", () => {
+  test("pending pause and resume disable their respective controls", () => {
     expect(
       selectRecorderView({ ...base, controlPending: "pause" }, input).controls
         .pause,
@@ -449,29 +454,64 @@ describe("selectRecorderView expected state table", () => {
       ).controls.resume,
     ).toBe(false);
   });
+});
 
-  test("mic denial gives the neutral idle view and Open Settings action", () => {
+describe("selectRecorderView: elapsed time and limit", () => {
+  test("uses elapsedMs and the configured max duration, including the inclusive warning boundary", () => {
+    expect(
+      selectRecorderView(base, {
+        ...input,
+        elapsedMs: 2 * 60 * 60 * 1000 + 49 * 60 * 1000 + 59_000,
+      }).timer,
+    ).toEqual({ text: "2:49:59" });
+    expect(
+      selectRecorderView(base, {
+        ...input,
+        elapsedMs: 2 * 60 * 60 * 1000 + 50 * 60 * 1000,
+      }).timer,
+    ).toEqual({
+      text: "2:50:00",
+      countdown: {
+        text: "Stops at 3:00:00",
+        remainingMs: 10 * 60 * 1000,
+        remainingText: "10:00",
+      },
+    });
     expect(
       selectRecorderView(
-        { ...initialRecorderState, permissionDenied: true },
-        input,
-      ),
+        { ...base, audioMs: 10_799_000 },
+        {
+          ...input,
+          elapsedMs: 10_000,
+        },
+      ).timer,
+    ).toEqual({ text: "0:10" });
+  });
+
+  test("supports a non-default maxDurationMs and clamps remaining time", () => {
+    const oneHour = { ...base, maxDurationMs: 60 * 60 * 1000 };
+    expect(
+      selectRecorderView(oneHour, {
+        ...input,
+        elapsedMs: 50 * 60 * 1000,
+      }).timer,
     ).toEqual({
-      ring: "idle",
-      flat: false,
-      pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
-      statusLine: FINAL_COPY.denied,
-      timer: { text: "0:12" },
-      controls: {
-        pause: false,
-        resume: false,
-        stop: false,
-        discard: false,
-        busy: false,
-        openSettings: true,
+      text: "50:00",
+      countdown: {
+        text: "Stops at 1:00:00",
+        remainingMs: 10 * 60 * 1000,
+        remainingText: "10:00",
       },
-      micDenied: true,
-      tapRingAction: null,
+    });
+    expect(
+      selectRecorderView(oneHour, {
+        ...input,
+        elapsedMs: 61 * 60 * 1000,
+      }).timer.countdown,
+    ).toEqual({
+      text: "Stops at 1:00:00",
+      remainingMs: 0,
+      remainingText: "0:00",
     });
   });
 });

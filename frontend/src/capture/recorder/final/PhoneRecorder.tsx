@@ -6,7 +6,6 @@ import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder, type RecorderValue } from "../RecorderProvider";
 import type { RecorderState } from "../recorderReducer";
 import { useRecordedElapsed } from "../useRecordedElapsed";
-import { FINAL_COPY } from "./finalCopy";
 import { ModesCard } from "./ModesCard";
 import { PrivacyScale } from "./PrivacyScale";
 import { RecorderRing } from "./RecorderRing";
@@ -14,7 +13,7 @@ import { selectRecorderView } from "./recorderView";
 import { shellForPlatform } from "./shellCapabilities";
 import { SheetDialog } from "./SheetDialog";
 import { CheckIcon, ChevronDownIcon, CloseIcon, InfoChevronIcon, PauseIcon, PlayIcon } from "./softIcons";
-import { modeShortLabel, modeSubLabel, identifySpeakersControl, MODE_STOPS } from "./transcriptionModes";
+import { modeShortLabel, identifySpeakersControl, MODE_STOPS } from "./transcriptionModes";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
 import { useOnDeviceModel, useTranscriptionChoice, type TranscriptionChoiceStorage } from "./useTranscriptionChoice";
@@ -87,8 +86,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
     elapsedMs,
-    shell,
-    inputName: audio.current?.name,
+    inputName: audio.current?.name ?? null,
     silencedSinceMs,
   });
 
@@ -147,8 +145,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
 
   const stop = MODE_STOPS.find((s) => s.id === choice.mode)!;
   const sheetOpen = discardOpen || choice.asking;
-  const mustSave = phase === "recording" && mic.state === "needs_user" && mic.reason === "write_failed";
-  const inputUnavailable = mic.reason === "mic_unavailable" && phase === "recording";
+  const mustSave = view.emphasis === "stop";
   const inputName = audio.current?.name ?? "Microphone";
   const resume = view.controls.resume;
   const denied = view.micDenied;
@@ -161,7 +158,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
   };
 
   return (
-    <div className="soft-skin pr" data-layout="phone" data-testid="phone-recorder" data-ring={view.ring}>
+    <div className={`soft-skin soft-${theme === "night" ? "night" : "day"} pr`} data-layout="phone" data-testid="phone-recorder" data-ring={view.ring}>
       <div className="pr-blob a" aria-hidden="true" />
       <div className="pr-blob b" aria-hidden="true" />
       <p role="status" aria-live="polite" className="sr-only" data-testid="phone-recorder-announcer">{said}</p>
@@ -196,7 +193,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
               <InfoChevronIcon />
             </button>
             <span className="pr-mname soft-title">{modeShortLabel(choice.mode, choice.identifySpeakers && !speakers.disabled)}</span>
-            <span className="pr-mshort">{modeSubLabel(choice.mode, shell)}</span>
+            <span className="pr-mshort">{stop.subLabel[shell]}</span>
           </div>
           <PrivacyScale stops={choice.stops} mode={choice.mode} onChoose={choose} step={choice.step} onUnavailable={() => {}} />
           <div className="pr-ends" aria-hidden="true">
@@ -214,7 +211,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
               recording={view.ring === "live"}
               theme={theme}
               subscribeLevel={recorder.subscribeLevel}
-              emphasis={inputUnavailable}
+              emphasis={view.emphasis === "input"}
               disabled={view.controls.busy}
               defaultOpen={defaultOpen === "via"}
               onSelect={(id) => void audio.select(id)}
@@ -241,13 +238,13 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
         {(settingsError ?? audio.error) && <p className="pr-alert" role="alert">{settingsError ?? audio.error}</p>}
         {idleDenied ? (
           <div className="pr-controls">
-            <button type="button" className="pr-b primary" onClick={openSettings}>{FINAL_COPY.openSettings}</button>
+            <button type="button" className="pr-b primary" onClick={openSettings}>Open Settings</button>
           </div>
         ) : (
           <>
-            {denied && (
+            {view.controls.openSettings && (
               <div className="pr-controls" style={{ paddingBottom: 0 }}>
-                <button type="button" className="pr-b primary" onClick={openSettings}>{FINAL_COPY.openSettings}</button>
+                <button type="button" className="pr-b primary" onClick={openSettings}>Open Settings</button>
               </div>
             )}
             <div className="pr-controls">

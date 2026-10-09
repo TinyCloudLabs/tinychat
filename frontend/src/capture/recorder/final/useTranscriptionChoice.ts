@@ -3,11 +3,9 @@ import { OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceSt
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import {
-  MODE_STOPS,
-  SKIP_ENABLED,
-  modeAvailability,
   readIdentifySpeakers,
   readMode,
+  scaleStops,
   writeIdentifySpeakers,
   writeMode,
   type ModeId,
@@ -64,10 +62,9 @@ export function useTranscriptionChoice({ shell, transcription, model, storage = 
   const offered = transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
 
-  const stops: ScaleStop[] = MODE_STOPS.filter((stop) => stop.id !== "skip" || SKIP_ENABLED).map((stop) => {
-    if (stop.id === "private") return offered ? { stop, available: true } : { stop, available: false, reason: PRIVATE_UNAVAILABLE };
-    const availability = modeAvailability(stop.id, shell, model);
-    return { stop, ...availability };
+  const stops: ScaleStop[] = scaleStops(shell, model).map(({ availability, ...stop }) => {
+    if (stop.id === "private" && !offered) return { stop, available: false, reason: PRIVATE_UNAVAILABLE };
+    return availability.available ? { stop, available: true } : { stop, available: false, reason: availability.reason };
   });
   const isAvailable = (id: ModeId) => stops.some((s) => s.stop.id === id && s.available);
 
@@ -80,10 +77,10 @@ export function useTranscriptionChoice({ shell, transcription, model, storage = 
 
   const commit = useCallback(
     (id: ModeId) => {
-      writeMode(id, storage);
+      writeMode(id, shell, storage, model);
       setStored(id);
     },
-    [storage],
+    [shell, model, storage],
   );
 
   /** Returns why a stop cannot be chosen, or null when the choice was taken (or is waiting on consent). */

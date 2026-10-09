@@ -1,6 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
 import { CloseIcon, CheckIcon, ModeIcon } from "./softIcons";
-import { identifySpeakersControl, modeSubLabel, type ModeId, type ModeShell } from "./transcriptionModes";
+import { identifySpeakersControl, type ModeId, type ModeShell } from "./transcriptionModes";
 import type { ScaleStop } from "./useTranscriptionChoice";
 
 const DOTS = 4;
@@ -95,7 +95,7 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
               <span className="pr-tile"><ModeIcon id={stop.id} size={14} /></span>
               <span className="pr-mptitle">
                 <span className="n soft-title">{stop.shortName}</span>
-                <span className="s">{modeSubLabel(stop.id, shell)}</span>
+                <span className="s">{stop.subLabel[shell]}</span>
                 {checked && <CheckIcon size={13} />}
               </span>
               <span className="pr-mpdots">
@@ -103,7 +103,7 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
                 <Dots value={stop.accuracyDots} label="Accuracy" />
               </span>
               <span className="pr-mpbody">
-                {stop.explanations[shell]}
+                {stop.explanations[shell]({ modelName: "" })}
                 {!available && reason ? <><br />{reason}</> : null}
               </span>
             </button>

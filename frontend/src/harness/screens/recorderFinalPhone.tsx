@@ -106,6 +106,9 @@ export const recorderFinalPhoneScreens: HarnessScreen[] = [
   screen("discard", {}, { defaultOpen: "discard" }),
   screen("stalled", { mic: { state: "interrupted", reason: "stalled" } }, {}, QUIET),
   screen("needs-user", { mic: { state: "needs_user", reason: "resume_not_allowed" } }, {}, QUIET),
+  screen("mic-unavailable", { mic: { state: "needs_user", reason: "mic_unavailable" } }, {}, QUIET),
+  screen("write-failed", { mic: { state: "needs_user", reason: "write_failed" } }, {}, QUIET),
+  screen("revoked", { mic: { state: "needs_user", reason: "permission_revoked" }, permissionDenied: true }, {}, QUIET),
   screen("silenced", { mic: { state: "silenced", reason: "no_signal" } }, { silencedSinceMs: FROZEN_NOW - 6000 }, QUIET),
   screen("countdown", { elapsedMs: minutes(170, 12), audioMs: minutes(170, 12), startedAt: FROZEN_NOW - minutes(170, 12) }),
   screen(
