@@ -6,30 +6,41 @@ import {
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import {
+  MODE_STOPS,
   scaleStops,
   type ModeId,
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import type {
-  RecorderTranscriberId,
-  SetTranscriberResult,
-  TranscriberApi,
-} from "./transcriberApiStub";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { RecorderValue } from "../RecorderProvider";
+
+export type TranscriberApi = Pick<
+  RecorderValue,
+  "transcriber" | "setTranscriber" | "setIdentifySpeakers"
+>;
+export type SetTranscriberResult = Awaited<
+  ReturnType<TranscriberApi["setTranscriber"]>
+>;
 
 export const PRIVATE_UNAVAILABLE = "Not available right now";
 export const SIGNED_OUT = "Sign in to choose another mode";
+export const unavailableNow = (what: string) =>
+  `${what} isn't available right now`;
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
-export const TRANSCRIBER_FOR: Record<ModeId, RecorderTranscriberId> = {
+export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
   skip: "off",
   local: "on-device",
   private: "private-cloud",
   powerful: "assemblyai",
 };
+const MODE_NAME = Object.fromEntries(
+  MODE_STOPS.map((stop) => [stop.id, stop.shortName]),
+) as Record<ModeId, string>;
 const MODE_FOR = Object.fromEntries(
   Object.entries(TRANSCRIBER_FOR).map(([mode, id]) => [id, mode]),
-) as Record<RecorderTranscriberId, ModeId>;
+) as Record<TranscriberId, ModeId>;
 
 export interface ScaleStop {
   stop: ModeStop;
@@ -163,7 +174,7 @@ export function useTranscriptionChoice({
         console.error(
           `[Recorder] The provider cannot use ${TRANSCRIBER_FOR[id]} right now`,
         );
-        notify(PRIVATE_UNAVAILABLE);
+        notify(unavailableNow(MODE_NAME[id]));
         return;
     }
   };
@@ -227,7 +238,7 @@ export function useTranscriptionChoice({
         ? SPEAKERS_NEEDS_CONSENT
         : result === "locked_signed_out"
           ? SIGNED_OUT
-          : PRIVATE_UNAVAILABLE,
+          : unavailableNow("Identify speakers"),
     );
   };
 
