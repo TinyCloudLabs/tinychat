@@ -32,7 +32,7 @@ const sdkStub = (service: string): unknown =>
   });
 
 export const harnessTcw = new Proxy(
-  { did: HARNESS_DID, address: () => HARNESS_ADDRESS },
+  { did: HARNESS_DID, spaceId: "harness-space", address: () => HARNESS_ADDRESS },
   {
     get: (target, key) =>
       key in target ? target[key as keyof typeof target] : key === "then" ? undefined : sdkStub(String(key)),
