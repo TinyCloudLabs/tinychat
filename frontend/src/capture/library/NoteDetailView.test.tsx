@@ -10,7 +10,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { aboutHref } from "@/lib/about";
-import { registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import {
+  __desktopWhisperQueueReadsForTests,
+  registerDesktopWhisperQueue,
+  type DesktopWhisperJob,
+  type DesktopWhisperQueue,
+} from "@/lib/voiceNotes/desktop/desktopWhisper";
 import type { NoteTranscriptionState } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { LibraryItem } from "./LibraryRow";
 import { NoteDetailView, transcriptBlocks, type NoteDetailViewProps } from "./NoteDetailView";
@@ -201,7 +206,10 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
   };
 
   test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
+    const before = __desktopWhisperQueueReadsForTests();
     expect(withJob({ state: "queued" })).toContain("Waiting to transcribe on this Mac");
+    // The counter sees the enabled path, so its silence in the classic test means something.
+    expect(__desktopWhisperQueueReadsForTests()).toBeGreaterThan(before);
     expect(withJob({ state: "transcribing", progress: 33 })).toContain("Transcribing on this Mac · 33%");
     const failed = withJob({ state: "failed", error: "raw detail" });
     expect(failed).toContain('data-testid="whisper-job-retry"');
@@ -216,8 +224,12 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
       snapshot: () => { calls.push("snapshot"); return new Map([["rec-1", job]]); },
       subscribe: () => { calls.push("subscribe"); return noop; },
     } as unknown as DesktopWhisperQueue);
+    // The production default (no override): the flag is unset and the shell isn't Tauri in tests.
+    const before = __desktopWhisperQueueReadsForTests();
     const classic = render();
+    expect(__desktopWhisperQueueReadsForTests()).toBe(before);
     expect(render({ desktopWhisper: false })).toBe(classic);
+    expect(__desktopWhisperQueueReadsForTests()).toBe(before);
     expect(classic).toContain("No transcript.");
     expect(classic).not.toContain("whisper-job");
     expect(calls).toEqual([]);
