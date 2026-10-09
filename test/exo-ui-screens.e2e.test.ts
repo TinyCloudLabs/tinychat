@@ -30,6 +30,8 @@ interface Viewport {
   textScale?: number;
   /** Zoom and text-scale captures also check for clipped text. */
   zoom?: boolean;
+  /** Only the screens whose id starts with one of these run at this viewport (default: every screen). */
+  screenPrefixes?: string[];
 }
 
 const VIEWPORTS: Viewport[] = [
@@ -41,6 +43,20 @@ const VIEWPORTS: Viewport[] = [
   { id: "desktop", width: 1280, height: 800, deviceScaleFactor: 2 },
   // 1280x800 at 200% browser zoom.
   { id: "zoom200", width: 640, height: 400, deviceScaleFactor: 2, zoom: true },
+  // The smallest phone the recorder-final screens must fit (an Android emulator's 320x640), scoped to those screens.
+  {
+    id: "phone-small",
+    width: 320,
+    height: 640,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    screenPrefixes: [
+      "recorder-final-phone-",
+      "recorder-final-minimized-",
+      "capture-soft-",
+    ],
+  },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
 ];
@@ -254,8 +270,8 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height})`, async () => {
       const failures: string[] = [];
       for (const theme of themes) {
-        // WebKit stops loading after about 65 pages per browser. Keep each
-        // browser below that ceiling, including the second theme.
+        // WebKit stops loading after about 65 pages per browser. Recycle every
+        // 40 screens within each theme to stay below that limit.
         for (let start = 0; start < screens.length; start += 40) {
           const viewportBrowser = await engine.launch({ headless: true });
           browsers.push(viewportBrowser);
@@ -277,6 +293,10 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
           }
           try {
             for (const screen of screens.slice(start, start + 40)) {
+              if (
+                viewport.screenPrefixes &&
+                !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
+              ) continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
@@ -316,7 +336,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
               }
               await page.close();
-          }
+            }
           } finally {
             await context.close();
           }

@@ -212,7 +212,7 @@ export function MirroredSpectrumBars({
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 2,
+        gap: "var(--spectrum-gap, 2px)",
         width: "100%",
         height,
       }}
@@ -233,7 +233,8 @@ export function MirroredSpectrumBars({
               transform: `scaleY(${initialScale.toFixed(3)})`,
               height: "100%",
               width,
-              flex: "none",
+              minWidth: 0,
+              flex: "0 1 auto",
               borderRadius: 2,
               background: paused
                 ? "#8f8993"

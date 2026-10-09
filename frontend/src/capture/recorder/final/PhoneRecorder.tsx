@@ -53,6 +53,7 @@ function recorderState(recorder: RecorderValue): RecorderState {
     startedAt: recorder.startedAt,
     audioMs: recorder.audioMs,
     elapsedMs: recorder.elapsedMs,
+    elapsedAt: recorder.elapsedAt,
     maxDurationMs: recorder.maxDurationMs,
     mic: recorder.mic,
     controlPending: recorder.controlPending,
