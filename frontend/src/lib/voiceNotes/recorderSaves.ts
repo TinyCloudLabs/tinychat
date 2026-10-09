@@ -25,6 +25,7 @@ import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { saveVoiceNote, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
+import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
 
 export function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -168,6 +169,12 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
   } catch (caught) {
     return `Discarded, but this phone kept its copy: ${messageOf(caught)}`;
   }
+  try {
+    // Keep the discard marker until the local Markdown tombstone is durable.
+    await deleteNote(id);
+  } catch (caught) {
+    return `Discarded audio, but this phone kept its note text: ${messageOf(caught)}`;
+  }
   clearDiscarded(id);
   // Saved to the space before it was discarded: the local copy is gone, so that mark goes too.
   if (cloudSaved.delete(id)) {
@@ -246,8 +253,12 @@ export async function saveRecording(
           },
         }
       : native;
-    const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress });
-    if (!saved.ok) return { kind: "failed", failure: saved.error.message };
+    const saved = await saveVoiceNote(tcw, recording, source, nativePlatform(), { onProgress,
+      checkpoint: () => { if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); } });
+    if (!saved.ok) return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: saved.error.message };
+    if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
     // The device copy remains playable. This old marker is informational;
     // the indexed row and the native ledger decide idempotence.
     cloudSaved.add(recording.id);
@@ -279,7 +290,9 @@ export async function saveRecording(
       cleanupError,
     };
   } catch (caught) {
-    return { kind: "failed", failure: messageOf(caught) };
+    return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: messageOf(caught) };
   } finally {
     savesInFlight.delete(recording.id);
     publishSaveIdle();
@@ -290,6 +303,7 @@ export async function saveRecording(
 export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   recording: VoiceNoteRecording, checkpoint: () => void = () => undefined): Promise<SaveOutcome> {
   const check = () => { assertCurrent(ctx); checkpoint(); };
+  const checkActive = () => { check(); if (isDiscarded(recording.id)) throw new Error("Recording was discarded"); };
   check();
   if (isDiscarded(recording.id)) return { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) };
   if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) return { kind: "held", reason: "other-account" };
@@ -302,12 +316,14 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
   try {
     const source = nativeRecordingSource(recording);
     const checkedSource: VoiceNoteAudioSource = { ...source, readPart: async (offset, length) => {
-      check();
+      checkActive();
       return source.readPart(offset, length);
     } };
-    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: check });
-    if (!saved.ok) return { kind: "failed", failure: saved.error.message };
-    check();
+    const saved = await saveVoiceNote(tcw, recording, checkedSource, nativePlatform(), { checkpoint: checkActive });
+    if (!saved.ok) return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: saved.error.message };
+    checkActive();
     const patch = { audio: { state: "saved" as const, rowId: saved.data.id, at: Date.now() } };
     let fresh = recording;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -326,7 +342,9 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
     }
     return { kind: "failed", failure: "Could not update this phone's saved-note status" };
   } catch (caught) {
-    return { kind: "failed", failure: messageOf(caught) };
+    return isDiscarded(recording.id)
+      ? { kind: "discarded", cleanupError: await deleteDiscarded(recording.id) }
+      : { kind: "failed", failure: messageOf(caught) };
   } finally {
     savesInFlight.delete(recording.id);
     publishSaveIdle();

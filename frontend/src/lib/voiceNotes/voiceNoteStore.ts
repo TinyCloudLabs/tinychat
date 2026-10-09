@@ -8,6 +8,7 @@
 //   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/manifest  JSON, written LAST
 //   KV   {APP_ID}/connectors/exo-voice-note/transcript/{id}      old-reader mirror
 //   KV   {APP_ID}/connectors/exo-voice-note/transcript-rev/{id}/{hash} immutable body
+//   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/note.md Markdown + frontmatter
 //
 // Notes saved before TC-517 hold their audio as ONE value at
 // `{APP_ID}/connectors/exo-voice-note/audio/{id}` (JSON { mimeType, base64 });
@@ -49,9 +50,11 @@ import {
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 import type { LocalTranscript } from "./nativeVoiceNotes";
 import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
-import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio } from "./voiceNoteRows";
+import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio,
+  patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
+import { loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
 /** `connector_meeting.source` for every voice note. */
 export const VOICE_NOTE_SOURCE = "exo-voice-note";
@@ -65,6 +68,49 @@ export const VOICE_NOTE_SOURCE_LABEL = "Voice note";
  */
 export function voiceNoteAudioKvKey(id: string): string {
   return `${CONNECTORS_KV_PREFIX}/${VOICE_NOTE_SOURCE}/audio/${id}`;
+}
+
+export function voiceNoteMarkdownKvKey(id: string): string {
+  return `${voiceNoteAudioKvKey(id)}/note.md`;
+}
+
+const noteSyncs = new Map<string, Promise<boolean>>();
+
+/** The T18 row and its audio prefix own note sync; there is no separate upload queue. */
+export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
+  checkpoint: () => void = () => undefined): Promise<boolean> {
+  const syncKey = `${tcw.spaceId}:${tcw.did}:${id}`;
+  const inFlight = noteSyncs.get(syncKey);
+  if (inFlight) return inFlight;
+  const sync = (async () => {
+    checkpoint();
+    for (;;) {
+      const note = await loadNote(id);
+      if (!note) return false;
+      const row = await resolveVoiceNoteRow(tcw, id, checkpoint);
+      if (!row) return false;
+      const key = voiceNoteMarkdownKvKey(id);
+      if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) return true;
+      const body = noteMarkdown(note);
+      const put = await runOnSpaceLane(() => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown" }); });
+      if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
+      checkpoint();
+      await patchVoiceNoteMarkdown(tcw, id, key, note.editedAt, checkpoint);
+      const latest = await loadNote(id);
+      if (!latest || latest.revision === note.revision) return true;
+    }
+  })().finally(() => { if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey); });
+  noteSyncs.set(syncKey, sync);
+  return sync;
+}
+
+export async function readRecordingNoteFromSpace(tcw: TinyCloudWeb, id: string): Promise<RecordingNote | null> {
+  const result = await tcw.kv.get(voiceNoteMarkdownKvKey(id));
+  if (!result.ok) {
+    if (/NOT_FOUND|404/i.test(`${result.error.code ?? ""} ${result.error.message}`)) return null;
+    throw new Error(`Could not load recording note: ${result.error.message}`);
+  }
+  return parseNoteMarkdown(String(result.data.data));
 }
 
 export function voiceNoteAudioPartKey(id: string, index: number): string {
@@ -233,7 +279,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
-): Promise<StoreResult<UpsertMeetingOutcome>> {
+): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: string }>> {
   try {
     opts.checkpoint?.();
     const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
@@ -253,7 +299,16 @@ export async function saveVoiceNote(
     opts.checkpoint?.();
     await patchVoiceNoteAudio(tcw, recording, platform, { base, mimeType: audio.data.mimeType,
       size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint);
-    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt } };
+    // Audio has landed. A Markdown failure is separate; the row's absent/stale
+    // note_edited_at keeps it eligible for the next reconciliation or edit.
+    let noteSyncError: string | undefined;
+    try { await syncRecordingNote(tcw, recording.id, opts.checkpoint); }
+    catch (caught) {
+      opts.checkpoint?.(); // Cancellation and discard still stop this save.
+      noteSyncError = caught instanceof Error ? caught.message : String(caught);
+      console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
+    }
+    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: caught instanceof Error ? caught.message : String(caught) } };
