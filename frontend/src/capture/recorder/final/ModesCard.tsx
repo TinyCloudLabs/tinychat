@@ -45,6 +45,7 @@ export function ModesCard({ stops, mode, shell, identifySpeakers, onChoose, onTo
   }, [onClose, opener]);
 
   const key = (event: KeyboardEvent) => {
+    event.currentTarget.setAttribute("data-kbd", "");
     if (event.key === "Escape") {
       event.stopPropagation();
       event.preventDefault();

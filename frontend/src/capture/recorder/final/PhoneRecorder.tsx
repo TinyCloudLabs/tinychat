@@ -203,7 +203,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
           <div className="pr-capline">
             {choice.needsConsent ? <button type="button" onClick={() => choice.select("private")}>Turn on private transcription</button> : stop.captions[shell]}
           </div>
-          {!idleDenied && (
+          {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}
               currentId={audio.current?.id ?? null}
@@ -270,6 +270,7 @@ export function PhoneRecorder({ inputs: inputsSource, silencedSinceMs: silencedS
                 type="button"
                 className="pr-b main"
                 data-emphasis={mustSave}
+                data-secondary={view.controls.openSettings}
                 disabled={!view.controls.stop}
                 onClick={() => {
                   hapticMedium();

@@ -18,6 +18,7 @@ export function SheetDialog({ role, title, description, onCancel, children, titl
     root.current?.querySelector<HTMLElement>("[data-initial]")?.focus();
   }, []);
   const key = (event: KeyboardEvent) => {
+    event.currentTarget.setAttribute("data-kbd", "");
     if (event.key === "Escape") {
       event.stopPropagation();
       event.preventDefault();

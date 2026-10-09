@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { VoiceNotes, nativeVoiceNotesAvailable, type AudioInput } from "@/lib/voiceNotes/nativeVoiceNotes";
+import {
+  listInputs,
+  nativeVoiceNotesAvailable,
+  onInputsChanged,
+  selectInput,
+  type AudioInput,
+  type AudioInputsSnapshot,
+} from "@/lib/voiceNotes/nativeVoiceNotes";
 
-export interface AudioInputsSnapshot {
-  inputs: AudioInput[];
-  selectedId: string | null;
-  activeId: string | null;
-}
+export type { AudioInputsSnapshot };
 
 export interface AudioInputsSource {
   list(): Promise<AudioInputsSnapshot>;
@@ -14,13 +17,13 @@ export interface AudioInputsSource {
 }
 
 export const nativeAudioInputs: AudioInputsSource = {
-  list: () => VoiceNotes.listInputs(),
-  select: (id) => VoiceNotes.selectInput({ id }),
-  subscribe(listener) {
-    const handle = VoiceNotes.addListener("inputs", listener);
-    return () => void handle.then((h) => h.remove());
-  },
+  list: listInputs,
+  select: selectInput,
+  subscribe: onInputsChanged,
 };
+
+/** The shell has no input routing: a capability, not a failure. */
+const isUnsupported = (caught: unknown) => typeof caught === "object" && caught !== null && (caught as { code?: unknown }).code === "unsupported";
 
 export const NO_INPUTS: AudioInputsSnapshot = { inputs: [], selectedId: null, activeId: null };
 
@@ -33,12 +36,18 @@ export function currentInput(snapshot: AudioInputsSnapshot): AudioInput | null {
 export function useAudioInputs(source: AudioInputsSource | null = nativeVoiceNotesAvailable() ? nativeAudioInputs : null) {
   const [snapshot, setSnapshot] = useState<AudioInputsSnapshot>(NO_INPUTS);
   const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
   useEffect(() => {
     if (!source) return;
     let live = true;
     source.list().then(
       (next) => live && setSnapshot(next),
-      (caught: unknown) => live && setError(caught instanceof Error ? caught.message : String(caught)),
+      (caught: unknown) => {
+        if (!live) return;
+        if (isUnsupported(caught)) return setUnsupported(true);
+        console.error("[Recorder] Could not list audio inputs", caught);
+        setError(caught instanceof Error ? caught.message : String(caught));
+      },
     );
     const unsubscribe = source.subscribe((next) => live && setSnapshot(next));
     return () => {
@@ -53,10 +62,12 @@ export function useAudioInputs(source: AudioInputsSource | null = nativeVoiceNot
         await source.select(id);
         setError(null);
       } catch (caught) {
+        if (isUnsupported(caught)) return setUnsupported(true);
+        console.error("[Recorder] Could not select the audio input", caught);
         setError(caught instanceof Error ? caught.message : String(caught));
       }
     },
     [source],
   );
-  return { ...snapshot, current: currentInput(snapshot), select, error };
+  return { ...snapshot, current: currentInput(snapshot), select, error, unsupported };
 }

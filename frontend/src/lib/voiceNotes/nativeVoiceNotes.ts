@@ -313,3 +313,35 @@ export async function nativeHttpFileUploadSupported(
     return false;
   }
 }
+
+export type AudioInputsSnapshot = { inputs: AudioInput[]; selectedId: string | null; activeId: string | null };
+
+const inputSubscribers = new Set<(snapshot: AudioInputsSnapshot) => void>();
+let nativeInputsHandle: Promise<PluginListenerHandle> | null = null;
+
+/**
+ * Subscribe to input-list changes. Capacitor delivers a retained event to the
+ * first native listener only, so this keeps one native listener for all
+ * subscribers: attached with the first, removed with the last.
+ */
+export function onInputsChanged(listener: (snapshot: AudioInputsSnapshot) => void): () => void {
+  inputSubscribers.add(listener);
+  nativeInputsHandle ??= VoiceNotes.addListener("inputs", (snapshot) => {
+    for (const subscriber of [...inputSubscribers]) subscriber(snapshot);
+  });
+  return () => {
+    inputSubscribers.delete(listener);
+    if (inputSubscribers.size > 0 || !nativeInputsHandle) return;
+    const handle = nativeInputsHandle;
+    nativeInputsHandle = null;
+    void handle.then((h) => h.remove());
+  };
+}
+
+export function listInputs(): Promise<AudioInputsSnapshot> {
+  return VoiceNotes.listInputs();
+}
+
+export function selectInput(id: string | null): Promise<void> {
+  return VoiceNotes.selectInput({ id });
+}

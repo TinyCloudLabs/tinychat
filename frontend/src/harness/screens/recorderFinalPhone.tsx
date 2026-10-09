@@ -10,10 +10,14 @@ import type { HarnessScreen } from "../screen";
 
 const noop = () => {};
 
-const LEVELS = Array.from({ length: 96 }, (_, i) =>
-  Math.min(1, Math.max(0, 0.32 + 0.24 * Math.sin(i * 0.61) + 0.18 * Math.sin(i * 1.73 + 1.1) + 0.08 * Math.cos(i * 3.1))),
-);
-const QUIET = LEVELS.map(() => 0);
+// A steady moderate level, re-sent so the halo stays active (it goes quiet 450ms after the last sample).
+const STEADY_LEVEL = 0.15;
+const steadyLevel: RecorderValue["subscribeLevel"] = (listener) => {
+  listener(STEADY_LEVEL);
+  const timer = setInterval(() => listener(STEADY_LEVEL), 100);
+  return () => clearInterval(timer);
+};
+const QUIET = [0];
 
 const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
   availability: "available",
@@ -79,7 +83,7 @@ function screen(
   id: string,
   value: Partial<RecorderValue>,
   props: PhoneRecorderProps = {},
-  levels: readonly number[] = LEVELS,
+  levels?: readonly number[],
 ): HarnessScreen {
   return {
     id: `recorder-final-phone-${id}`,
@@ -90,7 +94,7 @@ function screen(
     render: () => {
       __setOnDeviceSttForTests(ON_DEVICE_STT);
       return (
-        <StaticRecorderProvider value={{ ...LIVE, ...value }} levels={levels}>
+        <StaticRecorderProvider value={{ ...LIVE, ...(levels ? {} : { subscribeLevel: steadyLevel }), ...value }} levels={levels}>
           <PhoneRecorder inputs={INPUTS} {...props} />
         </StaticRecorderProvider>
       );
