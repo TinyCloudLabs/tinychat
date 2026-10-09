@@ -13,6 +13,7 @@ import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationPyannoteModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.SpeechSegment
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
@@ -163,48 +164,43 @@ internal object Benchmark {
                 var emptyNonSilent = 0
                 var coverage = 0.0
                 var vadProcessingSeconds = 0.0
-                fun drain() {
-                    while (!vad.empty()) {
-                        val segment = vad.front()
-                        vad.pop()
-                        val start = segment.start
-                        val chunk = segment.samples
-                        require(start >= 0 && start.toLong() + chunk.size <= samples.size) { "VAD returned audio outside fixture" }
-                        coverage += chunk.size.toDouble() / RATE
-                        val rms = if (chunk.isEmpty()) 0.0 else
-                            kotlin.math.sqrt(chunk.fold(0.0) { sum, sample -> sum + sample * sample } / chunk.size)
-                        val pad = (options.padSeconds * RATE).toInt()
-                        val padded = FloatArray(chunk.size + 2 * pad)
-                        chunk.copyInto(padded, pad)
-                        val stream = recognizer.createStream()
-                        try {
-                            stream.acceptWaveform(padded, RATE)
-                            recognizer.decode(stream)
-                            val result = recognizer.getResult(stream)
-                            val aligned = TokenWordAlignment.align(result.tokens, result.timestamps, result.durations,
-                                (start - pad).toDouble() / RATE)
-                            if (aligned.isEmpty()) empty++
-                            if (aligned.isEmpty() && rms > NON_SILENT_RMS) emptyNonSilent++
-                            segments.put(JSONObject().put("start", start.toDouble() / RATE)
-                                .put("end", (start + chunk.size).toDouble() / RATE)
-                                .put("decodedWords", aligned.size).put("rms", rms)
-                                .put("tokens", JSONArray(result.tokens)))
-                            words.addAll(aligned)
-                        } finally { stream.release() }
-                    }
+                val source = object : VadFrames.Source<SpeechSegment> {
+                    override fun acceptWaveform(samples: FloatArray) = vad.acceptWaveform(samples)
+                    override fun empty() = vad.empty()
+                    override fun front() = vad.front()
+                    override fun pop() = vad.pop()
+                    override fun flush() = vad.flush()
                 }
-                // Sherpa 1.13.8 reduces every acceptWaveform call to one speech decision.
-                // Feed one Silero window per call so short pauses are retained as cut points.
-                VadFrames.feed(samples) { frame ->
+                VadFrames.process(samples, source, onSegment = { segment ->
+                    val start = segment.start
+                    val chunk = segment.samples
+                    require(start >= 0 && start.toLong() + chunk.size <= samples.size) { "VAD returned audio outside fixture" }
+                    coverage += chunk.size.toDouble() / RATE
+                    val rms = if (chunk.isEmpty()) 0.0 else
+                        kotlin.math.sqrt(chunk.fold(0.0) { sum, sample -> sum + sample * sample } / chunk.size)
+                    val pad = (options.padSeconds * RATE).toInt()
+                    val padded = FloatArray(chunk.size + 2 * pad)
+                    chunk.copyInto(padded, pad)
+                    val stream = recognizer.createStream()
+                    try {
+                        stream.acceptWaveform(padded, RATE)
+                        recognizer.decode(stream)
+                        val result = recognizer.getResult(stream)
+                        val aligned = TokenWordAlignment.align(result.tokens, result.timestamps, result.durations,
+                            (start - pad).toDouble() / RATE)
+                        if (aligned.isEmpty()) empty++
+                        if (aligned.isEmpty() && rms > NON_SILENT_RMS) emptyNonSilent++
+                        segments.put(JSONObject().put("start", start.toDouble() / RATE)
+                            .put("end", (start + chunk.size).toDouble() / RATE)
+                            .put("decodedWords", aligned.size).put("rms", rms)
+                            .put("tokens", JSONArray(result.tokens)))
+                        words.addAll(aligned)
+                    } finally { stream.release() }
+                }, onVadCall = { call ->
                     val vadBegan = now()
-                    vad.acceptWaveform(frame)
+                    call()
                     vadProcessingSeconds += now() - vadBegan
-                    drain()
-                }
-                val flushBegan = now()
-                vad.flush()
-                vadProcessingSeconds += now() - flushBegan
-                drain()
+                })
                 return Recognition(words.sortedBy { it.start }, segments, empty, emptyNonSilent, coverage,
                     loadSeconds, coldLoad, vadCreationSeconds, vadProcessingSeconds, now() - decodeBegan)
             } finally { vad.release() }
