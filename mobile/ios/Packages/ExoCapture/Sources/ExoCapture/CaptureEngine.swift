@@ -41,6 +41,7 @@ public final class CaptureEngine {
     private var pausedSince: Int64?
     private var pausedMs: Int64 = 0
     private var audioMs: Int64 = 0
+    private var wallClock: CaptureClock = SystemCaptureClock()
     private var spans: [MissingAudioSpan] = []
     private var openSpan: MissingAudioSpan?
     private var lastLevel = Date.distantPast
@@ -91,8 +92,9 @@ public final class CaptureEngine {
     }
 
     #if DEBUG
-    init(testRoot: URL) throws {
+    init(testRoot: URL, clock: CaptureClock = SystemCaptureClock()) throws {
         library = try RecordingLibrary(root: testRoot)
+        wallClock = clock
         debugTesting = true
     }
     var debugGraphActive: Bool { graphActive || audioEngine?.isRunning == true }
@@ -185,7 +187,7 @@ public final class CaptureEngine {
         var claimed: [String] = []
         if let did = value.accountDid {
             if var live = info, live.owner == nil {
-                try library.appendJournal(live.id, ["e": "owner", "t": wallMilliseconds(),
+                try library.appendJournal(live.id, ["e": "owner", "t": wallClock.nowMilliseconds(),
                                                     "a": audioMs, "did": did])
                 live.owner = did; info = live
                 claimed.append(live.id)
@@ -216,7 +218,7 @@ public final class CaptureEngine {
                                                    testLimit.flatMap { $0 > 0 ? $0 : nil } ?? 10_800_000)))
         var selected = override ?? settings.options
         if settings.accountDid == nil { selected.transcriber = "on-device" }
-        let now = wallMilliseconds()
+        let now = wallClock.nowMilliseconds()
         let session = SessionInfo(id: UUID().uuidString.lowercased(), maxDurationMs: limit,
                                   source: source, owner: settings.accountDid,
                                   transitionGen: settings.transitionGen, options: selected,
@@ -295,7 +297,7 @@ public final class CaptureEngine {
         guard attempts.mayAttach(ticket), info?.id == ticket.id, intent == "recording" else {
             throw CaptureError.cancelled
         }
-        let acquiredAt = wallMilliseconds()
+        let acquiredAt = wallClock.nowMilliseconds()
         // The transition machine emits span_close, availability, and only a changed input.
         let input = inputRouter.active()
         if let input {
@@ -311,9 +313,10 @@ public final class CaptureEngine {
         let writer: AacAdtsWriter
         if let existing = self.writer { try existing.reopen(); writer = existing }
         else {
-            let openedAt = wallMilliseconds()
+            let openedAt = wallClock.nowMilliseconds()
             try library.openFirstSegment(session.id, at: openedAt)
-            writer = try AacAdtsWriter(library: library, id: session.id, segmentOpenedAt: openedAt)
+            writer = try AacAdtsWriter(library: library, id: session.id, segmentOpenedAt: openedAt,
+                                       clock: wallClock)
             self.writer = writer
         }
         #if DEBUG
@@ -508,7 +511,7 @@ public final class CaptureEngine {
         let paused: (audioMs: Int64, at: Int64)
         do {
             paused = try next.pause(input: input, frames: frames, journal: journal,
-                                    clock: SystemCaptureClock(), currentAudioMs: audioMs) { [self] error in
+                                    clock: wallClock, currentAudioMs: audioMs) { [self] error in
                 log.error("Audio session remained active after Pause: \(String(describing: error), privacy: .public)")
             }
         } catch CaptureError.pauseFailed {
@@ -537,7 +540,7 @@ public final class CaptureEngine {
         let wasPaused = intent == "paused"
         if !automatic && !isForeground && !allowedBackgroundIntent {
             if wasPaused {
-                let now = wallMilliseconds()
+                let now = wallClock.nowMilliseconds()
                 var next = transitions ?? CaptureTransitionMachine()
                 for event in next.resumed(at: now, audioMs: audioMs) { try library.appendJournal(session.id, event) }
                 if let since = pausedSince { pausedMs += max(0, now - since) }
@@ -549,7 +552,7 @@ public final class CaptureEngine {
         }
         let ticket: CaptureAttemptGate.Ticket?
         if wasPaused {
-            let now = wallMilliseconds()
+            let now = wallClock.nowMilliseconds()
             var next = transitions ?? CaptureTransitionMachine()
             for event in next.resumed(at: now, audioMs: audioMs) { try library.appendJournal(session.id, event) }
             if let since = pausedSince { pausedMs += max(0, now - since) }
@@ -617,7 +620,7 @@ public final class CaptureEngine {
         catch { writerFailed(error); return }
         closeNoSignal()
         deactivateGraph(tapRemoved: true)
-        let interruptedAt = wallMilliseconds()
+        let interruptedAt = wallClock.nowMilliseconds()
         if openSpan != nil { closeSpan(at: interruptedAt) }
         var next = transitions ?? CaptureTransitionMachine()
         let events = next.interrupted(at: interruptedAt, audioMs: audioMs,
@@ -697,7 +700,7 @@ public final class CaptureEngine {
         availability = "blocked"; reason = why; attempts.blocked()
         var next = transitions ?? CaptureTransitionMachine()
         do {
-            for event in next.blocked(at: wallMilliseconds(), audioMs: audioMs,
+            for event in next.blocked(at: wallClock.nowMilliseconds(), audioMs: audioMs,
                                       generation: generation, reason: why) {
                 try library.appendJournal(session.id, event, fullSync: true)
             }
@@ -719,7 +722,7 @@ public final class CaptureEngine {
 
     private func openOmittedSpan(_ why: String) {
         guard openSpan == nil, let session = info else { return }
-        let at = wallMilliseconds()
+        let at = wallClock.nowMilliseconds()
         openSpan = MissingAudioSpan(kind: "omitted", reason: why, startedAt: at, atAudioMs: audioMs)
         var next = transitions ?? CaptureTransitionMachine()
         do {
@@ -733,7 +736,7 @@ public final class CaptureEngine {
 
     private func closeSpan(at timestamp: Int64? = nil, journal: Bool = true) {
         guard var span = openSpan else { return }
-        span.endedAt = timestamp ?? wallMilliseconds()
+        span.endedAt = timestamp ?? wallClock.nowMilliseconds()
         if span.kind == "silenced" { span.audioMs = max(0, audioMs - span.atAudioMs) }
         spans.append(span); openSpan = nil
         if journal, let session = info {
@@ -752,7 +755,7 @@ public final class CaptureEngine {
         guard let session = info, intent == "recording" else { return }
         if muted {
             guard openSpan == nil else { return }
-            let at = wallMilliseconds()
+            let at = wallClock.nowMilliseconds()
             openSpan = MissingAudioSpan(kind: "silenced", reason: "input_muted",
                                         startedAt: at, atAudioMs: audioMs)
             reason = "input_muted"
@@ -777,7 +780,7 @@ public final class CaptureEngine {
             return
         }
         closeNoSignal()
-        let stoppedAt = wallMilliseconds()
+        let stoppedAt = wallClock.nowMilliseconds()
         let final: (audioMs: Int64, heartbeatAt: Int64?)
         do { final = try writer?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
         catch {
@@ -859,7 +862,7 @@ public final class CaptureEngine {
         try library.delete(session.id)
         _ = stopInput()
         deactivateGraph(tapRemoved: true)
-        _ = try? writer?.finish(at: wallMilliseconds())
+        _ = try? writer?.finish(at: wallClock.nowMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
@@ -870,7 +873,7 @@ public final class CaptureEngine {
         guard let session = info else { throw CaptureError.notRecording }
         var actual = changed
         if session.owner == nil { actual.transcriber = "on-device" }
-        try library.appendJournal(session.id, ["e": "options", "t": wallMilliseconds(), "a": audioMs,
+        try library.appendJournal(session.id, ["e": "options", "t": wallClock.nowMilliseconds(), "a": audioMs,
                                                "transcriber": actual.transcriber,
                                                "identifySpeakers": actual.identifySpeakers])
         options = actual
@@ -881,7 +884,7 @@ public final class CaptureEngine {
         let state: String = intent == "stopped" ? "idle" : intent == "paused" ? "paused" :
             availability == "interrupted" ? "interrupted" : availability == "blocked" ? "needs_user" :
             openSpan?.kind == "silenced" ? "silenced" : "recording"
-        let now = wallMilliseconds()
+        let now = wallClock.nowMilliseconds()
         let elapsed = info.map { CaptureTiming.elapsedMilliseconds(startedAt: $0.startedAt,
             closedPaused: pausedMs, pausedSince: pausedSince, now: now) } ?? 0
         return ["state": state, "reason": reason as Any? ?? NSNull(), "id": info?.id as Any? ?? NSNull(),
@@ -1035,7 +1038,7 @@ public final class CaptureEngine {
                 "inactiveAfterDiscard": audioEngine == nil && !graphActive]
     }
 
-    private func emitState() { emit("micState", status().merging(["at": wallMilliseconds()]) { _, newer in newer }, retained: true) }
+    private func emitState() { emit("micState", status().merging(["at": wallClock.nowMilliseconds()]) { _, newer in newer }, retained: true) }
 
     private static func spanObject(_ span: MissingAudioSpan) -> [String: Any] {
         ["kind": span.kind, "reason": span.reason, "startedAt": span.startedAt,

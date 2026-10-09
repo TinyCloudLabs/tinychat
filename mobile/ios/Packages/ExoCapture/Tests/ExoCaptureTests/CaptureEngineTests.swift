@@ -4,9 +4,25 @@ import XCTest
 @testable import ExoCapture
 
 @MainActor final class CaptureEngineTests: XCTestCase {
-    private func withEngine(_ body: (CaptureEngine) throws -> Void) throws {
+    private final class TestClock: CaptureClock {
+        private let lock = NSLock()
+        private var value: Int64 = 1_700_000_000_000
+
+        func nowMilliseconds() -> Int64 {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+
+        func advance(by milliseconds: Int64) {
+            lock.lock(); defer { lock.unlock() }
+            value += milliseconds
+        }
+    }
+
+    private func withEngine(clock: CaptureClock = SystemCaptureClock(),
+                            _ body: (CaptureEngine) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-engine-\(UUID().uuidString)")
-        let engine = try CaptureEngine(testRoot: root)
+        let engine = try CaptureEngine(testRoot: root, clock: clock)
         engine.debugForeground = true
         defer {
             _ = try? engine.discard()
@@ -226,19 +242,26 @@ import XCTest
     }
 
     func testRecordedLimitExcludesPauseInLiveEngine() throws {
-        try withEngine { engine in
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            engine.debugSuppressTaps()
             let id = try XCTUnwrap(engine.start(requestedLimitMs: 3_000)["id"] as? String)
-            RunLoop.current.run(until: Date().addingTimeInterval(1.4))
+            clock.advance(by: 1_400)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(engine.status()["elapsedMs"] as? Int64, 1_400)
             try engine.pause()
-            RunLoop.current.run(until: Date().addingTimeInterval(2.1))
+            clock.advance(by: 2_100)
+            engine.debugWatchdogTick()
             XCTAssertEqual(engine.status()["state"] as? String, "paused")
+            XCTAssertEqual(engine.status()["elapsedMs"] as? Int64, 1_400)
+            XCTAssertEqual(engine.status()["pausedMs"] as? Int64, 2_100)
             let stopped = expectation(description: "recorded time limit")
             var completed: [String: Any]?
-            var stateStoppedAt: Date?
+            var stoppedAt: Int64?
             let token = engine.observe { name, data, _ in
                 if name == "micState", data["state"] as? String == "idle",
                    data["reason"] as? String == "max_duration" {
-                    stateStoppedAt = Date()
+                    stoppedAt = clock.nowMilliseconds()
                 }
                 if name == "autoStopped", data["reason"] as? String == "max_duration" {
                     completed = data
@@ -247,14 +270,20 @@ import XCTest
             }
             defer { engine.removeObserver(token) }
             try engine.resume()
-            let resumedAt = Date()
-            wait(for: [stopped], timeout: 20)
-            XCTAssertGreaterThanOrEqual(try XCTUnwrap(stateStoppedAt).timeIntervalSince(resumedAt), 1.2)
-            let recording = try XCTUnwrap(completed?["recording"] as? [String: Any])
-            XCTAssertEqual(recording["id"] as? String, id)
-            let sidecar = try engine.library.readSidecar(id)
-            XCTAssertEqual((sidecar["spans"] as? [[String: Any]])?.count, 0)
-            XCTAssertGreaterThan(sidecar["pausedMs"] as? Int64 ?? 0, 1_500)
+            clock.advance(by: 1_599)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(engine.status()["state"] as? String, "recording")
+            XCTAssertEqual(engine.status()["elapsedMs"] as? Int64, 2_999)
+            clock.advance(by: 1)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(stoppedAt, 1_700_000_005_100)
+            XCTAssertEqual(engine.status()["state"] as? String, "idle")
+            XCTAssertEqual(engine.status()["reason"] as? String, "max_duration")
+            wait(for: [stopped], timeout: 10)
+            XCTAssertEqual(completed?["maxDurationMs"] as? Int64, 3_000)
+            XCTAssertTrue(completed?["recording"] is NSNull,
+                          "suppressed simulator buffers leave no audio to commit")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
         }
     }
 
