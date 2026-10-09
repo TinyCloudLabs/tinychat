@@ -24,5 +24,7 @@ export interface HarnessScreen {
   platform?: AppPlatform;
   /** The capture waits until this selector matches (an opened sheet, a loaded model), up to 5 s. */
   readyWhen?: string;
+  /** Driven by a test, not captured: the screenshot harness skips it. */
+  interactive?: boolean;
   render: () => ReactNode;
 }
