@@ -507,25 +507,39 @@ public final class RecordingLibrary {
                 try FileManager.default.removeItem(at: path); try sync(url("outbox")); return "outbox"
             }
             var open = receipt
-            switch receipt["kind"] as? String {
-            case "hosted_upload":
-                open["kind"] = "hosted_create"
-                if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
-            case "hosted_submit":
-                open["kind"] = "hosted_submit"
-                if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
-            case "own_upload_lookup":
-                open["kind"] = "own_upload"
-                if let handle = receipt["handle"] as? String { open["uploadUrl"] = handle }
-            case "ptx_job":
-                open["kind"] = "ptx_create"
-                if let handle = receipt["handle"] as? String { open["jobId"] = handle }
-            case "transcript":
-                open["kind"] = "own_create"
-                if let handle = receipt["handle"] as? String { open["jobId"] = handle }
-            default:
-                open["kind"] = (receipt["provider"] as? String) == "ptx" ? "ptx_create" :
-                    (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
+            let outboxKind = receipt["kind"] as? String
+            if let original = receipt["receiptKind"] as? String,
+               ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(original) {
+                open["kind"] = original
+                if let handle = receipt["handle"] as? String {
+                    switch outboxKind {
+                    case "hosted_upload", "hosted_submit": open["uploadId"] = handle
+                    case "own_upload_lookup": open["uploadUrl"] = handle
+                    case "transcript", "ptx_job": open["jobId"] = handle
+                    default: break
+                    }
+                }
+            } else {
+                switch outboxKind {
+                case "hosted_upload":
+                    open["kind"] = "hosted_create"
+                    if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
+                case "hosted_submit":
+                    open["kind"] = "hosted_submit"
+                    if let handle = receipt["handle"] as? String { open["uploadId"] = handle }
+                case "own_upload_lookup":
+                    open["kind"] = "own_upload"
+                    if let handle = receipt["handle"] as? String { open["uploadUrl"] = handle }
+                case "ptx_job":
+                    open["kind"] = "ptx_create"
+                    if let handle = receipt["handle"] as? String { open["jobId"] = handle }
+                case "transcript":
+                    open["kind"] = "own_create"
+                    if let handle = receipt["handle"] as? String { open["jobId"] = handle }
+                default:
+                    open["kind"] = (receipt["provider"] as? String) == "ptx" ? "ptx_create" :
+                        (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
+                }
             }
             try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result)
             return "outbox"
@@ -550,10 +564,11 @@ public final class RecordingLibrary {
         let existing = (try? JSONSerialization.jsonObject(with: Data(contentsOf: path))) as? [String: Any]
         let kind = receipt["kind"] as? String ?? "unknown"
         let mode = receipt["mode"] ?? NSNull()
-        let job = result?["jobId"] ?? receipt["jobId"]
-        let upload = result?["uploadId"] ?? receipt["uploadId"]
-        let uploadURL = result?["uploadUrl"] ?? receipt["uploadUrl"]
-        let direct = result?["handle"] ?? receipt["handle"]
+        let direct = result?["handle"]
+        let job = result?["jobId"] ??
+            (["hosted_submit", "own_create", "ptx_create"].contains(kind) ? direct : nil) ?? receipt["jobId"]
+        let upload = result?["uploadId"] ?? (kind == "hosted_create" ? direct : nil) ?? receipt["uploadId"]
+        let uploadURL = result?["uploadUrl"] ?? (kind == "own_upload" ? direct : nil) ?? receipt["uploadUrl"]
         let outboxKind: String
         let handle: Any?
         let state: String
@@ -586,6 +601,9 @@ public final class RecordingLibrary {
             "kind": outboxKind,
             "createdAt": receipt["startedAt"] ?? wallMilliseconds(), "attempts": 0]
         entry["kind"] = outboxKind
+        if ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(kind) {
+            entry["receiptKind"] = kind
+        } else { entry["receiptKind"] = NSNull() }
         entry["handle"] = handle ?? NSNull()
         entry["handleExpiresAt"] = result?["handleExpiresAt"] ?? receipt["handleExpiresAt"] ?? NSNull()
         entry["state"] = state
@@ -702,6 +720,7 @@ public final class RecordingLibrary {
         let entryId = UUID().uuidString.lowercased()
         let object: [String: Any] = ["entryId": entryId, "did": did, "provider": provider,
                                      "mode": mode, "kind": kind, "handle": handle,
+                                     "receiptKind": NSNull(),
                                      "handleExpiresAt": NSNull(), "state": "pending",
                                      "createdAt": wallMilliseconds(), "attempts": 0]
         try writeDurable(CanonicalJSON.file(object), to: url("outbox/\(entryId).json"))
@@ -1004,12 +1023,17 @@ public final class RecordingLibrary {
             guard !liveSessions.contains(id), active[id, default: 0] == 0 else {
                 throw CaptureError.recordingInProgress
             }
+            guard !FileManager.default.fileExists(atPath: sidecarURL(id).path) else {
+                throw CaptureError.notFailedRecording
+            }
+            let hasSession = FileManager.default.fileExists(atPath: parked.path) ||
+                FileManager.default.fileExists(atPath: sessionURL(id).path)
             guard let data = try? Data(contentsOf: marker),
                   let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  record["inFlight"] as? Bool == false,
-                  !FileManager.default.fileExists(atPath: sidecarURL(id).path),
-                  FileManager.default.fileExists(atPath: parked.path) ||
-                    FileManager.default.fileExists(atPath: sessionURL(id).path) else { throw CaptureError.notFound }
+                  record["inFlight"] as? Bool == false else {
+                throw hasSession ? CaptureError.notFailedRecording : CaptureError.notFound
+            }
+            guard hasSession else { throw CaptureError.notFound }
             let tombstone = url("tombstones/\(id)")
             if !FileManager.default.fileExists(atPath: tombstone.path) {
                 guard FileManager.default.createFile(atPath: tombstone.path, contents: Data()) else {

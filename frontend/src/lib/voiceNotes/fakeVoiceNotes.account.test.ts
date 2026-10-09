@@ -77,13 +77,39 @@ test("receipt stages and failed outcomes match the native outbox contract", asyn
   expect((await fake.plugin.listOutbox({ did })).entries).toMatchObject([{ entryId: `${id}:upload`, kind: "hosted_upload", handle: "up-1", state: "pending" }]);
 });
 
+test("own-key create keeps its receipt kind through URL lookup and a late job handle", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+    transcriber: "assemblyai", identifySpeakers: false });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  await fake.plugin.beginRemoteOp({ id, did, opId: "create", provider: "assemblyai", mode: "own",
+    kind: "own_create", fingerprint: "one", startedAt: 10 });
+  await fake.plugin.deleteAudio({ id });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create",
+    result: { outcome: "unknown", uploadUrl: "https://example.test/audio" } });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]).toMatchObject({
+    kind: "own_upload_lookup", receiptKind: "own_create", handle: "https://example.test/audio", state: "lookup",
+  });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create", result: { outcome: "unknown" } });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]?.kind).toBe("own_upload_lookup");
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create",
+    result: { outcome: "created", handle: "job-42" } });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]).toMatchObject({
+    kind: "transcript", receiptKind: "own_create", handle: "job-42", state: "pending",
+  });
+});
+
 test("preference changes retain transitioning and recovery actions report absent sessions", async () => {
   const fake = createFakeVoiceNotes();
   await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
   await fake.plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1, transcriber: "on-device", identifySpeakers: true });
-  expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: did });
+  expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null });
   await expect(fake.plugin.retryRecovery({ id: "missing" })).rejects.toMatchObject({ code: "not_found" });
   await expect(fake.plugin.discardFailedRecording({ id: "missing" })).rejects.toMatchObject({ code: "not_found" });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  await expect(fake.plugin.discardFailedRecording({ id })).rejects.toMatchObject({ code: "not_failed_recording" });
   fake.controls.quarantine("retryable", "bad journal", 1024);
   await fake.plugin.retryRecovery({ id: "retryable" });
   fake.controls.quarantine("discardable", "bad journal", 1024);

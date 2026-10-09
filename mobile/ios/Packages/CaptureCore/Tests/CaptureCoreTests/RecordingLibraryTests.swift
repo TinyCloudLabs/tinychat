@@ -498,8 +498,10 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.sidecarURL(id).path))
         let relaunched = try RecordingLibrary(root: root)
         _ = try relaunched.recoverableSessions()
-        let kinds = try relaunched.listOutbox(did: "did:test").compactMap { $0["kind"] as? String }.sorted()
+        let entries = try relaunched.listOutbox(did: "did:test")
+        let kinds = entries.compactMap { $0["kind"] as? String }.sorted()
         XCTAssertEqual(kinds, ["hosted_upload", "transcript"])
+        XCTAssertTrue(entries.allSatisfy { $0["receiptKind"] is NSNull })
         XCTAssertTrue(try relaunched.listCommitted().isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: relaunched.audioURL(id).path))
     }
@@ -625,7 +627,9 @@ final class RecordingLibraryTests: XCTestCase {
                                              transitionGen: 0, options: CaptureOptions(), startedAt: 1))
         XCTAssertThrowsError(try library.discardFailedRecording(id))
         library.endLiveCapture(id)
-        XCTAssertThrowsError(try library.discardFailedRecording(id))
+        XCTAssertThrowsError(try library.discardFailedRecording(id)) {
+            XCTAssertEqual($0 as? CaptureError, .notFailedRecording)
+        }
         try library.beginRecoveryAttempt(id)
         XCTAssertThrowsError(try library.discardFailedRecording(id))
         try library.noteRecoveryFailure(id, reason: "bad segment")
@@ -719,6 +723,7 @@ final class RecordingLibraryTests: XCTestCase {
             try library.delete(id)
             let entry = try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):op" })
             XCTAssertEqual(entry["kind"] as? String, outboxKind)
+            XCTAssertEqual(entry["receiptKind"] as? String, kind)
             XCTAssertEqual(entry["state"] as? String, state)
             XCTAssertEqual(entry["handle"] as? String, fields.values.first as? String)
             XCTAssertNil(entry["opKind"])
@@ -743,6 +748,7 @@ final class RecordingLibraryTests: XCTestCase {
                 result: ["outcome": "created", "handle": "generic-handle"])
             let after = try XCTUnwrap(library.listOutbox(did: "did:test").first)
             XCTAssertEqual(after["kind"] as? String, item.expectedKind)
+            XCTAssertEqual(after["receiptKind"] as? String, item.kind)
             XCTAssertEqual(after["state"] as? String, item.state)
             XCTAssertEqual(after["handle"] as? String, "generic-handle")
         }
@@ -756,5 +762,29 @@ final class RecordingLibraryTests: XCTestCase {
             ["e": "stop", "t": Int64(410), "a": Int64(200)]])
         XCTAssertEqual(recovered.firstAudioAt, 120)
         XCTAssertEqual(recovered.captureStoppedAt, 400)
+    }
+
+    func testOwnCreateURLLookupKeepsOriginalKindForLateJobHandle() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "create",
+            "provider": "assemblyai", "mode": "own", "kind": "own_create",
+            "fingerprint": "one", "startedAt": 100])
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/audio"])
+        let lookup = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+        XCTAssertEqual(lookup["kind"] as? String, "own_upload_lookup")
+        XCTAssertEqual(lookup["receiptKind"] as? String, "own_create")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "unknown"])
+        XCTAssertEqual(try library.listOutbox(did: "did:test").first?["kind"] as? String,
+                       "own_upload_lookup")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "created", "handle": "job-42"])
+        let job = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+        XCTAssertEqual(job["kind"] as? String, "transcript")
+        XCTAssertEqual(job["receiptKind"] as? String, "own_create")
+        XCTAssertEqual(job["handle"] as? String, "job-42")
+        XCTAssertEqual(job["state"] as? String, "pending")
     }
 }

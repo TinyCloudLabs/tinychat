@@ -255,9 +255,12 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     const entryId = `${receipt.id}:${receipt.opId}`;
     if (result.outcome === "failed") { outbox.delete(entryId); return null; }
     const old = outbox.get(entryId);
-    const job = result.jobId ?? (receipt.kind === "hosted_submit" || receipt.kind === "own_create" || receipt.kind === "ptx_create" ? result.handle : undefined);
-    const upload = result.uploadId ?? (receipt.kind === "hosted_create" ? result.handle : undefined);
-    const url = result.uploadUrl ?? (receipt.kind === "own_upload" ? result.handle : undefined);
+    const job = result.jobId ?? (receipt.kind === "hosted_submit" || receipt.kind === "own_create" || receipt.kind === "ptx_create" ? result.handle : undefined)
+      ?? (old?.kind === "transcript" || old?.kind === "ptx_job" ? old.handle ?? undefined : undefined);
+    const upload = result.uploadId ?? (receipt.kind === "hosted_create" ? result.handle : undefined)
+      ?? (old?.kind === "hosted_upload" || old?.kind === "hosted_submit" ? old.handle ?? undefined : undefined);
+    const url = result.uploadUrl ?? (receipt.kind === "own_upload" ? result.handle : undefined)
+      ?? (old?.kind === "own_upload_lookup" ? old.handle ?? undefined : undefined);
     const kind: OutboxEntry["kind"] = receipt.kind === "ptx_create" ? "ptx_job"
       : receipt.kind === "hosted_create" ? "hosted_upload"
       : receipt.kind === "hosted_submit" ? job ? "transcript" : upload ? "hosted_submit" : "unknown"
@@ -270,7 +273,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       : kind === "hosted_submit" || kind === "own_upload_lookup" ? handle ? "lookup" : "unknown"
       : handle ? "pending" : "unknown";
     const entry: OutboxEntry = { entryId, did: receipt.did, provider: receipt.provider, mode: receipt.mode,
-      kind, handle, handleExpiresAt: result.handleExpiresAt ?? old?.handleExpiresAt ?? null,
+      kind, receiptKind: receipt.kind, handle, handleExpiresAt: result.handleExpiresAt ?? old?.handleExpiresAt ?? null,
       state, createdAt: receipt.startedAt, attempts: old?.attempts ?? 0 };
     outbox.set(entryId, entry);
     return entry;
@@ -322,7 +325,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
           const entryId = `${id}:${++outboxCounter}`;
           const receipt = [...receiptResults.values()].find((item) => item.handle === handle);
           outbox.set(entryId, { entryId, did: note.owner!, provider: remote.provider, mode: remote.mode,
-            kind, handle, handleExpiresAt: receipt?.handleExpiresAt ?? null, state: "pending", createdAt: now(), attempts: 0 });
+            kind, receiptKind: null, handle, handleExpiresAt: receipt?.handleExpiresAt ?? null,
+            state: "pending", createdAt: now(), attempts: 0 });
         };
         if (remote.provider === "ptx") {
           if (remote.jobId) add("ptx_job", remote.jobId);
@@ -416,7 +420,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     },
     async discardFailedRecording({ id }) {
       if (session?.id === id) throw failure("recording_in_progress");
-      if (!quarantine.delete(id)) throw failure("not_found");
+      if (!quarantine.delete(id)) throw failure(notes.has(id) ? "not_failed_recording" : "not_found");
       notes.delete(id); tombstones.add(id);
     },
     async beginRemoteOp(receipt) {
@@ -442,9 +446,12 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const receipt = receipts.get(`${id}:${opId}`);
       if (!receipt || receipt.did !== did) throw failure("receipt_not_found");
       const previous = receiptResults.get(`${id}:${opId}`);
-      if (previous) return { destination: tombstones.has(id) ? "outbox" : previous.destination };
       const note = notes.get(id);
       const handle = result.handle ?? result.jobId ?? result.uploadId ?? result.uploadUrl ?? null;
+      if (previous?.outcome === result.outcome && previous.handle === handle &&
+          previous.handleExpiresAt === (result.handleExpiresAt ?? null)) {
+        return { destination: tombstones.has(id) ? "outbox" : previous.destination };
+      }
       if (!note || tombstones.has(id) || note.owner !== did) {
         outboxFor(receipt, result);
         receiptResults.set(`${id}:${opId}`, { destination: "outbox", handle,

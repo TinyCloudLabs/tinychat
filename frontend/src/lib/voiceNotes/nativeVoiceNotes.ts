@@ -46,6 +46,8 @@ export interface MissingAudioSpan {
 export interface OutboxEntry {
   entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
   kind: "transcript" | "hosted_upload" | "hosted_submit" | "ptx_job" | "own_upload_lookup" | "unknown";
+  /** Original receipt kind; absent on Android until its follow-up, null on standalone legacy cleanup. */
+  receiptKind?: RemoteOpReceipt["kind"] | null;
   handle: string | null; handleExpiresAt: number | null;
   state: "pending" | "lookup" | "unknown" | "authority_expired" | "done";
   createdAt: number; attempts: number;
@@ -165,7 +167,6 @@ export interface VoiceNoteRecording {
   version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
   firstAudioAt?: number | null; captureStoppedAt?: number | null;
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
-  firstAudioAt?: number | null; captureStoppedAt?: number | null;
   legacyImport?: boolean; ownerUnknown?: boolean;
   source?: CaptureSource; owner?: string | null; transitionGen?: number;
   options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;
@@ -241,6 +242,7 @@ export interface VoiceNotesPlugin {
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;
   setAccountState(options: { status: AccountStatus; accountDid: string | null; transitionGen: number }): Promise<void>;
   retryRecovery(options: { id: string }): Promise<void>;
+  /** A healthy id rejects with `not_failed_recording`; a live id with `recording_in_progress`. */
   discardFailedRecording(options: { id: string }): Promise<void>;
   beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
   recordRemoteResult(options: { id: string; did: string; opId: string; result: {
@@ -255,8 +257,6 @@ export interface VoiceNotesPlugin {
   listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;
   selectInput(options: { id: string | null }): Promise<void>;
   listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
-  retryRecovery(options: { id: string }): Promise<void>;
-  discardFailedRecording(options: { id: string }): Promise<void>;
   deleteQuarantined(options: { id: string }): Promise<void>;
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
   completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
