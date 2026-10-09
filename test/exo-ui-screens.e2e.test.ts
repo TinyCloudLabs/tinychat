@@ -297,6 +297,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 viewport.screenPrefixes &&
                 !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
               ) continue;
+              if (screen.viewports && !screen.viewports.includes(viewport.id)) continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));

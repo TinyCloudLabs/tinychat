@@ -239,12 +239,10 @@ function FailedHome(props: {
 }
 const LOST_ROW = '[data-testid="capture-recent"] li[data-issue="recoveryFailed"] button';
 const PARKED_ROW = '[data-testid="capture-recent"] li[data-issue="quarantined"] button';
-// The Soft skin is phone-only. Where the home is not Soft there is no sheet to wait for, and the frozen clock
-// would never end the wait, so the screen is ready once the plain home is listed.
-const unlessSoft = (selector: string) =>
-  `${selector}, body:not(:has([data-testid="capture-recent"])) ${LISTED}`;
-const SHEET = unlessSoft('[data-testid="capture-issue-sheet"]');
-const CONFIRM = unlessSoft('[role="alertdialog"]');
+const SHEET = '[data-testid="capture-issue-sheet"]';
+const CONFIRM = '[role="alertdialog"]';
+// The Soft home is drawn on a phone only, so its open-sheet captures run at the phone viewports.
+const PHONE_VIEWPORTS = ["phone", "phone-small"];
 
 export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-notes", render: () => <SoftHome /> },
@@ -274,8 +272,8 @@ export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-failed-parked", interactive: true, render: () => <FailedHome issues={{}} parked={["rec-parked"]} /> },
   { ...SOFT, id: "capture-soft-failed-unplayable", interactive: true, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} reasons={{ "rec-unplayable": "unplayable" }} /> },
   { ...SOFT, id: "capture-soft-failed-no-audio", interactive: true, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} reasons={{ "rec-unplayable": "no_audio_track" }} /> },
-  { ...SOFT, id: "capture-soft-sheet-actions", readyWhen: SHEET, render: () => <FailedHome issues={LOST} open={LOST_ROW} /> },
-  { ...SOFT, id: "capture-soft-sheet-quarantined", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-parked"]} open={PARKED_ROW} /> },
-  { ...SOFT, id: "capture-soft-sheet-unplayable", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} reasons={{ "rec-unplayable": "unplayable" }} open={PARKED_ROW} /> },
-  { ...SOFT, id: "capture-soft-sheet-confirm", readyWhen: CONFIRM, render: () => <FailedHome issues={LOST} open={LOST_ROW} confirm /> },
+  { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-actions", readyWhen: SHEET, render: () => <FailedHome issues={LOST} open={LOST_ROW} /> },
+  { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-quarantined", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-parked"]} open={PARKED_ROW} /> },
+  { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-unplayable", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} reasons={{ "rec-unplayable": "unplayable" }} open={PARKED_ROW} /> },
+  { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-confirm", readyWhen: CONFIRM, render: () => <FailedHome issues={LOST} open={LOST_ROW} confirm /> },
 ];
