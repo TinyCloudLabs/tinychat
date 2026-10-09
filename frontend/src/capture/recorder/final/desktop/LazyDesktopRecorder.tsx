@@ -2,17 +2,22 @@ import {
   Component,
   lazy,
   Suspense,
+  useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ComponentType,
   type LazyExoticComponent,
   type ReactNode,
+  type RefObject,
 } from "react";
+import { PlatformContext } from "@/lib/platform";
 import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder } from "../../RecorderProvider";
-import type { RecorderLayout } from "../shellCapabilities";
+import { shellForPlatform, type RecorderLayout } from "../shellCapabilities";
 import { ChevronDownIcon } from "../softIcons";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { DesktopRecorderProps } from "./DesktopRecorder";
 
 // This file is in the main bundle; the recorder view it waits for is not, so nothing here may import its styles.
@@ -111,23 +116,123 @@ function Opening({ layout }: { layout: Exclude<RecorderLayout, "phone"> }) {
   );
 }
 
+/** A module that could not be fetched: the browser may keep the failed URL, so asking again for it won't help; only a reload does. */
+export function isChunkLoadError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    name === "ChunkLoadError" ||
+    /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i.test(
+      message,
+    )
+  );
+}
+
+/** Vite fires this on window when a lazy chunk's preload fails; returns the unsubscribe. */
+export function listenForPreloadError(
+  target: Pick<Window, "addEventListener" | "removeEventListener">,
+  onError: () => void,
+): () => void {
+  target.addEventListener("vite:preloadError", onError);
+  return () => target.removeEventListener("vite:preloadError", onError);
+}
+
+export const reloadExo = () => window.location.reload();
+
 export function LoadFailed({
   layout,
   onRetry,
+  needsReload = false,
+  reload = reloadExo,
+  defaultConfirming = false,
 }: {
   layout: Exclude<RecorderLayout, "phone">;
   onRetry: () => void;
+  /** Asking again can't help: offer Reload Exo instead of Try again. */
+  needsReload?: boolean;
+  reload?: () => void;
+  defaultConfirming?: boolean;
 }) {
   const recorder = useRecorder();
+  const shell = shellForPlatform(useContext(PlatformContext));
+  const [confirming, setConfirming] = useState(defaultConfirming);
+  const reloadButton = useRef<HTMLButtonElement>(null);
+  const ids = useId();
+  return LoadFailedView({
+    layout,
+    recording: recorder.phase !== "idle",
+    web: shell === "web",
+    needsReload,
+    confirming,
+    ids,
+    reloadButton,
+    onRetry,
+    onAskReload: () => setConfirming(true),
+    onKeep: () => setConfirming(false),
+    reload,
+  });
+}
+
+export function LoadFailedView({
+  layout,
+  recording,
+  web,
+  needsReload,
+  confirming,
+  ids,
+  reloadButton,
+  onRetry,
+  onAskReload,
+  onKeep,
+  reload,
+}: {
+  layout: Exclude<RecorderLayout, "phone">;
+  recording: boolean;
+  web: boolean;
+  needsReload: boolean;
+  confirming: boolean;
+  ids: string;
+  reloadButton: RefObject<HTMLButtonElement | null>;
+  onRetry: () => void;
+  onAskReload: () => void;
+  onKeep: () => void;
+  reload: () => void;
+}) {
   return (
     <RecorderSurface layout={layout}>
       <p role="alert" className="pr-alert" style={{ padding: 0 }}>
         Couldn't open the recorder.
-        {recorder.phase !== "idle" && " Your recording continues."}
-        <button type="button" className="pr-retry" onClick={onRetry}>
-          Try again
-        </button>
+        {recording && " Your recording continues."}
+        {needsReload ? (
+          <button
+            ref={reloadButton}
+            type="button"
+            className="pr-retry"
+            onClick={recording ? onAskReload : reload}
+          >
+            Reload Exo
+          </button>
+        ) : (
+          <button type="button" className="pr-retry" onClick={onRetry}>
+            Try again
+          </button>
+        )}
       </p>
+      {confirming && (
+        <ConfirmDialog
+          titleId={`${ids}-rt`}
+          descriptionId={`${ids}-rd`}
+          title="Reload Exo?"
+          description={
+            web
+              ? "Reloading stops this recording in the browser. Exo recovers what was recorded when the page reopens."
+              : "The recording keeps going while Exo reloads."
+          }
+          keep={{ label: "Keep recording", onPress: onKeep }}
+          other={{ label: "Reload", tone: "danger", onPress: reload }}
+          returnFocus={reloadButton}
+        />
+      )}
     </RecorderSurface>
   );
 }
@@ -136,14 +241,17 @@ export class LoadBoundary extends Component<
   {
     layout: Exclude<RecorderLayout, "phone">;
     onRetry: () => void;
+    /** A retry has already failed once. */
+    retried?: boolean;
+    reload?: () => void;
     children: ReactNode;
   },
-  { failed: boolean }
+  { failed: boolean; error: unknown }
 > {
-  state = { failed: false };
+  state = { failed: false, error: null as unknown };
 
-  static getDerivedStateFromError() {
-    return { failed: true };
+  static getDerivedStateFromError(error: unknown) {
+    return { failed: true, error };
   }
 
   componentDidCatch(error: unknown) {
@@ -152,7 +260,14 @@ export class LoadBoundary extends Component<
 
   render() {
     return this.state.failed ? (
-      <LoadFailed layout={this.props.layout} onRetry={this.props.onRetry} />
+      <LoadFailed
+        layout={this.props.layout}
+        onRetry={this.props.onRetry}
+        needsReload={
+          this.props.retried === true || isChunkLoadError(this.state.error)
+        }
+        reload={this.props.reload}
+      />
     ) : (
       this.props.children
     );
@@ -162,18 +277,37 @@ export class LoadBoundary extends Component<
 export interface LazyDesktopRecorderProps extends DesktopRecorderProps {
   /** Where the view comes from; the dynamic import unless a test says otherwise. */
   load?: DesktopRecorderLoader;
+  /** What Reload Exo does; reloads the page unless a test says otherwise. */
+  reload?: () => void;
 }
 
 export function LazyDesktopRecorder({
   load = importDesktopRecorder,
+  reload = reloadExo,
   ...props
 }: LazyDesktopRecorderProps) {
   const [attempt, setAttempt] = useState(0);
+  const [preloadFailed, setPreloadFailed] = useState(false);
+  useEffect(
+    () => listenForPreloadError(window, () => setPreloadFailed(true)),
+    [],
+  );
   const Recorder = desktopRecorderFor(load);
+  if (preloadFailed)
+    return (
+      <LoadFailed
+        layout={props.layout}
+        onRetry={() => {}}
+        needsReload
+        reload={reload}
+      />
+    );
   return (
     <LoadBoundary
       key={attempt}
       layout={props.layout}
+      retried={attempt > 0}
+      reload={reload}
       onRetry={() => setAttempt((count) => count + 1)}
     >
       <Suspense fallback={<Opening layout={props.layout} />}>
