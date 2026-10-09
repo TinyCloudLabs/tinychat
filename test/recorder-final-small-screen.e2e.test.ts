@@ -293,6 +293,39 @@ for (const theme of THEMES) {
       await page.context().close();
     });
 
+    test("the mode name 'Audio only' and its sub-label fit beside the modes button", async () => {
+      const page = await open(
+        "recorder-final-phone-interactive-first-run",
+        theme.param,
+        ".pr-mname",
+      );
+      expect(await page.textContent(".pr-mname")).toBe("Audio only");
+      expect(await page.textContent(".pr-mshort")).toBe("no transcript");
+      const [info] = await boxes(page, ".pr-minfo");
+      const [name] = await boxes(page, ".pr-mname");
+      const [short] = await boxes(page, ".pr-mshort");
+      const [row] = await boxes(page, ".pr-mrow");
+      for (const part of [info, name, short]) {
+        expect(within(part, VIEWPORT_BOX)).toBe(true);
+        expect(within(part, row)).toBe(true);
+      }
+      expect(apart(info, name)).toBe(true);
+      expect(apart(name, short)).toBe(true);
+      expect(apart(info, short)).toBe(true);
+      // Neither the name nor the sub-label is cut off.
+      expect(
+        await page.$$eval(".pr-mname, .pr-mshort", (els) =>
+          els.every((el) => el.scrollWidth <= el.clientWidth + 1),
+        ),
+      ).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      await page.context().close();
+    });
+
     test("the discard sheet fits and its buttons are whole", async () => {
       const page = await open(
         "recorder-final-phone-discard",

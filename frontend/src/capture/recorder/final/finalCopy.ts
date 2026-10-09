@@ -47,12 +47,12 @@ export const FINAL_COPY = {
   whisperUnavailable: "Get Whisper for this Mac",
   modelUnavailable: "Get the on-device model",
   modes: {
-    skipName: "Skip",
+    skipName: "Audio only",
     localName: "Local",
     privateName: "Private",
     powerfulName: "Powerful",
     speakersName: "AssemblyAI · speakers",
-    audioOnly: "audio only",
+    noTranscript: "no transcript",
     skipCaption: {
       phone: "Just the recording, kept on this phone.",
       desktop: "Just the recording, saved to your space.",

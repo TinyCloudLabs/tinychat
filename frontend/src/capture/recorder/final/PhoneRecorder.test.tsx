@@ -29,6 +29,11 @@ const LIVE: Partial<RecorderValue> = {
   audioMs: 768_000,
   elapsedMs: 768_000,
   transcription: PRIVATE_ON,
+  transcriber: {
+    id: "private-cloud",
+    identifySpeakers: false,
+    source: "recording",
+  },
   sheetOpen: true,
 };
 
@@ -62,9 +67,33 @@ describe("PhoneRecorder", () => {
     expect(html).toContain('aria-live="polite"');
   });
 
-  test("the scale has four stops: Skip, Local, Private and Powerful", () => {
+  test("the scale has four stops: Audio only, Local, Private and Powerful", () => {
     const html = render();
     expect((html.match(/data-available=/g) ?? []).length).toBe(4);
+  });
+
+  test("signed out, the first render has Local open and the other stops closed; signed in opens Audio only and Private (Local waits for its model)", () => {
+    const stops = (patch: Partial<RecorderValue>) =>
+      [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
+        (m) => m[1],
+      );
+    const local = {
+      id: "on-device" as const,
+      identifySpeakers: false,
+      source: "recording" as const,
+    };
+    expect(stops({ signedIn: false, transcriber: local })).toEqual([
+      "false",
+      "true",
+      "false",
+      "false",
+    ]);
+    expect(stops({ signedIn: true, transcriber: local })).toEqual([
+      "true",
+      "false",
+      "true",
+      "false",
+    ]);
   });
 
   test("paused offers Resume on the ring", () => {
@@ -126,6 +155,19 @@ describe("PhoneRecorder", () => {
     expect(html).toContain('role="switch"');
     expect(html).toMatch(/role="switch"[^>]*aria-disabled="true"/);
     expect(html).toContain("Coming with the next update");
+  });
+
+  test("the Identify speakers switch shows the provider's value, and on-device takes it back to the default", () => {
+    const switchChecked = (
+      id: "assemblyai" | "on-device",
+      identifySpeakers: boolean,
+    ) =>
+      render(
+        { transcriber: { id, identifySpeakers, source: "recording" } },
+        { defaultOpen: "modes" },
+      ).match(/role="switch"[^>]*aria-checked="(true|false)"/)?.[1];
+    expect(switchChecked("assemblyai", true)).toBe("true");
+    expect(switchChecked("on-device", false)).toBe("false");
   });
 
   test("the discard sheet is an alertdialog that keeps the recording by default", () => {

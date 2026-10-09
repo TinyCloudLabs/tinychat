@@ -37,8 +37,8 @@ import { useSilencedSince } from "./useSilencedSince";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
+  type TranscriberApi,
 } from "./useTranscriptionChoice";
-import { useTranscriberApi, type TranscriberApi } from "./transcriberApiStub";
 import { ViaMenu } from "./ViaMenu";
 import "./soft.css";
 import "./phone.css";
@@ -77,7 +77,7 @@ export interface PhoneRecorderProps {
   inputs?: AudioInputsSource | null;
   /** Starts the silence timer earlier than now (the harness). */
   silencedSinceMs?: number | null;
-  /** The provider's transcriber API; the stand-in until the provider has it (the harness passes its own). */
+  /** Replaces the provider's transcriber API (the harness passes a logging one). */
   transcriberApi?: TranscriberApi;
   /** Starts with one surface open (the harness). */
   defaultOpen?: "modes" | "via" | "discard";
@@ -109,13 +109,12 @@ export function PhoneRecorder({
   const audio = useAudioInputs(inputsSource);
   const input = mic.input ?? audio.current;
   const onDevice = useOnDeviceModel();
-  // TODO(TC-781 transcriber API): read these from `recorder` once the provider has them.
-  const stubbedApi = useTranscriberApi(recorder.transcription);
   const choice = useTranscriptionChoice({
     shell,
     transcription: recorder.transcription,
     model: onDevice.model,
-    transcriber: transcriberApi ?? stubbedApi,
+    transcriber: transcriberApi ?? recorder,
+    signedIn: recorder.signedIn,
     notify: showToast,
   });
 

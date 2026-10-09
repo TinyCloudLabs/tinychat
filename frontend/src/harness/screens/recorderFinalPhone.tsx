@@ -49,6 +49,11 @@ const LIVE: Partial<RecorderValue> = {
   audioMs: minutes(12, 48),
   elapsedMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
+  transcriber: {
+    id: "private-cloud",
+    identifySpeakers: false,
+    source: "recording",
+  },
   sheetOpen: true,
 };
 
@@ -97,6 +102,7 @@ const MODEL_READY: OnDeviceSttStatus = {
       totalBytes: 1,
       error: null,
     },
+    { id: "silero-vad", state: "ready", bytes: 1, totalBytes: 1, error: null },
   ],
   pack: "full",
   autoDownload: true,

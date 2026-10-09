@@ -3,13 +3,11 @@
 // recorderFinalPhone.tsx. The page exposes `window.exoRecorder`: the calls in order, a patch for the
 // recorder's state, and the flags that make its plugins fail.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { TranscriptionRouteControl } from "@/capture/recorder/TranscriptionRouteControl";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
-import type {
-  RecorderTranscriber,
-  RecorderTranscriberId,
-  SetTranscriberResult,
-  TranscriberApi,
-} from "@/capture/recorder/final/transcriberApiStub";
+import type { TranscriberApi } from "@/capture/recorder/final/useTranscriptionChoice";
+import type { SetTranscriberResult } from "@/capture/recorder/voiceNoteRecorderController";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
 import {
   RecorderProvider,
@@ -41,7 +39,13 @@ declare global {
       /** What the provider answers to the next setTranscriber calls (null: decide as it would). */
       transcriberResult: SetTranscriberResult | null;
       /** The provider's transcriber changes from outside this screen. */
-      patchTranscriber: (patch: Partial<RecorderTranscriber>) => void;
+      patchTranscriber: (patch: Partial<RecorderValue["transcriber"]>) => void;
+    };
+    /** The default recorder's route control over a provider that can be told to reject. */
+    exoRoute?: {
+      calls: string[];
+      rejectSetter: boolean;
+      rejectConsent: boolean;
     };
     /** The real recorder over the fake native plugin: the control calls in order, and the ones that reject while flagged. */
     exoNative?: {
@@ -69,6 +73,7 @@ const MODEL_READY: OnDeviceSttStatus = {
       totalBytes: 1,
       error: null,
     },
+    { id: "silero-vad", state: "ready", bytes: 1, totalBytes: 1, error: null },
   ],
   pack: "full",
   autoDownload: true,
@@ -83,7 +88,7 @@ const minutes = (m: number) => m * 60_000;
 interface Setup {
   consented: boolean;
   /** The transcriber the provider starts with. */
-  transcriber: RecorderTranscriberId;
+  transcriber: TranscriberId;
   /** Starts with every plugin call rejecting. */
   failing: boolean;
 }
@@ -94,7 +99,7 @@ function Interactive({
   failing,
 }: Setup) {
   const [consented, setConsented] = useState(consentedAtStart);
-  const [transcriber, setTranscriber] = useState<RecorderTranscriber>({
+  const [transcriber, setTranscriber] = useState<RecorderValue["transcriber"]>({
     id: transcriberAtStart,
     identifySpeakers: false,
     source: "recording",
@@ -131,7 +136,7 @@ function Interactive({
   // The provider's transcriber API, over this screen's state.
   const transcriberApi: TranscriberApi = {
     transcriber,
-    setTranscriber: (id, { scope }) => {
+    setTranscriber: async (id, { scope }) => {
       log.calls.push(`transcriber:${id}:${scope}`);
       if (log.transcriberResult !== null) {
         if (log.transcriberResult === "locked_signed_out")
@@ -143,7 +148,7 @@ function Interactive({
       setTranscriber((current) => ({ ...current, id }));
       return "ok";
     },
-    setIdentifySpeakers: (on, scope) => {
+    setIdentifySpeakers: async (on, scope) => {
       log.calls.push(`identifySpeakers:${on}:${scope}`);
       setTranscriber((current) => ({ ...current, identifySpeakers: on }));
       return "ok";
@@ -302,6 +307,73 @@ function screen(name: string, setup: Setup): HarnessScreen {
   };
 }
 
+function RouteControl() {
+  const control = (window.exoRoute ??= {
+    calls: [],
+    rejectSetter: false,
+    rejectConsent: false,
+  });
+  const [consented, setConsented] = useState(false);
+  const [transcriber, setTranscriber] = useState<RecorderValue["transcriber"]>({
+    id: "on-device",
+    identifySpeakers: false,
+    source: "recording",
+  });
+  const transcription: VoiceNoteTranscriptionProps = {
+    availability: "available",
+    consented,
+    maxSeconds: 600,
+    jobs: new Map(),
+    onTranscribe: () => {},
+    onConsent: () => {
+      control.calls.push("consent");
+      if (control.rejectConsent) throw new Error("Consent was not saved");
+      setConsented(true);
+    },
+    onTurnOff: () => {},
+    onRecheck: () => {},
+  };
+  return (
+    <div className="p-4">
+      <TranscriptionRouteControl
+        transcription={transcription}
+        signedIn
+        recorder={{
+          transcriber,
+          setTranscriber: async (id) => {
+            control.calls.push(`transcriber:${id}`);
+            if (control.rejectSetter) throw new Error("Plugin is down");
+            setTranscriber((current) => ({ ...current, id }));
+            return "ok";
+          },
+        }}
+      />
+    </div>
+  );
+}
+
+const routeControlScreen: HarnessScreen = {
+  id: "recorder-final-phone-interactive-route-control",
+  group: "recorder",
+  layout: "pane",
+  platform: "ios",
+  displayTitle: false,
+  interactive: true,
+  render: () => {
+    __setOnDeviceSttForTests({
+      status: async () => MODEL_READY,
+      setAutoDownload: async () => {},
+      downloadNow: async () => {},
+      cancelDownload: async () => {},
+      deleteModels: async () => {},
+      enqueue: async () => {},
+      cancel: async () => {},
+      addListener: async () => ({ remove: async () => {} }),
+    } satisfies OnDeviceSttPlugin);
+    return <RouteControl />;
+  },
+};
+
 const nativeScreen: HarnessScreen = {
   id: "recorder-final-phone-interactive-native",
   group: "recorder",
@@ -327,6 +399,7 @@ const nativeScreen: HarnessScreen = {
 
 export const recorderFinalPhoneInteractiveScreens: HarnessScreen[] = [
   nativeScreen,
+  routeControlScreen,
   screen("consented", {
     consented: true,
     transcriber: "private-cloud",

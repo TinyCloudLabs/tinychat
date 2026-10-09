@@ -1,16 +1,17 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
-import type {
-  RecorderTranscriberId,
-  SetTranscriberResult,
-  TranscriberApi,
-} from "./transcriberApiStub";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 import {
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
+  unavailableNow,
+  type TranscriberApi,
   TRANSCRIBER_FOR,
   useTranscriptionChoice,
 } from "./useTranscriptionChoice";
@@ -39,6 +40,7 @@ const MODEL: OnDeviceSttStatus = {
       totalBytes: 1,
       error: null,
     },
+    { id: "silero-vad", state: "ready", bytes: 1, totalBytes: 1, error: null },
   ],
   pack: "full",
   autoDownload: true,
@@ -51,7 +53,7 @@ const MODEL: OnDeviceSttStatus = {
 type Call = [string, ...unknown[]];
 
 function fakeApi(
-  id: RecorderTranscriberId,
+  id: TranscriberId,
   result: SetTranscriberResult | Error = "ok",
   speakers: SetTranscriberResult | Error = "ok",
 ) {
@@ -76,6 +78,7 @@ function choice(
   props: VoiceNoteTranscriptionProps | undefined,
   api: TranscriberApi,
   model: OnDeviceSttStatus | null = MODEL,
+  signedIn = true,
 ) {
   const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
@@ -85,6 +88,7 @@ function choice(
       transcription: props,
       model,
       transcriber: api,
+      signedIn,
       notify: (message) => void notices.push(message),
     });
     return null;
@@ -96,7 +100,7 @@ function choice(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("useTranscriptionChoice", () => {
-  test("the scale has Skip, Local, Private and Powerful; Powerful is disabled", () => {
+  test("the scale has Audio only, Local, Private and Powerful; Powerful is disabled", () => {
     const { result } = choice(transcription(), fakeApi("private-cloud").api);
     expect(result.stops.map((s) => s.stop.id)).toEqual([
       "skip",
@@ -167,7 +171,7 @@ describe("useTranscriptionChoice", () => {
     ]);
   });
 
-  test("Skip is the provider's off, and never the legacy route's onTurnOff", async () => {
+  test("Audio only is the provider's off, and never the legacy route's onTurnOff", async () => {
     let off = 0;
     const { api, calls } = fakeApi("private-cloud");
     const { result } = choice(
@@ -209,6 +213,17 @@ describe("useTranscriptionChoice", () => {
     expect(calls).toEqual([["setIdentifySpeakers", true, "recording"]]);
   });
 
+  test("Identify speakers is always the provider's value, and switching to on-device takes it back to the default", () => {
+    const shown = (id: TranscriberId, identifySpeakers: boolean) => {
+      const { api } = fakeApi(id);
+      api.transcriber = { id, identifySpeakers, source: "recording" };
+      return choice(transcription(), api).result.identifySpeakers;
+    };
+    expect(shown("assemblyai", true)).toBe(true);
+    expect(shown("on-device", false)).toBe(false);
+    expect(shown("assemblyai", false)).toBe(false);
+  });
+
   describe("a refused Identify speakers is shown and logged, and the switch stays with the provider", () => {
     const refused = async (result: SetTranscriberResult | Error) => {
       const logged = spyOn(console, "error").mockImplementation(() => {});
@@ -224,7 +239,7 @@ describe("useTranscriptionChoice", () => {
       for (const [result, reason] of [
         ["needs_consent", SPEAKERS_NEEDS_CONSENT],
         ["locked_signed_out", SIGNED_OUT],
-        ["unavailable", PRIVATE_UNAVAILABLE],
+        ["unavailable", unavailableNow("Identify speakers")],
       ] as const) {
         const { notices, errors, shown } = await refused(result);
         expect(notices).toEqual([reason]);
@@ -248,6 +263,123 @@ describe("useTranscriptionChoice", () => {
     });
   });
 
+  describe("signed-out availability follows the account", () => {
+    const availability = (signedIn: boolean, id: TranscriberId) =>
+      choice(
+        transcription(),
+        fakeApi(id).api,
+        MODEL,
+        signedIn,
+      ).result.stops.map((s) => s.available);
+
+    test("signed out, from the first render: Local is open and every other stop says to sign in", () => {
+      const { result } = choice(
+        transcription(),
+        fakeApi("on-device").api,
+        MODEL,
+        false,
+      );
+      expect(result.stops.map((s) => [s.stop.id, s.available])).toEqual([
+        ["skip", false],
+        ["local", true],
+        ["private", false],
+        ["powerful", false],
+      ]);
+      expect(
+        result.stops.filter((s) => !s.available).map((s) => s.reason),
+      ).toEqual([SIGNED_OUT, SIGNED_OUT, SIGNED_OUT]);
+      expect(result.mode).toBe("local");
+    });
+
+    test("signed out, Audio only cannot be requested at all", async () => {
+      const { api, calls } = fakeApi("on-device");
+      const { result } = choice(transcription(), api, MODEL, false);
+      expect(result.select("skip")).toBe(SIGNED_OUT);
+      await settle();
+      expect(calls).toEqual([]);
+    });
+
+    test("signed in, the same account opens the stops again", () => {
+      expect(availability(true, "on-device")).toEqual([
+        true,
+        true,
+        true,
+        false,
+      ]);
+    });
+
+    test("a refusal toasts but locks nothing: the stops follow the account", async () => {
+      const { api } = fakeApi("private-cloud", "locked_signed_out");
+      const { result, notices } = choice(transcription(), api);
+      result.select("skip");
+      await settle();
+      expect(notices).toEqual([SIGNED_OUT]);
+      expect(
+        choice(transcription(), api).result.stops.map((s) => s.available),
+      ).toEqual([true, true, true, false]);
+    });
+
+    describe("mounted: signing out and back in", () => {
+      const saved = {
+        window: (globalThis as { window?: unknown }).window,
+        act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+          .IS_REACT_ACT_ENVIRONMENT,
+      };
+      beforeAll(() => {
+        (
+          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+        ).IS_REACT_ACT_ENVIRONMENT = true;
+        (globalThis as { window?: unknown }).window = {
+          setTimeout,
+          clearTimeout,
+          event: undefined,
+          HTMLIFrameElement: class {},
+        };
+      });
+      afterAll(() => {
+        (globalThis as { window?: unknown }).window = saved.window;
+        (
+          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+        ).IS_REACT_ACT_ENVIRONMENT = saved.act;
+      });
+
+      test("sign-in reopens the stops, and signing out closes them again", async () => {
+        const { api } = fakeApi("on-device");
+        const seen: boolean[][] = [];
+        function Probe({ signedIn }: { signedIn: boolean }) {
+          seen.push(
+            useTranscriptionChoice({
+              shell: "phone",
+              transcription: transcription(),
+              model: MODEL,
+              transcriber: api,
+              signedIn,
+              notify: noop,
+            }).stops.map((s) => s.available),
+          );
+          return null;
+        }
+        const container = {
+          nodeType: 1,
+          nodeName: "DIV",
+          tagName: "DIV",
+          ownerDocument: null,
+          textContent: "",
+          addEventListener() {},
+          removeEventListener() {},
+        } as unknown as HTMLElement;
+        const root = createRoot(container);
+        await act(async () => root.render(<Probe signedIn={false} />));
+        expect(seen.at(-1)).toEqual([false, true, false, false]);
+        await act(async () => root.render(<Probe signedIn />));
+        expect(seen.at(-1)).toEqual([true, true, true, false]);
+        await act(async () => root.render(<Probe signedIn={false} />));
+        expect(seen.at(-1)).toEqual([false, true, false, false]);
+        await act(async () => root.unmount());
+      });
+    });
+  });
+
   describe("results and failures are shown and logged", () => {
     const failure = async (
       result: SetTranscriberResult | Error,
@@ -263,10 +395,13 @@ describe("useTranscriptionChoice", () => {
       return { notices, errors };
     };
 
-    test("unavailable: a toast, a log, and the selection stays with the provider", async () => {
-      const { notices, errors } = await failure("unavailable");
-      expect(notices).toEqual([PRIVATE_UNAVAILABLE]);
-      expect(errors).toHaveLength(1);
+    test("unavailable: a toast naming the mode asked for, a log, and the selection stays with the provider", async () => {
+      const skip = await failure("unavailable", "skip");
+      expect(skip.notices).toEqual([unavailableNow("Audio only")]);
+      expect(skip.errors).toHaveLength(1);
+      const priv = await failure("unavailable", "private");
+      expect(priv.notices).toEqual([unavailableNow("Private")]);
+      expect(unavailableNow("Local")).toBe("Local isn't available right now");
     });
 
     test("locked_signed_out: says why", async () => {
