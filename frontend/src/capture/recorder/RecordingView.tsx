@@ -69,7 +69,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
   const savedRoute = savedTranscriber === "on-device" ? "on-device" : transcribing ? "private-cloud" : "off";
   const paused = mic.state === "paused" || mic.state === "interrupted" || mic.state === "needs_user";
 
-  if (recorder.permissionDenied) return <MicrophoneAccessOff onMinimise={recorder.minimiseSheet} onOpenSettings={recorder.openSettings} />;
+  if (recorder.permissionDenied) return <MicrophoneAccessOff onMinimise={recorder.minimiseSheet} onOpenSettings={recorder.openSettings} onTryAgain={recorder.record} />;
 
   return (
     <div data-testid="voice-note-recorder" data-phase={phase} className="flex h-full min-h-0 flex-col bg-background text-foreground">

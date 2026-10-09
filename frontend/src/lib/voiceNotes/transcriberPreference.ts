@@ -1,4 +1,5 @@
 // JS owns the user's default. Native owns a live session's journaled options.
+import { localTranscriptionUnavailable } from "./captureEngine";
 import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
 
 const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
@@ -26,8 +27,10 @@ export function readTranscriberPreference(): CaptureOptions {
   } catch { return memoryPreference; }
 }
 
+/** An engine without on-device speech (the web recorder) maps on-device to private cloud here; the stored preference is untouched. */
 export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): TranscriberId {
-  return signedIn ? pref : "on-device";
+  const transcriber = signedIn ? pref : "on-device";
+  return transcriber === "on-device" && localTranscriptionUnavailable() ? "private-cloud" : transcriber;
 }
 
 /** Disabled speaker modes keep the preference but send false to native capture. */
