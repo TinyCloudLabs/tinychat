@@ -315,7 +315,7 @@ class CaptureEngine private constructor(private val context: Context) {
                 if (recordedElapsedMs() >= maxMs) scheduleAutoStop(MicStateContract.MAX_DURATION)
             }
         }
-        val localInput = try { AudioCapture({ pcm -> localEncoder.offer(pcm, pcm.size) }, { level, peak ->
+        val localInput = try { AudioCapture(context, { pcm -> localEncoder.offer(pcm, pcm.size) }, { level, peak ->
             emit("level", JSONObject().put("level", level).put("peak", peak))
             val now = System.currentTimeMillis()
             if (peak > 0) {
