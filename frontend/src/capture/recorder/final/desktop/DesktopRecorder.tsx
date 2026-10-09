@@ -20,6 +20,7 @@ import {
   PauseIcon,
   PlayIcon,
 } from "../softIcons";
+import { NOTES_COPY } from "../notesCopy";
 import { modeShortLabel } from "../transcriptionModes";
 import type { AudioInputsSource } from "../useAudioInputs";
 import { useFinalRecorderControls } from "../useFinalRecorderControls";
@@ -81,6 +82,10 @@ export interface DesktopRecorderProps {
   layout: Exclude<RecorderLayout, "phone">;
   /** Opens the note view; without it there is no Write notes button. */
   onOpenNotes?: () => void;
+  /** The last write of the note failed: the notes button says so, and so does an alert. */
+  noteSaveFailed?: boolean;
+  /** Done: the owner saves the note first, then calls `stop`. Without it Done stops at once. */
+  onDone?: (stop: () => void) => void;
 }
 
 /** What the screenshot harness sets in the view's place; the app never provides it. */
@@ -97,7 +102,12 @@ export interface DesktopRecorderSeed {
 
 export const DesktopRecorderSeedContext = createContext<DesktopRecorderSeed>({});
 
-export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
+export function DesktopRecorder({
+  layout,
+  onOpenNotes,
+  noteSaveFailed = false,
+  onDone,
+}: DesktopRecorderProps) {
   const {
     inputs: inputsSource,
     silencedSinceMs: silencedSeed = null,
@@ -221,9 +231,18 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
           {view.statusLine}
         </div>
         {onOpenNotes && (
-          <button type="button" className="dr-notes" onClick={onOpenNotes}>
+          <button
+            type="button"
+            className="dr-notes"
+            data-failed={noteSaveFailed || undefined}
+            onClick={onOpenNotes}
+          >
             <PencilIcon />
-            {hasNotes ? "View notes" : "Write notes"}
+            {noteSaveFailed
+              ? NOTES_COPY.noteNotSaved
+              : hasNotes
+                ? "View notes"
+                : "Write notes"}
           </button>
         )}
 
@@ -318,6 +337,11 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
           )}
         </div>
 
+        {noteSaveFailed && (
+          <p className="pr-alert" role="alert">
+            {NOTES_COPY.noteNotSavedAlert}
+          </p>
+        )}
         {alerts.map(({ message, retry }) => (
           <p key={message} className="pr-alert" role="alert">
             {message}
@@ -365,7 +389,9 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
               className="pr-b main"
               data-emphasis={mustSave}
               disabled={!(view.controls.stop || stopUnknown)}
-              onClick={() => control("stop")}
+              onClick={() =>
+                onDone ? onDone(() => control("stop")) : control("stop")
+              }
             >
               <CheckIcon />
               Done

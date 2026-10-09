@@ -23,8 +23,6 @@ import { SidebarLiveCard } from "./SidebarLiveCard";
 type RecorderShellProps = Omit<AppShellProps, "island" | "railLive" | "sidebarLive"> & {
   /** Opens a saved note (the receipt's and the island's Open). */
   onOpenNote?: (id: string) => void;
-  /** Opens the note view from the desktop recorder's Write notes / View notes. */
-  onOpenNotes?: () => void;
 };
 
 export function RecorderShell(props: RecorderShellProps) {
@@ -37,7 +35,7 @@ export function RecorderShell(props: RecorderShellProps) {
  * the island, the rail button and the sidebar card while recording; once it
  * stops, those keep showing the saving, saved and "Save now" states.
  */
-export function FinalRecorderShell({ onOpenNote, onOpenNotes, ...shell }: RecorderShellProps) {
+export function FinalRecorderShell({ onOpenNote, ...shell }: RecorderShellProps) {
   const recorder = useRecorder();
   // Mounted here because this shell outlives the recorder views: minimising or stopping while minimised still ends the notes UI state.
   useNotesLifecycle();
@@ -91,12 +89,12 @@ export function FinalRecorderShell({ onOpenNote, onOpenNotes, ...shell }: Record
         }
       />
       {navKind === "tabbar" ? null : <ShellNoteNotice layout="beside" />}
-      <RecordingOverlay onOpenNote={onOpenNote} onOpenNotes={onOpenNotes} desktopHost={recorderHost} finalSkin />
+      <RecordingOverlay onOpenNote={onOpenNote} desktopHost={recorderHost} finalSkin />
     </MinimizedProvider>
   );
 }
 
-function ClassicRecorderShell({ onOpenNote, onOpenNotes: _onOpenNotes, ...shell }: RecorderShellProps) {
+function ClassicRecorderShell({ onOpenNote, ...shell }: RecorderShellProps) {
   const recorder = useRecorder();
   // On its side a phone has the rail, so nothing floats over Send.
   const tabbar = useNavKind() === "tabbar";

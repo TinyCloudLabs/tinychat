@@ -50,6 +50,7 @@ import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
+import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
 import { MeetingSheet } from "./meeting/MeetingSheet";
 import { RecordButton } from "./recorder/RecordButton";
@@ -145,6 +146,10 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     noteId: screen.noteId,
     transcriber: recorder.available ? { backendUrl, sessionStore } : null,
   });
+  // Behind the flag a saved voice note is the note itself: a full page (desktop) or a sheet over the Library (phone).
+  const openNote = noteScreen && library.note.item?.source === VOICE_NOTE_SOURCE ? library.note.item : null;
+  const notePage = desktopHome && openNote !== null;
+  const noteSheet = soft && openNote !== null;
   const now = new Date();
 
   // Wide: the Library link and entering the Library bring its half of the list pane into view.
@@ -176,13 +181,13 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
 
   return (
     <div
-      className={wide && !homeOnly ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
+      className={wide && !homeOnly && !notePage ? "grid h-full grid-cols-[minmax(0,22.5rem)_minmax(0,1fr)]" : "relative h-full"}
       data-testid="capture-surface"
       data-layout={wide ? "panes" : "stack"}
     >
       <div
         className={cn(
-          homeOnly ? "relative h-full" : wide ? `${SCROLLER} border-r border-border` : noteScreen ? "hidden" : "relative h-full",
+          homeOnly ? "relative h-full" : notePage ? "hidden" : wide ? `${SCROLLER} border-r border-border` : noteScreen && !noteSheet ? "hidden" : "relative h-full",
           soft && `soft-skin soft-home ${softTheme}`,
         )}
         data-layout={soft ? "phone" : undefined}
@@ -275,7 +280,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
         <div
           ref={libraryRef}
-          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen ? SCROLLER : "hidden"}
+          className={homeOnly ? "hidden" : desktopHome ? SCROLLER : wide ? "border-t border-border pt-2" : libraryScreen || noteSheet ? SCROLLER : "hidden"}
           data-scroll-root={wide ? undefined : ""}
           data-testid="capture-library"
         >
@@ -291,7 +296,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
         </div>
       </div>
       <div
-        className={homeOnly ? "hidden" : wide || noteScreen ? SCROLLER : "hidden"}
+        className={homeOnly || noteSheet ? "hidden" : notePage ? "h-full overflow-hidden" : wide || noteScreen ? SCROLLER : "hidden"}
         data-scroll-root=""
         data-testid="capture-detail"
       >
@@ -300,8 +305,9 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             key={screen.noteId}
             library={library}
             pushed={!wide}
-            onBack={() => goUp(navigate, PATHS.library)}
+            onBack={() => goUp(navigate, notePage ? PATHS.capture : PATHS.library)}
             transcription={recorder.transcription}
+            savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
           />
         ) : wide ? (
           empty ? (

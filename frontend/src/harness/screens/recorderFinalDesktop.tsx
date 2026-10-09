@@ -3,13 +3,18 @@
 // the frozen clock; the interactive one runs the real recorder over the fake native plugin, for
 // test/recorder-final-desktop.e2e.test.ts. The harness build has no env, so FinalRecorderShell stands in
 // for the flag, and DesktopRecorderSeedContext opens the surfaces that start closed.
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef } from "react";
 
 import {
   DesktopRecorderSeedContext,
   type DesktopRecorderSeed,
 } from "@/capture/recorder/final/desktop/DesktopRecorder";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
+import {
+  clearNotesUi,
+  updateNotesUi,
+  type NotesUiFields,
+} from "@/capture/recorder/final/notes";
 import { useRecorder, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext } from "@/lib/platform";
@@ -62,6 +67,7 @@ export const LIVE: Partial<RecorderValue> = {
   phase: "recording",
   mic: { state: "recording", reason: null },
   startedAt: FROZEN_NOW - minutes(12, 48),
+  recordingId: "rec-harness",
   audioMs: minutes(12, 48),
   elapsedMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
@@ -70,6 +76,7 @@ export const LIVE: Partial<RecorderValue> = {
     identifySpeakers: false,
     source: "recording",
   },
+  noteStatus: "ready",
   sheetOpen: true,
 };
 
@@ -129,7 +136,6 @@ export function Frame({
 }) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
-  const [notesOpen, setNotesOpen] = useState(false);
   return (
     <DesktopRecorderSeedContext.Provider value={seed}>
       <ShellApp
@@ -138,20 +144,8 @@ export function Frame({
         state="ready"
         recorder={recorder}
         finalRecorder
-        onOpenNotes={() => setNotesOpen(true)}
         inside={
-          <>
-            {start ? <StartRecording /> : null}
-            {notesOpen ? (
-              <div
-                role="status"
-                data-testid="notes-placeholder"
-                className="fixed bottom-4 right-4 z-[60] rounded-md border bg-background px-3 py-2 text-sm shadow"
-              >
-                Notes view (placeholder)
-              </div>
-            ) : null}
-          </>
+          start ? <StartRecording /> : null
         }
       />
     </DesktopRecorderSeedContext.Provider>
@@ -163,6 +157,7 @@ function screen(
   value: Partial<RecorderValue>,
   seed: DesktopRecorderSeed = {},
   platform: HarnessScreen["platform"] = "tauri",
+  notes?: Partial<NotesUiFields>,
 ): HarnessScreen {
   return {
     id: `recorder-final-desktop-${id}`,
@@ -173,6 +168,8 @@ function screen(
     platform,
     render: () => {
       __setOnDeviceSttForTests(ON_DEVICE_STT);
+      clearNotesUi();
+      if (notes) updateNotesUi("rec-harness", () => notes);
       return (
         <Frame
           seed={{ inputs: INPUTS, ...seed }}
@@ -228,6 +225,22 @@ const interactiveScreen: HarnessScreen = {
   },
 };
 
+const NOTE_MD = [
+  "# Sync with Hunter",
+  "",
+  "- **0:08** Hunter mentions the TTL setting",
+  "- **0:20** Decision: ship the cache behind a flag",
+  "",
+  "Follow-ups:",
+  "",
+  "- [ ] Send the **benchmark** numbers",
+  "- [ ] Write up the _rollout_ plan",
+].join("\n");
+const NOTED: Partial<RecorderValue> = {
+  note: { md: NOTE_MD, moments: [] },
+  noteStatus: "ready",
+};
+
 export const recorderFinalDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   screen("recording", {}),
@@ -260,6 +273,29 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
     audioMs: 0,
     elapsedMs: 0,
   }),
+  {
+    ...screen("note-write", NOTED, {}, "tauri", { open: true, view: "write" }),
+    readyWhen: ".nv textarea",
+  },
+  {
+    ...screen("note-preview", NOTED, {}, "tauri", { open: true, view: "preview" }),
+    readyWhen: ".nv .fmd",
+  },
+  {
+    ...screen("note-save-failed", NOTED, {}, "tauri", {
+      open: true,
+      view: "write",
+      saveFailed: true,
+    }),
+    readyWhen: ".nv .nv-err",
+  },
+  {
+    ...screen("note-loading", { noteStatus: "loading", note: null }, {}, "tauri", {
+      open: true,
+      view: "write",
+    }),
+    readyWhen: ".nv .pr-nwait",
+  },
   screen("modes", {}, { defaultOpen: "modes" }),
   screen("via", {}, { defaultOpen: "via" }),
   screen("discard", {}, { defaultOpen: "discard" }),
