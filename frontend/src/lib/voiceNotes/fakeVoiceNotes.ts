@@ -343,10 +343,10 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         const settled = receiptResults.get(`${id}:${receipt.opId}`);
         if (settled?.outcome === "failed") continue;
         if (settled?.handle && [...outbox.values()].some((entry) => entry.did === receipt.did && entry.handle === settled.handle)) continue;
+        const stored = note?.ledger?.remote.find((entry) => entry.opId === receipt.opId);
         outboxFor(receipt, { outcome: settled?.outcome ?? "unknown", handleExpiresAt: settled?.handleExpiresAt ?? undefined,
-          ...(receipt.kind === "hosted_create" ? { uploadId: settled?.handle ?? undefined }
-            : receipt.kind === "own_upload" ? { uploadUrl: settled?.handle ?? undefined }
-              : { jobId: settled?.handle ?? undefined }) });
+          uploadId: stored?.uploadId ?? undefined, uploadUrl: stored?.uploadUrl ?? undefined,
+          jobId: stored?.jobId ?? undefined });
       }
     },
     async listPending() { return { recordings: [...notes.values()].map((note) => structuredClone(note)) }; },
@@ -454,7 +454,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       }
       if (!note || tombstones.has(id) || note.owner !== did) {
         outboxFor(receipt, result);
-        receiptResults.set(`${id}:${opId}`, { destination: "outbox", handle,
+        receiptResults.set(`${id}:${opId}`, { destination: "outbox", handle: handle ?? previous?.handle ?? null,
           handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });
         return { destination: "outbox" };
       }
@@ -473,7 +473,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         }
       }
       note.rev = (note.rev ?? 0) + 1;
-      receiptResults.set(`${id}:${opId}`, { destination: "ledger", handle,
+      receiptResults.set(`${id}:${opId}`, { destination: "ledger", handle: handle ?? previous?.handle ?? null,
         handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });
       return { destination: "ledger" };
     },

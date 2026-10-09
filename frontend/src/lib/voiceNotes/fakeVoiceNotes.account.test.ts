@@ -100,6 +100,23 @@ test("own-key create keeps its receipt kind through URL lookup and a late job ha
   });
 });
 
+test("own-key lookup survives an unchanged result before deleting the note", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+    transcriber: "assemblyai", identifySpeakers: false });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  await fake.plugin.beginRemoteOp({ id, did, opId: "create", provider: "assemblyai", mode: "own",
+    kind: "own_create", fingerprint: "one", startedAt: 10 });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create",
+    result: { outcome: "unknown", uploadUrl: "https://example.test/audio" } });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create", result: { outcome: "unknown" } });
+  await fake.plugin.deleteAudio({ id });
+  expect((await fake.plugin.listOutbox({ did })).entries).toContainEqual(expect.objectContaining({
+    kind: "own_upload_lookup", receiptKind: "own_create", handle: "https://example.test/audio", state: "lookup",
+  }));
+});
+
 test("preference changes retain transitioning and recovery actions report absent sessions", async () => {
   const fake = createFakeVoiceNotes();
   await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
