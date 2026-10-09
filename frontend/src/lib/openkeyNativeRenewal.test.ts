@@ -28,7 +28,7 @@ function harness(now: number, original = session("old"), onUnavailable?: (messag
       kv: {
         put: async () => { if (retired) throw new Error("Service graph has been retired by session replacement."); calls.push(installed!); return { ok: true }; },
         list: async () => { if (retired) throw new Error("Service graph has been retired by session replacement."); return { ok: true, data: { keys: [], truncated: false } }; },
-        withPrefix(prefix: string) { const service = this; return { put: (key: string) => service.put(prefix + key) }; },
+        withPrefix(prefix: string) { return { put: (key: string) => this.put(prefix + key) }; },
       },
       sql: {
         db(_name: string) { return {
