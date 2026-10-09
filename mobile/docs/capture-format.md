@@ -106,7 +106,7 @@ A user pause is not a missing span; it is counted in `pausedMs` and the `intent`
 | `own_create` | `create_unknown` → `submitted` → `create_unknown` | `transcript`, `jobId` (or result `handle`) → `pending`; otherwise `own_upload_lookup`, `uploadUrl` → `lookup`; without either handle → `unknown`/`unknown` |
 | `ptx_create` | `create_unknown` → `submitted` → `create_unknown` | `ptx_job`, `jobId` (or result `handle`); known handle `pending`, absent handle `unknown` |
 
-For `outcome: "unknown"`, a known definitive job or upload handle still uses the table's handle state; an absent handle stays `unknown` except the hosted submit and own-key URL lookup paths. `cleanup` begins as `none`, becomes `pending` when the resource is abandoned or local transcript is written, and becomes `done` only on confirmed cleanup. `done` receipts make no outbox entry. A result's `handleExpiresAt` is preserved. A hosted transcript and its upload require separate receipt `opId`s, and therefore separate outbox entries. Outbox `done` removes the entry; `authority_expired` retains it (§2.3). Tombstones never carry cleanup state.
+For `outcome: "unknown"`, a known definitive job or upload handle still uses the table's handle state; an absent handle stays `unknown` except the hosted submit and own-key URL lookup paths. `cleanup` begins as `none`, becomes `pending` when the resource is abandoned or local transcript is written, and becomes `done` only on confirmed cleanup; at that point `stage` is `done`. `done` receipts make no outbox entry. A result's `handleExpiresAt` is preserved. A hosted transcript and its upload require separate receipt `opId`s, and therefore separate outbox entries. Outbox `done` removes the entry; `authority_expired` retains it (§2.3). Tombstones never carry cleanup state.
 
 **Failpoints and suspension gates.** `FileOps` wraps create/write/sync/rename/unlink/rmdir with named failpoints: `start.mkdir`, `start.journal`, `seg.write`, `seg.sync`, `roll.create`, `stop.journal`, `stage.write`, `publish.m4aRename`, `publish.sidecarTmp`, `publish.sidecarRename`, `publish.gc`, `claim.write`, `ledger.write`, `delete.tombstone`, `delete.outbox`, `delete.unlink`, `import.sidecar`, `tombstone.retire`. A failpoint crash drops unsynced data from the in-memory FS, modelling power loss. **Suspension gates** pause a long operation at `stage.begin`, `stage.afterMux`, `probe.afterLoad` and `stt.beforePublish`, so tests can interleave delete, discard, claim, recovery or another commit there. After every scenario, recovery runs twice. The invariants: (I1) no committed note is lost; (I2) no tombstoned id reappears or gets any published artifact; (I3) no sidecar is regenerated over a newer `rev`; (I4) recovery is idempotent; (I5) unsynced loss stays within the policy bound; (I6) every remote resource is either in a sidecar ledger or in the outbox. Extra scenarios: a failed unlink followed by a clock advanced 8 days and a relaunch (the tombstone stays, nothing resurrects); delete during a gated commit; discard during a gated legacy probe.
 
@@ -195,7 +195,12 @@ export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: 
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
 export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
 export interface OutboxEntry { entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
-  kind: "transcript" | "hosted_upload" | "ptx_job" | "own_upload_lookup"; handle: string; createdAt: number; attempts: number }
+  kind: "transcript" | "hosted_upload" | "hosted_submit" | "ptx_job" | "own_upload_lookup" | "unknown";
+  handle: string | null; handleExpiresAt: number | null;
+  state: "pending" | "lookup" | "unknown" | "authority_expired" | "done"; createdAt: number; attempts: number }
+export interface RemoteOpReceipt { id: string; did: string; opId: string; provider: "assemblyai" | "ptx";
+  mode: "hosted" | "own" | null; kind: "hosted_create" | "hosted_submit" | "own_upload" | "own_create" | "ptx_create";
+  fingerprint: string; startedAt: number }
 export type ClaimOptions =
   | { id: string; did: string; evidence: "signed_out_v2" | "user_choice" }
   | { id: string; did: string; evidence: "space_row"; rowId: string };
@@ -229,8 +234,15 @@ export interface VoiceNotesPlugin {
   // v2
   pause(): Promise<void>; resume(): Promise<void>; discard(): Promise<{ id: string | null }>;
   setRecordingOptions(o: Partial<CaptureOptions>): Promise<void>;
-  getCaptureDefaults(): Promise<CaptureDefaults>;
+  getCaptureDefaults(): Promise<CaptureDefaults & { status: "signed_in" | "transitioning" | "signed_out" }>;
   setCaptureDefaults(o: CaptureDefaults): Promise<{ claimed: string[] }>;   // rejects `stale_transition` if o.transitionGen < stored; with accountDid non-null, claims the live unowned session and unowned v2 notes (never legacy notes)
+  setAccountState(o: { status: "signed_in" | "transitioning" | "signed_out"; accountDid: string | null; transitionGen: number }): Promise<void>;
+  beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
+  recordRemoteResult(o: { id: string; did: string; opId: string; result: {
+    handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
+    outcome: "created" | "failed" | "unknown" } }): Promise<{ destination: "ledger" | "outbox" }>;
+  retryRecovery(o: { id: string }): Promise<void>;
+  discardFailedRecording(o: { id: string }): Promise<void>;
   claim(o: ClaimOptions): Promise<{ owner: string | null }>;  // row_id_required | claim_evidence_required | claim_evidence_invalid | owner_mismatch | tombstoned
   updateLedger(o: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;  // owner_mismatch | rev_conflict | tombstoned
   localAudioUrl(o: { id: string }): Promise<{ url: string }>;
@@ -241,11 +253,12 @@ export interface VoiceNotesPlugin {
   listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
   deleteQuarantined(o: { id: string }): Promise<void>;
   listOutbox(o: { did: string }): Promise<{ entries: OutboxEntry[] }>;
-  completeOutbox(o: { entryId: string; result: "done" | "retry" }): Promise<void>;
+  completeOutbox(o: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
   // events: micState (retained; includes id, audioMs, openSpan), level, autoStopped (retained), presentRecorder (retained),
   //         recovered (retained), committed (retained; every commit incl. native-only stops), inputs
 }
 ```
+The recovery actions reject `not_found` when no failed session exists and `recording_in_progress` for the live id.
 - `start()` without options uses the persisted native defaults. With `accountDid: null`, the transcriber is forced to `on-device` (decision 6).
 - `presentRecorder` is emitted for every start that didn't come from `start()`.
 - Retained `micState`, `autoStopped`, `presentRecorder`, `recovered` and `committed` events are queued in order until delivered to a listener, then consumed; multiple commits are never coalesced into the last one.

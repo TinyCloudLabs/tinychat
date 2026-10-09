@@ -17,7 +17,6 @@ public final class RecordingLibrary {
     private var generations: [String: UInt64] = [:]
     private var active: [String: Int] = [:]
     private var liveSessions: Set<String> = []
-    private var countedRecoveryFailures: Set<String> = []
     // Launch recovery only owns sessions left by an earlier library instance.
     // A session started here can finish while the asynchronous launch scan runs.
     private var startedHere: Set<String> = []
@@ -435,6 +434,8 @@ public final class RecordingLibrary {
               let opId = receipt["opId"] as? String, Self.validOpID(opId),
               let provider = receipt["provider"] as? String, ["assemblyai", "ptx"].contains(provider),
               let kind = receipt["kind"] as? String,
+              let fingerprint = receipt["fingerprint"] as? String, !fingerprint.isEmpty,
+              let startedAt = receipt["startedAt"] as? NSNumber,
               ["hosted_create", "hosted_submit", "own_upload", "own_create", "ptx_create"].contains(kind) else {
             throw CaptureError.invalidArgument
         }
@@ -448,8 +449,13 @@ public final class RecordingLibrary {
                 var ledger = item["ledger"] as? [String: Any] ?? [:]
                 var remote = ledger["remote"] as? [[String: Any]] ?? []
                 if !remote.contains(where: { $0["opId"] as? String == opId }) {
-                    var open = receipt
-                    open["stage"] = "\(kind)_unknown"
+                    let open: [String: Any] = ["opId": opId, "provider": provider,
+                        "mode": receipt["mode"] ?? NSNull(), "kind": kind,
+                        "fingerprint": fingerprint,
+                        "startedAt": startedAt,
+                        "stage": Self.receiptStage(kind, outcome: "unknown"),
+                        "uploadId": NSNull(), "uploadUrl": NSNull(), "jobId": NSNull(),
+                        "handleExpiresAt": NSNull(), "cleanup": "none"]
                     remote.append(open); ledger["remote"] = remote; item["ledger"] = ledger
                     item["rev"] = (item["rev"] as? Int ?? 0) + 1
                     try publishSidecarUnlocked(id, item, failpointName: "receipt.begin")
@@ -474,7 +480,18 @@ public final class RecordingLibrary {
                 var ledger = item["ledger"] as? [String: Any] ?? [:]
                 var remote = ledger["remote"] as? [[String: Any]] ?? []
                 if let index = remote.firstIndex(where: { $0["opId"] as? String == opId }) {
-                    remote[index].merge(result) { _, new in new }
+                    if result["outcome"] as? String == "failed" { remote.remove(at: index) }
+                    else {
+                        remote[index]["stage"] = Self.receiptStage(remote[index]["kind"] as? String ?? "", outcome: result["outcome"] as? String ?? "unknown")
+                        for key in ["uploadId", "uploadUrl", "jobId", "handleExpiresAt"] {
+                            if let value = result[key] { remote[index][key] = value }
+                        }
+                        if let handle = result["handle"] {
+                            let key = (remote[index]["kind"] as? String) == "hosted_create" ? "uploadId" :
+                                (remote[index]["kind"] as? String) == "own_upload" ? "uploadUrl" : "jobId"
+                            remote[index][key] = handle
+                        }
+                    }
                     ledger["remote"] = remote; item["ledger"] = ledger
                     item["rev"] = (item["rev"] as? Int ?? 0) + 1
                     try publishSidecarUnlocked(id, item, failpointName: "receipt.result")
@@ -486,19 +503,42 @@ public final class RecordingLibrary {
                   let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw CaptureError.notFound
             }
-            try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: result)
+            if result["outcome"] as? String == "failed" {
+                try FileManager.default.removeItem(at: path); try sync(url("outbox")); return "outbox"
+            }
+            var open = receipt
+            switch receipt["kind"] as? String {
+            case "hosted_upload": open["kind"] = "hosted_create"; open["uploadId"] = receipt["handle"]
+            case "hosted_submit": open["kind"] = "hosted_submit"; open["uploadId"] = receipt["handle"]
+            case "own_upload_lookup": open["kind"] = "own_create"; open["uploadUrl"] = receipt["handle"]
+            case "ptx_job": open["kind"] = "ptx_create"; open["jobId"] = receipt["handle"]
+            case "transcript": open["kind"] = "own_create"; open["jobId"] = receipt["handle"]
+            default:
+                open["kind"] = (receipt["provider"] as? String) == "ptx" ? "ptx_create" :
+                    (receipt["mode"] as? String) == "hosted" ? "hosted_submit" : "own_create"
+            }
+            try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: open, result: result)
             return "outbox"
         }
     }
 
     private func receiptOutboxURL(id: String, opId: String) -> URL { url("outbox/\(id):\(opId).json") }
 
+    private static func receiptStage(_ kind: String, outcome: String) -> String {
+        guard outcome == "created" else { return kind == "hosted_submit" ? "submit_unknown" : "create_unknown" }
+        switch kind {
+        case "hosted_create": return "uploading"
+        case "own_upload": return "uploaded"
+        default: return "submitted"
+        }
+    }
+
     private func writeReceiptOutboxUnlocked(id: String, opId: String, receipt: [String: Any],
                                             result: [String: Any]?) throws {
         try check("delete.outbox")
         let path = receiptOutboxURL(id: id, opId: opId)
         let existing = (try? JSONSerialization.jsonObject(with: Data(contentsOf: path))) as? [String: Any]
-        let kind = receipt["opKind"] as? String ?? receipt["kind"] as? String ?? "unknown"
+        let kind = receipt["kind"] as? String ?? "unknown"
         let mode = receipt["mode"] ?? NSNull()
         let job = result?["jobId"] ?? receipt["jobId"]
         let upload = result?["uploadId"] ?? receipt["uploadId"]
@@ -510,27 +550,32 @@ public final class RecordingLibrary {
         switch kind {
         case "hosted_create":
             outboxKind = "hosted_upload"; handle = upload ?? direct
-            state = handle == nil ? "unknown" : "pending"
-        case "hosted_submit" where job == nil && direct == nil:
-            outboxKind = "hosted_submit"; handle = upload
-            state = handle == nil ? "unknown" : "lookup"
+            state = handle is String ? "pending" : "unknown"
+        case "hosted_submit":
+            if let job = job as? String ?? direct as? String {
+                outboxKind = "transcript"; handle = job; state = "pending"
+            } else if let upload = upload as? String {
+                outboxKind = "hosted_submit"; handle = upload; state = "lookup"
+            } else { outboxKind = "unknown"; handle = nil; state = "unknown" }
         case "own_upload":
-            outboxKind = "own_upload_lookup"; handle = uploadURL
-            state = handle == nil ? "unknown" : "lookup"
-        case "own_create" where job == nil && direct == nil:
-            outboxKind = "own_upload_lookup"; handle = uploadURL
-            state = handle == nil ? "unknown" : "lookup"
+            outboxKind = "own_upload_lookup"; handle = uploadURL ?? direct
+            state = handle is String ? "lookup" : "unknown"
+        case "own_create":
+            if let job = job as? String ?? direct as? String {
+                outboxKind = "transcript"; handle = job; state = "pending"
+            } else if let url = uploadURL as? String {
+                outboxKind = "own_upload_lookup"; handle = url; state = "lookup"
+            } else { outboxKind = "unknown"; handle = nil; state = "unknown" }
         default:
-            outboxKind = kind == "ptx_create" ? "ptx_job" : "transcript"
+            outboxKind = "ptx_job"
             handle = job ?? direct
-            state = handle == nil ? "unknown" : "pending"
+            state = handle is String ? "pending" : "unknown"
         }
         var entry: [String: Any] = existing ?? ["entryId": "\(id):\(opId)", "did": receipt["did"] ?? "",
             "provider": receipt["provider"] ?? "", "mode": mode,
-            "kind": outboxKind, "opKind": kind,
+            "kind": outboxKind,
             "createdAt": receipt["startedAt"] ?? wallMilliseconds(), "attempts": 0]
         entry["kind"] = outboxKind
-        entry["opKind"] = kind
         entry["handle"] = handle ?? NSNull()
         entry["handleExpiresAt"] = result?["handleExpiresAt"] ?? receipt["handleExpiresAt"] ?? NSNull()
         entry["state"] = state
@@ -608,7 +653,9 @@ public final class RecordingLibrary {
             guard let did, let provider = remote["provider"] as? String else { continue }
             if let opId = remote["opId"] as? String, let id = item["id"] as? String {
                 // Idempotent across a crash after the tombstone and before sidecar removal.
-                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: remote, result: remote)
+                var receipt = remote
+                receipt["did"] = did
+                try writeReceiptOutboxUnlocked(id: id, opId: opId, receipt: receipt, result: remote)
                 continue
             }
             let mode = remote["mode"] ?? NSNull()
@@ -645,6 +692,7 @@ public final class RecordingLibrary {
         let entryId = UUID().uuidString.lowercased()
         let object: [String: Any] = ["entryId": entryId, "did": did, "provider": provider,
                                      "mode": mode, "kind": kind, "handle": handle,
+                                     "handleExpiresAt": NSNull(), "state": "pending",
                                      "createdAt": wallMilliseconds(), "attempts": 0]
         try writeDurable(CanonicalJSON.file(object), to: url("outbox/\(entryId).json"))
         try sync(url("outbox"))
@@ -809,11 +857,21 @@ public final class RecordingLibrary {
                     try retireTombstoneUnlocked(id)
                 } catch { /* Retain marker and retry next launch. */ }
             }
-            return try FileManager.default.contentsOfDirectory(at: url("sessions"), includingPropertiesForKeys: nil)
-                .map(\.lastPathComponent).filter {
-                    $0 != liveID && !liveSessions.contains($0) && !startedHere.contains($0) &&
-                    Self.validID($0) && !FileManager.default.fileExists(atPath: url("tombstones/\($0)").path)
+            var recoverable: [String] = []
+            for id in try FileManager.default.contentsOfDirectory(at: url("sessions"), includingPropertiesForKeys: nil).map(\.lastPathComponent) {
+                guard id != liveID, !liveSessions.contains(id), !startedHere.contains(id),
+                      Self.validID(id), !FileManager.default.fileExists(atPath: url("tombstones/\(id)").path) else { continue }
+                let marker = recoveryMarker(id)
+                let record = (try? JSONSerialization.jsonObject(with: Data(contentsOf: marker))) as? [String: Any]
+                if FileManager.default.fileExists(atPath: sidecarURL(id).path) {
+                    recoverable.append(id)
+                    continue
                 }
+                if (record?["attempts"] as? Int ?? 0) >= 3 {
+                    try quarantineRecoveryUnlocked(id, record: record ?? [:])
+                } else { recoverable.append(id) }
+            }
+            return recoverable
         }
     }
 
@@ -837,23 +895,52 @@ public final class RecordingLibrary {
         }
     }
 
-    /// Three failed launch attempts move the session out of the automatic scan. Its original
-    /// journal and segments remain intact until the user explicitly retries or discards it.
+    private func recoveryMarker(_ id: String) -> URL { url("quarantine/\(id).recovery.json") }
+
+    private func writeRecoveryMarkerUnlocked(_ id: String, _ record: [String: Any]) throws {
+        let temporary = url("quarantine/\(id).recovery.json.tmp")
+        try writeDurable(CanonicalJSON.file(record), to: temporary)
+        guard rename(temporary.path, recoveryMarker(id).path) == 0 else {
+            throw CaptureError.io("rename recovery marker: \(errno)")
+        }
+        try sync(url("quarantine"))
+    }
+
+    /// Persist the attempt before running code that can crash the process. An in-flight marker
+    /// counts as a failed launch if the next process finds it.
+    public func beginRecoveryAttempt(_ id: String) throws {
+        guard Self.validID(id) else { throw CaptureError.invalidArgument }
+        try queue.sync {
+            let marker = recoveryMarker(id)
+            let previous = (try? JSONSerialization.jsonObject(with: Data(contentsOf: marker))) as? [String: Any]
+            let count = (previous?["attempts"] as? Int ?? 0) + 1
+            let record: [String: Any] = ["id": id, "reason": previous?["reason"] ?? "recovery in progress",
+                                         "attempts": count, "inFlight": true, "quarantined": false]
+            try writeRecoveryMarkerUnlocked(id, record)
+        }
+    }
+
     public func noteRecoveryFailure(_ id: String, reason: String) throws {
         guard Self.validID(id) else { throw CaptureError.invalidArgument }
         try queue.sync {
-            let marker = url("quarantine/\(id).recovery.json")
+            let marker = recoveryMarker(id)
             let previous = (try? JSONSerialization.jsonObject(with: Data(contentsOf: marker))) as? [String: Any]
-            let count = (previous?["attempts"] as? Int ?? 0) +
-                (countedRecoveryFailures.insert(id).inserted ? 1 : 0)
+            let count = previous?["attempts"] as? Int ?? 1
             let record: [String: Any] = ["id": id, "reason": reason, "attempts": count,
-                                         "quarantined": count >= 3]
-            try writeDurable(CanonicalJSON.file(record), to: marker)
-            try sync(url("quarantine"))
-            if count >= 3, FileManager.default.fileExists(atPath: sessionURL(id).path) {
-                try FileManager.default.moveItem(at: sessionURL(id), to: url("quarantine/\(id).session"))
-                try sync(url("sessions")); try sync(url("quarantine"))
-            }
+                                         "inFlight": false, "quarantined": count >= 3]
+            try writeRecoveryMarkerUnlocked(id, record)
+            if count >= 3 { try quarantineRecoveryUnlocked(id, record: record) }
+        }
+    }
+
+    private func quarantineRecoveryUnlocked(_ id: String, record: [String: Any]) throws {
+        var updated = record
+        updated["id"] = id; updated["quarantined"] = true; updated["inFlight"] = false
+        updated["reason"] = updated["reason"] ?? "recovery interrupted"
+        try writeRecoveryMarkerUnlocked(id, updated)
+        if FileManager.default.fileExists(atPath: sessionURL(id).path) {
+            try FileManager.default.moveItem(at: sessionURL(id), to: url("quarantine/\(id).session"))
+            try sync(url("sessions")); try sync(url("quarantine"))
         }
     }
 
@@ -884,7 +971,6 @@ public final class RecordingLibrary {
 
     public func clearRecoveryFailure(_ id: String) {
         queue.sync {
-            countedRecoveryFailures.remove(id)
             let marker = url("quarantine/\(id).recovery.json")
             if FileManager.default.fileExists(atPath: marker.path) {
                 try? FileManager.default.removeItem(at: marker)

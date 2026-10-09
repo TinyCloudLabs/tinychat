@@ -132,7 +132,7 @@ class ExoBridgeViewController: CAPBridgeViewController {
                     }
                     catch { object["capture"] = ["error": String(describing: error)] }
                     let account = CaptureEngine.shared.defaults()
-                    UserDefaults.standard.set(true, forKey: "exo.debug.failAccountState")
+                    UserDefaults.standard.set("3", forKey: "exo.debug.failAccountState")
                     do {
                         try CaptureEngine.shared.setAccountState(status: "signed_out", accountDid: nil,
                                                                  transitionGen: account.transitionGen)

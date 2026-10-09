@@ -195,7 +195,10 @@ public final class CaptureEngine {
             do {
                 let ids = try library.recoverableSessions()
                 CaptureRecoverySweep.run(ids: ids, recover: { id in
+                    guard !library.isLiveCapture(id) else { return }
+                    try library.beginRecoveryAttempt(id)
                     try recoverSession(id)
+                    library.clearRecoveryFailure(id)
                 }, failed: { id, error in
                         try? library.noteRecoveryFailure(id, reason: String(describing: error))
                         log.error("Recovery failed for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -225,11 +228,14 @@ public final class CaptureEngine {
     public func defaults() -> CaptureDefaults { (try? accountState().defaults) ?? CaptureDefaults() }
 
     @discardableResult public func setDefaults(_ value: CaptureDefaults) throws -> [String] {
-        try checkAccountStateDebugFailure()
-        let old = try accountState().defaults
+        let current = try accountState()
+        let old = current.defaults
         try value.validateTransition(from: old)
-        try library.setAccountState(CaptureAccountState(status: value.accountDid == nil ? "signed_out" : "signed_in",
-                                                        accountDid: value.accountDid,
+        let preserveTransition = current.status == "transitioning" && value.transitionGen == current.transitionGen
+        guard !preserveTransition || value.accountDid == nil else { throw CaptureError.staleTransition }
+        try library.setAccountState(CaptureAccountState(status: preserveTransition ? "transitioning" :
+                                                        (value.accountDid == nil ? "signed_out" : "signed_in"),
+                                                        accountDid: preserveTransition ? current.accountDid : value.accountDid,
                                                         transitionGen: value.transitionGen,
                                                         options: CaptureOptions(transcriber: value.transcriber,
                                                                                 identifySpeakers: value.identifySpeakers)))
@@ -254,16 +260,19 @@ public final class CaptureEngine {
     }
 
     public func setAccountState(status: String, accountDid: String?, transitionGen: Int64) throws {
-        try checkAccountStateDebugFailure()
         let old = try accountState()
+        try checkAccountStateDebugFailure(status: status, previous: old.status)
         try library.setAccountState(CaptureAccountState(status: status, accountDid: accountDid,
                                                         transitionGen: transitionGen, options: old.options))
     }
 
-    private func checkAccountStateDebugFailure() throws {
+    private func checkAccountStateDebugFailure(status: String, previous: String) throws {
         #if DEBUG
-        if UserDefaults.standard.bool(forKey: "exo.debug.failAccountState") ||
-           ProcessInfo.processInfo.environment["EXO_DEBUG_FAIL_ACCOUNT_STATE"] == "1" {
+        let step = UserDefaults.standard.string(forKey: "exo.debug.failAccountState") ??
+            ProcessInfo.processInfo.environment["EXO_DEBUG_FAIL_ACCOUNT_STATE"]
+        if (step == "1" && status == "transitioning") ||
+           (step == "3" && status == "signed_out") ||
+           (step == "compensation" && status == "signed_in" && previous == "transitioning") {
             throw CaptureError.io("debug account-state write failure")
         }
         #endif
@@ -1055,6 +1064,10 @@ public final class CaptureEngine {
         if intent == "recording", availability == "available" { rebuildForRoute("route_change") }
     }
 
+    #if DEBUG
+    func debugConfigurationRebuild() { if intent == "recording", availability == "available" { rebuildForRoute("route_change") } }
+    #endif
+
     public func mediaServicesReset() {
         guard info != nil else { return }
         if intent == "paused" { return }
@@ -1270,11 +1283,18 @@ public final class CaptureEngine {
                                   startedAt: startedAt)
         let lastSegment = events.compactMap { $0["e"] as? String == "segment" ? $0["index"] as? Int : nil }.last ?? 0
         try DispatchQueue.main.sync {
-            guard info == nil else { return }
+            guard info == nil else {
+                // A cold quick action may start a new capture before the launch sweep arrives.
+                // Surface the parked recording in this pass so it is not silently skipped.
+                emit("recoveryFailed", ["id": id, "reason": "Paused recording is waiting while another recording is active"], retained: true)
+                return
+            }
             try library.adoptParkedSession(id)
             info = session; options = session.options; intent = "paused"; availability = "available"
             reason = "user"; audioMs = frames * 1024 * 1000 / 48_000
-            pausedMs = recovered.pausedMs; pausedSince = pausedAt; spans = recovered.spans
+            let lastT = events.last?["t"] as? Int64 ?? pausedAt
+            pausedMs = max(0, recovered.pausedMs - max(0, lastT - pausedAt))
+            pausedSince = pausedAt; spans = recovered.spans
             writer = AacAdtsWriter(parkedLibrary: library, id: id, lastSegment: lastSegment,
                                    audioFrames: frames * 1024, clock: wallClock)
             var next = CaptureTransitionMachine()
@@ -1289,6 +1309,7 @@ public final class CaptureEngine {
     public func retryRecovery(_ id: String) throws {
         guard RecordingLibrary.validID(id) else { throw CaptureError.invalidArgument }
         try library.prepareRecoveryRetry(id)
+        try library.beginRecoveryAttempt(id)
         do { try recoverSession(id); library.clearRecoveryFailure(id) }
         catch { try? library.noteRecoveryFailure(id, reason: String(describing: error)); throw error }
     }

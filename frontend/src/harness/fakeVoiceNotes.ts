@@ -155,6 +155,8 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
       return { claimed: [] };
     },
     setAccountState: unsupported,
+    retryRecovery: unsupported,
+    discardFailedRecording: unsupported,
     beginRemoteOp: unsupported,
     recordRemoteResult: unsupported,
     claim: unsupported,

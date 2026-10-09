@@ -239,6 +239,8 @@ export interface VoiceNotesPlugin {
   getCaptureDefaults(): Promise<CaptureDefaults & { status: AccountStatus }>;
   setCaptureDefaults(options: CaptureDefaults): Promise<{ claimed: string[] }>;
   setAccountState(options: { status: AccountStatus; accountDid: string | null; transitionGen: number }): Promise<void>;
+  retryRecovery(options: { id: string }): Promise<void>;
+  discardFailedRecording(options: { id: string }): Promise<void>;
   beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
   recordRemoteResult(options: { id: string; did: string; opId: string; result: {
     handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
