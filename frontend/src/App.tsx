@@ -112,7 +112,7 @@ import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync
 import { LocalCaptureHome } from "./capture/local/LocalCaptureHome";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
 import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
-import { captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
+import { captureCapabilities, captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
 import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
 import { handoffBeforeCredentialClear, withCaptureDeadline } from "./lib/voiceNotes/accountHandoff";
 import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
@@ -899,8 +899,9 @@ export function App() {
     if (state === "offline") setOfflineCapture(true);
     else if (state !== "booting") setOfflineCapture(false);
   }, [state]);
-  const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
-  const signedOutLocalHome = voiceNotesInApp && !LOCAL_VALIDATION && state === "unauthenticated" && error === null
+  const capabilities = captureCapabilities();
+  const offlineRecorder = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && offlineCapture;
+  const signedOutLocalHome = voiceNotesInApp && capabilities.offlineRecorder && !LOCAL_VALIDATION && state === "unauthenticated" && error === null
     && globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1";
 
   // The pending-count badge follows the drain record's store directly — no
@@ -1123,7 +1124,7 @@ export function App() {
         Recordings are being kept unassigned until Exo can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
       </div>}
-      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={authAction} />
+      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && capabilities.micDeniedPresentation && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={authAction} />
       {storageReadOnly && (
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full: read-only.</strong>{" "}

@@ -276,6 +276,11 @@ export interface VoiceNotesPlugin {
 // imports this binding, and an ES module binding is live.
 export let VoiceNotes = registerPlugin<VoiceNotesPlugin>("VoiceNotes");
 
+/** Boot only (captureEngine.installCaptureEngine): every caller of `VoiceNotes` now talks to `plugin`. */
+export function installVoiceNotesEngine(plugin: VoiceNotesPlugin): void {
+  VoiceNotes = plugin;
+}
+
 let availableForTests: boolean | null = null;
 
 export function nativeVoiceNotesAvailable(): boolean {
