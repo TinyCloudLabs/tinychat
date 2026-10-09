@@ -8,9 +8,9 @@ import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity,
   reconcileDuplicates, sweepArchived, transcriptHash, transcriptRevKvKey } from "./voiceNoteRows";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
-import { createVoiceNotePipeline } from "./voiceNotePipeline";
+import { createVoiceNotePipeline, VoiceNoteSaveDeferred } from "./voiceNotePipeline";
 import { handoffBeforeCredentialClear } from "./accountHandoff";
-import { currentAccountGeneration } from "./accountContext";
+import { advanceAccountGeneration, currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { associateLegacyNotes, markLegacyOwnerUnknown } from "./legacyMigration";
 
@@ -304,8 +304,10 @@ test("cancelAll stops an upload at its next KV checkpoint and quiescent waits", 
     await atPart;
     pipeline.cancelAll();
     expect(await pipeline.quiescent(0)).toBe(false);
+    // Re-arming for a later session cannot turn this old job into an error receipt.
+    pipeline.resume();
     release();
-    await expect(job).rejects.toThrow();
+    await expect(job).rejects.toBeInstanceOf(VoiceNoteSaveDeferred);
     expect(await pipeline.quiescent(100)).toBe(true);
     expect([...values.keys()].some((key) => key.endsWith("/manifest"))).toBe(false);
   } finally {
@@ -331,6 +333,14 @@ test("Stop during the OpenKey wait after handoff cannot upload to the old accoun
     await expect(pipeline.process({ did: tcw.did, spaceId: tcw.spaceId,
       generation: currentAccountGeneration() }, stopped.id)).rejects.toThrow("suspended");
     expect(values.size).toBe(0);
+    const current = await fake.plugin.getCaptureDefaults();
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: current.transitionGen + 1,
+      transcriber: "on-device", identifySpeakers: false });
+    pipeline.resume();
+    await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId,
+      generation: advanceAccountGeneration() });
+    expect((await fake.plugin.listPending()).recordings.find((note) => note.id === stopped.id)?.ledger?.audio.state).toBe("saved");
+    expect(values.size).toBeGreaterThan(0);
   } finally { __setVoiceNotesForTests(previous, { available: null }); }
 });
 

@@ -775,18 +775,21 @@ describe("I1 badge — App wiring (source-asserted)", () => {
     const from = app.indexOf("const signOut = useCallback");
     expect(from).toBeGreaterThan(0);
     const body = app.slice(from, app.indexOf("const isReady", from));
+    const cleanup = app.slice(app.indexOf("const completeLocalSignOut = useCallback"),
+      app.indexOf("useEffect(() => registerSessionSignedOutHook"));
     expect(body).toContain("signOutOpenKeySession(openKeyClient");
     expect(body.indexOf("signOutOpenKeySession(openKeyClient")).toBeLessThan(
       body.indexOf("tcw.signOut?.()"),
     );
     expect(body).toContain('openKeyOutcome.status === "unverified"');
     expect(body).toContain('openKeyOutcome.status === "cancelled"');
-    expect(body).toContain("if (address) clearPersistedSession(address);");
-    expect(body).toContain("historyPrefetch.clear();");
-    expect(body).toContain("clearAgentSessionCache();");
-    expect(body).toContain("clearBackgroundDrainRecord();");
+    expect(body).toContain("completeLocalSignOut(openKeyWarning");
+    expect(cleanup).toContain("if (address) clearPersistedSession(address);");
+    expect(cleanup).toContain("historyPrefetch.clear();");
+    expect(cleanup).toContain("clearAgentSessionCache();");
+    expect(cleanup).toContain("clearBackgroundDrainRecord();");
     // The page load's latches are NOT reset here — only the record is.
-    expect(body).not.toContain("resetBackgroundDrainForTests");
+    expect(cleanup).not.toContain("resetBackgroundDrainForTests");
   });
 });
 

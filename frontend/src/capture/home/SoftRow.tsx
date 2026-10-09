@@ -42,7 +42,7 @@ export function softRowLabel(
   ];
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
-  if (props.issue && props.issue.kind !== "finalization_timed_out")
+  if (props.issue && props.issue.kind !== "finalization_timed_out" && props.issue.kind !== "partial_audio")
     parts.push(HOME_COPY.needsAttention);
   if (props.issue && props.onActivate) parts.push(HOME_COPY.opensDetails);
   return parts.join(". ");
@@ -60,7 +60,7 @@ function Spinner() {
 
 export function SoftRow(props: SoftRowProps) {
   const { issue } = props;
-  const failed = issue !== undefined && issue.kind !== "finalization_timed_out";
+  const failed = issue !== undefined && issue.kind !== "finalization_timed_out" && issue.kind !== "partial_audio";
   const Icon = props.icon;
   const label = softRowLabel(props);
   const body = (

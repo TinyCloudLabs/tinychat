@@ -33,3 +33,14 @@ class AccountState(private val root: File, private val ops: FileOps, private val
         ops.rename(tmp, file, "account.rename")
     }
 }
+
+/** Debug-only write failure selector; the plugin calls this before each durable write. */
+object AccountStateDebugFailure {
+    fun check(failure: String?, status: String?, previous: String) {
+        val handoffWrite = previous == "transitioning" && (status == "signed_out" || status == "signed_in")
+        if ((failure == "1" && status == "transitioning") ||
+            (failure == "3" && status == "signed_out") ||
+            (failure == "compensation" && handoffWrite))
+            throw IllegalStateException("account_state_write_failed")
+    }
+}

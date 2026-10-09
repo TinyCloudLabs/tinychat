@@ -51,6 +51,12 @@ describe("honestRecorderError", () => {
     expect(line({ error: FINALIZATION_PENDING, captureIssues: { a: failed } })).toBe(FINALIZATION_PENDING);
   });
 
+  test("partial_audio is not an error: it neither rewrites nor suppresses the promise", () => {
+    const partial: RecorderCaptureIssue = { kind: "partial_audio", missingMs: 1000 };
+    expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: partial } })).toBe(FINALIZATION_PENDING);
+    expect(line({ finalizationPendingId: "a", captureIssues: { a: partial } })).toBeNull();
+  });
+
   test("a different error is left alone, whatever the issues", () => {
     expect(line({ error: "Could not stop: boom", finalizationPendingId: "a", captureIssues: { a: failed } })).toBe("Could not stop: boom");
   });

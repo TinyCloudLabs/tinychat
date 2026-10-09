@@ -126,7 +126,7 @@ import type {
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
-import { registerSessionSignedOutHook } from "./lib/sessionSignedOut";
+import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   nativeSessionWasActive, retireNativeSessionAtBoot, secretsAvailable,
@@ -227,7 +227,32 @@ export function App() {
       .catch(() => undefined);
     return task;
   }, [performCaptureHandoff]);
-  useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff), [captureHandoff]);
+  const completeLocalSignOut = useCallback((warning: string | null, terminal = false) => {
+    resetNavigationMemory();
+    if (address) clearPersistedSession(address);
+    voiceNotePipeline?.cancelAll();
+    openkeyRef.current = null;
+    if (isNativeOpenKeySession()) setNativeSessionActive(false);
+    historyPrefetch.clear();
+    clearAgentSessionCache();
+    clearBackgroundDrainRecord();
+    uploadRunner.reset();
+    selectionControllerRef.current = null;
+    memoryRef.current = null;
+    setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
+    setTcw(null);
+    setCaptureReadyTcw(null);
+    setAddress(null);
+    setDid(null);
+    setSpaceId(null);
+    setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
+    setBillingStatus(null);
+    setPricingOpen(false);
+    setError(warning);
+    setState(terminal ? "unauthenticated" : warning ? "recoverableError" : "unauthenticated");
+  }, [address, voiceNotePipeline]);
+  useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff,
+    () => completeLocalSignOut(null)), [captureHandoff, completeLocalSignOut]);
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;
     try {
@@ -809,6 +834,10 @@ export function App() {
           openKeyWarning =
             "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "remote-unavailable") {
+          openKeyWarning =
+            "Remote OpenKey sign-out is unavailable in this app right now. TinyChat is signed out locally. " +
+            "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "unverified") {
           const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
           openKeyWarning =
@@ -826,40 +855,15 @@ export function App() {
           logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
       }
-      // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
-      // directly as well so a client cleanup failure cannot restore this user.
-      if (address) clearPersistedSession(address);
+      // TinyCloudWeb.signOut is local cleanup. The shared completion also
+      // removes persisted account data, so a cleanup failure cannot restore it.
       sessionStoreRef.current.clear();
-      if (nativeSession) setNativeSessionActive(false);
-      // Drop the in-memory history prefetch cache and stop its queue — it holds
-      // the signed-out account's message docs.
-      historyPrefetch.clear();
-      // Clear the agent session cache so the next sign-in re-probes.
-      clearAgentSessionCache();
-      // Drop the background-drain counts: they belong to the account that is
-      // leaving, and the next user must never inherit them. ONLY the record —
-      // this page load's attempt/dark latches are about the page, not the user.
-      clearBackgroundDrainRecord();
-      // Stop this tab's audio upload work: it runs with the leaving account's
-      // session and space. Its stored job stays for that account's next visit.
-      uploadRunner.reset();
-      selectionControllerRef.current = null;
-      memoryRef.current = null;
-      setSelectionView((view) => ({ ...view, threadId: null, model: null, canSend: false, canPick: false }));
-      setTcw(null);
-      setAddress(null);
-      setDid(null);
-      setSpaceId(null);
-      setModels(OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })));
-      setBillingStatus(null);
-      setPricingOpen(false);
-      setError(openKeyWarning);
-      setState(options.terminal ? "unauthenticated" : openKeyWarning ? "recoverableError" : "unauthenticated");
+      completeLocalSignOut(openKeyWarning, Boolean(options.terminal));
     } finally {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
-  }, [address, tcw, captureHandoff, restoreCaptureAfterAuthAbort]);
+  }, [tcw, captureHandoff, restoreCaptureAfterAuthAbort, completeLocalSignOut]);
 
   const isReady = state === "ready" && tcw !== null;
   // The offline state still HOLDS a session, so its "Try again" re-runs the
@@ -1048,8 +1052,8 @@ export function App() {
                   memoryRef={memoryRef}
                   onSelectionView={setSelectionView}
                   onSelectionAuthFailure={() => { void (async () => {
-                    if (!await captureHandoff()) return;
-                    sessionStoreRef.current.clear();
+                    try { await clearSessionAfterHandoff(sessionStoreRef.current); }
+                    catch { return; }
                     setError("Your session expired. Sign in again to continue.");
                     setState("recoverableError");
                   })(); }}

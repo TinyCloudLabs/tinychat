@@ -30,6 +30,8 @@ const writeFailed: RecorderCaptureIssue = {
   kind: "write_failed",
   detail: "EIO",
 };
+const partial: RecorderCaptureIssue = { kind: "partial_audio", missingMs: 3000,
+  spans: [{ startMs: 2000, endMs: 5000, reason: "writer_stalled" }] };
 
 const note = (i: number): LibraryItem => ({
   id: `row-${i}`,
@@ -83,6 +85,14 @@ describe("issue copy", () => {
     expect(issueHasSheet(timedOut)).toBe(false);
     expect(issueHasSheet(failed)).toBe(true);
     expect(issueHasSheet(writeFailed)).toBe(true);
+  });
+
+  test("partial audio stays available to the recorder without becoming an error row or sheet", () => {
+    expect(issueHasSheet(partial)).toBe(false);
+    expect(sheetIssue("rec-1", { "rec-1": partial }, true)).toBeNull();
+    expect(issueForItem(note(1), { "rec-1": partial })).toBeUndefined();
+    expect(orphanIssues([], { "rec-1": partial })).toEqual([]);
+    expect(cardNote({ "rec-1": partial }, null)).toBe(HOME_COPY.notInSpace);
   });
 
   test("an open sheet follows the provider's current issue: it changes with it and is gone once it clears", () => {
@@ -174,13 +184,17 @@ describe("the on-this-phone card's note", () => {
     ["the finishing promise as lastError yields to write_failed", { a: writeFailed }, FINALIZATION_PENDING, kept],
     ["the finishing promise as lastError stays with nothing failed", { a: timedOut }, FINALIZATION_PENDING, pending],
     ["the finishing promise as lastError stays with no issue", {}, FINALIZATION_PENDING, pending],
+    ["partial_audio is not an error: it keeps the plain line", { a: partial }, null, "Not in your space yet"],
+    ["partial_audio does not suppress the finishing promise", { a: partial }, FINALIZATION_PENDING, pending],
+    ["partial_audio does not trigger it", { a: partial, b: timedOut }, null, pending],
+    ["partial_audio does not outrank a real failure", { a: partial, b: failed }, FINALIZATION_PENDING, retry],
   ];
   for (const [name, issues, lastError, expected] of cases) {
     test(name, () => {
       const note = cardNote(issues, lastError);
       expect(note).toBe(expected);
       if (
-        Object.values(issues).some((issue) => issue.kind !== "finalization_timed_out") &&
+        Object.values(issues).some((issue) => issue.kind !== "finalization_timed_out" && issue.kind !== "partial_audio") &&
         lastError === FINALIZATION_PENDING
       )
         expect(note).not.toContain("automatically");
