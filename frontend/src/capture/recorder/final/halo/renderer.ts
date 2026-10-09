@@ -207,6 +207,10 @@ export const TICKS_SHADER = `
 void main() {
   vec2 p = P();
   float r = length(p);
+  if (r < RA - 2.0 * px) {
+    gl_FragColor = avatarAt(p, 1.0) * EF(p);
+    return;
+  }
   float angle = atan(p.x, p.y);
   float count = uTickN;
   float cell = floor((angle / TAU + 0.5) * count);
@@ -429,7 +433,7 @@ class SharedHaloRenderer {
       peak: new Float32Array(DATA_SIZE),
       hold: new Float32Array(DATA_SIZE),
       mean: new Float32Array(DATA_SIZE).fill(0.15),
-      pauseValue: config.paused || config.still ? 1 : 0,
+      pauseValue: config.paused ? 1 : 0,
       atlasX: 0,
       atlasY: 0,
     };

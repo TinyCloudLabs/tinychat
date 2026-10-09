@@ -142,6 +142,14 @@ export function ribbonBarScale(value: number, act: number): number {
   return 0.12 + 0.88 * Math.min(1, value * act * 1.25);
 }
 
+export function dockBarScale(value: number, act: number): number {
+  return 0.2 + 0.8 * value * act;
+}
+
+function spectrumBarScale(value: number, act: number, bars: number): number {
+  return bars === 22 ? dockBarScale(value, act) : ribbonBarScale(value, act);
+}
+
 function setSpectrumHeights(
   heights: number[],
   source: Pick<HaloSource, "spec" | "act">,
@@ -149,7 +157,7 @@ function setSpectrumHeights(
 ) {
   for (let index = 0; index < bars; index++) {
     const band = mirroredBandIndex(index, bars);
-    heights[index] = ribbonBarScale(source.spec[band], source.act);
+    heights[index] = spectrumBarScale(source.spec[band], source.act, bars);
   }
 }
 
@@ -163,18 +171,24 @@ export function MirroredSpectrumBars({
 }: MirroredSpectrumBarsProps) {
   const root = useRef<HTMLDivElement>(null);
   const heights = useRef<number[]>([]);
+  const lastPainted = useRef<number[]>([]);
   if (heights.current.length !== bars) {
     heights.current = Array.from({ length: bars }, () => 0.12);
+    lastPainted.current = Array.from({ length: bars }, () => -1);
   }
 
   useEffect(() => {
     const spans = root.current
       ? (Array.from(root.current.children) as HTMLElement[])
       : [];
-    const paint = () =>
+    const paint = () => {
       spans.forEach((bar, index) => {
-        bar.style.transform = `scaleY(${heights.current[index].toFixed(3)})`;
+        const scale = Math.round(heights.current[index] * 1000);
+        if (lastPainted.current[index] === scale) return;
+        lastPainted.current[index] = scale;
+        bar.style.transform = `scaleY(${(scale / 1000).toFixed(3)})`;
       });
+    };
     if (source && !paused) setSpectrumHeights(heights.current, source, bars);
     paint();
     if (!subscribe || paused) return;
@@ -204,9 +218,10 @@ export function MirroredSpectrumBars({
     >
       {Array.from({ length: bars }, (_, index) => {
         const initialScale = source
-          ? ribbonBarScale(
+          ? spectrumBarScale(
               source.spec[mirroredBandIndex(index, bars)],
               source.act,
+              bars,
             )
           : 0.12;
         return (

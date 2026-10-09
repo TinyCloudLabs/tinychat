@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   LevelBars,
+  dockBarScale,
   mirroredBandIndex,
   MirroredSpectrumBars,
   ribbonBarScale,
@@ -44,6 +45,8 @@ describe("level bars", () => {
     expect(ribbon).toContain("width:3px");
     expect(ribbon).toContain("height:30px");
     expect(ribbonBarScale(0, 0)).toBeCloseTo(0.12);
+    expect(dockBarScale(0, 0)).toBeCloseTo(0.2);
+    expect(dockBarScale(0.5, 0.4)).toBeCloseTo(0.36);
   });
 
   test("renders paused meters in neutral grey", () => {

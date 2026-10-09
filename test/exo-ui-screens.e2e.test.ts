@@ -6,6 +6,7 @@
 //
 //   EXO_UI_ONLY=primitives,legacy    screen groups or ids
 //   EXO_UI_VIEWPORTS=phone,zoom200   viewport ids, or a group (zoom200, text200)
+//   EXO_UI_VIEWPORTS=phone,halo-review  also enables the halo-only review captures
 //   EXO_UI_THEMES=dark               light, dark
 //   EXO_UI_ENGINE=chromium           webkit (default: Exo's WKWebView) or chromium (CI)
 //   EXO_UI_MOTION=no-preference      reduce (default) or no-preference
@@ -399,13 +400,17 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     }, 600_000);
   }
 
-  test("recorder halo in tall phone and eight-ring review captures", async () => {
+  if (viewportFilter?.some((id) => ["phone", "phone-halo-review", "halo-review"].includes(id))) test("recorder halo in tall phone and eight-ring review captures", async () => {
     const halo = screens.find((screen) => screen.id === "recorder-final-halo");
     if (!halo) return;
 
     const haloViewports: Viewport[] = [
-      { id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
-      { id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 },
+      ...(viewportFilter!.some((id) => ["phone", "phone-halo-review"].includes(id))
+        ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
+        : []),
+      ...(viewportFilter!.includes("halo-review")
+        ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
+        : []),
     ];
     const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
     const haloBrowser = await engine.launch({ headless: true });
@@ -458,6 +463,21 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               return centerVisible && (!checkCorners || cornerAlpha === 0);
             });
           }, forceCanvas, { timeout: 5_000 });
+          if (!forceCanvas && engineName === "webkit") {
+            const center = await page.locator(".halo-ring__canvas").nth(3).evaluate((canvas) => {
+              const element = canvas as HTMLCanvasElement;
+              const context = element.getContext("2d");
+              if (!context) throw new Error("Halo output canvas has no 2D context");
+              const x = Math.floor(element.width / 2);
+              const y = Math.floor(element.height / 2);
+              return {
+                size: element.width,
+                color: [...context.getImageData(x, y, 1, 1).data.slice(0, 3)],
+              };
+            });
+            expect(center.size % 2).toBe(1);
+            expect(center.color).toEqual(theme === "dark" ? [68, 59, 76] : [251, 248, 246]);
+          }
           if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
           const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;
           await page.screenshot({ path: `${outDir}${file}`, fullPage: false });

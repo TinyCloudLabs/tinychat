@@ -35,7 +35,18 @@ function IdleRing({ theme }: { theme: "night" | "day" }) {
         onClick={() =>
           setSurface((current) => (current === "night" ? "day" : "night"))
         }
-        style={{ minHeight: 44, marginBottom: 54, padding: "10px 14px" }}
+        style={{
+          display: "block",
+          minHeight: 44,
+          margin: "0 auto 54px",
+          padding: "10px 14px",
+          border: "1px solid currentColor",
+          borderRadius: 999,
+          color: "inherit",
+          background: "transparent",
+          font: "inherit",
+          cursor: "pointer",
+        }}
       >
         Switch idle disc theme
       </button>
