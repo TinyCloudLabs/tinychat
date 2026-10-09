@@ -127,6 +127,8 @@ function ignoredConsoleError(message: ConsoleMessage): boolean {
   if (text.startsWith("Failed to load resource") && url !== "" && !url.startsWith("http://127.0.0.1:")) return true;
   // WebKit does not know Chrome's interactive-widget viewport key (index.html) and reports it as an error.
   if (text.includes('Viewport argument key "interactive-widget" not recognized')) return true;
+  // The saved-note-page-save-failed screen refuses the save on purpose, and the app logs every failed save.
+  if (text.startsWith("[SavedNote] Could not save the note")) return true;
   return false;
 }
 

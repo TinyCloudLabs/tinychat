@@ -107,11 +107,15 @@ test("a signed-out native note migrates its Markdown once with the T18 audio row
     const beforeEdit = await readRecordingNoteFromSpace(tcw, id);
     expect(beforeEdit?.moments).toEqual([{ atMs: 3_000, label: "bookmark" }]);
     expect(row(sqlite, `vn-${id}`).metadata.note_kv_key).toBe(key);
-    await saveNote(id, "# Edited later\n- **0:03** bookmark");
+    expect(beforeEdit?.savedEditAt).toBeNull();
+    expect(values.get(key)).not.toContain("edited:");
+    await saveNote(id, "# Edited later\n- **0:03** bookmark", { savedEdit: true });
     await syncRecordingNote(tcw, id);
     expect(notePuts).toBe(2);
     const afterEdit = await readRecordingNoteFromSpace(tcw, id);
     expect(afterEdit!.editedAt > beforeEdit!.editedAt).toBe(true);
+    expect(afterEdit!.savedEditAt).toBe(afterEdit!.editedAt);
+    expect(values.get(key)).toContain("edited: ");
   } finally { __setVoiceNotesForTests(original, { available: null }); }
 });
 

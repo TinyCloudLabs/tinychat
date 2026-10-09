@@ -7,11 +7,14 @@ export interface RecordingNote {
   moments: RecordingMoment[];
   createdAt: string;
   editedAt: string;
+  /** When the saved-note Save last rewrote the note; null until then. Recorder writes never set it, and records stored
+   * before the field existed read as null. */
+  savedEditAt: string | null;
   /** Local revision; a remote sync repeats if a newer edit arrived while it was writing. */
   revision: number;
 }
 
-type StoredNote = Omit<RecordingNote, "moments"> | { recordingId: string; deleted: true };
+type StoredNote = Omit<RecordingNote, "moments" | "savedEditAt"> & { savedEditAt?: string | null } | { recordingId: string; deleted: true };
 const DB_NAME = "exo-recording-notes";
 const STORE_NAME = "notes";
 const LOCAL_PREFIX = "exo.voiceNotes.note.";
@@ -84,7 +87,7 @@ export async function loadNote(id: string): Promise<RecordingNote | null> {
   validateId(id);
   await writes.get(id)?.catch(() => undefined);
   const note = await readStored(id);
-  return note && !("deleted" in note) ? { ...note, moments: parseMomentLines(note.md) } : null;
+  return note && !("deleted" in note) ? { ...note, savedEditAt: note.savedEditAt ?? null, moments: parseMomentLines(note.md) } : null;
 }
 
 /** Only these Markdown lines are moments. Other list items and prose are ignored. */
@@ -106,32 +109,41 @@ export function parseMomentLines(md: string): RecordingMoment[] {
 
 function changed(id: string, old: StoredNote | null): Omit<RecordingNote, "moments"> {
   const now = new Date(Math.max(Date.now(), old && !("deleted" in old) ? Date.parse(old.editedAt) + 1 : 0)).toISOString();
-  return old && !("deleted" in old) ? { ...old, editedAt: now, revision: old.revision + 1 }
-    : { recordingId: id, md: "", createdAt: now, editedAt: now, revision: 1 };
+  return old && !("deleted" in old) ? { ...old, savedEditAt: old.savedEditAt ?? null, editedAt: now, revision: old.revision + 1 }
+    : { recordingId: id, md: "", createdAt: now, editedAt: now, savedEditAt: null, revision: 1 };
 }
 
 /** Every edit is durable locally before its promise resolves; only space sync is debounced. */
-export function saveNote(id: string, md: string): Promise<RecordingNote> {
+export function saveNote(id: string, md: string, options: { savedEdit?: boolean } = {}): Promise<RecordingNote> {
   validateId(id);
   return ordered(id, async () => {
     const stored = await readStored(id);
     if (stored && "deleted" in stored) throw new Error("This recording was discarded");
     const note = changed(id, stored);
     note.md = md;
+    if (options.savedEdit) note.savedEditAt = note.editedAt;
     await writeStored(note);
     return { ...note, moments: parseMomentLines(md) };
   });
 }
 
 /** A note found in the space becomes available offline without rewriting its timestamps. */
-export function adoptNote(remote: RecordingNote): Promise<RecordingNote> {
+export function adoptNote(remote: Omit<RecordingNote, "savedEditAt"> & { savedEditAt?: string | null }): Promise<RecordingNote> {
   validateId(remote.recordingId);
   return ordered(remote.recordingId, async () => {
     const stored = await readStored(remote.recordingId);
     if (stored && "deleted" in stored) throw new Error("This recording was discarded");
-    if (stored) return { ...stored, moments: parseMomentLines(stored.md) };
+    // A stored note keeps its text; its saved-edit time only ever moves forward, so a record without one cannot clear it.
+    if (stored) {
+      const mine = stored.savedEditAt ?? null;
+      const theirs = remote.savedEditAt ?? null;
+      const savedEditAt = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine)) ? theirs : mine;
+      if (savedEditAt !== mine) await writeStored({ ...stored, savedEditAt });
+      return { ...stored, savedEditAt, moments: parseMomentLines(stored.md) };
+    }
     const record: Omit<RecordingNote, "moments"> = { recordingId: remote.recordingId, md: remote.md,
-      createdAt: remote.createdAt, editedAt: remote.editedAt, revision: remote.revision };
+      createdAt: remote.createdAt, editedAt: remote.editedAt, savedEditAt: remote.savedEditAt ?? null,
+      revision: remote.revision };
     await writeStored(record);
     return { ...record, moments: parseMomentLines(record.md) };
   });
@@ -145,22 +157,22 @@ export function deleteNote(id: string): Promise<void> {
 
 /** JSON scalars and arrays are valid YAML flow values; Markdown stays byte-for-byte intact. */
 export function noteMarkdown(note: RecordingNote): string {
-  return `---\nrecordingId: ${JSON.stringify(note.recordingId)}\ncreatedAt: ${JSON.stringify(note.createdAt)}\nedited: ${JSON.stringify(note.editedAt)}\nmoments: ${JSON.stringify(parseMomentLines(note.md))}\n---\n${note.md}`;
+  return `---\nrecordingId: ${JSON.stringify(note.recordingId)}\ncreatedAt: ${JSON.stringify(note.createdAt)}\n${note.savedEditAt === null ? "" : `edited: ${JSON.stringify(note.savedEditAt)}\n`}moments: ${JSON.stringify(parseMomentLines(note.md))}\n---\n${note.md}`;
 }
 
 export function parseNoteMarkdown(markdown: string): RecordingNote {
-  const match = /^---\nrecordingId: (.+)\ncreatedAt: (.+)\nedited: (.+)\nmoments: (.+)\n---\n([\s\S]*)$/.exec(markdown);
+  const match = /^---\nrecordingId: (.+)\ncreatedAt: (.+)\n(?:edited: (.+)\n)?moments: (.+)\n---\n([\s\S]*)$/.exec(markdown);
   if (!match) throw new Error("Invalid recording note frontmatter");
   const id: unknown = JSON.parse(match[1]!);
   const createdAt: unknown = JSON.parse(match[2]!);
-  const editedAt: unknown = JSON.parse(match[3]!);
+  const savedEditAt: unknown = match[3] === undefined ? null : JSON.parse(match[3]);
   const moments: unknown = JSON.parse(match[4]!);
-  if (typeof id !== "string" || typeof createdAt !== "string" || typeof editedAt !== "string" || !Array.isArray(moments) ||
+  if (typeof id !== "string" || typeof createdAt !== "string" || (savedEditAt !== null && typeof savedEditAt !== "string") || !Array.isArray(moments) ||
     !moments.every((m) => m && typeof m === "object" && Number.isFinite(m.atMs) && m.atMs >= 0 &&
       (m.label === undefined || typeof m.label === "string"))) throw new Error("Invalid recording note frontmatter");
   validateId(id);
   const md = match[5]!;
   const derived = parseMomentLines(md);
   if (JSON.stringify(moments) !== JSON.stringify(derived)) throw new Error("Recording note moments disagree with its Markdown");
-  return { recordingId: id, createdAt, editedAt, moments: derived, md, revision: 1 };
+  return { recordingId: id, createdAt, editedAt: savedEditAt ?? createdAt, savedEditAt, moments: derived, md, revision: 1 };
 }

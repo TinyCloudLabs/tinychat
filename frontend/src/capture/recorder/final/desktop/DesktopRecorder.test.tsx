@@ -142,4 +142,13 @@ describe("DesktopRecorder", () => {
       "false",
     ]);
   });
+  test("a failed note save changes the notes button and raises an alert", () => {
+    const failed = render({}, { ...withNotes, noteSaveFailed: true });
+    expect(failed).toContain("Note not saved");
+    expect(failed).toContain('data-failed="true"');
+    expect(failed).toContain("tap Done again to finish without it");
+    const fine = render({}, withNotes);
+    expect(fine).not.toContain("Note not saved");
+    expect(fine).not.toContain("data-failed");
+  });
 });
