@@ -331,7 +331,9 @@ export function SavedNotePage(props: SavedNoteViewProps) {
         >
           <span aria-hidden="true">←</span> {COPY.back}
         </button>
-        <h1 className="soft-title sn-title">{props.title}</h1>
+        <h1 className="soft-title sn-title" data-testid="note-detail">
+          {props.title}
+        </h1>
         <p className="sn-meta">{props.meta}</p>
         <Body {...props} {...refs} />
       </div>
@@ -373,7 +375,10 @@ export function SavedNoteSheet(props: SavedNoteViewProps) {
         >
           <div className="sn-sheet-body" inert={confirming}>
             <div className="sn-sheet-head">
-              <Dialog.Title className="soft-title sn-title">
+              <Dialog.Title
+                className="soft-title sn-title"
+                data-testid="note-detail"
+              >
                 {props.title}
               </Dialog.Title>
               <Dialog.Close className="sn-x" aria-label={COPY.close}>

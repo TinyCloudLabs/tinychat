@@ -12,11 +12,19 @@
 //      Close returns focus to the line, Dismiss removes the marker (focus lands on the row), and a Dismiss that fails says so.
 //
 // SOFT_HOME_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import {
   chromium,
   webkit,
   type Browser,
+  type BrowserContext,
   type BrowserType,
   type Locator,
   type Page,
@@ -31,6 +39,7 @@ if (!engine)
   );
 
 let browser: Browser;
+const contexts: BrowserContext[] = [];
 let running: ReturnType<typeof serveHarness>;
 beforeAll(async () => {
   running = serveHarness(await buildHarness());
@@ -50,6 +59,11 @@ async function hasFocus(locator: Locator): Promise<void> {
   }
 }
 
+// A failed test never reaches its own close; a leaked context must not outlive it.
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map((context) => context.close()));
+});
+
 async function open(screen: string): Promise<Page> {
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -58,6 +72,7 @@ async function open(screen: string): Promise<Page> {
     colorScheme: "dark",
     reducedMotion: "reduce",
   });
+  contexts.push(context);
   const page = await context.newPage();
   await page.goto(
     `http://127.0.0.1:${running.port}/?screen=${screen}&theme=dark&platform=ios&freeze=1`,
