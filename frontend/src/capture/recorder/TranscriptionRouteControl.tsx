@@ -15,6 +15,7 @@ import { InfoTip } from "@/components/ui/info-tip";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { hapticSelection } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
+import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
 import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
@@ -82,6 +83,8 @@ function asRoute(transcriber: TranscriberId): Route {
 }
 
 function routeOptions(signedIn: boolean, offered: boolean): { value: Route; label: string }[] {
+  if (localTranscriptionUnavailable())
+    return offered ? [{ value: "off", label: "Off" }, { value: "private-cloud", label: "Private cloud" }] : [{ value: "off", label: "Off" }];
   if (!signedIn) return [{ value: "on-device", label: "On this phone" }];
   return offered
     ? [
@@ -152,7 +155,7 @@ export function TranscriptionRouteControl(props: {
   // resolves, then correct from the real stored default once it lands. Already-consented private
   // cloud is a stronger, synchronously-known signal of intent than that still-loading default.
   // The recorder below reads the controller's native choice instead of these local hints.
-  const [onDevicePicked, setOnDevicePicked] = useState(!consented);
+  const [onDevicePicked, setOnDevicePicked] = useState(!consented && !localTranscriptionUnavailable());
   const { activeOverride: liveOverride, onDeviceDefault, offDefault } = useLiveRouteOverride(signedIn && !recorder);
   const [activeOverride, setActiveOverride] = useState<Route | null>(null);
   useEffect(() => { if (liveOverride) setActiveOverride(liveOverride); }, [liveOverride]);
@@ -161,7 +164,7 @@ export function TranscriptionRouteControl(props: {
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const askingNow = offered && !consented && asking;
   // With a live recorder the selection is always the provider's; `asking` only shows the consent question.
-  const route: Route = !signedIn ? "on-device"
+  const route: Route = !signedIn && !localTranscriptionUnavailable() ? "on-device"
     : recorder ? asRoute(recorder.transcriber.id)
     : askingNow ? "private-cloud"
     : activeOverride ?? (offPicked && !askingNow ? "off"

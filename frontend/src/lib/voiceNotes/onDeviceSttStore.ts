@@ -1,6 +1,7 @@
 // A subscribable snapshot of `OnDeviceStt.status()` (useSyncExternalStore-friendly), the same
 // pattern as `pendingStore` in recorderSaves.ts. Used by the recorder's transcription route
 // control and by the Settings "Voice notes" card, so both show the same model state live.
+import { localTranscriptionUnavailable } from "./captureEngine";
 import { OnDeviceStt, type OnDeviceSttStatus } from "./onDeviceStt";
 
 const EMPTY_STATUS: OnDeviceSttStatus = {
@@ -22,8 +23,9 @@ function publish(status: OnDeviceSttStatus): void {
   for (const listener of listeners) listener();
 }
 
+// An engine without on-device speech never reaches OnDeviceStt; the store stays on its empty snapshot.
 function start(): void {
-  if (started) return;
+  if (started || localTranscriptionUnavailable()) return;
   started = true;
   // A harness or test that never swaps in a fake OnDeviceStt (it has no availability gate like
   // `nativeVoiceNotesAvailable()`) can throw synchronously from Capacitor's plugin proxy; this
@@ -49,6 +51,7 @@ export const onDeviceSttStore = {
     };
   },
   refresh(): Promise<void> {
+    if (localTranscriptionUnavailable()) return Promise.resolve();
     return OnDeviceStt.status().then(publish);
   },
 };
