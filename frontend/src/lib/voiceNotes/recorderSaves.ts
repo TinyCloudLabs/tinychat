@@ -38,6 +38,23 @@ export function errorCode(error: unknown): string | null {
 
 /** Recordings being uploaded right now, across mounts (StrictMode mounts effects twice). */
 const savesInFlight = new Set<string>();
+const saveIdleListeners = new Set<() => void>();
+/** A swap must not retire the service graph while a recording is writing. */
+export function voiceNoteSaveBusy(): boolean {
+  return savesInFlight.size > 0 || pendingRunInFlight !== null;
+}
+
+/** Resolve after the recording and the pending-run single-flight guard settle. */
+export function whenVoiceNoteSavesIdle(): Promise<void> {
+  if (!voiceNoteSaveBusy()) return Promise.resolve();
+  return new Promise((resolve) => saveIdleListeners.add(resolve));
+}
+
+function publishSaveIdle(): void {
+  if (voiceNoteSaveBusy()) return;
+  for (const listener of saveIdleListeners) listener();
+  saveIdleListeners.clear();
+}
 /**
  * Recordings this app session saved and removed from the phone: a late "autoStopped"
  * event or a pending retry that still lists one must not save it again.
@@ -241,6 +258,7 @@ export async function saveRecording(
     return { kind: "failed", failure: messageOf(caught) };
   } finally {
     savesInFlight.delete(recording.id);
+    publishSaveIdle();
   }
 }
 
@@ -294,6 +312,7 @@ export function savePendingRecordings(tcw: TinyCloudWeb): Promise<PendingRun> {
   })().finally(() => {
     pendingRunInFlight = null;
     publishPending({ running: false });
+    publishSaveIdle();
   });
   return pendingRunInFlight;
 }

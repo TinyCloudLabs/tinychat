@@ -1112,7 +1112,8 @@ export async function appendMessage(
     // timed out: SqlOpError.retryable), the retry succeeds without appending a
     // duplicate position.
     const messageId = (item.message as { id?: unknown } | undefined)?.id;
-    if (typeof messageId === "string") {
+    const reconcileMessage = async (): Promise<boolean> => {
+      if (typeof messageId !== "string") return false;
       const existing = await store(tcw).query(
         "SELECT payload FROM messages WHERE thread_id = ? ORDER BY position",
         [id],
@@ -1134,9 +1135,11 @@ export async function appendMessage(
         patchCacheEntry(tcw, { id, title: doc.title, model: doc.model, updatedAt: doc.updatedAt });
         historyPrefetch.invalidate(id);
         notifyThreadIndex(readCache(tcw) ?? []);
-        return;
+        return true;
       }
-    }
+      return false;
+    };
+    if (await reconcileMessage()) return;
 
     // Read the current title (to know whether to derive one) and existing model.
     const head = await store(tcw).query(
@@ -1158,7 +1161,9 @@ export async function appendMessage(
     const now = new Date().toISOString();
     const payload = JSON.stringify(item);
 
-    const res = await store(tcw).batch([
+    let res;
+    try {
+      res = await store(tcw).batch([
     {
       sql: `INSERT INTO threads (id, title, model, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
@@ -1172,8 +1177,22 @@ export async function appendMessage(
             VALUES (?, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE thread_id = ?), ?, ?)`,
       params: [id, id, payload, now],
     },
-    ]);
-    if (!res.ok) throw new SqlOpError(res.error, "appendMessage(batch)");
+      ]);
+    } catch (error) {
+      // A retired graph may have committed the append before its reply was
+      // lost. Read by message ID on the replacement graph; never replay the
+      // MAX(position)+1 batch with an unknown outcome.
+      const code = error && typeof error === "object" && "code" in error ? error.code : null;
+      const uncertain = code === "ABORTED"
+        || (error instanceof Error && error.message === "Service graph has been retired by session replacement.");
+      if (uncertain && await reconcileMessage()) return;
+      throw error;
+    }
+    if (!res.ok) {
+      if ((res.error.code === "ABORTED" || res.error.message === "Service graph has been retired by session replacement.")
+        && await reconcileMessage()) return;
+      throw new SqlOpError(res.error, "appendMessage(batch)");
+    }
 
     patchCacheEntry(tcw, { id, title, updatedAt: now, model: currentModel });
   // The thread's stored messages changed — drop any prefetched doc so a later
