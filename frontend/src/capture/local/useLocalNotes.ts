@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { clearPartialAudioIssue } from "../recorder/partialAudioIssues";
 
 export function useLocalNotes(did: string | null, offline = false) {
   const [notes, setNotes] = useState<VoiceNoteRecording[]>([]);
@@ -21,6 +22,7 @@ export function useLocalNotes(did: string | null, offline = false) {
   }, [refresh]);
   const remove = useCallback(async (id: string) => {
     await VoiceNotes.deleteAudio({ id });
+    clearPartialAudioIssue(id);
     await refresh();
   }, [refresh]);
   return { notes, error, refresh, remove };

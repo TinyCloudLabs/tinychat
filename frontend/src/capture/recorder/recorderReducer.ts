@@ -20,7 +20,8 @@ export interface RecorderMic {
 export type RecorderCaptureIssue =
   | { kind: "finalization_timed_out" }
   | { kind: "recoveryFailed"; detail: string }
-  | { kind: "write_failed"; detail: string };
+  | { kind: "write_failed"; detail: string }
+  | { kind: "partial_audio"; missingMs?: number; spans?: { startMs: number; endMs: number; reason: string }[] };
 
 export interface RecorderState {
   phase: RecorderPhase;
@@ -32,7 +33,7 @@ export interface RecorderState {
   elapsedMs: number;
   /** Wall-clock time when this elapsed checkpoint reached the controller. */
   elapsedAt: number | null;
-  /** Native failures keyed by recording ID, including notes no longer on the recorder screen. */
+  /** Capture issues keyed by recording ID, including saved partial audio. */
   captureIssues: Record<string, RecorderCaptureIssue>;
   /** A recovery scan can fail before native knows which recording caused it. */
   recoveryScanFailure: string | null;
@@ -76,6 +77,8 @@ export type RecorderEvent =
     { elapsedMs: number; elapsedAt: number } | { elapsedMs?: never; elapsedAt?: never }))
   | { type: "CAPTURE_ISSUE"; id: string | null; issue: RecorderCaptureIssue }
   | { type: "CAPTURE_RESOLVED"; id: string }
+  | { type: "CAPTURE_COMMITTED"; id: string; partial?: Extract<RecorderCaptureIssue, { kind: "partial_audio" }> }
+  | { type: "CAPTURE_DISMISSED"; id: string }
   | { type: "PAUSE_REQUESTED" }
   | { type: "PAUSE_CONFIRMED" }
   | { type: "PAUSE_FAILED"; error: string }
@@ -230,6 +233,20 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...state, captureIssues: { ...state.captureIssues, [event.id]: event.issue } };
     case "CAPTURE_RESOLVED": {
       if (!(event.id in state.captureIssues)) return state;
+      const captureIssues = { ...state.captureIssues };
+      delete captureIssues[event.id];
+      return { ...state, captureIssues };
+    }
+    case "CAPTURE_COMMITTED": {
+      const previous = state.captureIssues[event.id];
+      const captureIssues = { ...state.captureIssues };
+      if (event.partial || previous?.kind === "write_failed" || previous?.kind === "partial_audio")
+        captureIssues[event.id] = event.partial ?? (previous?.kind === "partial_audio" ? previous : { kind: "partial_audio" });
+      else delete captureIssues[event.id];
+      return { ...state, captureIssues };
+    }
+    case "CAPTURE_DISMISSED": {
+      if (state.captureIssues[event.id]?.kind !== "partial_audio") return state;
       const captureIssues = { ...state.captureIssues };
       delete captureIssues[event.id];
       return { ...state, captureIssues };

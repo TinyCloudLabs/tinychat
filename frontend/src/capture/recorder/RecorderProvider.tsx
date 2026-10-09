@@ -51,6 +51,7 @@ export interface RecorderValue {
   elapsedMs: number;
   elapsedAt: number | null;
   captureIssues: Record<string, RecorderCaptureIssue>;
+  dismissCaptureIssue(id: string): void;
   recoveryScanFailure: string | null;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
@@ -271,6 +272,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       elapsedMs: state.elapsedMs,
       elapsedAt: state.elapsedAt,
       captureIssues: state.captureIssues,
+      dismissCaptureIssue: recorder.dismissCaptureIssue,
       recoveryScanFailure: state.recoveryScanFailure,
       controlPending: state.controlPending,
       maxDurationMs: state.maxDurationMs,
@@ -308,6 +310,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       record,
       recorder.available,
       recorder.discard,
+      recorder.dismissCaptureIssue,
       recorder.pending,
       recorder.retryPending,
       recorder.openSettings,
@@ -362,6 +365,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       elapsedMs: 0,
       elapsedAt: null,
       captureIssues: {},
+      dismissCaptureIssue: noop,
       recoveryScanFailure: null,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,

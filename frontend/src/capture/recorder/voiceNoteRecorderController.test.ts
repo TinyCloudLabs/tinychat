@@ -706,6 +706,8 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "AAC write failed" });
     fake.emit("recoveryFailed", { id, reason: "mux failed" });
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "recoveryFailed", detail: "mux failed" });
+    recorder.dismissCaptureIssue(id);
+    expect(recorder.getState().captureIssues[id]?.kind).toBe("recoveryFailed");
     fake.emit("recovered", { id });
     expect(recorder.getState().captureIssues[id]).toBeUndefined();
     fake.emit("recoveryFailed", { error: "scan failed" });
@@ -727,7 +729,7 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
-  test("iOS writer failure followed by an auto-stop carrying the saved note clears its issue", async () => {
+  test("iOS writer failure followed by an auto-stop carrying the saved note retains a partial-audio notice", async () => {
     const { recorder } = await attached();
     await recorder.record();
     const id = recorder.getState().recordingId!;
@@ -735,25 +737,25 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().captureIssues[id]?.kind).toBe("write_failed");
     const recording = await stopNatively();
     fake.emit("autoStopped", { id, reason: "write_failed", maxDurationMs: 10_800_000, at: Date.now(), recording });
-    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "partial_audio" });
     await tick();
     expect(saves).toEqual([id]);
   });
 
-  test("Android writer failure followed by committed and autoStopped clears its issue", async () => {
+  test("Android writer failure followed by committed and autoStopped retains a partial-audio notice", async () => {
     const { recorder } = await attached();
     await recorder.record();
     const id = recorder.getState().recordingId!;
     fake.emit("writeFailure", { id, error: "write_failed: storage full" });
     const recording = await stopNatively();
     fake.emit("committed", { id });
-    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "partial_audio" });
     fake.emit("autoStopped", { id, reason: "write_failed", maxDurationMs: 10_800_000, at: Date.now(), recording });
     await tick();
     expect(saves).toEqual([id]);
   });
 
-  test("Android Stop failure followed by a successful second Stop clears its issue", async () => {
+  test("Android Stop drain failure followed by a successful second Stop retains the notice", async () => {
     let stops = 0;
     __setVoiceNotesForTests({ ...plugin, async stop() {
       if (++stops === 1) {
@@ -771,8 +773,65 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().captureIssues[id]?.kind).toBe("write_failed");
     expect(recorder.getState().phase).toBe("recording");
     await recorder.stop();
-    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "partial_audio" });
     expect(stops).toBe(2);
+  });
+
+  test("web commit before writeFailure also leaves a partial-audio notice", async () => {
+    const { recorder } = await attached();
+    const recording = earlier();
+    fake.emit("committed", { id: recording.id });
+    fake.emit("writeFailure", { id: recording.id, error: "AAC write failed" });
+    fake.emit("autoStopped", { id: recording.id, reason: "write_failed", maxDurationMs: 10_800_000,
+      at: Date.now(), recording });
+    expect(recorder.getState().captureIssues[recording.id]).toEqual({ kind: "partial_audio" });
+  });
+
+  test("a normal commit clears recovery and finalization issues", async () => {
+    const { recorder } = await attached();
+    const recovered = earlier().id;
+    const finalized = earlier().id;
+    fake.emit("recoveryFailed", { id: recovered, reason: "retry failed" });
+    fake.emit("autoStopped", { id: finalized, reason: "max_duration", maxDurationMs: 10_800_000,
+      at: Date.now(), recording: null, error: "finalization_timed_out" });
+    fake.emit("committed", { id: recovered });
+    fake.emit("committed", { id: finalized });
+    expect(recorder.getState().captureIssues[recovered]).toBeUndefined();
+    expect(recorder.getState().captureIssues[finalized]).toBeUndefined();
+  });
+
+  test("committed sidecar missing spans survive reload and can be dismissed durably", async () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    try {
+      const recording = earlier();
+      recording.startedAt = 100_000;
+      recording.spans = [{ kind: "omitted", reason: "writer_stalled", startedAt: 102_000,
+        endedAt: 105_000, atAudioMs: 2_000, audioMs: 0 }];
+      const first = await attached();
+      expect(first.recorder.getState().captureIssues[recording.id]).toEqual({ kind: "partial_audio",
+        missingMs: 3_000, spans: [{ startMs: 2_000, endMs: 5_000, reason: "writer_stalled" }] });
+      first.detach();
+      onPhone = []; // Upload removed the native sidecar; the notice is still local.
+      const second = await attached();
+      expect(second.recorder.getState().captureIssues[recording.id]?.kind).toBe("partial_audio");
+      second.recorder.dismissCaptureIssue(recording.id);
+      expect(second.recorder.getState().captureIssues[recording.id]).toBeUndefined();
+      fake.emit("writeFailure", { id: recording.id, error: "late replay" });
+      expect(second.recorder.getState().captureIssues[recording.id]).toBeUndefined();
+      second.detach();
+      const third = await attached();
+      expect(third.recorder.getState().captureIssues[recording.id]).toBeUndefined();
+      third.detach();
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
   });
 
   test("a timed-out limit auto-stop explains recovery instead of saying no audio", async () => {
