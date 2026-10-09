@@ -33,7 +33,20 @@ export interface FakeVoiceNotes {
   retainPresentRecorder(payload: { id: string | null; reason?: string }): void;
 }
 
-export function createFakeVoiceNotes(): FakeVoiceNotes {
+export interface FakeVoiceNotesOptions {
+  /** Delays `listPending` and `localAudioUrl` by this long (default: resolve immediately) — for
+   * exercising the receipt's display-clock gating (TC-781) against a native read slow enough that
+   * the immediate fake can never establish the timing. */
+  nativeReadDelayMs?: number;
+  /** Reports every committed note as unowned, regardless of the signed-in account defaults ever
+   * carry — so the frontend's own background space-save holds it rather than attempting one. */
+  unownedNotes?: boolean;
+}
+
+export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeVoiceNotes {
+  const nativeReadDelayMs = options.nativeReadDelayMs ?? 0;
+  const unownedNotes = options.unownedNotes ?? false;
+  const delay = () => (nativeReadDelayMs > 0 ? new Promise((resolve) => setTimeout(resolve, nativeReadDelayMs)) : Promise.resolve());
   const listeners = new Map<string, Set<Listener>>();
   let retainedPresent: { id: string | null; reason?: string } | null = null;
   let adds = 0;
@@ -78,7 +91,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         silencedEvents: 0,
         noSignalMs: 0,
         version: 2,
-        owner: defaults.accountDid,
+        owner: unownedNotes ? null : defaults.accountDid,
         rev: 1,
         options: current.options,
       };
@@ -116,6 +129,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       deleted.push(id);
     },
     async listPending() {
+      await delay();
       return { recordings: committed };
     },
     pause: unsupported,
@@ -146,7 +160,10 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     claim: unsupported,
     updateLedger: unsupported,
     // A tiny silent WAV data URL: real enough for MeetingAudioPlayer to mount and show Play.
-    async localAudioUrl() { return { url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=" }; },
+    async localAudioUrl() {
+      await delay();
+      return { url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=" };
+    },
     putTranscript: unsupported,
     async getTranscript() { return { transcript: null }; },
     listInputs: unsupported,

@@ -97,7 +97,7 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
           {receipt ? (
             <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
               onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
-              onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} />
+              onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} />
           ) : (
             <TranscriptionRouteControl transcription={recorder.transcription} signedIn={recorder.signedIn}
               recorder={recorder} defaultAsking={consentAsking} />

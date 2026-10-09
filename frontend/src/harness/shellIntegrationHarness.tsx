@@ -37,7 +37,17 @@ declare global {
 }
 
 initSizeClass();
-const fake = createFakeVoiceNotes();
+const params = new URLSearchParams(window.location.search);
+// ?nativeReadDelayMs=2500 on the page URL delays listPending/localAudioUrl that long, for tests
+// of the receipt's display-clock gating (TC-781) that an instant fake can't establish the timing
+// of. ?unownedNotes=1 reports every committed note as unowned, regardless of the harness's always
+// signed-in account (RecorderProvider here uses harnessTcw, not captureTcw below, and
+// harnessTcw's SQL stub can never satisfy the voice-note-identity schema check those tests would
+// otherwise race against): native holds an unowned note rather than attempting to save it, so
+// outcome stays "local" long enough to actually observe the display clock.
+const nativeReadDelayMs = Number(params.get("nativeReadDelayMs") ?? 0) || 0;
+const unownedNotes = params.get("unownedNotes") === "1";
+const fake = createFakeVoiceNotes({ nativeReadDelayMs, unownedNotes });
 __setVoiceNotesForTests(fake.plugin, { available: true });
 __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
 const shim = createRuntimeShim();

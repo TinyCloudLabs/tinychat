@@ -39,6 +39,10 @@ export interface SavedReceiptProps {
   onDone: () => void;
   onSaveNow: () => void;
   onPlayingChange?: (playing: boolean) => void;
+  /** The local Play control is ready to show (or has visibly failed to load) — the provider's
+   * receipt-display clock starts here, not at commit, so it can never run out before there is
+   * anything to look at. Called at most once per note. */
+  onReady?: () => void;
   className?: string;
 }
 
@@ -108,14 +112,19 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const saved = props.outcome === "saved";
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  // A ref, not a dependency: onReady must fire exactly once per note's own fetch (keyed on
+  // props.saved?.id below), regardless of whether the caller's callback identity happens to change
+  // across renders in between.
+  const onReadyRef = useRef(props.onReady);
+  onReadyRef.current = props.onReady;
   useEffect(() => {
     if (!props.saved) return;
     let active = true;
     setLocalUrl(null);
     setLocalError(null);
     void VoiceNotes.localAudioUrl({ id: props.saved.id }).then(
-      ({ url }) => { if (active) setLocalUrl(Capacitor.convertFileSrc(url)); },
-      (caught: unknown) => { if (active) setLocalError(`Could not open this phone's audio: ${caught instanceof Error ? caught.message : String(caught)}`); },
+      ({ url }) => { if (active) { setLocalUrl(Capacitor.convertFileSrc(url)); onReadyRef.current?.(); } },
+      (caught: unknown) => { if (active) { setLocalError(`Could not open this phone's audio: ${caught instanceof Error ? caught.message : String(caught)}`); onReadyRef.current?.(); } },
     );
     return () => { active = false; };
   }, [props.saved?.id]);
