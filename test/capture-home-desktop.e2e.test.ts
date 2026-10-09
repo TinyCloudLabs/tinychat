@@ -357,3 +357,38 @@ describe.serial(`desktop capture home: failed recordings (${engine.name()})`, ()
     expect(errors).toEqual([]);
   });
 });
+
+// Dismiss on a partial-audio Recent row (frontend/src/harness/screens/captureHomeDesktop.tsx "dismiss"): a dismissal that is not saved says so inline, on that row, and leaves the notice.
+describe.serial(`desktop capture home: partial-audio Dismiss (${engine.name()})`, () => {
+  const ROW = 'li[data-issue="partial_audio"]';
+  const DISMISS = '[data-testid="capture-issue-dismiss"]';
+  const ERROR = '[data-testid="capture-issue-error"]';
+  const calls = (page: Page) => page.evaluate(() => window.exoUiDismiss?.calls ?? []);
+
+  for (const how of ["false", "throw"] as const) {
+    test(`a Dismiss that fails (${how}) shows the alert on its row, keeps the notice and keeps focus on Dismiss; a retry then dismisses`, async () => {
+      const { page, errors } = await open(undefined, "capture-home-desktop-dismiss");
+      const row = page.locator(ROW);
+      await shown(row);
+      await page.evaluate((mode) => { window.exoUiDismiss!.fail = mode; }, how);
+      const dismiss = row.locator(DISMISS);
+      await dismiss.click();
+      const alert = row.locator(ERROR);
+      await shown(alert);
+      expect(await alert.getAttribute("role")).toBe("alert");
+      expect(await alert.innerText()).toBe("Couldn't dismiss this notice. It is still shown.");
+      expect(await dismiss.getAttribute("aria-describedby")).toBe(await alert.getAttribute("id"));
+      expect(await row.count()).toBe(1);
+      await focused(dismiss);
+      expect(await calls(page)).toEqual(["rec-0928"]);
+
+      await page.evaluate(() => { window.exoUiDismiss!.fail = null; });
+      await dismiss.click();
+      await gone(row);
+      expect(await page.locator(ERROR).count()).toBe(0);
+      expect(await calls(page)).toEqual(["rec-0928", "rec-0928"]);
+      // The thrown failure is logged by dismissNotice; only that console error is expected.
+      expect(errors.filter((text) => !/partial-audio notice/.test(text))).toEqual([]);
+    });
+  }
+});
