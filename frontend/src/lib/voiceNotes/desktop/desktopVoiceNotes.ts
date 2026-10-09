@@ -143,7 +143,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       return result;
     } finally {
       releaseLive();
-      emitMic(native);
+      emitMic({ ...native, id: null, startedAt: null, elapsedMs: 0, audioMs: 0, pausedMs: 0 });
     }
   };
   const handleAutoStop = (event: NativeAutoStop) => {
