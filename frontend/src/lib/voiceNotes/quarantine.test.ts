@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, type VoiceNotesPlugin } from "./nativeVoiceNotes";
-import { isUnsupported, readQuarantine, rejectionCode } from "./quarantine";
+import { createCoalescedReader, isUnsupported, readQuarantine, rejectionCode } from "./quarantine";
 
 const rejecting = (error: unknown): VoiceNotesPlugin =>
   ({
@@ -72,4 +72,71 @@ test("rejection codes", () => {
   expect(isUnsupported({ code: "unsupported" })).toBe(true);
   expect(isUnsupported({ code: "not_found" })).toBe(false);
   expect(isUnsupported({ code: "unimplemented" })).toBe(false);
+});
+
+describe("createCoalescedReader", () => {
+  const harness = () => {
+    const resolvers: Array<(value: number) => void> = [];
+    let active = 0;
+    let overlapped = false;
+    const applied: number[] = [];
+    const request = createCoalescedReader(
+      () => {
+        active++;
+        if (active > 1) overlapped = true;
+        return new Promise<number>((resolve) =>
+          resolvers.push((value) => {
+            active--;
+            resolve(value);
+          }),
+        );
+      },
+      (value) => applied.push(value),
+    );
+    const settle = async (value: number) => {
+      resolvers.shift()!(value);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    return { request, resolvers, applied, settle, overlapped: () => overlapped };
+  };
+
+  test("a request with nothing pending reads at once", () => {
+    const { request, resolvers } = harness();
+    request();
+    expect(resolvers.length).toBe(1);
+  });
+
+  test("requests during a pending read give exactly one more read after it, never concurrent", async () => {
+    const { request, resolvers, applied, settle, overlapped } = harness();
+    request();
+    request();
+    request();
+    expect(resolvers.length).toBe(1);
+    await settle(1);
+    expect(resolvers.length).toBe(1);
+    await settle(2);
+    expect(resolvers.length).toBe(0);
+    expect(applied).toEqual([1, 2]);
+    expect(overlapped()).toBe(false);
+  });
+
+  test("a request during the trailing read gets another, one at a time", async () => {
+    const { request, resolvers, settle, applied } = harness();
+    request();
+    request();
+    await settle(1);
+    request();
+    await settle(2);
+    expect(resolvers.length).toBe(1);
+    await settle(3);
+    expect(applied).toEqual([1, 2, 3]);
+  });
+
+  test("after the reads settle, the next request reads again", async () => {
+    const { request, resolvers, settle } = harness();
+    request();
+    await settle(1);
+    request();
+    expect(resolvers.length).toBe(1);
+  });
 });

@@ -347,7 +347,7 @@ describe("Soft Capture home interactions (phone)", () => {
       await page.context().close();
     });
 
-    test("quarantine is read on mount, again after an action, and again when a recoveryFailed issue appears", async () => {
+    test("quarantine is read on mount, again after an action (at least once; one read serves a refresh asked for while it is pending), and again when a recoveryFailed issue appears", async () => {
       const page = await open("capture-soft-failed-parked");
       await page.locator(PARKED).waitFor({ timeout: 5_000 });
       const reads = () => page.evaluate(() => window.exoUiFailed!.listCalls());
@@ -361,7 +361,7 @@ describe("Soft Capture home interactions (phone)", () => {
       await sheetOf(page).waitFor({ timeout: 5_000 });
       await page.locator('[data-testid="capture-issue-retry"]').tap();
       await sheetOf(page).waitFor({ state: "detached", timeout: 5_000 });
-      expect(await reads()).toBe(appeared + 1);
+      await page.waitForFunction((before) => window.exoUiFailed!.listCalls() > before, appeared);
       await page.context().close();
     });
   });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   listQuarantine,
@@ -44,9 +44,37 @@ export async function readQuarantine(): Promise<QuarantineRead> {
 }
 
 /**
+ * Runs `read` one at a time. A request made while a read is pending marks it
+ * dirty, and exactly one more read runs after the pending one: the extra read
+ * can't predate the request, and requests that pile up share it.
+ */
+export function createCoalescedReader<T>(
+  read: () => Promise<T>,
+  apply: (result: T) => void,
+): () => void {
+  let pending = false;
+  let dirty = false;
+  const run = (): void => {
+    pending = true;
+    dirty = false;
+    void read()
+      .then(apply)
+      .finally(() => {
+        pending = false;
+        if (dirty) run();
+      });
+  };
+  return () => {
+    if (pending) dirty = true;
+    else run();
+  };
+}
+
+/**
  * The sessions native gave up on and parked with their audio kept. Read on
  * mount, whenever `refreshKey` changes (the caller passes a key that changes
- * when a `recoveryFailed` issue appears), and on `refresh()`.
+ * when a `recoveryFailed` issue appears), and on `refresh()`. Reads never
+ * overlap, and a request made during one gets one read after it.
  */
 export function useQuarantinedRecordings(
   enabled: boolean,
@@ -55,19 +83,27 @@ export function useQuarantinedRecordings(
   const [items, setItems] = useState<readonly QuarantinedRecording[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [tick, setTick] = useState(0);
+  const mounted = useRef(true);
+  const apply = useRef((read: QuarantineRead) => {
+    if (!mounted.current) return;
+    if (read.kind === "items") {
+      setItems(read.items);
+      setError(null);
+    } else setError(read.caught);
+  });
+  const request = useRef<(() => void) | null>(null);
+  request.current ??= createCoalescedReader(readQuarantine, (read) =>
+    apply.current(read),
+  );
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!enabled || !nativeVoiceNotesAvailable()) return;
-    let current = true;
-    void readQuarantine().then((read) => {
-      if (!current) return;
-      if (read.kind === "items") {
-        setItems(read.items);
-        setError(null);
-      } else setError(read.caught);
-    });
-    return () => {
-      current = false;
-    };
+    request.current?.();
   }, [enabled, refreshKey, tick]);
   const refresh = useCallback(() => setTick((n) => n + 1), []);
   return { items, error, refresh };
