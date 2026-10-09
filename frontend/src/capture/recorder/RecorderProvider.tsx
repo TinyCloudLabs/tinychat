@@ -77,6 +77,8 @@ export interface RecorderValue {
   note: RecorderNote | null;
   /** The editor can write only after this recording's local note has loaded. */
   noteStatus: RecorderNoteStatus;
+  /** Short account-scoped code for the current recording's Markdown sync; audio save is separate. */
+  noteSyncError: string | null;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
@@ -301,6 +303,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       transcriber: recorder.transcriber,
       note: recorder.note,
       noteStatus: recorder.noteStatus,
+      noteSyncError: recorder.noteSyncError,
       setNoteText: recorder.setNoteText,
       markMoment: recorder.markMoment,
       setTranscriber: recorder.setTranscriber,
@@ -331,6 +334,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.dismissCaptureIssue,
       recorder.note,
       recorder.noteStatus,
+      recorder.noteSyncError,
       recorder.setNoteText,
       recorder.markMoment,
       recorder.pending,
@@ -416,6 +420,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       transcriber: { id: "on-device", identifySpeakers: false, source: "default" },
       note: null,
       noteStatus: "ready",
+      noteSyncError: null,
       setNoteText: async () => {},
       markMoment: () => 0,
       setTranscriber: async () => "unavailable",

@@ -33,6 +33,7 @@ import {
   voiceNoteAudioSourceFromBase64,
   voiceNoteMarkdownKvKey,
   syncRecordingNote,
+  recordingNoteSyncError,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
 import { saveNote } from "./recordingNotes";
@@ -169,12 +170,15 @@ describe("saveVoiceNote", () => {
       voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
     expect(saved.ok).toBe(true);
     if (!saved.ok) throw new Error(saved.error.message);
-    expect(saved.data.noteSyncError).toContain("notes offline");
+    expect(saved.data.noteSyncError).toBe("sync_failed");
+    expect(recordingNoteSyncError(space.tcw, withNote.id)).toBe("sync_failed");
+    expect(recordingNoteSyncError({ ...space.tcw, did: "did:other" } as TinyCloudWeb, withNote.id)).toBeNull();
     expect(space.kv.has(voiceNoteAudioManifestKey(withNote.id))).toBe(true);
     expect(space.kv.has(noteKey)).toBe(false);
 
     space.failPut(null);
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncError(space.tcw, withNote.id)).toBeNull();
     expect(space.kv.get(noteKey)).toContain("# Local draft");
   });
 

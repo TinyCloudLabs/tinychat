@@ -35,6 +35,7 @@ export interface VoiceNoteRecorder {
   transcriber: RecorderTranscriberChoice;
   note: RecorderNote | null;
   noteStatus: RecorderNoteStatus;
+  noteSyncError: string | null;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
@@ -77,6 +78,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
   const transcriberChoice = useSyncExternalStore(controller.subscribe, controller.getTranscriber);
   const note = useSyncExternalStore(controller.subscribe, controller.getNote);
   const noteStatus = useSyncExternalStore(controller.subscribe, controller.getNoteStatus);
+  const noteSyncError = useSyncExternalStore(controller.subscribe, controller.getNoteSyncError);
   const snapshot = useSyncExternalStore(
     transcriber ? transcriber.subscribe : noSubscription,
     () => transcriber?.snapshot() ?? HIDDEN_SNAPSHOT,
@@ -90,6 +92,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       transcriber: transcriberChoice,
       note,
       noteStatus,
+      noteSyncError,
       setNoteText: controller.setNoteText,
       markMoment: controller.markMoment,
       setTranscriber: controller.setTranscriber,
@@ -109,6 +112,6 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
     }),
-    [available, controller, note, noteStatus, pending, snapshot, state, transcriber, transcriberChoice],
+    [available, controller, note, noteStatus, noteSyncError, pending, snapshot, state, transcriber, transcriberChoice],
   );
 }
