@@ -177,4 +177,48 @@ describe("PhoneRecorder", () => {
     expect(html).toContain("Keep recording");
     expect(html).toContain("Discard recording");
   });
+
+  const withNote = (md: string | null): PhoneRecorderProps["notesApi"] => ({
+    note: md === null ? null : { md, moments: [] },
+    setNoteText: noop,
+    markMoment: () => 42_000,
+  });
+
+  test("＋ notes a moment while recording", () => {
+    expect(render()).toMatch(
+      /<button[^>]*aria-label="Note this moment"(?![^>]*disabled)/,
+    );
+  });
+
+  test("View notes shows only once there is a note", () => {
+    expect(render({}, { notesApi: withNote(null) })).not.toContain(
+      "View notes",
+    );
+    expect(render({}, { notesApi: withNote("   ") })).not.toContain(
+      "View notes",
+    );
+    expect(
+      render({}, { notesApi: withNote("- **0:08** Hunter mentions the TTL") }),
+    ).toContain("View notes");
+  });
+
+  test("the notes sheet is a labelled modal dialog", () => {
+    const html = render(
+      {},
+      { notesApi: withNote("hello"), defaultOpen: "notes" },
+    );
+    expect(html).toMatch(/role="dialog"[^>]*aria-modal="true"/);
+    expect(html).toContain("Notes");
+    expect(html).toContain("Write");
+    expect(html).toContain("Preview");
+  });
+
+  test("the discard sheet names the notes only when there are some", () => {
+    expect(render({}, { defaultOpen: "discard" })).toContain(
+      "of audio. This can&#x27;t be undone.",
+    );
+    expect(
+      render({}, { defaultOpen: "discard", notesApi: withNote("a note") }),
+    ).toContain("of audio and your notes.");
+  });
 });

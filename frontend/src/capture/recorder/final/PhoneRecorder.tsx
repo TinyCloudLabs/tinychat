@@ -5,6 +5,7 @@ import {
   useId,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
 import { hapticLight } from "@/lib/haptics";
@@ -13,7 +14,21 @@ import { useResolvedTheme } from "@/lib/theme";
 import { useRecorder, type RecorderValue } from "../RecorderProvider";
 import type { RecorderState } from "../recorderReducer";
 import { useRecordedElapsed } from "../useRecordedElapsed";
+import { useKeyboardInset } from "./keyboardInset";
 import { ModesCard } from "./ModesCard";
+import { MomentField } from "./MomentField";
+import { warmRenderer } from "./notes";
+import { NOTES_COPY } from "./notesCopy";
+import { NotesListIcon, PlusIcon } from "./notesIcons";
+import { NotesSheet } from "./NotesSheet";
+import { useNotesApi, type NotesApi } from "./notesApiStub";
+import {
+  readNotesView,
+  rememberNotesView,
+  type NotesView,
+} from "./notesViewPreference";
+import { hasNote } from "./momentLines";
+import { useMomentFlow } from "./useMomentFlow";
 import { PrivacyScale } from "./PrivacyScale";
 import { RecorderRing } from "./RecorderRing";
 import { selectRecorderView } from "./recorderView";
@@ -46,6 +61,8 @@ import "./soft.css";
 import "./phone.css";
 
 const TOAST_MS = 2400;
+/** The notes renderer's WASM is fetched this long into a recording, never when the recorder opens. */
+const WARM_RENDERER_MS = 4000;
 
 /** What the selector reads of the recorder; the fields it does not use are inert. */
 function recorderState(recorder: RecorderValue): RecorderState {
@@ -82,15 +99,21 @@ export interface PhoneRecorderProps {
   silencedSinceMs?: number | null;
   /** Replaces the provider's transcriber API (the harness passes a logging one). */
   transcriberApi?: TranscriberApi;
+  /** The provider's note API; the stand-in until the provider has it (the harness passes its own). */
+  notesApi?: NotesApi;
   /** Starts with one surface open (the harness). */
-  defaultOpen?: "modes" | "via" | "discard";
+  defaultOpen?: "modes" | "via" | "discard" | "moment" | "notes";
+  /** The notes view remembered from an earlier session (the harness). */
+  notesViewSeed?: NotesView;
 }
 
 export function PhoneRecorder({
   inputs: inputsSource,
   silencedSinceMs: silencedSeed = null,
   transcriberApi,
+  notesApi,
   defaultOpen,
+  notesViewSeed,
 }: PhoneRecorderProps) {
   const recorder = useRecorder();
   const shell = shellForPlatform(useContext(PlatformContext));
@@ -128,6 +151,37 @@ export function PhoneRecorder({
     silencedSinceMs,
   });
 
+  // TODO(TC-878): read the note from `recorder` once the provider has it.
+  const latestElapsed = useRef(elapsedMs);
+  latestElapsed.current = elapsedMs;
+  const stubbedNotes = useNotesApi(() => latestElapsed.current);
+  const notes = notesApi ?? stubbedNotes;
+  const { field: momentField, flow: moment } = useMomentFlow(notes, (error) => {
+    console.error("[Recorder] Could not mark this moment", error);
+    showToast(
+      NOTES_COPY.momentFailed(
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
+  });
+  const noteMd = notes.note?.md ?? "";
+  const [notesOpen, setNotesOpen] = useState(defaultOpen === "notes");
+  const [notesView, setNotesView] = useState<NotesView>(
+    notesViewSeed ?? "preview",
+  );
+  const keyboardInset = useKeyboardInset();
+  const markButton = useRef<HTMLButtonElement>(null);
+  const viewNotesButton = useRef<HTMLButtonElement>(null);
+  const recordingNow = phase === "recording";
+  useEffect(() => {
+    if (!recordingNow) return;
+    const timer = setTimeout(warmRenderer, WARM_RENDERER_MS);
+    return () => clearTimeout(timer);
+  }, [recordingNow]);
+  useEffect(() => {
+    if (defaultOpen === "moment") moment.begin();
+  }, []);
+
   const [modesOpen, setModesOpen] = useState(defaultOpen === "modes");
   const [discardOpen, setDiscardOpen] = useState(defaultOpen === "discard");
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -152,6 +206,11 @@ export function PhoneRecorder({
     shownMode.current = choice.mode;
     setSaid(`${modeShortLabel(choice.mode, false)} selected`);
   }, [choice.mode]);
+
+  const say = (message: string) =>
+    setSaid((previous) =>
+      previous === message ? `${message}\u200b` : message,
+    );
 
   const closeModes = useCallback(() => {
     setModesOpen(false);
@@ -204,7 +263,7 @@ export function PhoneRecorder({
         };
 
   const stop = MODE_STOPS.find((s) => s.id === choice.mode)!;
-  const sheetOpen = discardOpen || choice.asking;
+  const sheetOpen = discardOpen || choice.asking || notesOpen;
   const mustSave = view.emphasis === "stop";
   const inputName = input?.name ?? "Microphone";
   const resume = view.controls.resume;
@@ -241,6 +300,7 @@ export function PhoneRecorder({
       data-layout="phone"
       data-testid="phone-recorder"
       data-ring={view.ring}
+      style={{ "--kbh": `${keyboardInset}px` } as CSSProperties}
     >
       <div className="pr-blob a" aria-hidden="true" />
       <div className="pr-blob b" aria-hidden="true" />
@@ -255,6 +315,7 @@ export function PhoneRecorder({
 
       <div
         className="pr-main"
+        data-noting={momentField !== null}
         inert={sheetOpen}
         style={{
           display: "flex",
@@ -291,7 +352,19 @@ export function PhoneRecorder({
             data-dim={view.ring === "paused"}
           >
             <span>{view.timer.text}</span>
-            <span className="pr-time-slot" aria-hidden="true" />
+            <button
+              ref={markButton}
+              type="button"
+              className="pr-time-slot pr-mark"
+              aria-label={NOTES_COPY.noteThisMoment}
+              disabled={phase !== "recording"}
+              onClick={() => {
+                hapticLight();
+                moment.begin();
+              }}
+            >
+              <PlusIcon />
+            </button>
           </div>
           {view.timer.countdown && (
             <div className="pr-countdown">{view.timer.countdown.text}</div>
@@ -300,10 +373,41 @@ export function PhoneRecorder({
         <div
           className="pr-extra"
           data-emphasis={mustSave}
+          data-collapsed={
+            !view.statusLine && (momentField !== null || hasNote(noteMd))
+          }
           data-testid="phone-recorder-status"
         >
           {view.statusLine}
         </div>
+        {(momentField !== null || hasNote(noteMd)) && (
+          <div className="pr-notes">
+            {momentField ? (
+              <MomentField
+                field={momentField}
+                flow={moment}
+                onClosed={(result, refocus) => {
+                  if (result === "saved") say(NOTES_COPY.momentNoted);
+                  if (refocus)
+                    markButton.current?.focus({ preventScroll: true });
+                }}
+              />
+            ) : (
+              <button
+                ref={viewNotesButton}
+                type="button"
+                className="pr-vnotes"
+                onClick={() => {
+                  setNotesView(readNotesView());
+                  setNotesOpen(true);
+                }}
+              >
+                <NotesListIcon />
+                {NOTES_COPY.viewNotes}
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="pr-stage">
           <RecorderRing
@@ -463,13 +567,39 @@ export function PhoneRecorder({
         )}
       </div>
 
+      {notesOpen && (
+        <NotesSheet
+          initialMd={noteMd}
+          view={notesView}
+          onViewChange={(next) => {
+            rememberNotesView(next);
+            setNotesView(next);
+          }}
+          onSave={notes.setNoteText}
+          onClose={() => setNotesOpen(false)}
+          recording={{
+            timerText: view.timer.text,
+            paused: view.ring === "paused",
+            canToggle: resume || view.controls.pause,
+            onToggle: () => {
+              hapticLight();
+              control(resume ? "resume" : "pause");
+            },
+            subscribeLevel: recorder.subscribeLevel,
+            theme,
+          }}
+          keyboardInset={keyboardInset}
+          returnFocus={viewNotesButton}
+          fallbackFocus={markButton}
+        />
+      )}
       {discardOpen && (
         <SheetDialog
           role="alertdialog"
           titleId={`${ids}-dt`}
           descriptionId={`${ids}-dd`}
           title="Discard this recording?"
-          description={`You'll lose ${view.timer.text} of audio. This can't be undone.`}
+          description={NOTES_COPY.discardLoss(view.timer.text, hasNote(noteMd))}
           onCancel={() => setDiscardOpen(false)}
           returnFocus={discardButton}
         >

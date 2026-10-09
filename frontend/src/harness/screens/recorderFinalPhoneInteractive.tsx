@@ -48,6 +48,8 @@ declare global {
       rejectConsent: boolean;
     };
     /** The real recorder over the fake native plugin: the control calls in order, and the ones that reject while flagged. */
+    /** The notes screen's recorder: the control calls in order. */
+    exoNotes?: { calls: string[] };
     exoNative?: {
       calls: string[];
       fail: Record<"pause" | "resume" | "stop" | "discard", boolean>;
@@ -374,6 +376,62 @@ const routeControlScreen: HarnessScreen = {
   },
 };
 
+// 0:42 in, the note API in the screen's own memory (the stub), and a Discard that only logs.
+function Notes() {
+  const value = useMemo<Partial<RecorderValue>>(() => {
+    const notes = (window.exoNotes ??= { calls: [] });
+    return {
+      phase: "recording",
+      mic: { state: "recording", reason: null },
+      startedAt: FROZEN_NOW - 42_000,
+      audioMs: 42_000,
+      elapsedMs: 42_000,
+      sheetOpen: true,
+      subscribeLevel: (listener) => {
+        listener(0.15);
+        return () => {};
+      },
+      pause: () => void notes.calls.push("pause"),
+      resume: () => void notes.calls.push("resume"),
+      stop: () => void notes.calls.push("stop"),
+      discard: () => void notes.calls.push("discard"),
+    };
+  }, []);
+  return (
+    <StaticRecorderProvider value={value}>
+      <PhoneRecorder inputs={NOTES_INPUTS} />
+    </StaticRecorderProvider>
+  );
+}
+
+const NOTES_INPUTS = {
+  list: async () => SNAPSHOT,
+  select: async () => {},
+  subscribe: () => () => {},
+};
+
+const notesScreen: HarnessScreen = {
+  id: "recorder-final-phone-interactive-notes",
+  group: "recorder",
+  layout: "pane",
+  platform: "ios",
+  displayTitle: false,
+  interactive: true,
+  render: () => {
+    __setOnDeviceSttForTests({
+      status: async () => MODEL_READY,
+      setAutoDownload: async () => {},
+      downloadNow: async () => {},
+      cancelDownload: async () => {},
+      deleteModels: async () => {},
+      enqueue: async () => {},
+      cancel: async () => {},
+      addListener: async () => ({ remove: async () => {} }),
+    } satisfies OnDeviceSttPlugin);
+    return <Notes />;
+  },
+};
+
 const nativeScreen: HarnessScreen = {
   id: "recorder-final-phone-interactive-native",
   group: "recorder",
@@ -400,6 +458,7 @@ const nativeScreen: HarnessScreen = {
 export const recorderFinalPhoneInteractiveScreens: HarnessScreen[] = [
   nativeScreen,
   routeControlScreen,
+  notesScreen,
   screen("consented", {
     consented: true,
     transcriber: "private-cloud",

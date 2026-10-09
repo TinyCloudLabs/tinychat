@@ -15,6 +15,7 @@ import {
   type OnDeviceSttPlugin,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
+import { useNotesApi } from "@/capture/recorder/final/notesApiStub";
 import { FROZEN_NOW } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
@@ -153,7 +154,74 @@ function screen(
   };
 }
 
+// The notes surfaces (TC-881): 42 s in, with the moments the reference shows.
+const NOTED: Partial<RecorderValue> = {
+  startedAt: FROZEN_NOW - 42_000,
+  audioMs: 42_000,
+  elapsedMs: 42_000,
+};
+const NOTE_MD = [
+  "# Sync with Hunter",
+  "",
+  "- **0:08** Hunter mentions the TTL setting",
+  "- **0:20** Decision: ship the cache behind a flag",
+  "",
+  "Follow-ups:",
+  "",
+  "- [ ] Send the **benchmark** numbers",
+  "- [ ] Write up the _rollout_ plan",
+  "",
+  "> Keep the first release small.",
+].join("\n");
+
+function Noted(props: PhoneRecorderProps & { md: string | null }) {
+  const { md, ...rest } = props;
+  const notesApi = useNotesApi(() => 42_000, md);
+  return <PhoneRecorder inputs={INPUTS} notesApi={notesApi} {...rest} />;
+}
+
+function notesScreen(
+  id: string,
+  props: PhoneRecorderProps & { md: string | null },
+  readyWhen?: string,
+): HarnessScreen {
+  return {
+    ...screen(id, NOTED),
+    readyWhen,
+    render: () => {
+      __setOnDeviceSttForTests(ON_DEVICE_STT);
+      return (
+        <StaticRecorderProvider
+          value={{ ...LIVE, ...NOTED, subscribeLevel: steadyLevel }}
+        >
+          <Noted {...props} />
+        </StaticRecorderProvider>
+      );
+    },
+  };
+}
+
 export const recorderFinalPhoneScreens: HarnessScreen[] = [
+  notesScreen(
+    "moment-field",
+    { md: null, defaultOpen: "moment" },
+    ".pr-moment input",
+  ),
+  notesScreen(
+    "after-moment",
+    { md: "- **0:08** Hunter mentions the TTL setting" },
+    ".pr-vnotes",
+  ),
+  notesScreen(
+    "notes-preview",
+    { md: NOTE_MD, defaultOpen: "notes", notesViewSeed: "preview" },
+    ".pr-nsheet .fmd",
+  ),
+  notesScreen(
+    "notes-write",
+    { md: NOTE_MD, defaultOpen: "notes", notesViewSeed: "write" },
+    ".pr-nsheet textarea",
+  ),
   screen("recording", {}),
   screen("paused", { mic: { state: "paused", reason: "user" } }, {}, QUIET),
   screen("modes", {}, { defaultOpen: "modes" }),
