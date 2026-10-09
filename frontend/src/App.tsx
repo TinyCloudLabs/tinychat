@@ -1063,7 +1063,7 @@ export function App() {
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+          <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
             {offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} />
               : signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction} />
                 : <BootSurface state={state} error={error} onAction={authAction} />}

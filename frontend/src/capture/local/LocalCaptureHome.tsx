@@ -22,7 +22,7 @@ export function LocalCaptureHome({ did = null, offline = false, onSignIn, onRetr
   const current = notes.filter((note) => !note.ownerUnknown);
   return <section aria-label="Capture on this phone" className="mx-auto w-full max-w-xl space-y-5 p-5" data-testid="local-capture-home">
     <header className="flex items-start justify-between gap-3">
-      <div><h1 className="text-2xl font-semibold">On this phone</h1><p className="text-sm text-muted-foreground">{LOCAL_ONLY_COPY}</p></div>
+      <div><h1 className="font-display text-2xl font-semibold">On this phone</h1><p className="text-sm text-muted-foreground">{LOCAL_ONLY_COPY}</p></div>
       <Button variant="ghost" aria-label="Local settings" onClick={() => setSettings(true)}>Settings</Button>
     </header>
     {offline ? <div><p>You're offline.</p><Button variant="outline" onClick={onRetry}>Try again</Button></div>

@@ -210,7 +210,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+          <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
             {state === "offline" && voiceNotesInApp
               ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider>
               : <BootSurface state={state} error={null} onAction={() => {}} />}
