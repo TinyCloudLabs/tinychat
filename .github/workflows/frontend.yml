@@ -7,7 +7,9 @@ name: Frontend
 # Lint covers frontend/ and test/ only: the repo-wide `bun run lint` still has
 # errors in backend/ and artifacts/.
 #
-# WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here.
+# WebKit runs locally (EXO_UI_ENGINE=webkit, SCROLL_ENGINE=webkit), not here,
+# except the recorder halo job below: WebKit on macOS is the only place the
+# halo's bitmap handoff has gone blank (TC-876).
 # The model-router browser suite stays out until TC-768 resolves its three
 # failures on main (since #107, stream before save).
 
@@ -87,4 +89,64 @@ jobs:
         with:
           name: exo-ui-screens-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
           path: screenshots/exo-ui/
+          if-no-files-found: warn
+
+  halo-webkit:
+    name: Recorder halo (macOS WebKit)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-webkit-macos-${{ hashFiles('bun.lock', 'test/package.json') }}
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Install WebKit
+        working-directory: test
+        run: bunx playwright install webkit
+
+      # TEMPORARY PROOF (removed in the next push): the stall test must fail on
+      # the renderer as it was before the fix.
+      - name: Stall test on the pre-fix renderer (expected to fail)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RENDERER: frontend/src/capture/recorder/final/halo/renderer.ts
+        run: |
+          cp "$RENDERER" "$RUNNER_TEMP/renderer.fixed.ts"
+          git fetch --depth=1 origin "$BASE_SHA"
+          git show "$BASE_SHA:$RENDERER" > "$RENDERER"
+          cd test
+          if bun test recorder-final-halo.e2e.test.ts -t "after the main thread stalls"; then
+            echo "stall test unexpectedly passed on old code"
+            exit 1
+          fi
+          cd ..
+          cp "$RUNNER_TEMP/renderer.fixed.ts" "$RENDERER"
+
+      - name: Recorder halo (WebKit)
+        working-directory: test
+        env:
+          HALO_LOADS: "30"
+        run: bun test recorder-final-halo.e2e.test.ts
+
+      - name: Upload the halo screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: recorder-halo-webkit-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: screenshots/recorder-halo/
           if-no-files-found: warn

@@ -7,6 +7,7 @@ import { inspectHaloPixels, readHaloCenterPixel } from "./exo-ui/halo-pixels";
 declare global {
   interface Window {
     exoUi?: { ready: boolean };
+    haloStall?: { done: boolean };
   }
 }
 
@@ -97,3 +98,89 @@ test("recorder-final halo renders its centre pixel in WebKit", async () => {
     }
   }
 }, 60_000);
+
+test("recorder-final halo rings stay painted after the main thread stalls", async () => {
+  for (const theme of ["light", "dark"] as const) {
+    const context = await browser!.newContext({
+      viewport: { width: 390, height: 4400 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+      colorScheme: theme,
+      reducedMotion: "reduce",
+    });
+    try {
+      const page = await context.newPage();
+      await page.goto(
+        `http://127.0.0.1:${server!.port}/?screen=recorder-final-halo&theme=${theme}&platform=web&freeze=1&haloStall=800`,
+      );
+      await page.waitForFunction(
+        () => window.haloStall?.done === true,
+        undefined,
+        { timeout: 20_000 },
+      );
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ),
+          ),
+      );
+      const { ready, canvases } = (await page.evaluate(inspectHaloPixels, {
+        diagnostics: true,
+      })) as { ready: boolean; canvases: unknown[] };
+      if (!ready) {
+        await page
+          .screenshot({ path: `${output}halo-${theme}-stall-failure.png` })
+          .catch(() => {});
+      }
+      expect(ready, JSON.stringify(canvases)).toBe(true);
+      await page.close();
+    } finally {
+      await context.close();
+    }
+  }
+}, 90_000);
+
+const loads = Number(process.env.HALO_LOADS ?? 0);
+
+test.skipIf(loads === 0)(
+  `recorder-final halo paints every ring across ${loads} fresh loads`,
+  async () => {
+    for (let load = 0; load < loads; load++) {
+      if (load > 0 && load % 10 === 0) {
+        await browser?.close();
+        browser = await webkit.launch({ headless: true });
+      }
+      const theme = load % 2 === 0 ? "light" : "dark";
+      const context = await browser!.newContext({
+        viewport: { width: 390, height: 4400 },
+        deviceScaleFactor: 2,
+        isMobile: true,
+        hasTouch: true,
+        colorScheme: theme,
+        reducedMotion: "reduce",
+      });
+      try {
+        const page = await context.newPage();
+        await page.goto(
+          `http://127.0.0.1:${server!.port}/?screen=recorder-final-halo&theme=${theme}&platform=web&freeze=1`,
+        );
+        await page.waitForFunction(
+          () => window.exoUi?.ready === true,
+          undefined,
+          { timeout: 20_000 },
+        );
+        await page.waitForTimeout(500);
+        const { ready, canvases } = (await page.evaluate(inspectHaloPixels, {
+          diagnostics: true,
+        })) as { ready: boolean; canvases: unknown[] };
+        expect(ready, `load ${load}: ${JSON.stringify(canvases)}`).toBe(true);
+      } finally {
+        await context.close();
+      }
+    }
+  },
+  loads * 20_000,
+);
