@@ -327,7 +327,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         await bridge.invoke("recorder_select_input", { id });
         const inputs = await bridge.invoke<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>("recorder_list_inputs");
         if (live) {
-          live.session.input = inputs.inputs.find((item) => item.id === inputs.activeId) ?? null;
+          live.session.input = inputs.inputs.find((item) => item.id === (inputs.activeId ?? inputs.selectedId)) ?? null;
           await store.updateSession(live.session.id, { input: live.session.input });
         }
         emit("inputs", inputs);
