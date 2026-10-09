@@ -1852,7 +1852,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
 
         <AlertDialogFooter>
           <AlertDialogCancel disabled={running} className="h-8 px-3 text-xs">
-            {retry || progress?.done ? "Close" : `Keep ${descriptor.name}`}
+            {retry || progress?.done ? "Close" : "Cancel"}
           </AlertDialogCancel>
           <Button
             variant="destructive"
@@ -1920,7 +1920,7 @@ function formatRetryIn(ms: number): string {
  * google-meet has no webhook is actually known. `supportsBackgroundNotifications`
  * refuses the surface for this source for the same reason.
  */
-const WEBHOOKLESS_STEPS: readonly DisconnectStep[] = [
+export const WEBHOOKLESS_STEPS: readonly DisconnectStep[] = [
   "record-purge",
   "disable-webhooks",
 ];
@@ -1931,13 +1931,13 @@ const WEBHOOKLESS_STEPS: readonly DisconnectStep[] = [
  * LOUD: `feature-dark` with no established darkness is a hard failure in the
  * runner, never a silent success.
  */
-const NO_DELIVERY_LANE: DisconnectWebhooks = {
+export const NO_DELIVERY_LANE: DisconnectWebhooks = {
   disable: () => Promise.resolve({ status: "feature-dark" }),
   recordPurge: () => Promise.resolve({ status: "feature-dark" }),
 };
 
 /** What the upstream `POST /revoke` did. Never fatal except `locked`. */
-interface UpstreamRevokeState {
+export interface UpstreamRevokeState {
   status: "revoked" | "no-token" | "failed" | "locked" | "server-unavailable";
   /** Google's or the vault's own words, when there are any. */
   message?: string;
@@ -2031,7 +2031,7 @@ export async function revokeGoogleUpstream(input: {
   }
 }
 
-function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
+export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
   switch (state.status) {
     case "revoked":
       return null;
@@ -2052,7 +2052,7 @@ function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
  * connector that has none, and "your API key" for a connection that is not a
  * key. Failures and the running labels stay the module's.
  */
-function googleDisconnectStatusMessage(progress: DisconnectProgress): string | null {
+export function googleDisconnectStatusMessage(progress: DisconnectProgress): string | null {
   if (progress.done) {
     return progress.mode === "delete-data"
       ? "Disconnected. Your Google Meet meetings have been deleted from your space."

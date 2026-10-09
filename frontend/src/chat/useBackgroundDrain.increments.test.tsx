@@ -534,7 +534,7 @@ describe("I0 record store — wiring", () => {
   const read = (rel: string) => readFileSync(join(import.meta.dir, rel), "utf8");
 
   test("the Settings section publishes its own post-run state into the same store", () => {
-    const section = read("BackgroundSyncSection.tsx");
+    const section = read("useBackgroundSync.ts");
     expect(section).toContain("publishBackgroundDrainConnectorState");
     // Publish rides the section's ONE emit callback — the numbers are already
     // in hand after every run. No new client call, no new HTTP re-count.
@@ -1527,7 +1527,7 @@ describe("I0 record store — a clear strands in-flight runs (account switch)", 
   });
 
   test("the Settings section captures its generation at mount and hands it to the publish (source-asserted)", () => {
-    const section = readFileSync(join(import.meta.dir, "BackgroundSyncSection.tsx"), "utf8");
+    const section = readFileSync(join(import.meta.dir, "useBackgroundSync.ts"), "utf8");
     // Captured ONCE, when the section instance begins — not read fresh at each
     // publish, which would defeat the guard exactly the way the audit found.
     expect(section).toContain("readBackgroundDrainGeneration");

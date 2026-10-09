@@ -122,6 +122,7 @@ describe("Connectors page composition", () => {
     for (const name of [
       "ConnectorsCard.tsx",
       "BackgroundSyncSection.tsx",
+      "useBackgroundSync.ts",
       "backgroundSyncState.ts",
     ]) {
       const source = read(name);

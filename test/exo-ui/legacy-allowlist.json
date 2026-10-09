@@ -145,5 +145,75 @@
     "check": "touch-target",
     "reason": "Explicit h-9 and h-8 heights (TranscriberSection). PR7's Meeting sheet replaces them.",
     "removeIn": "PR8"
+  },
+  {
+    "screen": "meeting-sources-connected",
+    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-connected",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-not-connected",
+    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-not-connected",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-manage",
+    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-manage",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-rotate",
+    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-rotate",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-disconnect",
+    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-disconnect",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
   }
 ]
