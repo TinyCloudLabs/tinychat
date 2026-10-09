@@ -193,7 +193,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs };
     case "PERMISSION_DENIED":
       if (state.phase === "recording" || state.phase === "stopping" || state.phase === "discarding") return state;
-      return { ...state, phase: "idle", permissionDenied: true, error: null };
+      return { ...state, permissionDenied: true, error: null };
     case "PERMISSION_GRANTED":
       return state.permissionDenied ? { ...state, permissionDenied: false } : state;
     case "PAUSE_REQUESTED":
