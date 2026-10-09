@@ -224,7 +224,7 @@ pub async fn recorder_models_list(app: tauri::AppHandle) -> Result<Vec<ModelRow>
                 .lock()
                 .unwrap()
                 .get(id)
-                .filter(|p| p.status == "downloading" && p.fraction > 0.0)
+                .filter(|p| p.status == "downloading")
                 .map(|p| p.fraction)
         } else {
             None
