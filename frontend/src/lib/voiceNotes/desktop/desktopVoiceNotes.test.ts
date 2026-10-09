@@ -403,6 +403,19 @@ describe("desktop recorder adapter", () => {
     stored.close();
   });
 
+  test("a signed-out recording is journaled as Audio only until the desktop Whisper route exists", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.start({ transcriber: "on-device" });
+    first.dispose();
+    const stored = await openWebStore({ env, dbName, locks: memoryLocks(), decodeCheck: null,
+      audio: () => createFileAudioBlobStore(bridge) });
+    expect(await stored.getSession("note-1")).toMatchObject({ owner: null, options: { transcriber: "off" } });
+    stored.close();
+  });
+
   test("a failed metadata commit leaves the durable native file for recovery", async () => {
     const bridge = new FakeBridge();
     const env = newIdbEnv();

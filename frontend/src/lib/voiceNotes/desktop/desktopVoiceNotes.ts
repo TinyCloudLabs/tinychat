@@ -4,6 +4,7 @@ import type {
 } from "../nativeVoiceNotes";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "../nativeVoiceNotes";
 import { registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
+import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
 import { createFileAudioBlobStore, type CommandBridge } from "./fileAudioBlobStore";
 import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock, type RecoveryResult, type SessionRecord,
   type WebStore, openWebStore, type WebStoreOptions } from "../web/webStore";
@@ -341,7 +342,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
           const captureOptions: CaptureOptions = {
-            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : "on-device",
+            // TODO(TC-888): use on-device when desktopWhisper
+            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : "off",
             identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
           };
           id = newId();
@@ -575,12 +577,16 @@ async function tauriBridge(): Promise<DesktopBridge> {
   };
 }
 
+/** Opens the desktop engine and registers the extras that bind the same bridge. */
+export async function installDesktopEngine(bridge: DesktopBridge, storeOptions?: DesktopVoiceNotesOptions["storeOptions"]): Promise<CaptureEngine> {
+  const engine = await openDesktopVoiceNotes({ bridge, storeOptions });
+  registerDesktopCaptureExtras((await import("./tauriDesktopCaptureExtras")).createTauriDesktopCaptureExtras(bridge));
+  try { await engine.recoverInterrupted(); }
+  catch (error) { console.error("[desktopVoiceNotes] Recovery will retry; recorder stays available", error); }
+  return engine.plugin;
+}
+
 /** Registration is the only desktop engine gate. The main entry imports this module once. */
 export function registerDesktopVoiceNotes(): void {
-  registerCaptureEngine("tauri", async () => {
-    const engine = await openDesktopVoiceNotes({ bridge: await tauriBridge() });
-    try { await engine.recoverInterrupted(); }
-    catch (error) { console.error("[desktopVoiceNotes] Recovery will retry; recorder stays available", error); }
-    return engine.plugin;
-  });
+  registerCaptureEngine("tauri", async () => installDesktopEngine(await tauriBridge()));
 }

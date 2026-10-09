@@ -41,6 +41,8 @@ export interface ModesCardProps {
   onClose: () => void;
   /** The ⓘ⌄ button, which a click on it does not count as outside. */
   opener: RefObject<HTMLElement | null>;
+  /** Replaces a mode's explanation where the shell's state makes the default untrue. */
+  explanationFor?: Partial<Record<ModeId, string>>;
 }
 
 export function ModesCard({
@@ -52,6 +54,7 @@ export function ModesCard({
   onToggleSpeakers,
   onClose,
   opener,
+  explanationFor,
 }: ModesCardProps) {
   const root = useRef<HTMLDivElement>(null);
   const rows = useRef(new Map<ModeId, HTMLButtonElement>());
@@ -147,7 +150,7 @@ export function ModesCard({
                 <Dots value={stop.accuracyDots} label="Accuracy" />
               </span>
               <span className="pr-mpbody">
-                {stop.explanations[shell]({ modelName: "" })}
+                {explanationFor?.[stop.id] ?? stop.explanations[shell]({ modelName: "" })}
                 {!available && reason ? (
                   <>
                     <br />

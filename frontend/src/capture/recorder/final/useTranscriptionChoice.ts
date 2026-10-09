@@ -13,6 +13,7 @@ import {
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
+import { FINAL_COPY } from "./finalCopy";
 import type { RecorderValue } from "../RecorderProvider";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 
@@ -24,6 +25,8 @@ export const PRIVATE_UNAVAILABLE = "Not available right now";
 export const SIGNED_OUT = "Sign in to choose another mode";
 export const unavailableNow = (what: string) =>
   `${what} isn't available right now`;
+export const DESKTOP_SIGNED_OUT_CAPTION =
+  "Just the recording, kept on this Mac.";
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
@@ -122,7 +125,9 @@ export function useTranscriptionChoice({
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
-  const mode = MODE_FOR[api.transcriber.id];
+  // TODO(TC-888): drop this when desktopWhisper lands; until then a signed-out Mac recording has no transcription path.
+  const desktopSignedOut = shell === "desktop" && !signedIn;
+  const mode: ModeId = desktopSignedOut ? "skip" : MODE_FOR[api.transcriber.id];
 
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<ModeId | null>(null);
@@ -130,6 +135,16 @@ export function useTranscriptionChoice({
 
   const stops: ScaleStop[] = scaleStops(shell, model).map(
     ({ availability, ...stop }) => {
+      if (desktopSignedOut) {
+        if (stop.id === "skip") return { stop, available: true };
+        if (stop.id === "local")
+          return {
+            stop,
+            available: false,
+            reason: FINAL_COPY.whisperUnavailable,
+          };
+        return { stop, available: false, reason: SIGNED_OUT };
+      }
       if (!signedIn && stop.id !== "local")
         return { stop, available: false, reason: SIGNED_OUT };
       if (!signedIn) return { stop, available: true };
@@ -241,6 +256,7 @@ export function useTranscriptionChoice({
 
   return {
     mode,
+    caption: desktopSignedOut ? DESKTOP_SIGNED_OUT_CAPTION : null,
     stops,
     select,
     step,
