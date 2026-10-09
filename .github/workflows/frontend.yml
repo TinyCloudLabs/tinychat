@@ -30,6 +30,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Unit tests, lint and the build. The browser work runs in the jobs below, in
+  # parallel, so no single job approaches its timeout as the harnesses grow.
   frontend:
     name: Frontend tests, lint and browser harnesses
     runs-on: ubuntu-latest
@@ -58,6 +60,25 @@ jobs:
       - name: Lint (frontend and test)
         run: bunx eslint frontend test
 
+  browser:
+    name: Browser harnesses (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
       - name: Install Chromium
         run: bun run --cwd test install:browsers:ci
 
@@ -66,16 +87,12 @@ jobs:
         run: SCROLL_ENGINE=chromium bun test connectors-scroll.e2e.test.ts
 
       - name: Agent banner across navigation (Chromium)
+        if: ${{ !cancelled() }}
         run: bun run --cwd test agent-banner:browser
 
       - name: Shell invariants (Chromium)
+        if: ${{ !cancelled() }}
         run: bun run --cwd test shell-invariants:browser
-
-      # Four viewports: phone, landscape phone, desktop and 200% text on a
-      # phone (where Linux fonts have caught clipping macOS hides). The full
-      # nine-viewport matrix, WebKit included, runs locally.
-      - name: Exo UI screens (Chromium)
-        run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone,phone-land,desktop,text200-phone bun run --cwd test exo-ui:screens
 
       - name: Recorder-final interaction suites (Chromium)
         if: ${{ !cancelled() }}
@@ -86,10 +103,72 @@ jobs:
         if: ${{ !cancelled() }}
         run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone-halo-review EXO_UI_HALO_FORCE_CANVAS=1 bun run --cwd test exo-ui:screens
 
+  # One job per viewport: phone, landscape phone, desktop and 200% text on a
+  # phone (where Linux fonts have caught clipping macOS hides). The full
+  # nine-viewport matrix, WebKit included, runs locally.
+  screens:
+    name: Exo UI screens (Chromium, ${{ matrix.viewport }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        viewport: [phone, phone-land, desktop, text200-phone]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Install Chromium
+        run: bun run --cwd test install:browsers:ci
+
+      - name: Exo UI screens (Chromium)
+        run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=${{ matrix.viewport }} bun run --cwd test exo-ui:screens
+
       - name: Upload the Exo UI screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: exo-ui-screens-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          name: exo-ui-screens-${{ github.event.pull_request.number }}-${{ matrix.viewport }}-${{ github.run_attempt }}
           path: screenshots/exo-ui/
           if-no-files-found: warn
+
+  # The recorder follow-ups' interaction suites (desktop recorder, Meeting
+  # sources, Capture settings and, as their slices land, notes, the desktop
+  # Capture home and the web engine). bun matches files by name, so a suite
+  # joins as soon as its file exists.
+  followups:
+    name: Recorder follow-ups e2e (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install JS deps
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Install Chromium
+        run: bun run --cwd test install:browsers:ci
+
+      - name: Recorder follow-ups interaction suites (Chromium)
+        working-directory: test
+        run: EXO_UI_ENGINE=chromium bun test recorder-final-desktop recorder-final-notes recorder-final-saved-note recorder-final-web meeting-sources capture-settings capture-home-desktop web-voice-notes-codec
