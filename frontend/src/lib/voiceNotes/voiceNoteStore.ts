@@ -75,11 +75,31 @@ export function voiceNoteMarkdownKvKey(id: string): string {
 }
 
 const noteSyncs = new Map<string, Promise<boolean>>();
+export type NoteSyncErrorCode = "sync_failed";
+const noteSyncErrors = new Map<string, NoteSyncErrorCode>();
+const noteSyncListeners = new Set<() => void>();
+const noteSyncKey = (tcw: TinyCloudWeb, id: string) => JSON.stringify([tcw.spaceId, tcw.did, id]);
+
+/** Account-scoped status; UI never receives a raw storage or network error. */
+export function recordingNoteSyncError(tcw: TinyCloudWeb, id: string): NoteSyncErrorCode | null {
+  return noteSyncErrors.get(noteSyncKey(tcw, id)) ?? null;
+}
+export function subscribeRecordingNoteSync(listener: () => void): () => void {
+  noteSyncListeners.add(listener);
+  return () => { noteSyncListeners.delete(listener); };
+}
+export function reportRecordingNoteSyncError(tcw: TinyCloudWeb, id: string, code: NoteSyncErrorCode | null): void {
+  const key = noteSyncKey(tcw, id);
+  if ((noteSyncErrors.get(key) ?? null) === code) return;
+  if (code) noteSyncErrors.set(key, code);
+  else noteSyncErrors.delete(key);
+  for (const listener of [...noteSyncListeners]) listener();
+}
 
 /** The T18 row and its audio prefix own note sync; there is no separate upload queue. */
 export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
   checkpoint: () => void = () => undefined): Promise<boolean> {
-  const syncKey = `${tcw.spaceId}:${tcw.did}:${id}`;
+  const syncKey = noteSyncKey(tcw, id);
   const inFlight = noteSyncs.get(syncKey);
   if (inFlight) return inFlight;
   const sync = (async () => {
@@ -99,7 +119,14 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       const latest = await loadNote(id);
       if (!latest || latest.revision === note.revision) return true;
     }
-  })().finally(() => { if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey); });
+  })().then((result) => {
+    if (result) { checkpoint(); reportRecordingNoteSyncError(tcw, id, null); }
+    return result;
+  }, (error: unknown) => {
+    checkpoint(); // A cancelled account never publishes a note status for its old client.
+    reportRecordingNoteSyncError(tcw, id, "sync_failed");
+    throw error;
+  }).finally(() => { if (noteSyncs.get(syncKey) === sync) noteSyncs.delete(syncKey); });
   noteSyncs.set(syncKey, sync);
   return sync;
 }
@@ -279,7 +306,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
-): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: string }>> {
+): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: NoteSyncErrorCode }>> {
   try {
     opts.checkpoint?.();
     const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
@@ -301,11 +328,11 @@ export async function saveVoiceNote(
       size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint);
     // Audio has landed. A Markdown failure is separate; the row's absent/stale
     // note_edited_at keeps it eligible for the next reconciliation or edit.
-    let noteSyncError: string | undefined;
+    let noteSyncError: NoteSyncErrorCode | undefined;
     try { await syncRecordingNote(tcw, recording.id, opts.checkpoint); }
     catch (caught) {
       opts.checkpoint?.(); // Cancellation and discard still stop this save.
-      noteSyncError = caught instanceof Error ? caught.message : String(caught);
+      noteSyncError = "sync_failed";
       console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
     }
     return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };

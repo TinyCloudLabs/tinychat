@@ -39,7 +39,8 @@ import {
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
-import { readRecordingNoteFromSpace, syncRecordingNote } from "@/lib/voiceNotes/voiceNoteStore";
+import { readRecordingNoteFromSpace, recordingNoteSyncError, reportRecordingNoteSyncError,
+  subscribeRecordingNoteSync, syncRecordingNote, type NoteSyncErrorCode } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
@@ -60,6 +61,8 @@ export interface VoiceNoteRecorderControllerOptions {
   appleInterim?: () => boolean;
   /** Delayed/failing local reads can be exercised without changing the phone's storage adapter. */
   noteLoader?: typeof loadNote;
+  /** Test clock for note-load retries; production uses setTimeout. */
+  noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void;
 }
 
 export type TranscriberChoiceResult = "ok" | "needs_consent" | "locked_signed_out" | "unavailable";
@@ -80,6 +83,7 @@ export interface VoiceNoteRecorderController {
   getTranscriber(): RecorderTranscriberChoice;
   getNote(): RecorderNote | null;
   getNoteStatus(): RecorderNoteStatus;
+  getNoteSyncError(): string | null;
   /** Resolves after the Markdown is durable on this phone; space sync is debounced. */
   setNoteText(md: string): Promise<void>;
   /** Tap-time recorded clock only. The UI writes a Markdown line if the moment is kept. */
@@ -108,7 +112,10 @@ export interface VoiceNoteRecorderController {
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline, onDeviceReady,
-  appleInterim, noteLoader = loadNote }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
+  appleInterim, noteLoader = loadNote, noteRetryScheduler = (delayMs, retry) => {
+    const timer = setTimeout(retry, delayMs);
+    return () => clearTimeout(timer);
+  } }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
@@ -123,6 +130,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let noteStatus: RecorderNoteStatus = "ready";
   let noteLoadError: Error | null = null;
   let noteLoadVersion = 0;
+  let noteRetryAttempts = 0;
+  let cancelNoteRetry: (() => void) | null = null;
+  let noteAttached = false;
   let noteSyncTimer: ReturnType<typeof setTimeout> | null = null;
   // Signed out (no tcw), notes stay local-first and never sync.
   const noteClient = tcw?.did && tcw.spaceId ? tcw : null;
@@ -146,22 +156,42 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
 
   const notify = () => { for (const listener of [...listeners]) listener(); };
   const currentNoteId = () => state.recordingId ?? state.lastSaved?.id ?? null;
-  const followNote = (force = false) => {
+  const noteAccountCurrent = () => noteAccount && noteAccount.generation === currentAccountGeneration() &&
+    tcw?.did === noteAccount.did && tcw?.spaceId === noteAccount.spaceId;
+  const getNoteSyncError = () => {
     const id = currentNoteId();
-    if (id === noteId && !force && noteStatus !== "error") return;
-    noteId = id;
-    note = null;
-    noteStatus = id ? "loading" : "ready";
-    noteLoadError = null;
+    return id && noteClient && noteAccountCurrent()
+      ? recordingNoteSyncError(noteClient, id) : null;
+  };
+  const reportSavedNoteSyncError = (id: string, code: NoteSyncErrorCode | undefined) => {
+    if (code && noteClient && noteAccountCurrent()) reportRecordingNoteSyncError(noteClient, id, code);
+  };
+  const clearNoteRetry = () => { cancelNoteRetry?.(); cancelNoteRetry = null; };
+  function scheduleNoteRetry(id: string, version: number): void {
+    if (!noteAttached || noteId !== id || version !== noteLoadVersion) return;
+    const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(noteRetryAttempts, 5));
+    noteRetryAttempts++;
+    clearNoteRetry();
+    cancelNoteRetry = noteRetryScheduler(delayMs, () => {
+      cancelNoteRetry = null;
+      if (noteAttached && noteId === id && version === noteLoadVersion) beginNoteLoad(id);
+    });
+  }
+  function beginNoteLoad(id: string): void {
     const version = ++noteLoadVersion;
-    if (!id) return;
     void (async () => {
       let stored = await noteLoader(id);
       if (!stored && noteClient && state.phase === "idle" && state.outcome === "saved") {
+        checkNoteAccount();
         const remote = await readRecordingNoteFromSpace(noteClient, id);
+        checkNoteAccount();
+        if (version !== noteLoadVersion || noteId !== id) return;
         if (remote) stored = await adoptNote(remote);
       }
       if (version !== noteLoadVersion || noteId !== id) return;
+      clearNoteRetry();
+      noteRetryAttempts = 0;
+      noteLoadError = null;
       note = stored ? { md: stored.md, moments: stored.moments } : null;
       noteStatus = "ready";
       notify();
@@ -171,7 +201,20 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       noteStatus = "error";
       notify();
       console.warn("[VoiceNotes] Could not load recording note", error);
+      scheduleNoteRetry(id, version);
     });
+  }
+  const followNote = (force = false) => {
+    const id = currentNoteId();
+    if (id === noteId && !force) return;
+    clearNoteRetry();
+    noteRetryAttempts = 0;
+    noteId = id;
+    note = null;
+    noteStatus = id ? "loading" : "ready";
+    noteLoadError = null;
+    if (!id) { ++noteLoadVersion; return; }
+    beginNoteLoad(id);
   };
   const scheduleNoteSync = (id: string) => {
     if (!noteAccount || !noteClient || state.outcome !== "saved" || state.lastSaved?.id !== id) return;
@@ -205,7 +248,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (next === state) return;
     state = next;
     refreshChoice();
-    followNote(next.outcome === "saved" && before.outcome !== "saved" && note === null);
+    followNote(next.outcome === "saved" && before.outcome !== "saved" && note === null && noteStatus === "ready");
     notify();
   };
 
@@ -305,6 +348,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     });
     switch (outcome.kind) {
       case "saved":
+        reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
         landed(recording, outcome.audio ?? undefined);
         void pendingStore.refresh(outcome.cleanupError);
@@ -353,6 +397,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       return;
     }
     const outcome = await saveRecording(tcw, recording);
+    if (outcome.kind === "saved") reportSavedNoteSyncError(recording.id, outcome.noteSyncError);
     if (outcome.kind === "saved") landed(recording, outcome.audio ?? undefined);
     if (outcome.kind === "failed") void pendingStore.refresh(outcome.failure);
     else if (outcome.kind === "already-saved" || outcome.kind === "discarded") void pendingStore.refresh(outcome.cleanupError ?? undefined);
@@ -385,16 +430,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     getTranscriber: () => choice,
     getNote: () => note,
     getNoteStatus: () => noteStatus,
+    getNoteSyncError,
     async setNoteText(md) {
       const id = currentNoteId();
       if (!id) throw new Error("No recording is selected for notes");
       if (noteId !== id || noteStatus === "loading")
         throw Object.assign(new Error("Recording note is still loading"), { code: "note_not_loaded" });
       if (noteStatus === "error") {
-        const error = noteLoadError ?? new Error("Could not load recording note");
-        followNote(true); // A later edit can proceed after a successful retry; this edit never writes.
-        notify();
-        throw error;
+        throw noteLoadError ?? new Error("Could not load recording note");
       }
       const before = note;
       const version = ++noteLoadVersion;
@@ -471,6 +514,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     attach() {
       if (!available) return () => {};
       let attached = true;
+      noteAttached = true;
+      if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
+      const unsubscribeNoteSync = subscribeRecordingNoteSync(notify);
       const unsubscribePreference = subscribeTranscriberPreference(() => {
         preference = readTranscriberPreference();
         if (refreshChoice()) notify();
@@ -561,6 +607,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         });
       return () => {
         attached = false;
+        noteAttached = false;
+        clearNoteRetry();
         if (noteSyncTimer) {
           clearTimeout(noteSyncTimer);
           noteSyncTimer = null;
@@ -568,6 +616,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             console.warn("[VoiceNotes] Could not sync recording note", error));
         }
         unsubscribePreference();
+        unsubscribeNoteSync();
         for (const handle of handles) void handle.then((h) => h.remove());
       };
     },
