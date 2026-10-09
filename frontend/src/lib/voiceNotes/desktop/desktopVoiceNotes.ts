@@ -298,11 +298,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     const result = await store.recoverInterruptedSessions();
     for (const recording of result.recovered) emit("recovered", { id: recording.id, recording });
     for (const failed of result.failed) emit("recoveryFailed", failed);
-    if (imported && (await store.getSession(imported.id)
-      || (await store.listQuarantine()).items.some((item) => item.id === imported.id)
-      || (await store.listPending()).recordings.some((item) => item.id === imported.id))) {
-      // The renderer has durably taken responsibility, including quarantine
-      // or a decoder-unavailable session. The native pointer must not block Start.
+    if (imported) {
+      // Recovery has finished. The store now owns any durable bytes, whether it
+      // committed, quarantined, retained a session, or dropped an empty note.
+      // Leaving the native pointer after an empty drop blocks every future Start.
       await bridge.invoke("recorder_acknowledge", { id: imported.id });
     }
     return { recovered: result.recovered, failed: [...quarantined, ...result.failed] };

@@ -291,6 +291,34 @@ describe("desktop recorder adapter", () => {
     second.dispose();
   });
 
+  test("an empty first-second crash clears the native journal across relaunches", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.start();
+    first.dispose();
+    bridge.state = "idle"; bridge.current = null;
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 0,
+      pausedMs: 0, maxDurationMs: 10_000 };
+    // Native has skipped a header-only/missing capture segment. The Rust file
+    // store reports zero bytes, so WebStore drops the empty session.
+    const second = await rig(bridge, dbName, env, {}, "note-2");
+    expect(await second.recoverInterrupted()).toEqual({ recovered: [], failed: [] });
+    expect(bridge.recover).toBeNull();
+    expect((await second.plugin.listPending()).recordings).toHaveLength(0);
+    expect((await second.plugin.start()).id).toBe("note-2");
+    await second.plugin.discard();
+    second.dispose();
+
+    const third = await rig(bridge, dbName, env, {}, "note-3");
+    expect(await third.recoverInterrupted()).toEqual({ recovered: [], failed: [] });
+    expect((await third.plugin.listPending()).recordings).toHaveLength(0);
+    expect((await third.plugin.start()).id).toBe("note-3");
+    expect(bridge.calls).toContain("recorder_acknowledge");
+    third.dispose();
+  });
+
   test("relaunch keeps original quarantine metadata and emits its failure only once", async () => {
     const bridge = new FakeBridge();
     const env = newIdbEnv();
