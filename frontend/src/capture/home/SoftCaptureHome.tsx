@@ -113,10 +113,16 @@ function Recent(props: SoftCaptureHomeProps) {
     <section
       aria-labelledby="recent-title"
       className="soft-recent"
+      data-return-focus=""
       data-testid="capture-recent"
     >
       <div className="soft-sect-row">
-        <h2 id="recent-title" className="soft-sect">
+        <h2
+          id="recent-title"
+          className="soft-sect"
+          tabIndex={-1}
+          data-return-focus-target=""
+        >
           {HOME_COPY.recent}
         </h2>
         <Link to={PATHS.library} className="soft-link">

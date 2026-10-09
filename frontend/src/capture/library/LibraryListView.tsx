@@ -78,7 +78,12 @@ export function LibraryListView(props: LibraryListViewProps) {
   const soft = useSoftHome();
   const orphans = soft && matchesFilter(VOICE_NOTE_SOURCE, filter) ? orphanIssues(items, soft.issues) : [];
   return (
-    <div className="flex flex-col gap-3" data-testid="library-list" data-state={status}>
+    <div
+      className={cn("flex flex-col gap-3", soft && "focus:outline-none")}
+      data-testid="library-list"
+      data-state={status}
+      {...(soft ? { role: "region", "aria-label": "Library", tabIndex: -1, "data-return-focus": "" } : {})}
+    >
       <LibraryFilterControl value={filter} onValueChange={props.onFilterChange} />
       {status === "loading" && items.length === 0 && orphans.length === 0 ? (
         <div role="status">

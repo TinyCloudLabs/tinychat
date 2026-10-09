@@ -5,7 +5,7 @@
 //   2. A "couldn't recover" row opens a labelled sheet; Close returns focus to the row.
 //   3. A capture issue with no Library row also shows in the Library list, and behaves the same.
 //   4. A timed-out row is one keyboard-reachable button that opens its sheet.
-//   5. An open sheet closes when the provider clears its issue.
+//   5. An open sheet closes when the provider clears its issue, and focus lands on the list's heading (Recent or Library), never <body>.
 //   6. Save now on the "on this phone" card calls retryPending.
 //
 // SOFT_HOME_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
@@ -135,22 +135,46 @@ describe("Soft Capture home interactions (phone)", () => {
     await page.context().close();
   });
 
-  for (const [screen, kind] of [
-    ["capture-soft-clearing-failed", "recoveryFailed"],
-    ["capture-soft-clearing-saving", "finalization_timed_out"],
+  for (const [screen, kind, pane, landing] of [
+    [
+      "capture-soft-clearing-failed",
+      "recoveryFailed",
+      "capture-recent",
+      "#recent-title",
+    ],
+    [
+      "capture-soft-clearing-saving",
+      "finalization_timed_out",
+      "capture-recent",
+      "#recent-title",
+    ],
+    [
+      "capture-soft-clearing-library",
+      "recoveryFailed",
+      "library-list",
+      '[data-testid="library-list"]',
+    ],
   ] as const)
-    test(`an open ${kind} sheet closes when the recorder clears the issue`, async () => {
+    test(`${screen}: an open ${kind} sheet closes when the recorder clears the issue, and focus lands on the list's heading`, async () => {
       const page = await open(screen);
       await page
-        .locator(
-          `[data-testid="capture-recent"] li[data-issue="${kind}"] button`,
-        )
+        .locator(`[data-testid="${pane}"] li[data-issue="${kind}"] button`)
         .tap();
       const sheet = page.getByRole("dialog");
       await sheet.waitFor({ timeout: 5_000 });
       await page.evaluate(() => window.exoUiClearIssues?.());
       await sheet.waitFor({ state: "detached", timeout: 5_000 });
       expect(await page.locator(`li[data-issue="${kind}"]`).count()).toBe(0);
+      expect(
+        await page.evaluate(
+          (selector) =>
+            document.activeElement === document.querySelector(selector),
+          landing,
+        ),
+      ).toBe(true);
+      expect(
+        await page.evaluate(() => document.activeElement?.tagName),
+      ).not.toBe("BODY");
       await page.context().close();
     });
 

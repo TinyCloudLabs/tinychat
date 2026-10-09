@@ -36,7 +36,7 @@ export function softHomeEnabled(): boolean {
 
 export interface SoftHomeValue {
   issues: CaptureIssues;
-  /** A tap on a row whose issue has a sheet: the recording's id, and the row to return focus to. */
+  /** A tap on a row whose issue has a sheet: the recording's id, and the row to return focus to (or, if it is gone, its list's heading). */
   openIssue: (id: string, opener: HTMLElement) => void;
 }
 
@@ -62,8 +62,13 @@ export function SoftHomeProvider(props: {
   }, [sheetId, issue]);
   // The sheet has no Dialog.Trigger, so Radix can't return focus on its own. The row is passed in: WebKit doesn't focus a tapped button.
   const opener = useRef<HTMLElement | null>(null);
+  // The row disappears when its issue clears (the sheet closes then), so focus has a stable place to land: the heading of the list the row was in.
+  const fallback = useRef<HTMLElement | null>(null);
   const openIssue = useCallback((id: string, row: HTMLElement) => {
     opener.current = row;
+    const scope = row.closest<HTMLElement>("[data-return-focus]");
+    fallback.current =
+      scope?.querySelector<HTMLElement>("[data-return-focus-target]") ?? scope;
     setSheetId(id);
   }, []);
   const value = useMemo<SoftHomeValue | null>(
@@ -76,6 +81,7 @@ export function SoftHomeProvider(props: {
       <IssueSheet
         issue={issue}
         returnFocusTo={opener}
+        fallbackFocusTo={fallback}
         onClose={() => setSheetId(null)}
       />
     </SoftHomeContext.Provider>

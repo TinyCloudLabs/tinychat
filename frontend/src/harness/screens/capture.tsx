@@ -127,5 +127,12 @@ export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-library-issue", path: "/chat/capture/library", render: () => <SoftHome recorder={RECOVERY_FAILED} /> },
   { ...SOFT, id: "capture-soft-clearing-failed", interactive: true, render: () => <ClearableIssues issues={LOST} /> },
   { ...SOFT, id: "capture-soft-clearing-saving", interactive: true, render: () => <ClearableIssues issues={SAVING} /> },
+  {
+    ...SOFT,
+    id: "capture-soft-clearing-library",
+    path: "/chat/capture/library",
+    interactive: true,
+    render: () => <ClearableIssues issues={LOST} />,
+  },
   { ...SOFT, id: "capture-soft-override", render: () => <SoftHome recorder={ISSUES_WITH_CARD} /> },
 ];

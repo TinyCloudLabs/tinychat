@@ -13,6 +13,8 @@ import { useSoftTheme } from "./softTheme";
 export function IssueSheet(props: {
   issue: RecorderCaptureIssue | null;
   returnFocusTo: RefObject<HTMLElement | null>;
+  /** Where focus goes when the row is gone: never `<body>`. */
+  fallbackFocusTo: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
   const theme = useSoftTheme();
@@ -31,7 +33,8 @@ export function IssueSheet(props: {
           data-kind={props.issue?.kind}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            props.returnFocusTo.current?.focus();
+            const row = props.returnFocusTo.current;
+            (row?.isConnected ? row : props.fallbackFocusTo.current)?.focus();
           }}
         >
           <Dialog.Title className="soft-title soft-sheet-title">
