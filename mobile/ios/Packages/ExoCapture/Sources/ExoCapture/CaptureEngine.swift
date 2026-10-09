@@ -198,7 +198,7 @@ public final class CaptureEngine {
                     guard !library.isLiveCapture(id) else { return }
                     try library.beginRecoveryAttempt(id)
                     try recoverSession(id)
-                    library.clearRecoveryFailure(id)
+                    try library.clearRecoveryFailure(id)
                 }, failed: { id, error in
                         try? library.noteRecoveryFailure(id, reason: String(describing: error))
                         log.error("Recovery failed for \(id, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -1248,7 +1248,7 @@ public final class CaptureEngine {
             try RecordingFinalizer.mux(segments: segments,
                                        expectedAudioMs: sidecar["durationMs"] as? Int64 ?? 0, to: staged)
         }
-        library.clearRecoveryFailure(id)
+        try library.clearRecoveryFailure(id)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             #if DEBUG
@@ -1310,7 +1310,7 @@ public final class CaptureEngine {
         guard RecordingLibrary.validID(id) else { throw CaptureError.invalidArgument }
         try library.prepareRecoveryRetry(id)
         try library.beginRecoveryAttempt(id)
-        do { try recoverSession(id); library.clearRecoveryFailure(id) }
+        do { try recoverSession(id); try library.clearRecoveryFailure(id) }
         catch { try? library.noteRecoveryFailure(id, reason: String(describing: error)); throw error }
     }
 

@@ -969,12 +969,12 @@ public final class RecordingLibrary {
         }
     }
 
-    public func clearRecoveryFailure(_ id: String) {
-        queue.sync {
+    public func clearRecoveryFailure(_ id: String) throws {
+        try queue.sync {
             let marker = url("quarantine/\(id).recovery.json")
             if FileManager.default.fileExists(atPath: marker.path) {
-                try? FileManager.default.removeItem(at: marker)
-                try? sync(url("quarantine"))
+                try FileManager.default.removeItem(at: marker)
+                try sync(url("quarantine"))
             }
         }
     }
