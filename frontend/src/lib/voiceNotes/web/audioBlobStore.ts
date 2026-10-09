@@ -3,8 +3,27 @@ import { failure, request, STORES, transact, type IdbEnv } from "./idb";
 /**
  * Where a recording's bytes live. webStore never assumes IndexedDB: the Tauri
  * build supplies an implementation backed by files on disk (TC-880).
+ *
+ * Reconcile rule for every implementation. The blob store's `size()` is the truth
+ * about what is durable; the session journal (bytes, audioMs) only describes it.
+ * When a store cannot append and journal in one transaction (`transactional` is
+ * absent), the journal write can fail, or the tab can die, after `append` resolved.
+ * Then webStore trusts `size()`: it never deletes durable bytes, it commits the
+ * recording at the size the store reports, and it re-derives the duration from it
+ * (journaled audioMs scaled by size / journaled bytes, or the decoded duration when
+ * the journal never saw a byte). A journal failure is surfaced, never swallowed.
  */
 export interface AudioBlobStore {
+  /**
+   * Set only when the audio shares the session journal's IndexedDB database. webStore
+   * then appends inside the journal's own transaction, so a chunk's bytes and the
+   * session's progress become durable together or not at all.
+   */
+  readonly transactional?: {
+    /** Every object store `appendIn` writes. */
+    readonly stores: readonly string[];
+    appendIn(tx: IDBTransaction, id: string, chunk: Uint8Array): Promise<number>;
+  };
   /** Appends to the end of the recording's bytes; resolves with the new total size once durable. */
   append(id: string, chunk: Uint8Array): Promise<number>;
   /** Bytes stored so far (0 when nothing was ever appended). */
@@ -22,18 +41,19 @@ interface MetaRow { id: string; size: number; finalized: boolean }
 
 export function createIdbAudioBlobStore(db: IDBDatabase, env: IdbEnv): AudioBlobStore {
   const names = [STORES.audioChunks, STORES.audioMeta];
+  const appendIn = async (tx: IDBTransaction, id: string, chunk: Uint8Array): Promise<number> => {
+    const meta = (await request(tx.objectStore(STORES.audioMeta).get(id)) as MetaRow | undefined) ?? { id, size: 0, finalized: false };
+    if (meta.finalized) throw failure("audio_finalized", `Recording ${id} is sealed.`);
+    if (chunk.byteLength === 0) return meta.size;
+    const row: ChunkRow = { id, offset: meta.size, bytes: chunk.slice().buffer };
+    tx.objectStore(STORES.audioChunks).put(row);
+    const size = meta.size + chunk.byteLength;
+    tx.objectStore(STORES.audioMeta).put({ id, size, finalized: false } satisfies MetaRow);
+    return size;
+  };
   return {
-    append: (id, chunk) =>
-      transact(db, names, "readwrite", async (tx) => {
-        const meta = (await request(tx.objectStore(STORES.audioMeta).get(id)) as MetaRow | undefined) ?? { id, size: 0, finalized: false };
-        if (meta.finalized) throw failure("audio_finalized", `Recording ${id} is sealed.`);
-        if (chunk.byteLength === 0) return meta.size;
-        const row: ChunkRow = { id, offset: meta.size, bytes: chunk.slice().buffer };
-        tx.objectStore(STORES.audioChunks).put(row);
-        const size = meta.size + chunk.byteLength;
-        tx.objectStore(STORES.audioMeta).put({ id, size, finalized: false } satisfies MetaRow);
-        return size;
-      }),
+    transactional: { stores: names, appendIn },
+    append: (id, chunk) => transact(db, names, "readwrite", (tx) => appendIn(tx, id, chunk)),
 
     size: (id) =>
       transact(db, [STORES.audioMeta], "readonly", async (tx) =>

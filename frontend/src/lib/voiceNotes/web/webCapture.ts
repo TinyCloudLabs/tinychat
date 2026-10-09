@@ -9,12 +9,17 @@
 // node's stream. Pause flushes the recorder, pauses it and stops the mic tracks;
 // resume re-acquires the same device and reconnects it to the node. The recorder
 // never sees a track end, so every chunk belongs to one container: one playable file.
+//
+// Releasing the mic never waits on the recorder. The last slice is requested first, the
+// tracks are stopped at once, and only then does pause wait (at most flushTimeoutMs) for
+// that slice; a stalled recorder is reported through onFlushStalled, not hidden.
 
 import { failure } from "./idb";
 import { startLevelMeter, type LevelMeter, type LevelMeterEnv, type LevelSample } from "./webLevels";
 import type { AudioInput } from "../nativeVoiceNotes";
 
 export const TIMESLICE_MS = 1000;
+export const FLUSH_TIMEOUT_MS = 2000;
 export const PREFERRED_MIME_TYPES = ["audio/webm;codecs=opus", "audio/mp4"] as const;
 
 export interface CaptureEnv {
@@ -24,6 +29,8 @@ export interface CaptureEnv {
   permissions: Pick<Permissions, "query"> | null;
   now(): number;
   levelEnv?: LevelMeterEnv;
+  /** How long a pause waits for the recorder's last slice. Default FLUSH_TIMEOUT_MS. */
+  flushTimeoutMs?: number;
 }
 
 export function browserCaptureEnv(): CaptureEnv {
@@ -54,13 +61,15 @@ export interface CaptureCallbacks {
   onInputLost(loss: InputLoss): void;
   onMute(muted: boolean): void;
   onRecorderError(error: unknown): void;
+  /** The recorder did not deliver its last slice in time; the mic is already released and the capture held. */
+  onFlushStalled(): void;
 }
 
 export interface WebCapture {
   readonly mimeType: string;
   /** Prompts for the mic if needed, then records. Rejects with the browser's DOMException. */
   start(deviceId: string | null): Promise<AudioInput>;
-  /** Flushes the last slice to onChunk, pauses the recorder and stops the mic tracks. */
+  /** Stops the mic tracks at once, then delivers the last slice to onChunk (bounded) and pauses the recorder. */
   pause(): Promise<void>;
   /** Re-acquires the mic (the device used so far unless `deviceId` says otherwise) and continues the same recording. */
   resume(deviceId?: string | null): Promise<AudioInput>;
@@ -149,9 +158,15 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
     return input;
   };
 
-  const flush = () => new Promise<void>((resolve) => {
-    if (!recorder || recorder.state !== "recording") return resolve();
-    flushWaiter = resolve;
+  /** Resolves true when the recorder delivered the requested slice, false when it did not within the bound. */
+  const flush = () => new Promise<boolean>((resolve) => {
+    if (!recorder || recorder.state !== "recording") return resolve(true);
+    const timer = setTimeout(() => {
+      if (flushWaiter === delivered) flushWaiter = null;
+      resolve(false);
+    }, env.flushTimeoutMs ?? FLUSH_TIMEOUT_MS);
+    const delivered = () => { clearTimeout(timer); resolve(true); };
+    flushWaiter = delivered;
     recorder.requestData();
   });
 
@@ -159,10 +174,11 @@ export function createWebCapture(env: CaptureEnv, callbacks: CaptureCallbacks): 
     meter?.stop();
     meter = null;
     callbacks.onLevel({ level: 0, peak: 0, active: false });
-    await flush();
+    const flushed = flush();
+    releaseInput();
+    if (!(await flushed)) callbacks.onFlushStalled();
     if (recorder?.state === "recording") recorder.pause();
     boundary = null;
-    releaseInput();
   };
 
   const startMeter = () => {

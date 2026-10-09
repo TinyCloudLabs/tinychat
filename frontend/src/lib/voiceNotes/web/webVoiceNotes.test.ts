@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test as bunTest } from "bun:test";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS, type VoiceNoteRecording } from "../nativeVoiceNotes";
-import { FakeMediaRecorder, createRig, slowTest, type Rig, type RigOptions } from "./webTestKit";
+import { FakeMediaRecorder, createRig, memoryAudioBlobs, slowTest, type Rig, type RigOptions } from "./webTestKit";
+import { memoryLocks, openWebStore } from "./webStore";
 import {
   UNSUPPORTED_METHODS, WEB_CAPABILITIES, WEB_MAX_DURATION_MS, WEB_MIN_DURATION_LIMIT_MS,
 } from "./webVoiceNotes";
@@ -316,6 +317,99 @@ describe("failures while recording", () => {
     await rig.settle();
     expect(events.autoStopped).toMatchObject([{ reason: "disk_full", recording: null, error: "no_audio_captured" }]);
     expect((await rig.engine.plugin.listPending()).recordings).toEqual([]);
+  });
+
+  describe("a journal write that fails (full disk) after the audio write", () => {
+    const quotaAt = (nth: number) => {
+      let seen = 0;
+      return { beforeOp: (op: string) => { if (op === "session:progress" && ++seen === nth) throw new DOMException("full", "QuotaExceededError"); } };
+    };
+
+    test("atomic store, first slice: nothing was written, so the note is dropped as disk_full", async () => {
+      const rig = await createRig({ hooks: quotaAt(1) });
+      const { events } = await listen(rig);
+      await rig.engine.plugin.start();
+      await quiet(() => rig.chunk([1, 2, 3]));
+      await rig.settle();
+      expect(events.autoStopped).toMatchObject([{ reason: "disk_full", recording: null, error: "no_audio_captured" }]);
+      expect((await rig.engine.plugin.listPending()).recordings).toEqual([]);
+    });
+
+    test("atomic store, later slice: the rolled-back slice is lost, every earlier slice is committed", async () => {
+      const rig = await createRig({ hooks: quotaAt(2) });
+      const { events } = await listen(rig);
+      await rig.engine.plugin.start();
+      await rig.chunk([1, 2, 3]);
+      await quiet(() => rig.chunk([4, 5, 6]));
+      await rig.settle();
+      expect(events.autoStopped).toMatchObject([{ reason: "disk_full", recording: { sizeBytes: 3, durationMs: 1000 } }]);
+      const id = (events.autoStopped[0] as { id: string }).id;
+      expect(Array.from(await readAll(rig, id))).toEqual([1, 2, 3]);
+    });
+
+    for (const [name, nth, sizeBytes] of [["first", 1, 3], ["later", 2, 6]] as const) {
+      test(`non-atomic blob store, ${name} slice: the written bytes are never deleted and are in the committed note`, async () => {
+        const blobs = memoryAudioBlobs();
+        const rig = await createRig({ audio: blobs.create, hooks: quotaAt(nth) });
+        const { events } = await listen(rig);
+        await rig.engine.plugin.start();
+        if (nth === 2) await rig.chunk([1, 2, 3]);
+        await quiet(() => rig.chunk(nth === 2 ? [4, 5, 6] : [1, 2, 3]));
+        await rig.settle();
+        expect(events.autoStopped).toMatchObject([{ reason: "disk_full", recording: { sizeBytes, durationMs: nth * 1000 } }]);
+        expect(events.writeFailure).toMatchObject([{ error: expect.stringContaining("full") }]);
+        const id = (events.autoStopped[0] as { id: string }).id;
+        expect(blobs.sizeOf(id)).toBe(sizeBytes);
+        expect(Array.from(await readAll(rig, id))).toEqual(sizeBytes === 3 ? [1, 2, 3] : [1, 2, 3, 4, 5, 6]);
+      });
+    }
+  });
+
+  test("a claim by another tab while recording survives the stop", async () => {
+    const rig = await createRig();
+    const { plugin } = rig.engine;
+    await plugin.start();
+    await rig.chunk([1, 2, 3]);
+    const other = await openWebStore({ env: rig.idb, locks: memoryLocks(), now: rig.clock.now });
+    const { claimed } = await other.setCaptureDefaults({ accountDid: "did:A", transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+    expect(claimed).toHaveLength(1);
+    const note = await plugin.stop();
+    expect(note.owner).toBe("did:A");
+    expect((await plugin.listPending()).recordings.map((r) => r.owner)).toEqual(["did:A"]);
+  });
+
+  describe("pause releases the microphone without waiting for the encoder", () => {
+    test("a dataavailable that arrives late: the tracks are released at once and the late slice still counts", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      await plugin.start();
+      await rig.chunk([1, 2, 3]);
+      rig.fake.env.flushTimeoutMs = 60_000;
+      rig.fake.recorder().requestDataMode = "deferred";
+      rig.fake.recorder().encode([4, 5]);
+      const paused = plugin.pause();
+      await rig.settle();
+      expect(rig.fake.mic.liveTracks()).toEqual([]);
+      rig.fake.recorder().releaseRequestedData();
+      await paused;
+      expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user" });
+      await rig.settle();
+      const note = await plugin.stop();
+      expect(note.sizeBytes).toBe(5);
+    });
+
+    test("a dataavailable that never arrives: pause completes after the flush timeout and says so", async () => {
+      const rig = await createRig();
+      const { plugin } = rig.engine;
+      const { events } = await listen(rig);
+      const { id } = await plugin.start();
+      await rig.chunk([1, 2, 3]);
+      rig.fake.recorder().requestDataMode = "never";
+      await quiet(() => plugin.pause());
+      expect(rig.fake.mic.liveTracks()).toEqual([]);
+      expect(await plugin.status()).toMatchObject({ state: "paused", reason: "user" });
+      expect(events.writeFailure).toEqual([{ id, error: "pause_flush_timeout" }]);
+    });
   });
 
   test("losing the microphone blocks the recording; plugging it back in and resuming continues it with a typed gap", async () => {

@@ -4,10 +4,10 @@ import { base64ToBytes } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore } from "./audioBlobStore";
 import { openWebDb } from "./idb";
 import { newIdbEnv } from "./testing/idb";
-import { FakeClock, slowTest } from "./webTestKit";
+import { FakeClock, memoryAudioBlobs, slowTest } from "./webTestKit";
 import {
-  MAX_READ_CHUNK_BYTES, MAX_RECOVERY_ATTEMPTS, memoryLocks, openWebStore, recordingFromSession, sessionLock, type StoreOp,
-  type WebStore, type WebStoreOptions,
+  durableBytesOf, MAX_READ_CHUNK_BYTES, MAX_RECOVERY_ATTEMPTS, memoryLocks, openWebStore, recordingFromSession, sessionLock,
+  UNDECODABLE_REASON, type DecodeCheck, type StoreOp, type WebStore, type WebStoreOptions,
 } from "./webStore";
 
 const test = slowTest(bunTest);
@@ -255,12 +255,93 @@ describe("interrupted-session recovery", () => {
     expect(Array.from(await readAll(fresh, "n"))).toEqual(Array.from(first));
   });
 
-  test("kill between the audio write and its journal keeps the bytes and under-counts duration by at most that chunk", async () => {
+  test("kill at the checkpoint leaves neither the chunk nor its progress: bytes and duration agree exactly", async () => {
     const a = bytesOf(40, 1);
     const b = bytesOf(30, 2);
     const { result, fresh } = await killedAt("session:progress", async (s) => { await record(s, "n", [a, b]); }, 2);
-    expect(result.recovered).toMatchObject([{ id: "n", sizeBytes: 70, durationMs: 1000 }]);
-    expect(Array.from(await readAll(fresh, "n"))).toEqual(Array.from(concat(a, b)));
+    expect(result.recovered).toMatchObject([{ id: "n", sizeBytes: 40, durationMs: 1000 }]);
+    expect(Array.from(await readAll(fresh, "n"))).toEqual(Array.from(a));
+  });
+
+  describe("a blob store that cannot join the journal transaction", () => {
+    test("kill between the append and its journal keeps every byte and reconciles the duration to the blob store's size", async () => {
+      const blobs = memoryAudioBlobs();
+      const a = bytesOf(40, 1);
+      const b = bytesOf(30, 2);
+      const h = harness({ audio: blobs.create });
+      let seen = 0;
+      const doomed = await h.open({ hooks: { beforeOp: (op) => { if (op === "session:progress" && ++seen === 2) throw new Error("killed"); } } });
+      await expect(record(doomed, "m", [a, b])).rejects.toThrow("killed");
+      h.locks.releaseAll();
+      const tab = await h.open();
+      expect((await tab.getSession("m"))).toMatchObject({ bytes: 40, audioMs: 1000 });
+      expect(await tab.audio.size("m")).toBe(70);
+      const { recovered } = await tab.recoverInterruptedSessions();
+      expect(recovered).toMatchObject([{ id: "m", sizeBytes: 70, durationMs: Math.round(1000 * 70 / 40) }]);
+      expect(Array.from(await readAll(tab, "m"))).toEqual(Array.from(concat(a, b)));
+    });
+
+    test("a journal that never saw a byte takes the decoder's duration", async () => {
+      const blobs = memoryAudioBlobs();
+      const h = harness({ audio: blobs.create });
+      const doomed = await h.open({ hooks: { beforeOp: (op) => { if (op === "session:progress") throw new Error("killed"); } } });
+      await expect(record(doomed, "m", [bytesOf(25)])).rejects.toThrow("killed");
+      h.locks.releaseAll();
+      const decode: DecodeCheck = async () => ({ durationMs: 1234 });
+      const { recovered } = await (await h.open({ decodeCheck: decode })).recoverInterruptedSessions();
+      expect(recovered).toMatchObject([{ id: "m", sizeBytes: 25, durationMs: 1234 }]);
+    });
+
+    test("a journal failure after the append is surfaced with the durable size and never deletes audio", async () => {
+      for (const failAt of [1, 2]) {
+        const blobs = memoryAudioBlobs();
+        let seen = 0;
+        const quota = () => new DOMException("full", "QuotaExceededError");
+        const store = await harness({ audio: blobs.create }).open({
+          hooks: { beforeOp: (op) => { if (op === "session:progress" && ++seen === failAt) throw quota(); } },
+        });
+        await store.beginSession(init("n"));
+        const chunks = [bytesOf(10, 1), bytesOf(20, 2)];
+        let failure: unknown;
+        for (const [index, chunk] of chunks.entries()) {
+          try {
+            await store.appendChunk("n", chunk, { audioMs: 1000 * (index + 1), firstAudioAt: 1500 });
+          } catch (error) {
+            failure = error;
+          }
+        }
+        expect((failure as DOMException).name).toBe("QuotaExceededError");
+        expect(durableBytesOf(failure)).toBe(failAt === 1 ? 10 : 30);
+        expect(await store.audio.size("n")).toBe(30);
+        await expect(store.dropEmptySession("n")).rejects.toEqual(code("audio_not_empty"));
+        expect(await store.audio.size("n")).toBe(30);
+        const note = await store.commitSession("n", (session, size) => recordingFromSession(session, size, {
+          endedAt: 9000, durationMs: session.audioMs, recovered: false, endedUnexpectedly: false, exitReason: null,
+        }), { audioMs: 2000, bytes: 30, firstAudioAt: 1500 });
+        expect(note).toMatchObject({ sizeBytes: 30, durationMs: 2000 });
+      }
+    });
+  });
+
+  test("an IDB checkpoint that fails after the append rolls the append back and loses nothing already durable", async () => {
+    for (const failAt of [1, 2]) {
+      let seen = 0;
+      const store = await harness().open({
+        hooks: { beforeOp: (op) => { if (op === "session:progress" && ++seen === failAt) throw new DOMException("full", "QuotaExceededError"); } },
+      });
+      await store.beginSession(init("n"));
+      const first = bytesOf(10, 1);
+      const rejected: unknown[] = [];
+      for (const [index, chunk] of [first, bytesOf(20, 2)].entries()) {
+        await store.appendChunk("n", chunk, { audioMs: 1000 * (index + 1), firstAudioAt: 1500 }).catch((error: unknown) => rejected.push(error));
+      }
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as DOMException).name).toBe("QuotaExceededError");
+      expect(durableBytesOf(rejected[0])).toBeNull();
+      const durable = failAt === 1 ? 20 : 10;
+      expect(await store.audio.size("n")).toBe(durable);
+      expect(await store.getSession("n")).toMatchObject({ bytes: durable, audioMs: failAt === 1 ? 2000 : 1000 });
+    }
   });
 
   test("kill at session:update still recovers the durable chunks", async () => {
@@ -379,6 +460,134 @@ describe("interrupted-session recovery", () => {
     expect(await store.audio.size("b")).toBe(0);
     await expect(store.discardFailedRecording({ id: "a" })).rejects.toEqual(code("not_found"));
     await expect(store.beginSession(init("a"))).rejects.toEqual(code("tombstoned"));
+  });
+});
+
+describe("recovered prefixes must decode", () => {
+  test("a prefix the checker accepts is published with its bytes", async () => {
+    const h = harness();
+    const sent = await record(await h.open(), "n", [bytesOf(30), bytesOf(30, 2)]);
+    h.locks.releaseAll();
+    const seen: { size: number; mimeType: string; total: number }[] = [];
+    const decodeCheck: DecodeCheck = async (head, mimeType, total) => { seen.push({ size: head.byteLength, mimeType, total }); return { durationMs: 2000 }; };
+    const tab = await h.open({ decodeCheck });
+    const { recovered, failed } = await tab.recoverInterruptedSessions();
+    expect(failed).toEqual([]);
+    expect(recovered).toMatchObject([{ id: "n", recovered: true, sizeBytes: 60, durationMs: 2000 }]);
+    expect(seen).toEqual([{ size: 60, mimeType: "audio/webm;codecs=opus", total: 60 }]);
+    expect(Array.from(await readAll(tab, "n"))).toEqual(Array.from(sent));
+  });
+
+  test("a prefix the checker rejects is quarantined, never published, and keeps its audio; Try again re-checks and Delete removes it", async () => {
+    const h = harness();
+    const sent = await record(await h.open(), "n", [bytesOf(30)]);
+    h.locks.releaseAll();
+    let decodable = false;
+    const decodeCheck: DecodeCheck = async () => {
+      if (!decodable) throw new Error("no moov atom");
+      return { durationMs: 1000 };
+    };
+    const tab = await h.open({ decodeCheck });
+    const log = console.error;
+    const logged: unknown[][] = [];
+    console.error = (...args: unknown[]) => { logged.push(args); };
+    let result;
+    try {
+      result = await tab.recoverInterruptedSessions();
+    } finally {
+      console.error = log;
+    }
+    expect(result.recovered).toEqual([]);
+    expect(result.failed).toEqual([{ id: "n", reason: UNDECODABLE_REASON, error: "no moov atom" }]);
+    expect(logged).toHaveLength(1);
+    expect((await tab.listPending()).recordings).toEqual([]);
+    expect(await tab.listQuarantine()).toEqual({ items: [{ id: "n", reason: UNDECODABLE_REASON, sizeBytes: 30 }] });
+    expect(await tab.getSession("n")).toBeNull();
+    expect(await tab.audio.size("n")).toBe(30);
+    await expect(tab.readAudioChunk({ id: "n", offset: 0, length: 4 })).rejects.toEqual(code("not_found"));
+    expect((await tab.recoverInterruptedSessions()).recovered).toEqual([]);
+
+    decodable = true;
+    await tab.rearmQuarantined("n");
+    const retried = await tab.recoverInterruptedSessions();
+    expect(retried.recovered).toMatchObject([{ id: "n", sizeBytes: 30 }]);
+    expect(Array.from(await readAll(tab, "n"))).toEqual(Array.from(sent));
+
+    decodable = false;
+    await record(tab, "d", [bytesOf(5)]);
+    console.error = () => {};
+    try {
+      await tab.recoverInterruptedSessions();
+    } finally {
+      console.error = log;
+    }
+    await tab.deleteQuarantined({ id: "d" });
+    expect((await tab.listQuarantine()).items).toEqual([]);
+    expect(await tab.audio.size("d")).toBe(0);
+  });
+
+  test("only the head is handed to the checker, with the full size alongside", async () => {
+    const h = harness();
+    await record(await h.open(), "n", [bytesOf(3 * 1024 * 1024), bytesOf(3 * 1024 * 1024, 2), bytesOf(3 * 1024 * 1024, 3)]);
+    h.locks.releaseAll();
+    const seen: number[][] = [];
+    const tab = await h.open({ decodeCheck: async (head, _type, total) => { seen.push([head.byteLength, total]); return { durationMs: 3000 }; } });
+    await tab.recoverInterruptedSessions();
+    expect(seen).toEqual([[8 * 1024 * 1024, 9 * 1024 * 1024]]);
+  });
+});
+
+describe("a claim by another tab is never overwritten", () => {
+  const signIn = (store: WebStore, did: string) =>
+    store.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+  const finish = (session: Parameters<Parameters<WebStore["commitSession"]>[1]>[0], size: number) =>
+    recordingFromSession(session, size, { endedAt: 9000, durationMs: session.audioMs, recovered: false, endedUnexpectedly: false, exitReason: null });
+
+  test("a commit built from a stale snapshot keeps the owner journaled meanwhile", async () => {
+    const h = harness();
+    const tabA = await h.open();
+    const tabB = await h.open({ locks: memoryLocks() });
+    await record(tabA, "n", [bytesOf(10)]);
+    const staleOwner = (await tabA.getSession("n"))!.owner;
+    expect((await signIn(tabB, "did:A")).claimed).toEqual(["n"]);
+    expect(staleOwner).toBeNull();
+    const note = await tabA.commitSession("n", finish, { audioMs: 1000, bytes: 10, firstAudioAt: 1500 });
+    expect(note?.owner).toBe("did:A");
+    expect((await tabA.listPending()).recordings[0]!.owner).toBe("did:A");
+  });
+
+  test("a claim between recovery's checks and its commit is kept", async () => {
+    const h = harness();
+    await record(await h.open(), "n", [bytesOf(10)]);
+    h.locks.releaseAll();
+    const claimer = await h.open({ locks: memoryLocks() });
+    const tab = await h.open({ hooks: { beforeOp: async (op) => { if (op === "note:commit") await signIn(claimer, "did:A"); } } });
+    const { recovered } = await tab.recoverInterruptedSessions();
+    expect(recovered).toMatchObject([{ id: "n", owner: "did:A", recovered: true }]);
+    expect((await tab.listPending()).recordings[0]!.owner).toBe("did:A");
+  });
+
+  test("a claim between the failed check and the quarantine write is kept when the recording is retried", async () => {
+    const h = harness();
+    await record(await h.open(), "n", [bytesOf(10)]);
+    h.locks.releaseAll();
+    const claimer = await h.open({ locks: memoryLocks() });
+    let decodable = false;
+    const tab = await h.open({
+      decodeCheck: async () => { if (!decodable) throw new Error("bad"); return { durationMs: 1000 }; },
+      hooks: { beforeOp: async (op) => { if (op === "quarantine:write") await signIn(claimer, "did:A"); } },
+    });
+    const log = console.error;
+    console.error = () => {};
+    try {
+      await tab.recoverInterruptedSessions();
+    } finally {
+      console.error = log;
+    }
+    expect((await tab.listQuarantine()).items).toHaveLength(1);
+    decodable = true;
+    await tab.rearmQuarantined("n");
+    expect((await tab.recoverInterruptedSessions()).recovered).toMatchObject([{ id: "n", owner: "did:A" }]);
   });
 });
 
@@ -519,6 +728,41 @@ describe("ledger, receipts, outbox and transcripts (native parity)", () => {
     await expect(store.updateLedger({ id: "n", did: "did:A", rev: 2, patch: {} })).rejects.toEqual(code("tombstoned"));
     await expect(store.claim({ id: "n", did: "did:A", evidence: "signed_out_v2" })).rejects.toEqual(code("tombstoned"));
     await expect(store.beginSession(init("n"))).rejects.toEqual(code("tombstoned"));
+  });
+
+  test("deleting again never resurrects cleanup that was already completed", async () => {
+    const { open } = harness();
+    const store = await open();
+    await signedIn(store);
+    await noteWith(store, "n", [bytesOf(4)], "did:A");
+    await store.beginRemoteOp(receipt("n"));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "op1", result: { outcome: "created", handle: "up-1" } });
+    await store.beginRemoteOp(receipt("n", { opId: "op2", kind: "hosted_submit" }));
+    await store.recordRemoteResult({ id: "n", did: "did:A", opId: "op2", result: { outcome: "created", jobId: "job-1" } });
+    await store.deleteAudio({ id: "n" });
+    const queued = (await store.listOutbox({ did: "did:A" })).entries;
+    expect(queued).toHaveLength(2);
+    await store.deleteAudio({ id: "n" });
+    expect((await store.listOutbox({ did: "did:A" })).entries).toEqual(queued);
+    for (const entry of queued) await store.completeOutbox({ entryId: entry.entryId, result: "done" });
+    expect((await store.listOutbox({ did: "did:A" })).entries).toEqual([]);
+    await store.deleteAudio({ id: "n" });
+    await store.deleteAudio({ id: "n" });
+    expect((await store.listOutbox({ did: "did:A" })).entries).toEqual([]);
+    expect(await store.audio.size("n")).toBe(0);
+  });
+
+  test("deleting again still finishes an audio delete a crash interrupted", async () => {
+    const h = harness();
+    let armed = false;
+    const doomed = await h.open({ hooks: { beforeOp: (op) => { if (armed && op === "audio:delete") throw new Error("killed"); } } });
+    await noteWith(doomed, "n", [bytesOf(9)]);
+    armed = true;
+    await expect(doomed.deleteAudio({ id: "n" })).rejects.toThrow("killed");
+    const fresh = await h.open();
+    expect(await fresh.audio.size("n")).toBe(9);
+    await fresh.deleteAudio({ id: "n" });
+    expect(await fresh.audio.size("n")).toBe(0);
   });
 
   test("an unowned (signed-out) note deletes without any outbox entries", async () => {

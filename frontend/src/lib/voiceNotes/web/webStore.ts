@@ -14,14 +14,17 @@ import type {
 } from "../nativeVoiceNotes";
 import { bytesToBase64 } from "../voiceNoteAudio";
 import { createIdbAudioBlobStore, type AudioBlobStore } from "./audioBlobStore";
+import { browserDecodeCheck, DECODE_CHECK_MAX_BYTES, type DecodeCheck } from "./decodeCheck";
 import { browserIdbEnv, failure, openWebDb, request, STORES, transact, type IdbEnv } from "./idb";
 
 export { failure };
-export type { AudioBlobStore };
+export type { AudioBlobStore, DecodeCheck };
 
 /** One native call never moves more than this much audio (matches the shells). */
 export const MAX_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 export const MAX_RECOVERY_ATTEMPTS = 3;
+/** Quarantine reason of a recovered prefix the browser cannot decode. */
+export const UNDECODABLE_REASON = "undecodable_audio";
 export const RECORDING_LOCK = "exo-voice-note-recording";
 export const sessionLock = (id: string) => `exo-voice-note-session:${id}`;
 
@@ -95,6 +98,8 @@ export interface WebStoreOptions {
   /** Replaces the IndexedDB audio store (the Tauri build passes a file-backed one). */
   audio?: (db: IDBDatabase, env: IdbEnv) => AudioBlobStore;
   locks?: SessionLocks;
+  /** Validates a recovered prefix before it is published. Default: the browser's decoder; null skips validation. */
+  decodeCheck?: DecodeCheck | null;
   now?: () => number;
   hooks?: { beforeOp?(op: StoreOp, id: string): void | Promise<void> };
 }
@@ -122,14 +127,25 @@ export interface WebStore extends PluginProtocol {
   readonly locks: SessionLocks;
   beginSession(init: SessionInit): Promise<SessionRecord>;
   getSession(id: string): Promise<SessionRecord | null>;
-  /** Appends the chunk, then journals `progress`; both are durable when this resolves. */
+  /**
+   * Appends the chunk and journals `progress` (plus the new byte total); both are durable when this
+   * resolves. With a transactional blob store they commit as one transaction: a failure leaves neither.
+   * With any other store the bytes are durable first; if the journal write then fails, the error carries
+   * `durableBytes` (see journalFailure) and the bytes are kept: the blob store's size is the truth.
+   */
   appendChunk(id: string, bytes: Uint8Array, progress: Partial<SessionRecord>): Promise<void>;
   updateSession(id: string, patch: Partial<SessionRecord>): Promise<void>;
-  /** Seals the audio and atomically turns the session into a pending recording. Null if the id was discarded meanwhile. */
-  commitSession(id: string, finish: (session: SessionRecord, sizeBytes: number) => VoiceNoteRecording): Promise<VoiceNoteRecording | null>;
+  /**
+   * Seals the audio and turns the session into a pending recording in one transaction. `build` runs inside
+   * that transaction on the session as journaled right then (so an owner claimed by another tab is kept);
+   * `progress` is what the caller knows to be durable and the journal may lag behind on. Null if the id was
+   * discarded meanwhile.
+   */
+  commitSession(id: string, build: (session: SessionRecord, sizeBytes: number) => VoiceNoteRecording,
+    progress?: Pick<SessionRecord, "audioMs" | "bytes" | "firstAudioAt">): Promise<VoiceNoteRecording | null>;
   /** The whole audio of a pending recording, for playback. */
   readNoteAudio(id: string): Promise<{ bytes: Uint8Array; mimeType: string }>;
-  /** Drops a session that captured nothing (no tombstone: there is nothing to protect). */
+  /** Drops a session that captured nothing (no tombstone: there is nothing to protect). Rejects `audio_not_empty` rather than delete durable bytes. */
   dropEmptySession(id: string): Promise<void>;
   /** Discards a session and its audio and tombstones the id. */
   discardSession(id: string): Promise<void>;
@@ -181,6 +197,27 @@ export function recordingFromSession(
 
 const clone = <T>(value: T): T => structuredClone(value);
 
+/** A journal write failed after the blob store had already made `durableBytes` durable. */
+export function journalFailure(error: unknown, durableBytes: number): Error & { durableBytes: number } {
+  const base = error instanceof Error ? error : new Error(String(error));
+  return Object.assign(base, { durableBytes });
+}
+export const durableBytesOf = (error: unknown): number | null =>
+  typeof (error as { durableBytes?: unknown } | null)?.durableBytes === "number" ? (error as { durableBytes: number }).durableBytes : null;
+
+/**
+ * The duration of a recovered recording whose audio is `actualBytes` long. The journal's audioMs
+ * describes `session.bytes`; when the blob store disagrees (a journal write failed or the tab died
+ * between the append and the journal), scale it. A journal that never saw a byte has nothing to
+ * scale, so the decoder's measurement is the only evidence.
+ */
+function reconciledDurationMs(session: SessionRecord, actualBytes: number, decodedMs: number): number {
+  if (actualBytes === session.bytes) return session.audioMs;
+  if (session.bytes > 0) return Math.round(session.audioMs * actualBytes / session.bytes);
+  if (decodedMs === 0) console.warn("[webStore] A recovered recording has no journaled duration and no decoder measured it", session.id);
+  return decodedMs;
+}
+
 function outboxEntryFor(
   receipt: RemoteOpReceipt,
   result: { handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
@@ -221,6 +258,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
   const db = await openWebDb(env, options.dbName ?? "exo-voice-notes");
   const audio = options.audio ? options.audio(db, env) : createIdbAudioBlobStore(db, env);
   const locks = options.locks ?? webLocks();
+  const decodeCheck = options.decodeCheck === undefined ? browserDecodeCheck() : options.decodeCheck;
 
   const get = async <T>(tx: IDBTransaction, store: string, key: IDBValidKey): Promise<T | undefined> =>
     (await request(tx.objectStore(store).get(key))) as T | undefined;
@@ -305,13 +343,27 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
 
     async appendChunk(id, bytes, progress) {
       await before("audio:append", id);
-      const bytesNow = await audio.append(id, bytes);
-      await before("session:progress", id);
-      await transact(db, [STORES.sessions], "readwrite", async (tx) => {
+      const journalIn = async (tx: IDBTransaction, bytesNow: number) => {
         const row = await get<SessionRecord>(tx, STORES.sessions, id);
         if (!row) throw failure("not_found", `Session ${id} is gone.`);
         await put(tx, STORES.sessions, { ...row, ...clone(progress), id, bytes: bytesNow, lastHeartbeatAt: now() });
-      });
+      };
+      const joint = audio.transactional;
+      if (joint) {
+        await transact(db, [STORES.sessions, ...joint.stores], "readwrite", async (tx) => {
+          const bytesNow = await joint.appendIn(tx, id, bytes);
+          await before("session:progress", id);
+          await journalIn(tx, bytesNow);
+        });
+        return;
+      }
+      const bytesNow = await audio.append(id, bytes);
+      try {
+        await before("session:progress", id);
+        await transact(db, [STORES.sessions], "readwrite", (tx) => journalIn(tx, bytesNow));
+      } catch (error) {
+        throw journalFailure(error, bytesNow);
+      }
     },
 
     async updateSession(id, patch) {
@@ -323,21 +375,21 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       });
     },
 
-    async commitSession(id, finish) {
+    async commitSession(id, build, progress) {
       await before("audio:finalize", id);
       const sizeBytes = await audio.finalize(id);
-      const session = await readSession(id);
-      if (!session) return null;
-      const recording = finish(clone(session), sizeBytes);
       await before("note:commit", id);
-      const committed = await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+      const recording = await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones], "readwrite", async (tx) => {
+        const session = await get<SessionRecord>(tx, STORES.sessions, id);
+        if (!session) return null;
         const tombstoned = await get(tx, STORES.tombstones, id);
         await del(tx, STORES.sessions, id);
-        if (tombstoned) return false;
-        await put(tx, STORES.notes, recording);
-        return true;
+        if (tombstoned) return null;
+        const built = build(clone({ ...session, ...progress }), sizeBytes);
+        await put(tx, STORES.notes, built);
+        return built;
       });
-      return committed ? clone(recording) : null;
+      return recording ? clone(recording) : null;
     },
 
     async readNoteAudio(id) {
@@ -346,6 +398,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
     },
 
     async dropEmptySession(id) {
+      if ((await audio.size(id)) > 0) throw failure("audio_not_empty", `Recording ${id} has durable audio; it is not dropped.`);
       await before("audio:delete", id);
       await audio.delete(id);
       await transact(db, [STORES.sessions], "readwrite", (tx) => del(tx, STORES.sessions, id));
@@ -408,6 +461,10 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       await before("tombstone", id);
       await transact(db, [STORES.sessions, STORES.notes, STORES.tombstones, STORES.transcripts, STORES.receipts, STORES.outbox],
         "readwrite", async (tx) => {
+          // A tombstone means an earlier delete already queued its remote cleanup, and completed
+          // outbox entries are gone: walking the ledger and receipts again would resurrect them.
+          const existing = await get<TombstoneRow>(tx, STORES.tombstones, id);
+          if (existing) return;
           const note = await get<VoiceNoteRecording>(tx, STORES.notes, id);
           await put(tx, STORES.tombstones, { id, at: now(), audioPending: true } satisfies TombstoneRow);
           const outbox = await all<OutboxEntry>(tx, STORES.outbox);
@@ -644,35 +701,48 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       return next;
     });
     if (!attempt) return {};
-    if (attempt.recoveryAttempts > MAX_RECOVERY_ATTEMPTS) return { failed: await quarantine(attempt, "recovery_failed", "recovery kept failing") };
+    if (attempt.recoveryAttempts > MAX_RECOVERY_ATTEMPTS) return { failed: await quarantine(id, "recovery_failed", "recovery kept failing") };
     try {
       const size = await audio.size(id);
       if (size === 0) {
         await store.dropEmptySession(id);
         return {};
       }
+      let decodedMs = 0;
+      if (decodeCheck) {
+        try {
+          const head = await audio.read(id, 0, Math.min(size, DECODE_CHECK_MAX_BYTES));
+          decodedMs = (await decodeCheck(head, attempt.mimeType, size)).durationMs;
+        } catch (error) {
+          console.error("[webStore] A recovered recording does not decode; quarantining it", id, error);
+          return { failed: await quarantine(id, UNDECODABLE_REASON, error instanceof Error ? error.message : String(error)) };
+        }
+      }
       const recording = await store.commitSession(id, (session, sizeBytes) => recordingFromSession(session, sizeBytes, {
-        endedAt: Math.max(session.startedAt, session.lastHeartbeatAt), durationMs: session.audioMs,
+        endedAt: Math.max(session.startedAt, session.lastHeartbeatAt), durationMs: reconciledDurationMs(session, sizeBytes, decodedMs),
         recovered: true, endedUnexpectedly: true, exitReason: null,
       }));
       return recording ? { recovered: recording } : {};
     } catch (error) {
       console.error("[webStore] Recovering an interrupted recording failed", id, error);
       if (attempt.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
-        return { failed: await quarantine(attempt, "recovery_failed", error instanceof Error ? error.message : String(error)) };
+        return { failed: await quarantine(id, "recovery_failed", error instanceof Error ? error.message : String(error)) };
       }
       return { failed: { id, reason: "recovery_failed", error: error instanceof Error ? error.message : String(error) } };
     }
   }
 
-  async function quarantine(session: SessionRecord, reason: string, error: string) {
-    await before("quarantine:write", session.id);
-    const sizeBytes = await audio.size(session.id);
+  /** Moves the session, as journaled right now, to the quarantine queue; its audio stays. */
+  async function quarantine(id: string, reason: string, error: string) {
+    await before("quarantine:write", id);
+    const sizeBytes = await audio.size(id);
     await transact(db, [STORES.quarantine, STORES.sessions], "readwrite", async (tx) => {
-      await put(tx, STORES.quarantine, { id: session.id, reason, error, sizeBytes, session } satisfies QuarantineRow);
-      await del(tx, STORES.sessions, session.id);
+      const session = await get<SessionRecord>(tx, STORES.sessions, id);
+      if (!session) return;
+      await put(tx, STORES.quarantine, { id, reason, error, sizeBytes, session } satisfies QuarantineRow);
+      await del(tx, STORES.sessions, id);
     });
-    return { id: session.id, reason, error };
+    return { id, reason, error };
   }
 
   return store;

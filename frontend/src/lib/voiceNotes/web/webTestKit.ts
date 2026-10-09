@@ -7,6 +7,7 @@ import type { LevelMeterEnv } from "./webLevels";
 import { createWebVoiceNotes, type WebVoiceNotes } from "./webVoiceNotes";
 import { memoryLocks, openWebStore, type WebStore, type WebStoreOptions } from "./webStore";
 import type { IdbEnv } from "./idb";
+import type { AudioBlobStore } from "./audioBlobStore";
 
 export class FakeClock {
   t = 1_000_000;
@@ -51,6 +52,9 @@ export class FakeMediaRecorder {
   timeslice: number | undefined;
   /** Bytes the encoder has produced but not delivered yet. */
   pending: number[] = [];
+  /** What requestData() does: deliver at once, hold the slice until releaseRequestedData(), or never deliver it. */
+  requestDataMode: "immediate" | "deferred" | "never" = "immediate";
+  private parked = false;
   constructor(readonly stream: unknown, options: { mimeType: string }) {
     this.mimeType = options.mimeType;
     FakeMediaRecorder.instances.push(this);
@@ -58,7 +62,16 @@ export class FakeMediaRecorder {
   start(timeslice?: number) { this.state = "recording"; this.timeslice = timeslice; }
   pause() { this.state = "paused"; }
   resume() { this.state = "recording"; }
-  requestData() { this.deliver(); }
+  requestData() {
+    if (this.requestDataMode === "immediate") this.deliver();
+    else if (this.requestDataMode === "deferred") this.parked = true;
+  }
+  /** The browser finally fires the dataavailable that requestData() asked for. */
+  releaseRequestedData() {
+    if (!this.parked) return;
+    this.parked = false;
+    this.deliver();
+  }
   stop() {
     this.deliver();
     this.state = "inactive";
@@ -150,6 +163,7 @@ export function createFakeEnv(clock: FakeClock): { env: CaptureEnv; mic: FakeMic
     permissions: { async query() { return { state: mic.permissionState } as PermissionStatus; } },
     now: clock.now,
     levelEnv,
+    flushTimeoutMs: 50,
   };
   return {
     env, mic,
@@ -201,6 +215,39 @@ export async function createRig(options: RigOptions = {}): Promise<Rig> {
     },
   };
   return rig;
+}
+
+/**
+ * A blob store that cannot join the journal's transaction (like the file-backed one TC-880 supplies).
+ * Its bytes outlive any webStore on top of it, as files outlive a tab.
+ */
+export function memoryAudioBlobs() {
+  const files = new Map<string, { chunks: Uint8Array[]; finalized: boolean }>();
+  const sizeOf = (id: string) => (files.get(id)?.chunks ?? []).reduce((total, chunk) => total + chunk.byteLength, 0);
+  const create = (): AudioBlobStore => ({
+    async append(id, chunk) {
+      const file = files.get(id) ?? { chunks: [], finalized: false };
+      if (file.finalized) throw new Error(`Recording ${id} is sealed.`);
+      file.chunks.push(chunk.slice());
+      files.set(id, file);
+      return sizeOf(id);
+    },
+    async size(id) { return sizeOf(id); },
+    async read(id, offset, length) {
+      const all = new Uint8Array(sizeOf(id));
+      let at = 0;
+      for (const chunk of files.get(id)?.chunks ?? []) { all.set(chunk, at); at += chunk.byteLength; }
+      return all.slice(offset, Math.min(all.byteLength, offset + length));
+    },
+    async finalize(id) {
+      const file = files.get(id) ?? { chunks: [], finalized: false };
+      file.finalized = true;
+      files.set(id, file);
+      return sizeOf(id);
+    },
+    async delete(id) { files.delete(id); },
+  });
+  return { files, create, sizeOf };
 }
 
 /** Wraps bun:test's `test` with a timeout that survives a loaded machine; IndexedDB round-trips are slow there. */

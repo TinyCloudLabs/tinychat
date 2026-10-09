@@ -12,7 +12,7 @@ import {
   browserCaptureEnv, createWebCapture, TIMESLICE_MS, type CaptureEnv, type InputLoss, type WebCapture,
 } from "./webCapture";
 import {
-  failure, RECORDING_LOCK, recordingFromSession, sessionLock, type RecoveryResult, type SessionRecord, type WebStore,
+  durableBytesOf, failure, RECORDING_LOCK, recordingFromSession, sessionLock, type RecoveryResult, type SessionRecord, type WebStore,
 } from "./webStore";
 
 export type { RecoveryResult };
@@ -194,11 +194,21 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const audioMs = l.record.audioMs + durationMs;
       const firstAudioAt = l.record.firstAudioAt ?? now();
-      await store.appendChunk(l.id, bytes, { audioMs, firstAudioAt });
-      l.record.audioMs = audioMs;
-      l.record.firstAudioAt = firstAudioAt;
-      l.record.bytes += bytes.byteLength;
-      l.lastDurableAt = now();
+      const count = () => {
+        l.record.audioMs = audioMs;
+        l.record.firstAudioAt = firstAudioAt;
+        l.record.bytes += bytes.byteLength;
+        l.lastDurableAt = now();
+      };
+      try {
+        await store.appendChunk(l.id, bytes, { audioMs, firstAudioAt });
+      } catch (error) {
+        // A blob store that cannot join the journal's transaction made the bytes durable before the
+        // journal failed: they count, and finish() commits them (the blob store's size is the truth).
+        if (durableBytesOf(error) !== null) count();
+        throw error;
+      }
+      count();
       if (audioMs >= l.record.maxDurationMs && !l.finishing) scheduleAutoStop(l, "max_duration");
     }).catch((error: unknown) => onWriteFailure(l, error));
   };
@@ -211,16 +221,18 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     try {
       await l.capture.stop();
       await l.queue;
-      closeSpan(s);
-      if (s.pauseStartedAt !== null) { s.pausedMs += now() - s.pauseStartedAt; s.pauseStartedAt = null; }
-      if (s.bytes === 0) {
+      // The blob store, not the in-memory count, says whether anything is durable: a write that
+      // reported failure may still have landed, and durable audio is never dropped.
+      if ((await store.audio.size(l.id)) === 0) {
         await store.dropEmptySession(l.id);
         outcome = { recording: null, error: "no_audio_captured" };
       } else {
+        // Built from the session as journaled inside the commit transaction, so an owner another tab
+        // claimed meanwhile is kept; only the durable progress counters come from this tab.
         const recording = await store.commitSession(l.id, (journaled, sizeBytes) =>
-          recordingFromSession({ ...journaled, ...s }, sizeBytes, {
-            endedAt: now(), durationMs: s.audioMs, recovered: false, endedUnexpectedly: reason === "permission_revoked", exitReason: null,
-          }));
+          recordingFromSession(journaled, sizeBytes, {
+            endedAt: now(), durationMs: journaled.audioMs, recovered: false, endedUnexpectedly: reason === "permission_revoked", exitReason: null,
+          }), { audioMs: s.audioMs, bytes: s.bytes, firstAudioAt: s.firstAudioAt });
         outcome = { recording, error: recording ? null : "tombstoned" };
       }
     } catch (error) {
@@ -294,6 +306,12 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     onRecorderError: (error: unknown) => {
       const l = holder.live;
       if (l) onWriteFailure(l, error);
+    },
+    onFlushStalled: () => {
+      const l = holder.live;
+      if (!l) return;
+      console.error("[webVoiceNotes] The recorder did not deliver its last slice before the microphone was released", l.id);
+      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
     },
   });
 
