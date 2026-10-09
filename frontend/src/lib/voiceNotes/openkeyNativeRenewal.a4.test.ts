@@ -7,9 +7,14 @@ import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin
 const manifestAndParts = new Map<string, unknown>();
 const records = new Map<string, unknown>();
 const store = { ...(await import("./voiceNoteStore")) };
+// Bun keeps the first mock.module factory for this path across test files.
+// Cached callers must delegate to the real save after this fixture finishes.
+let mockActive = true;
 mock.module("./voiceNoteStore", () => ({
   ...store,
-  saveVoiceNote: async (tcw: TinyCloudWeb, recording: VoiceNoteRecording, source: Parameters<typeof store.saveVoiceNote>[2]) => {
+  saveVoiceNote: async (...args: Parameters<typeof store.saveVoiceNote>) => {
+    if (!mockActive) return store.saveVoiceNote(...args);
+    const [tcw, recording, source] = args;
     const base = store.voiceNoteAudioKvKey(recording.id);
     const manifest = await putAudio(tcw.kv, base, source, {
       partSize: 2, fileName: `${recording.id}.m4a`, mimeType: recording.mimeType,
@@ -18,7 +23,7 @@ mock.module("./voiceNoteStore", () => ({
     return { ok: true, data: { inserted: true } };
   },
 }));
-afterAll(() => mock.module("./voiceNoteStore", () => store));
+afterAll(() => { mockActive = false; });
 
 const { savePendingRecordings } = await import("./recorderSaves");
 const { NativeRenewal, guardNativeTinyCloudCalls } = await import("../openkeyNativeRenewal");
