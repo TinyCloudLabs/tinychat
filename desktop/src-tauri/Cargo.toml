@@ -56,6 +56,10 @@ git = "https://github.com/fastrepl/anarlog"
 rev = "864ddc1f692116d128eea2692fd72b0a51007768"
 optional = true
 
+[dependencies.hound]
+version = "3.5"
+optional = true
+
 # `vault_base()` (session audio + settings) is read from the StartupSnapshot
 # state that only tauri-plugin-settings::init() manages, and the local-stt
 # models dir resolves through the same plugin.
@@ -152,6 +156,7 @@ transcription = [
     "dep:tauri-plugin-local-stt",
     "dep:audio-actual",
     "dep:anlg-mp3",
+    "dep:hound",
     "dep:tauri-plugin-settings",
     "dep:tokio",
     "dep:reqwest",

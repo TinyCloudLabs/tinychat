@@ -1,5 +1,5 @@
 //! Native persistence and model commands for DesktopCaptureExtras (D4).
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,6 +26,7 @@ pub struct ExtrasState {
     pub settings_lock: tokio::sync::Mutex<()>,
     pub progress: Mutex<HashMap<String, Progress>>,
     pub failures: Mutex<HashMap<String, String>>,
+    pub watching: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +86,120 @@ fn accept_progress(previous: Option<&Progress>, _next: &Progress) -> bool {
     !previous.is_some_and(|previous| previous.status != "downloading")
 }
 
+fn polled_terminal(
+    downloaded: bool,
+    downloading: bool,
+    inactive_polls: u8,
+) -> Option<&'static str> {
+    if downloaded {
+        Some("done")
+    } else if !downloading && inactive_polls >= 1 {
+        Some("error")
+    } else {
+        None
+    }
+}
+
+fn watch_download(app: tauri::AppHandle, id: String) {
+    if !app
+        .state::<ExtrasState>()
+        .watching
+        .lock()
+        .unwrap()
+        .insert(id.clone())
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let model = parse_model(&id);
+        let mut inactive = 0;
+        for _ in 0..3600 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if app
+                .state::<ExtrasState>()
+                .progress
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|p| p.status != "downloading")
+            {
+                break;
+            }
+            let result = match &model {
+                Ok(model) => {
+                    let downloaded = app.local_stt().is_model_downloaded(model).await;
+                    let downloading = app.local_stt().is_model_downloading(model).await;
+                    match (downloaded, downloading) {
+                        (Ok(true), _) => Some(("done", None)),
+                        (Ok(false), Ok(downloading)) => {
+                            let terminal = polled_terminal(false, downloading, inactive);
+                            inactive = if downloading { 0 } else { inactive + 1 };
+                            terminal.map(|status| {
+                                (status, Some("model_download_cancelled".to_string()))
+                            })
+                        }
+                        (Err(error), _) | (_, Err(error)) => {
+                            Some(("error", Some(error.to_string())))
+                        }
+                    }
+                }
+                Err(error) => Some(("error", Some(error.clone()))),
+            };
+            if let Some((status, error)) = result {
+                let fraction = app
+                    .state::<ExtrasState>()
+                    .progress
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .map(|p| p.fraction)
+                    .unwrap_or(0.0);
+                report_progress(
+                    &app,
+                    Progress {
+                        id: id.clone(),
+                        fraction: if status == "done" { 1.0 } else { fraction },
+                        status,
+                        error,
+                    },
+                );
+                break;
+            }
+        }
+        if app
+            .state::<ExtrasState>()
+            .progress
+            .lock()
+            .unwrap()
+            .get(&id)
+            .is_some_and(|p| p.status == "downloading")
+        {
+            let fraction = app
+                .state::<ExtrasState>()
+                .progress
+                .lock()
+                .unwrap()
+                .get(&id)
+                .map(|p| p.fraction)
+                .unwrap_or(0.0);
+            report_progress(
+                &app,
+                Progress {
+                    id: id.clone(),
+                    fraction,
+                    status: "error",
+                    error: Some("model_download_timeout".into()),
+                },
+            );
+        }
+        app.state::<ExtrasState>()
+            .watching
+            .lock()
+            .unwrap()
+            .remove(&id);
+    });
+}
+
 fn parse_model(id: &str) -> Result<LocalModel, String> {
     if !MODEL_IDS.contains(&id) {
         return Err("unsupported_model".into());
@@ -139,19 +254,18 @@ pub fn install(app: &tauri::App) {
         if !MODEL_IDS.contains(&id) {
             return;
         }
+        if value["status"] == "completed" {
+            watch_download(handle.clone(), id.to_string());
+            return;
+        }
         let fraction = value["status"]
             .get("downloading")
             .and_then(serde_json::Value::as_f64)
-            .map(|percent| (percent / 100.0).clamp(0.0, 1.0) as f32)
-            .or_else(|| {
-                if value["status"] == "completed" {
-                    Some(1.0)
-                } else {
-                    None
-                }
-            });
+            .map(|percent| (percent / 100.0).clamp(0.0, 1.0) as f32);
         if let Some(fraction) = fraction {
-            if fraction == 0.0 && value["status"].get("downloading").is_some() {
+            // A shared local-transcription download may start without calling
+            // recorder_models_download. Its first event can already be > 0%.
+            if value["status"].get("downloading").is_some() {
                 let state = handle.state::<ExtrasState>();
                 let mut current = state.progress.lock().unwrap();
                 if current.get(id).is_some_and(|p| p.status != "downloading") {
@@ -163,12 +277,11 @@ pub fn install(app: &tauri::App) {
                 Progress {
                     id: id.into(),
                     fraction,
-                    // Upstream completion can precede the final on-disk check.
-                    // Only recorder_models_download emits terminal "done".
                     status: "downloading",
                     error: None,
                 },
             );
+            watch_download(handle.clone(), id.to_string());
         } else if let Some(error) = value["status"]
             .get("failed")
             .and_then(serde_json::Value::as_str)
@@ -509,5 +622,26 @@ mod tests {
         assert!(accept_progress(None, &done));
         assert!(!accept_progress(Some(&done), &done));
         assert!(!accept_progress(Some(&done), &error));
+    }
+
+    #[test]
+    fn shared_download_watcher_finishes_external_downloads_and_cancellations() {
+        assert_eq!(polled_terminal(false, true, 0), None);
+        assert_eq!(polled_terminal(false, false, 0), None);
+        assert_eq!(polled_terminal(false, false, 1), Some("error"));
+        assert_eq!(polled_terminal(true, false, 0), Some("done"));
+        let downloading = Progress {
+            id: "QuantizedTinyEn".into(),
+            fraction: 0.4,
+            status: "downloading",
+            error: None,
+        };
+        let done = Progress {
+            fraction: 1.0,
+            status: "done",
+            ..downloading.clone()
+        };
+        assert!(accept_progress(Some(&downloading), &done));
+        assert!(!accept_progress(Some(&done), &done));
     }
 }

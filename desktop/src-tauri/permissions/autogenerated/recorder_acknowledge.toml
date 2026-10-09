@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recorder-acknowledge"
+description = "Enables the recorder_acknowledge command without any pre-configured scope."
+commands.allow = ["recorder_acknowledge"]
+
+[[permission]]
+identifier = "deny-recorder-acknowledge"
+description = "Denies the recorder_acknowledge command without any pre-configured scope."
+commands.deny = ["recorder_acknowledge"]

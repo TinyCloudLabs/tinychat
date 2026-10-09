@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{Mode, OFlags};
 use tauri::Manager;
+use tauri_plugin_settings::SettingsPluginExt;
 
 const MAX_CHUNK: usize = 4 * 1024 * 1024;
 
@@ -21,8 +22,145 @@ pub fn import_segment(
     id: &str,
     segment_id: &str,
     path: &Path,
+    system_audio: bool,
 ) -> Result<(), String> {
-    import_at(&root(app)?, id, segment_id, path)
+    normalize_and_import_at(
+        &root(app)?,
+        &sessions_root(app)?,
+        id,
+        segment_id,
+        path,
+        system_audio,
+    )
+}
+
+fn normalize_and_import_at(
+    root: &Path,
+    sessions: &Path,
+    id: &str,
+    segment_id: &str,
+    source: &Path,
+    system_audio: bool,
+) -> Result<(), String> {
+    if !valid_id(segment_id) || !segment_id.starts_with("rec-") {
+        return Err("invalid_segment_id".into());
+    }
+    let done = root.join(format!("{id}.{segment_id}.imported"));
+    if !done.exists() {
+        let normalized = source
+            .parent()
+            .ok_or("missing_capture_session")?
+            .join("audio.mono.mp3");
+        normalize_mp3(source, &normalized, system_audio)?;
+        import_at(root, id, segment_id, &normalized)?;
+    }
+    // The marker and audio file are synced by import_at. A crash before this
+    // cleanup is harmless: a retry sees the marker and removes the source.
+    remove_source_session(sessions, segment_id)
+}
+
+fn normalize_mp3(source: &Path, output: &Path, system_audio: bool) -> Result<(), String> {
+    if output.exists() {
+        return Ok(());
+    }
+    let decoded = output.with_extension("decoded.wav");
+    anlg_mp3::decode_to_wav(source, &decoded).map_err(|e| format!("decode_failed: {e}"))?;
+    let result = encode_mono_wav(&decoded, output, system_audio);
+    let _ = fs::remove_file(decoded);
+    result
+}
+
+fn encode_mono_wav(wav: &Path, output: &Path, system_audio: bool) -> Result<(), String> {
+    let mut reader = hound::WavReader::open(wav).map_err(|e| e.to_string())?;
+    let spec = reader.spec();
+    if !matches!(spec.channels, 1 | 2)
+        || spec.sample_format != hound::SampleFormat::Float
+        || spec.bits_per_sample != 32
+    {
+        return Err("unsupported_capture_pcm".into());
+    }
+    let mut encoder =
+        anlg_mp3::MonoStreamEncoder::new(spec.sample_rate).map_err(|e| e.to_string())?;
+    let temp = output.with_extension("mp3.tmp");
+    let mut target = File::create(&temp).map_err(|e| e.to_string())?;
+    let mut samples = reader.samples::<f32>();
+    let mut mono = Vec::with_capacity(4096);
+    let mut encoded = Vec::new();
+    loop {
+        mono.clear();
+        for _ in 0..4096 {
+            let Some(left) = samples.next() else {
+                break;
+            };
+            let left = left.map_err(|e| e.to_string())?;
+            let value = if spec.channels == 2 {
+                let right = samples
+                    .next()
+                    .ok_or("incomplete_stereo_frame")?
+                    .map_err(|e| e.to_string())?;
+                if system_audio {
+                    ((left + right) * 0.5).clamp(-1.0, 1.0)
+                } else {
+                    left
+                }
+            } else {
+                left
+            };
+            mono.push(value);
+        }
+        if mono.is_empty() {
+            break;
+        }
+        encoded.clear();
+        encoder
+            .encode_f32(&mono, &mut encoded)
+            .map_err(|e| e.to_string())?;
+        target.write_all(&encoded).map_err(|e| e.to_string())?;
+    }
+    encoded.clear();
+    encoder.flush(&mut encoded).map_err(|e| e.to_string())?;
+    target.write_all(&encoded).map_err(|e| e.to_string())?;
+    target.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(temp, output).map_err(|e| e.to_string())?;
+    File::open(output.parent().ok_or("missing_capture_session")?)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+pub fn sessions_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let vault = app.settings().vault_base().map_err(|e| e.to_string())?;
+    Ok(Path::new(vault.as_str()).join("sessions"))
+}
+
+pub fn segment_imported(
+    app: &tauri::AppHandle,
+    id: &str,
+    segment_id: &str,
+) -> Result<bool, String> {
+    if !valid_id(id) || !valid_id(segment_id) {
+        return Err("invalid_segment_id".into());
+    }
+    Ok(root(app)?
+        .join(format!("{id}.{segment_id}.imported"))
+        .exists())
+}
+
+pub fn remove_source_session(sessions: &Path, segment_id: &str) -> Result<(), String> {
+    if !valid_id(segment_id) || !segment_id.starts_with("rec-") {
+        return Err("invalid_segment_id".into());
+    }
+    let path = sessions.join(segment_id);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            fs::remove_dir_all(&path).map_err(|e| e.to_string())?
+        }
+        Ok(_) => return Err("capture_session_not_directory".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    }
+    File::open(sessions)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 fn import_at(root: &Path, id: &str, segment_id: &str, path: &Path) -> Result<(), String> {
@@ -250,6 +388,20 @@ pub fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, Str
 #[tauri::command]
 pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let root = root(&app)?;
+    let sessions = sessions_root(&app)?;
+    delete_at(&root, &sessions, &id)?;
+    if let Some(pending) = super::journal::load(&app)? {
+        if pending.id == id {
+            if let Some(segment_id) = pending.segment_id {
+                remove_source_session(&sessions, &segment_id)?;
+                super::journal::remove_failed_source(&app, &segment_id)?;
+            }
+        }
+    }
+    super::journal::delete_failed_for_note(&app, &id)
+}
+
+fn delete_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
     let path = audio_path(&root, &id)?;
     let marker = sealed_path(&root, &id)?;
     match fs::remove_file(path) {
@@ -269,6 +421,15 @@ pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String
         if name.starts_with(&format!("{id}.rec-"))
             && (name.ends_with(".importing") || name.ends_with(".imported"))
         {
+            let segment_id = name
+                .strip_prefix(&format!("{id}."))
+                .and_then(|value| {
+                    value
+                        .strip_suffix(".importing")
+                        .or_else(|| value.strip_suffix(".imported"))
+                })
+                .ok_or("invalid_segment_marker")?;
+            remove_source_session(sessions, segment_id)?;
             fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
         }
     }
@@ -309,5 +470,103 @@ mod tests {
         import_at(&root, "note", "rec-segment", &source).unwrap();
         assert_eq!(read(&root, "note", 0, 20).unwrap(), b"firstsecond");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deleting_note_removes_audio_and_every_segment_source() {
+        let base = std::env::temp_dir().join(format!("exo-delete-test-{}", uuid::Uuid::new_v4()));
+        let root = base.join("audio");
+        let sessions = base.join("sessions");
+        let source = sessions.join("rec-first");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("audio.mp3"), b"fixture").unwrap();
+        import_at(&root, "note", "rec-first", &source.join("audio.mp3")).unwrap();
+        remove_source_session(&sessions, "rec-first").unwrap();
+        let leftover = sessions.join("rec-second");
+        fs::create_dir_all(&leftover).unwrap();
+        fs::write(leftover.join("audio_mic.wav"), b"fixture").unwrap();
+        fs::write(root.join("note.rec-second.importing"), b"7").unwrap();
+        delete_at(&root, &sessions, "note").unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&sessions).unwrap().count(), 0);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn actual_import_pipeline_produces_mono_64k_for_both_capture_modes() {
+        for system_audio in [false, true] {
+            let base = std::env::temp_dir().join(format!("exo-mono-test-{}", uuid::Uuid::new_v4()));
+            let root = base.join("audio");
+            let sessions = base.join("sessions");
+            let source = sessions.join("rec-fixture");
+            fs::create_dir_all(&root).unwrap();
+            fs::create_dir_all(&source).unwrap();
+            let wav = source.join("audio.wav");
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 48_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+            for frame in 0..48_000 {
+                let mic = ((frame as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin()) * 0.25;
+                writer.write_sample(mic).unwrap();
+                // A separate inverse channel makes the two policies observably
+                // different: mic-only keeps the left signal, mixing cancels it.
+                writer.write_sample(-mic).unwrap();
+            }
+            writer.finalize().unwrap();
+            // Exercise the pinned upstream encoder, then the exact import path.
+            let upstream = source.join("audio.mp3");
+            anlg_mp3::encode_wav(&wav, &upstream).unwrap();
+            normalize_and_import_at(
+                &root,
+                &sessions,
+                "note",
+                "rec-fixture",
+                &upstream,
+                system_audio,
+            )
+            .unwrap();
+            assert!(!source.exists());
+            let note = root.join("note.mp3");
+            let decoded = root.join("verified.wav");
+            anlg_mp3::decode_to_wav(&note, &decoded).unwrap();
+            let samples: Vec<f32> = hound::WavReader::open(&decoded)
+                .unwrap()
+                .samples::<f32>()
+                .map(Result::unwrap)
+                .collect();
+            let mean =
+                samples.iter().map(|sample| sample.abs()).sum::<f32>() / samples.len() as f32;
+            if system_audio {
+                assert!(mean < 0.03, "system mix was not mono: {mean}");
+            } else {
+                assert!(mean > 0.10, "mic channel was lost: {mean}");
+            }
+            let probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=channels,sample_rate,bit_rate",
+                    "-of",
+                    "default=noprint_wrappers=1",
+                ])
+                .arg(&note)
+                .output();
+            if let Ok(probe) = probe {
+                assert!(probe.status.success());
+                let report = String::from_utf8(probe.stdout).unwrap();
+                assert!(report.contains("channels=1"), "{report}");
+                assert!(report.contains("sample_rate=48000"), "{report}");
+                assert!(report.contains("bit_rate=64000"), "{report}");
+            }
+            fs::remove_dir_all(base).unwrap();
+        }
     }
 }
