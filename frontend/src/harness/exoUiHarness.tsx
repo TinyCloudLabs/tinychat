@@ -22,6 +22,7 @@ import type { HarnessScreen } from "./screen";
 import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
+import { localScreens } from "./screens/local";
 import { primitivesScreens } from "./screens/primitives";
 import { recorderScreens } from "./screens/recorder";
 import { recorderFinalHaloScreen } from "./screens/recorderFinalHalo";
@@ -53,6 +54,7 @@ const SCREENS: HarnessScreen[] = [
   ...captureScreens,
   ...captureSoftScreens,
   ...libraryScreens,
+  ...localScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
 

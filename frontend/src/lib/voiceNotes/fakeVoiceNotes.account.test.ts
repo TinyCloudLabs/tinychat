@@ -160,6 +160,28 @@ test("legacy notes require matching space-row evidence; old discard markers beco
   }
 });
 
+test("discard migration preserves a marker written during native deletion", async () => {
+  const original = VoiceNotes;
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  const note = { id: "old-discard", startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4,
+    silencedMs: 0, silencedEvents: 0, noSignalMs: 0 };
+  fake.controls.commitLegacy(note);
+  const storage = { value: JSON.stringify([note.id]), getItem() { return this.value; },
+    setItem(_key: string, value: string) { this.value = value; }, removeItem() { this.value = ""; } };
+  const native = fake.plugin.deleteAudio;
+  fake.plugin.deleteAudio = async (options) => {
+    storage.value = JSON.stringify([note.id, "new-discard"]);
+    await native(options);
+  };
+  try {
+    await migrateLegacyDiscardLedger(storage as never);
+    expect(JSON.parse(storage.value)).toEqual(["new-discard"]);
+  } finally {
+    __setVoiceNotesForTests(original, { available: null });
+  }
+});
+
 test("a stale account context makes no storage or native call", async () => {
   const generation = currentAccountGeneration();
   advanceAccountGeneration();

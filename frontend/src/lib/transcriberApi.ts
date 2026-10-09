@@ -1,3 +1,4 @@
+import { clearSessionAfterHandoff } from "./sessionSignedOut";
 import type { SessionStore } from "@tinyboilerplate/client";
 
 /**
@@ -149,7 +150,7 @@ export function createTranscriberClient(
     const token = sessionStore.getToken();
     if (!token) return { status: "unauthenticated" };
     if (sessionStore.isExpired()) {
-      sessionStore.clear();
+      await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
 
@@ -174,7 +175,7 @@ export function createTranscriberClient(
     }
 
     if (response.status === 401) {
-      sessionStore.clear();
+      await clearSessionAfterHandoff(sessionStore);
       return { status: "unauthenticated" };
     }
     if (response.status === 404) {

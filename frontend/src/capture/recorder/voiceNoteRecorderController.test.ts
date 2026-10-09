@@ -625,6 +625,21 @@ describe("voice-note recorder controller", () => {
     expect(deleteCalls).toBe(0);
   });
 
+  test("already_committed keeps the note and reports that it was saved", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async discard() {
+      await stopNatively();
+      throw Object.assign(new Error("Already committed"), { code: "already_committed" });
+    } }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    await recorder.discard();
+    expect(onPhone.map((recording) => recording.id)).toEqual([id]);
+    expect(isDiscarded(id)).toBe(false);
+    expect(recorder.getState().error).toContain("Already saved on this phone");
+  });
+
   test("a failed Stop checks native status before showing a live recorder", async () => {
     const base = plugin;
     let checks = 0;
