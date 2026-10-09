@@ -22,13 +22,15 @@ const writes = new Map<string, Promise<unknown>>();
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+  const pending = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME, { keyPath: "recordingId" });
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("Could not open recording notes"));
   });
-  return dbPromise;
+  dbPromise = pending;
+  void pending.catch(() => { if (dbPromise === pending) dbPromise = null; });
+  return pending;
 }
 
 async function readStored(id: string): Promise<StoredNote | null> {
@@ -58,7 +60,7 @@ async function writeStored(note: StoredNote): Promise<void> {
   }
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
+    const tx = db.transaction(STORE_NAME, "readwrite", { durability: "strict" });
     tx.objectStore(STORE_NAME).put(note);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error("Could not save recording note"));

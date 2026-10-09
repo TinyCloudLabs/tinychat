@@ -279,7 +279,7 @@ export async function saveVoiceNote(
   source: VoiceNoteAudioSource,
   platform: string,
   opts: StoreAudioOptions = {},
-): Promise<StoreResult<UpsertMeetingOutcome>> {
+): Promise<StoreResult<UpsertMeetingOutcome & { noteSyncError?: string }>> {
   try {
     opts.checkpoint?.();
     const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
@@ -299,9 +299,16 @@ export async function saveVoiceNote(
     opts.checkpoint?.();
     await patchVoiceNoteAudio(tcw, recording, platform, { base, mimeType: audio.data.mimeType,
       size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint);
-    // The row now exists. A failed note sync keeps this save retryable, including after sign-in.
-    await syncRecordingNote(tcw, recording.id, opts.checkpoint);
-    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt } };
+    // Audio has landed. A Markdown failure is separate; the row's absent/stale
+    // note_edited_at keeps it eligible for the next reconciliation or edit.
+    let noteSyncError: string | undefined;
+    try { await syncRecordingNote(tcw, recording.id, opts.checkpoint); }
+    catch (caught) {
+      opts.checkpoint?.(); // Cancellation and discard still stop this save.
+      noteSyncError = caught instanceof Error ? caught.message : String(caught);
+      console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", caught);
+    }
+    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt, noteSyncError } };
   } catch (caught) {
     return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
       message: caught instanceof Error ? caught.message : String(caught) } };

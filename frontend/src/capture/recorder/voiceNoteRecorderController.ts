@@ -56,6 +56,8 @@ export interface VoiceNoteRecorderControllerOptions {
   /** Test seam for model readiness; production reads the shared native STT snapshot. */
   onDeviceReady?: () => boolean;
   appleInterim?: () => boolean;
+  /** Delayed/failing local reads can be exercised without changing the phone's storage adapter. */
+  noteLoader?: typeof loadNote;
 }
 
 export type TranscriberChoiceResult = "ok" | "needs_consent" | "locked_signed_out" | "unavailable";
@@ -69,11 +71,13 @@ export type SetTranscriberResult = TranscriberChoiceResult;
 export type TranscriberScope = TranscriberChoiceScope;
 export type RecorderTranscriber = RecorderTranscriberChoice;
 export interface RecorderNote { md: string; moments: RecordingMoment[] }
+export type RecorderNoteStatus = "loading" | "ready" | "error";
 
 export interface VoiceNoteRecorderController {
   getState(): RecorderState;
   getTranscriber(): RecorderTranscriberChoice;
   getNote(): RecorderNote | null;
+  getNoteStatus(): RecorderNoteStatus;
   /** Resolves after the Markdown is durable on this phone; space sync is debounced. */
   setNoteText(md: string): Promise<void>;
   /** Tap-time recorded clock only. The UI writes a Markdown line if the moment is kept. */
@@ -102,7 +106,7 @@ export interface VoiceNoteRecorderController {
 }
 
 export function createVoiceNoteRecorderController({ tcw, available, transcriber, onDeviceReady,
-  appleInterim }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
+  appleInterim, noteLoader = loadNote }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
   let preference = readTranscriberPreference();
   let nativeOptions: CaptureOptions | null = null;
@@ -114,6 +118,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let choice = defaultChoice();
   let note: RecorderNote | null = null;
   let noteId: string | null = null;
+  let noteStatus: RecorderNoteStatus = "ready";
+  let noteLoadError: Error | null = null;
   let noteLoadVersion = 0;
   let noteSyncTimer: ReturnType<typeof setTimeout> | null = null;
   const noteAccount = tcw.did && tcw.spaceId ? { did: tcw.did, spaceId: tcw.spaceId,
@@ -132,21 +138,30 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   const currentNoteId = () => state.recordingId ?? state.lastSaved?.id ?? null;
   const followNote = (force = false) => {
     const id = currentNoteId();
-    if (id === noteId && !force) return;
+    if (id === noteId && !force && noteStatus !== "error") return;
     noteId = id;
     note = null;
+    noteStatus = id ? "loading" : "ready";
+    noteLoadError = null;
     const version = ++noteLoadVersion;
     if (!id) return;
     void (async () => {
-      let stored = await loadNote(id);
+      let stored = await noteLoader(id);
       if (!stored && tcw.did && state.phase === "idle" && state.outcome === "saved") {
         const remote = await readRecordingNoteFromSpace(tcw, id);
         if (remote) stored = await adoptNote(remote);
       }
       if (version !== noteLoadVersion || noteId !== id) return;
       note = stored ? { md: stored.md, moments: stored.moments } : null;
+      noteStatus = "ready";
       notify();
-    })().catch((error: unknown) => console.warn("[VoiceNotes] Could not load recording note", error));
+    })().catch((error: unknown) => {
+      if (version !== noteLoadVersion || noteId !== id) return;
+      noteLoadError = error instanceof Error ? error : new Error(String(error));
+      noteStatus = "error";
+      notify();
+      console.warn("[VoiceNotes] Could not load recording note", error);
+    });
   };
   const scheduleNoteSync = (id: string) => {
     if (!noteAccount || state.outcome !== "saved" || state.lastSaved?.id !== id) return;
@@ -325,9 +340,18 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     getState: () => state,
     getTranscriber: () => choice,
     getNote: () => note,
+    getNoteStatus: () => noteStatus,
     async setNoteText(md) {
       const id = currentNoteId();
       if (!id) throw new Error("No recording is selected for notes");
+      if (noteId !== id || noteStatus === "loading")
+        throw Object.assign(new Error("Recording note is still loading"), { code: "note_not_loaded" });
+      if (noteStatus === "error") {
+        const error = noteLoadError ?? new Error("Could not load recording note");
+        followNote(true); // A later edit can proceed after a successful retry; this edit never writes.
+        notify();
+        throw error;
+      }
       const before = note;
       const version = ++noteLoadVersion;
       note = { md, moments: parseMomentLines(md) };

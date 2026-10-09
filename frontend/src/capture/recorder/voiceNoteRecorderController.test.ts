@@ -64,7 +64,8 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller(options: { tcw?: TinyCloudWeb; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber } = {}) {
+function controller(options: { tcw?: TinyCloudWeb; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
+  appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote } = {}) {
   return createVoiceNoteRecorderController({
     tcw: options.tcw ?? tcw,
     available: true,
@@ -73,6 +74,7 @@ function controller(options: { tcw?: TinyCloudWeb; consented?: boolean | (() => 
         capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
+    noteLoader: options.noteLoader,
   });
 }
 
@@ -160,6 +162,7 @@ describe("voice-note recorder controller", () => {
     await tick();
     await first.record();
     const id = currentId!;
+    await tick();
     await first.setNoteText("# Draft\n- **0:07** hallway");
     expect((await loadNote(id))?.md).toBe("# Draft\n- **0:07** hallway");
     detach();
@@ -174,10 +177,63 @@ describe("voice-note recorder controller", () => {
     remove();
   });
 
+  test("an edit during a reload's pending note read cannot replace the stored draft", async () => {
+    const first = controller();
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    await tick();
+    const id = currentId!;
+    await first.setNoteText("# Ten lines of work\nKeep this draft");
+    detach();
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const reopened = controller({ noteLoader: async (noteId) => { await gate; return loadNote(noteId); } });
+    const remove = reopened.attach();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("loading");
+    await expect(reopened.setNoteText("x")).rejects.toMatchObject({ code: "note_not_loaded" });
+    expect((await loadNote(id))?.md).toBe("# Ten lines of work\nKeep this draft");
+    release();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("ready");
+    expect(reopened.getNote()?.md).toBe("# Ten lines of work\nKeep this draft");
+    remove();
+  });
+
+  test("a failed note read blocks edits and a retry preserves the draft", async () => {
+    const first = controller();
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    await tick();
+    const id = currentId!;
+    await first.setNoteText("Do not overwrite");
+    detach();
+
+    let available = false;
+    const readFailure = new Error("IndexedDB open failed");
+    const reopened = controller({ noteLoader: (noteId) => available ? loadNote(noteId) : Promise.reject(readFailure) });
+    const remove = reopened.attach();
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("error");
+    await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
+    expect((await loadNote(id))?.md).toBe("Do not overwrite");
+    available = true;
+    await tick();
+    await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
+    await tick();
+    expect(reopened.getNoteStatus()).toBe("ready");
+    expect(reopened.getNote()?.md).toBe("Do not overwrite");
+    remove();
+  });
+
   test("discard deletes the local note with its native recording", async () => {
     const { recorder, detach } = await attached();
     await recorder.record();
     const id = currentId!;
+    await tick();
     await recorder.setNoteText("To discard");
     await recorder.discard();
     expect(await loadNote(id)).toBeNull();

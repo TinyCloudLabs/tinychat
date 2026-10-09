@@ -21,7 +21,7 @@ import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recor
 import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
-import type { RecorderNote } from "./voiceNoteRecorderController";
+import type { RecorderNote, RecorderNoteStatus } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
@@ -66,6 +66,8 @@ export interface RecorderValue {
   transcriber: RecorderTranscriberChoice;
   /** The current recording's Markdown; moments are parsed from its timestamp lines. */
   note: RecorderNote | null;
+  /** The editor can write only after this recording's local note has loaded. */
+  noteStatus: RecorderNoteStatus;
   setNoteText(md: string): Promise<void>;
   markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
@@ -280,6 +282,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       transcription: recorder.transcription,
       transcriber: recorder.transcriber,
       note: recorder.note,
+      noteStatus: recorder.noteStatus,
       setNoteText: recorder.setNoteText,
       markMoment: recorder.markMoment,
       setTranscriber: recorder.setTranscriber,
@@ -308,6 +311,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.available,
       recorder.discard,
       recorder.note,
+      recorder.noteStatus,
       recorder.setNoteText,
       recorder.markMoment,
       recorder.pending,
@@ -377,6 +381,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       transcription: undefined,
       transcriber: { id: "on-device", identifySpeakers: false, source: "default" },
       note: null,
+      noteStatus: "ready",
       setNoteText: async () => {},
       markMoment: () => 0,
       setTranscriber: async () => "unavailable",

@@ -20,6 +20,27 @@ afterEach(() => {
 });
 
 describe("recording Markdown", () => {
+  test("a failed IndexedDB open is retried by the next read", async () => {
+    const previousDb = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+    let opens = 0;
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: {
+      open() {
+        opens++;
+        const request: { error: Error; onerror?: () => void } = { error: new Error(`open ${opens} failed`) };
+        queueMicrotask(() => request.onerror?.());
+        return request as unknown as IDBOpenDBRequest;
+      },
+    } });
+    try {
+      await expect(loadNote(id())).rejects.toThrow("open 1 failed");
+      await expect(loadNote(id())).rejects.toThrow("open 2 failed");
+      expect(opens).toBe(2);
+    } finally {
+      if (previousDb) Object.defineProperty(globalThis, "indexedDB", previousDb);
+      else Reflect.deleteProperty(globalThis, "indexedDB");
+    }
+  });
+
   test("parses m:ss, h:mm:ss, an empty bookmark, and ignores other lines", () => {
     expect(parseMomentLines("# Notes\n- **2:05** useful idea\n- **1:02:03**\n- **0:07** bookmark\n- **2:62** invalid\n- ordinary item\n**0:04** missing bullet"))
       .toEqual([{ atMs: 125_000, label: "useful idea" }, { atMs: 3_723_000, label: "" },
