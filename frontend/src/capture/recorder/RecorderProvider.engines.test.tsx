@@ -72,7 +72,8 @@ const node = (): unknown => new Proxy(function () {}, {
   set: () => true,
 });
 const documentStub: Record<string, unknown> = { createElement: () => node(), createTextNode: () => node(), nodeType: 9, activeElement: null, addEventListener() {}, removeEventListener() {} };
-const windowStub = (extra: object = {}) => ({ setTimeout, clearTimeout, event: undefined, HTMLIFrameElement: class {}, document: documentStub, ...extra });
+const windowStub = (extra: object = {}) => ({ setTimeout, clearTimeout, event: undefined, HTMLIFrameElement: class {}, document: documentStub,
+  addEventListener: () => {}, removeEventListener: () => {}, ...extra });
 
 const saved = {
   window: global.window, act: global.IS_REACT_ACT_ENVIRONMENT, flag: process.env.VITE_EXO_RECORDER_FINAL,
