@@ -191,6 +191,34 @@ for (const theme of THEMES) {
       await page.context().close();
     });
 
+    test("the modes card: no row's text sits under the Identify speakers row, at the top or scrolled", async () => {
+      const page = await open(
+        "recorder-final-phone-modes",
+        theme.param,
+        "[data-testid=modes-card] .pr-mprow",
+      );
+      const check = async () => {
+        const [footer] = await boxes(page, ".pr-spk");
+        const [card] = await boxes(page, "[data-testid=modes-card]");
+        const texts = await boxes(
+          page,
+          ".pr-mprow .pr-mptitle, .pr-mprow .pr-mpbody",
+        );
+        expect(texts.length).toBeGreaterThan(0);
+        for (const text of texts) {
+          // A line scrolled out of the card is not drawn; one that is drawn must be clear of the footer.
+          const drawn = text.bottom > card.top && text.top < card.bottom;
+          if (drawn) expect(apart(text, footer)).toBe(true);
+        }
+      };
+      await check();
+      await page.$eval("[data-testid=modes-card]", (card) => {
+        card.scrollTop = card.scrollHeight;
+      });
+      await check();
+      await page.context().close();
+    });
+
     test("the modes card stays inside the screen", async () => {
       const page = await open(
         "recorder-final-phone-modes",

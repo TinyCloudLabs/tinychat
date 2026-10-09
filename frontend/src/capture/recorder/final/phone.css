@@ -671,6 +671,11 @@
   border-radius: 0 0 26px 26px;
   text-align: left;
 }
+@media (max-width: 359px) {
+  .pr-spk {
+    position: static;
+  }
+}
 .pr-spk .t {
   flex: 1;
   min-width: 0;

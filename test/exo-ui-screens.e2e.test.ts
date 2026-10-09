@@ -43,7 +43,19 @@ const VIEWPORTS: Viewport[] = [
   // 1280x800 at 200% browser zoom.
   { id: "zoom200", width: 640, height: 400, deviceScaleFactor: 2, zoom: true },
   // The smallest phone the recorder-final screens must fit (an Android emulator's 320x640), scoped to those screens.
-  { id: "phone-small", width: 320, height: 640, deviceScaleFactor: 3, isMobile: true, hasTouch: true, screenPrefixes: ["recorder-final-phone-", "recorder-final-minimized-", "capture-soft-"] },
+  {
+    id: "phone-small",
+    width: 320,
+    height: 640,
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+    screenPrefixes: [
+      "recorder-final-phone-",
+      "recorder-final-minimized-",
+      "capture-soft-",
+    ],
+  },
   { id: "text200-phone", group: "text200", width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true, textScale: 2, zoom: true },
   { id: "text200-desktop", group: "text200", width: 1280, height: 800, deviceScaleFactor: 2, textScale: 2, zoom: true },
 ];
@@ -279,7 +291,13 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
         }
         try {
           for (const screen of screens) {
-            if (viewport.screenPrefixes && !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))) continue;
+            if (
+              viewport.screenPrefixes &&
+              !viewport.screenPrefixes.some((prefix) =>
+                screen.id.startsWith(prefix),
+              )
+            )
+              continue;
             const page = await context.newPage();
             const errors: string[] = [];
             page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));

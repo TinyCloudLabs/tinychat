@@ -72,9 +72,19 @@ export const captureScreens: HarnessScreen[] = [
 // The Soft skin sets its title in Fraunces, so the Literata font check does not apply.
 const SOFT = { ...CAPTURE, platform: "ios", readyWhen: LISTED, displayTitle: false } as const;
 
-function SoftHome(props: { recorder?: Partial<RecorderValue>; library?: boolean; rows?: typeof LIBRARY_ROWS }) {
+function SoftHome(props: {
+  recorder?: Partial<RecorderValue>;
+  library?: boolean;
+  rows?: typeof LIBRARY_ROWS;
+}) {
   forceSoftHome(true);
-  return <CaptureShell library={props.library ?? true} rows={props.rows} recorder={props.recorder ?? SOFT_IDLE} />;
+  return (
+    <CaptureShell
+      library={props.library ?? true}
+      rows={props.rows}
+      recorder={props.recorder ?? SOFT_IDLE}
+    />
+  );
 }
 
 const SOFT_IDLE: Partial<RecorderValue> = { available: true, ready: true };
@@ -112,10 +122,17 @@ const LONG_ROWS: typeof LIBRARY_ROWS = [
   {
     ...LIBRARY_ROWS[1],
     id: "note-long-title",
-    title: "Quarterly planning offsite: venue, budget and the Friday agenda for everyone on the thread",
+    title:
+      "Quarterly planning offsite: venue, budget and the Friday agenda for everyone on the thread",
     durationSecs: 11 * 3600 + 59 * 60 + 59,
   },
-  { ...LIBRARY_ROWS[1], id: "note-long-word", title: "Supercalifragilisticexpialidocious-recording-from-the-customer-interview-2026-10-06", durationSecs: 3725 },
+  {
+    ...LIBRARY_ROWS[1],
+    id: "note-long-word",
+    title:
+      "Supercalifragilisticexpialidocious-recording-from-the-customer-interview-2026-10-06",
+    durationSecs: 3725,
+  },
   LIBRARY_ROWS[0],
 ];
 
@@ -130,7 +147,11 @@ const SAVING = { "rec-saving": { kind: "finalization_timed_out" } } as const;
 
 export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-notes", render: () => <SoftHome /> },
-  { ...SOFT, id: "capture-soft-long-titles", render: () => <SoftHome rows={LONG_ROWS} /> },
+  {
+    ...SOFT,
+    id: "capture-soft-long-titles",
+    render: () => <SoftHome rows={LONG_ROWS} />,
+  },
   { ...SOFT, id: "capture-soft-empty", render: () => <SoftHome library={false} /> },
   { ...SOFT, id: "capture-soft-on-phone", render: () => <SoftHome recorder={ON_PHONE} /> },
   { ...SOFT, id: "capture-soft-timed-out", render: () => <SoftHome recorder={TIMED_OUT} /> },
