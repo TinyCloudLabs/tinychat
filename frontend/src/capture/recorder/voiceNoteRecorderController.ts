@@ -143,12 +143,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let noteLoadError: Error | null = null;
   let noteLoadVersion = 0;
   let noteSyncTimer: ReturnType<typeof setTimeout> | null = null;
-  const noteAccount = tcw.did && tcw.spaceId ? { did: tcw.did, spaceId: tcw.spaceId,
+  // Signed out (no tcw), notes stay local-first and never sync.
+  const noteClient = tcw?.did && tcw.spaceId ? tcw : null;
+  const noteAccount = noteClient?.did && noteClient.spaceId ? { did: noteClient.did, spaceId: noteClient.spaceId,
     generation: currentAccountGeneration() } : null;
   const checkNoteAccount = () => {
     if (!noteAccount) throw new Error("No account owns this recording note");
     assertCurrent(noteAccount);
-    if (tcw.did !== noteAccount.did || tcw.spaceId !== noteAccount.spaceId) throw new Error("Recording note account changed");
+    if (tcw?.did !== noteAccount.did || tcw?.spaceId !== noteAccount.spaceId) throw new Error("Recording note account changed");
   };
   let onSaved: ((recording: VoiceNoteRecording) => void) | undefined;
   let onPresent: (() => void) | undefined;
@@ -204,8 +206,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (!id) return;
     void (async () => {
       let stored = await noteLoader(id);
-      if (!stored && tcw.did && state.phase === "idle" && state.outcome === "saved") {
-        const remote = await readRecordingNoteFromSpace(tcw, id);
+      if (!stored && noteClient && state.phase === "idle" && state.outcome === "saved") {
+        const remote = await readRecordingNoteFromSpace(noteClient, id);
         if (remote) stored = await adoptNote(remote);
       }
       if (version !== noteLoadVersion || noteId !== id) return;
@@ -221,11 +223,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     });
   };
   const scheduleNoteSync = (id: string) => {
-    if (!noteAccount || state.outcome !== "saved" || state.lastSaved?.id !== id) return;
+    if (!noteAccount || !noteClient || state.outcome !== "saved" || state.lastSaved?.id !== id) return;
     if (noteSyncTimer) clearTimeout(noteSyncTimer);
     noteSyncTimer = setTimeout(() => {
       noteSyncTimer = null;
-      void syncRecordingNote(tcw, id, checkNoteAccount).catch((error: unknown) =>
+      void syncRecordingNote(noteClient, id, checkNoteAccount).catch((error: unknown) =>
         console.warn("[VoiceNotes] Could not sync recording note", error));
     }, 500);
   };
@@ -666,7 +668,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (noteSyncTimer) {
           clearTimeout(noteSyncTimer);
           noteSyncTimer = null;
-          if (noteAccount && noteId) void syncRecordingNote(tcw, noteId, checkNoteAccount).catch((error: unknown) =>
+          if (noteAccount && noteClient && noteId) void syncRecordingNote(noteClient, noteId, checkNoteAccount).catch((error: unknown) =>
             console.warn("[VoiceNotes] Could not sync recording note", error));
         }
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
