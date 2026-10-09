@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { base64ToBytes } from "../voiceNoteAudio";
 import { newIdbEnv } from "../web/testing/idb";
-import { memoryLocks } from "../web/webStore";
+import { memoryLocks, type WebStoreOptions } from "../web/webStore";
+import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, type DesktopBridge } from "./desktopVoiceNotes";
 
@@ -67,9 +68,10 @@ class FakeBridge implements DesktopBridge {
   }
 }
 
-function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID()) {
+function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEnv = newIdbEnv(),
+  storeOptions: Partial<WebStoreOptions> = {}) {
   return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => "note-1",
-    storeOptions: { env: newIdbEnv(), dbName, locks: memoryLocks(), decodeCheck: null, now: () => bridge.now } });
+    storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null, now: () => bridge.now, ...storeOptions } });
 }
 
 describe("desktop recorder adapter", () => {
@@ -147,6 +149,27 @@ describe("desktop recorder adapter", () => {
     expect(result.recovered).toHaveLength(1);
     expect(result.recovered[0]?.sizeBytes).toBe(3);
     expect((await second.plugin.listPending()).recordings).toHaveLength(1);
+    second.dispose();
+  });
+
+  test("a failed metadata commit leaves the durable native file for recovery", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    let fail = true;
+    const first = await rig(bridge, dbName, env, { hooks: { beforeOp(op) {
+      if (op === "note:commit" && fail) { fail = false; throw new Error("metadata unavailable"); }
+    } } });
+    await first.plugin.start();
+    bridge.elapsed = 1200;
+    bridge.files.set("note-1", Uint8Array.of(8, 9, 10));
+    await expect(first.plugin.stop()).rejects.toThrow("metadata unavailable");
+    expect(bridge.files.get("note-1")).toEqual(Uint8Array.of(8, 9, 10));
+    first.dispose();
+    const second = await rig(bridge, dbName, env);
+    const result = await second.recoverInterrupted();
+    expect(result.recovered[0]).toMatchObject({ id: "note-1", sizeBytes: 3, durationMs: 1200 });
+    expect(bridge.files.get("note-1")).toEqual(Uint8Array.of(8, 9, 10));
     second.dispose();
   });
 });
