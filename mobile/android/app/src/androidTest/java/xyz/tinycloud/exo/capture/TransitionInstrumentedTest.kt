@@ -42,13 +42,19 @@ class TransitionInstrumentedTest {
             CaptureService.startFromVisibleActivity(context, "duration-test", "in_app")
             await(engine, "recording")
             awaitAttached(engine)
+            val checkpointDeadline = SystemClock.elapsedRealtime() + 5_000
+            while (engine.status().getLong("audioMs") == 0L &&
+                SystemClock.elapsedRealtime() < checkpointDeadline) Thread.sleep(50)
+            val beforeAudioMs = engine.status().getLong("audioMs")
+            assertTrue("recording never reached a durable audio checkpoint", beforeAudioMs > 0)
             val from = SystemClock.elapsedRealtime()
             Thread.sleep(8_000)
             val until = SystemClock.elapsedRealtime()
             val note = engine.stop()
             val capturedMs = until - from
-            val difference = kotlin.math.abs(note.getLong("durationMs") - capturedMs)
-            assertTrue("note ${note.getLong("durationMs")} ms vs live $capturedMs ms",
+            val addedAudioMs = note.getLong("durationMs") - beforeAudioMs
+            val difference = kotlin.math.abs(addedAudioMs - capturedMs)
+            assertTrue("audio added $addedAudioMs ms vs live $capturedMs ms",
                 difference <= capturedMs / 20 + 250)
             engine.library.delete(note.getString("id"))
         } finally {
