@@ -34,6 +34,7 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   // The shared note queue uses mobile OnDeviceStt (Parakeet). Desktop's
   // Whisper localStt bridge is a separate flow, exposed through D4 extras.
   localTranscription: false,
+  desktopWhisper: false,
   offlineRecorder: true,
 };
 
@@ -62,6 +63,14 @@ const mergeSpans = (existing: MissingAudioSpan[], native: MissingAudioSpan[] = [
 
 export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): Promise<DesktopVoiceNotes> {
   const { bridge } = options;
+  let desktopWhisper = false;
+  try {
+    const selected = await bridge.invoke<string | null>("recorder_models_get");
+    if (selected) {
+      const models = await bridge.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list");
+      desktopWhisper = models.some((model) => model.id === selected && model.downloaded);
+    }
+  } catch (error) { console.warn("[desktopVoiceNotes] Could not read the selected Whisper model", error); }
   const now = options.now ?? (() => Date.now());
   const newId = options.newId ?? (() => crypto.randomUUID());
   const store = options.store ?? await openWebStore({ locks: memoryLocks(), ...options.storeOptions,
@@ -328,7 +337,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   }
 
   const plugin: CaptureEngine = {
-    capabilities: DESKTOP_CAPABILITIES,
+    capabilities: { ...DESKTOP_CAPABILITIES, desktopWhisper },
     async start(startOptions) {
       return run(async () => {
         if (live) throw failure("recording_in_progress");
@@ -342,9 +351,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
           const captureOptions: CaptureOptions = {
-            // TODO(TC-888): use on-device when desktopWhisper
-            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : "off",
-            identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
+            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : desktopWhisper ? "on-device" : "off",
+            identifySpeakers: signedIn ? startOptions?.identifySpeakers ?? defaults.identifySpeakers : false,
           };
           id = newId();
           const releaseSession = await store.locks.hold(sessionLock(id));
@@ -452,7 +460,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
       return run(async () => {
         if (!live) throw failure("not_recording");
         const options: CaptureOptions = { ...live.session.options, ...next };
-        if (!live.session.owner) options.transcriber = "on-device";
+        if (!live.session.owner) options.transcriber = desktopWhisper ? "on-device" : "off";
+        if (!live.session.owner) options.identifySpeakers = false;
         live.session.options = options;
         await store.updateSession(live.session.id, { options });
         emitMic(await bridge.invoke<NativeStatus>("recorder_status"));

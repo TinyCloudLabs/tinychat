@@ -152,7 +152,7 @@ describe("registration", () => {
     const engine = await startWebCaptureEngine({ store: rig.store, captureEnv: () => rig.fake.env, now: rig.clock.now });
     expect(engine.capabilities).toEqual({
       nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-      background: false, localTranscription: false, offlineRecorder: false,
+      background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
     });
   });
 });

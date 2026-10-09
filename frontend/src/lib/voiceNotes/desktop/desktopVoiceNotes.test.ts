@@ -21,6 +21,8 @@ class FakeBridge implements DesktopBridge {
   current: string | null = null;
   state: "idle" | "recording" | "paused" = "idle";
   selectedId: string | null = null;
+  selectedModel: string | null = null;
+  downloadedModels = new Set<string>();
   spans: MissingAudioSpan[] = [];
   stopError: Error | null = null;
   now = 1_000_000;
@@ -45,6 +47,8 @@ class FakeBridge implements DesktopBridge {
     const id = String(args.id ?? "");
     let result: unknown;
     switch (command) {
+      case "recorder_models_get": result = this.selectedModel; break;
+      case "recorder_models_list": result = [...this.downloadedModels].map((model) => ({ id: model, downloaded: true })); break;
       case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; break;
       case "recorder_acknowledge": this.recover = null; result = null; break;
       case "recorder_failed_list": result = this.failed; break;
@@ -170,6 +174,25 @@ describe("desktop recorder adapter", () => {
     expect(engine.plugin.capabilities).toMatchObject({ localTranscription: false, background: true,
       offlineRecorder: true, nativeShortcuts: false, presentRecorder: false, openSettings: false });
     engine.dispose();
+  });
+
+  test("signed-out capture uses Whisper only with a selected downloaded model", async () => {
+    const missing = new FakeBridge();
+    missing.selectedModel = "QuantizedTinyEn";
+    const audioOnly = await rig(missing);
+    expect(audioOnly.plugin.capabilities.desktopWhisper).toBe(false);
+    await audioOnly.plugin.start();
+    expect((await audioOnly.plugin.status()).options?.transcriber).toBe("off");
+    audioOnly.dispose();
+
+    const ready = new FakeBridge();
+    ready.selectedModel = "QuantizedTinyEn";
+    ready.downloadedModels.add("QuantizedTinyEn");
+    const whisper = await rig(ready);
+    expect(whisper.plugin.capabilities).toMatchObject({ desktopWhisper: true, localTranscription: false });
+    await whisper.plugin.start();
+    expect((await whisper.plugin.status()).options?.transcriber).toBe("on-device");
+    whisper.dispose();
   });
 
   test("a failed post-start metadata write stops the native microphone", async () => {

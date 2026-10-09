@@ -22,7 +22,7 @@ import {
   type CaptureOptions,
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
+import { captureCapabilities, onDeviceTranscriptionAvailable } from "@/lib/voiceNotes/captureEngine";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -517,9 +517,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async setTranscriber(id, { scope, waitForModel = false }) {
       if (!available || id === "assemblyai") return "unavailable";
-      if (id === "on-device" && !captureCapabilities().localTranscription) return "unavailable";
+      if (id === "on-device" && !onDeviceTranscriptionAvailable()) return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
-      if (id === "on-device" && !waitForModel && !(onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())))
+      if (id === "on-device" && captureCapabilities().localTranscription && !waitForModel && !(onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())))
         return "unavailable";
       if (id === "private-cloud") {
         const snapshot = transcriber?.snapshot?.();

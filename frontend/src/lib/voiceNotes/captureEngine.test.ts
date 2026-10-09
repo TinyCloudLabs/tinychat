@@ -18,7 +18,7 @@ import { VoiceNotes, __setVoiceNotesForTests } from "./nativeVoiceNotes";
 
 const none: CaptureCapabilities = {
   nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
-  background: false, localTranscription: false, offlineRecorder: false,
+  background: false, localTranscription: false, desktopWhisper: false, offlineRecorder: false,
 };
 const engine = (): CaptureEngine => ({ ...createFakeVoiceNotes().plugin, capabilities: none });
 
@@ -93,7 +93,7 @@ describe("flag off is unchanged", () => {
   test("native stays native: available without an install, the binding untouched, every capability on", async () => {
     setShell({ flag: false, native: true, tauri: false, mediaRecorder: false, mediaDevices: false });
     expect(captureEngineAvailable()).toBe(true);
-    expect(Object.values(captureCapabilities()).every(Boolean)).toBe(true);
+    expect(captureCapabilities()).toMatchObject({ localTranscription: true, desktopWhisper: false });
     await installCaptureEngine();
     expect(captureEngineKind()).toBe("native");
     expect(VoiceNotes).toBe(saved.voiceNotes);

@@ -24,6 +24,7 @@ export const WEB_CAPABILITIES = {
   micDeniedPresentation: false,
   background: false,
   localTranscription: false,
+  desktopWhisper: false,
   offlineRecorder: false,
 } as const;
 export type WebCapabilities = typeof WEB_CAPABILITIES;
