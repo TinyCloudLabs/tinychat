@@ -89,9 +89,15 @@ describe("desktop recorder adapter", () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge);
     const seen: string[] = [];
+    const levels: { level: number; peak?: number }[] = [];
     await engine.plugin.addListener("micState", (event) => seen.push(event.state));
+    await engine.plugin.addListener("level", (event) => levels.push(event));
     const started = await engine.plugin.start({ maxDurationMs: 10_000 });
     expect(started.id).toBe("note-1");
+    await engine.plugin.selectInput({ id: "mic-1" });
+    expect((await engine.plugin.listInputs()).selectedId).toBe("mic-1");
+    bridge.emit("exo://recorder-level", { level: 0.25, peak: 0.5 });
+    expect(levels).toEqual([{ level: 0.25, peak: 0.5 }]);
     bridge.elapsed = 1000;
     bridge.files.set(started.id, Uint8Array.of(10, 20));
     await engine.plugin.pause();
