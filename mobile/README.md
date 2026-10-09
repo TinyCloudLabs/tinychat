@@ -726,7 +726,5 @@ The session JWK never touches WebView localStorage. Details:
   handoff after consent revokes the new grant before showing an error. If
   secure storage fails during sign-out, the app keeps the native session for
   another attempt.
-- `@openkey/sdk-capacitor` is installed from the vendored tarball
-  `vendor/openkey-sdk-capacitor-65c5b63.tgz` (gitignored; TC-774 S2 is
-  unpublished). When it publishes, replace the `file:` specs in
-  `frontend/package.json` and `mobile/package.json` with `"0.1.0"`.
+- `@openkey/sdk-capacitor` is the published `0.1.0-beta.0` npm package (beta /
+  latest dist-tags).
