@@ -329,6 +329,38 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().phase).toBe("recording");
   });
 
+  test("an unsupported or stalled sidecar scan cannot delay the first Record", async () => {
+    __setVoiceNotesForTests({ ...plugin, listPending: () => new Promise(() => {}) }, { available: true });
+    const stalled = controller();
+    const detachStalled = stalled.attach();
+    await tick();
+    expect(stalled.getState().ready).toBe(true);
+    detachStalled();
+
+    __setVoiceNotesForTests({ ...plugin, listPending: undefined as never }, { available: true });
+    const unsupported = controller();
+    const detachUnsupported = unsupported.attach();
+    await tick();
+    expect(unsupported.getState().ready).toBe(true);
+    detachUnsupported();
+  });
+
+  test("an invalid account space is logged after construction without blanking the recorder", async () => {
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+      const badAccount = { did: tcw.did, spaceId: {} } as TinyCloudWeb;
+      const recorder = controller({ tcw: badAccount });
+      expect(errors).toEqual([]); // The controller is constructed during render.
+      const detach = recorder.attach();
+      await tick();
+      expect(recorder.getState().ready).toBe(true);
+      expect(errors.some(([message]) => String(message).includes("Invalid account identifiers"))).toBe(true);
+      detach();
+    } finally { console.error = original; }
+  });
+
   test("a remount picks up the running recording through status(), never starting another", async () => {
     const first = await attached();
     await first.recorder.record();

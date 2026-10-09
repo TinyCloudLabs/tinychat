@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { dismissPartialAudioIssue, partialAudioDismissed, partialAudioScope,
   prunePartialAudioIssues, savedPartialAudioIssues, savePartialAudioIssue } from "./partialAudioIssues";
+import { harnessTcw, HARNESS_DID } from "@/harness/stubs";
+
+test("the harness has a real space ID and invalid IDs still throw", () => {
+  expect(harnessTcw.spaceId).toBe("harness-space");
+  expect(partialAudioScope(harnessTcw.did, harnessTcw.spaceId))
+    .toBe(partialAudioScope(HARNESS_DID, "harness-space"));
+  expect(() => partialAudioScope(HARNESS_DID, {})).toThrow(TypeError);
+});
 
 test("partial-audio records are per DID and space, and old unknown dismissals are pruned", () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");

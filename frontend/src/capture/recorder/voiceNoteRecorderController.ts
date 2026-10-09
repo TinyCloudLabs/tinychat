@@ -128,7 +128,22 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   let onPresent: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
-  const issueScope = partialAudioScope(tcw?.did, tcw?.spaceId);
+  // Resolve only after mount. An invalid SDK identity is logged, while the
+  // recorder remains usable and never writes notices into another account.
+  let issueScope: string | null | undefined;
+  const scope = (): string | null => {
+    if (issueScope !== undefined) return issueScope;
+    try { return (issueScope = partialAudioScope(tcw?.did, tcw?.spaceId)); }
+    catch (caught) {
+      console.error("[VoiceNotes] Invalid account identifiers for capture issues", caught);
+      issueScope = null;
+      return null;
+    }
+  };
+  const dismissed = (id: string) => {
+    const key = scope();
+    return key !== null && partialAudioDismissed(key, id);
+  };
   const belongsToAccount = (recording: VoiceNoteRecording) =>
     (recording.owner == null || recording.owner === tcw?.did) &&
     (!recording.ledger?.spaceId || !tcw?.spaceId || recording.ledger.spaceId === tcw.spaceId);
@@ -139,13 +154,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     if (recording && !belongsToAccount(recording)) return;
     committedIds.add(id);
     const partial = recording ? partialFromSidecar(recording) : null;
-    if (partialAudioDismissed(issueScope, id)) {
+    if (dismissed(id)) {
       send({ type: "CAPTURE_RESOLVED", id });
     } else {
       send({ type: "CAPTURE_COMMITTED", id, ...(partial ? { partial } :
         lostAudioIds.has(id) ? { partial: { kind: "partial_audio" } as const } : {}) });
       const issue = state.captureIssues[id];
-      if (issue?.kind === "partial_audio") savePartialAudioIssue(issueScope, id, issue);
+      const key = scope();
+      if (key !== null && issue?.kind === "partial_audio") savePartialAudioIssue(key, id, issue);
     }
   };
 
@@ -406,14 +422,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       onPresent = next;
     },
     attach() {
+      const key = scope();
       if (!available) return () => {};
       let attached = true;
-      for (const [id, issue] of Object.entries(savedPartialAudioIssues(issueScope))) {
-        if (!partialAudioDismissed(issueScope, id)) send({ type: "CAPTURE_ISSUE", id, issue });
-        committedIds.add(id);
-        lostAudioIds.add(id);
+      if (key !== null) {
+        for (const [id, issue] of Object.entries(savedPartialAudioIssues(key))) {
+          if (!partialAudioDismissed(key, id)) send({ type: "CAPTURE_ISSUE", id, issue });
+          committedIds.add(id);
+          lostAudioIds.add(id);
+        }
+        for (const id of pendingAudioLossIds(key)) lostAudioIds.add(id);
       }
-      for (const id of pendingAudioLossIds(issueScope)) lostAudioIds.add(id);
       const onCaptureDeleted = (event: Event) => {
         const id = (event as CustomEvent<{ id: string }>).detail?.id;
         if (id) { send({ type: "CAPTURE_RESOLVED", id }); committedIds.delete(id); lostAudioIds.delete(id); }
@@ -450,14 +469,15 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });
         }),
         VoiceNotes.addListener("writeFailure", (event) => {
-          if (partialAudioDismissed(issueScope, event.id)) return;
+          if (dismissed(event.id)) return;
           lostAudioIds.add(event.id);
-          savePendingAudioLoss(issueScope, event.id);
+          const key = scope();
+          if (key !== null) savePendingAudioLoss(key, event.id);
           if (state.captureIssues[event.id]?.kind === "partial_audio") return;
           send({ type: "CAPTURE_ISSUE", id: event.id,
             issue: committedIds.has(event.id) ? { kind: "partial_audio" } : { kind: "write_failed", detail: event.error } });
           const issue = state.captureIssues[event.id];
-          if (issue?.kind === "partial_audio") savePartialAudioIssue(issueScope, event.id, issue);
+          if (key !== null && issue?.kind === "partial_audio") savePartialAudioIssue(key, event.id, issue);
         }),
         VoiceNotes.addListener("recovered", (event) => {
           const id = event.id ?? event.recording?.id;
@@ -502,25 +522,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           }
         }),
       ];
-      // Once the listeners are in (the shell hands them its retained events as they
-      // attach), ask what is running: a WebView reload mid-recording, or a recording
-      // started offline, leaves the native recorder running. Record waits for both.
-      void Promise.all(handles)
-        .then(async () => {
-          // listPending includes committed sidecars still on this phone. It restores
-          // missing-audio notices even when the shell cannot replay old events.
-          try {
-            const { recordings } = await VoiceNotes.listPending();
-            if (attached) {
-              const visible = recordings.filter(belongsToAccount);
-              prunePartialAudioIssues(issueScope, new Set(visible.map((recording) => recording.id)));
-              for (const recording of visible) {
-                if (partialFromSidecar(recording)) captureCommitted(recording.id, recording);
-              }
-            }
-          } catch (caught) { console.warn("[VoiceNotes] Could not inspect committed capture spans", caught); }
-          return VoiceNotes.status();
-        })
+      // A WebView reload mid-recording still picks up the active native session.
+      const reconcile = Promise.all(handles)
+        .then(() => VoiceNotes.status())
         .then(
           (status) => {
             if (!attached) return;
@@ -544,6 +548,20 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         .finally(() => {
           if (attached) send({ type: "RECONCILED" });
         });
+      // The sidecar scan is best effort, after readiness. Unsupported or slow
+      // listPending implementations cannot delay native status or the first Record.
+      void reconcile.then(async () => {
+        try {
+          const { recordings } = await VoiceNotes.listPending();
+          if (!attached) return;
+          const visible = recordings.filter(belongsToAccount);
+          const key = scope();
+          if (key !== null) prunePartialAudioIssues(key, new Set(visible.map((recording) => recording.id)));
+          for (const recording of visible) {
+            if (partialFromSidecar(recording)) captureCommitted(recording.id, recording);
+          }
+        } catch (caught) { console.warn("[VoiceNotes] Could not inspect committed capture spans", caught); }
+      }).catch((caught: unknown) => console.warn("[VoiceNotes] Could not attach capture scan", caught));
       return () => {
         attached = false;
         if (typeof window !== "undefined") window.removeEventListener("exo:captureIssueDeleted", onCaptureDeleted);
@@ -710,7 +728,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         if (shown && shown !== id) clearDiscarded(shown);
       }
       send({ type: "DISCARDED", id: shown });
-      if (id) { send({ type: "CAPTURE_RESOLVED", id }); clearPartialAudioIssue(issueScope, id); committedIds.delete(id); lostAudioIds.delete(id); }
+      if (id) {
+        send({ type: "CAPTURE_RESOLVED", id });
+        const key = scope();
+        if (key !== null) clearPartialAudioIssue(key, id);
+        committedIds.delete(id); lostAudioIds.delete(id);
+      }
     },
     async retryPending() {
       if (!available) return;
@@ -740,7 +763,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     dismissCaptureIssue(id) {
       if (state.captureIssues[id]?.kind !== "partial_audio") return;
-      if (dismissPartialAudioIssue(issueScope, id)) send({ type: "CAPTURE_DISMISSED", id });
+      const key = scope();
+      if (key !== null && dismissPartialAudioIssue(key, id)) send({ type: "CAPTURE_DISMISSED", id });
     },
     subscribeLevel(listener) {
       levelListeners.add(listener);
