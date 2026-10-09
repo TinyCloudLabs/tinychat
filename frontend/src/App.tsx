@@ -78,6 +78,7 @@ import { HeaderLiveChip } from "./capture/recorder/HeaderLiveChip";
 import { LiveEdge } from "./capture/recorder/LiveEdge";
 import { RecordButton } from "./capture/recorder/RecordButton";
 import { RecorderProvider } from "./capture/recorder/RecorderProvider";
+import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
 import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
@@ -929,6 +930,7 @@ export function App() {
           </main>
         )}
       </div>
+      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={authAction} />
       {storageReadOnly && (
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full: read-only.</strong>{" "}

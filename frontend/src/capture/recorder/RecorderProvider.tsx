@@ -29,6 +29,7 @@ export interface RecorderValue {
   /** The recorder has heard status() and its retained events; Record waits until then. */
   ready: boolean;
   phase: RecorderPhase;
+  permissionDenied: boolean;
   mic: RecorderMic;
   /** Wall-clock start; views tick from native audioMs for recorded time. */
   startedAt: number | null;
@@ -52,10 +53,11 @@ export interface RecorderValue {
   /** Stop the live recording and delete it; the sheet closes once it is gone. */
   discard(): void;
   retryPending(): void;
+  openSettings(): Promise<void>;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;
-  minimiseSheet(): void;
+  minimiseSheet(): void | Promise<void>;
   setReceiptPlaying(playing: boolean): void;
   subscribeLevel(listener: (level: number) => void): () => void;
 }
@@ -167,13 +169,14 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   // Local commit starts the receipt clock. Playback keeps it open.
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
+    if (state.permissionDenied) return;
     if (receiptPlaying) return;
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MS);
     return () => clearTimeout(timer);
-  }, [dismissOutcome, receiptPlaying, state.outcome, state.lastSaved]);
+  }, [dismissOutcome, receiptPlaying, state.outcome, state.lastSaved, state.permissionDenied]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
@@ -186,13 +189,17 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
-  const minimiseSheet = useCallback(() => setSheetOpen(false), []);
+  const minimiseSheet = useCallback(async () => {
+    if (state.permissionDenied) await recorder.dismissShortcutRecovery();
+    setSheetOpen(false);
+  }, [recorder.dismissShortcutRecovery, state.permissionDenied]);
 
   const value = useMemo<RecorderValue>(
     () => ({
       available: recorder.available,
       ready: state.ready,
       phase: state.phase,
+      permissionDenied: state.permissionDenied,
       mic: state.mic,
       startedAt: state.startedAt,
       audioMs: state.audioMs,
@@ -213,6 +220,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       resume: recorder.resume,
       discard: recorder.discard,
       retryPending: recorder.retryPending,
+      openSettings: recorder.openSettings,
       dismissOutcome: dismiss,
       openSheet,
       minimiseSheet,
@@ -228,6 +236,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.discard,
       recorder.pending,
       recorder.retryPending,
+      recorder.openSettings,
       recorder.stop,
       recorder.pause,
       recorder.resume,
@@ -267,6 +276,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       available: true,
       ready: true,
       phase: "idle",
+      permissionDenied: false,
       mic: { state: "idle", reason: null },
       startedAt: null,
       audioMs: 0,
@@ -287,6 +297,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       resume: noop,
       discard: noop,
       retryPending: noop,
+      openSettings: async () => {},
       dismissOutcome: noop,
       openSheet: noop,
       minimiseSheet: noop,

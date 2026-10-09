@@ -55,6 +55,8 @@ export interface VoiceNoteRecorderController {
   /** Stop the live recording and delete it from the phone; nothing is saved. */
   discard(): Promise<void>;
   retryPending(): Promise<void>;
+  openSettings(): Promise<void>;
+  dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
   /** Input levels (0..1), fanned out without React state. */
@@ -227,6 +229,26 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
         VoiceNotes.addListener("presentRecorder", async (event) => {
+          if (event.reason === "permission_denied" && event.id === null) {
+            const status = await VoiceNotes.status();
+            if (attached && status.micDeniedPresentation) {
+              send({ type: "PERMISSION_DENIED" });
+              onPresent?.();
+            }
+            return;
+          }
+          if (event.reason === "permission_granted" && event.id === null) {
+            const status = await VoiceNotes.status();
+            if (attached && !status.micDeniedPresentation && status.microphonePermissionGranted) {
+              send({ type: "PERMISSION_GRANTED" });
+              if (status.shortcutRecordPending) {
+                onPresent?.();
+                void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
+                  console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
+              }
+            }
+            return;
+          }
           try {
             const status = await VoiceNotes.status();
             if (!attached || status.state === "idle" || status.id !== event.id) return;
@@ -246,8 +268,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         .then(() => VoiceNotes.status())
         .then(
           (status) => {
-            if (!attached || status.state === "idle") return;
+            if (!attached) return;
+            if (status.micDeniedPresentation) {
+              send({ type: "PERMISSION_DENIED" });
+              onPresent?.();
+            } else if (status.shortcutRecordPending && status.microphonePermissionGranted) {
+              send({ type: "PERMISSION_GRANTED" });
+              onPresent?.();
+              void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
+                console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
+            }
+            if (status.state === "idle") return;
             send(activePickup(status));
+            if (status.source === "app_shortcut" || status.source === "notification") onPresent?.();
           },
           (caught: unknown) => console.warn("[VoiceNotes] Could not ask the recorder what is running", caught),
         )
@@ -275,7 +308,19 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         });
       } catch (caught) {
         send({ type: "START_FAILED", error: messageOf(caught) });
+        if (errorCode(caught) === "permission_denied") {
+          send({ type: "PERMISSION_DENIED" });
+          onPresent?.();
+        }
       }
+    },
+    async openSettings() {
+      await VoiceNotes.openSettings();
+    },
+    async dismissShortcutRecovery() {
+      const status = await VoiceNotes.status();
+      if (status.micDeniedPresentation !== undefined) await VoiceNotes.dismissShortcutRecovery();
+      send({ type: "PERMISSION_GRANTED" });
     },
     async stop() {
       // Stop waits for STARTED: the plugin cannot cancel a start in flight.

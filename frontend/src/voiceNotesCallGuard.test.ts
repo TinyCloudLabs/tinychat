@@ -1,6 +1,7 @@
 // One recorder controller: only these files may drive the native VoiceNotes
-// plugin (listen, start, stop, delete audio). A second caller would mean a
-// second recorder racing the first for the microphone and its saves. The
+// plugin (listen, start, stop, delete audio). The signed-out recovery view
+// reads status without adding a competing presentRecorder listener. A second
+// recording caller would race the first for the microphone and its saves. The
 // redesign's recorder (TC-761) moved the controller to
 // voiceNoteRecorderController (wrapped by useVoiceNoteRecorder) and the saves
 // to recorderSaves.

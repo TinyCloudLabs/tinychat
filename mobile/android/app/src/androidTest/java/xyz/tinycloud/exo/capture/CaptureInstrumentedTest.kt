@@ -63,7 +63,7 @@ class CaptureInstrumentedTest {
     private fun permissionButton(allow: Boolean) {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
         val suffixes = if (allow) listOf("permission_allow_foreground_only_button", "permission_allow_button")
-            else listOf("permission_deny_button")
+            else listOf("permission_deny_button", "permission_deny_and_dont_ask_again_button")
         val packages = listOf("com.android.permissioncontroller", "com.google.android.permissioncontroller",
             "com.google.android.packageinstaller", "com.android.packageinstaller")
         val deadline = System.currentTimeMillis() + 10_000
@@ -107,14 +107,23 @@ class CaptureInstrumentedTest {
     }
 
     /** Run with RECORD_AUDIO revoked and permission flags reset before instrumentation starts. */
-    @Test fun shortcutDeniedPermissionClearsCommandWithoutReprompting() {
+    @Test fun shortcutDeniedTwiceHoldsCommandAndOffersRecordOnGrant() {
         assumeTrue("Run this case with RECORD_AUDIO revoked before instrumentation",
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
         val engine = CaptureEngine.get(context)
-        val denied = CountDownLatch(1)
+        val firstDenied = CountDownLatch(1)
+        val denied = CountDownLatch(2)
+        val deniedCount = AtomicInteger(0)
+        val granted = CountDownLatch(1)
         val listener = object : CaptureEngine.Listener {
             override fun event(name: String, data: JSONObject) {
-                if (name == "presentRecorder" && data.optString("reason") == "permission_denied") denied.countDown()
+                if (name == "presentRecorder" && data.optString("reason") == "permission_denied") {
+                    assertTrue(data.isNull("id"))
+                    deniedCount.incrementAndGet()
+                    firstDenied.countDown()
+                    denied.countDown()
+                }
+                if (name == "presentRecorder" && data.optString("reason") == "permission_granted") granted.countDown()
             }
         }
         engine.addListener(listener)
@@ -122,14 +131,40 @@ class CaptureInstrumentedTest {
             .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             permissionButton(false)
+            assertTrue("first denial was not surfaced", firstDenied.await(5, TimeUnit.SECONDS))
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                activity.startActivity(Intent(activity, MainActivity::class.java).setAction(CaptureService.RECORD))
+            }
+            permissionButton(false)
             assertTrue("denial was not surfaced", denied.await(5, TimeUnit.SECONDS))
-            awaitNoPendingCommand()
+            assertEquals("RECORD", LaunchCommandStore(context).pending()?.action)
+            assertTrue(MicShortcutRecovery.recordPending(context))
             assertEquals("idle", engine.status().getString("state"))
             Thread.sleep(500)
             assertNull("denial triggered another permission dialog",
                 UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
                     .findObject(By.res("com.android.permissioncontroller", "permission_deny_button")))
-        } finally { engine.removeListener(listener); activity.finish() }
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressHome()
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                InstrumentationRegistry.getInstrumentation().uiAutomation
+                    .executeShellCommand("am start -n ${context.packageName}/.MainActivity")
+            ).use { it.readBytes() }
+            Thread.sleep(300)
+            assertEquals("ordinary resume re-delivered the denial", 2, deniedCount.get())
+            MicShortcutRecovery.markSettingsOpened(context)
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressHome()
+            grant(Manifest.permission.RECORD_AUDIO)
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                InstrumentationRegistry.getInstrumentation().uiAutomation
+                    .executeShellCommand("am start -n ${context.packageName}/.MainActivity")
+            ).use { it.readBytes() }
+            assertTrue("grant on return was not surfaced", granted.await(5, TimeUnit.SECONDS))
+            assertFalse(MicShortcutRecovery.denied(context))
+            assertTrue(MicShortcutRecovery.recordPending(context))
+            assertEquals("idle", engine.status().getString("state"))
+            MicShortcutRecovery.consumeRecordOffer(context)
+            awaitNoPendingCommand()
+        } finally { MicShortcutRecovery.dismiss(context); engine.removeListener(listener); activity.finish() }
     }
 
     @Test fun shortcutCommandAndRecordingSurviveActivityRecreation() {

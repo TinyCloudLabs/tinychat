@@ -91,6 +91,16 @@ describe("recorderReducer", () => {
     expect(recorderReducer(saved, { type: "DISMISSED" }).outcome).toBeNull();
   });
 
+  test("a shortcut denial during saving keeps the save running behind the access page", () => {
+    const saving = run([{ type: "STOP_REQUESTED" }, { type: "SAVE_PROGRESS", percent: 42 }], recording());
+    const denied = recorderReducer(saving, { type: "PERMISSION_DENIED" });
+    expect(denied).toMatchObject({ phase: "saving", permissionDenied: true });
+    const committed = recorderReducer(denied, { type: "LOCAL_COMMITTED", id: "rec-1", durationMs: 42_000, at: 9 });
+    expect(committed).toMatchObject({ phase: "idle", permissionDenied: true, outcome: "local" });
+    const saved = recorderReducer(committed, { type: "SAVED", id: "rec-1", durationMs: 42_000, at: 10 });
+    expect(saved).toMatchObject({ permissionDenied: true, outcome: "saved" });
+  });
+
   test("Stop is ignored until the recorder has started", () => {
     const starting = recorderReducer(initialRecorderState, { type: "START_REQUESTED" });
     expect(recorderReducer(starting, { type: "STOP_REQUESTED" })).toBe(starting);

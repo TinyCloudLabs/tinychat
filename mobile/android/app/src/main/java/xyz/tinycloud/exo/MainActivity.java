@@ -16,6 +16,7 @@ import org.json.JSONObject;
 import xyz.tinycloud.exo.capture.CaptureEngine;
 import xyz.tinycloud.exo.capture.CaptureService;
 import xyz.tinycloud.exo.capture.LaunchCommandStore;
+import xyz.tinycloud.exo.capture.MicShortcutRecovery;
 import xyz.tinycloud.exo.capture.VoiceNotesPlugin;
 import xyz.tinycloud.exo.health.HealthPlugin;
 import xyz.tinycloud.exo.location.LocationPlugin;
@@ -33,9 +34,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
             askingPermission = false;
             if (granted) main.post(this::handlePending);
             else {
-                LaunchCommandStore.Command command = commands.pending();
-                if (command != null) commands.clear(command.getId());
                 consumedCommandId = null;
+                MicShortcutRecovery.markDenied(this, true);
                 CaptureEngine.get(this).presentRecorder(null, "permission_denied");
             }
         });
@@ -60,14 +60,27 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     }
     private void consumeIntent(Intent intent) {
         String action = intent.getAction();
-        if (CaptureService.RECORD.equals(action)) commands.put("RECORD", "app_shortcut");
+        if (CaptureService.RECORD.equals(action)) {
+            MicShortcutRecovery.newShortcut(this);
+            commands.put("RECORD", "app_shortcut");
+        }
         else if (CaptureService.SHOW_RECORDER.equals(action)) commands.put("SHOW_RECORDER", "notification");
         setIntent(new Intent(intent).setAction(null));
     }
     @Override public void onResume() {
         super.onResume();
         // Lifecycle reaches RESUMED after onResume returns.
-        main.post(this::handlePending);
+        main.post(() -> {
+            if (MicShortcutRecovery.denied(this)) {
+                if (MicShortcutRecovery.permissionGranted(this)) {
+                    MicShortcutRecovery.markGranted(this);
+                    CaptureEngine.get(this).presentRecorder(null, "permission_granted");
+                } else if (MicShortcutRecovery.takeSettingsReturn(this)) {
+                    CaptureEngine.get(this).presentRecorder(null, "permission_denied");
+                }
+            }
+            handlePending();
+        });
     }
     private void handlePending() {
         if (!getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;
@@ -80,6 +93,9 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
             engine.presentRecorder();
             return;
         }
+        // A denied shortcut remains an offer. Only an explicit new shortcut asks again;
+        // returning from Settings shows Record instead of starting the mic unseen.
+        if (MicShortcutRecovery.recordPending(this)) return;
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             if (!askingPermission) { askingPermission = true; requestMic.launch(Manifest.permission.RECORD_AUDIO); }
             return;
