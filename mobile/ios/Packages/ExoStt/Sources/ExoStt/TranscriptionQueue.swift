@@ -10,26 +10,32 @@ import SttCore
 /// background queue: there is no `BGProcessingTask`/checkpoint persistence (T24 adds that), so a
 /// note interrupted by the app dying restarts its decode from the beginning next time the queue
 /// runs, instead of resuming mid-file. It never runs while a capture session is live: it checks
-/// `CaptureEngine.shared.isCapturing` before loading a model and again before every VAD window, and
+/// `CapturePauseGate.isActive()` before loading a model and again before every VAD window, and
 /// releases the recognizer promptly instead of competing with capture for CPU/memory. Audio is
 /// decoded and fed to the VAD and recognizer in fixed-size windows (`AudioDecoder.decodeWindows`),
 /// never as one in-memory array, so a note's memory use does not scale with its length: a note left
 /// recording for a long time once crashed every launch decoding itself whole (TC-836 incident).
 /// Before each attempt, `AttemptGuard` persists an incremented attempt count to the note's sidecar;
 /// after `AttemptGuard.maxAttempts` a note is marked `failed` instead of retried, so a note that
-/// reliably crashes the decode can never crash-loop the app at every launch again. `ReleaseHandoff`
-/// lets `CaptureEngine` wait, bounded, for the current decode to release before opening the mic
-/// (`awaitReleaseForCapture`, wired via `CaptureEngine.sttReleaseHandoff` in `ExoSttBootstrap`): a
-/// single VAD segment's recognize() call can't be interrupted mid-call, so capture never waits
-/// unboundedly — it proceeds regardless, and this queue's own per-window capture check is what
-/// actually abandons the attempt once it notices.
+/// reliably crashes the decode can never crash-loop the app at every launch again.
+///
+/// Capture-priority handoff (plan §2.5, round-2 finding 3 override): `CaptureEngine.start` never
+/// waits for this queue — it pushes `captureStarted()` (via `CaptureEngine.captureSessionStarted`,
+/// wired in `ExoSttBootstrap`) and opens the mic immediately regardless. `CapturePauseGate` is the
+/// signal that push sets; it stays active through a paused session too, not only a recording one,
+/// and only `captureEnded()` (Stop, Discard, or a start that never acquired the mic) clears it. The
+/// outer note-at-a-time loop (`CaptureYieldingLoop`) checks it between notes; the per-window
+/// capture check inside `Engine.transcribe` checks it between windows, i.e. between ASR segments —
+/// never mid-recognize(), since that call can't be interrupted. Either way the engine releases at
+/// the next checkpoint and this queue stays idle until `captureEnded()`, then resumes from exactly
+/// where it left off.
 public final class TranscriptionQueue {
     public static let shared = TranscriptionQueue(store: ModelDownloads.shared.store)
 
     private let store: ModelStore
     private let capture = CaptureEngine.shared
     private let runQueue = DispatchQueue(label: "xyz.tinycloud.exo.stt.queue")
-    private let releaseHandoff = ReleaseHandoff()
+    private let captureGate = CapturePauseGate()
     private var pending: [String] = []
     private var running = false
     public var onQueueChanged: (() -> Void)?
@@ -91,17 +97,22 @@ public final class TranscriptionQueue {
         }
     }
 
-    /// Called by `CaptureEngine` (via `sttReleaseHandoff`) before opening the mic (capture-priority
-    /// handoff, plan §2.5): returns as soon as the current decode has released its native engine,
-    /// or after `timeout` — whichever is first. Capture always proceeds either way; it must never
-    /// wait unboundedly.
-    public func awaitReleaseForCapture(timeout: TimeInterval) {
-        releaseHandoff.awaitRelease(timeout: timeout)
+    /// Pushed by `CaptureEngine` (via `captureSessionStarted`) the instant a session begins
+    /// (capture-priority handoff, plan §2.5): never blocks, so capture never waits on this queue.
+    public func captureStarted() {
+        captureGate.captureStarted()
+    }
+
+    /// Pushed by `CaptureEngine` (via `captureSessionEnded`) once a session has fully ended (Stop,
+    /// Discard, or a start that never acquired the mic): resumes the queue from its checkpoint.
+    public func captureEnded() {
+        captureGate.captureEnded()
+        runQueue.async { [self] in pump() }
     }
 
     private func pump() {
         guard !running, !pending.isEmpty else { return }
-        guard !capture.isCapturing else { return } // Resumed by the next `committed` (capture ended).
+        guard !captureGate.isActive() else { return } // Resumed by `captureEnded()`.
         let memory = ProcessInfo.processInfo.physicalMemory
         let modelId = ModelManifest.primaryModel(physicalMemoryBytes: memory)
         guard store.isReady(modelId), store.isReady(ModelManifest.sileroVad) else {
@@ -110,7 +121,6 @@ public final class TranscriptionQueue {
             return
         }
         running = true
-        let releaseStarted = releaseHandoff.begin()
         let engine: Engine
         do {
             engine = try Engine(store: store, modelId: modelId)
@@ -118,19 +128,20 @@ public final class TranscriptionQueue {
             for id in pending { fail(id, code: "model_load_failed", message: String(describing: error)) }
             pending.removeAll()
             running = false
-            releaseHandoff.release(releaseStarted)
             onQueueChanged?()
             return
         }
-        defer { running = false; releaseHandoff.release(releaseStarted) }
-        while let id = pending.first {
-            guard !capture.isCapturing else { break } // Leave it queued; release happens via `defer`.
-            pending.removeFirst()
+        defer { running = false }
+        CaptureYieldingLoop.run(
+            hasNext: { !pending.isEmpty },
+            next: { pending.removeFirst() },
+            isPaused: { captureGate.isActive() }
+        ) { id in
             let previousAttempts = ((try? capture.library.readSidecar(id))?["stt"] as? [String: Any])?["attempts"] as? Int ?? 0
             switch AttemptGuard.next(previousAttempts: previousAttempts) {
             case .giveUp:
                 fail(id, code: "too_many_attempts", message: "gave up after \(AttemptGuard.maxAttempts) attempts")
-                continue
+                return
             case .proceed(let attempt):
                 // Persisted before the risky decode starts: a crash mid-attempt still counts
                 // against the cap next launch, instead of retrying the same note forever.
@@ -145,7 +156,6 @@ public final class TranscriptionQueue {
                 // attempt count so being interrupted repeatedly never burns the crash-loop budget.
                 try? capture.library.updateStt(id, patch: ["state": "queued", "attempts": previousAttempts])
                 pending.insert(id, at: 0)
-                break
             } catch {
                 fail(id, code: "decode_failed", message: String(describing: error))
             }
@@ -169,7 +179,7 @@ public final class TranscriptionQueue {
         var windowsDone = 0
         try engine.transcribe(
             file: audioURL,
-            checkCapturing: { [self] in guard !capture.isCapturing else { throw TranscriptionQueueError.captureStarted } },
+            checkCapturing: { [self] in guard !captureGate.isActive() else { throw TranscriptionQueueError.captureStarted } },
             onWindow: { [self] in
                 windowsDone += 1
                 try? capture.library.updateStt(id, patch: ["windowsDone": windowsDone])

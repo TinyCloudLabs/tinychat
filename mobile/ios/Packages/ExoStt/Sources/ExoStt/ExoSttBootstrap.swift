@@ -17,10 +17,11 @@ public enum ExoSttBootstrap {
                 guard name == "committed" else { return }
                 TranscriptionQueue.shared.reconcile()
             }
-            // Capture-priority handoff (plan §2.5): ExoCapture can't depend on ExoStt directly
-            // (ExoStt already depends on ExoCapture, so that would be a package cycle), so the
-            // queue registers itself here instead.
-            CaptureEngine.shared.sttReleaseHandoff = { timeout in TranscriptionQueue.shared.awaitReleaseForCapture(timeout: timeout) }
+            // Capture-priority handoff (plan §2.5, round-2 finding 3 override): ExoCapture can't
+            // depend on ExoStt directly (ExoStt already depends on ExoCapture, so that would be a
+            // package cycle), so the queue registers itself here instead. Neither call blocks.
+            CaptureEngine.shared.captureSessionStarted = { TranscriptionQueue.shared.captureStarted() }
+            CaptureEngine.shared.captureSessionEnded = { TranscriptionQueue.shared.captureEnded() }
         }
         // Picks up notes committed in an earlier process run (app killed mid-transcription, or
         // committed before the model finished downloading): re-queued here instead of resumed
