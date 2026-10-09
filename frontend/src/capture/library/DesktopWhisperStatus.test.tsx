@@ -92,12 +92,12 @@ describe("DesktopWhisperStatus", () => {
   };
 
   test("no queue or no job for the note: the fallback, so the signed-in and phone states are unchanged", () => {
-    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" fallback={fallback} />)).toContain("the existing status");
+    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />)).toContain("the existing status");
     const fake = fakeQueue();
     registerDesktopWhisperQueue(fake.queue);
-    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" fallback={fallback} />)).toContain("the existing status");
+    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />)).toContain("the existing status");
     fake.publish(job({ id: "other", state: "failed" }));
-    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" fallback={fallback} />)).toContain("the existing status");
+    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />)).toContain("the existing status");
   });
 
   test("a job shows its state, and a failure logs the raw error once", async () => {
@@ -105,9 +105,9 @@ describe("DesktopWhisperStatus", () => {
     const fake = fakeQueue();
     registerDesktopWhisperQueue(fake.queue);
     fake.publish(job({ state: "transcribing", progress: 10 }));
-    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" fallback={fallback} />)).toContain("Transcribing on this Mac · 10%");
+    expect(renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />)).toContain("Transcribing on this Mac · 10%");
     fake.publish(job({ state: "failed", error: "fixture failed" }));
-    const html = renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" fallback={fallback} />);
+    const html = renderToStaticMarkup(<DesktopWhisperStatus noteId="n1" enabled fallback={fallback} />);
     expect(html).toContain("Retry");
     expect(html).not.toContain("fixture failed");
     const { root } = await mount();

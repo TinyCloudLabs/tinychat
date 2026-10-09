@@ -14,6 +14,7 @@ import {
   type RecorderValue,
 } from "../../recorder/RecorderProvider";
 import { registerDesktopWhisperQueue, type DesktopWhisperJob, type DesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
+import { retryWhisperJob } from "@/capture/library/DesktopWhisperStatus";
 import { dismissNotice } from "../captureIssues";
 import { HOME_COPY } from "../homeCopy";
 import {
@@ -21,6 +22,7 @@ import {
   DismissControl,
   FilterChips,
   RecentRow,
+  WhisperRetryControl,
   type DesktopCaptureHomeProps,
 } from "./DesktopCaptureHome";
 
@@ -375,6 +377,55 @@ describe("a row with an after-stop Whisper job", () => {
     expect(renderToStaticMarkup(
       <MemoryRouter><ul><RecentRow entry={{ type: "item", item: note(3), startedAt: note(3).startedAt }} now={NOW} grouped onDismiss={() => true} onOpenIssue={noop} /></ul></MemoryRouter>,
     )).toBe(plain);
+  });
+
+  test("a failed job gets a Retry button beside the row link, not inside it; other states and rows get none", () => {
+    const failed = rowFor(job({ state: "failed", error: "raw detail" }));
+    expect(failed).toContain('data-testid="recent-whisper-retry"');
+    expect(failed).toContain('aria-label="Retry transcribing Voice note · Oct 9, 1:47 AM on this Mac"');
+    expect(failed).not.toContain('role="alert"');
+    const link = failed.match(/<a [^>]*>[\s\S]*?<\/a>/)![0];
+    expect(link).not.toContain("Retry");
+    expect(failed.indexOf("recent-whisper-retry")).toBeGreaterThan(failed.indexOf("</a>"));
+    expect(rowFor(job({ state: "queued" }))).not.toContain("recent-whisper-retry");
+    expect(rowFor(job({ state: "transcribing", progress: 5 }))).not.toContain("recent-whisper-retry");
+    expect(rowFor(job({ state: "done" }))).not.toContain("recent-whisper-retry");
+    expect(rowFor(job({ id: "other", state: "failed" }))).not.toContain("recent-whisper-retry");
+    expect(rowFor(job({ state: "failed" }), {
+      type: "item", item: note(3), startedAt: note(3).startedAt, issue: { kind: "write_failed", detail: "x" },
+    } as never)).not.toContain("recent-whisper-retry");
+  });
+
+  test("the Retry control: a failed retry shows a generic alert, never the raw job error", () => {
+    const control = (error: boolean) =>
+      renderToStaticMarkup(<WhisperRetryControl label="Retry it" error={error} onRetry={noop} />);
+    expect(control(false)).not.toContain('role="alert"');
+    const failed = control(true);
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain("Couldn’t start the retry. Try again.");
+    expect(failed).toContain("aria-describedby");
+    expect(rowFor(job({ state: "failed", error: "raw detail" }))).not.toContain("raw detail");
+  });
+
+  test("Retry calls the queue's retry for that note, and a refusal reaches the alert path", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    const retries: string[] = [];
+    let refuse = false;
+    registerDesktopWhisperQueue({
+      snapshot: () => new Map(),
+      subscribe: () => noop,
+      retry: async (id: string) => { retries.push(id); if (refuse) throw new Error("raw detail"); },
+    } as unknown as DesktopWhisperQueue);
+    const failures: string[] = [];
+    retryWhisperJob("rec-3", () => failures.push("x"));
+    await Bun.sleep(0);
+    expect(retries).toEqual(["rec-3"]);
+    expect(failures).toEqual([]);
+    refuse = true;
+    retryWhisperJob("rec-3", () => failures.push("x"));
+    await Bun.sleep(0);
+    expect(failures).toEqual(["x"]);
+    error.mockRestore();
   });
 
   test("a recording failure keeps its own row, whatever the job says", () => {

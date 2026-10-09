@@ -3,8 +3,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { appPlatform } from "@/lib/platform";
 import { getDesktopWhisperQueue, type DesktopWhisperJob } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
+import { recorderFinalEnabled } from "@/capture/recorder/final/recorderFinalFlag";
 
 export const WHISPER_JOB_COPY = {
   queued: "Waiting to transcribe on this Mac…",
@@ -77,8 +79,12 @@ export function retryWhisperJob(id: string, onError: () => void): void {
   });
 }
 
-/** Shows the note's Whisper job when it has one; otherwise `fallback`. */
-export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode }) {
+/** The after-stop Whisper path exists only in the Tauri shell with the final recorder on; elsewhere nothing reads the queue. */
+export function desktopWhisperEnabled(): boolean {
+  return recorderFinalEnabled() && appPlatform() === "tauri";
+}
+
+function DesktopWhisperJobStatus(props: { noteId: string; fallback: ReactNode }) {
   const job = useDesktopWhisperJob(props.noteId);
   const [retryError, setRetryError] = useState(false);
   useLogWhisperFailure(props.noteId, job);
@@ -88,4 +94,11 @@ export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNod
     retryWhisperJob(props.noteId, () => setRetryError(true));
   };
   return <DesktopWhisperStatusView job={job} retryError={retryError} onRetry={onRetry} />;
+}
+
+/** Shows the note's Whisper job when it has one; otherwise `fallback`. Disabled, it is `fallback` and never touches the queue. */
+export function DesktopWhisperStatus(props: { noteId: string; fallback: ReactNode; enabled?: boolean }) {
+  const enabled = props.enabled ?? desktopWhisperEnabled();
+  if (!enabled) return <>{props.fallback}</>;
+  return <DesktopWhisperJobStatus noteId={props.noteId} fallback={props.fallback} />;
 }

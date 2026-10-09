@@ -44,6 +44,8 @@ export interface NoteDetailViewProps {
   loadAudio: AudioLoad | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
   transcription?: VoiceNoteTranscriptionProps;
+  /** Whether the Mac's after-stop Whisper job shows here; defaults to the final recorder in the Tauri shell. */
+  desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
   onCopy: () => void;
   /** Reads again what did not load (the list, or this note). */
@@ -230,6 +232,7 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
         ) : (
           <DesktopWhisperStatus
             noteId={item.sourceId}
+            enabled={props.desktopWhisper}
             fallback={
               // A plain function of its props (no hooks), so its "nothing to say" is known here.
               VoiceNoteTranscriptionStatus({

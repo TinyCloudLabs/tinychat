@@ -197,7 +197,7 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
   const withJob = (job: Partial<DesktopWhisperJob> | null, patch: Partial<NoteDetailViewProps> = {}) => {
     const jobs = new Map(job ? [["rec-1", { id: "rec-1", state: "queued", error: null, progress: null, ...job } as DesktopWhisperJob]] : []);
     registerDesktopWhisperQueue({ snapshot: () => jobs, subscribe: () => noop } as unknown as DesktopWhisperQueue);
-    return render(patch);
+    return render({ desktopWhisper: true, ...patch });
   };
 
   test("signed out (no private-cloud props): queued, progress and failure with Retry show on the page", () => {
@@ -207,6 +207,20 @@ describe("a voice note with an after-stop Whisper job on the Mac", () => {
     expect(failed).toContain('data-testid="whisper-job-retry"');
     expect(failed).not.toContain("raw detail");
     expect(failed).not.toContain("No transcript.");
+  });
+
+  test("with the flag off (the classic view) it renders as before and never reads the queue", () => {
+    const calls: string[] = [];
+    const job: DesktopWhisperJob = { id: "rec-1", state: "failed", error: "raw detail", progress: null };
+    registerDesktopWhisperQueue({
+      snapshot: () => { calls.push("snapshot"); return new Map([["rec-1", job]]); },
+      subscribe: () => { calls.push("subscribe"); return noop; },
+    } as unknown as DesktopWhisperQueue);
+    const classic = render();
+    expect(render({ desktopWhisper: false })).toBe(classic);
+    expect(classic).toContain("No transcript.");
+    expect(classic).not.toContain("whisper-job");
+    expect(calls).toEqual([]);
   });
 
   test("without a job the page is unchanged", () => {
