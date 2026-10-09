@@ -252,71 +252,73 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
   for (const viewport of viewports) {
     test(`every screen at ${viewport.id} (${viewport.width}x${viewport.height})`, async () => {
       const failures: string[] = [];
-      // A fresh browser per viewport: WebKit stops loading pages after about
-      // sixty in one browser, and a full run loads several hundred.
-      const viewportBrowser = await engine.launch({ headless: true });
-      browsers.push(viewportBrowser);
       for (const theme of themes) {
-        const context: BrowserContext = await viewportBrowser.newContext({
-          viewport: { width: viewport.width, height: viewport.height },
-          deviceScaleFactor: viewport.deviceScaleFactor,
-          isMobile: viewport.isMobile ?? false,
-          hasTouch: viewport.hasTouch ?? false,
-          colorScheme: theme,
-          reducedMotion: motion,
-        });
-        if (viewport.textScale) {
-          // Before the app's scripts run; <html> may not exist yet when init scripts start.
-          await context.addInitScript((scale) => {
-            const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
-            if (document.documentElement) apply();
-            else document.addEventListener("readystatechange", apply, { once: true });
-          }, viewport.textScale);
-        }
-        try {
-          for (const screen of screens) {
-            const page = await context.newPage();
-            const errors: string[] = [];
-            page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-            page.on("console", (message) => {
-              if (message.type() === "error" && !ignoredConsoleError(message)) {
-                const url = message.location().url;
-                errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
-              }
-            });
-            await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
-            await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
-            await page.waitForLoadState("networkidle");
-            await page.waitForTimeout(300);
-
-            const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
-            const findings: Finding[] = await page.evaluate(inspectPage, {
-              layout: screen.layout,
-              touch: viewport.hasTouch ?? false,
-              zoom: viewport.zoom ?? false,
-              displayTitle: screen.displayTitle ?? false,
-              allow,
-            });
-            // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
-            if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
-              const record = page.locator('[data-testid="voice-note-record"]');
-              if (await record.count() === 0 || await record.first().isDisabled()) {
-                findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
-              }
-            }
-            for (const error of errors) findings.push({ check: "errors", detail: error });
-
-            const file = `${screen.id}__${viewport.id}__${theme}.png`;
-            await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
-            captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
-
-            for (const finding of findings) {
-              failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
-            }
-            await page.close();
+        // WebKit stops loading after about 65 pages per browser. Keep each
+        // browser below that ceiling, including the second theme.
+        for (let start = 0; start < screens.length; start += 40) {
+          const viewportBrowser = await engine.launch({ headless: true });
+          browsers.push(viewportBrowser);
+          const context: BrowserContext = await viewportBrowser.newContext({
+            viewport: { width: viewport.width, height: viewport.height },
+            deviceScaleFactor: viewport.deviceScaleFactor,
+            isMobile: viewport.isMobile ?? false,
+            hasTouch: viewport.hasTouch ?? false,
+            colorScheme: theme,
+            reducedMotion: motion,
+          });
+          if (viewport.textScale) {
+            // Before the app's scripts run; <html> may not exist yet when init scripts start.
+            await context.addInitScript((scale) => {
+              const apply = () => document.documentElement.style.setProperty("font-size", `${scale * 100}%`);
+              if (document.documentElement) apply();
+              else document.addEventListener("readystatechange", apply, { once: true });
+            }, viewport.textScale);
           }
-        } finally {
-          await context.close();
+          try {
+            for (const screen of screens.slice(start, start + 40)) {
+              const page = await context.newPage();
+              const errors: string[] = [];
+              page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+              page.on("console", (message) => {
+                if (message.type() === "error" && !ignoredConsoleError(message)) {
+                  const url = message.location().url;
+                  errors.push(`console.error: ${message.text()}${url ? ` (${url})` : ""}`);
+                }
+              });
+              await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
+              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+              await page.waitForLoadState("networkidle");
+              await page.waitForTimeout(300);
+
+              const allow = allowlist.filter((entry) => entry.screen === screen.id).map(({ selector, check }) => ({ selector, check }));
+              const findings: Finding[] = await page.evaluate(inspectPage, {
+                layout: screen.layout,
+                touch: viewport.hasTouch ?? false,
+                zoom: viewport.zoom ?? false,
+                displayTitle: screen.displayTitle ?? false,
+                allow,
+              });
+              // The native Capture home must finish recorder setup; generic layout checks missed a missing Record button.
+              if (["shell-capture", "capture-first-use", "capture-items", "capture-in-progress"].includes(screen.id)) {
+                const record = page.locator('[data-testid="voice-note-record"]');
+                if (await record.count() === 0 || await record.first().isDisabled()) {
+                  findings.push({ check: "native-record-ready", detail: "Capture has no enabled Record button" });
+                }
+              }
+              for (const error of errors) findings.push({ check: "errors", detail: error });
+
+              const file = `${screen.id}__${viewport.id}__${theme}.png`;
+              await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
+              captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
+
+              for (const finding of findings) {
+                failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
+              }
+              await page.close();
+          }
+          } finally {
+            await context.close();
+          }
         }
       }
       expect(failures).toEqual([]);
@@ -324,12 +326,17 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
     }, 600_000);
   }
 
-  if (!viewportFilter || viewportFilter.some((id) => ["phone", "phone-halo-review", "halo-review"].includes(id))) test("recorder halo in tall phone and eight-ring review captures", async () => {
+  const runsPhoneHaloReview =
+    !viewportFilter ||
+    viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id));
+  const runsHaloReview = viewportFilter?.includes("halo-review") ?? false;
+  if (runsPhoneHaloReview || runsHaloReview)
+    test("recorder halo in tall phone and eight-ring review captures", async () => {
     const halo = screens.find((screen) => screen.id === "recorder-final-halo");
     if (!halo) return;
 
     const haloViewports: Viewport[] = [
-      ...(!viewportFilter || viewportFilter.some((id) => ["phone", "phone-halo-review"].includes(id))
+      ...(runsPhoneHaloReview
         ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
         : []),
       ...(viewportFilter?.includes("halo-review")
@@ -368,9 +375,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
           page.on("console", (message) => {
             if (message.type() === "info" && message.text().includes("[HaloRing] renderer:")) rendererPaths.push(message.text());
           });
-          await page.goto(`http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`);
-          await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
-          await page.waitForFunction((checkCorners) => {
+          const pixelsReady = (checkCorners: boolean) => {
             const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")];
             if (canvases.length !== 8) return false;
             return canvases.every((canvas) => {
@@ -386,7 +391,36 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
               const cornerAlpha = pixels[3] + pixels[(canvas.width - 1) * 4 + 3] + pixels[(canvas.height - 1) * canvas.width * 4 + 3] + pixels[(canvas.height * canvas.width - 1) * 4 + 3];
               return centerVisible && (!checkCorners || cornerAlpha === 0);
             });
-          }, forceCanvas, { timeout: 5_000 });
+          };
+          try {
+            await page.goto(`http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`);
+            await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+            await page.waitForFunction(pixelsReady, forceCanvas, { timeout: 5_000 });
+          } catch (caught) {
+            const canvasStates = await page.locator(".halo-ring__canvas").evaluateAll((canvases) =>
+              canvases.map((canvas) => {
+                const element = canvas as HTMLCanvasElement;
+                const context = element.getContext("2d");
+                let centerVisible = false;
+                let cornerAlpha: number | null = null;
+                if (context && element.width > 1 && element.height > 1) {
+                  const pixels = context.getImageData(0, 0, element.width, element.height).data;
+                  for (let y = Math.floor(element.height * 0.3); y < element.height * 0.7 && !centerVisible; y += 4) {
+                    for (let x = Math.floor(element.width * 0.3); x < element.width * 0.7; x += 4) {
+                      if (pixels[(y * element.width + x) * 4 + 3] > 0) { centerVisible = true; break; }
+                    }
+                  }
+                  cornerAlpha = pixels[3] + pixels[(element.width - 1) * 4 + 3] + pixels[(element.height - 1) * element.width * 4 + 3] + pixels[(element.height * element.width - 1) * 4 + 3];
+                }
+                return { width: element.width, height: element.height, has2dContext: context !== null, centerVisible, cornerAlpha };
+              }),
+            );
+            const diagnostic = { error: String(caught), rendererPaths, canvasCount: canvasStates.length, canvases: canvasStates };
+            console.error("Halo pixel check timed out", diagnostic);
+            const diagnosticFile = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}-timeout.png`;
+            await page.screenshot({ path: `${outDir}${diagnosticFile}`, fullPage: false }).catch(() => {});
+            throw new Error(`Halo pixel check timed out: ${JSON.stringify(diagnostic)}`, { cause: caught });
+          }
           if (!forceCanvas && engineName === "webkit") {
             const center = await page.locator(".halo-ring__canvas").nth(3).evaluate((canvas) => {
               const element = canvas as HTMLCanvasElement;

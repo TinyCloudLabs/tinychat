@@ -30,16 +30,26 @@ const NO_SIGNAL_CLAUSE = "no sound is reaching the microphone";
 
 function interruptionText(reason: MicStateReason): string {
   switch (reason) {
-    case "stalled": return "The microphone stopped sending sound. Reconnecting…";
-    case "interruption": return "Paused by a call or Siri. Resumes when it ends.";
-    case "call": return "Resumes when the call ends";
-    case "resume_blocked": return "The microphone could not resume because the audio session is blocked.";
-    case "mic_unavailable": return "The microphone is unavailable. Choose another input or reconnect it.";
-    case "route_change": return "The microphone input changed. Waiting for capture to recover.";
-    case "media_services_reset": return "Audio services restarted. Waiting for capture to recover.";
-    case "read_error": return "The microphone could not be read. Waiting for capture to recover.";
-    case "app_suspended": return "Recording was interrupted while the app was inactive.";
-    default: return "Interrupted";
+    case "stalled":
+      return "The microphone stopped sending sound. Reconnecting…";
+    case "interruption":
+      return "Paused by a call or Siri. Resumes when it ends.";
+    case "call":
+      return "Resumes when the call ends";
+    case "resume_blocked":
+      return "The microphone could not resume because the audio session is blocked.";
+    case "mic_unavailable":
+      return "The microphone is unavailable. Choose another input or reconnect it.";
+    case "route_change":
+      return "The microphone input changed. Waiting for capture to recover.";
+    case "media_services_reset":
+      return "Audio services restarted. Waiting for capture to recover.";
+    case "read_error":
+      return "The microphone could not be read. Waiting for capture to recover.";
+    case "app_suspended":
+      return "Recording was interrupted while the app was inactive.";
+    default:
+      return "Interrupted";
   }
 }
 
@@ -80,7 +90,6 @@ export function recorderStatusText(
   phase: RecorderPhase,
   mic: { state: MicState; reason: MicStateReason },
   savePercent: number | null,
-  inputName = "the microphone",
 ): string {
   if (phase === "starting") return "Starting the microphone…";
   if (phase === "stopping") return "Saving to your space";
@@ -92,7 +101,7 @@ export function recorderStatusText(
   if (mic.state === "needs_user") return "Tap to resume";
   const warning = micWarning(mic);
   if (warning === "silenced") return "Mic silenced";
-  if (warning === "no-signal") return `No sound from ${inputName}`;
+  if (warning === "no-signal") return "No sound from the microphone";
   return "Recording";
 }
 
@@ -122,9 +131,9 @@ export function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export const RECEIPT_SAVED = "Saved on this phone";
 export const RECEIPT_KEPT = "Kept on this phone";
-export const FINALIZATION_PENDING = "Exo will finish it";
+export const FINALIZATION_PENDING =
+  "Kept on this phone. Exo will finish it automatically.";
 export const ISLAND_SAVED = "Saved on this phone";
 export const ISLAND_KEPT = "Kept on this phone";
 export const DISCARD_PROMPT = "Discard?";

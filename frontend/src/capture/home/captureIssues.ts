@@ -122,6 +122,6 @@ export function cardNote(
   if (kinds.includes("recoveryFailed"))
     return `${HOME_COPY.notInSpace} · ${HOME_COPY.willRetry}`;
   if (kinds.includes("finalization_timed_out"))
-    return `${HOME_COPY.notInSpace} · ${HOME_COPY.willFinish}`;
+    return HOME_COPY.willFinish;
   return HOME_COPY.notInSpace;
 }

@@ -41,7 +41,6 @@ describe("recorderCopy", () => {
     expect(micWarningSentence(recording)).toBeNull();
     expect(recorderStatusText("recording", { state: "silenced", reason: "os_silenced" }, null)).toBe("Mic silenced");
     expect(recorderStatusText("recording", { state: "recording", reason: "no_signal" }, null)).toBe("No sound from the microphone");
-    expect(recorderStatusText("recording", { state: "recording", reason: "no_signal" }, null, "AirPods")).toBe("No sound from AirPods");
     expect(recorderStatusText("saving", recording, 42)).toBe("Saving to your space · 42%");
     expect(recorderStatusText("starting", recording, null)).toBe("Starting the microphone…");
   });
@@ -49,8 +48,12 @@ describe("recorderCopy", () => {
   test("paused, interrupted and blocked states say what happened", () => {
     expect(recorderStatusText("recording", { state: "paused", reason: "user" }, null)).toBe("Paused · mic off");
     expect(recorderStatusText("recording", { state: "interrupted", reason: "call" }, null)).toBe("Resumes when the call ends");
-    expect(recorderStatusText("recording", { state: "interrupted", reason: "stalled" }, null)).toBe("The microphone stopped sending sound. Reconnecting…");
-    expect(recorderStatusText("recording", { state: "interrupted", reason: "interruption" }, null)).toBe("Paused by a call or Siri. Resumes when it ends.");
+    expect(recorderStatusText("recording", { state: "interrupted", reason: "stalled" }, null)).toBe(
+      "The microphone stopped sending sound. Reconnecting…",
+    );
+    expect(recorderStatusText("recording", { state: "interrupted", reason: "interruption" }, null)).toBe(
+      "Paused by a call or Siri. Resumes when it ends.",
+    );
     expect(recorderStatusText("recording", { state: "needs_user", reason: "resume_blocked" }, null)).toBe("Tap to resume");
     expect(micStatusText("recording", { state: "paused", reason: "user" }, 3_600_000)).toContain("The microphone is off");
   });

@@ -172,10 +172,9 @@ export function MirroredSpectrumBars({
   const root = useRef<HTMLDivElement>(null);
   const heights = useRef<number[]>([]);
   const lastPainted = useRef<number[]>([]);
+  const rest = spectrumBarScale(0, 0, bars);
   if (heights.current.length !== bars) {
-    heights.current = Array.from({ length: bars }, () =>
-      bars === 22 ? 0.2 : 0.12,
-    );
+    heights.current = Array.from({ length: bars }, () => rest);
     lastPainted.current = Array.from({ length: bars }, () => -1);
   }
 
@@ -225,9 +224,7 @@ export function MirroredSpectrumBars({
               source.act,
               bars,
             )
-          : bars === 22
-            ? 0.2
-            : 0.12;
+          : rest;
         return (
           <span
             key={index}

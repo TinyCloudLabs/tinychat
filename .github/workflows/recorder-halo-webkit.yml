@@ -1,0 +1,51 @@
+name: Recorder halo WebKit
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "test/recorder-final-halo.e2e.test.ts"
+
+permissions:
+  contents: read
+
+jobs:
+  halo-webkit:
+    name: Recorder halo centre pixel (macOS WebKit)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+          cache: true
+          cache-dependency-path: bun.lock
+
+      - name: Cache Playwright WebKit
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-webkit-macos-${{ hashFiles('bun.lock', 'test/package.json') }}
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright WebKit
+        working-directory: test
+        run: bunx playwright install webkit
+
+      - name: Halo centre-pixel check
+        working-directory: test
+        run: bun test recorder-final-halo.e2e.test.ts
+
+      - name: Upload halo screenshots and timeout diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: recorder-halo-webkit-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: screenshots/recorder-halo/
+          if-no-files-found: warn

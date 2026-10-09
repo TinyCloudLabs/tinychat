@@ -57,7 +57,7 @@ jobs:
       - name: Lint (frontend and test)
         run: bunx eslint frontend test
 
-      - name: Install Chromium and WebKit
+      - name: Install Chromium
         run: bun run --cwd test install:browsers:ci
 
       - name: Connectors scroll containment (Chromium)
@@ -76,11 +76,9 @@ jobs:
       - name: Exo UI screens (Chromium)
         run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone,phone-land,desktop,text200-phone bun run --cwd test exo-ui:screens
 
-      - name: Recorder halo pixel checks (WebKit)
-        run: EXO_UI_ENGINE=webkit EXO_UI_VIEWPORTS=phone-halo-review bun run --cwd test exo-ui:screens
-
-      - name: Recorder halo forced Canvas 2D checks (WebKit)
-        run: EXO_UI_ENGINE=webkit EXO_UI_VIEWPORTS=phone-halo-review EXO_UI_HALO_FORCE_CANVAS=1 bun run --cwd test exo-ui:screens
+      - name: Recorder halo forced Canvas 2D checks (Linux Chromium)
+        if: ${{ !cancelled() }}
+        run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone-halo-review EXO_UI_HALO_FORCE_CANVAS=1 bun run --cwd test exo-ui:screens
 
       - name: Upload the Exo UI screenshots
         if: ${{ !cancelled() }}

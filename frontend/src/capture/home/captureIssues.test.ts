@@ -67,7 +67,9 @@ describe("issue copy", () => {
   test("a timed-out recording's sheet explains it is kept on this phone and offers no action", () => {
     const copy = issueSheetCopy(timedOut);
     expect(copy.title).toBe("Saving this recording");
-    expect(copy.body).toContain("kept on this phone");
+    expect(copy.body).toBe(
+      "Kept on this phone. Exo will finish it automatically.",
+    );
     expect(JSON.stringify(copy)).not.toMatch(/Try again|Delete/);
   });
 
@@ -152,7 +154,7 @@ describe("the on-this-phone card's note", () => {
 
   test("a timed-out recording says Exo will finish it", () => {
     expect(cardNote({ a: timedOut }, null)).toBe(
-      "Not in your space yet · Exo will finish it automatically",
+      "Kept on this phone. Exo will finish it automatically.",
     );
   });
 
