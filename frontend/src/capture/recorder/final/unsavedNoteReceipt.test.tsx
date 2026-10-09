@@ -13,8 +13,11 @@ import {
   updateNotesUi,
 } from "./notes/notesUiState";
 import { recordingKey } from "./notes/recordingKey";
+import type { ReactElement } from "react";
 import {
   ReceiptNoteNotice,
+  ShellNoteNotice,
+  UnsavedNoteNotice,
   UnsavedNoteNoticeView,
 } from "./UnsavedNoteNotice";
 
@@ -138,5 +141,66 @@ describe("a recording that ends with its note unsaved", () => {
     );
     expect(empty).not.toContain("Copy note");
     expect(empty).toContain("Dismiss");
+  });
+});
+
+function shell(layout: "tabbar" | "beside", patch: Record<string, unknown> = {}) {
+  return renderToStaticMarkup(
+    <StaticRecorderProvider
+      value={{ phase: "idle", outcome: null, sheetOpen: false, startedAt: null, ...patch }}
+    >
+      <ShellNoteNotice layout={layout} />
+    </StaticRecorderProvider>,
+  );
+}
+
+// Renders UnsavedNoteNotice once, inside a provider, and hands back the element it produced so its props can be pressed.
+function pressableNotice(): ReactElement<{ onDismiss: () => void; onCopy: () => void }> {
+  let element: ReactElement<{ onDismiss: () => void; onCopy: () => void }> | null = null;
+  function Probe() {
+    element = UnsavedNoteNotice({}) as typeof element;
+    return null;
+  }
+  renderToStaticMarkup(
+    <StaticRecorderProvider>
+      <Probe />
+    </StaticRecorderProvider>,
+  );
+  if (element === null) throw new Error("no notice rendered");
+  return element;
+}
+
+describe("the notice after the receipt closes", () => {
+  async function retainNote() {
+    const log = spyOn(console, "error").mockImplementation(() => {});
+    const { done } = recordingWithFailingNote();
+    await done();
+    await done();
+    clearNotesUiExcept(null);
+    log.mockRestore();
+  }
+
+  test("the shell carries it once the receipt is gone, on a phone and beside the rail, until Dismiss clears it", async () => {
+    await retainNote();
+    for (const layout of ["tabbar", "beside"] as const) {
+      // The open receipt shows it itself, so the shell doesn't draw a second.
+      expect(shell(layout, { outcome: "saved", sheetOpen: true })).toBe("");
+      // Closed to the island, and then dismissed by the provider's timer: the notice is still there.
+      expect(shell(layout, { outcome: "saved", sheetOpen: false })).toContain(LOST);
+      const closed = shell(layout);
+      expect(closed).toContain(LOST);
+      expect(closed).toContain("Copy note");
+      expect(closed).toContain("Dismiss");
+      expect(closed).toContain('data-testid="shell-note-notice"');
+    }
+    pressableNotice().props.onDismiss();
+    expect(readUnsavedNote()).toBeNull();
+    expect(shell("tabbar")).toBe("");
+    expect(shell("beside")).toBe("");
+  });
+
+  test("there is no banner without a retained note", () => {
+    expect(shell("tabbar")).toBe("");
+    expect(shell("beside")).toBe("");
   });
 });

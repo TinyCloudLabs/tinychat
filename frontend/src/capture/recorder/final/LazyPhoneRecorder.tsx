@@ -12,6 +12,7 @@ import {
 import { PlatformContext } from "@/lib/platform";
 import { useRecorder } from "../RecorderProvider";
 import { shellForPlatform } from "./shellCapabilities";
+import { ChevronDownIcon } from "./softIcons";
 import { isChunkLoadError } from "./desktop/LazyDesktopRecorder";
 import type { PhoneRecorderProps } from "./PhoneRecorder";
 
@@ -45,14 +46,38 @@ export function phoneRecorderFor(load: PhoneRecorderLoader): LazyRecorder {
   return component;
 }
 
-function Surface({ children }: { children: ReactNode }) {
+export function SurfaceView({
+  onMinimise,
+  children,
+}: {
+  onMinimise: () => void;
+  children: ReactNode;
+}) {
   return (
     <div
       data-testid="phone-recorder-surface"
-      className="flex h-full w-full flex-col items-center justify-center gap-3 px-8 text-center text-sm text-muted-foreground"
+      className="relative flex h-full w-full flex-col items-center justify-center gap-3 px-8 text-center text-sm text-muted-foreground"
     >
+      <button
+        type="button"
+        aria-label="Minimise recorder"
+        className="absolute left-3 top-[calc(env(safe-area-inset-top)+0.5rem)] flex size-11 items-center justify-center rounded-full text-foreground"
+        onClick={onMinimise}
+      >
+        <ChevronDownIcon size={19} />
+      </button>
       {children}
     </div>
+  );
+}
+
+/** The recorder's stand-in while it loads or can't: it always offers Minimise, so a stalled or failed chunk never traps a recording. */
+export function Surface({ children }: { children: ReactNode }) {
+  const recorder = useRecorder();
+  return (
+    <SurfaceView onMinimise={() => void recorder.minimiseSheet()}>
+      {children}
+    </SurfaceView>
   );
 }
 

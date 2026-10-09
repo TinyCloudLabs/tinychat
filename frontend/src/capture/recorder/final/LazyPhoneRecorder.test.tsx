@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { StaticRecorderProvider } from "../RecorderProvider";
@@ -7,6 +8,7 @@ import {
   isPhoneRecorderPreloadError,
   LazyPhoneRecorder,
   LoadFailed,
+  Surface,
 } from "./LazyPhoneRecorder";
 
 describe("LazyPhoneRecorder", () => {
@@ -66,5 +68,42 @@ describe("LazyPhoneRecorder", () => {
       </PlatformContext.Provider>,
     );
     expect(phone).not.toContain("Reloading stops");
+  });
+
+  test("the loading and failed surfaces both offer Minimise recorder", () => {
+    const pending = renderToStaticMarkup(
+      <StaticRecorderProvider value={{ phase: "recording" }}>
+        <LazyPhoneRecorder load={() => new Promise(() => {})} />
+      </StaticRecorderProvider>,
+    );
+    const failed = renderToStaticMarkup(
+      <StaticRecorderProvider value={{ phase: "recording" }}>
+        <LoadFailed label="Reload Exo" onRetry={() => {}} />
+      </StaticRecorderProvider>,
+    );
+    for (const html of [pending, failed])
+      expect(html).toContain('aria-label="Minimise recorder"');
+  });
+
+  test("pressing Minimise recorder on either surface minimises the sheet", () => {
+    for (const surface of ["pending", "failed"] as const) {
+      const minimiseSheet = mock(() => {});
+      let tree: ReactElement<{ onMinimise: () => void }> | null = null;
+      function Probe() {
+        // Surface is what both the pending and the failed states draw; the failed state's own children sit inside it.
+        const child: ReactNode =
+          surface === "pending" ? <p>Opening recorder…</p> : <p>Couldn't open the recorder.</p>;
+        tree = Surface({ children: child }) as typeof tree;
+        return null;
+      }
+      renderToStaticMarkup(
+        <StaticRecorderProvider value={{ phase: "recording", minimiseSheet }}>
+          <Probe />
+        </StaticRecorderProvider>,
+      );
+      if (tree === null) throw new Error("no surface");
+      (tree as ReactElement<{ onMinimise: () => void }>).props.onMinimise();
+      expect(minimiseSheet).toHaveBeenCalledTimes(1);
+    }
   });
 });

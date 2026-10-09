@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useRecorder } from "../RecorderProvider";
+import { useRecorder, type RecorderValue } from "../RecorderProvider";
 import { Button } from "@/components/ui/button";
 import { NOTES_COPY } from "./notesCopy";
 import { dismissUnsavedNote, useUnsavedNote } from "./notes/notesUiState";
@@ -81,6 +81,44 @@ export function UnsavedNoteNotice({
       }}
       onDismiss={dismissUnsavedNote}
     />
+  );
+}
+
+/** Whether a saved or failed recording's receipt is on screen, where ReceiptNoteNotice carries the notice. */
+export function receiptIsOpen(
+  recorder: Pick<RecorderValue, "phase" | "outcome" | "sheetOpen">,
+): boolean {
+  return recorder.sheetOpen && recorder.phase === "idle" && recorder.outcome !== null;
+}
+
+/** True while the shell should carry the lost-note notice itself: a note is retained and the open receipt isn't showing it. */
+export function useShellNoteNotice(): boolean {
+  const recorder = useRecorder();
+  return useUnsavedNote() !== null && !receiptIsOpen(recorder);
+}
+
+/**
+ * The lost-note notice once the receipt has closed (its timers dismiss it on their own), so Copy note stays reachable
+ * until the user dismisses it. The shell draws it above the tab bar on a phone, and at the top centre of the window beside the rail or sidebar.
+ */
+export function ShellNoteNotice({ layout }: { layout: "tabbar" | "beside" }) {
+  const shown = useShellNoteNotice();
+  if (!shown) return null;
+  if (layout === "tabbar")
+    return (
+      <div className="px-3 py-1" data-testid="shell-note-notice">
+        <UnsavedNoteNotice />
+      </div>
+    );
+  return (
+    <div
+      data-testid="shell-note-notice"
+      className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+1rem)] z-40 mx-auto max-w-xl px-5"
+    >
+      <div className="pointer-events-auto">
+        <UnsavedNoteNotice />
+      </div>
+    </div>
   );
 }
 

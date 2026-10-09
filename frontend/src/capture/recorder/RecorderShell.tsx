@@ -13,6 +13,7 @@ import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import { FloatingRibbon, Ribbon } from "./final/Ribbon";
 import { ShellChrome } from "./final/shell/ShellChrome";
 import { SidebarDock } from "./final/SidebarDock";
+import { ShellNoteNotice, useShellNoteNotice } from "./final/UnsavedNoteNotice";
 import { Island, islandState } from "./Island";
 import { RailLiveButton } from "./RailLiveButton";
 import { islandShown, useRecorder } from "./RecorderProvider";
@@ -60,6 +61,15 @@ export function FinalRecorderShell({ onOpenNote, onOpenNotes, ...shell }: Record
   } else if (minimized && navKind === "rail" && (recording || showsMinimizedError(recorder))) {
     island = <FloatingRibbon ribbon={recording} />;
   }
+  const noteNotice = useShellNoteNotice();
+  if (noteNotice && navKind === "tabbar") {
+    island = (
+      <>
+        <ShellNoteNotice layout="tabbar" />
+        {island}
+      </>
+    );
+  }
   const dock = minimized && recording ? <SidebarDock /> : null;
   const sidebarCard = recording ? dock : <SidebarLiveCard />;
   const sidebarAlert = minimized && showsMinimizedError(recorder);
@@ -80,6 +90,7 @@ export function FinalRecorderShell({ onOpenNote, onOpenNotes, ...shell }: Record
           ) : null
         }
       />
+      {navKind === "tabbar" ? null : <ShellNoteNotice layout="beside" />}
       <RecordingOverlay onOpenNote={onOpenNote} onOpenNotes={onOpenNotes} desktopHost={recorderHost} finalSkin />
     </MinimizedProvider>
   );
