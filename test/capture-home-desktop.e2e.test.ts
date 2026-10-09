@@ -229,7 +229,7 @@ describe.serial(`desktop capture home: failed recordings (${engine.name()})`, ()
         /Needs attention\. Opens details$/,
       );
     }
-    expect(await page.locator("li[data-source-id=rec-0802] a").count()).toBe(0);
+    expect(await home(page).locator("li[data-source-id=rec-0802] a").count()).toBe(0);
     expect(errors).toEqual([]);
   });
 

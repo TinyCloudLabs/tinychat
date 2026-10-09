@@ -248,6 +248,14 @@
     0 20px 60px rgba(0, 0, 0, 0.4);
   animation: soft-fade 0.2s ease-out;
 }
+/* Asking to delete: the confirmation is the only card on screen. */
+.soft-skin.soft-sheet[data-layout="desktop"]:has(.pr-sheet) {
+  background: transparent;
+  box-shadow: none;
+}
+.soft-sheet[data-layout="desktop"] > [inert] {
+  visibility: hidden;
+}
 .soft-sheet[data-layout="desktop"] .pr-sheet {
   inset: 0;
   width: min(392px, calc(100vw - 32px));

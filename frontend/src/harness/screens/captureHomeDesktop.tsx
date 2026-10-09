@@ -96,7 +96,11 @@ function FailedHome(props: {
   open?: string;
   confirm?: boolean;
 }) {
-  useState(() => installFailedNative(props.parked ?? ["rec-parked"], {}));
+  useState(() => {
+    const plugin = installNativePlugin();
+    __setOnDeviceSttForTests(ON_DEVICE_STT);
+    installFailedNative(props.parked ?? ["rec-parked"], {}, plugin);
+  });
   const [issues, setIssues] = useState(LOST);
   window.exoUiClearIssues = () => setIssues({});
   const recorder = useMemo<Partial<RecorderValue>>(

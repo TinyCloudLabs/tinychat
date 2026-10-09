@@ -184,7 +184,7 @@ function screen(
 }
 
 // The real recorder over the fake native plugin, with each control call recorded for the test.
-export function installNativePlugin() {
+export function installNativePlugin(): VoiceNotesPlugin {
   const log = (window.exoDesktop ??= { calls: [] });
   const fake = createFakeVoiceNotes();
   const plugin: VoiceNotesPlugin = { ...fake.plugin };
@@ -197,6 +197,7 @@ export function installNativePlugin() {
       };
   }
   __setVoiceNotesForTests(plugin, { available: true });
+  return plugin;
 }
 
 // Starts a recording once the provider is ready and leaves the ring view open.
