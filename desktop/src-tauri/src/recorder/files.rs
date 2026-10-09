@@ -385,6 +385,30 @@ pub fn finalize_audio_file(app: tauri::AppHandle, id: String) -> Result<u64, Str
     Ok(size)
 }
 
+/** A staged, sealed copy made from bounded AudioBlobStore reads for anarlog's file-path batch API. */
+#[tauri::command]
+pub fn recorder_whisper_audio_path(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    whisper_audio_path_at(&root(&app)?, &id).map(|path| path.to_string_lossy().into_owned())
+}
+
+fn whisper_audio_path_at(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    if !id.starts_with("whisper-") {
+        return Err("invalid_whisper_stage".into());
+    }
+    let path = audio_path(dir, id)?;
+    let marker = sealed_path(dir, id)?;
+    if !marker.is_file()
+        || open_read(dir, id)?
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .len()
+            == 0
+    {
+        return Err("whisper_stage_not_ready".into());
+    }
+    Ok(path)
+}
+
 #[tauri::command]
 pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let root = root(&app)?;
@@ -441,6 +465,22 @@ fn delete_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whisper_stage_requires_a_sealed_nonempty_file_and_rejects_other_ids() {
+        let root = std::env::temp_dir().join(format!("exo-whisper-stage-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(whisper_audio_path_at(&root, "note").is_err());
+        assert!(whisper_audio_path_at(&root, "whisper-../escape").is_err());
+        append(&root, "whisper-note", b"mp3").unwrap();
+        assert!(whisper_audio_path_at(&root, "whisper-note").is_err());
+        fs::write(sealed_path(&root, "whisper-note").unwrap(), b"").unwrap();
+        assert_eq!(
+            whisper_audio_path_at(&root, "whisper-note").unwrap(),
+            root.join("whisper-note.mp3")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn chunks_are_bounded_and_read_at_offsets() {

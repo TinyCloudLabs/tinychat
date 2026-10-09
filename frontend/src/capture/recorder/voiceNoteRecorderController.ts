@@ -22,7 +22,7 @@ import {
   type CaptureOptions,
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
-import { captureCapabilities, onDeviceTranscriptionAvailable } from "@/lib/voiceNotes/captureEngine";
+import { captureCapabilities, captureEngineKind, onDeviceTranscriptionAvailable } from "@/lib/voiceNotes/captureEngine";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
@@ -517,6 +517,10 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async setTranscriber(id, { scope, waitForModel = false }) {
       if (!available || id === "assemblyai") return "unavailable";
+      if (id === "on-device" && captureEngineKind() === "tauri") {
+        try { await (await import("@/lib/voiceNotes/desktop/desktopVoiceNotes")).refreshDesktopWhisperCapability(); }
+        catch { return "unavailable"; }
+      }
       if (id === "on-device" && !onDeviceTranscriptionAvailable()) return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
       if (id === "on-device" && captureCapabilities().localTranscription && !waitForModel && !(onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())))
@@ -528,7 +532,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
       if (scope === "recording") {
         if (state.phase !== "recording" || !state.recordingId) return "unavailable";
-        const identifySpeakers = id === "on-device" && !(appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")
+        const identifySpeakers = id === "on-device" && captureCapabilities().localTranscription
+          && !(appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")
           ? preference.identifySpeakers : false;
         await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
         acceptNativeOptions(await VoiceNotes.status());

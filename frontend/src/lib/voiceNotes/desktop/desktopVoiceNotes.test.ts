@@ -4,7 +4,9 @@ import { newIdbEnv } from "../web/testing/idb";
 import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore";
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
-import { openDesktopVoiceNotes, type DesktopBridge } from "./desktopVoiceNotes";
+import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBridge } from "./desktopVoiceNotes";
+import type { DesktopWhisperBridge } from "./desktopWhisper";
+import type { TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
 import type { MissingAudioSpan } from "../nativeVoiceNotes";
 
 type Callback = (payload: never) => void;
@@ -49,6 +51,8 @@ class FakeBridge implements DesktopBridge {
     switch (command) {
       case "recorder_models_get": result = this.selectedModel; break;
       case "recorder_models_list": result = [...this.downloadedModels].map((model) => ({ id: model, downloaded: true })); break;
+      case "recorder_models_select": this.selectedModel = id;
+        this.emit("exo://recorder-model-selection", id); result = null; break;
       case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; break;
       case "recorder_acknowledge": this.recover = null; result = null; break;
       case "recorder_failed_list": result = this.failed; break;
@@ -76,6 +80,7 @@ class FakeBridge implements DesktopBridge {
       }
       case "read_audio_chunk": result = (this.files.get(id) ?? new Uint8Array()).slice(Number(args.offset), Number(args.offset) + Number(args.len)); break;
       case "finalize_audio_file": result = this.files.get(id)?.length ?? 0; break;
+      case "recorder_whisper_audio_path": result = `/fixture/${id}.mp3`; break;
       case "delete_audio_file": this.files.delete(id);
         this.failed = this.failed.filter((item) => item.id !== id);
         result = null; break;
@@ -85,6 +90,37 @@ class FakeBridge implements DesktopBridge {
   }
 }
 
+class FakeWhisper implements DesktopWhisperBridge {
+  calls: TranscriptionParams[] = [];
+  stops: string[] = [];
+  fail = false;
+  pending = false;
+  listeners = new Set<(event: TranscriptionEvent) => void>();
+  async startServer() { return "http://fixture"; }
+  async onTranscription(cb: (event: TranscriptionEvent) => void) {
+    this.listeners.add(cb);
+    return () => { this.listeners.delete(cb); };
+  }
+  async startTranscription(params: TranscriptionParams) {
+    this.calls.push(params);
+    if (this.pending) return;
+    queueMicrotask(() => this.emit(this.fail
+      ? { type: "failed", session_id: params.session_id, code: "unknown", error: "fixture failed" }
+      : { type: "completed", session_id: params.session_id, mode: "direct",
+        response: { metadata: null, results: { channels: [{ alternatives: [{ transcript: "hello", confidence: 1 }] }] } } }));
+  }
+  async stopTranscription(id: string) { this.stops.push(id); this.emit({ type: "stopped", session_id: id }); }
+  emit(event: TranscriptionEvent) { for (const cb of this.listeners) cb(event); }
+}
+
+async function waitFor(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) { if (check()) return; await Bun.sleep(10); }
+  throw new Error("Timed out waiting for fixture Whisper");
+}
+
+const slow = (name: string, run: () => Promise<void>) => test(name, run, 30_000);
+
 function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEnv = newIdbEnv(),
   storeOptions: Partial<WebStoreOptions> = {}, id = "note-1") {
   return openDesktopVoiceNotes({ bridge, now: () => bridge.now, newId: () => id,
@@ -92,6 +128,163 @@ function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEn
 }
 
 describe("desktop recorder adapter", () => {
+  slow("stop queues Whisper and commits a local transcript once", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls).toHaveLength(1);
+    expect((await engine.plugin.getTranscript({ id })).transcript).toMatchObject({ engine: "whispercpp", outcome: "transcribed",
+      segments: [{ text: "hello" }] });
+    const completed: string[] = [];
+    const stopDone = engine.whisper!.onDone((doneId) => completed.push(doneId));
+    await waitFor(() => completed.length === 1);
+    expect(completed).toEqual([id]);
+    stopDone();
+    await engine.whisper!.resume();
+    expect(whisper.calls).toHaveLength(1);
+    engine.dispose();
+  });
+
+  slow("Whisper progress is visible on the queued note", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2));
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.length === 1);
+    whisper.emit({ type: "progress", session_id: id,
+      event: { type: "progress", percentage: 0.5, partial_text: "halfway" } });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.progress === 50);
+    expect((await engine.plugin.listPending()).recordings.find((note) => note.id === id)?.stt?.state).toBe("running");
+    whisper.emit({ type: "completed", session_id: id, mode: "direct",
+      response: { metadata: null, results: { channels: [{ alternatives: [{ transcript: "hello", confidence: 1 }] }] } } });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    engine.dispose();
+  });
+
+  slow("Off and private-cloud notes never start Whisper", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    await engine.plugin.setAccountState({ status: "signed_in", accountDid: "did:owner", transitionGen: 1 });
+    await engine.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: 1,
+      transcriber: "off", identifySpeakers: false });
+    for (const route of ["off", "private-cloud"] as const) {
+      const id = (await engine.plugin.start({ transcriber: route })).id;
+      bridge.files.set(id, Uint8Array.of(1, 2));
+      bridge.elapsed = 1000;
+      expect((await engine.plugin.stop()).options?.transcriber).toBe(route);
+    }
+    await engine.whisper!.resume();
+    expect(whisper.calls).toHaveLength(0);
+    engine.dispose();
+  });
+
+  slow("starting another recording stops Whisper before opening the microphone", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const first = (await engine.plugin.start()).id;
+    bridge.files.set(first, Uint8Array.of(1));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.length === 1);
+    const second = (await engine.plugin.start()).id;
+    expect(second).not.toBe(first);
+    expect((await engine.plugin.status()).state).toBe("recording");
+    expect(whisper.listeners.size).toBe(0);
+    await engine.plugin.discard();
+    engine.dispose();
+  });
+
+  slow("Whisper failure stays on the note until Retry; a missing model reports unavailable", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.fail = true;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    expect((await engine.plugin.listPending()).recordings.find((note) => note.id === id)?.stt?.error).toContain("fixture failed");
+    whisper.fail = false;
+    await engine.whisper!.retry(id);
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    expect(whisper.calls).toHaveLength(2);
+    engine.dispose();
+
+    const missing = new FakeBridge();
+    missing.selectedModel = "QuantizedTinyEn";
+    const missingWhisper = new FakeWhisper();
+    const absent = await openDesktopVoiceNotes({ bridge: missing, whisper: missingWhisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    await absent.plugin.setAccountState({ status: "signed_in", accountDid: "did:owner", transitionGen: 1 });
+    await absent.plugin.setCaptureDefaults({ accountDid: "did:owner", transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const missingId = (await absent.plugin.start({ transcriber: "on-device" })).id;
+    missing.files.set(missingId, Uint8Array.of(1));
+    await absent.plugin.stop();
+    await waitFor(() => absent.whisper?.snapshot().get(missingId)?.state === "failed");
+    expect(absent.whisper?.snapshot().get(missingId)?.error).toContain("unavailable");
+    expect(missingWhisper.calls).toHaveLength(0);
+    absent.dispose();
+  });
+
+  slow("relaunch requeues interrupted Whisper without making a duplicate transcript", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const firstWhisper = new FakeWhisper();
+    firstWhisper.pending = true;
+    const first = await openDesktopVoiceNotes({ bridge, whisper: firstWhisper, now: () => bridge.now,
+      storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+    const id = (await first.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2));
+    bridge.elapsed = 1000;
+    await first.plugin.stop();
+    await waitFor(() => firstWhisper.calls.length === 1);
+    first.dispose();
+    const nextWhisper = new FakeWhisper();
+    const next = await openDesktopVoiceNotes({ bridge, whisper: nextWhisper, now: () => bridge.now,
+      storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+    await next.whisper!.resume();
+    await waitFor(() => next.whisper?.snapshot().get(id)?.state === "done");
+    expect(nextWhisper.stops).toEqual([id]);
+    expect(nextWhisper.calls).toHaveLength(1);
+    next.dispose();
+    const third = await openDesktopVoiceNotes({ bridge, whisper: new FakeWhisper(), now: () => bridge.now,
+      storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+    await third.whisper!.resume();
+    expect((await third.plugin.listPending()).recordings.filter((note) => note.id === id)).toHaveLength(1);
+    expect((await third.plugin.getTranscript({ id })).transcript?.noteId).toBe(id);
+    third.dispose();
+  });
   test("reopens a live native capture after WebView reload and can stop it", async () => {
     const bridge = new FakeBridge();
     const env = newIdbEnv();
@@ -193,6 +386,19 @@ describe("desktop recorder adapter", () => {
     await whisper.plugin.start();
     expect((await whisper.plugin.status()).options?.transcriber).toBe("on-device");
     whisper.dispose();
+  });
+
+  test("selecting a downloaded model refreshes desktopWhisper without a reload", async () => {
+    const bridge = new FakeBridge();
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const engine = await rig(bridge);
+    expect(engine.plugin.capabilities.desktopWhisper).toBe(false);
+    await bridge.invoke("recorder_models_select", { id: "QuantizedTinyEn" });
+    await refreshDesktopWhisperCapability();
+    await waitFor(() => engine.plugin.capabilities.desktopWhisper);
+    expect((await engine.plugin.start()).id).toBe("note-1");
+    expect((await engine.plugin.status()).options?.transcriber).toBe("on-device");
+    engine.dispose();
   });
 
   test("a failed post-start metadata write stops the native microphone", async () => {
