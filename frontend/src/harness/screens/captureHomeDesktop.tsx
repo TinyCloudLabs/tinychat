@@ -17,6 +17,9 @@ import { FROZEN_NOW } from "../stubs";
 import { installFailedNative } from "./capture";
 import { installNativePlugin, ON_DEVICE_STT } from "./recorderFinalDesktop";
 
+// Where captureHomeKind picks the desktop home: a rail or sidebar at a medium or expanded size class. A phone on its side (844x390) is a compact rail, which keeps today's home.
+const DESKTOP_HOME_VIEWPORTS = ["tablet", "tablet-land", "desktop-min", "desktop", "text200-desktop"];
+
 const LISTED =
   '[data-testid="recent-item"], [data-testid="capture-recent-empty"]';
 
@@ -136,7 +139,7 @@ const screen = (
   displayTitle: false,
   path: "/chat/capture",
   platform,
-  minViewportWidth: 768,
+  viewports: DESKTOP_HOME_VIEWPORTS,
   readyWhen: LISTED,
   render,
 });
@@ -148,7 +151,7 @@ const interactiveScreen: HarnessScreen = {
   displayTitle: false,
   path: "/chat/capture",
   platform: "tauri",
-  minViewportWidth: 768,
+  viewports: DESKTOP_HOME_VIEWPORTS,
   interactive: true,
   render: () => {
     installNativePlugin();
