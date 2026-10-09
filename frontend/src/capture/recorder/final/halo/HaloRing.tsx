@@ -1,14 +1,22 @@
-import { useEffect, useRef } from "react";
-import { QUIET, type HaloSource } from "./source";
-import { registerHalo } from "./renderer";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { QUIET, type HaloSource, type HaloSourceSubscriber } from "./source";
+import {
+  BLEED,
+  invalidateHalo,
+  registerHalo,
+  type HaloConfig,
+} from "./renderer";
 
 export interface HaloRingProps {
   size: 172 | 214 | 118;
   ticks: 44 | 40;
   paused?: boolean;
+  /** Interrupted capture: show neutral ticks and freeze the last source. */
   still?: boolean;
   theme: "night" | "day";
+  /** Static snapshots are for deterministic harness frames; production uses subscribe. */
   source?: HaloSource;
+  subscribe?: HaloSourceSubscriber;
   className?: string;
 }
 
@@ -19,34 +27,48 @@ export function HaloRing({
   still = false,
   theme,
   source = QUIET,
+  subscribe,
   className,
 }: HaloRingProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const frozenSource = useRef(source);
-  if (!paused && !still) frozenSource.current = source;
-  const displaySource = paused || still ? frozenSource.current : source;
-  const config = useRef({
-    size,
-    ticks,
-    paused,
-    still,
-    theme,
-    source,
-    weight: 1.45,
-    spread: 1,
-  });
-  Object.assign(config.current, {
-    size,
-    ticks,
-    paused,
-    still,
-    theme,
-    source: displaySource,
-  });
+  const sourceRef = useRef(source);
+  const config = useRef<HaloConfig | null>(null);
+  if (!config.current) {
+    config.current = {
+      size,
+      ticks,
+      paused,
+      still,
+      theme,
+      sourceRef,
+      weight: 1.45,
+      spread: 1,
+    };
+  }
+
+  useLayoutEffect(() => {
+    if (!subscribe) sourceRef.current = source;
+    Object.assign(config.current!, {
+      size,
+      ticks,
+      paused,
+      still,
+      theme,
+    });
+    if (canvas.current) invalidateHalo(canvas.current);
+  }, [size, ticks, paused, still, theme, source, subscribe]);
+
+  useEffect(() => {
+    if (!subscribe) return;
+    return subscribe((next) => {
+      sourceRef.current = next;
+    });
+  }, [subscribe]);
+
   useEffect(() => {
     const element = canvas.current;
     if (!element) return;
-    return registerHalo(element, config.current);
+    return registerHalo(element, config.current!);
   }, []);
   return (
     <span
@@ -68,9 +90,11 @@ export function HaloRing({
         className="halo-ring__canvas"
         style={{
           position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
+          left: "50%",
+          top: "50%",
+          width: size * BLEED,
+          height: size * BLEED,
+          transform: "translate(-50%, -50%)",
           pointerEvents: "none",
         }}
       />

@@ -1,3 +1,4 @@
+/** `size` is the disc diameter and layout box; a centered 1.75× canvas bleeds outside it without shifting layout. */
 export { HaloRing } from "./HaloRing";
 export type { HaloRingProps } from "./HaloRing";
 export {
@@ -12,4 +13,5 @@ export {
   sourceFromLevel,
   whitenSpectrum,
 } from "./source";
-export type { HaloSource } from "./source";
+/** Push samples here; HaloRing reads the latest source each render frame, without React state. */
+export type { HaloSource, HaloSourceSubscriber } from "./source";

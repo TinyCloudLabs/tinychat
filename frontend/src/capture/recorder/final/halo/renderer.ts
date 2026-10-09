@@ -6,6 +6,8 @@ const ATLAS_SIZE = 1024;
 const SPECTRUM_SIZE = 32;
 const DATA_SIZE = 128;
 const RA = 1 / BLEED;
+const compareByPixelSize = (a: HaloEntry, b: HaloEntry) =>
+  b.pixelSize - a.pixelSize;
 
 export interface HaloConfig {
   size: number;
@@ -13,13 +15,70 @@ export interface HaloConfig {
   paused: boolean;
   still: boolean;
   theme: "night" | "day";
-  source: HaloSource;
+  sourceRef: { current: HaloSource };
   weight: number;
   spread: number;
 }
 
 type HaloSurface = HTMLCanvasElement | OffscreenCanvas;
-type RenderPath = "webgl-atlas" | "webgl-drawImage" | "canvas-2d";
+export type RenderPath = "webgl-atlas" | "webgl-drawImage" | "canvas-2d";
+export type FrameCallback = (now: number) => boolean;
+
+export class HaloRafLoop {
+  private running = false;
+  private frameId: number | null = null;
+
+  constructor(
+    private readonly callback: FrameCallback,
+    private readonly request: (callback: FrameRequestCallback) => number = (
+      callback,
+    ) => requestAnimationFrame(callback),
+    private readonly cancel: (frameId: number) => void = (frameId) =>
+      cancelAnimationFrame(frameId),
+  ) {}
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.frameId = this.request(this.onFrame);
+  }
+
+  stop() {
+    if (!this.running) return;
+    this.running = false;
+    if (this.frameId !== null) this.cancel(this.frameId);
+    this.frameId = null;
+  }
+
+  private onFrame: FrameRequestCallback = (now) => {
+    this.frameId = null;
+    if (!this.running) return;
+    if (!this.callback(now)) {
+      this.running = false;
+      return;
+    }
+    this.frameId = this.request(this.onFrame);
+  };
+}
+
+export function haloFrameInterval(
+  path: RenderPath,
+  level: number,
+  act: number,
+  paused: boolean,
+  still: boolean,
+  settlingPause: boolean,
+): number {
+  if (settlingPause) return 0;
+  if (path === "canvas-2d" || paused || still || (act < 0.01 && level < 0.01)) {
+    return 1000 / 15;
+  }
+  return 0;
+}
+
+export function easePause(value: number, target: number, dt: number): number {
+  return value + (target - value) * (1 - Math.exp(-Math.min(0.1, dt) * 7));
+}
 
 interface SelectedSurface {
   canvas: HaloSurface;
@@ -37,10 +96,18 @@ interface HaloEntry {
   reduced: boolean;
   avatarTexture: WebGLTexture | null;
   dataTexture: WebGLTexture | null;
+  uploadedTheme: HaloConfig["theme"] | null;
+  source: HaloSource;
+  frozenSource: HaloSource;
   data: Uint8Array;
+  interpolated: Float32Array;
+  whitened: Float32Array;
   peak: Float32Array;
   hold: Float32Array;
   mean: Float32Array;
+  pauseValue: number;
+  atlasX: number;
+  atlasY: number;
 }
 
 interface Uniforms {
@@ -57,6 +124,7 @@ interface Uniforms {
   level: WebGLUniformLocation | null;
   act: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
+  reduced: WebGLUniformLocation | null;
   avatar: WebGLUniformLocation | null;
   data: WebGLUniformLocation | null;
 }
@@ -81,6 +149,7 @@ uniform vec2 uOrig;
 uniform float uLevel;
 uniform float uAct;
 uniform float uLight;
+uniform float uReduce;
 uniform float uPause;
 uniform float uStill;
 uniform float uClock;
@@ -134,10 +203,14 @@ vec2 P() {
 }
 `;
 
-const TICKS_SHADER = `
+export const TICKS_SHADER = `
 void main() {
   vec2 p = P();
   float r = length(p);
+  if (r < RA - 2.0 * px) {
+    gl_FragColor = avatarAt(p, 1.0) * EF(p);
+    return;
+  }
   float angle = atan(p.x, p.y);
   float count = uTickN;
   float cell = floor((angle / TAU + 0.5) * count);
@@ -170,7 +243,7 @@ void main() {
   if (uStill > 0.5) {
     color = neutral;
   }
-  tick *= mix(1.0, breathe, uPause);
+  tick *= mix(1.0, breathe, uPause * (1.0 - uReduce));
 
   float glow = exp(-max(distance, 0.0) * 55.0) * 0.45 * uAct
     * (1.0 - uPause) * (1.0 - uStill);
@@ -183,12 +256,32 @@ void main() {
 }
 `;
 
+export function pauseBreathOpacity(
+  clock: number,
+  pause: number,
+  reduced: boolean,
+): number {
+  const breathe = 0.62 + 0.38 * (0.5 + 0.5 * Math.sin(clock * 2.4));
+  return 1 - (reduced ? 0 : pause) * (1 - breathe);
+}
+
 const GL_OPTIONS: WebGLContextAttributes = {
   alpha: true,
   premultipliedAlpha: true,
   antialias: false,
   powerPreference: "low-power",
 };
+
+const ACCENTS = {
+  night: [
+    new Float32Array([1, 107 / 255, 98 / 255]),
+    new Float32Array([232 / 255, 71 / 255, 90 / 255]),
+  ],
+  day: [
+    new Float32Array([229 / 255, 72 / 255, 63 / 255]),
+    new Float32Array([240 / 255, 122 / 255, 114 / 255]),
+  ],
+} as const;
 
 function webglContext(canvas: HaloSurface): WebGLRenderingContext | null {
   return canvas.getContext("webgl", GL_OPTIONS) as WebGLRenderingContext | null;
@@ -248,8 +341,35 @@ function makeDisc(theme: HaloConfig["theme"]): HTMLCanvasElement {
   return canvas;
 }
 
+function sourceSnapshot(source: HaloSource): HaloSource {
+  return {
+    level: source.level,
+    act: source.act,
+    low: source.low,
+    mid: source.mid,
+    high: source.high,
+    centroid: source.centroid,
+    spec: new Float32Array(source.spec),
+    wave: new Float32Array(source.wave),
+  };
+}
+
+function copySource(target: HaloSource, source: HaloSource) {
+  target.level = source.level;
+  target.act = source.act;
+  target.low = source.low;
+  target.mid = source.mid;
+  target.high = source.high;
+  target.centroid = source.centroid;
+  target.spec.set(source.spec);
+  target.wave.set(source.wave);
+}
+
 class SharedHaloRenderer {
   private readonly entries = new Set<HaloEntry>();
+  private readonly todo: HaloEntry[] = [];
+  private readonly batch: HaloEntry[] = [];
+  private readonly frameLoop = new HaloRafLoop((now) => this.tick(now));
   private canvas: HaloSurface;
   private gl: WebGLRenderingContext | null;
   private path: RenderPath;
@@ -261,6 +381,7 @@ class SharedHaloRenderer {
     HTMLCanvasElement
   >();
   private startTime = performance.now();
+  private lost = false;
 
   constructor() {
     const selected = selectRenderSurface(
@@ -285,7 +406,6 @@ class SharedHaloRenderer {
         this.onContextRestored,
       );
     }
-    requestAnimationFrame(this.tick);
   }
 
   add(canvas: HTMLCanvasElement, config: HaloConfig): () => void {
@@ -304,21 +424,34 @@ class SharedHaloRenderer {
       reduced: reduceQuery.matches,
       avatarTexture: null,
       dataTexture: null,
+      uploadedTheme: null,
+      source: config.sourceRef.current,
+      frozenSource: sourceSnapshot(config.sourceRef.current),
       data: new Uint8Array(DATA_SIZE * 4),
+      interpolated: new Float32Array(DATA_SIZE),
+      whitened: new Float32Array(DATA_SIZE),
       peak: new Float32Array(DATA_SIZE),
       hold: new Float32Array(DATA_SIZE),
       mean: new Float32Array(DATA_SIZE).fill(0.15),
+      pauseValue: config.paused ? 1 : 0,
+      atlasX: 0,
+      atlasY: 0,
     };
     const intersection = new IntersectionObserver(
       ([item]) => {
         entry.visible = item.isIntersecting;
+        if (entry.visible) this.frameLoop.start();
       },
       { rootMargin: "80px" },
     );
-    const resize = new ResizeObserver(() => this.resize(entry));
+    const resize = new ResizeObserver(() => {
+      this.resize(entry);
+      if (entry.visible) this.frameLoop.start();
+    });
     const onMotionChange = (event: MediaQueryListEvent) => {
       entry.reduced = event.matches;
       entry.lastDraw = 0;
+      if (entry.visible) this.frameLoop.start();
     };
 
     intersection.observe(canvas);
@@ -334,7 +467,17 @@ class SharedHaloRenderer {
       reduceQuery.removeEventListener("change", onMotionChange);
       this.deleteTextures(entry);
       this.entries.delete(entry);
+      if (this.entries.size === 0) this.frameLoop.stop();
     };
+  }
+
+  invalidate(canvas: HTMLCanvasElement) {
+    for (const entry of this.entries) {
+      if (entry.canvas !== canvas) continue;
+      entry.lastDraw = 0;
+      this.frameLoop.start();
+      return;
+    }
   }
 
   private buildProgram() {
@@ -399,6 +542,7 @@ class SharedHaloRenderer {
       level: gl.getUniformLocation(program, "uLevel"),
       act: gl.getUniformLocation(program, "uAct"),
       light: gl.getUniformLocation(program, "uLight"),
+      reduced: gl.getUniformLocation(program, "uReduce"),
       avatar: gl.getUniformLocation(program, "uAvatar"),
       data: gl.getUniformLocation(program, "uData"),
     };
@@ -426,11 +570,19 @@ class SharedHaloRenderer {
   }
 
   private prepareTextures(entry: HaloEntry) {
-    if (!this.gl) {
-      return;
-    }
-    this.deleteTextures(entry);
+    if (!this.gl || this.lost || this.gl.isContextLost()) return;
+    this.ensureAvatarTexture(entry);
     const gl = this.gl;
+    if (!entry.dataTexture) entry.dataTexture = this.createTexture(gl.LINEAR);
+    this.uploadSource(entry, 0);
+  }
+
+  private ensureAvatarTexture(entry: HaloEntry) {
+    const gl = this.gl;
+    if (!gl || this.lost || gl.isContextLost()) return;
+    if (entry.avatarTexture && entry.uploadedTheme === entry.config.theme)
+      return;
+    if (entry.avatarTexture) gl.deleteTexture(entry.avatarTexture);
     entry.avatarTexture = this.createTexture(gl.LINEAR);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(
@@ -442,12 +594,14 @@ class SharedHaloRenderer {
       this.getDisc(entry.config.theme),
     );
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    entry.dataTexture = this.createTexture(gl.LINEAR);
-    this.uploadSource(entry, 0);
+    entry.uploadedTheme = entry.config.theme;
   }
 
   private deleteTextures(entry: HaloEntry) {
-    if (!this.gl) {
+    if (!this.gl || this.lost || this.gl.isContextLost()) {
+      entry.avatarTexture = null;
+      entry.dataTexture = null;
+      entry.uploadedTheme = null;
       return;
     }
     if (entry.avatarTexture) {
@@ -475,9 +629,9 @@ class SharedHaloRenderer {
     if (!gl || !texture) {
       return;
     }
-    const { source } = entry.config;
+    const { source } = entry;
     const bytes = entry.data;
-    const interpolated = new Float32Array(DATA_SIZE);
+    const interpolated = entry.interpolated;
     for (let index = 0; index < DATA_SIZE; index++) {
       const position = (index / (DATA_SIZE - 1)) * (SPECTRUM_SIZE - 1);
       const left = Math.floor(position);
@@ -503,7 +657,12 @@ class SharedHaloRenderer {
       entry.mean[index] += (value - entry.mean[index]) * Math.min(1, dt / 2.5);
     }
 
-    const whitened = whitenSpectrum(interpolated, entry.mean, source.level);
+    const whitened = whitenSpectrum(
+      interpolated,
+      entry.mean,
+      source.level,
+      entry.whitened,
+    );
     for (let index = 0; index < DATA_SIZE; index++) {
       bytes[DATA_SIZE * 3 + index] = Math.min(255, whitened[index] * 255);
     }
@@ -534,33 +693,52 @@ class SharedHaloRenderer {
     }
   }
 
-  private tick = (now: number) => {
-    requestAnimationFrame(this.tick);
-    const idleInterval = 1000 / 15;
-    const entries = [...this.entries].filter((entry) => {
-      if (!entry.visible || entry.pixelSize === 0) {
-        return false;
+  private tick(now: number): boolean {
+    if (this.lost || this.gl?.isContextLost() || this.entries.size === 0) {
+      return false;
+    }
+    this.todo.length = 0;
+    let visible = false;
+    for (const entry of this.entries) {
+      if (!entry.visible || entry.pixelSize === 0) continue;
+      visible = true;
+      const { config } = entry;
+      const current = config.sourceRef.current;
+      if (!config.paused && !config.still)
+        copySource(entry.frozenSource, current);
+      entry.source =
+        config.paused || config.still ? entry.frozenSource : current;
+      const dt =
+        entry.lastDraw === 0
+          ? 1 / 60
+          : Math.min(0.1, Math.max(0, (now - entry.lastDraw) / 1000));
+      const pauseTarget = config.paused ? 1 : 0;
+      entry.pauseValue = easePause(entry.pauseValue, pauseTarget, dt);
+      const settlingPause = Math.abs(pauseTarget - entry.pauseValue) > 0.01;
+      const interval = haloFrameInterval(
+        this.path,
+        entry.source.level,
+        entry.source.act,
+        config.paused || config.still,
+        config.still,
+        settlingPause,
+      );
+      if (now - entry.lastDraw >= interval) this.todo.push(entry);
+    }
+    if (!visible) return false;
+    if (this.todo.length > 0) {
+      if (this.gl && this.program && this.buffer && this.uniforms) {
+        this.drawWebgl(now);
+      } else {
+        this.drawCanvas(now);
       }
-      const lowActivity =
-        entry.config.paused ||
-        entry.config.still ||
-        entry.config.source.act < 0.01;
-      const interval =
-        this.path === "canvas-2d" || lowActivity ? idleInterval : 0;
-      return now - entry.lastDraw >= interval;
-    });
-    if (entries.length === 0) {
-      return;
     }
-    if (this.gl && this.program && this.buffer && this.uniforms) {
-      this.drawWebgl(entries, now);
-    } else {
-      this.drawCanvas(entries, now);
-    }
-  };
+    return true;
+  }
 
-  private drawWebgl(entries: HaloEntry[], now: number) {
+  private drawWebgl(now: number) {
     const gl = this.gl!;
+    if (this.lost || gl.isContextLost()) return;
     gl.useProgram(this.program!);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer!);
     gl.enableVertexAttribArray(0);
@@ -568,40 +746,11 @@ class SharedHaloRenderer {
     gl.enable(gl.SCISSOR_TEST);
     gl.clearColor(0, 0, 0, 0);
 
-    const batch: Array<{ entry: HaloEntry; x: number; y: number }> = [];
     let x = 0;
     let y = 0;
     let shelfHeight = 0;
-    const flush = () => {
-      if (batch.length === 0) {
-        return;
-      }
-      const offscreen = this.canvas as OffscreenCanvas;
-      const bitmap =
-        this.path === "webgl-atlas" ? offscreen.transferToImageBitmap() : null;
-      const source = bitmap ?? (this.canvas as HTMLCanvasElement);
-      for (const item of batch) {
-        const size = item.entry.pixelSize;
-        item.entry.context.clearRect(0, 0, size, size);
-        item.entry.context.drawImage(
-          source,
-          item.x,
-          ATLAS_SIZE - item.y - size,
-          size,
-          size,
-          0,
-          0,
-          size,
-          size,
-        );
-        item.entry.lastDraw = now;
-      }
-      bitmap?.close();
-      batch.length = 0;
-    };
-
-    const sorted = [...entries].sort((a, b) => b.pixelSize - a.pixelSize);
-    for (const entry of sorted) {
+    this.todo.sort(compareByPixelSize);
+    for (const entry of this.todo) {
       const size = entry.pixelSize;
       if (x + size > ATLAS_SIZE) {
         x = 0;
@@ -609,21 +758,53 @@ class SharedHaloRenderer {
         shelfHeight = 0;
       }
       if (y + size > ATLAS_SIZE) {
-        flush();
+        this.flushBatch(now);
         x = 0;
         y = 0;
         shelfHeight = 0;
       }
 
+      entry.atlasX = x;
+      entry.atlasY = y;
       gl.viewport(x, y, size, size);
       gl.scissor(x, y, size, size);
       gl.clear(gl.COLOR_BUFFER_BIT);
       this.drawEntry(entry, x, y, size, now);
-      batch.push({ entry, x, y });
+      this.batch.push(entry);
       x += size;
       shelfHeight = Math.max(shelfHeight, size);
     }
-    flush();
+    this.flushBatch(now);
+  }
+
+  private flushBatch(now: number) {
+    if (this.batch.length === 0) return;
+    if (this.lost || this.gl?.isContextLost()) {
+      this.batch.length = 0;
+      return;
+    }
+    const offscreen = this.canvas as OffscreenCanvas;
+    const bitmap =
+      this.path === "webgl-atlas" ? offscreen.transferToImageBitmap() : null;
+    const source = bitmap ?? (this.canvas as HTMLCanvasElement);
+    for (const entry of this.batch) {
+      const size = entry.pixelSize;
+      entry.context.clearRect(0, 0, size, size);
+      entry.context.drawImage(
+        source,
+        entry.atlasX,
+        ATLAS_SIZE - entry.atlasY - size,
+        size,
+        size,
+        0,
+        0,
+        size,
+        size,
+      );
+      entry.lastDraw = now;
+    }
+    bitmap?.close();
+    this.batch.length = 0;
   }
 
   private drawEntry(
@@ -642,6 +823,7 @@ class SharedHaloRenderer {
       entry.lastDraw === 0
         ? 1 / 60
         : Math.min(0.1, (now - entry.lastDraw) / 1000);
+    this.ensureAvatarTexture(entry);
     this.uploadSource(entry, paused || still ? 0 : dt);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -653,95 +835,94 @@ class SharedHaloRenderer {
     gl.uniform2f(uniforms.resolution, size, size);
     gl.uniform2f(uniforms.origin, x, y);
     gl.uniform1f(uniforms.clock, (now - this.startTime) / 1000);
-    gl.uniform1f(uniforms.pause, paused ? 1 : 0);
+    gl.uniform1f(uniforms.pause, entry.pauseValue);
     gl.uniform1f(uniforms.still, still ? 1 : 0);
-    gl.uniform3fv(uniforms.accent, this.accent(config.theme, false));
-    gl.uniform3fv(uniforms.accent2, this.accent(config.theme, true));
+    gl.uniform3fv(uniforms.accent, ACCENTS[config.theme][0]);
+    gl.uniform3fv(uniforms.accent2, ACCENTS[config.theme][1]);
     gl.uniform1f(uniforms.tickCount, config.ticks);
     gl.uniform1f(uniforms.weight, config.weight);
     gl.uniform1f(uniforms.spread, config.spread);
-    gl.uniform1f(uniforms.level, config.source.level);
-    gl.uniform1f(uniforms.act, config.source.act);
+    gl.uniform1f(uniforms.level, entry.source.level);
+    gl.uniform1f(uniforms.act, entry.source.act);
     gl.uniform1f(uniforms.light, config.theme === "day" ? 1 : 0);
+    gl.uniform1f(uniforms.reduced, entry.reduced ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
-
-  private accent(theme: HaloConfig["theme"], second: boolean): Float32Array {
-    const hex =
-      theme === "night"
-        ? second
-          ? "#e8475a"
-          : "#ff6b62"
-        : second
-          ? "#f07a72"
-          : "#e5483f";
-    return new Float32Array([
-      Number.parseInt(hex.slice(1, 3), 16) / 255,
-      Number.parseInt(hex.slice(3, 5), 16) / 255,
-      Number.parseInt(hex.slice(5, 7), 16) / 255,
-    ]);
-  }
-
-  private drawCanvas(entries: HaloEntry[], now: number) {
-    for (const entry of entries) {
+  private drawCanvas(now: number) {
+    for (const entry of this.todo) {
       const { context, config } = entry;
+      const { source } = entry;
       const size = entry.pixelSize;
       const dt =
         entry.lastDraw === 0
           ? 1 / 60
           : Math.min(0.1, (now - entry.lastDraw) / 1000);
       context.clearRect(0, 0, size, size);
+      const center = size / 2;
+      const discSize = size * RA;
+      const discOrigin = center - discSize / 2;
+      context.save();
+      context.beginPath();
+      context.arc(center, center, discSize / 2, 0, Math.PI * 2);
+      context.clip();
       context.drawImage(
         this.getDisc(config.theme),
         0,
         0,
-        size,
-        size,
-        (size * (1 - RA)) / 2,
-        (size * (1 - RA)) / 2,
-        size * RA,
-        size * RA,
+        256,
+        256,
+        discOrigin,
+        discOrigin,
+        discSize,
+        discSize,
       );
+      context.restore();
       for (let index = 0; index < DATA_SIZE; index++) {
         const position = (index / (DATA_SIZE - 1)) * (SPECTRUM_SIZE - 1);
         const left = Math.floor(position);
         const fraction = position - left;
         const value =
-          config.source.spec[left] * (1 - fraction) +
-          config.source.spec[Math.min(SPECTRUM_SIZE - 1, left + 1)] * fraction;
+          source.spec[left] * (1 - fraction) +
+          source.spec[Math.min(SPECTRUM_SIZE - 1, left + 1)] * fraction;
         entry.mean[index] +=
           (value - entry.mean[index]) * Math.min(1, dt / 2.5);
       }
 
-      const paused = config.paused;
-      const neutral = config.theme === "day" ? "#9e9eaa" : "#4d4d61";
-      const restA = config.theme === "night" ? "#ff6b62" : "#e5483f";
-      const restB = config.theme === "night" ? "#e8475a" : "#f07a72";
-      const drained = config.theme === "day" ? "#d9d4d9" : "#59515f";
-      const breathe =
-        paused && !config.still && !entry.reduced
-          ? 0.62 +
-            0.38 * (0.5 + 0.5 * Math.sin(((now - this.startTime) / 1000) * 2.4))
-          : 1;
+      const [accentA, accentB] = ACCENTS[config.theme];
+      const light = config.theme === "day";
+      const neutralR = light ? 0.62 : 0.3;
+      const neutralG = light ? 0.62 : 0.3;
+      const neutralB = light ? 0.7 : 0.38;
+      const restR = (accentA[0] + accentB[0]) / 2;
+      const restG = (accentA[1] + accentB[1]) / 2;
+      const restB = (accentA[2] + accentB[2]) / 2;
+      const gray = (restR + restG + restB) * 0.33;
+      const drainAmount = light ? 0.9 : 0.8;
+      const drainedR = (gray + (restR - gray) * 0.1) * drainAmount;
+      const drainedG = (gray + (restG - gray) * 0.1) * drainAmount;
+      const drainedB = (gray + (restB - gray) * 0.1) * drainAmount;
+      const breathAlpha = pauseBreathOpacity(
+        (now - this.startTime) / 1000,
+        entry.pauseValue,
+        entry.reduced || config.still,
+      );
       for (let index = 0; index < config.ticks; index++) {
         const angle = ((index + 0.5) / config.ticks) * Math.PI * 2 - Math.PI;
-        const cell = Math.floor((angle / (Math.PI * 2) + 0.5) * config.ticks);
         const mirror = Math.abs(angle) / Math.PI;
         const bandPosition = mirror * 0.85 * (SPECTRUM_SIZE - 1);
         const bandLeft = Math.floor(bandPosition);
         const bandMix = bandPosition - bandLeft;
         const spectrum =
-          config.source.spec[bandLeft] * (1 - bandMix) +
-          config.source.spec[Math.min(SPECTRUM_SIZE - 1, bandLeft + 1)] *
-            bandMix;
+          source.spec[bandLeft] * (1 - bandMix) +
+          source.spec[Math.min(SPECTRUM_SIZE - 1, bandLeft + 1)] * bandMix;
+        const cell = index;
         const scatter = 0.06 + ((cell * 0.618034 + 0.21) % 1) * 0.7;
         const samplePosition = scatter * (SPECTRUM_SIZE - 1);
         const sampleLeft = Math.floor(samplePosition);
         const sampleMix = samplePosition - sampleLeft;
         const sample =
-          config.source.spec[sampleLeft] * (1 - sampleMix) +
-          config.source.spec[Math.min(SPECTRUM_SIZE - 1, sampleLeft + 1)] *
-            sampleMix;
+          source.spec[sampleLeft] * (1 - sampleMix) +
+          source.spec[Math.min(SPECTRUM_SIZE - 1, sampleLeft + 1)] * sampleMix;
         const meanPosition = scatter * (DATA_SIZE - 1);
         const meanLeft = Math.floor(meanPosition);
         const meanMix = meanPosition - meanLeft;
@@ -752,19 +933,17 @@ class SharedHaloRenderer {
           0,
           Math.min(
             1,
-            (sample / (mean + 0.08)) *
-              0.45 *
-              (0.35 + 0.9 * config.source.level),
+            (sample / (mean + 0.08)) * 0.45 * (0.35 + 0.9 * source.level),
           ),
         );
         const value =
           spectrum * (1 - config.spread) +
-          Math.max(0, Math.min(1, white * 0.75 + config.source.level * 0.4)) *
+          Math.max(0, Math.min(1, white * 0.75 + source.level * 0.4)) *
             config.spread;
         const length =
           0.012 +
-          Math.pow(value, 1.15) * 0.3 * config.source.act +
-          config.source.level * 0.025 * config.source.act;
+          Math.pow(value, 1.15) * 0.3 * source.act +
+          source.level * 0.025 * source.act;
         const radius = RA + 0.055;
         const tickRadius = (radius * size) / 2;
         const tickLength = (length * size) / 2;
@@ -773,36 +952,67 @@ class SharedHaloRenderer {
         const y = center - Math.cos(angle) * tickRadius;
         const endX = x + Math.sin(angle) * tickLength;
         const endY = y - Math.cos(angle) * tickLength;
-        const accent = mirror < 0.5 ? restA : restB;
-        context.strokeStyle = config.still
-          ? neutral
-          : paused
-            ? drained
-            : accent;
-        context.globalAlpha =
-          paused || config.still ? 1 : Math.max(0.3, config.source.act);
+        const hotR = accentA[0] + (accentB[0] - accentA[0]) * mirror;
+        const hotG = accentA[1] + (accentB[1] - accentA[1]) * mirror;
+        const hotB = accentA[2] + (accentB[2] - accentA[2]) * mirror;
+        const activeR = neutralR + (hotR - neutralR) * source.act;
+        const activeG = neutralG + (hotG - neutralG) * source.act;
+        const activeB = neutralB + (hotB - neutralB) * source.act;
+        const colorR = config.still
+          ? neutralR
+          : activeR + (drainedR - activeR) * entry.pauseValue;
+        const colorG = config.still
+          ? neutralG
+          : activeG + (drainedG - activeG) * entry.pauseValue;
+        const colorB = config.still
+          ? neutralB
+          : activeB + (drainedB - activeB) * entry.pauseValue;
+        const red = Math.round(colorR * 255);
+        const green = Math.round(colorG * 255);
+        const blue = Math.round(colorB * 255);
+        context.strokeStyle = `rgb(${red} ${green} ${blue})`;
+        context.globalAlpha = breathAlpha;
         context.lineWidth =
-          ((0.0115 + 0.003 * config.source.act) * config.weight * size) / 2;
+          (0.0115 + 0.003 * source.act) * config.weight * size;
         context.lineCap = "round";
         context.beginPath();
         context.moveTo(x, y);
-        context.lineTo(x + (endX - x) * breathe, y + (endY - y) * breathe);
+        context.lineTo(endX, endY);
         context.stroke();
       }
       context.globalAlpha = 1;
+      context.beginPath();
+      context.arc(center, center, discSize / 2, 0, Math.PI * 2);
+      context.strokeStyle = light
+        ? "rgb(158 158 179 / 0.12)"
+        : "rgb(77 77 97 / 0.12)";
+      context.lineWidth = 1;
+      context.stroke();
       entry.lastDraw = now;
     }
   }
 
   private onContextLost = (event: Event) => {
     event.preventDefault();
+    this.lost = true;
+    this.frameLoop.stop();
+    for (const entry of this.entries) {
+      entry.avatarTexture = null;
+      entry.dataTexture = null;
+      entry.uploadedTheme = null;
+    }
   };
 
   private onContextRestored = () => {
+    this.lost = false;
     this.program = null;
     this.buffer = null;
     this.uniforms = null;
     this.buildProgram();
+    for (const entry of this.entries) {
+      entry.lastDraw = 0;
+      if (entry.visible) this.frameLoop.start();
+    }
   };
 }
 
@@ -811,4 +1021,8 @@ let sharedRenderer: SharedHaloRenderer | undefined;
 export function registerHalo(canvas: HTMLCanvasElement, config: HaloConfig) {
   sharedRenderer ??= new SharedHaloRenderer();
   return sharedRenderer.add(canvas, config);
+}
+
+export function invalidateHalo(canvas: HTMLCanvasElement) {
+  sharedRenderer?.invalidate(canvas);
 }

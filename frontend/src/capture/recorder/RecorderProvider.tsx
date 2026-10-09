@@ -34,7 +34,7 @@ export interface RecorderValue {
   /** Wall-clock start of this recording. */
   startedAt: number | null;
   audioMs: number;
-  /** Native recorded-time checkpoint; useRecordedElapsed ticks it while the mic is live. */
+  /** Native recorded-time checkpoint; useRecordedElapsed ticks it through interruptions and blocked resumes, except user Pause. */
   elapsedMs: number;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;

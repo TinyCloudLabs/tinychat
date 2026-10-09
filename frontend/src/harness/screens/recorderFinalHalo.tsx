@@ -1,16 +1,60 @@
+import { useState } from "react";
 import {
   HaloRing,
   LevelBars,
-  LevelSourceAdapter,
   MirroredSpectrumBars,
+  sourceFromLevel,
 } from "@/capture/recorder/final/halo";
 import type { HarnessScreen } from "../screen";
 
-const adapter = new LevelSourceAdapter(863);
-adapter.update(0.35, 0.42, 1000);
-let ACTIVE = adapter.sample(1016);
-for (let frame = 1032; frame <= 1200; frame += 16)
-  ACTIVE = adapter.sample(frame);
+const LEVEL_SCRIPT = [0.16, 0.35, 0.35] as const;
+const SCRIPT_SOURCES = [
+  sourceFromLevel(LEVEL_SCRIPT[0], 0.22, 0.42),
+  sourceFromLevel(LEVEL_SCRIPT[1], 0.42, 0.74),
+  sourceFromLevel(LEVEL_SCRIPT[2], 0.42, 0.91),
+];
+const ACTIVE = SCRIPT_SOURCES[SCRIPT_SOURCES.length - 1];
+
+function subscribeScript(listener: (source: typeof ACTIVE) => void) {
+  for (const source of SCRIPT_SOURCES) listener(source);
+  return () => {};
+}
+
+function subscribeLevels(listener: (level: number) => void) {
+  for (const level of LEVEL_SCRIPT) listener(level);
+  return () => {};
+}
+
+function IdleRing({ theme }: { theme: "night" | "day" }) {
+  const [surface, setSurface] = useState(theme);
+  return (
+    <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
+      <button
+        type="button"
+        data-halo-theme-toggle=""
+        onClick={() =>
+          setSurface((current) => (current === "night" ? "day" : "night"))
+        }
+        style={{
+          display: "block",
+          minHeight: 44,
+          margin: "0 auto 54px",
+          padding: "10px 14px",
+          border: "1px solid currentColor",
+          borderRadius: 999,
+          color: "inherit",
+          background: "transparent",
+          font: "inherit",
+          cursor: "pointer",
+        }}
+      >
+        Switch idle disc theme
+      </button>
+      <HaloRing size={118} ticks={40} theme={surface} />
+      <p>Idle · theme refresh</p>
+    </div>
+  );
+}
 
 function ThemePreview({ theme }: { theme: "night" | "day" }) {
   const night = theme === "night";
@@ -35,41 +79,71 @@ function ThemePreview({ theme }: { theme: "night" | "day" }) {
           flexWrap: "wrap",
         }}
       >
-        <div style={{ textAlign: "center" }}>
-          <HaloRing size={172} ticks={44} theme={theme} source={ACTIVE} />
-          <p>Recording · phone</p>
+        <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
+          <HaloRing
+            size={172}
+            ticks={44}
+            theme={theme}
+            source={ACTIVE}
+            subscribe={subscribeScript}
+          />
+          <p style={{ margin: "54px 0 0" }}>Recording · phone</p>
         </div>
-        <div style={{ textAlign: "center" }}>
+        <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
           <HaloRing
             size={172}
             ticks={44}
             theme={theme}
             paused
             source={ACTIVE}
+            subscribe={subscribeScript}
           />
-          <p>Paused</p>
+          <p style={{ margin: "54px 0 0" }}>Paused</p>
         </div>
-        <div style={{ textAlign: "center" }}>
-          <HaloRing size={214} ticks={44} theme={theme} source={ACTIVE} />
-          <p>Recording · desktop</p>
+        <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
+          <HaloRing
+            size={214}
+            ticks={44}
+            theme={theme}
+            source={ACTIVE}
+            subscribe={subscribeScript}
+          />
+          <p style={{ margin: "54px 0 0" }}>Recording · desktop</p>
         </div>
-        <div style={{ textAlign: "center" }}>
-          <HaloRing size={118} ticks={40} theme={theme} />
-          <p>Idle</p>
+        <div style={{ textAlign: "center", padding: "44px 40px 58px" }}>
+          <IdleRing theme={theme} />
         </div>
       </div>
       <div style={{ display: "grid", gap: 14, marginTop: 12 }}>
         <div>
-          <LevelBars bars={3} theme={theme} levels={[0.28, 0.72, 0.44]} />
+          <LevelBars bars={3} theme={theme} subscribe={subscribeLevels} />
           <span>Via · 3 levels</span>
         </div>
         <div>
-          <MirroredSpectrumBars bars={30} theme={theme} source={ACTIVE} />
+          <MirroredSpectrumBars
+            bars={30}
+            theme={theme}
+            source={ACTIVE}
+            subscribe={subscribeScript}
+          />
           <span>Ribbon · 30 spectrum bars</span>
         </div>
         <div>
-          <MirroredSpectrumBars bars={22} theme={theme} source={ACTIVE} />
+          <MirroredSpectrumBars
+            bars={22}
+            theme={theme}
+            source={ACTIVE}
+            subscribe={subscribeScript}
+          />
           <span>Dock · 22 spectrum bars</span>
+        </div>
+        <div>
+          <LevelBars
+            bars={5}
+            theme={theme}
+            levels={[0.18, 0.32, 0.52, 0.32, 0.18]}
+          />
+          <span>Note view · 5 bars</span>
         </div>
       </div>
     </section>
@@ -92,6 +166,7 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           gridTemplateColumns: window.innerWidth >= 1200 ? "1fr 1fr" : "1fr",
           gap: 20,
           padding: 20,
+          overflowX: "clip",
           background: "#100d14",
           fontFamily: "system-ui, sans-serif",
         }}
@@ -105,7 +180,7 @@ export const recorderFinalHaloScreen: HarnessScreen = {
           }}
         >
           Rings draw while in view. Scroll to start rings outside the viewport;
-          full-page captures can show those rings blank.
+          the halo-review capture keeps all eight in view.
         </p>
         {previews.map((theme) => (
           <ThemePreview key={theme} theme={theme} />
