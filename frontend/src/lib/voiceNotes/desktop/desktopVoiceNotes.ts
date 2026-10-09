@@ -264,7 +264,9 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     unlisten.push(await bridge.listen<{ level: number; peak: number }>("exo://recorder-level", (event) => emit("level", event)));
     unlisten.push(await bridge.listen<NativeAutoStop>("exo://recorder-auto-stopped", handleAutoStop));
     unlisten.push(await bridge.listen<string>("exo://recorder-model-selection", () => {
-      void refreshWhisperCapability().catch((error: unknown) => console.warn("[desktopVoiceNotes] Could not refresh Whisper model", error));
+      void refreshWhisperCapability().then(() => {
+        if (capabilities.desktopWhisper) return whisperQueue?.modelAvailable();
+      }).catch((error: unknown) => console.warn("[desktopVoiceNotes] Could not refresh Whisper model", error));
     }));
     if (initialNative.id) emitMic(initialNative);
   } catch (error) {

@@ -1,17 +1,19 @@
 import type { BatchResponse, TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
 import type { WhisperModel } from "@/lib/localTranscriber";
+import { leaseWhisperServer, SHARED_WHISPER_SERVER_SCOPE, type WhisperServerLease } from "@/lib/whisperServerLease";
 import type { LocalTranscript, NoteSttState, VoiceNoteRecording } from "../nativeVoiceNotes";
 import type { WebStore } from "../web/webStore";
 import type { DesktopBridge } from "./desktopVoiceNotes";
 
-const CHUNK = 4 * 1024 * 1024;
 const MODEL_IDS = new Set<WhisperModel>(["QuantizedTinyEn", "QuantizedTiny", "QuantizedBaseEn", "QuantizedBase",
   "QuantizedSmallEn", "QuantizedSmall", "QuantizedLargeTurbo"]);
 type WhisperEvent = TranscriptionEvent;
 
 /** The existing anarlog local-stt and batch-transcription commands, injectable for file-only tests. */
 export interface DesktopWhisperBridge {
+  serverScope?: object;
   startServer(model: WhisperModel): Promise<string>;
+  stopServer(): Promise<void>;
   startTranscription(params: TranscriptionParams): Promise<void>;
   stopTranscription(id: string): Promise<void>;
   onTranscription(cb: (event: WhisperEvent) => void): Promise<() => void>;
@@ -26,7 +28,9 @@ export async function loadDesktopWhisperBridge(): Promise<DesktopWhisperBridge> 
     return result.data;
   };
   return {
+    serverScope: SHARED_WHISPER_SERVER_SCOPE,
     startServer: async (model) => unwrap(await localStt.commands.startServer(model)),
+    stopServer: async () => { unwrap(await localStt.commands.stopServer("internal")); },
     startTranscription: async (params) => { unwrap(await transcription.commands.startTranscription(params)); },
     stopTranscription: async (id) => { unwrap(await transcription.commands.stopTranscription(id)); },
     onTranscription: async (cb) => {
@@ -47,6 +51,7 @@ export interface DesktopWhisperQueue {
   resume(): Promise<void>;
   noteCommitted(recording: VoiceNoteRecording): Promise<void>;
   retry(id: string): Promise<void>;
+  modelAvailable(): Promise<void>;
   beforeCapture(): Promise<void>;
   captureEnded(): void;
   dispose(): void;
@@ -87,7 +92,7 @@ export function createDesktopWhisperQueue(args: {
   let active: string | null = null;
   let activeRun: Promise<void> | null = null;
   let transcribing = false;
-  let startingTranscription: Promise<void> | null = null;
+  let serverLease: WhisperServerLease | null = null;
   let disposed = false;
   let stopping = false;
 
@@ -118,17 +123,7 @@ export function createDesktopWhisperQueue(args: {
     return id as WhisperModel;
   };
   const audioPath = async (id: string, stagedId: string): Promise<string> => {
-    await files.invoke("delete_audio_file", { id: stagedId });
-    const size = await store.audio.size(id);
-    if (size === 0) throw new Error("unavailable: this note has no audio");
-    for (let offset = 0; offset < size; offset += CHUNK) {
-      if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
-      const bytes = await store.audio.read(id, offset, Math.min(CHUNK, size - offset));
-      if (bytes.length !== Math.min(CHUNK, size - offset)) throw new Error("audio_short_read");
-      await files.invoke("append_audio_chunk", { id: stagedId, bytes: Array.from(bytes) });
-    }
-    await files.invoke("finalize_audio_file", { id: stagedId });
-    return files.invoke<string>("recorder_whisper_audio_path", { id: stagedId });
+    return files.invoke<string>("recorder_whisper_stage_audio", { id, stageId: stagedId });
   };
   const one = async (note: VoiceNoteRecording): Promise<void> => {
     const id = note.id;
@@ -143,16 +138,20 @@ export function createDesktopWhisperQueue(args: {
       await mark(id, "running");
       stagedId = await stageId(id);
       const path = await audioPath(id, stagedId);
-      if (stopping || captureLive()) throw new Error("capture_has_priority");
-      const server = await whisper.startServer(model);
-      if (stopping || captureLive()) throw new Error("capture_has_priority");
+      if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
+      const lease = leaseWhisperServer(model, () => whisper.startServer(model), () => whisper.stopServer(),
+        whisper.serverScope ?? whisper);
+      serverLease = lease;
+      const server = await lease.ready;
+      if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       const response = await new Promise<BatchResponse>((resolve, reject) => {
         let settled = false;
         let stop = () => {};
         let progressUpdates = Promise.resolve();
+        const timeoutMs = Math.max(30 * 60_000, Math.ceil(note.durationMs * 6));
         const timer = setTimeout(() => {
           if (!settled) { settled = true; stop(); reject(new Error("Whisper transcription timed out")); }
-        }, 30 * 60_000);
+        }, timeoutMs);
         const finish = (event: WhisperEvent) => {
           if (event.session_id !== id || settled) return;
           if (event.type === "progress") {
@@ -173,22 +172,23 @@ export function createDesktopWhisperQueue(args: {
           try {
             stop = await whisper.onTranscription(finish);
             transcribing = true;
-            const started = whisper.startTranscription({ session_id: id, provider: "whispercpp", file_path: path,
+            await whisper.startTranscription({ session_id: id, provider: "whispercpp", file_path: path,
               model, base_url: server, api_key: "", languages: ["en"], keywords: [] });
-            startingTranscription = started;
-            try { await started; } finally { if (startingTranscription === started) startingTranscription = null; }
           } catch (error) { if (!settled) { settled = true; clearTimeout(timer); stop(); reject(error); } }
         })();
       });
-      if (stopping || captureLive()) throw new Error("capture_has_priority");
+      if (disposed || stopping || captureLive()) throw new Error("capture_has_priority");
       await store.putTranscript({ id, transcript: transcriptFromResponse(note, model, response) });
       await mark(id, "done");
       emitDone(id);
     } catch (error) {
+      if (disposed) return;
       if (String(error).includes("capture_has_priority")) await mark(id, "queued");
       else await mark(id, "failed", error instanceof Error ? error.message : String(error));
     } finally {
       transcribing = false;
+      serverLease?.release();
+      serverLease = null;
       if (stagedId) {
         try { await files.invoke("delete_audio_file", { id: stagedId }); }
         catch (error) { console.warn("[desktopWhisper] Could not remove staged audio", error); }
@@ -200,7 +200,7 @@ export function createDesktopWhisperQueue(args: {
     const notes = (await store.listPending()).recordings;
     const next = notes.find((note) => note.options?.transcriber === "on-device"
       && !["done", "failed", "cancelled"].includes(note.stt?.state ?? "queued"));
-    if (!next) return;
+    if (!next) { serverLease?.release(); return; }
     active = next.id;
     activeRun = one(next).catch((error: unknown) => {
       console.error("[desktopWhisper] Could not update note status", error);
@@ -235,6 +235,9 @@ export function createDesktopWhisperQueue(args: {
         else publish(note.id, note.stt?.state === "done" ? "done" : note.stt?.state === "failed" ? "failed" : "queued",
           note.stt?.error ?? null);
       }
+      // Native tasks from the previous renderer are stopped above. Sweep any
+      // sealed or partial stage they left before a new attempt can start.
+      await files.invoke("recorder_whisper_cleanup_stages");
       await drain();
     },
     async noteCommitted(note) {
@@ -245,31 +248,41 @@ export function createDesktopWhisperQueue(args: {
     async retry(id) {
       const note = (await store.listPending()).recordings.find((item) => item.id === id);
       if (!note || note.options?.transcriber !== "on-device") throw new Error("unavailable: this note is not a local transcription");
+      if (active === id || note.stt?.state === "running") throw new Error("This note is already being transcribed");
+      if (note.stt?.state !== "failed" && note.stt?.state !== "waiting_for_model")
+        throw new Error("Only failed local transcriptions can be retried");
       await mark(id, "queued");
       await drain();
     },
     async beforeCapture() {
       stopping = true;
-      if (startingTranscription) {
-        try { await startingTranscription; } catch { /* The job's own failure is handled by one(). */ }
-      }
+      serverLease?.release();
       if (active && transcribing) {
-        try { await whisper.stopTranscription(active); }
-        catch { /* A terminal event may already be in flight; wait below. */ }
+        try { void whisper.stopTranscription(active).catch(() => { /* A terminal event may already be in flight. */ }); }
+        catch { /* A failed cancellation must never fail Record. */ }
       }
-      if (activeRun) {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([activeRun, new Promise<never>((_, reject) => {
-            timeout = setTimeout(() => reject(new Error("Could not pause Whisper before recording")), 10_000);
-          })]);
-        } finally { if (timeout) clearTimeout(timeout); }
+      // Neither model loading nor a late native terminal event may block Record.
+    },
+    async modelAvailable() {
+      const notes = (await store.listPending()).recordings;
+      for (const note of notes) {
+        if (note.options?.transcriber === "on-device" && note.stt?.state === "failed"
+          && note.stt.error?.startsWith("unavailable:") && note.stt.error.includes("model")) await mark(note.id, "queued");
       }
+      await drain();
     },
     captureEnded() {
       stopping = false;
       void drain().catch((error: unknown) => console.error("[desktopWhisper] Could not drain queue", error));
     },
-    dispose() { disposed = true; listeners.clear(); doneListeners.clear(); },
+    dispose() {
+      disposed = true;
+      stopping = true;
+      serverLease?.release();
+      if (active && transcribing) {
+        try { void whisper.stopTranscription(active).catch(() => {}); } catch { /* WebView teardown continues. */ }
+      }
+      listeners.clear(); doneListeners.clear();
+    },
   };
 }

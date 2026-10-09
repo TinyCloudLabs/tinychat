@@ -80,7 +80,20 @@ class FakeBridge implements DesktopBridge {
       }
       case "read_audio_chunk": result = (this.files.get(id) ?? new Uint8Array()).slice(Number(args.offset), Number(args.offset) + Number(args.len)); break;
       case "finalize_audio_file": result = this.files.get(id)?.length ?? 0; break;
-      case "recorder_whisper_audio_path": result = `/fixture/${id}.mp3`; break;
+      case "recorder_whisper_stage_audio": {
+        const stageId = String(args.stageId);
+        this.files.set(stageId, (this.files.get(id) ?? new Uint8Array()).slice());
+        result = `/fixture/${stageId}.mp3`;
+        break;
+      }
+      case "recorder_whisper_cleanup_stages": {
+        let removed = 0;
+        for (const key of this.files.keys()) if (key.startsWith("whisper-")) {
+          this.files.delete(key); removed++;
+        }
+        result = removed;
+        break;
+      }
       case "delete_audio_file": this.files.delete(id);
         this.failed = this.failed.filter((item) => item.id !== id);
         result = null; break;
@@ -93,10 +106,14 @@ class FakeBridge implements DesktopBridge {
 class FakeWhisper implements DesktopWhisperBridge {
   calls: TranscriptionParams[] = [];
   stops: string[] = [];
+  serverStops = 0;
+  serverStarts = 0;
+  onStopServer: (() => void) | null = null;
   fail = false;
   pending = false;
   listeners = new Set<(event: TranscriptionEvent) => void>();
-  async startServer() { return "http://fixture"; }
+  async startServer() { this.serverStarts++; return "http://fixture"; }
+  async stopServer() { this.serverStops++; this.onStopServer?.(); }
   async onTranscription(cb: (event: TranscriptionEvent) => void) {
     this.listeners.add(cb);
     return () => { this.listeners.delete(cb); };
@@ -140,6 +157,7 @@ describe("desktop recorder adapter", () => {
     bridge.elapsed = 1000;
     await engine.plugin.stop();
     await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "done");
+    await waitFor(() => whisper.serverStops === 1);
     expect(whisper.calls).toHaveLength(1);
     expect((await engine.plugin.getTranscript({ id })).transcript).toMatchObject({ engine: "whispercpp", outcome: "transcribed",
       segments: [{ text: "hello" }] });
@@ -165,6 +183,7 @@ describe("desktop recorder adapter", () => {
     bridge.files.set(id, Uint8Array.of(1, 2));
     await engine.plugin.stop();
     await waitFor(() => whisper.calls.length === 1);
+    await expect(engine.whisper!.retry(id)).rejects.toThrow("already being transcribed");
     whisper.emit({ type: "progress", session_id: id,
       event: { type: "progress", percentage: 0.5, partial_text: "halfway" } });
     await waitFor(() => engine.whisper?.snapshot().get(id)?.progress === 50);
@@ -202,6 +221,7 @@ describe("desktop recorder adapter", () => {
     bridge.downloadedModels.add("QuantizedTinyEn");
     const whisper = new FakeWhisper();
     whisper.pending = true;
+    whisper.onStopServer = () => expect(bridge.state).toBe("idle");
     const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
       storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
     const first = (await engine.plugin.start()).id;
@@ -212,8 +232,78 @@ describe("desktop recorder adapter", () => {
     const second = (await engine.plugin.start()).id;
     expect(second).not.toBe(first);
     expect((await engine.plugin.status()).state).toBe("recording");
-    expect(whisper.listeners.size).toBe(0);
+    expect(whisper.serverStops).toBeGreaterThan(0);
+    await waitFor(() => whisper.listeners.size === 0);
+    whisper.onStopServer = null;
     await engine.plugin.discard();
+    engine.dispose();
+  });
+
+  slow("a 15 second model load never delays a new recording", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    let finishLoad: (url: string) => void = () => {};
+    whisper.startServer = async () => {
+      whisper.serverStarts++;
+      return new Promise<string>((resolve) => { finishLoad = resolve; });
+    };
+    const engine = await openDesktopVoiceNotes({ bridge, whisper, now: () => bridge.now,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const first = (await engine.plugin.start()).id;
+    bridge.files.set(first, Uint8Array.of(1));
+    bridge.elapsed = 1000;
+    await engine.plugin.stop();
+    await waitFor(() => whisper.serverStarts === 1);
+    const second = await Promise.race([engine.plugin.start(), Bun.sleep(500).then(() => { throw new Error("Record waited for Whisper"); })]);
+    expect(second.id).not.toBe(first);
+    expect(whisper.serverStops).toBeGreaterThan(0);
+    bridge.now += 15_000;
+    finishLoad("http://fixture");
+    await waitFor(() => whisper.serverStops >= 2);
+    await waitFor(() => engine.whisper?.snapshot().get(first)?.state === "queued");
+    expect((await engine.plugin.status()).state).toBe("recording");
+    await engine.plugin.discard();
+    engine.dispose();
+  });
+
+  slow("native Whisper cancellation errors never reject Record", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    whisper.stopServer = async () => { throw new Error("server already stopped"); };
+    whisper.stopTranscription = async () => { throw new Error("task already stopped"); };
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const first = (await engine.plugin.start()).id;
+    bridge.files.set(first, Uint8Array.of(1));
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.length === 1);
+    await expect(engine.plugin.start()).resolves.toHaveProperty("id");
+    expect((await engine.plugin.status()).state).toBe("recording");
+    await engine.plugin.discard();
+    engine.dispose();
+  });
+
+  slow("a model failure during transcription fails promptly", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const id = (await engine.plugin.start()).id;
+    bridge.files.set(id, Uint8Array.of(1, 2));
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.length === 1);
+    bridge.downloadedModels.clear();
+    whisper.emit({ type: "failed", session_id: id, code: "unknown", error: "Whisper model disappeared" });
+    await waitFor(() => engine.whisper?.snapshot().get(id)?.state === "failed");
+    expect(engine.whisper?.snapshot().get(id)?.error).toContain("model disappeared");
     engine.dispose();
   });
 
@@ -251,6 +341,10 @@ describe("desktop recorder adapter", () => {
     await waitFor(() => absent.whisper?.snapshot().get(missingId)?.state === "failed");
     expect(absent.whisper?.snapshot().get(missingId)?.error).toContain("unavailable");
     expect(missingWhisper.calls).toHaveLength(0);
+    missing.downloadedModels.add("QuantizedTinyEn");
+    await missing.invoke("recorder_models_select", { id: "QuantizedTinyEn" });
+    await waitFor(() => absent.whisper?.snapshot().get(missingId)?.state === "done");
+    expect(missingWhisper.calls).toHaveLength(1);
     absent.dispose();
   });
 
@@ -273,6 +367,7 @@ describe("desktop recorder adapter", () => {
     const nextWhisper = new FakeWhisper();
     const next = await openDesktopVoiceNotes({ bridge, whisper: nextWhisper, now: () => bridge.now,
       storeOptions: { env, dbName, locks: memoryLocks(), decodeCheck: null } });
+    await expect(next.whisper!.retry(id)).rejects.toThrow("already being transcribed");
     await next.whisper!.resume();
     await waitFor(() => next.whisper?.snapshot().get(id)?.state === "done");
     expect(nextWhisper.stops).toEqual([id]);
