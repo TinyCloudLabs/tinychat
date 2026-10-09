@@ -12,10 +12,6 @@ public enum CaptureResumeError: Error, LocalizedError {
 
 public final class CaptureEngine {
     public static let shared = CaptureEngine()
-    /// Capture-priority handoff bound (plan §2.5): how long capture-start waits for STT to release
-    /// its native engine before opening the mic regardless. Short enough that a user never notices
-    /// Record feeling slow; long enough to usually dodge a wasteful bit of model-unload contention.
-    static let captureStartReleaseWaitSeconds: TimeInterval = 0.3
     public let library: RecordingLibrary
     private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
     private let defaultsKey = "exo.capture.defaults.v2"
@@ -164,15 +160,14 @@ public final class CaptureEngine {
             try? attemptResume(automatic: true, retryOnFailure: availability != "blocked")
         }
     }
-    /// Whether a capture session is live right now (recording or paused). The on-device STT queue
-    /// checks this before and between work units, and releases its model instead of competing
-    /// with capture for CPU/memory (plan capture-priority handoff, §2.5).
-    public var isCapturing: Bool { intent != "stopped" }
-    /// Set by `ExoSttBootstrap` to `TranscriptionQueue.shared.awaitReleaseForCapture` (ExoCapture
-    /// cannot depend on ExoStt directly without a package cycle, since ExoStt depends on
-    /// ExoCapture). Called before the mic opens; must never block longer than the timeout it's
-    /// given — capture always proceeds regardless of whether STT actually released in time.
-    public var sttReleaseHandoff: ((TimeInterval) -> Void)?
+    /// Set by `ExoSttBootstrap` to `TranscriptionQueue.shared.captureStarted` / `.captureEnded`
+    /// (ExoCapture cannot depend on ExoStt directly without a package cycle, since ExoStt depends
+    /// on ExoCapture). `captureSessionStarted` is pushed the instant a session begins — it never
+    /// blocks, so capture never waits on it before opening the mic (capture-priority handoff, plan
+    /// §2.5, round-2 finding 3 override). `captureSessionEnded` is pushed once a session has fully
+    /// ended, so the STT queue can resume from its checkpoint.
+    public var captureSessionStarted: (() -> Void)?
+    public var captureSessionEnded: (() -> Void)?
     public func presentRecorder() {
         if let id = info?.id {
             log.notice("presentRecorder id=\(id, privacy: .public)")
@@ -266,11 +261,10 @@ public final class CaptureEngine {
                                   startedAt: now)
         try library.startSession(session)
         info = session; options = selected; intent = "recording"; availability = "available"
-        // Capture priority (plan §2.5): `intent` just flipped, so the STT queue's next check of
-        // `isCapturing` will abandon its current attempt. Wait briefly for it to actually release
-        // its native engine before the mic opens, but never block the recording start on it —
-        // a single VAD segment's recognize() call can't be interrupted mid-call.
-        sttReleaseHandoff?(CaptureEngine.captureStartReleaseWaitSeconds)
+        // Capture priority (plan §2.5, round-2 finding 3 override): this never waits for STT.
+        // Push the signal and open the mic immediately; the queue releases at its next checkpoint
+        // (between windows/segments, never mid-recognize()) and stays idle until captureSessionEnded.
+        captureSessionStarted?()
         transitions = CaptureTransitionMachine()
         reason = nil; spans = []; openSpan = nil; audioMs = 0; pausedMs = 0; pausedSince = nil
         currentInput = nil; currentInputRate = nil
@@ -294,6 +288,7 @@ public final class CaptureEngine {
                 limitTimer?.invalidate(); limitTimer = nil
                 try? library.delete(session.id)
                 info = nil; intent = "stopped"; attempts.stop()
+                captureSessionEnded?()
             }
             throw error
         }
@@ -832,6 +827,7 @@ public final class CaptureEngine {
             deactivateGraph(tapRemoved: true)
             limitTimer?.invalidate(); limitTimer = nil
             writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
+            captureSessionEnded?()
             emitState()
             DispatchQueue.global(qos: .utility).async { [self] in
                 do { try recoverSession(session.id) }
@@ -866,6 +862,7 @@ public final class CaptureEngine {
         #endif
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
+        captureSessionEnded?()
         emitState()
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") {
             self.log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
@@ -955,6 +952,7 @@ public final class CaptureEngine {
         deactivateGraph(tapRemoved: true)
         _ = try? writer?.finish(at: wallClock.nowMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
+        captureSessionEnded?()
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
         return session.id

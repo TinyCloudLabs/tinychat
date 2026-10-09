@@ -20,11 +20,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
-/** Capture-priority handoff bound (plan §2.5): how long capture-start waits for STT to release its
- * native engine before opening the mic regardless. Short enough that a user never notices Record
- * feeling slow; long enough to usually dodge a wasteful few hundred ms of model-unload contention. */
-private const val CAPTURE_START_RELEASE_WAIT_MS = 300L
-
 /** Process singleton. Neither the capture nor recovery depends on a WebView being alive. */
 class CaptureEngine private constructor(private val context: Context) {
     interface Listener { fun event(name: String, data: JSONObject) }
@@ -292,18 +287,17 @@ class CaptureEngine private constructor(private val context: Context) {
         noSignalAt = 0; lastPeakAt = System.currentTimeMillis()
         source = startSource; transitions.start(); setMicState("idle", null)
         spans = JSONArray(); openSpan = null
-        // Capture priority (plan §2.5): `transitions.start()` just flipped intent to recording, so
-        // the STT queue's next check of `isCapturing()` will abandon its current attempt. Wait
-        // briefly for it to actually release its native engine before the mic opens, but never
-        // block the recording start on it — a single VAD segment's recognize() call can't be
-        // interrupted mid-call.
-        TranscriptionQueue.get(context).awaitReleaseForCapture(CAPTURE_START_RELEASE_WAIT_MS)
+        // Capture priority (plan §2.5, round-2 finding 3 override): this never waits for STT.
+        // Push the signal and open the mic immediately; the queue releases at its next checkpoint
+        // (between windows/segments, never mid-recognize()) and stays idle until `captureEnded()`.
+        TranscriptionQueue.get(context).captureStarted()
         try { acquire(releaseLockDuringStart = false, beforeStart = {
             sequence!!.firstInput(gen)
         }) } catch (e: Exception) {
             if (id == newId && intent == "recording") {
                 library.closeSession(newId)
                 id = null; transitions.send(TransitionMachine.Event.STOP); setMicState("idle", null)
+                TranscriptionQueue.get(context).captureEnded()
             }
             throw e
         }
@@ -524,6 +518,7 @@ class CaptureEngine private constructor(private val context: Context) {
         autoStop(MicStateContract.WRITE_FAILED)
         if (id != null) {
             transitions.writeFailed(); setMicState("needs_user", MicStateContract.WRITE_FAILED); publishState()
+            TranscriptionQueue.get(context).captureEnded()
         }
         throw IllegalStateException("pause_failed", failure)
     }
@@ -605,6 +600,7 @@ class CaptureEngine private constructor(private val context: Context) {
         val current = id ?: throw IllegalStateException("not_recording")
         if (input == null) library.read(current)?.let { saved ->
             id = null; setMicState("idle", null); transitions.send(TransitionMachine.Event.STOP)
+            TranscriptionQueue.get(context).captureEnded()
             main.removeCallbacks(limitTick)
             publishState(); emit("committed", saved)
             return@withLock saved
@@ -633,6 +629,7 @@ class CaptureEngine private constructor(private val context: Context) {
             closeSilence(current)
             closeOmitted(current, System.currentTimeMillis())
             transitions.send(TransitionMachine.Event.STOP); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+            TranscriptionQueue.get(context).captureEnded()
             if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
             val at = System.currentTimeMillis()
             finalReason = if (captureFailure != null) MicStateContract.WRITE_FAILED else reason
@@ -646,6 +643,7 @@ class CaptureEngine private constructor(private val context: Context) {
             try { encoder?.abort() } catch (abort: Exception) { Log.e("ExoCapture", "AAC abort after failed Stop", abort) }
             encoder = null
             transitions.writeFailed(); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+            TranscriptionQueue.get(context).captureEnded()
             library.closeSession(current)
             setMicState("needs_user", MicStateContract.WRITE_FAILED)
             main.removeCallbacks(limitTick)
@@ -661,6 +659,7 @@ class CaptureEngine private constructor(private val context: Context) {
         val current = id ?: return@withLock null
         if (library.sidecar(current).exists()) throw IllegalStateException("already_committed")
         transitions.send(TransitionMachine.Event.DISCARD); CaptureNotifications.cancelAlert(context); main.removeCallbacks(retry)
+        TranscriptionQueue.get(context).captureEnded()
         val captured = input
         try { captured?.drain() } catch (e: Exception) { Log.e("ExoCapture", "Discard input drain failed", e) }
         finally {
@@ -694,10 +693,6 @@ class CaptureEngine private constructor(private val context: Context) {
         val now = System.currentTimeMillis()
         return now - startedAt - pausedMs - if (pausedAt > 0) now - pausedAt else 0
     }
-    /** Whether a capture session is live right now (recording or paused). The on-device STT queue
-     * checks this before and between work units, and releases its model instead of competing with
-     * capture for CPU/memory (plan capture-priority handoff, §2.5). */
-    fun isCapturing(): Boolean = intent != "stopped"
     @Synchronized fun status(): JSONObject {
         val mic = MicStateContract.snapshot(state, reason, reasonDetail,
             onViolation = { Log.e("ExoCapture", it) })
