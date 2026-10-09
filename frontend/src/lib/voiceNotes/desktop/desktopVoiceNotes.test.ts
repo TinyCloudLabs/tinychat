@@ -75,6 +75,18 @@ function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEn
 }
 
 describe("desktop recorder adapter", () => {
+  test("a failed post-start metadata write stops the native microphone", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), { hooks: { beforeOp(op) {
+      if (op === "session:update") throw new Error("metadata unavailable");
+    } } });
+    await expect(engine.plugin.start()).rejects.toThrow("metadata unavailable");
+    expect(bridge.calls).toContain("recorder_stop");
+    expect(bridge.state).toBe("idle");
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    engine.dispose();
+  });
+
   test("file-backed audio reads in chunks and reports the real size", async () => {
     const bridge = new FakeBridge();
     const audio = createFileAudioBlobStore(bridge);

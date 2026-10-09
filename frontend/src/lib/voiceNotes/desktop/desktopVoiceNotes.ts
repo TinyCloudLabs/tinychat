@@ -214,6 +214,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const releases = [releaseRecording];
         let id = "";
         let began = false;
+        let nativeStarted = false;
         try {
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
@@ -234,14 +235,23 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
             options: captureOptions, mimeType: "audio/mpeg", input, maxDurationMs });
           began = true;
           const native = await bridge.invoke<NativeStatus>("recorder_start", { id, maxDurationMs });
+          nativeStarted = true;
           session.startedAt = native.startedAt ?? session.startedAt;
           await store.updateSession(id, { startedAt: session.startedAt });
           live = { session, release: releases };
           emitMic(native);
           return { id, startedAt: session.startedAt, maxDurationMs };
         } catch (error) {
-          if (began && await store.audio.size(id) === 0) await store.dropEmptySession(id);
-          for (const release of releases) release();
+          let cleanupError: unknown = null;
+          if (nativeStarted) {
+            try { await bridge.invoke("recorder_stop"); } catch (caught) { cleanupError = caught; }
+          }
+          try {
+            if (began && cleanupError === null && await store.audio.size(id) === 0) await store.dropEmptySession(id);
+          } finally {
+            for (const release of releases) release();
+          }
+          if (cleanupError !== null) throw new AggregateError([error, cleanupError], "Could not stop capture after its metadata write failed");
           throw error;
         }
       });
