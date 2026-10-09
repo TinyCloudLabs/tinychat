@@ -18,6 +18,8 @@ import {
 import { useRecorder, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { PlatformContext } from "@/lib/platform";
+import { __setInstalledEngineForTests } from "@/lib/voiceNotes/captureEngine";
+import { registerDesktopCaptureExtras, type DesktopCaptureExtras } from "@/lib/voiceNotes/desktopCaptureExtras";
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import {
   __setVoiceNotesForTests,
@@ -180,6 +182,43 @@ function screen(
   };
 }
 
+// The Mac's Whisper as the engine and the ⚙︎ extras report it: a selected, downloaded model (or none).
+function macWhisper(model: "ready" | "none"): HarnessScreen["render"] {
+  return () => {
+    __setInstalledEngineForTests("tauri", {
+      nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
+      background: true, localTranscription: false, desktopWhisper: model === "ready", offlineRecorder: true,
+    });
+    const models = [{
+      id: "LargeTurbo", label: "Whisper Large Turbo (Multilingual)", sizeBytes: 1_600_000_000,
+      downloaded: model === "ready", selected: model === "ready", downloading: false, progress: null,
+    }];
+    registerDesktopCaptureExtras({
+      models: {
+        list: async () => models,
+        get: async () => (model === "ready" ? "LargeTurbo" : null),
+        select: async () => {},
+        download: async () => {},
+        onProgress: () => noop,
+      },
+      systemAudio: { get: async () => false, set: async () => {} },
+      autoSaveToSpace: { get: async () => true, set: async () => {} },
+    } as unknown as DesktopCaptureExtras);
+    return null;
+  };
+}
+
+function whisperScreen(
+  id: string,
+  model: "ready" | "none",
+  value: Partial<RecorderValue>,
+  seed: DesktopRecorderSeed = {},
+): HarnessScreen {
+  const base = screen(id, value, seed);
+  const setUp = macWhisper(model);
+  return { ...base, render: () => { setUp(); return base.render(); } };
+}
+
 // The real recorder over the fake native plugin, with each control call recorded for the test.
 export function installNativePlugin(): VoiceNotesPlugin {
   const log = (window.exoDesktop ??= { calls: [] });
@@ -305,5 +344,9 @@ export const recorderFinalDesktopScreens: HarnessScreen[] = [
   },
   screen("modes", {}, { defaultOpen: "modes" }),
   screen("via", {}, { defaultOpen: "via" }),
+  whisperScreen("whisper-signed-out", "ready", { signedIn: false, transcriber: { id: "on-device", identifySpeakers: false, source: "default" } }),
+  whisperScreen("whisper-signed-out-modes", "ready", { signedIn: false, transcriber: { id: "on-device", identifySpeakers: false, source: "default" } }, { defaultOpen: "modes" }),
+  whisperScreen("whisper-signed-in-modes", "ready", { signedIn: true, transcriber: { id: "on-device", identifySpeakers: false, source: "default" } }, { defaultOpen: "modes" }),
+  whisperScreen("whisper-no-model-modes", "none", { signedIn: true }, { defaultOpen: "modes" }),
   screen("discard", {}, { defaultOpen: "discard" }),
 ];

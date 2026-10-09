@@ -23,6 +23,7 @@ import { voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/vo
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { DesktopWhisperStatus } from "./DesktopWhisperStatus";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
@@ -43,6 +44,8 @@ export interface NoteDetailViewProps {
   loadAudio: AudioLoad | null;
   /** Private cloud transcription (voice notes in the phone app); absent elsewhere. */
   transcription?: VoiceNoteTranscriptionProps;
+  /** Whether the Mac's after-stop Whisper job shows here; defaults to the final recorder in the Tauri shell. */
+  desktopWhisper?: boolean;
   copyState: "idle" | "copied" | "failed";
   onCopy: () => void;
   /** Reads again what did not load (the list, or this note). */
@@ -227,12 +230,18 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
             <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
           </div>
         ) : (
-          // A plain function of its props (no hooks), so its "nothing to say" is known here.
-          VoiceNoteTranscriptionStatus({
-            item,
-            outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
-            transcription: props.transcription,
-          }) ?? <p className="text-callout text-muted-foreground">No transcript.</p>
+          <DesktopWhisperStatus
+            noteId={item.sourceId}
+            enabled={props.desktopWhisper}
+            fallback={
+              // A plain function of its props (no hooks), so its "nothing to say" is known here.
+              VoiceNoteTranscriptionStatus({
+                item,
+                outcome: voiceNoteTranscriptState(metadata.status === "ok" ? metadata.metadata : null).status,
+                transcription: props.transcription,
+              }) ?? <p className="text-callout text-muted-foreground">No transcript.</p>
+            }
+          />
         )
       ) : (
         <p className="text-callout text-muted-foreground" data-testid="note-transcript-absent">

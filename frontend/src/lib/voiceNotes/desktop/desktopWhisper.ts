@@ -58,7 +58,10 @@ export interface DesktopWhisperQueue {
 }
 
 let registered: DesktopWhisperQueue | null = null;
-export function getDesktopWhisperQueue(): DesktopWhisperQueue | null { return registered; }
+let queueReads = 0;
+export function getDesktopWhisperQueue(): DesktopWhisperQueue | null { queueReads += 1; return registered; }
+/** How many times the queue has been looked up; tests prove the classic paths never do. */
+export const __desktopWhisperQueueReadsForTests = () => queueReads;
 export function registerDesktopWhisperQueue(queue: DesktopWhisperQueue | null): void { registered = queue; }
 
 const stt = (state: NoteSttState["state"], error: string | null = null): NoteSttState => ({

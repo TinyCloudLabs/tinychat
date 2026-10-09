@@ -27,7 +27,9 @@ import { useFinalRecorderControls } from "../useFinalRecorderControls";
 import { MicDeniedAction } from "../shell/MicDeniedAction";
 import type { TranscriberApi } from "../useTranscriptionChoice";
 import { ViaMenu } from "../ViaMenu";
+import { FINAL_COPY } from "../finalCopy";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { openCaptureSettings } from "./openCaptureSettings";
 import { DesktopRing } from "./DesktopRing";
 import { Toasts, showToast } from "./Toasts";
 import "../soft.css";
@@ -76,6 +78,8 @@ function useSizing(root: React.RefObject<HTMLElement | null>) {
   }, [root]);
   return sizing;
 }
+
+const GET_WHISPER_NO_SETTINGS = "Open ⚙︎ Capture settings on the Capture page to get a Whisper model.";
 
 export interface DesktopRecorderProps {
   /** The rail (768–1023) or the desktop layout (1024 and up); both use these sizes. */
@@ -160,6 +164,25 @@ export function DesktopRecorder({
   // The view replaces a dock, a ribbon or the loading surface, which held focus, so focus moves into it.
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
   const hasNotes = (recorder.note?.md ?? "").length > 0;
+  // Local with no model: the toast says why, and ⚙︎ Capture settings opens behind the minimised recorder.
+  const chooseMode = (id: Parameters<typeof choose>[0]) => {
+    const reason = choose(id);
+    if (id !== "local" || reason !== FINAL_COPY.whisperUnavailable) return reason;
+    if (!openCaptureSettings()) {
+      console.error("[Recorder] Capture settings is not mounted, so Get Whisper cannot open it");
+      showToast(GET_WHISPER_NO_SETTINGS);
+      return reason;
+    }
+    void (async () => {
+      try {
+        await recorder.minimiseSheet();
+      } catch (caught) {
+        console.error("[Recorder] Could not minimise the recorder to show Capture settings", caught);
+        showToast(`Could not show Capture settings: ${caught instanceof Error ? caught.message : String(caught)}`);
+      }
+    })();
+    return reason;
+  };
 
   return (
     <div
@@ -290,11 +313,10 @@ export function DesktopRecorder({
                     onClose={closeModes}
                     onChoose={(id) => {
                       consentOpener.current = opener.current;
-                      if (choose(id) === null) closeModes();
+                      if (chooseMode(id) === null) closeModes();
                     }}
                     onToggleSpeakers={choice.setIdentifySpeakers}
-                    // TODO(TC-888): signed-out Mac notes stay Audio only until desktop Whisper.
-                    explanationFor={choice.caption ? { skip: choice.caption } : undefined}
+                    explanationFor={choice.explanationFor}
                   />
                 </div>
               )}
@@ -313,7 +335,7 @@ export function DesktopRecorder({
             mode={choice.mode}
             onChoose={(id) => {
               consentOpener.current = scale.current;
-              return choose(id);
+              return chooseMode(id);
             }}
             step={choice.step}
             onUnavailable={() => {}}

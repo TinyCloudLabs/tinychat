@@ -35,6 +35,8 @@ export const DESKTOP_HOME_COPY = {
   partialAudio: "Saved — part of this recording couldn't be written",
   dismiss: "Dismiss",
   dismissLabel: (title: string) => `Dismiss the notice for ${title}`,
+  retry: "Retry",
+  retryLabel: (title: string) => `Retry transcribing ${title} on this Mac`,
   scanFailure:
     "Exo couldn't check for unfinished recordings. It will try again when it next opens.",
 } as const;
