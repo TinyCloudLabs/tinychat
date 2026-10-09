@@ -29,14 +29,16 @@ export function createAuthRouter(config: AuthRoutesConfig) {
     }
 
     try {
-      const { address, nonce } = await verifySIWE(message, signature);
+      const { address, nonce, expirationTime } = await verifySIWE(message, signature);
       if (!config.nonceStore.validate(address, nonce)) {
         res
           .status(401)
           .json({ error: "invalid_nonce", message: "Nonce is invalid, expired, or already used" });
         return;
       }
-      const { token, expiresIn } = await issueSessionToken(address, config.privateKey);
+      const { token, expiresIn } = await issueSessionToken(address, config.privateKey, {
+        notAfter: expirationTime ? new Date(expirationTime) : undefined,
+      });
       res.json({ token, expiresIn, address: address.toLowerCase() });
     } catch (error) {
       console.error("[auth] verification failed:", error);

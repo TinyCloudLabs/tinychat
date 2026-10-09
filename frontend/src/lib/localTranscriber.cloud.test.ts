@@ -220,7 +220,7 @@ const failing = (code: string): Step => () => {
   throw new PrivateCloudError(code, code);
 };
 
-function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"] } = {}) {
+function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"]; bearer?: PrivateCloudApi["bearer"] } = {}) {
   const calls: string[] = [];
   /** Status answers for ID (and any job without its own queue). */
   const gets: Step[] = [];
@@ -230,7 +230,7 @@ function makeApi(opts: { capabilities?: PrivateCloudApi["capabilities"] } = {}) 
   const control = { removeFails: false };
   const api: PrivateCloudApi = {
     backendUrl: "https://api.example",
-    bearer: () => "tok",
+    bearer: opts.bearer ?? (() => "tok"),
     capabilities: opts.capabilities ?? (async () => ({ max_bytes: 120960000 })),
     // Jobs are this desktop's (its create's channel choices) unless a test says otherwise.
     list: async () => {
@@ -291,13 +291,14 @@ function setup(
   opts: {
     configured?: boolean;
     capabilities?: PrivateCloudApi["capabilities"];
+    bearer?: PrivateCloudApi["bearer"];
     pending?: Partial<PendingCloudJob> | null;
     legacy?: Partial<PendingCloudJob> | null;
   } = {},
 ) {
   const b = makeBridge();
   const n = makeNative({ configured: opts.configured });
-  const a = makeApi({ capabilities: opts.capabilities });
+  const a = makeApi({ capabilities: opts.capabilities, bearer: opts.bearer });
   /** Each account's pending record (per-account keys, like localStorage). */
   const pendingByAccount = new Map<string, ReturnType<typeof memoryStore<PendingCloudJob>>>();
   const pendingFor = (did: string) => {
@@ -932,6 +933,48 @@ describe("private cloud recordings kept across a closed view or relaunch (TC-772
     ]);
     expect(result).toMatchObject({ sessionId, transcriptionId: ID, captureHandle: "h7" });
     expect(r.statuses).toContainEqual({ kind: "uploading", pct: 50 });
+  });
+
+  test("an expired bearer at Stop keeps A's recording for a fresh sign-in after relaunch, never B", async () => {
+    let bearer: string | null = null;
+    const s = setup({ bearer: () => bearer });
+    const { sessionId, stopped } = await recordAndStop(s);
+    await expect(stopped).rejects.toMatchObject({ code: "unauthenticated", message: "Your session expired. Sign in again, then retry." });
+    expect(s.n.submits).toEqual([]);
+    expect(s.pending.value).toMatchObject({
+      sessionId,
+      attemptId: ATTEMPT_1,
+      transcriptionId: null,
+      audioPath: AUDIO,
+      submitted: false,
+    });
+
+    bearer = "fresh";
+    const b = s.relaunch(ACCOUNT_B);
+    expect(b.t.adoptTranscription()).toBeNull();
+    expect(b.t.resumeCloudTranscription()).toBeNull();
+    expect(b.t.resumeKeptRecording()).toBeNull();
+    await expect(b.t.retryTranscription()).rejects.toThrow("No recording is waiting to be transcribed");
+    expect(s.pendingFor(ACCOUNT_B).value).toBeNull();
+    expect(s.n.submits).toEqual([]);
+    expect(s.pending.value).toMatchObject({ sessionId, attemptId: ATTEMPT_1, submitted: false });
+
+    s.n.onDisk.set(sessionId, "h7");
+    const a = s.relaunch(ACCOUNT_A);
+    const offered = (await a.t.resumeKeptRecording()!.catch((e) => e)) as KeptRecordingError;
+    expect(offered).toBeInstanceOf(KeptRecordingError);
+    expect(offered.message).toContain("before it was uploaded");
+    s.a.gets.push(job("completed"));
+    const result = (await a.t.retryTranscription()) as CloudTranscriptResult;
+    expect(s.n.reopens).toEqual([sessionId]);
+    expect(s.n.submits).toEqual([
+      { captureHandle: "h7", attemptId: ATTEMPT_1, backendUrl: "https://api.example", bearer: "fresh", language: "en" },
+    ]);
+    expect(result).toMatchObject({ sessionId, transcriptionId: ID, captureHandle: "h7" });
+    expect(s.pending.value).toMatchObject({ sessionId, attemptId: ATTEMPT_1, transcriptionId: ID });
+    await a.t.finishCloudTranscript(result);
+    expect(s.pending.value).toBeNull();
+    expect(s.pendingFor(ACCOUNT_B).value).toBeNull();
   });
 
   test("a capture that ended on its own, then the view closed, is kept too", async () => {
