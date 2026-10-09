@@ -1,9 +1,11 @@
 import Foundation
 import Darwin
+import OSLog
 
 /// All metadata publications go through one synchronous queue. Muxing and probing run outside it,
 /// holding an operation generation that delete/discard can invalidate at any time.
 public final class RecordingLibrary {
+    private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture.finalizer")
     public struct SyncMetric {
         public let count: Int
         public let meanMs: Double
@@ -216,7 +218,9 @@ public final class RecordingLibrary {
         do {
             try makeM4A(staged)
             try check("stage.write")
+            log.notice("commit stage=fsync outcome=start id=\(id, privacy: .public)")
             try sync(staged)
+            log.notice("commit stage=fsync outcome=completed id=\(id, privacy: .public)")
             gate?("stage.afterMux")
             return try queue.sync {
                 guard generations[id, default: 0] == generation,

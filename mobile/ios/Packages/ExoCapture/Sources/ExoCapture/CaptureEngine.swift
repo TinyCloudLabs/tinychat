@@ -68,6 +68,7 @@ public final class CaptureEngine {
     var debugBeforeAttach: (() -> Void)?
     var debugInputRoute: (id: String?, sampleRate: Double?)?
     var debugNow: (() -> TimeInterval)?
+    var debugMuxWaitTimeout: TimeInterval?
     #endif
     private var isForeground: Bool {
         #if DEBUG
@@ -116,7 +117,31 @@ public final class CaptureEngine {
         lastTapAt = retryNow
         tapTimeLock.unlock()
     }
+    func debugEnqueue(_ buffer: AVAudioPCMBuffer) throws {
+        guard let writer, intent == "recording" else { throw CaptureError.notRecording }
+        writer.enqueue(buffer, generation: generation)
+    }
     #endif
+
+    private var muxWaitTimeout: TimeInterval {
+        #if DEBUG
+        if let debugMuxWaitTimeout { return debugMuxWaitTimeout }
+        #endif
+        return 30
+    }
+
+    private func emitAutoStopped(reason: String, result: Result<[String: Any], Error>,
+                                 maxDurationMs: Int64? = nil) {
+        var data: [String: Any] = ["reason": reason, "at": wallClock.nowMilliseconds()]
+        if let maxDurationMs { data["maxDurationMs"] = maxDurationMs }
+        switch result {
+        case .success(let recording): data["recording"] = recording
+        case .failure(let error):
+            data["recording"] = NSNull()
+            data["error"] = (error as? CaptureError)?.code ?? "finalization_failed"
+        }
+        emit("autoStopped", data, retained: true)
+    }
 
     public func observe(_ body: @escaping (String, [String: Any], Bool) -> Void) -> UUID {
         let token = UUID(); observers[token] = body
@@ -430,9 +455,8 @@ public final class CaptureEngine {
         if let session = info, intent == "recording",
            (status()["elapsedMs"] as? Int64 ?? 0) >= session.maxDurationMs {
             stop(reason: "max_duration") { [weak self] result in
-                let recording: Any = (try? result.get()) ?? NSNull()
-                self?.emit("autoStopped", ["reason": "max_duration", "maxDurationMs": session.maxDurationMs,
-                                            "at": wallMilliseconds(), "recording": recording], retained: true)
+                self?.emitAutoStopped(reason: "max_duration", result: result,
+                                      maxDurationMs: session.maxDurationMs)
             }
             return
         }
@@ -467,8 +491,7 @@ public final class CaptureEngine {
                 }
                 if free < 100 * 1024 * 1024 {
                     stop(reason: "disk_full") { [weak self] result in
-                        self?.emit("autoStopped", ["reason": "disk_full", "at": wallMilliseconds(),
-                                                    "recording": (try? result.get()) ?? NSNull()], retained: true)
+                        self?.emitAutoStopped(reason: "disk_full", result: result)
                     }
                 }
             } catch { log.error("Disk capacity check failed: \(String(describing: error), privacy: .public)") }
@@ -479,9 +502,7 @@ public final class CaptureEngine {
         guard info != nil, intent == "recording" else { return }
         log.error("Writer failed: \(String(describing: error), privacy: .public)")
         stop(reason: "write_failed") { [weak self] result in
-            let recording: Any = (try? result.get()) ?? NSNull()
-            self?.emit("autoStopped", ["reason": "write_failed", "at": wallMilliseconds(),
-                                        "recording": recording], retained: true)
+            self?.emitAutoStopped(reason: "write_failed", result: result)
         }
     }
 
@@ -807,6 +828,7 @@ public final class CaptureEngine {
         let spans = self.spans
         let input = currentInput
         let noSignal = noSignalMs
+        let muxWaitTimeout = self.muxWaitTimeout
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
         emitState()
@@ -836,10 +858,13 @@ public final class CaptureEngine {
                                           endedUnexpectedly: false,
                                           lastHeartbeatAt: lastHeartbeat, input: input,
                                           noSignalMs: noSignal)
+                log.notice("finalize stage=mux_start id=\(session.id, privacy: .public) durationMs=\(duration)")
                 let committed = try library.commit(session.id, sidecar: sidecar) { staged in
                     try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(session.id)),
-                                               expectedAudioMs: duration, to: staged)
+                                               expectedAudioMs: duration, to: staged,
+                                               waitTimeout: muxWaitTimeout)
                 }
+                log.notice("finalize stage=committed id=\(session.id, privacy: .public)")
                 let flushes = library.syncMetrics()
                 for kind in ["F_FULLFSYNC", "F_BARRIERFSYNC", "fsync_fallback"] {
                     if let metric = flushes[kind] {
@@ -851,6 +876,7 @@ public final class CaptureEngine {
                     completion(.success(committed))
                 }
             } catch {
+                log.error("finalize stage=failed id=\(session.id, privacy: .public) error=\(String(describing: error), privacy: .public)")
                 DispatchQueue.main.async { completion(.failure(error)) }
             }
         }

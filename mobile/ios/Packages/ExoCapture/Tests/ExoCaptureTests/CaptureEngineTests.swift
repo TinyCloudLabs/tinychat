@@ -39,6 +39,19 @@ import XCTest
         try events(engine, id).filter { $0["e"] as? String == "segment" }.count
     }
 
+    private func enqueueTone(_ engine: CaptureEngine, buffers: Int = 8) throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        for batch in 0..<buffers {
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096))
+            buffer.frameLength = 4096
+            let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+            for frame in 0..<4096 {
+                samples[frame] = 0.2 * sin(Float(2 * Double.pi * 440 * Double(batch * 4096 + frame) / 48_000))
+            }
+            try engine.debugEnqueue(buffer)
+        }
+    }
+
     func testBackgroundRefusalAndForegroundBlockedAttempt() throws {
         try withEngine { engine in
             let id = try XCTUnwrap(engine.start()["id"] as? String)
@@ -281,9 +294,82 @@ import XCTest
             XCTAssertEqual(engine.status()["reason"] as? String, "max_duration")
             wait(for: [stopped], timeout: 10)
             XCTAssertEqual(completed?["maxDurationMs"] as? Int64, 3_000)
+            XCTAssertEqual(completed?["at"] as? Int64, clock.nowMilliseconds())
             XCTAssertTrue(completed?["recording"] is NSNull,
                           "suppressed simulator buffers leave no audio to commit")
             XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
+        }
+    }
+
+    func testRecordedLimitCommitsRealAudio() throws {
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            let id = try XCTUnwrap(engine.start(requestedLimitMs: 3_000)["id"] as? String)
+            try enqueueTone(engine)
+            clock.advance(by: 1_400)
+            try engine.pause()
+            clock.advance(by: 2_100)
+            engine.debugWatchdogTick()
+            XCTAssertEqual(engine.status()["state"] as? String, "paused")
+            let committed = expectation(description: "recording committed")
+            let autoStopped = expectation(description: "limit completion")
+            var committedNote: [String: Any]?
+            var stoppedNote: [String: Any]?
+            let token = engine.observe { name, data, _ in
+                if name == "committed" {
+                    committedNote = data
+                    committed.fulfill()
+                }
+                if name == "autoStopped", data["reason"] as? String == "max_duration" {
+                    stoppedNote = data["recording"] as? [String: Any]
+                    autoStopped.fulfill()
+                }
+            }
+            defer { engine.removeObserver(token) }
+            try engine.resume()
+            try enqueueTone(engine)
+            clock.advance(by: 1_600)
+            engine.debugWatchdogTick()
+            wait(for: [committed, autoStopped], timeout: 90)
+            XCTAssertEqual(committedNote?["id"] as? String, id)
+            XCTAssertEqual(stoppedNote?["id"] as? String, id)
+            let sidecar = try engine.library.readSidecar(id)
+            let wallMs = try XCTUnwrap(sidecar["wallMs"] as? Int64)
+            let pausedMs = try XCTUnwrap(sidecar["pausedMs"] as? Int64)
+            XCTAssertGreaterThanOrEqual(wallMs - pausedMs, 3_000)
+            XCTAssertEqual(pausedMs, 2_100)
+            XCTAssertGreaterThan(sidecar["durationMs"] as? Int64 ?? 0, 0)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.audioURL(id).path))
+        }
+    }
+
+    func testMuxTimeoutKeepsAudioForRecovery() throws {
+        let clock = TestClock()
+        try withEngine(clock: clock) { engine in
+            engine.debugMuxWaitTimeout = 0
+            let id = try XCTUnwrap(engine.start(requestedLimitMs: 1_000)["id"] as? String)
+            try enqueueTone(engine)
+            let autoStopped = expectation(description: "limit reports mux timeout")
+            var failure: [String: Any]?
+            let token = engine.observe { name, data, _ in
+                if name == "autoStopped", data["reason"] as? String == "max_duration" {
+                    failure = data
+                    autoStopped.fulfill()
+                }
+            }
+            defer { engine.removeObserver(token) }
+            clock.advance(by: 1_000)
+            engine.debugWatchdogTick()
+            wait(for: [autoStopped], timeout: 30)
+            XCTAssertEqual(failure?["error"] as? String, CaptureError.finalizationTimedOut("ready_wait").code)
+            XCTAssertEqual(failure?["at"] as? Int64, clock.nowMilliseconds())
+            XCTAssertTrue(failure?["recording"] is NSNull)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: engine.library.sessionURL(id).path))
+            XCTAssertGreaterThan(ADTS.fullFrameCount(try Data(contentsOf: engine.library.segmentURL(id, index: 0))), 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: engine.library.sidecarURL(id).path))
+            XCTAssertTrue(try events(engine, id).contains {
+                $0["e"] as? String == "stop" && $0["reason"] as? String == "max_duration"
+            })
         }
     }
 

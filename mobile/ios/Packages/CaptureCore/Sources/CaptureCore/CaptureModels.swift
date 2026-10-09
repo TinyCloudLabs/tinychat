@@ -5,6 +5,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
     case alreadyRecording, notRecording, invalidArgument, notFound, tombstoned
     case staleTransition, ownerMismatch, revConflict, recordingInProgress
     case insufficientStorage, noAudio, cancelled, pauseFailed, resumeFailed, io(String)
+    case finalizationTimedOut(String)
     case rowIDRequired, claimEvidenceRequired, claimEvidenceInvalid
 
     public var code: String {
@@ -24,6 +25,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
         case .pauseFailed: "pause_failed"
         case .resumeFailed: "resume_failed"
         case .io: "io_failed"
+        case .finalizationTimedOut: "finalization_timed_out"
         case .rowIDRequired: "row_id_required"
         case .claimEvidenceRequired: "claim_evidence_required"
         case .claimEvidenceInvalid: "claim_evidence_invalid"
@@ -32,6 +34,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         if case .io(let message) = self { return message }
+        if case .finalizationTimedOut(let stage) = self { return "Recording finalization timed out at \(stage)" }
         return code
     }
 }
