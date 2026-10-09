@@ -4,6 +4,7 @@
 // recorder's state, and the flags that make its plugins fail.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TranscriptionRouteControl } from "@/capture/recorder/TranscriptionRouteControl";
+import { clearNotesUi } from "@/capture/recorder/final/notes";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
 import type { TranscriberApi } from "@/capture/recorder/final/useTranscriptionChoice";
 import type { SetTranscriberResult } from "@/capture/recorder/voiceNoteRecorderController";
@@ -378,6 +379,7 @@ const routeControlScreen: HarnessScreen = {
 
 // 0:42 in, the note API in the screen's own memory (the stub), and a Discard that only logs.
 function Notes() {
+  useState(clearNotesUi);
   const value = useMemo<Partial<RecorderValue>>(() => {
     const notes = (window.exoNotes ??= { calls: [] });
     return {

@@ -1,5 +1,6 @@
 // The final phone recorder (TC-867) in each state, over a StaticRecorderProvider
 // on the frozen clock. Night and Day come from the harness theme.
+import { useState } from "react";
 import {
   PhoneRecorder,
   type PhoneRecorderProps,
@@ -15,6 +16,7 @@ import {
   type OnDeviceSttPlugin,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
+import { clearNotesUi } from "@/capture/recorder/final/notes";
 import { useNotesApi } from "@/capture/recorder/final/notesApiStub";
 import { FROZEN_NOW } from "../stubs";
 import type { HarnessScreen } from "../screen";
@@ -176,6 +178,7 @@ const NOTE_MD = [
 
 function Noted(props: PhoneRecorderProps & { md: string | null }) {
   const { md, ...rest } = props;
+  useState(clearNotesUi);
   const notesApi = useNotesApi(() => 42_000, md);
   return <PhoneRecorder inputs={INPUTS} notesApi={notesApi} {...rest} />;
 }

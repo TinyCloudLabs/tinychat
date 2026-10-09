@@ -28,8 +28,15 @@ export function useMomentFlow(
       markMoment: () => latest.current.api.markMoment(),
       readMd: () => md.current,
       writeMd: (next) => {
+        const before = md.current;
         md.current = next;
-        latest.current.api.setNoteText(next);
+        // A write the note refuses (not ready, or failed) is reported, and the text goes back to what is saved.
+        void (async () => latest.current.api.setNoteText(next))().catch(
+          (error: unknown) => {
+            if (md.current === next) md.current = before;
+            latest.current.onError(error);
+          },
+        );
       },
       onError: (error) => latest.current.onError(error),
     },

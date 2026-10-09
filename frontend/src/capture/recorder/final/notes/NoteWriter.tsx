@@ -22,6 +22,8 @@ export interface NoteWriterProps {
   textareaRef?: Ref<HTMLTextAreaElement>;
   /** Focus the field, caret at the end, when it mounts. */
   autoFocus?: boolean;
+  /** Nothing can be typed or formatted (the note is not ready); `aria-disabled` keeps the field focusable. */
+  disabled?: boolean;
   label?: string;
   placeholder?: string;
 }
@@ -41,6 +43,7 @@ export function NoteWriter({
   onChange,
   textareaRef,
   autoFocus = false,
+  disabled = false,
   label = NOTES_COPY.noteField,
   placeholder = NOTES_COPY.notePlaceholder,
 }: NoteWriterProps) {
@@ -65,9 +68,12 @@ export function NoteWriter({
         aria-label={label}
         placeholder={placeholder}
         spellCheck
+        readOnly={disabled}
+        aria-disabled={disabled || undefined}
         defaultValue={initialValue}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
+          if (disabled) return;
           const target = event.currentTarget;
           const edit = keyEdit(
             event.nativeEvent,
@@ -93,7 +99,9 @@ export function NoteWriter({
             type="button"
             aria-label={NOTES_COPY.tools[tool]}
             title={NOTES_COPY.tools[tool]}
+            aria-disabled={disabled || undefined}
             onClick={() => {
+              if (disabled) return;
               const target = field.current!;
               target.focus();
               apply(

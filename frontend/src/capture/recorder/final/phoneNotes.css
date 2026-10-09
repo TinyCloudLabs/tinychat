@@ -13,10 +13,11 @@
   position: absolute;
   inset: -4px;
 }
-.pr-mark:not(:disabled):active {
+.pr-mark:not(:disabled):not([aria-disabled="true"]):active {
   transform: translateY(-50%) scale(0.86);
 }
-.pr-mark:disabled {
+.pr-mark:disabled,
+.pr-mark[aria-disabled="true"] {
   opacity: 0.45;
 }
 
@@ -226,4 +227,10 @@
   .pr-nsaved {
     transition: none;
   }
+}
+.pr-nerr {
+  margin: 0;
+  padding: 0 20px 8px;
+  font-size: 13px;
+  color: var(--red);
 }

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { LevelBars } from "./halo";
-import { createAutosave } from "./autosave";
+import { createNoteSaver } from "./noteSaver";
+import type { NoteStatus } from "./notesApiStub";
 import { trapTab } from "./focusTrap";
 import { markKeyboardOpened } from "./inputModality";
 import { NoteRenderer, NoteWriter } from "./notes";
@@ -11,12 +12,18 @@ import "./phoneNotes.css";
 const AUTOSAVE_MS = 500;
 
 export interface NotesSheetProps {
-  /** The note when the sheet opens; the writer owns it while open. */
-  initialMd: string;
+  /** The note as typed so far: the unsaved draft if there is one, else the saved note. Kept above the sheet. */
+  md: string;
+  /** Every keystroke, before it is saved. */
+  onDraft: (md: string) => void;
   view: NotesView;
   onViewChange: (view: NotesView) => void;
-  /** Saves the note (debounced while typing, at once on close). */
-  onSave: (md: string) => void;
+  /** Typed text that has not been saved yet; null when everything typed is saved. */
+  draft: string | null;
+  /** Mirrors `recorder.noteStatus`: nothing is saved, or typed, until the note is ready. */
+  noteStatus: NoteStatus;
+  /** Saves the note (debounced while typing, at once on close); rejects if it could not be saved. */
+  onSave: (md: string) => Promise<void>;
   onClose: () => void;
   /** The recording, kept in view: the timer, three level bars, and a tap to pause or resume. */
   recording: {
@@ -35,7 +42,10 @@ export interface NotesSheetProps {
 
 /** The notes sheet over the recorder: a modal dialog that traps focus and returns it to its opener. */
 export function NotesSheet({
-  initialMd,
+  md,
+  onDraft,
+  draft,
+  noteStatus,
   view,
   onViewChange,
   onSave,
@@ -48,16 +58,24 @@ export function NotesSheet({
   const ids = useId();
   const root = useRef<HTMLDivElement>(null);
   const done = useRef<HTMLButtonElement>(null);
-  const [draft, setDraft] = useState(initialMd);
   const [pending, setPending] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const save = useRef(onSave);
   save.current = onSave;
-  const autosave = useRef<ReturnType<typeof createAutosave> | null>(null);
-  autosave.current ??= createAutosave(
-    (md) => save.current(md),
-    AUTOSAVE_MS,
-    setPending,
-  );
+  const saver = useRef<ReturnType<typeof createNoteSaver> | null>(null);
+  saver.current ??= createNoteSaver({
+    commit: (next) => save.current(next),
+    delayMs: AUTOSAVE_MS,
+    unsaved: draft,
+    status: noteStatus,
+    onPending: setPending,
+    onError: (error) => {
+      if (error !== null)
+        console.error("[Recorder] Could not save the note", error);
+      setSaveError(error !== null);
+    },
+  });
+  const ready = noteStatus === "ready";
   const back = useRef({ returnFocus, fallbackFocus });
   back.current = { returnFocus, fallbackFocus };
   const mounted = useRef(false);
@@ -65,7 +83,7 @@ export function NotesSheet({
   useEffect(() => {
     markKeyboardOpened(root.current);
     return () => {
-      autosave.current!.flush();
+      saver.current!.flush();
       const { returnFocus: opener, fallbackFocus: fallback } = back.current;
       (opener.current?.isConnected
         ? opener.current
@@ -80,17 +98,21 @@ export function NotesSheet({
     mounted.current = true;
   }, [view]);
 
-  const change = (md: string) => {
-    setDraft(md);
-    autosave.current!.schedule(md);
+  useEffect(() => {
+    saver.current!.setStatus(noteStatus);
+  }, [noteStatus]);
+
+  const change = (next: string) => {
+    onDraft(next);
+    saver.current!.change(next);
   };
   const choose = (next: NotesView) => {
     if (next === view) return;
-    autosave.current!.flush();
+    saver.current!.flush();
     onViewChange(next);
   };
   const close = () => {
-    autosave.current!.flush();
+    saver.current!.flush();
     onClose();
   };
   const lifted = keyboardInset > 0;
@@ -142,13 +164,27 @@ export function NotesSheet({
           <h2 id={`${ids}-title`} className="soft-title">
             {NOTES_COPY.notesTitle}
           </h2>
-          <span className="pr-nsaved" data-shown={!pending}>
-            {NOTES_COPY.saved}
+          <span
+            className="pr-nsaved"
+            data-shown={
+              noteStatus === "loading" || (ready && !pending && !saveError)
+            }
+          >
+            {noteStatus === "loading"
+              ? NOTES_COPY.noteLoading
+              : NOTES_COPY.saved}
           </span>
           <button ref={done} type="button" className="pr-ndone" onClick={close}>
             {NOTES_COPY.notesDone}
           </button>
         </div>
+        {(noteStatus === "error" || saveError) && (
+          <p className="pr-nerr" role="alert">
+            {noteStatus === "error"
+              ? NOTES_COPY.noteLoadFailed
+              : NOTES_COPY.noteSaveFailed}
+          </p>
+        )}
         <div className="pr-ntabs" role="group" aria-label={NOTES_COPY.viewTabs}>
           {(["write", "preview"] as const).map((id) => (
             <button
@@ -163,10 +199,15 @@ export function NotesSheet({
         </div>
         <div className="pr-nbody">
           {view === "write" ? (
-            <NoteWriter initialValue={draft} onChange={change} autoFocus />
+            <NoteWriter
+              initialValue={md}
+              onChange={change}
+              disabled={!ready}
+              autoFocus
+            />
           ) : (
             <div className="pr-nprev">
-              <NoteRenderer md={draft} label={NOTES_COPY.preview} />
+              <NoteRenderer md={md} label={NOTES_COPY.preview} />
             </div>
           )}
         </div>

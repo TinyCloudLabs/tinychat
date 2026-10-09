@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
@@ -9,6 +9,7 @@ import {
 } from "../RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import { PhoneRecorder, type PhoneRecorderProps } from "./PhoneRecorder";
+import { clearNotesUi, useNotesUi, type NotesUi } from "./notes";
 
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
@@ -179,6 +180,7 @@ describe("PhoneRecorder", () => {
   });
 
   const withNote = (md: string | null): PhoneRecorderProps["notesApi"] => ({
+    noteStatus: "ready",
     note: md === null ? null : { md, moments: [] },
     setNoteText: noop,
     markMoment: () => 42_000,
@@ -220,5 +222,123 @@ describe("PhoneRecorder", () => {
     expect(
       render({}, { defaultOpen: "discard", notesApi: withNote("a note") }),
     ).toContain("of audio and your notes.");
+  });
+
+  describe("the note is not ready", () => {
+    const status = (
+      noteStatus: "loading" | "error",
+    ): PhoneRecorderProps["notesApi"] => ({
+      noteStatus,
+      note: { md: "- **0:08** TTL", moments: [] },
+      setNoteText: noop,
+      markMoment: () => 42_000,
+    });
+
+    test("＋ is aria-disabled and says the note is loading", () => {
+      expect(render({}, { notesApi: status("loading") })).toMatch(
+        /<button[^>]*aria-label="Loading note…"[^>]*aria-disabled="true"/,
+      );
+    });
+
+    test("＋ says the note could not be loaded when it errored", () => {
+      expect(render({}, { notesApi: status("error") })).toMatch(
+        /<button[^>]*aria-label="Your note could not be loaded\."[^>]*aria-disabled="true"/,
+      );
+    });
+
+    test("the sheet shows Loading note… and a read-only, aria-disabled writer", () => {
+      const html = render(
+        {},
+        {
+          notesApi: status("loading"),
+          defaultOpen: "notes",
+          notesViewSeed: "write",
+        },
+      );
+      expect(html).toContain("Loading note…");
+      expect(html).toMatch(
+        /<textarea[^>]*readOnly=""[^>]*aria-disabled="true"|<textarea[^>]*aria-disabled="true"[^>]*readOnly=""/,
+      );
+      expect(html).not.toContain('role="alert"');
+    });
+
+    test("an errored note shows a visible error line in the sheet", () => {
+      const html = render(
+        {},
+        {
+          notesApi: status("error"),
+          defaultOpen: "notes",
+          notesViewSeed: "write",
+        },
+      );
+      expect(html).toMatch(/role="alert"[^>]*>Your note could not be loaded\./);
+    });
+
+    test("a ready note has an editable writer and no error line", () => {
+      const html = render(
+        {},
+        {
+          notesApi: withNote("hi"),
+          defaultOpen: "notes",
+          notesViewSeed: "write",
+        },
+      );
+      expect(html).not.toContain("aria-disabled");
+      expect(html).not.toContain('role="alert"');
+    });
+  });
+
+  describe("a layout switch while writing", () => {
+    beforeEach(clearNotesUi);
+    afterEach(clearNotesUi);
+    // The state the sheet left behind: LIVE's recording started at 1.
+    let ui: NotesUi;
+    const leaveBehind = () => {
+      function Probe() {
+        ui = useNotesUi(LIVE.startedAt as number);
+        return null;
+      }
+      renderToStaticMarkup(<Probe />);
+    };
+
+    test("remounts with the sheet open on the Write view and the unsaved draft in the field", () => {
+      leaveBehind();
+      ui.setNoteMd("saved line");
+      ui.openNotes("write");
+      ui.setDraft("saved line\n\nstill typing");
+      const html = render();
+      expect(html).toMatch(/role="dialog"[^>]*aria-modal="true"/);
+      expect(html).toMatch(/aria-pressed="true"[^>]*>Write/);
+      expect(html).toContain("saved line\n\nstill typing");
+      expect(html).toContain("View notes");
+    });
+
+    test("remounts open on the Preview view when that was showing", () => {
+      leaveBehind();
+      ui.setNoteMd("saved line");
+      ui.openNotes("preview");
+      ui.setDraft("saved line plus more");
+      const html = render();
+      expect(html).toMatch(/role="dialog"[^>]*aria-modal="true"/);
+      expect(html).toMatch(/aria-pressed="true"[^>]*>Preview/);
+      expect(html).not.toContain("<textarea");
+      expect(html).toContain("nt-fmd-loading");
+    });
+
+    test("a note typed in the sheet is still there with the sheet closed", () => {
+      leaveBehind();
+      ui.setNoteMd("- **0:08** TTL");
+      expect(render()).toContain("View notes");
+    });
+
+    test("after Done or discard the next recording starts clean", () => {
+      leaveBehind();
+      ui.setNoteMd("old note");
+      ui.openNotes("write");
+      clearNotesUi();
+      const html = render();
+      expect(html).not.toContain("View notes");
+      expect(html).not.toContain('aria-modal="true"');
+    });
   });
 });

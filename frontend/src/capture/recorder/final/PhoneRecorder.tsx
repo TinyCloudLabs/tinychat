@@ -17,11 +17,11 @@ import { useRecordedElapsed } from "../useRecordedElapsed";
 import { useKeyboardInset } from "./keyboardInset";
 import { ModesCard } from "./ModesCard";
 import { MomentField } from "./MomentField";
-import { warmRenderer } from "./notes";
+import { useNotesUi, warmRenderer } from "./notes";
 import { NOTES_COPY } from "./notesCopy";
 import { NotesListIcon, PlusIcon } from "./notesIcons";
 import { NotesSheet } from "./NotesSheet";
-import { useNotesApi, type NotesApi } from "./notesApiStub";
+import { notesApiOver, type NotesApi } from "./notesApiStub";
 import {
   readNotesView,
   rememberNotesView,
@@ -154,8 +154,11 @@ export function PhoneRecorder({
   // TODO(TC-878): read the note from `recorder` once the provider has it.
   const latestElapsed = useRef(elapsedMs);
   latestElapsed.current = elapsedMs;
-  const stubbedNotes = useNotesApi(() => latestElapsed.current);
-  const notes = notesApi ?? stubbedNotes;
+  const ui = useNotesUi(recorder.startedAt, {
+    open: defaultOpen === "notes",
+    view: notesViewSeed ?? "preview",
+  });
+  const notes = notesApi ?? notesApiOver(ui, () => latestElapsed.current);
   const { field: momentField, flow: moment } = useMomentFlow(notes, (error) => {
     console.error("[Recorder] Could not mark this moment", error);
     showToast(
@@ -165,10 +168,7 @@ export function PhoneRecorder({
     );
   });
   const noteMd = notes.note?.md ?? "";
-  const [notesOpen, setNotesOpen] = useState(defaultOpen === "notes");
-  const [notesView, setNotesView] = useState<NotesView>(
-    notesViewSeed ?? "preview",
-  );
+  const notesOpen = ui.open;
   const keyboardInset = useKeyboardInset();
   const markButton = useRef<HTMLButtonElement>(null);
   const viewNotesButton = useRef<HTMLButtonElement>(null);
@@ -356,9 +356,17 @@ export function PhoneRecorder({
               ref={markButton}
               type="button"
               className="pr-time-slot pr-mark"
-              aria-label={NOTES_COPY.noteThisMoment}
+              aria-label={
+                notes.noteStatus === "ready"
+                  ? NOTES_COPY.noteThisMoment
+                  : notes.noteStatus === "loading"
+                    ? NOTES_COPY.noteLoading
+                    : NOTES_COPY.noteLoadFailed
+              }
+              aria-disabled={notes.noteStatus !== "ready" || undefined}
               disabled={phase !== "recording"}
               onClick={() => {
+                if (notes.noteStatus !== "ready") return;
                 hapticLight();
                 moment.begin();
               }}
@@ -398,8 +406,7 @@ export function PhoneRecorder({
                 type="button"
                 className="pr-vnotes"
                 onClick={() => {
-                  setNotesView(readNotesView());
-                  setNotesOpen(true);
+                  ui.openNotes(readNotesView());
                 }}
               >
                 <NotesListIcon />
@@ -569,14 +576,20 @@ export function PhoneRecorder({
 
       {notesOpen && (
         <NotesSheet
-          initialMd={noteMd}
-          view={notesView}
+          md={ui.draft ?? noteMd}
+          onDraft={ui.setDraft}
+          view={ui.view}
           onViewChange={(next) => {
             rememberNotesView(next);
-            setNotesView(next);
+            ui.setView(next);
           }}
-          onSave={notes.setNoteText}
-          onClose={() => setNotesOpen(false)}
+          draft={ui.draft}
+          noteStatus={notes.noteStatus}
+          onSave={async (md) => {
+            await notes.setNoteText(md);
+            ui.settleDraft(md);
+          }}
+          onClose={ui.closeNotes}
           recording={{
             timerText: view.timer.text,
             paused: view.ring === "paused",
