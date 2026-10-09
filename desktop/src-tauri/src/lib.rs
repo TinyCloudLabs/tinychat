@@ -1,5 +1,7 @@
 #[cfg(feature = "transcription")]
 mod cloud;
+#[cfg(feature = "transcription")]
+mod recorder;
 #[cfg(all(feature = "transcription", debug_assertions))]
 mod smoke;
 
@@ -20,9 +22,19 @@ pub fn run() {
     let builder = {
         use tauri::Manager;
 
+        let system_audio = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let meter = std::sync::Arc::new(std::sync::Mutex::new(
+            recorder::audio_provider::Meter::default(),
+        ));
         let builder = builder
-            .manage(std::sync::Arc::new(audio_actual::ActualAudio)
-                as std::sync::Arc<dyn audio_actual::AudioProvider>)
+            .manage(system_audio.clone())
+            .manage(meter.clone())
+            .manage(
+                std::sync::Arc::new(recorder::audio_provider::SelectableAudio::new(
+                    system_audio,
+                    meter,
+                )) as std::sync::Arc<dyn audio_actual::AudioProvider>,
+            )
             .plugin(tauri_plugin_settings::init())
             .plugin(tauri_plugin_transcription::init())
             .plugin(tauri_plugin_local_stt::init(
@@ -38,6 +50,32 @@ pub fn run() {
             cloud::commands::cloud_transcription_submit,
             cloud::commands::cloud_transcription_cancel,
             cloud::commands::cloud_transcription_reopen,
+            recorder::files::append_audio_chunk,
+            recorder::files::audio_file_size,
+            recorder::files::read_audio_chunk,
+            recorder::files::finalize_audio_file,
+            recorder::files::delete_audio_file,
+            recorder::engine::recorder_start,
+            recorder::engine::recorder_pause,
+            recorder::engine::recorder_resume,
+            recorder::engine::recorder_stop,
+            recorder::engine::recorder_status,
+            recorder::engine::recorder_list_inputs,
+            recorder::engine::recorder_select_input,
+            recorder::engine::recorder_recover,
+            recorder::engine::recorder_acknowledge,
+            recorder::engine::recorder_failed_list,
+            recorder::engine::recorder_failed_retry,
+            recorder::engine::recorder_failed_delete,
+            recorder::extras::recorder_models_list,
+            recorder::extras::recorder_models_get,
+            recorder::extras::recorder_models_select,
+            recorder::extras::recorder_models_download,
+            recorder::extras::recorder_models_progress,
+            recorder::extras::recorder_system_audio_get,
+            recorder::extras::recorder_system_audio_set,
+            recorder::extras::recorder_auto_save_to_space_get,
+            recorder::extras::recorder_auto_save_to_space_set,
         ]);
         // Debug builds add a diagnostic that lets the webview verify the
         // native wiring in one invoke before any recording is attempted.
@@ -47,10 +85,42 @@ pub fn run() {
             cloud::commands::cloud_transcription_submit,
             cloud::commands::cloud_transcription_cancel,
             cloud::commands::cloud_transcription_reopen,
+            recorder::files::append_audio_chunk,
+            recorder::files::audio_file_size,
+            recorder::files::read_audio_chunk,
+            recorder::files::finalize_audio_file,
+            recorder::files::delete_audio_file,
+            recorder::engine::recorder_start,
+            recorder::engine::recorder_pause,
+            recorder::engine::recorder_resume,
+            recorder::engine::recorder_stop,
+            recorder::engine::recorder_status,
+            recorder::engine::recorder_list_inputs,
+            recorder::engine::recorder_select_input,
+            recorder::engine::recorder_recover,
+            recorder::engine::recorder_acknowledge,
+            recorder::engine::recorder_failed_list,
+            recorder::engine::recorder_failed_retry,
+            recorder::engine::recorder_failed_delete,
+            recorder::extras::recorder_models_list,
+            recorder::extras::recorder_models_get,
+            recorder::extras::recorder_models_select,
+            recorder::extras::recorder_models_download,
+            recorder::extras::recorder_models_progress,
+            recorder::extras::recorder_system_audio_get,
+            recorder::extras::recorder_system_audio_set,
+            recorder::extras::recorder_auto_save_to_space_get,
+            recorder::extras::recorder_auto_save_to_space_set,
             smoke::exo_desktop_smoke,
         ]);
 
         builder.setup(|app| {
+            app.manage(recorder::engine::Engine::default());
+            app.manage(recorder::extras::ExtrasState::default());
+            recorder::engine::install(app);
+            recorder::extras::install(app);
+            tauri::async_runtime::block_on(recorder::extras::load_system_audio(app.handle()))
+                .map_err(std::io::Error::other)?;
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
             ))?;
