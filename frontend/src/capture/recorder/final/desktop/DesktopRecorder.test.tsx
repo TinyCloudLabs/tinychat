@@ -8,7 +8,7 @@ import {
   type RecorderValue,
 } from "../../RecorderProvider";
 import type { VoiceNoteTranscriptionProps } from "../../transcriptionProps";
-import { DesktopRecorder, type DesktopRecorderProps } from "./DesktopRecorder";
+import { DesktopRecorder, DesktopRecorderSeedContext, type DesktopRecorderProps } from "./DesktopRecorder";
 
 const noop = () => {};
 const PRIVATE_ON: VoiceNoteTranscriptionProps = {
@@ -139,6 +139,20 @@ describe("DesktopRecorder", () => {
     expect(html).toContain('aria-valuetext="Audio only"');
     expect(html).toContain("Just the recording, kept on this Mac.");
     expect(html).not.toContain("transcribe it");
+    // TODO(TC-888): the open modes card says the same, not "Transcribe it later".
+    const card = renderToStaticMarkup(
+      <MemoryRouter>
+        <PlatformContext.Provider value="tauri">
+          <StaticRecorderProvider value={{ ...LIVE, signedIn: false, transcriber: local }}>
+            <DesktopRecorderSeedContext.Provider value={{ defaultOpen: "modes" }}>
+              <DesktopRecorder layout="desktop" />
+            </DesktopRecorderSeedContext.Provider>
+          </StaticRecorderProvider>
+        </PlatformContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(card).toContain('role="radiogroup"');
+    expect(card).not.toContain("Transcribe it later");
     expect(stops({ signedIn: true, transcriber: local })).toEqual([
       "true",
       "false",

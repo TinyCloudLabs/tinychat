@@ -293,6 +293,8 @@ export function DesktopRecorder({
                       if (choose(id) === null) closeModes();
                     }}
                     onToggleSpeakers={choice.setIdentifySpeakers}
+                    // TODO(TC-888): signed-out Mac notes stay Audio only until desktop Whisper.
+                    explanationFor={choice.caption ? { skip: choice.caption } : undefined}
                   />
                 </div>
               )}
