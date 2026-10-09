@@ -25,7 +25,9 @@ export const DESKTOP_CAPABILITIES: CaptureCapabilities = {
   openSettings: false,
   micDeniedPresentation: false,
   background: true,
-  localTranscription: true,
+  // The shared note queue uses mobile OnDeviceStt (Parakeet). Desktop's
+  // Whisper localStt bridge is a separate flow, exposed through D4 extras.
+  localTranscription: false,
   offlineRecorder: true,
 };
 

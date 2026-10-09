@@ -75,6 +75,13 @@ function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEn
 }
 
 describe("desktop recorder adapter", () => {
+  test("capabilities do not enable the mobile OnDeviceStt plugin", async () => {
+    const engine = await rig();
+    expect(engine.plugin.capabilities).toMatchObject({ localTranscription: false, background: true,
+      offlineRecorder: true, nativeShortcuts: false, presentRecorder: false, openSettings: false });
+    engine.dispose();
+  });
+
   test("a failed post-start metadata write stops the native microphone", async () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge, crypto.randomUUID(), newIdbEnv(), { hooks: { beforeOp(op) {
