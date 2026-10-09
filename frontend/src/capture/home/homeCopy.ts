@@ -1,3 +1,6 @@
+const RECOVERY_FAILED = "Couldn't recover this recording";
+const WRITE_FAILED = "Couldn't save all of this recording";
+
 /** Every line of text on the Soft Capture home that the library's own rows do not already say (TC-871). */
 export const HOME_COPY = {
   heading: "Capture",
@@ -16,13 +19,19 @@ export const HOME_COPY = {
   saveNow: "Save now",
   willFinish: "Kept on this phone. Exo will finish it automatically.",
   willRetry: "Exo will retry when it next opens",
+  /** Native has used up its automatic retries on a quarantined recording: no promise to try again. */
+  quarantinedCard: "Couldn't recover · audio kept",
   timedOutMeta: "Saving… · kept on this phone",
-  recoveryFailedMeta: "Couldn't recover this recording",
+  recoveryFailedMeta: RECOVERY_FAILED,
+  quarantinedMeta: `${RECOVERY_FAILED} · audio kept`,
+  /** What the recorder's own error line says once native has reported the failure; replaces "Exo will finish it automatically". */
+  recoveryFailedError: `${RECOVERY_FAILED}. Exo will try again when it next opens.`,
+  writeFailedError: `${WRITE_FAILED}.`,
   timedOutSheet: {
     title: "Saving this recording",
     body: "Kept on this phone. Exo will finish it automatically.",
   },
-  writeFailedMeta: "Couldn't save all of this recording",
+  writeFailedMeta: WRITE_FAILED,
   needsAttention: "Needs attention",
   opensDetails: "Opens details",
   scanFailure:
@@ -35,12 +44,33 @@ export const HOME_COPY = {
   uploadLabel: "Upload audio",
   meetingLabel: "Send a notetaker to a meeting",
   close: "Close",
+  tryAgain: "Try again",
+  tryingAgain: "Trying again…",
+  delete: "Delete",
+  deleting: "Deleting…",
+  keep: "Keep",
+  tryAgainFailed: "Couldn't try again. The recording is still on this phone.",
+  deleteFailed: "Couldn't delete this recording. It is still on this phone.",
+  deleteConfirm: {
+    title: "Delete this recording?",
+    body: "The audio will be deleted from this phone. This can't be undone.",
+  },
+  quarantineFailure:
+    "Exo couldn't check for recordings it kept. It will try again when it next opens.",
   recoveryFailedSheet: {
-    title: "Couldn't recover this recording",
+    title: RECOVERY_FAILED,
     body: "Exo couldn't finish saving this recording. It will try again when it next opens.",
   },
+  quarantinedSheet: {
+    title: RECOVERY_FAILED,
+    body: "Exo tried several times and couldn't finish saving this recording. The audio is kept on this phone.",
+  },
+  unplayableSheet: {
+    title: RECOVERY_FAILED,
+    body: "This recording can't be recovered. You can delete it.",
+  },
   writeFailedSheet: {
-    title: "Couldn't save all of this recording",
+    title: WRITE_FAILED,
     body: "This phone stopped saving the recording partway through. What was recorded up to that point is kept; the rest was not recorded.",
   },
 } as const;

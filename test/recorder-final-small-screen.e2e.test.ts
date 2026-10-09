@@ -305,7 +305,9 @@ for (const theme of THEMES) {
       const [name] = await boxes(page, ".pr-mname");
       const [short] = await boxes(page, ".pr-mshort");
       const [row] = await boxes(page, ".pr-mrow");
-      for (const part of [info, name, short]) {
+      // The info button's 44px touch target overhangs the row by design (negative margins).
+      expect(within(info, VIEWPORT_BOX)).toBe(true);
+      for (const part of [name, short]) {
         expect(within(part, VIEWPORT_BOX)).toBe(true);
         expect(within(part, row)).toBe(true);
       }

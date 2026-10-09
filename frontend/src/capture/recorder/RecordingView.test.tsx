@@ -5,6 +5,8 @@ import { MemoryRouter } from "react-router-dom";
 import { LevelTrace } from "./LevelTrace";
 import { RecordingView } from "./RecordingView";
 import type { RecorderValue } from "./RecorderProvider";
+import { FINALIZATION_PENDING } from "./recorderCopy";
+import { HOME_COPY } from "../home/homeCopy";
 
 const noop = () => {};
 const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
@@ -69,6 +71,29 @@ describe("RecordingView", () => {
     expect(html).toContain("Saved on this phone");
     expect(html).toContain("Saving to your TinyCloud space…");
     expect(html).not.toContain('data-testid="voice-note-stop"');
+  });
+
+  describe("the receipt's error line is the honest one", () => {
+    const escaped = (text: string) => text.replace("'", "&#x27;");
+    const receipt = (patch: Partial<RecorderValue>) => render({ phase: "idle", outcome: "local", startedAt: null,
+      lastSaved: { id: "rec-1", durationMs: 42_000, at: Date.now() }, error: FINALIZATION_PENDING, ...patch });
+
+    test("a failed recovery replaces the finishing promise", () => {
+      const html = receipt({ finalizationPendingId: "rec-1", captureIssues: { "rec-1": { kind: "recoveryFailed", detail: "ENOSPC" } } });
+      expect(html).toContain(escaped(HOME_COPY.recoveryFailedError));
+      expect(html).not.toContain("finish it automatically");
+      expect(html).not.toContain("ENOSPC");
+    });
+
+    test("a failed write replaces the finishing promise", () => {
+      const html = receipt({ finalizationPendingId: "rec-1", captureIssues: { "rec-1": { kind: "write_failed", detail: "EIO" } } });
+      expect(html).toContain(escaped(HOME_COPY.writeFailedError));
+      expect(html).not.toContain("finish it automatically");
+    });
+
+    test("with no failure the finishing promise stays", () => {
+      expect(receipt({ finalizationPendingId: "rec-1", captureIssues: {} })).toContain("finish it automatically");
+    });
   });
 
   test("the waveform has 96 bars and is hidden from assistive technology", () => {

@@ -178,9 +178,15 @@ function Recent(props: SoftCaptureHomeProps) {
 }
 
 export function SoftCaptureHome(props: SoftCaptureHomeProps) {
+  const soft = useSoftHome();
   return (
     <>
       <InProgress inProgress={props.inProgress} />
+      {soft?.quarantineFailed && (
+        <p role="alert" className="soft-quiet" data-testid="quarantine-failure">
+          {HOME_COPY.quarantineFailure}
+        </p>
+      )}
       {props.scanFailure !== null && (
         <p className="soft-quiet" data-testid="recovery-scan-failure">
           {HOME_COPY.scanFailure}

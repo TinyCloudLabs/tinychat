@@ -46,6 +46,13 @@ export interface RecorderState {
   /** How much of the note being saved is stored. */
   savePercent: number | null;
   error: string | null;
+  /**
+   * The recording whose finalization timed out while `error` is
+   * FINALIZATION_PENDING: its later capture issue (recoveryFailed,
+   * write_failed) says what the error line should. Cleared whenever that
+   * error clears.
+   */
+  finalizationPendingId: string | null;
   /** How the last recording ended; drives the receipt until dismissed. */
   outcome: "local" | "saved" | "failed" | null;
   /** The phone receipt distinguishes an active upload from a held note or another saver. */
@@ -87,8 +94,8 @@ export type RecorderEvent =
   | { type: "RESUME_FAILED"; error: string }
   | { type: "STOP_REQUESTED"; at: number }
   /** A failed stop was checked against native status; unknown keeps the view in stopping. */
-  | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number; elapsedMs: number; elapsedAt: number }
-  | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown" }
+  | { type: "STOP_FAILED"; error: string | null; status: "active"; mic: RecorderMic; audioMs: number; elapsedMs: number; elapsedAt: number; id?: string | null }
+  | { type: "STOP_FAILED"; error: string | null; status: "idle" | "unknown"; id?: string | null }
   /** The save started (percent null) or moved on. */
   | { type: "SAVE_PROGRESS"; percent: number | null }
   | { type: "LOCAL_COMMITTED"; id: string; durationMs: number; at: number }
@@ -100,7 +107,7 @@ export type RecorderEvent =
    * A recorder stopped itself at its limit: `id` is that recording's (null when it
    * captured nothing). Applied only when it is the recording on screen (autoStopIsCurrent).
    */
-  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; at: number; elapsedMs?: number; error?: string | null }
+  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; at: number; elapsedMs?: number; error?: string | null; pendingId?: string | null }
   /** status() and the retained events have been heard: Record may start. */
   | { type: "RECONCILED" }
   | { type: "PERMISSION_DENIED" }
@@ -133,6 +140,7 @@ export const initialRecorderState: RecorderState = {
   limitNotice: null,
   savePercent: null,
   error: null,
+  finalizationPendingId: null,
   outcome: null,
   localUpload: null,
   lastSaved: null,
@@ -146,6 +154,19 @@ export const initialRecorderState: RecorderState = {
 function toIdle(state: RecorderState): RecorderState {
   return { ...state, phase: "idle", recordingId: null, startedAt: null, mic: IDLE_MIC,
     controlPending: null, savePercent: null, autoSaving: false };
+}
+
+function stopFailed(state: RecorderState, event: Extract<RecorderEvent, { type: "STOP_FAILED" }>): RecorderState {
+  if (event.status === "unknown") return { ...state, error: event.error };
+  if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs,
+    elapsedMs: event.elapsedMs, elapsedAt: event.elapsedAt, error: event.error };
+  return { ...toIdle(state), error: event.error ?? state.error };
+}
+
+/** A stop that timed out finalizing names its recording, before `toIdle` forgets which one it was. */
+function withPendingId(before: RecorderState, event: { id?: string | null }, after: RecorderState): RecorderState {
+  if (after.error !== FINALIZATION_PENDING) return after;
+  return { ...after, finalizationPendingId: event.id ?? before.finalizationPendingId ?? before.recordingId };
 }
 
 /** Preserve the displayed recorded time when a live view stops ticking. */
@@ -186,6 +207,13 @@ function discardingThis(state: RecorderState, phase: "recording" | "discarding",
 }
 
 export function recorderReducer(state: RecorderState, event: RecorderEvent): RecorderState {
+  const next = reduce(state, event);
+  return next.error === FINALIZATION_PENDING || next.finalizationPendingId === null
+    ? next
+    : { ...next, finalizationPendingId: null };
+}
+
+function reduce(state: RecorderState, event: RecorderEvent): RecorderState {
   switch (event.type) {
     case "START_REQUESTED":
       if (state.phase !== "idle") return state;
@@ -232,10 +260,11 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
         ? { ...state, recoveryScanFailure: event.issue.detail } : state;
       return { ...state, captureIssues: { ...state.captureIssues, [event.id]: event.issue } };
     case "CAPTURE_RESOLVED": {
-      if (!(event.id in state.captureIssues)) return state;
+      const pending = state.finalizationPendingId === event.id ? { finalizationPendingId: null } : null;
+      if (!(event.id in state.captureIssues)) return pending ? { ...state, ...pending } : state;
       const captureIssues = { ...state.captureIssues };
       delete captureIssues[event.id];
-      return { ...state, captureIssues };
+      return { ...state, ...pending, captureIssues };
     }
     case "CAPTURE_COMMITTED": {
       const previous = state.captureIssues[event.id];
@@ -281,10 +310,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "STOP_FAILED":
       if (state.autoSaving || state.phase === "discarding") return state;
       if (state.phase !== "stopping") return state;
-      if (event.status === "unknown") return { ...state, error: event.error };
-      if (event.status === "active") return { ...state, phase: "recording", mic: event.mic, audioMs: event.audioMs,
-        elapsedMs: event.elapsedMs, elapsedAt: event.elapsedAt, error: event.error };
-      return { ...toIdle(state), error: event.error ?? state.error };
+      return withPendingId(state, event, stopFailed(state, event));
     case "SAVE_PROGRESS":
       if (state.phase === "idle" && state.outcome === "local") return { ...state, savePercent: event.percent };
       if (state.phase !== "stopping" && state.phase !== "saving") return state;
@@ -327,7 +353,9 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
           error: event.error === "finalization_timed_out"
             ? FINALIZATION_PENDING
             : `${event.notice} The recording captured no audio.` };
-        return state.autoSaving ? failed : toIdle(failed);
+        const pending = event.error === "finalization_timed_out"
+          ? { finalizationPendingId: event.pendingId ?? event.id ?? state.recordingId } : null;
+        return state.autoSaving ? { ...failed, ...pending } : { ...toIdle(failed), ...pending };
       }
       return {
         ...state,

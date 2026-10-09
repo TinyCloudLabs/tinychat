@@ -49,7 +49,6 @@ interface Setup {
 function Minimized({ paused, mic, elapsedMs }: Setup) {
   const platform = useContext(PlatformContext);
   const shim = useMemo(() => createRuntimeShim(), []);
-  const checkpointAt = useRef(Date.now());
   const [state, setState] = useState<Partial<RecorderValue>>({
     phase: "recording",
     mic:
@@ -60,6 +59,7 @@ function Minimized({ paused, mic, elapsedMs }: Setup) {
     startedAt: Date.now() - elapsedMs,
     audioMs: elapsedMs,
     elapsedMs,
+    elapsedAt: Date.now(),
     sheetOpen: false,
   });
   const log = useMemo(
@@ -68,15 +68,16 @@ function Minimized({ paused, mic, elapsedMs }: Setup) {
   );
   log.patch = (patch) => setState((current) => ({ ...current, ...patch }));
 
-  // The native recorder reports recorded time at each pause and resume; a pause freezes it there.
+  // The native recorder reports recorded time at each pause and resume, and the view ticks from the time it
+  // received that report (`elapsedAt`); a pause freezes the time there.
   const checkpoint = (mic: RecorderValue["mic"]) =>
     setState((current) => {
       const now = Date.now();
       const running = current.mic?.state !== "paused";
       const elapsed =
-        (current.elapsedMs ?? 0) + (running ? now - checkpointAt.current : 0);
-      checkpointAt.current = now;
-      return { ...current, mic, elapsedMs: elapsed };
+        (current.elapsedMs ?? 0) +
+        (running ? now - (current.elapsedAt ?? now) : 0);
+      return { ...current, mic, elapsedMs: elapsed, elapsedAt: now };
     });
 
   const value = useMemo<Partial<RecorderValue>>(

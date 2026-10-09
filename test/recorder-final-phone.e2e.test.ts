@@ -80,10 +80,17 @@ async function open(
       errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(error.message));
+  const screenName = `recorder-final-phone-interactive-${name}`;
   await page.goto(
-    `http://127.0.0.1:${server.port}/?screen=recorder-final-phone-interactive-${name}&theme=light&platform=ios`,
+    `http://127.0.0.1:${server.port}/?screen=${screenName}&theme=light&platform=ios`,
   );
-  await page.waitForSelector("[data-testid=phone-recorder]");
+  // Fail inside bun's 30 s test timeout: past it bun kills the browser and every later test reports a closed context.
+  page.setDefaultTimeout(10_000);
+  await page.waitForSelector("[data-testid=phone-recorder]").catch((caught) => {
+    throw new Error(
+      `${screenName} did not render: ${caught instanceof Error ? caught.message : String(caught)}\npage errors: ${JSON.stringify(errors)}`,
+    );
+  });
   return {
     page,
     errors,
