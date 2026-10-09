@@ -36,7 +36,8 @@ surfaced as `writeFailure`, and the service retries on the next limit tick.
 The Debug failure hook is the `exo.debug.failAccountState` string in the
 `exo.debug` preferences (or a Java system property of that name): `1` fails
 the `transitioning` write, `3` fails `signed_out`, and `compensation` fails
-the return to `signed_in` from `transitioning`.
+both `signed_out` and the return to `signed_in` from `transitioning`. The
+last case leaves the durable account status `transitioning`.
 
 The Moto G Power is checked out and locked. Its real noise floor and pause
 loss cannot be measured in this task. The `no_signal` check therefore keeps
