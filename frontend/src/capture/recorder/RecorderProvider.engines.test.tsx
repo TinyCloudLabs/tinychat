@@ -14,6 +14,7 @@ import { VoiceNotes, __setVoiceNotesForTests, type VoiceNotesPlugin } from "@/li
 import { OnDeviceStt, __setOnDeviceSttForTests, type OnDeviceSttPlugin } from "@/lib/voiceNotes/onDeviceStt";
 import { PendingVoiceNotesSaver } from "@/chat/PendingVoiceNotesSaver";
 import { CaptureEngineGate } from "./CaptureEngineGate";
+import { useOnDeviceReceipt } from "./SavedReceipt";
 import { RecorderProvider, useRecorder, type RecorderValue } from "./RecorderProvider";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -270,5 +271,66 @@ describe("native engine with every capability", () => {
     expect(value?.permissionDenied).toBe(true);
     await act(async () => { await value!.minimiseSheet(); });
     expect(calls).toContain("dismissShortcutRecovery");
+  });
+});
+
+describe("engine-aware transcription default", () => {
+  const withStorage = (stored: Record<string, string>, writes: string[] = []) => {
+    global.localStorage = { getItem: (key: string) => stored[key] ?? null, setItem: (key: string, v: string) => { writes.push(`${key}=${v}`); }, removeItem: () => {} };
+  };
+  afterEach(() => { global.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} }; });
+
+  test("a fresh profile on the web engine journals private-cloud, not on-device", async () => {
+    withStorage({});
+    const { fake } = await mount("web", NONE);
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("private-cloud");
+  });
+
+  test("an existing on-device preference journals private-cloud on web and is not rewritten", async () => {
+    const writes: string[] = [];
+    withStorage({ "exo.voiceNotes.transcriber": "on-device" }, writes);
+    const { fake } = await mount("web", NONE);
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("private-cloud");
+    expect(writes.filter((write) => write.startsWith("exo.voiceNotes.transcriber"))).toEqual([]);
+    expect(value?.transcriber.id).toBe("private-cloud");
+  });
+
+  test("Off stays Off on web", async () => {
+    withStorage({ "exo.voiceNotes.transcriber": "off" });
+    const { fake } = await mount("web", NONE);
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("off");
+  });
+
+  test("native keeps on-device for a fresh profile and an existing preference", async () => {
+    withStorage({});
+    const fresh = await mount("native", ALL);
+    expect((await fresh.fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    await act(async () => root!.unmount());
+    root = null;
+    __resetCaptureEngineForTests();
+    withStorage({ "exo.voiceNotes.transcriber": "on-device" });
+    const existing = await mount("native", ALL);
+    expect((await existing.fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+  });
+});
+
+describe("web engine: no OnDeviceStt calls", () => {
+  test("the saved-receipt hook never subscribes to or reads OnDeviceStt", async () => {
+    const { stt } = await mount("web", NONE);
+    function ReceiptProbe() { useOnDeviceReceipt("rec-1", true, null); return null; }
+    await act(async () => root!.render(<ReceiptProbe />));
+    await act(async () => { await tick(); });
+    expect(stt.calls).toEqual([]);
+  });
+
+  test("a denied microphone is recovered by calling record() again", async () => {
+    const { fake } = await mount("web", NONE);
+    const start = fake.plugin.start.bind(fake.plugin);
+    fake.plugin.start = async (...args) => { throw Object.assign(new Error("denied"), { code: "permission_denied" }); void args; };
+    await act(async () => { value!.record(); await tick(); });
+    expect(value?.permissionDenied).toBe(true);
+    fake.plugin.start = start;
+    await act(async () => { value!.record(); await tick(); });
+    expect(value?.permissionDenied).toBe(false);
   });
 });

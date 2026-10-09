@@ -80,6 +80,16 @@ export function captureCapabilities(): CaptureCapabilities {
   return nativeVoiceNotesAvailable() ? NATIVE_CAPABILITIES : NO_CAPABILITIES;
 }
 
+/** True when an installed engine has no on-device speech to text; OnDeviceStt must not be touched then. */
+export function localTranscriptionUnavailable(): boolean {
+  return installed !== null && !installed.capabilities.localTranscription;
+}
+
+/** True when an installed engine cannot open settings (a browser); denied-mic recovery is site guidance then. */
+export function openSettingsUnavailable(): boolean {
+  return installed !== null && !installed.capabilities.openSettings;
+}
+
 /** Boot, before the RecorderProvider mounts. Installs once; a failed install rejects (and may be retried). */
 export function installCaptureEngine(): Promise<void> {
   if (installed) return Promise.resolve();
