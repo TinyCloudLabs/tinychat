@@ -46,9 +46,11 @@ import {
   type PrivateCloudTranscript,
   type PtxPutResponse,
 } from "../privateCloud";
+import { captureEngineKind } from "./captureEngine";
 import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
+  base64ToBytes,
   MAX_ENCODED_BYTES_PER_SECOND,
   prepareTranscriptionAudio,
   VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS,
@@ -115,6 +117,46 @@ export const capacitorPtxPut: PtxPut = async (request) => {
   }
   return { status: response.status, body };
 };
+
+/** The browser has no native HTTP stack; PTX's CORS allows only Authorization and Content-Type, so no X-Correlation-Id here. */
+const FETCH_PUT_TIMEOUT_MS = 240_000;
+
+/**
+ * The web engine's transport: the same PUT as `capacitorPtxPut` over fetch. A redirect is refused
+ * (not followed), any failure to get an HTTP answer is `upload_outcome_unknown`, and a body that is
+ * not JSON is null, exactly as on the phone.
+ */
+export function createFetchPtxPut(fetchImpl: typeof fetch = (input, init) => fetch(input, init)): PtxPut {
+  return async (request) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_PUT_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetchImpl(request.url, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${request.capability}`, "Content-Type": request.contentType },
+        body: base64ToBytes(request.base64) as Uint8Array<ArrayBuffer>,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } catch {
+      throw new PrivateCloudError("upload_outcome_unknown", "The upload connection failed", { correlationId: request.correlationId });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (response.type === "opaqueredirect") {
+      throw new PrivateCloudError("service_misconfigured", "PTX answered with a redirect; it was not followed", { correlationId: request.correlationId });
+    }
+    let body: unknown;
+    try {
+      const text = await response.text();
+      body = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      body = null;
+    }
+    return { status: response.status, body };
+  };
+}
 
 // ── Jobs in flight (per note), and consent: per account ────────────────
 //
@@ -718,13 +760,14 @@ export function createVoiceNoteCloudForBuild(
 ): VoiceNoteCloud | null {
   const origin = buildPtxUploadOrigin();
   if (origin === null) return null;
+  const web = captureEngineKind() === "web";
   return createVoiceNoteCloud({
     api: createPrivateCloudApi(backendUrl, { sessionStore }),
     create: (request) => createPrivateCloudJob(backendUrl, { sessionStore }, request),
-    put: capacitorPtxPut,
+    put: web ? createFetchPtxPut() : capacitorPtxPut,
     origin,
     pending: localStorageVoiceNotePendingStore(accountDid),
-    uploadSupported: () => nativeHttpFileUploadSupported(),
+    uploadSupported: web ? () => Promise.resolve(true) : () => nativeHttpFileUploadSupported(),
   });
 }
 

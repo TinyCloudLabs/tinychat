@@ -55,9 +55,12 @@ async function listen(rig: Rig) {
 }
 
 describe("capabilities and constants", () => {
-  test("a browser has no native shortcuts, recorder presentation, settings, background capture or local transcription", async () => {
+  test("a browser has none of the seven capabilities", async () => {
     const rig = await createRig();
-    expect(rig.engine.capabilities).toEqual({ nativeShortcuts: false, presentRecorder: false, openSettings: false, background: false, localTranscription: false });
+    expect(rig.engine.capabilities).toEqual({
+      nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
+      background: false, localTranscription: false, offlineRecorder: false,
+    });
     expect(WEB_CAPABILITIES).toEqual(rig.engine.capabilities);
   });
 

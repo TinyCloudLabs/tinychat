@@ -21,8 +21,10 @@ export const WEB_CAPABILITIES = {
   nativeShortcuts: false,
   presentRecorder: false,
   openSettings: false,
+  micDeniedPresentation: false,
   background: false,
   localTranscription: false,
+  offlineRecorder: false,
 } as const;
 export type WebCapabilities = typeof WEB_CAPABILITIES;
 
@@ -68,8 +70,10 @@ export interface WebVoiceNotesOptions {
 export interface WebVoiceNotes {
   plugin: VoiceNotesPlugin;
   capabilities: WebCapabilities;
-  /** Commits sessions whose tab died mid-recording and emits recovered / recoveryFailed. W1c calls this at boot. */
+  /** Commits sessions whose tab died mid-recording and emits recovered / recoveryFailed. */
   recoverInterrupted(): Promise<RecoveryResult>;
+  /** Boot: recoverInterrupted, then announces recordings already in quarantine from earlier runs (as the Android shell does). */
+  recoverAtBoot(): Promise<RecoveryResult>;
   /** Stops capturing and drops listeners; for tests and teardown. Recordings stay on disk. */
   dispose(): void;
 }
@@ -626,10 +630,21 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     return result;
   }
 
+  async function recoverAtBoot(): Promise<RecoveryResult> {
+    const result = await recoverInterrupted();
+    const announced = new Set(result.failed.map((failed) => failed.id));
+    const { items } = await store.listQuarantine();
+    for (const item of items) {
+      if (!announced.has(item.id)) emit("recoveryFailed", { id: item.id, reason: item.reason });
+    }
+    return result;
+  }
+
   return {
     plugin,
     capabilities: WEB_CAPABILITIES,
     recoverInterrupted,
+    recoverAtBoot,
     dispose() {
       deviceChangeCleanup?.();
       const l = live;
