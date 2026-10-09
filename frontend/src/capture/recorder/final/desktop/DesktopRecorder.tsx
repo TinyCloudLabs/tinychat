@@ -293,6 +293,8 @@ export function DesktopRecorder({
                       if (choose(id) === null) closeModes();
                     }}
                     onToggleSpeakers={choice.setIdentifySpeakers}
+                    // TODO(TC-888): signed-out Mac notes stay Audio only until desktop Whisper.
+                    explanationFor={choice.caption ? { skip: choice.caption } : undefined}
                   />
                 </div>
               )}
@@ -320,7 +322,7 @@ export function DesktopRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">{stop.captions[shell]}</div>
+          <div className="pr-capline">{choice.caption ?? stop.captions[shell]}</div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}

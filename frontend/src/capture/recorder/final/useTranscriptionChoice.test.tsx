@@ -6,7 +6,10 @@ import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
+import type { ModeShell } from "./transcriptionModes";
+import { FINAL_COPY } from "./finalCopy";
 import {
+  DESKTOP_SIGNED_OUT_CAPTION,
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
@@ -79,12 +82,13 @@ function choice(
   api: TranscriberApi,
   model: OnDeviceSttStatus | null = MODEL,
   signedIn = true,
+  shell: ModeShell = "phone",
 ) {
   const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
   function Probe() {
     result = useTranscriptionChoice({
-      shell: "phone",
+      shell,
       transcription: props,
       model,
       transcriber: api,
@@ -289,6 +293,42 @@ describe("useTranscriptionChoice", () => {
         result.stops.filter((s) => !s.available).map((s) => s.reason),
       ).toEqual([SIGNED_OUT, SIGNED_OUT, SIGNED_OUT]);
       expect(result.mode).toBe("local");
+    });
+
+    test("signed out on the Mac app: Audio only is selected, Local says to get Whisper, the rest say to sign in", async () => {
+      // Provider still reports the signed-out default (on-device); the Mac scale must not show it.
+      const { api, calls } = fakeApi("on-device");
+      const { result } = choice(transcription(), api, null, false, "desktop");
+      expect(result.mode).toBe("skip");
+      expect(result.stops.map((s) => [s.stop.id, s.available])).toEqual([
+        ["skip", true],
+        ["local", false],
+        ["private", false],
+        ["powerful", false],
+      ]);
+      expect(result.stops.filter((s) => !s.available).map((s) => s.reason)).toEqual([
+        FINAL_COPY.whisperUnavailable,
+        SIGNED_OUT,
+        SIGNED_OUT,
+      ]);
+      expect(result.caption).toBe(DESKTOP_SIGNED_OUT_CAPTION);
+      expect(result.select("local")).toBe(FINAL_COPY.whisperUnavailable);
+      expect(result.select("private")).toBe(SIGNED_OUT);
+      await settle();
+      expect(calls).toEqual([]);
+    });
+
+    test("signed in on the Mac app is not locked and has no override caption", () => {
+      const { result } = choice(transcription(), fakeApi("private-cloud").api, null, true, "desktop");
+      expect(result.mode).toBe("private");
+      expect(result.caption).toBeNull();
+    });
+
+    test("signed out on the phone is unchanged: Local open, no caption override", () => {
+      const { result } = choice(transcription(), fakeApi("on-device").api, MODEL, false, "phone");
+      expect(result.mode).toBe("local");
+      expect(result.stops.find((s) => s.stop.id === "local")!.available).toBe(true);
+      expect(result.caption).toBeNull();
     });
 
     test("signed out, Audio only cannot be requested at all", async () => {
