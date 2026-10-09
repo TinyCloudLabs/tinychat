@@ -37,7 +37,8 @@ test("only the recorder's own files call the VoiceNotes plugin", () => {
     expect.arrayContaining(["capture/recorder/voiceNoteRecorderController.ts", "lib/voiceNotes/recorderSaves.ts", "chat/OfflineVoiceNotes.tsx"]),
   );
   const deletes = sources(SRC).filter((path) => /VoiceNotes\.deleteAudio\(/.test(readFileSync(path, "utf8")))
-    .map((path) => relative(SRC, path));
+    .map((path) => relative(SRC, path))
+    .sort();
   expect(deletes).toEqual(["lib/voiceNotes/legacyMigration.ts", "lib/voiceNotes/recorderSaves.ts"]);
   const savesSource = readFileSync(join(SRC, "lib/voiceNotes/recorderSaves.ts"), "utf8");
   expect(savesSource.match(/VoiceNotes\.deleteAudio\(/g)).toHaveLength(1);
