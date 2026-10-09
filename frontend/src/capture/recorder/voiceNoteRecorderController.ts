@@ -37,8 +37,12 @@ import {
   savePendingRecordings,
 } from "@/lib/voiceNotes/recorderSaves";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { adoptNote, deleteNote, loadNote, parseMomentLines, saveNote, type RecordingMoment } from "@/lib/voiceNotes/recordingNotes";
+import { readRecordingNoteFromSpace, syncRecordingNote } from "@/lib/voiceNotes/voiceNoteStore";
+import { assertCurrent, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import { FINALIZATION_PENDING, limitNoticeText } from "./recorderCopy";
 import { autoStopIsCurrent, initialRecorderState, recorderReducer, type RecorderEvent, type RecorderMic, type RecorderState } from "./recorderReducer";
+import { recordedElapsedAt } from "./recordedElapsed";
 
 const micFromStatus = (status: CaptureStatus | MicStateEvent): RecorderMic =>
   ({ state: status.state, reason: status.reason, input: status.input ?? null });
@@ -64,10 +68,16 @@ export interface RecorderTranscriberChoice {
 export type SetTranscriberResult = TranscriberChoiceResult;
 export type TranscriberScope = TranscriberChoiceScope;
 export type RecorderTranscriber = RecorderTranscriberChoice;
+export interface RecorderNote { md: string; moments: RecordingMoment[] }
 
 export interface VoiceNoteRecorderController {
   getState(): RecorderState;
   getTranscriber(): RecorderTranscriberChoice;
+  getNote(): RecorderNote | null;
+  /** Resolves after the Markdown is durable on this phone; space sync is debounced. */
+  setNoteText(md: string): Promise<void>;
+  /** Tap-time recorded clock only. The UI writes a Markdown line if the moment is kept. */
+  markMoment(): number;
   setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
   setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   subscribe(listener: () => void): () => void;
@@ -102,12 +112,51 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
   };
   let choice = defaultChoice();
+  let note: RecorderNote | null = null;
+  let noteId: string | null = null;
+  let noteLoadVersion = 0;
+  let noteSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  const noteAccount = tcw.did && tcw.spaceId ? { did: tcw.did, spaceId: tcw.spaceId,
+    generation: currentAccountGeneration() } : null;
+  const checkNoteAccount = () => {
+    if (!noteAccount) throw new Error("No account owns this recording note");
+    assertCurrent(noteAccount);
+    if (tcw.did !== noteAccount.did || tcw.spaceId !== noteAccount.spaceId) throw new Error("Recording note account changed");
+  };
   let onSaved: ((recording: VoiceNoteRecording) => void) | undefined;
   let onPresent: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
 
   const notify = () => { for (const listener of [...listeners]) listener(); };
+  const currentNoteId = () => state.recordingId ?? state.lastSaved?.id ?? null;
+  const followNote = (force = false) => {
+    const id = currentNoteId();
+    if (id === noteId && !force) return;
+    noteId = id;
+    note = null;
+    const version = ++noteLoadVersion;
+    if (!id) return;
+    void (async () => {
+      let stored = await loadNote(id);
+      if (!stored && tcw.did && state.phase === "idle" && state.outcome === "saved") {
+        const remote = await readRecordingNoteFromSpace(tcw, id);
+        if (remote) stored = await adoptNote(remote);
+      }
+      if (version !== noteLoadVersion || noteId !== id) return;
+      note = stored ? { md: stored.md, moments: stored.moments } : null;
+      notify();
+    })().catch((error: unknown) => console.warn("[VoiceNotes] Could not load recording note", error));
+  };
+  const scheduleNoteSync = (id: string) => {
+    if (!noteAccount || state.outcome !== "saved" || state.lastSaved?.id !== id) return;
+    if (noteSyncTimer) clearTimeout(noteSyncTimer);
+    noteSyncTimer = setTimeout(() => {
+      noteSyncTimer = null;
+      void syncRecordingNote(tcw, id, checkNoteAccount).catch((error: unknown) =>
+        console.warn("[VoiceNotes] Could not sync recording note", error));
+    }, 500);
+  };
   const refreshChoice = () => {
     const live = state.phase === "recording" && state.recordingId !== null && nativeOptions !== null;
     const next: RecorderTranscriberChoice = live
@@ -126,10 +175,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
   const send = (event: RecorderEvent) => {
+    const before = state;
     const next = recorderReducer(state, event);
     if (next === state) return;
     state = next;
     refreshChoice();
+    followNote(next.outcome === "saved" && before.outcome !== "saved" && note === null);
     notify();
   };
 
@@ -273,6 +324,30 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   return {
     getState: () => state,
     getTranscriber: () => choice,
+    getNote: () => note,
+    async setNoteText(md) {
+      const id = currentNoteId();
+      if (!id) throw new Error("No recording is selected for notes");
+      const before = note;
+      const version = ++noteLoadVersion;
+      note = { md, moments: parseMomentLines(md) };
+      notify();
+      try {
+        const saved = await saveNote(id, md);
+        if (noteId === id && version === noteLoadVersion) {
+          note = { md: saved.md, moments: saved.moments };
+          notify();
+        }
+        scheduleNoteSync(id);
+      } catch (error) {
+        if (noteId === id && version === noteLoadVersion) { note = before; notify(); }
+        throw error;
+      }
+    },
+    markMoment() {
+      if (state.phase !== "recording" || !state.recordingId) throw new Error("No live recording to mark");
+      return Math.floor(recordedElapsedAt(state));
+    },
     async setTranscriber(id, { scope, waitForModel = false }) {
       if (!available || id === "assemblyai") return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
@@ -424,6 +499,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         });
       return () => {
         attached = false;
+        if (noteSyncTimer) {
+          clearTimeout(noteSyncTimer);
+          noteSyncTimer = null;
+          if (noteAccount && noteId) void syncRecordingNote(tcw, noteId, checkNoteAccount).catch((error: unknown) =>
+            console.warn("[VoiceNotes] Could not sync recording note", error));
+        }
         unsubscribePreference();
         for (const handle of handles) void handle.then((h) => h.remove());
       };
@@ -578,6 +659,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
           return;
         }
       } else {
+        try { await deleteNote(id); }
+        catch (caught) {
+          send({ type: "DISCARD_FAILED", id: shown, error: `Could not delete the recording note: ${messageOf(caught)}`, committed: true });
+          return;
+        }
         clearDiscarded(id);
         if (shown && shown !== id) clearDiscarded(shown);
       }

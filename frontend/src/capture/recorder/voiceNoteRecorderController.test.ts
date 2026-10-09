@@ -15,6 +15,7 @@ import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin
 import { setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
+import { loadNote } from "@/lib/voiceNotes/recordingNotes";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -153,6 +154,58 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("note autosave survives a controller reload during native capture", async () => {
+    const first = controller();
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    const id = currentId!;
+    await first.setNoteText("# Draft\n- **0:07** hallway");
+    expect((await loadNote(id))?.md).toBe("# Draft\n- **0:07** hallway");
+    detach();
+
+    const reopened = controller();
+    const remove = reopened.attach();
+    await tick();
+    await tick();
+    expect(reopened.getState().recordingId).toBe(id);
+    expect(reopened.getNote()).toEqual({ md: "# Draft\n- **0:07** hallway",
+      moments: [{ atMs: 7_000, label: "hallway" }] });
+    remove();
+  });
+
+  test("discard deletes the local note with its native recording", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const id = currentId!;
+    await recorder.setNoteText("To discard");
+    await recorder.discard();
+    expect(await loadNote(id)).toBeNull();
+    expect(recorder.getNote()).toBeNull();
+    detach();
+  });
+
+  test("a moment reads the native recorded clock across a long user pause and writes nothing", async () => {
+    const originalNow = Date.now;
+    let now = 100_000;
+    Date.now = () => now;
+    try {
+      const { recorder, detach } = await attached();
+      await recorder.record();
+      const id = currentId!;
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 20_000 });
+      now += 5_000;
+      expect(recorder.markMoment()).toBe(25_000);
+      fake.emit("micState", { id, state: "paused", reason: "user", elapsedMs: 25_000 });
+      now += 40_000;
+      expect(recorder.markMoment()).toBe(25_000);
+      fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 25_000 });
+      expect(recorder.markMoment()).toBe(25_000);
+      expect(await loadNote(id)).toBeNull();
+      detach();
+    } finally { Date.now = originalNow; }
+  });
+
   test("the recorder route control journals Private cloud after first-use consent", async () => {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });
