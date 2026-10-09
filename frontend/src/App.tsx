@@ -854,6 +854,8 @@ export function App() {
     else if (state !== "booting") setOfflineCapture(false);
   }, [state]);
   const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
+  const signedOutLocalHome = voiceNotesInApp && !LOCAL_VALIDATION && state === "unauthenticated"
+    && globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1";
 
   // The pending-count badge follows the drain record's store directly — no
   // polling, no second count, no state of its own. Whichever path settles the
@@ -1062,15 +1064,9 @@ export function App() {
           </AgentAccessProvider>
         ) : (
           <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
-            <BootSurface
-              state={state}
-              error={error}
-              onAction={authAction}
-              voiceNotes={offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} /> : null}
-            />
-            {voiceNotesInApp && !LOCAL_VALIDATION && state === "unauthenticated" &&
-              globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1" &&
-              <LocalCaptureHome onSignIn={authAction} />}
+            {offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} />
+              : signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction} />
+                : <BootSurface state={state} error={error} onAction={authAction} />}
           </main>
         )}
       </div>

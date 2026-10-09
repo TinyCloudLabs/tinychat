@@ -211,12 +211,9 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
           </AgentAccessProvider>
         ) : (
           <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
-            <BootSurface
-              state={state}
-              error={null}
-              onAction={() => {}}
-              voiceNotes={state === "offline" && voiceNotesInApp ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider> : null}
-            />
+            {state === "offline" && voiceNotesInApp
+              ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider>
+              : <BootSurface state={state} error={null} onAction={() => {}} />}
           </main>
         )}
       </div>

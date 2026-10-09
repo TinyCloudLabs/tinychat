@@ -48,8 +48,9 @@ test("App mounts RecorderProvider exactly once above the auth gate", () => {
   expect(app.match(/<LiveEdge \/>/g)).toHaveLength(1);
 });
 
-test("offline local home consumes the same recorder above BootSurface", () => {
+test("offline local home consumes the same recorder above the auth gate", () => {
   const app = readFileSync(join(SRC, "App.tsx"), "utf8");
   expect(app).not.toContain("<OfflineVoiceNotes");
-  expect(app).toContain("<LocalCaptureHome did={did} offline");
+  expect(app).toContain("offlineRecorder ? <LocalCaptureHome did={did} offline");
+  expect(app).toContain("signedOutLocalHome ? <LocalCaptureHome onSignIn={authAction}");
 });
