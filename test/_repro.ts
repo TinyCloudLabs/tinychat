@@ -33,22 +33,39 @@ for (let i = 0; i < N; i++) {
     if (blank.length) {
       fails++; 
       const probe = await page.evaluate(async () => {
-        const r = (window as any).__halo; const gl = r.gl; const out: any[] = [];
-        const orig = r.flushBatch.bind(r);
-        r.flushBatch = (now: number) => {
-          const batch = [...r.batch];
-          for (const e of r.batch) {
-            const px = new Uint8Array(4);
-            gl.readPixels(e.atlasX + (e.pixelSize >> 1), e.atlasY + (e.pixelSize >> 1), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-            out.push(["gl", e.pixelSize, e.atlasX, e.atlasY, Array.from(px)]);
-          }
-          orig(now);
-          for (const e of batch) out.push(["after", e.pixelSize, Array.from(e.context.getImageData(e.pixelSize >> 1, e.pixelSize >> 1, 1, 1).data)]);
+        const r = (window as any).__halo; const gl = r.gl; const res: any = {};
+        const entries = [...r.entries];
+        const read = () => entries.map((e: any) => e.context.getImageData(e.pixelSize >> 1, e.pixelSize >> 1, 1, 1).data[3]);
+        const variants: Record<string, { pre?: () => void; direct?: boolean; keep?: boolean }> = {
+          baseline: {},
+          finish: { pre: () => gl.finish() },
+          readpx: { pre: () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)) },
+          direct: { direct: true },
+          keep: { keep: true },
         };
-        for (const e of r.entries) e.lastDraw = 0;
-        r.frameLoop.start();
-        await new Promise((res) => setTimeout(res, 400));
-        return out;
+        const orig = r.flushBatch;
+        res.initial = read();
+        for (const [name, v] of Object.entries(variants)) {
+          r.flushBatch = (now: number) => {
+            if (r.batch.length === 0) return;
+            v.pre?.();
+            const bitmap = v.direct ? null : r.canvas.transferToImageBitmap();
+            const src = bitmap ?? r.canvas;
+            for (const e of r.batch) {
+              e.context.clearRect(0, 0, e.pixelSize, e.pixelSize);
+              e.context.drawImage(src, e.atlasX, 1024 - e.atlasY - e.pixelSize, e.pixelSize, e.pixelSize, 0, 0, e.pixelSize, e.pixelSize);
+              e.lastDraw = now;
+            }
+            if (!v.keep) bitmap?.close();
+            r.batch.length = 0;
+          };
+          for (const e of entries) { e.context.clearRect(0, 0, e.pixelSize, e.pixelSize); e.lastDraw = 0; }
+          r.frameLoop.start();
+          await new Promise((res2) => setTimeout(res2, 500));
+          res[name] = read();
+        }
+        r.flushBatch = orig;
+        return res;
       });
       console.log("PROBE", JSON.stringify(probe));
       console.log(`FAIL run ${i} ${theme}`, JSON.stringify(res.out));
