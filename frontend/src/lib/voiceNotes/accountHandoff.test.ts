@@ -30,6 +30,8 @@ test("successful handoff is durable before credentials may clear; next recording
   expect(await fake.plugin.status()).toMatchObject({ owner: null, options: { transcriber: "on-device" } });
   const note = await fake.plugin.stop();
   expect(note.owner).toBeNull();
+  expect((await fake.plugin.listPending()).recordings.map((entry) => entry.id)).toContain(note.id);
+  expect((await fake.plugin.localAudioUrl({ id: note.id })).url).toContain(note.id);
   const claimed = await fake.plugin.setCaptureDefaults({ accountDid: "did:example:B", transitionGen: 4,
     transcriber: "on-device", identifySpeakers: false });
   expect(claimed.claimed).toEqual([note.id]);
@@ -114,4 +116,20 @@ test("process death after each acknowledged step recovers without assigning a ne
     await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 3, transcriber: "on-device", identifySpeakers: false });
     expect((await fake.plugin.listPending()).recordings.find((item) => item.id === note.id)?.owner).toBe(did);
   }
+});
+
+test("a live recording keeps the first account that signed in during it", async () => {
+  const fake = createFakeVoiceNotes();
+  const session = await fake.plugin.start();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+    transcriber: "on-device", identifySpeakers: false });
+  expect((await fake.plugin.status()).owner).toBe(did);
+  await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 2 });
+  await fake.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 3 });
+  await fake.plugin.setCaptureDefaults({ accountDid: "did:example:B", transitionGen: 4,
+    transcriber: "on-device", identifySpeakers: false });
+  const saved = await fake.plugin.stop();
+  expect(saved.id).toBe(session.id);
+  expect(saved.owner).toBe(did);
+  expect(saved.ownerUnknown).toBe(false);
 });
