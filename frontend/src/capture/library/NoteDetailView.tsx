@@ -214,6 +214,11 @@ function Transcript(props: NoteDetailViewProps & { item: LibraryItem }) {
           <p className="max-w-[68ch] whitespace-pre-wrap break-words text-body" data-testid="voice-note-transcript-text">
             {savedText(metadata)}
           </p>
+        ) : metadata.status === "ok" && metadata.metadata.transcription_outcome === "transcribed" ? (
+          <div className="flex flex-wrap items-center gap-3" data-testid="voice-note-transcript-missing">
+            <p className="text-callout text-muted-foreground">Couldn’t load this note’s full transcript.</p>
+            <Button type="button" variant="outline" onClick={props.onRetry}>Try again</Button>
+          </div>
         ) : (
           // A plain function of its props (no hooks), so its "nothing to say" is known here.
           VoiceNoteTranscriptionStatus({
@@ -271,6 +276,10 @@ export function NoteDetailView(props: NoteDetailViewProps) {
       </header>
       {props.loadAudio ? (
         <MeetingAudioPlayer key={item.id} load={props.loadAudio} />
+      ) : item.source === VOICE_NOTE_SOURCE && meta && Object.keys(meta).length === 0 ? (
+        <p role="status" className="text-callout text-muted-foreground" data-testid="voice-note-saving-from-phone">
+          Saving from your phone…
+        </p>
       ) : item.source === UPLOAD_MEETING_SOURCE && metadata?.status === "ok" && !audioKept ? (
         <p className="text-callout text-muted-foreground" data-testid="note-audio-missing">
           Only the transcript was saved; the audio wasn’t stored.

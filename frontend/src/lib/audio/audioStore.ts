@@ -91,6 +91,7 @@ export class AudioStoreQuotaError extends AudioStoreError {
 
 interface RetryOptions {
   signal?: AbortSignal;
+  schedule?: <T>(call: () => Promise<T>) => Promise<T>;
   /** Waits before each retry of a transient failure; its length bounds the retries. Tests pass zeros. */
   retryDelaysMs?: readonly number[];
 }
@@ -199,7 +200,7 @@ async function withRetry<T>(call: () => Promise<Result<T>>, opts: RetryOptions):
   const delays = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
   for (let attempt = 0; ; attempt++) {
     if (signal?.aborted) throw abortError();
-    const res = await call();
+    const res = await (opts.schedule ? opts.schedule(call) : call());
     if (!res.ok && (res.error.code === "ABORTED" || signal?.aborted)) throw abortError();
     if (res.ok || attempt >= delays.length || !isTransient(res.error)) return res;
     await sleep(delays[attempt]!, signal);

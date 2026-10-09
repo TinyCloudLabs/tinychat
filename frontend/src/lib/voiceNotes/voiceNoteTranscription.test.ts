@@ -15,7 +15,7 @@
 //   9. a note whose outcome is saved is never transcribed again, even if its PTX delete failed.
 
 import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { _resetConnectorSchemaMemoForTests, transcriptKvKey } from "../connectors/connectorStore";
 import {
@@ -34,6 +34,9 @@ import {
   type PtxPutResponse,
 } from "../privateCloud";
 import { base64ToBytes, bytesToBase64, type AudioDecoder } from "./voiceNoteAudio";
+import { createFakeVoiceNotes } from "./fakeVoiceNotes";
+import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
+import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   VOICE_NOTE_SOURCE,
   listVoiceNotes,
@@ -74,6 +77,16 @@ const CAPS: PrivateCloudCapabilities = {
   admission: "open",
 };
 const AUDIO = { mimeType: "audio/mp4", base64: bytesToBase64(new Uint8Array([1, 2, 3, 4])) };
+const originalVoiceNotes = VoiceNotes;
+beforeEach(() => {
+  const fake = createFakeVoiceNotes();
+  fake.plugin.listPending = async () => ({ recordings: [{ ...RECORDING, ledger: {
+    transcriptSync: { state: "pending", rev: 0, at: null },
+  }, owner: "did:test:voice", ownerUnknown: false } as never] });
+  fake.plugin.getTranscript = async () => ({ transcript: null });
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+});
+afterEach(() => __setVoiceNotesForTests(originalVoiceNotes, { available: null }));
 
 const silentDecoder = (seconds = 1): AudioDecoder => async (_bytes, sampleRate) => ({
   channels: [new Float32Array(Math.round(seconds * sampleRate)).fill(0.25)],
@@ -639,7 +652,7 @@ describe("transcript normalization", () => {
   });
 
   test("the save carries the desktop's engine metadata; no sentences is the no-speech outcome", () => {
-    const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z");
+    const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1);
     expect(prepared.speakers).toEqual(["You"]);
     expect(prepared.metadata).toEqual({
       transcription_engine: "private-cloud",
@@ -652,7 +665,7 @@ describe("transcript normalization", () => {
       speaker_labels: "single-speaker",
       transcribed_at: "2026-10-03T10:00:00.000Z",
     });
-    const silent = prepareVoiceNoteTranscript({ ...TRANSCRIPT, segments: [] }, "2026-10-03T10:00:00.000Z");
+    const silent = prepareVoiceNoteTranscript({ ...TRANSCRIPT, segments: [] }, "2026-10-03T10:00:00.000Z", 1);
     expect(silent.sentences).toEqual([]);
     expect(silent.metadata.transcription_outcome).toBe("no_speech");
   });
@@ -674,6 +687,7 @@ function sqliteSpace() {
     }
   };
   return {
+    sqlite,
     kv,
     tcw: {
       did: "did:test:voice",
@@ -713,6 +727,55 @@ const RECORDING = {
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
 
+  test("a note owned by another account is rejected before contacting private cloud", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+    const list = VoiceNotes.listPending.bind(VoiceNotes);
+    VoiceNotes.listPending = async () => ({ recordings: (await list()).recordings.map((note) => ({ ...note, owner: "did:other" })) });
+    const h = harness({});
+    await expect(transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+      sourceId: "rec-1", report: () => {} })).rejects.toMatchObject({ code: "transcript_save_failed" });
+    expect(h.calls).toEqual([]);
+  });
+
+  test("Library Transcribe saves other-device and old random-id notes absent from this phone", async () => {
+    for (const rowId of ["vn-rec-1", "older-random-row"]) {
+      _resetConnectorSchemaMemoForTests();
+      const space = sqliteSpace();
+      expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
+      if (rowId !== "vn-rec-1") space.sqlite.query("UPDATE connector_meeting SET id = ? WHERE id = 'vn-rec-1'").run(rowId);
+      VoiceNotes.listPending = async () => ({ recordings: [] });
+      VoiceNotes.getTranscript = async () => { throw new Error("No phone transcript read expected"); };
+      const h = harness({});
+      expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+        sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+      expect(h.creates).toHaveLength(1);
+      expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
+    }
+  });
+
+  test("a claimed iOS v1 phone copy without a ledger can be transcribed", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING, version: 1,
+      owner: "did:test:voice", ownerUnknown: false } as never] });
+    const h = harness({});
+    expect(await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+      sourceId: "rec-1", report: () => {} })).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1 });
+  });
+
+  test("only diarizing metadata sets the commit's speaker-label flag", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    for (const [index, label] of ["single-speaker", "diarized", "channels", "channel-you-others", "none"].entries()) {
+      const prepared = prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", index + 1);
+      prepared.metadata.speaker_labels = label;
+      expect((await saveVoiceNoteTranscript(space.tcw, "rec-1", prepared)).ok).toBe(true);
+      expect((await readTranscriptCommit(space.tcw, "rec-1"))?.speakerLabels).toBe(index > 0 && index < 4);
+    }
+  });
+
   test("the transcript lands on the note's transcript key and row, then the PTX job is deleted", async () => {
     const space = sqliteSpace();
     expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android")).ok).toBe(true);
@@ -726,6 +789,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
       now: () => new Date("2026-10-03T10:00:00.000Z"),
     });
     expect(outcome).toBe("transcribed");
+    expect(await readTranscriptCommit(space.tcw, "rec-1")).toMatchObject({ rev: 1, speakerLabels: false });
     expect(JSON.parse(space.kv.get(transcriptKvKey(VOICE_NOTE_SOURCE, "rec-1")) as string)).toEqual([
       { index: 0, speaker_name: "You", text: "Remember to book the venue.", start_time: 0.5, end_time: 9 },
     ]);
@@ -787,7 +851,7 @@ describe("transcribeVoiceNote (one note end to end)", () => {
   test("a note whose row already records an outcome is not transcribed again; a leftover job is deleted", async () => {
     const space = sqliteSpace();
     await saveVoiceNote(space.tcw, RECORDING, AUDIO, "android");
-    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z"));
+    await saveVoiceNoteTranscript(space.tcw, "rec-1", prepareVoiceNoteTranscript(TRANSCRIPT, "2026-10-03T10:00:00.000Z", 1));
     const h = harness({});
     // An older build saved the transcript, then lost the race to forget its job.
     h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });

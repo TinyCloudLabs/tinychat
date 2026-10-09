@@ -51,7 +51,9 @@ function fakeSpace() {
   const tcw = {
     did: `did:test:library-${spaces}`,
     spaceId: `library-${spaces}`,
-    sql: { db: () => ({ query: (sql: string) => call(sql.includes("WHERE source IN") ? "list" : "metadata") }) },
+    sql: { db: () => ({ query: (sql: string) => sql.includes("sqlite_schema") || sql.includes("FROM connector_meeting g")
+      ? Promise.resolve({ ok: true, data: { rows: [] } })
+      : call(sql.includes("WHERE source IN") ? "list" : "metadata") }) },
     kv: { get: () => call("transcript") },
   } as unknown as TinyCloudWeb;
   return {
@@ -149,9 +151,8 @@ describe("useLibrary, mounted", () => {
     // Something lands while the note's metadata is out: the list read waits its turn.
     await act(async () => captureEvents.emit("library-changed"));
     await space.answer("metadata", { ok: true, data: { rows: [[JSON.stringify({ capture: { platform: "ios" } })]] } });
-    await space.answer("transcript", { ok: false, error: { code: "KV_NOT_FOUND", message: "none" } });
     await space.answer("list", listed("b", "a"));
-    expect(space.kinds).toEqual(["list", "metadata", "transcript", "list"]);
+    expect(space.kinds).toEqual(["list", "metadata", "list"]);
     expect(seen.at(-1)!.note.reads.metadata?.status).toBe("ok");
     expect(seen.at(-1)!.note.reads.transcript?.status).toBe("absent");
     expect(space.most()).toBe(1);

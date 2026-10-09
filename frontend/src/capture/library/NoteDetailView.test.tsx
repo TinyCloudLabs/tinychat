@@ -45,6 +45,17 @@ function render(patch: Partial<NoteDetailViewProps> = {}) {
 }
 
 describe("NoteDetailView", () => {
+  test("an inserted voice-note row awaiting its audio explains its state", () => {
+    expect(render({ item: VOICE, loadAudio: null, metadata: { status: "ok", metadata: {} }, transcript: { status: "absent" } }))
+      .toContain("Saving from your phone…");
+  });
+  test("a committed transcript with a missing body does not show its preview as full text", () => {
+    const html = render({ item: VOICE, metadata: { status: "ok", metadata: {
+      transcription_outcome: "transcribed", transcript_text: null,
+    } }, transcript: { status: "absent" }, transcription: transcription() });
+    expect(html).toContain("Couldn’t load this note’s full transcript.");
+    expect(html).not.toContain("Not transcribed");
+  });
   test("loading, failed (Try again) and absent, before the note is known", () => {
     expect(render({ item: null, listStatus: "loading" })).toContain('data-testid="note-loading"');
     const failed = render({ item: null, listStatus: "failed" });

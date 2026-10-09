@@ -1,13 +1,13 @@
-// Voice notes in the user's own TinyCloud space, stored the way every other
-// capture source is: one `connector_meeting` row (SQL) plus bodies in KV under
-// the granted `connectors/` prefix. No new manifest permission is needed, and
-// a voice note is a Library item like any meeting.
+// Voice notes in the owner's TinyCloud space: one indexed live
+// `connector_meeting` row, a `voice_note_transcript` commit record, and bodies
+// in KV under the granted `connectors/` prefix.
 //
 //   SQL  connector_meeting  source = "exo-voice-note", source_id = recording id
 //   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/p/000000  raw audio, part 0 (≤ 1 MiB)
 //   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/p/000001  part 1, ...
 //   KV   {APP_ID}/connectors/exo-voice-note/audio/{id}/manifest  JSON, written LAST
-//   KV   {APP_ID}/connectors/exo-voice-note/transcript/{id}      FirefliesSentence[]
+//   KV   {APP_ID}/connectors/exo-voice-note/transcript/{id}      old-reader mirror
+//   KV   {APP_ID}/connectors/exo-voice-note/transcript-rev/{id}/{hash} immutable body
 //
 // Notes saved before TC-517 hold their audio as ONE value at
 // `{APP_ID}/connectors/exo-voice-note/audio/{id}` (JSON { mimeType, base64 });
@@ -19,9 +19,8 @@
 // minutes). Parts, manifest, resume and read checks are the shared audio
 // store's (lib/audio/audioStore.ts), the same one uploaded meeting audio uses.
 //
-// The transcript key (transcriptKvKey) is written empty with the note and
-// filled when private cloud transcription lands (saveVoiceNoteTranscript);
-// the Library and the meeting chat corpus read it like any other.
+// The fixed transcript key is created empty for legacy readers. New readers
+// follow the commit record, so a late old-client PUT cannot change their view.
 
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -43,11 +42,15 @@ import {
   CONNECTORS_KV_PREFIX,
   CONNECTORS_SQL_DB_NAME,
   ensureSchema,
-  upsertMeeting,
+  transcriptKvKey,
   type StoreResult,
   type UpsertMeetingOutcome,
 } from "../connectors/connectorStore";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
+import type { LocalTranscript } from "./nativeVoiceNotes";
+import { readLegacyTranscriptWinner, readTranscriptCommit, legacyTranscriptMetadata, type TranscriptCommit } from "./voiceNoteCommits";
+import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity, patchVoiceNoteAudio } from "./voiceNoteRows";
+import { runOnSpaceLane } from "../spaceWriteLane";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
 
 /** `connector_meeting.source` for every voice note. */
@@ -96,6 +99,8 @@ export interface StoreAudioOptions {
   onProgress?: (storedBytes: number, totalBytes: number) => void;
   /** Injected in tests. */
   retryDelaysMs?: readonly number[];
+  schedule?: <T>(call: () => Promise<T>) => Promise<T>;
+  checkpoint?: () => void;
 }
 
 /** Storage error codes the voice notes UI tells apart. */
@@ -180,8 +185,9 @@ export interface VoiceNoteListItem {
 
 const TRANSCRIPT_PREVIEW_CHARS = 280;
 
-/** Reads the transcript fields saveVoiceNoteTranscript writes; anything else is "none". */
-export function voiceNoteTranscriptState(metadata: unknown): VoiceNoteTranscriptState {
+/** A commit record is authoritative; metadata is read only in legacy format. */
+export function voiceNoteTranscriptState(metadata: unknown, commit?: TranscriptCommit | null): VoiceNoteTranscriptState {
+  if (commit) return { status: commit.outcome, preview: commit.preview };
   let parsed = metadata;
   if (typeof parsed === "string") {
     try {
@@ -193,6 +199,12 @@ export function voiceNoteTranscriptState(metadata: unknown): VoiceNoteTranscript
   if (!parsed || typeof parsed !== "object") return { status: "none", preview: null };
   const m = parsed as Record<string, unknown>;
   if (m.transcription_outcome === "no_speech") return { status: "no_speech", preview: null };
+  if (m.transcription_outcome === "transcribed") {
+    const text = typeof m.transcript_text === "string" ? m.transcript_text.trim() : "";
+    return { status: "transcribed", preview: text
+      ? text.length > TRANSCRIPT_PREVIEW_CHARS ? `${text.slice(0, TRANSCRIPT_PREVIEW_CHARS).trimEnd()}…` : text
+      : null };
+  }
   if (typeof m.transcript_text === "string" && m.transcript_text.trim().length > 0) {
     const text = m.transcript_text.trim();
     return {
@@ -203,11 +215,17 @@ export function voiceNoteTranscriptState(metadata: unknown): VoiceNoteTranscript
   return { status: "none", preview: null };
 }
 
+export async function readVoiceNoteTranscriptState(tcw: TinyCloudWeb, sourceId: string): Promise<VoiceNoteTranscriptState> {
+  const commit = await readTranscriptCommit(tcw, sourceId);
+  if (commit) return voiceNoteTranscriptState(null, commit);
+  const legacy = await readLegacyTranscriptWinner(tcw, sourceId);
+  return voiceNoteTranscriptState(legacyTranscriptMetadata(legacy));
+}
+
 /**
- * Audio first (every part, then its manifest), then the row: a listed note
- * always has audio behind it. A failure anywhere leaves the recording on the
- * phone (pending); saving it again resumes after the parts already stored, and
- * the row is an upsert on the recording id, so nothing is ever duplicated.
+ * Establish the identity row, put the empty legacy key, then upload audio and
+ * patch only the audio fields. A failure leaves the recording on the phone;
+ * retries resume parts and resolve the same indexed row.
  */
 export async function saveVoiceNote(
   tcw: TinyCloudWeb,
@@ -216,43 +234,30 @@ export async function saveVoiceNote(
   platform: string,
   opts: StoreAudioOptions = {},
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
-  const audio = await putVoiceNoteAudio(tcw, recording.id, source, opts);
-  if (!audio.ok) return audio;
-  const base = voiceNoteAudioKvKey(recording.id);
-  return upsertMeeting(
-    tcw,
-    {
-      id: crypto.randomUUID(),
-      source: VOICE_NOTE_SOURCE,
-      sourceId: recording.id,
-      title: voiceNoteTitle(recording.startedAt),
-      startedAt: new Date(recording.startedAt).toISOString(),
-      durationSecs: Math.round(recording.durationMs / 1000),
-      organizerEmail: null,
-      participants: [],
-      summaryOverview: null,
-      summaryActionItems: null,
-      keywords: null,
-      meetingType: null,
-      metadata: {
-        audio_kv_key: base,
-        audio_format: "parts-v1",
-        audio_mime_type: audio.data.mimeType,
-        audio_bytes: audio.data.size,
-        audio_parts: audio.data.parts.length,
-        // Where stored-audio readers (TC-593's Library player) look: parts + manifest under `base`.
-        audio: { stored: true, base },
-        capture: {
-          platform,
-          duration_ms: recording.durationMs,
-          silenced_ms: recording.silencedMs,
-          silenced_events: recording.silencedEvents,
-          no_signal_ms: recording.noSignalMs,
-        },
-      },
-    },
-    [],
-  );
+  try {
+    opts.checkpoint?.();
+    const before = await ensureVoiceNoteIdentity(tcw, opts.checkpoint);
+    if (before.status !== "established") return { ok: false, error: { code: before.status, message: before.reason ?? before.status } };
+    opts.checkpoint?.();
+    const row = await createVoiceNoteRow(tcw, recording, voiceNoteTitle(recording.startedAt), opts.checkpoint);
+    opts.checkpoint?.();
+    const empty = await runOnSpaceLane(() => { opts.checkpoint?.(); return tcw.kv.put(transcriptKvKey(VOICE_NOTE_SOURCE, recording.id), "[]",
+      { ifNoneMatch: "*", contentType: "application/json" }); });
+    if (!empty.ok && !/PRECONDITION|412/i.test(`${empty.error.code} ${empty.error.message}`))
+      return { ok: false, error: { code: empty.error.code ?? "STORE_ERROR", message: empty.error.message } };
+    opts.checkpoint?.();
+    const audio = await putVoiceNoteAudio(tcw, recording.id, source, { ...opts, schedule: (job) =>
+      (opts.schedule ?? runOnSpaceLane)(() => { opts.checkpoint?.(); return job(); }) });
+    if (!audio.ok) return audio;
+    const base = voiceNoteAudioKvKey(recording.id);
+    opts.checkpoint?.();
+    await patchVoiceNoteAudio(tcw, recording, platform, { base, mimeType: audio.data.mimeType,
+      size: audio.data.size, parts: audio.data.parts.length }, opts.checkpoint);
+    return { ok: true, data: { id: row.id, inserted: row.inserted, createdAt: row.createdAt } };
+  } catch (caught) {
+    return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
+      message: caught instanceof Error ? caught.message : String(caught) } };
+  }
 }
 
 /** Newest first. A space with no connectors db yet reads as empty. */
@@ -267,8 +272,7 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
   if (!res.ok) {
     return { ok: false, error: { code: res.error.code ?? "STORE_ERROR", message: `listVoiceNotes: ${res.error.message}` } };
   }
-  // Dedup is app-level (the authorizer forbids UNIQUE): one note per recording id, even if a
-  // racing save ever wrote a second row.
+  // The partial UNIQUE index enforces one live row per recording id.
   const seen = new Set<string>();
   const notes: VoiceNoteListItem[] = [];
   for (const row of res.data.rows) {
@@ -281,7 +285,7 @@ export async function listVoiceNotes(tcw: TinyCloudWeb, limit = 20): Promise<Sto
       title: typeof row[2] === "string" ? row[2] : null,
       startedAt: typeof row[3] === "string" ? row[3] : null,
       durationSecs: typeof row[4] === "number" ? row[4] : null,
-      transcript: voiceNoteTranscriptState(row[5]),
+      transcript: await readVoiceNoteTranscriptState(tcw, sourceId),
     });
   }
   return { ok: true, data: notes };
@@ -318,11 +322,12 @@ export async function readVoiceNoteForTranscription(
       // Unknown length: the audio's own size is checked before it is decoded.
     }
   }
-  return { ok: true, data: { transcript: voiceNoteTranscriptState(row[1]), durationSeconds } };
+  return { ok: true, data: { transcript: await readVoiceNoteTranscriptState(tcw, sourceId), durationSeconds } };
 }
 
 /** What a transcription adds to a note: the sentences for its transcript key and row metadata. */
 export interface VoiceNoteTranscriptSave {
+  rev: number;
   /** Empty when no speech was found: the transcript key stays `[]`. */
   sentences: FirefliesSentence[];
   /** Merged into the row's metadata (engine, provider, model, transcript_text, ...). */
@@ -332,17 +337,17 @@ export interface VoiceNoteTranscriptSave {
 }
 
 /**
- * Write a transcription onto an EXISTING note: the sentences go to the note's
- * transcript key (`transcriptKvKey("exo-voice-note", id)`) and the metadata is
- * merged into its row through upsertMeeting, which keeps the title, start time
- * and duration because they are passed as null. Refuses (rather than create a
- * row with no audio behind it) when the note is gone.
+ * Commit a transcript to an existing note. The immutable body lands first,
+ * then a CAS upsert publishes it in `voice_note_transcript`. The old row and
+ * fixed key are mirrors only.
  */
 export async function saveVoiceNoteTranscript(
   tcw: TinyCloudWeb,
   sourceId: string,
   transcript: VoiceNoteTranscriptSave,
 ): Promise<StoreResult<UpsertMeetingOutcome>> {
+  if (!Number.isSafeInteger(transcript.rev) || transcript.rev < 1)
+    return { ok: false, error: { code: "VOICE_NOTE_REV_REQUIRED", message: "The note's transcript revision is missing" } };
   const schema = await ensureSchema(tcw);
   if (!schema.ok) return schema;
   const existing = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
@@ -355,25 +360,39 @@ export async function saveVoiceNoteTranscript(
   if (existing.data.rows.length === 0) {
     return { ok: false, error: { code: "VOICE_NOTE_NOT_FOUND", message: "saveVoiceNoteTranscript: the voice note no longer exists" } };
   }
-  return upsertMeeting(
-    tcw,
-    {
-      id: crypto.randomUUID(),
-      source: VOICE_NOTE_SOURCE,
-      sourceId,
-      title: null,
-      startedAt: null,
-      durationSecs: null,
-      organizerEmail: null,
-      participants: transcript.speakers.map((name) => ({ name, email: null })),
-      summaryOverview: null,
-      summaryActionItems: null,
-      keywords: null,
-      meetingType: null,
-      metadata: transcript.metadata,
-    },
-    transcript.sentences,
-  );
+  try {
+    const m = transcript.metadata;
+    await commitVoiceNoteTranscript(tcw, sourceId, {
+      rev: transcript.rev, sentences: transcript.sentences,
+      outcome: m.transcription_outcome === "no_speech" ? "no_speech" : "transcribed",
+      text: typeof m.transcript_text === "string" ? m.transcript_text : null,
+      engine: typeof m.transcription_engine === "string" ? m.transcription_engine : null,
+      provider: typeof m.transcript_provider === "string" ? m.transcript_provider : null,
+      model: typeof m.model === "string" ? m.model : null,
+      language: typeof m.language === "string" ? m.language : null,
+      speakerLabels: m.speaker_labels == null ? null
+        : ["diarized", "channels", "channel-you-others"].includes(String(m.speaker_labels)),
+      participants: transcript.speakers,
+      transcribedAt: typeof m.transcribed_at === "string" ? m.transcribed_at : null, metadata: m,
+    });
+    return { ok: true, data: { id: String(existing.data.rows[0]?.[0]), inserted: false,
+      createdAt: new Date().toISOString() } };
+  } catch (caught) {
+    return { ok: false, error: { code: (caught as { code?: string }).code ?? "STORE_ERROR",
+      message: caught instanceof Error ? caught.message : String(caught) } };
+  }
+}
+
+/** T22's on-device lane sends this directly to the commit-table writer. */
+export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscriptSave {
+  const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
+    index, text: segment.text, start_time: segment.start, end_time: segment.end, speaker_name: segment.speaker ?? "You",
+  }));
+  return { rev: local.rev, sentences, speakers: [...new Set(local.segments.map((s) => s.speaker ?? "You"))],
+    metadata: { transcription_outcome: local.outcome, transcript_text: local.outcome === "transcribed"
+      ? local.segments.map((s) => s.text).join("\n") : null, transcription_engine: local.engine,
+      transcript_provider: local.engine, model: local.model, language: local.language,
+      speaker_labels: local.diarized, transcribed_at: local.createdAt } };
 }
 
 export interface LoadAudioOptions {

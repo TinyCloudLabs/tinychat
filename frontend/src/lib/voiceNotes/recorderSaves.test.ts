@@ -212,7 +212,7 @@ describe("saveRecording", () => {
 });
 
 describe("after a reload", () => {
-  test("saved, then a reload: the next run keeps the copy and never saves it again", async () => {
+  test("after a reload, an old localStorage marker cannot suppress a pending native ledger", async () => {
     const storage = withStorage();
     const before = await reloaded();
     const note = recording("reload", 1);
@@ -227,8 +227,8 @@ describe("after a reload", () => {
     // A fresh module: its in-memory guards are gone; the phone and localStorage are not.
     const after = await reloaded();
     const second = await after.savePendingRecordings(tcw);
-    expect(saveCalls).toBe(1);
-    expect(second.saved).toEqual([]);
+    expect(saveCalls).toBe(2);
+    expect(second.saved.map((r) => r.id)).toEqual(["reload"]);
     expect(second.left).toEqual([]);
     expect(phone.pending).toEqual([note]);
     expect(storage.has(saves.VOICE_NOTE_CLOUD_SAVED_KEY)).toBe(true);
