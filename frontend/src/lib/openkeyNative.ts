@@ -10,10 +10,8 @@
 // entries plus capabilities/read. It has no secrets or vault access, so every
 // secrets-dependent flow is gated behind `secretsAvailable()` below.
 //
-// TODO(E1 → prod): `@openkey/sdk-capacitor` is vendored from the TC-774 S2
-// branch at 65c5b63 as a file: tarball (frontend/package.json, vendor/). When the SDK
-// publishes, replace the file: specs in frontend/package.json and
-// mobile/package.json with `"0.1.0"` and delete vendor/.
+// `@openkey/sdk-capacitor` is pinned to the published 0.1.0-beta.0 in
+// frontend/package.json and mobile/package.json.
 
 import { appPlatform, type AppPlatform } from "./platform";
 import type { EIP1193Provider, TinyCloudWebConfig } from "@tinyboilerplate/client";
