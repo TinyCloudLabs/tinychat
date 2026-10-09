@@ -13,11 +13,13 @@ class FakeBridge implements DesktopBridge {
   calls: string[] = [];
   listeners = new Map<string, Set<Callback>>();
   recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number } | null = null;
+  failed: { id: string; segmentId: string; reason: string; error: string; journal: NonNullable<FakeBridge["recover"]> }[] = [];
   elapsed = 0;
   paused = 0;
   current: string | null = null;
   state: "idle" | "recording" | "paused" = "idle";
   selectedId: string | null = null;
+  stopError: Error | null = null;
   now = 1_000_000;
 
   emit(event: string, payload: unknown) {
@@ -40,11 +42,16 @@ class FakeBridge implements DesktopBridge {
     const id = String(args.id ?? "");
     let result: unknown;
     switch (command) {
-      case "recorder_recover": result = this.recover; this.recover = null; break;
+      case "recorder_recover": result = { journal: this.recover, quarantined: this.failed }; this.recover = null; break;
+      case "recorder_acknowledge": result = null; break;
+      case "recorder_failed_list": result = this.failed; break;
+      case "recorder_failed_retry": this.failed = this.failed.filter((item) => item.id !== id); result = []; break;
+      case "recorder_failed_delete": this.failed = this.failed.filter((item) => item.id !== id); result = null; break;
       case "recorder_start": this.current = id; this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_pause": this.state = "paused"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
       case "recorder_resume": this.state = "recording"; result = this.status(); this.emit("exo://recorder-mic-state", result); break;
-      case "recorder_stop": result = { ...this.status(), state: "idle", intent: "stopped" };
+      case "recorder_stop": if (this.stopError) throw this.stopError;
+        result = { ...this.status(), state: "idle", intent: "stopped" };
         this.state = "idle"; this.current = null; this.elapsed = 0; this.paused = 0;
         this.emit("exo://recorder-mic-state", this.status()); break;
       case "recorder_status": result = this.status(); break;
@@ -61,7 +68,9 @@ class FakeBridge implements DesktopBridge {
       }
       case "read_audio_chunk": result = (this.files.get(id) ?? new Uint8Array()).slice(Number(args.offset), Number(args.offset) + Number(args.len)); break;
       case "finalize_audio_file": result = this.files.get(id)?.length ?? 0; break;
-      case "delete_audio_file": this.files.delete(id); result = null; break;
+      case "delete_audio_file": this.files.delete(id);
+        this.failed = this.failed.filter((item) => item.id !== id);
+        result = null; break;
       default: throw new Error(`Unexpected command ${command}`);
     }
     return result as T;
@@ -75,6 +84,83 @@ function rig(bridge = new FakeBridge(), dbName = crypto.randomUUID(), env: IdbEn
 }
 
 describe("desktop recorder adapter", () => {
+  test("reopens a live native capture after WebView reload and can stop it", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.start();
+    bridge.elapsed = 1_500;
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    first.dispose();
+    const reopened = await rig(bridge, dbName, env);
+    const recovery = await reopened.recoverInterrupted();
+    expect(recovery.recovered).toHaveLength(0);
+    expect(bridge.calls).not.toContain("recorder_recover");
+    expect((await reopened.plugin.status()).elapsedMs).toBe(1_500);
+    const note = await reopened.plugin.stop();
+    expect(note.id).toBe("note-1");
+    expect(note.durationMs).toBe(1_500);
+    reopened.dispose();
+  });
+
+  test("native import failure enters quarantine and can be discarded", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed", error: "bad MP3",
+      journal: { id: "note-1", startedAt: bridge.now, recordedMs: 0, pausedMs: 0, maxDurationMs: 10_000 } }];
+    await expect(engine.plugin.stop()).rejects.toThrow("bad MP3");
+    expect((await engine.plugin.listQuarantine()).items).toMatchObject([{ id: "note-1", reason: "write_failed" }]);
+    await engine.plugin.discardFailedRecording({ id: "note-1" });
+    expect((await engine.plugin.listQuarantine()).items).toHaveLength(0);
+    engine.dispose();
+  });
+
+  test("discard writes its tombstone before native stop can fail", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const engine = await rig(bridge, dbName, env);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.stopError = new Error("writer stopped responding");
+    await expect(engine.plugin.discard()).rejects.toThrow("writer stopped responding");
+    expect((await engine.plugin.listPending()).recordings).toHaveLength(0);
+    engine.dispose();
+    bridge.stopError = null;
+    const reopened = await rig(bridge, dbName, env);
+    expect(bridge.state).toBe("idle");
+    await reopened.recoverInterrupted();
+    expect(bridge.files.has("note-1")).toBe(false);
+    reopened.dispose();
+  });
+
+  test("an interrupted discard does not resurrect a failed native segment", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.stopError = new Error("interrupted stop");
+    await expect(first.plugin.discard()).rejects.toThrow("interrupted stop");
+    first.dispose();
+    bridge.stopError = null;
+    bridge.state = "idle"; bridge.current = null;
+    const journal = { id: "note-1", startedAt: bridge.now, recordedMs: 500,
+      pausedMs: 0, maxDurationMs: 10_000 };
+    bridge.recover = journal;
+    bridge.failed = [{ id: "note-1", segmentId: "rec-broken", reason: "write_failed",
+      error: "bad MP3", journal }];
+    const reopened = await rig(bridge, dbName, env);
+    const result = await reopened.recoverInterrupted();
+    expect(result.recovered).toHaveLength(0);
+    expect(result.failed).toHaveLength(0);
+    expect((await reopened.plugin.listQuarantine()).items).toHaveLength(0);
+    expect(bridge.files.has("note-1")).toBe(false);
+    reopened.dispose();
+  });
   test("capabilities do not enable the mobile OnDeviceStt plugin", async () => {
     const engine = await rig();
     expect(engine.plugin.capabilities).toMatchObject({ localTranscription: false, background: true,
