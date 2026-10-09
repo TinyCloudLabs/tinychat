@@ -4,7 +4,9 @@
 //   1. A Recent row is one control; tapping it opens the note.
 //   2. A "couldn't recover" row opens a labelled sheet; Close returns focus to the row.
 //   3. A capture issue with no Library row also shows in the Library list, and behaves the same.
-//   4. Save now on the "on this phone" card calls retryPending.
+//   4. A timed-out row is one keyboard-reachable button that opens its sheet.
+//   5. An open sheet closes when the provider clears its issue.
+//   6. Save now on the "on this phone" card calls retryPending.
 //
 // SOFT_HOME_ENGINE=webkit runs it in WebKit (the phone app's engine); Chromium by default (CI).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -33,7 +35,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await browser?.close();
   running?.stop(true);
-});
+}, 30_000);
 
 async function open(screen: string): Promise<Page> {
   const context = await browser.newContext({
@@ -110,6 +112,47 @@ describe("Soft Capture home interactions (phone)", () => {
     );
     await page.context().close();
   });
+
+  test("a timed-out row is a button reachable by keyboard; its sheet explains, and Close returns focus", async () => {
+    const page = await open("capture-soft-timed-out");
+    const row = page.locator(
+      '[data-testid="capture-recent"] li[data-issue="finalization_timed_out"] button',
+    );
+    expect(await row.getAttribute("aria-label")).toContain(
+      "Saving… · kept on this phone",
+    );
+    await row.focus();
+    await page.keyboard.press("Enter");
+    const sheet = page.getByRole("dialog");
+    await sheet.waitFor({ timeout: 5_000 });
+    expect(await sheet.innerText()).toContain("kept on this phone");
+    expect(await sheet.innerText()).not.toMatch(/Try again|Delete/);
+    await page.keyboard.press("Escape");
+    await sheet.waitFor({ state: "detached", timeout: 5_000 });
+    expect(await row.evaluate((el) => el === document.activeElement)).toBe(
+      true,
+    );
+    await page.context().close();
+  });
+
+  for (const [screen, kind] of [
+    ["capture-soft-clearing-failed", "recoveryFailed"],
+    ["capture-soft-clearing-saving", "finalization_timed_out"],
+  ] as const)
+    test(`an open ${kind} sheet closes when the recorder clears the issue`, async () => {
+      const page = await open(screen);
+      await page
+        .locator(
+          `[data-testid="capture-recent"] li[data-issue="${kind}"] button`,
+        )
+        .tap();
+      const sheet = page.getByRole("dialog");
+      await sheet.waitFor({ timeout: 5_000 });
+      await page.evaluate(() => window.exoUiClearIssues?.());
+      await sheet.waitFor({ state: "detached", timeout: 5_000 });
+      expect(await page.locator(`li[data-issue="${kind}"]`).count()).toBe(0);
+      await page.context().close();
+    });
 
   test("Save now retries the saves waiting on this phone", async () => {
     const page = await open("capture-soft-on-phone");

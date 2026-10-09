@@ -2,7 +2,7 @@
 // use in an empty space, with items (In progress, Recent; the Library beside
 // it from medium up), an upload waiting in In progress, a recording minimised
 // to the island (the rail or the sidebar on wider screens), and the web.
-import { useContext, useMemo, type ReactNode } from "react";
+import { useContext, useMemo, useState, type ReactNode } from "react";
 
 import type { RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { forceSoftHome } from "@/capture/home/softHome";
@@ -81,6 +81,8 @@ const SOFT_IDLE: Partial<RecorderValue> = { available: true, ready: true };
 declare global {
   interface Window {
     exoUiRetryPending?: number;
+    /** The provider clears every capture issue (a save went through), for the interactive screen. */
+    exoUiClearIssues?: () => void;
   }
 }
 const ON_PHONE: Partial<RecorderValue> = {
@@ -105,6 +107,15 @@ const ISSUES_WITH_CARD: Partial<RecorderValue> = {
   captureIssues: { "rec-saving": { kind: "finalization_timed_out" }, "rec-lost": { kind: "recoveryFailed", detail: "native: segment unreadable" } },
 };
 
+function ClearableIssues(props: { issues: NonNullable<RecorderValue["captureIssues"]> }) {
+  const [issues, setIssues] = useState(props.issues);
+  window.exoUiClearIssues = () => setIssues({});
+  const recorder = useMemo<Partial<RecorderValue>>(() => ({ ...SOFT_IDLE, captureIssues: issues }), [issues]);
+  return <SoftHome recorder={recorder} />;
+}
+const LOST = { "rec-lost": { kind: "recoveryFailed", detail: "native: segment unreadable" } } as const;
+const SAVING = { "rec-saving": { kind: "finalization_timed_out" } } as const;
+
 export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-notes", render: () => <SoftHome /> },
   { ...SOFT, id: "capture-soft-empty", render: () => <SoftHome library={false} /> },
@@ -114,5 +125,7 @@ export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-write-failed", render: () => <SoftHome recorder={WRITE_FAILED} /> },
   { ...SOFT, id: "capture-soft-scan-failure", render: () => <SoftHome recorder={SCAN_FAILED} /> },
   { ...SOFT, id: "capture-soft-library-issue", path: "/chat/capture/library", render: () => <SoftHome recorder={RECOVERY_FAILED} /> },
+  { ...SOFT, id: "capture-soft-clearing-failed", interactive: true, render: () => <ClearableIssues issues={LOST} /> },
+  { ...SOFT, id: "capture-soft-clearing-saving", interactive: true, render: () => <ClearableIssues issues={SAVING} /> },
   { ...SOFT, id: "capture-soft-override", render: () => <SoftHome recorder={ISSUES_WITH_CARD} /> },
 ];

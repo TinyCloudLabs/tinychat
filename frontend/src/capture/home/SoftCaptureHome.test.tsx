@@ -140,14 +140,16 @@ describe("capture-issue rows", () => {
   const failed = { kind: "recoveryFailed", detail: "ENOSPC" } as const;
   const writeFailed = { kind: "write_failed", detail: "EIO" } as const;
 
-  test("timed out: 'Saving… · kept on this phone' with a spinner, not a sheet", () => {
+  test("timed out: 'Saving… · kept on this phone' with a spinner, as one button that opens its sheet", () => {
     const html = home({}, { "rec-9": timedOut });
     expect(html).toContain("Saving… · kept on this phone");
     expect(html).toContain('data-testid="soft-row-spinner"');
     expect(html).toContain('data-issue="finalization_timed_out"');
-    expect(html).not.toContain("<button");
+    expect(html).toMatch(/<button[^>]*class="soft-row"/);
+    expect(html).not.toContain('role="group"');
+    expect(html).not.toContain("Needs attention");
     expect(html).toContain(
-      'aria-label="Voice note. Saving… · kept on this phone"',
+      'aria-label="Voice note. Saving… · kept on this phone. Opens details"',
     );
   });
 

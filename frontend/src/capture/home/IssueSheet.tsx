@@ -16,7 +16,6 @@ export function IssueSheet(props: {
   onClose: () => void;
 }) {
   const theme = useSoftTheme();
-  // The copy outlives the issue clearing itself while the sheet fades out.
   const copy = props.issue ? issueSheetCopy(props.issue) : null;
   return (
     <Dialog.Root

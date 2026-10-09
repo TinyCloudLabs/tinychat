@@ -18,6 +18,10 @@ export const HOME_COPY = {
   willRetry: "Exo will retry when it next opens",
   timedOutMeta: "Saving… · kept on this phone",
   recoveryFailedMeta: "Couldn't recover this recording",
+  timedOutSheet: {
+    title: "Saving this recording",
+    body: "Exo is still saving this recording. It is kept on this phone, and Exo will finish it automatically.",
+  },
   writeFailedMeta: "Couldn't save all of this recording",
   needsAttention: "Needs attention",
   opensDetails: "Opens details",

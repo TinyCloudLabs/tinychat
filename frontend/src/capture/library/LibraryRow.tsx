@@ -36,7 +36,7 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         meta={libraryRowMeta(item, props.now, props.grouped)}
         durationSecs={item.durationSecs}
         issue={issue}
-        {...(issue && issueHasSheet(issue) ? { onActivate: (row: HTMLElement) => soft.openIssue(issue, row) } : { href: notePath(item.id) })}
+        {...(issue && issueHasSheet(issue) ? { onActivate: (row: HTMLElement) => soft.openIssue(item.sourceId, row) } : { href: notePath(item.id) })}
         selected={props.selected}
         testId={props.testId ?? (voiceNote ? "voice-note-item" : "library-item")}
         sourceId={voiceNote ? item.sourceId : undefined}

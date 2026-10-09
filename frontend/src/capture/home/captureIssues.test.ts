@@ -10,6 +10,7 @@ import {
   issueMeta,
   issueSheetCopy,
   orphanIssues,
+  sheetIssue,
   recentEntries,
 } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
@@ -63,11 +64,28 @@ describe("issue copy", () => {
     ).not.toMatch(/Try again|Delete/);
   });
 
-  test("a timed-out recording has no sheet: it resolves itself", () => {
+  test("a timed-out recording's sheet explains it is kept on this phone and offers no action", () => {
+    const copy = issueSheetCopy(timedOut);
+    expect(copy.title).toBe("Saving this recording");
+    expect(copy.body).toContain("kept on this phone");
+    expect(JSON.stringify(copy)).not.toMatch(/Try again|Delete/);
+  });
+
+  test("a Library row for a timed-out recording still opens its note; the failures open a sheet", () => {
     expect(issueHasSheet(timedOut)).toBe(false);
-    expect(issueSheetCopy(timedOut)).toBeNull();
     expect(issueHasSheet(failed)).toBe(true);
     expect(issueHasSheet(writeFailed)).toBe(true);
+  });
+
+  test("an open sheet follows the provider's current issue: it changes with it and is gone once it clears", () => {
+    expect(sheetIssue("rec-1", { "rec-1": failed }, true)).toBe(failed);
+    expect(sheetIssue("rec-1", { "rec-1": writeFailed }, true)).toBe(
+      writeFailed,
+    );
+    expect(sheetIssue("rec-1", {}, true)).toBeNull();
+    expect(sheetIssue("rec-1", { "rec-2": failed }, true)).toBeNull();
+    expect(sheetIssue("rec-1", { "rec-1": failed }, false)).toBeNull();
+    expect(sheetIssue(null, { "rec-1": failed }, true)).toBeNull();
   });
 });
 

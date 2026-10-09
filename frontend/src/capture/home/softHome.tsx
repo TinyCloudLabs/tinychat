@@ -7,6 +7,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -14,8 +15,7 @@ import {
 } from "react";
 
 import { recorderFinalEnabled } from "../recorder/final/recorderFinalFlag";
-import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
-import type { CaptureIssues } from "./captureIssues";
+import { sheetIssue, type CaptureIssues } from "./captureIssues";
 import { IssueSheet } from "./IssueSheet";
 import "../recorder/final/soft.css";
 import "./home.css";
@@ -36,8 +36,8 @@ export function softHomeEnabled(): boolean {
 
 export interface SoftHomeValue {
   issues: CaptureIssues;
-  /** A tap on a row whose issue has a sheet. */
-  openIssue: (issue: RecorderCaptureIssue, opener: HTMLElement) => void;
+  /** A tap on a row whose issue has a sheet: the recording's id, and the row to return focus to. */
+  openIssue: (id: string, opener: HTMLElement) => void;
 }
 
 const SoftHomeContext = createContext<SoftHomeValue | null>(null);
@@ -53,19 +53,19 @@ export function SoftHomeProvider(props: {
   issues: CaptureIssues;
   children: ReactNode;
 }) {
-  const [sheetIssue, setSheetIssue] = useState<RecorderCaptureIssue | null>(
-    null,
-  );
+  const [sheetId, setSheetId] = useState<string | null>(null);
   const { enabled, issues } = props;
+  // The sheet shows the provider's current issue for the recording: when it clears (a save went through), the sheet closes.
+  const issue = sheetIssue(sheetId, issues, enabled);
+  useEffect(() => {
+    if (sheetId !== null && issue === null) setSheetId(null);
+  }, [sheetId, issue]);
   // The sheet has no Dialog.Trigger, so Radix can't return focus on its own. The row is passed in: WebKit doesn't focus a tapped button.
   const opener = useRef<HTMLElement | null>(null);
-  const openIssue = useCallback(
-    (issue: RecorderCaptureIssue, row: HTMLElement) => {
-      opener.current = row;
-      setSheetIssue(issue);
-    },
-    [],
-  );
+  const openIssue = useCallback((id: string, row: HTMLElement) => {
+    opener.current = row;
+    setSheetId(id);
+  }, []);
   const value = useMemo<SoftHomeValue | null>(
     () => (enabled ? { issues, openIssue } : null),
     [enabled, issues, openIssue],
@@ -74,9 +74,9 @@ export function SoftHomeProvider(props: {
     <SoftHomeContext.Provider value={value}>
       {props.children}
       <IssueSheet
-        issue={sheetIssue}
+        issue={issue}
         returnFocusTo={opener}
-        onClose={() => setSheetIssue(null)}
+        onClose={() => setSheetId(null)}
       />
     </SoftHomeContext.Provider>
   );

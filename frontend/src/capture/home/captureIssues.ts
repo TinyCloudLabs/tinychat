@@ -21,17 +21,32 @@ export function issueMeta(issue: RecorderCaptureIssue): string {
   }
 }
 
-/** The two issues that open a sheet; a timed-out one resolves itself. */
+/** The issues whose Library row opens a sheet instead of its note; a timed-out one resolves itself, so its row still opens the note. */
 export function issueHasSheet(issue: RecorderCaptureIssue): boolean {
   return issue.kind !== "finalization_timed_out";
 }
 
-export function issueSheetCopy(
-  issue: RecorderCaptureIssue,
-): { title: string; body: string } | null {
-  if (issue.kind === "recoveryFailed") return HOME_COPY.recoveryFailedSheet;
-  if (issue.kind === "write_failed") return HOME_COPY.writeFailedSheet;
-  return null;
+export function issueSheetCopy(issue: RecorderCaptureIssue): {
+  title: string;
+  body: string;
+} {
+  switch (issue.kind) {
+    case "finalization_timed_out":
+      return HOME_COPY.timedOutSheet;
+    case "recoveryFailed":
+      return HOME_COPY.recoveryFailedSheet;
+    case "write_failed":
+      return HOME_COPY.writeFailedSheet;
+  }
+}
+
+/** The issue an open sheet shows: the provider's current one for that recording, none once it clears or the skin is off. */
+export function sheetIssue(
+  id: string | null,
+  issues: CaptureIssues,
+  enabled: boolean,
+): RecorderCaptureIssue | null {
+  return enabled && id !== null ? (issues[id] ?? null) : null;
 }
 
 /** The issue a Library item carries: a voice note whose recording id has one. */
