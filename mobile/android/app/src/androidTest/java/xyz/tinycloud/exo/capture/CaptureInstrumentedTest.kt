@@ -376,7 +376,7 @@ class CaptureInstrumentedTest {
                 releaseWriter.await(5, TimeUnit.SECONDS)
             }
             delivered.incrementAndGet()
-        }, { _, _ -> }, { _ -> }, { error -> throw AssertionError(error) })
+        }, { _, _ -> }, { _ -> }, { error, detail -> throw AssertionError("$error: $detail") })
         try {
             capture.start()
             assertTrue("writer never received the first buffer", entered.await(3, TimeUnit.SECONDS))

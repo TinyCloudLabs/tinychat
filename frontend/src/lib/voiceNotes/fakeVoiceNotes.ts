@@ -10,7 +10,7 @@ type Intent = NonNullable<CaptureStatus["intent"]>;
 type Availability = NonNullable<CaptureStatus["availability"]>;
 type Session = {
   id: string; startedAt: number; audioMs: number; pausedMs: number; pauseStarted: number | null;
-  intent: Intent; availability: Availability; reason: MicStateReason; gen: number; source: CaptureSource;
+  intent: Intent; availability: Availability; reason: MicStateReason; detail?: string; gen: number; source: CaptureSource;
   owner: string | null; transitionGen: number; options: CaptureOptions; spans: MissingAudioSpan[];
   openSpan: MissingAudioSpan | null; maxDurationMs: number; backoffAttempt: number; nextRetryMs: number | null;
   osSilenced: boolean; pendingCapturedMs: number;
@@ -34,7 +34,7 @@ export interface FakeVoiceNotes {
   plugin: VoiceNotesPlugin;
   /** These controls model OS events and delayed callbacks; the app uses plugin only. */
   controls: {
-    interruptionBegins(reason?: MicStateReason): void;
+    interruptionBegins(reason?: MicStateReason, detail?: string): void;
     interruptionEnds(success?: boolean): void;
     backoffExhausted(): void;
     backoffDelayMs(): number | null;
@@ -123,7 +123,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   };
   const stateChanged = () => {
     const s = session;
-    emit("micState", { ...(s ? mic(s) : { state: "idle", reason: null }), at: now(), id: s?.id ?? null,
+    emit("micState", { ...(s ? mic(s) : { state: "idle", reason: null }), detail: s?.detail,
+      at: now(), id: s?.id ?? null,
       audioMs: s?.audioMs ?? 0, openSpan: s?.openSpan ?? null });
   };
   const closeSpan = (s: Session) => {
@@ -147,6 +148,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     if (success) {
       s.availability = "available";
       s.reason = null;
+      s.detail = undefined;
       closeSpan(s);
       if (s.osSilenced) { openSpan(s, "silenced", "os_silenced"); s.reason = "os_silenced"; }
       pendingNotification = null;
@@ -155,6 +157,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     } else {
       s.availability = "blocked";
       s.reason = "resume_blocked";
+      s.detail = undefined;
     }
     stateChanged();
   };
@@ -171,6 +174,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       resumeShouldFail = null;
       s.availability = "blocked";
       s.reason = reason;
+      s.detail = undefined;
       stateChanged();
       throw failure(reason === "resume_blocked" ? "resume_failed" : reason);
     }
@@ -277,7 +281,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     async stop() { return stop("user"); },
     async status() {
       const s = session;
-      return structuredClone({ ...(s ? mic(s) : { state: "idle" as const, reason: null }), id: s?.id ?? null,
+      return structuredClone({ ...(s ? mic(s) : { state: "idle" as const, reason: null }), detail: s?.detail,
+        id: s?.id ?? null,
         intent: s?.intent ?? "stopped", availability: s?.availability ?? "available", startedAt: s?.startedAt ?? null,
         elapsedMs: s ? Math.max(0, now() - s.startedAt - s.pausedMs - (s.pauseStarted === null ? 0 : now() - s.pauseStarted)) : 0,
         audioMs: s?.audioMs ?? 0, pausedMs: s ? s.pausedMs + (s.pauseStarted === null ? 0 : now() - s.pauseStarted) : 0,
@@ -455,14 +460,14 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   };
 
   return { plugin, controls: {
-    interruptionBegins(reason = "interruption") {
+    interruptionBegins(reason = "interruption", detail?: string) {
       const s = session; if (!s) return;
       s.backoffAttempt = 0; s.nextRetryMs = null;
       if (s.intent === "recording") { openSpan(s, "omitted", "interruption"); pendingNotification = { id: s.id, gen: s.gen }; }
-      s.availability = "interrupted"; s.reason = reason; stateChanged();
+      s.availability = "interrupted"; s.reason = reason; s.detail = detail; stateChanged();
     },
-    interruptionEnds(success = true) { const s = session; if (s) { if (s.intent === "paused") { s.availability = "available"; s.reason = null; stateChanged(); } else automaticRestart(s, success); } },
-    backoffExhausted() { const s = session; if (s?.intent === "recording") { s.availability = "blocked"; s.reason = "resume_blocked"; s.nextRetryMs = null; stateChanged(); } },
+    interruptionEnds(success = true) { const s = session; if (s) { if (s.intent === "paused") { s.availability = "available"; s.reason = null; s.detail = undefined; stateChanged(); } else automaticRestart(s, success); } },
+    backoffExhausted() { const s = session; if (s?.intent === "recording") { s.availability = "blocked"; s.reason = "resume_blocked"; s.detail = undefined; s.nextRetryMs = null; stateChanged(); } },
     backoffDelayMs: () => session?.nextRetryMs ?? null,
     retryAutomatic(success = true) { const s = session; if (s?.intent === "recording" && s.nextRetryMs !== null) automaticRestart(s, success); },
     queueCapturedBuffer(ms) { const s = session; if (s?.intent === "recording" && s.availability === "available") s.pendingCapturedMs += Math.max(0, ms); },
@@ -478,9 +483,9 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const s = session; if (!s) return;
       s.osSilenced = active;
       if (active && s.intent === "recording" && s.availability === "available") {
-        s.reason = "os_silenced"; openSpan(s, "silenced", "os_silenced");
+        s.reason = "os_silenced"; s.detail = undefined; openSpan(s, "silenced", "os_silenced");
       } else if (!active && s.openSpan?.kind === "silenced") {
-        closeSpan(s); s.reason = null;
+        closeSpan(s); s.reason = null; s.detail = undefined;
       }
       stateChanged();
     },
