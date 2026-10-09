@@ -44,11 +44,21 @@ describe("Fireflies Manage panel", () => {
 
   test("an enabled connection says what it is and offers Rotate, Bring back and Disconnect", () => {
     const html = render(enabled);
-    expect(html).toContain("Enabled in TinyChat");
+    expect(html).toContain(">On<");
+    expect(html).not.toContain("Enabled in TinyChat");
     expect(html).toContain("Rotate the webhook secret");
     expect(html).toContain("Bring back deleted meetings");
     expect(html).toContain("Disconnect Fireflies");
     expect(html).not.toContain("Live");
+  });
+
+  test("unavailable and signed-out read as a plain sentence with an icon, not red", () => {
+    const signedOut = render({ ...enabled, phase: "signed-out" });
+    expect(signedOut).toContain("Sign in again to manage instant updates.");
+    expect(signedOut).toContain("<svg");
+    const unavailable = render({ ...enabled, phase: "unavailable" });
+    expect(unavailable).toContain("Status unavailable");
+    expect(unavailable).toContain("<svg");
   });
 
   test("nothing about instant updates renders when the route is dark, but Disconnect stays", () => {

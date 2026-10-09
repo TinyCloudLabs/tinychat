@@ -53,7 +53,12 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   granola: "Notes and transcripts from Granola.",
 };
 
-type Connections = Partial<Record<ConnectorId, ConnectorConnection | null>>;
+/** A source with no entry yet has not been read. Failed is not "not connected". */
+type ConnectionRead =
+  | { status: "loading" }
+  | { status: "failed" }
+  | { status: "ready"; connection: ConnectorConnection | null };
+type Connections = Partial<Record<ConnectorId, ConnectionRead>>;
 
 export interface MeetingSourcesDialogProps {
   open: boolean;
@@ -101,16 +106,24 @@ export function MeetingSourcesDialog({
     [backendUrl, sessionStore],
   );
 
-  const refresh = useCallback(
-    async (id: ConnectorId) => {
+  const readConnection = useCallback(
+    async (id: ConnectorId): Promise<ConnectionRead> => {
       const res = await connectorStore.getConnection(tcw, id);
       if (!res.ok) {
         console.error("Meeting source connection read failed", res.error);
-        return;
+        return { status: "failed" };
       }
-      setConnections((old) => ({ ...old, [id]: res.data }));
+      return { status: "ready", connection: res.data };
     },
     [tcw],
+  );
+
+  const refresh = useCallback(
+    async (id: ConnectorId) => {
+      const next = await readConnection(id);
+      setConnections((old) => ({ ...old, [id]: next }));
+    },
+    [readConnection],
   );
 
   useEffect(() => {
@@ -120,20 +133,15 @@ export function MeetingSourcesDialog({
       for (const id of SOURCE_IDS) {
         const d = CONNECTORS.find((item) => item.id === id);
         if (!d || d.status !== "available") continue;
-        const res = await connectorStore.getConnection(tcw, id);
+        const next = await readConnection(id);
         if (!active) return;
-        if (!res.ok) {
-          console.error("Meeting source connection read failed", res.error);
-          setConnections((old) => ({ ...old, [id]: null }));
-        } else {
-          setConnections((old) => ({ ...old, [id]: res.data }));
-        }
+        setConnections((old) => ({ ...old, [id]: next }));
       }
     })();
     return () => {
       active = false;
     };
-  }, [tcw, revision, open]);
+  }, [readConnection, revision, open]);
 
   const sourceSync = useSourceSync({ tcw, backendUrl, sessionStore, onSettled: refresh });
   const descriptors = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id)).filter(
@@ -157,7 +165,9 @@ export function MeetingSourcesDialog({
         returnFocus={returnFocus ?? (() => null)}
       >
         {descriptors.map((d) => {
-          const connection = connections[d.id];
+          const read = connections[d.id] ?? { status: "loading" };
+          const lookup = read.status;
+          const connection = read.status === "ready" ? read.connection : null;
           const connected = connection?.status === "connected";
           const connecting = connectDialog?.descriptor.id === d.id && connectDialog.purpose === "browser";
           const syncing = sourceSync.syncingId === d.id;
@@ -182,12 +192,17 @@ export function MeetingSourcesDialog({
               Icon={d.icon ?? PlugIcon}
               comingSoon={d.status === "coming-soon"}
               status={status}
+              lookup={d.status === "coming-soon" ? "ready" : lookup}
               connected={connected}
               busy={meetingSourceActionBusy(state)}
               syncing={syncing}
               manageOpen={manageOpen[d.id] === true}
               error={syncFailure ?? rowNotes[d.id] ?? null}
               onConnect={() => setConnectDialog({ descriptor: d, purpose: "browser" })}
+              onRetryLookup={() => {
+                setConnections((old) => ({ ...old, [d.id]: { status: "loading" } }));
+                void refresh(d.id);
+              }}
               onSync={() => void sourceSync.sync(d)}
               onToggleManage={() => setManageOpen((old) => ({ ...old, [d.id]: !old[d.id] }))}
               manage={
@@ -444,7 +459,7 @@ export function MeetingSourcesFeature(
 ) {
   const [open, setOpen] = useState(props.initialOpen ?? false);
   const [summary, setSummary] = useState<{ text: string; connected: boolean }>({
-    text: "Checking…",
+    text: "Meeting sources",
     connected: false,
   });
   const entryRef = useRef<HTMLButtonElement>(null);

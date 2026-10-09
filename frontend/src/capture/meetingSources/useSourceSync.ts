@@ -17,6 +17,81 @@ import {
 import type { ConnectorDescriptor, ConnectorId } from "@/lib/connectors/types";
 import { SECRETS_UNAVAILABLE_IN_APP_MESSAGE, secretsAvailable } from "@/lib/openkeyNative";
 
+export const SOURCE_SYNC_FAILED_MESSAGE = "Sync failed. Try again.";
+
+type SyncEngineInput = { tcw: TinyCloudWeb; signal: AbortSignal; onProgress: () => void };
+type SyncOutcome = { ok: true } | { ok: false; message: string };
+
+export interface SourceSyncDeps {
+  secretsAvailable: () => boolean;
+  isSecretsUnlocked: (tcw: TinyCloudWeb) => boolean;
+  unlockSecrets: typeof unlockSecrets;
+  getConnectorKey: typeof getConnectorKey;
+  runGmeetSyncNow: (
+    input: SyncEngineInput & {
+      backendUrl: string;
+      sessionStore: SessionStore;
+      refreshToken: string;
+    },
+  ) => Promise<SyncOutcome>;
+  runFirefliesSyncNow: (input: SyncEngineInput & { apiKey: string }) => Promise<SyncOutcome>;
+}
+
+const DEFAULT_DEPS: SourceSyncDeps = {
+  secretsAvailable,
+  isSecretsUnlocked,
+  unlockSecrets,
+  getConnectorKey,
+  runGmeetSyncNow,
+  runFirefliesSyncNow,
+};
+
+/** One sync attempt. Resolves to the message to show on the row, or null when it worked. Never rejects. */
+export async function runSourceSync(
+  d: ConnectorDescriptor,
+  input: { tcw: TinyCloudWeb; backendUrl: string; sessionStore: SessionStore },
+  deps: SourceSyncDeps = DEFAULT_DEPS,
+): Promise<string | null> {
+  const { tcw, backendUrl, sessionStore } = input;
+  try {
+    if (!deps.secretsAvailable()) return SECRETS_UNAVAILABLE_IN_APP_MESSAGE;
+    if (!deps.isSecretsUnlocked(tcw)) {
+      const unlock = await deps.unlockSecrets<SecretsErr>(tcw);
+      if (!unlock.ok) return unlock.error?.message ?? "Could not unlock secrets";
+    }
+    const key = await deps.getConnectorKey<SecretsErr>(tcw, d);
+    if (!key.ok) {
+      return (
+        key.error?.message ??
+        (d.id === "google-meet"
+          ? "Could not read the saved Google connection"
+          : "Could not read API key")
+      );
+    }
+    const controller = new AbortController();
+    const outcome =
+      d.id === "google-meet"
+        ? await deps.runGmeetSyncNow({
+            tcw,
+            backendUrl,
+            sessionStore,
+            refreshToken: key.data,
+            signal: controller.signal,
+            onProgress: () => {},
+          })
+        : await deps.runFirefliesSyncNow({
+            tcw,
+            apiKey: key.data,
+            signal: controller.signal,
+            onProgress: () => {},
+          });
+    return outcome.ok ? null : outcome.message;
+  } catch (cause) {
+    console.error(`Meeting source sync failed for ${d.id}`, cause);
+    return SOURCE_SYNC_FAILED_MESSAGE;
+  }
+}
+
 export interface SourceSyncController {
   /** The connector currently syncing, if any. */
   syncingId: ConnectorId | null;
@@ -42,40 +117,9 @@ export function useSourceSync(input: {
       inFlight.current = true;
       setSyncingId(d.id);
       setError(null);
-      const fail = (message: string) => setError({ id: d.id, message });
       try {
-        if (!secretsAvailable()) return fail(SECRETS_UNAVAILABLE_IN_APP_MESSAGE);
-        if (!isSecretsUnlocked(tcw)) {
-          const unlock = await unlockSecrets<SecretsErr>(tcw);
-          if (!unlock.ok) return fail(unlock.error?.message ?? "Could not unlock secrets");
-        }
-        const key = await getConnectorKey<SecretsErr>(tcw, d);
-        if (!key.ok) {
-          return fail(
-            key.error?.message ??
-              (d.id === "google-meet"
-                ? "Could not read the saved Google connection"
-                : "Could not read API key"),
-          );
-        }
-        const controller = new AbortController();
-        const outcome =
-          d.id === "google-meet"
-            ? await runGmeetSyncNow({
-                tcw,
-                backendUrl,
-                sessionStore,
-                refreshToken: key.data,
-                signal: controller.signal,
-                onProgress: () => {},
-              })
-            : await runFirefliesSyncNow({
-                tcw,
-                apiKey: key.data,
-                signal: controller.signal,
-                onProgress: () => {},
-              });
-        if (!outcome.ok) fail(outcome.message);
+        const message = await runSourceSync(d, { tcw, backendUrl, sessionStore });
+        if (message) setError({ id: d.id, message });
       } finally {
         inFlight.current = false;
         setSyncingId(null);

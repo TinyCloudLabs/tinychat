@@ -3,7 +3,7 @@
 // and Disconnect; every other source gets Disconnect alone. The rules all live
 // in `chat/backgroundSyncState.ts` — this file renders the state it reports and
 // hands intent back, exactly as `BackgroundSyncView` does for the flag-off page.
-import { CopyIcon } from "lucide-react";
+import { CircleAlertIcon, CopyIcon } from "lucide-react";
 
 import {
   BACKEND_INGEST_CONSENT_COPY,
@@ -16,7 +16,14 @@ import {
   type BackgroundSyncState,
 } from "@/chat/backgroundSyncState";
 import type { OffStateConsentVariant } from "@/chat/useBackgroundSync";
-import { LinkButton, OptionRow, Switch } from "./MeetingSourcesView";
+import { InlineError, LinkButton, OptionRow, Switch } from "./MeetingSourcesView";
+
+/** The window's own words for the webhook state; "Enabled in TinyChat" is the old product name. */
+export function instantUpdatesLabel(state: BackgroundSyncState): string {
+  if (state.phase === "signed-out") return "Sign in again to manage instant updates.";
+  if (state.phase === "enabled") return "On";
+  return backgroundSyncStatus(state).label;
+}
 
 /** Resolves the `**strong**` / `*em*` runs the pinned consent copy carries. Nothing else is interpreted. */
 function Marked({ text }: { text: string }) {
@@ -72,7 +79,6 @@ export interface FirefliesManageProps {
 export function FirefliesManage(props: FirefliesManageProps) {
   const { state, connectorName } = props;
   const dark = state.phase === "dark";
-  const status = backgroundSyncStatus(state);
   const enabled = state.phase === "enabled";
   const settled = state.phase === "off" || enabled;
   const notices = queueNotices(state);
@@ -98,9 +104,10 @@ export function FirefliesManage(props: FirefliesManageProps) {
           </p>
           {state.phase !== "off" && (
             <p className="ms-opt-text ms-opt-state" data-phase={state.phase}>
-              {state.phase === "signed-out"
-                ? "Sign in again to manage instant updates."
-                : status.label}
+              {(state.phase === "unavailable" || state.phase === "signed-out") && (
+                <CircleAlertIcon aria-hidden="true" />
+              )}
+              <span>{instantUpdatesLabel(state)}</span>
             </p>
           )}
           {enabled && !state.reveal && (
@@ -113,7 +120,11 @@ export function FirefliesManage(props: FirefliesManageProps) {
 
       {state.notice && (
         <div className="ms-note" data-tone={state.notice.tone}>
-          <p role={state.notice.tone === "error" ? "alert" : undefined}>{state.notice.message}</p>
+          {state.notice.tone === "error" ? (
+            <InlineError>{state.notice.message}</InlineError>
+          ) : (
+            <p>{state.notice.message}</p>
+          )}
           {state.notice.retryable && (
             <LinkButton onClick={props.onRetry}>Try again</LinkButton>
           )}
@@ -170,10 +181,10 @@ export function FirefliesManage(props: FirefliesManageProps) {
         <div className="ms-subpanel" role="group" aria-label="Webhook address and secret">
           <b>Paste these into Fireflies → Developer Settings → Webhooks V2</b>
           {state.reveal.rotated && (
-            <p role="alert" className="ms-consent-warn">
+            <InlineError>
               Your previous address and secret have stopped working. Replace them in {connectorName}{" "}
               now, or notifications will be turned away.
-            </p>
+            </InlineError>
           )}
           <RevealField label="Delivery URL" value={state.reveal.url} onCopy={props.onCopy} />
           <RevealField label="Signing secret" value={state.reveal.secret} onCopy={props.onCopy} />

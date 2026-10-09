@@ -148,9 +148,9 @@
   },
   {
     "screen": "meeting-sources-connected",
-    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
     "check": "touch-target",
-    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
     "removeIn": "n/a"
   },
   {
@@ -162,9 +162,9 @@
   },
   {
     "screen": "meeting-sources-not-connected",
-    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
     "check": "touch-target",
-    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
     "removeIn": "n/a"
   },
   {
@@ -176,9 +176,9 @@
   },
   {
     "screen": "meeting-sources-manage",
-    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
     "check": "touch-target",
-    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
     "removeIn": "n/a"
   },
   {
@@ -190,9 +190,9 @@
   },
   {
     "screen": "meeting-sources-rotate",
-    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
     "check": "touch-target",
-    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
     "removeIn": "n/a"
   },
   {
@@ -204,13 +204,41 @@
   },
   {
     "screen": "meeting-sources-disconnect",
-    "selector": ".ms-window button, .ms-window a, .ms-window input, .ms-confirm button, .ms-entry",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
     "check": "touch-target",
-    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar (pointer sizes from the design, 34px buttons). The phone viewports capture it for overflow and clipping only.",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
     "removeIn": "n/a"
   },
   {
     "screen": "meeting-sources-disconnect",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-loading",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-loading",
+    "selector": ".ms-soon",
+    "check": "text-size",
+    "reason": "The design's Coming soon badge is 10.5px uppercase.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-failed",
+    "selector": ".ms-window .ms-btn1, .ms-window .ms-btn2, .ms-window .ms-close, .ms-window .ms-switch, .ms-window .ms-link, .ms-window .ms-icon-btn, .ms-window .ms-check input",
+    "check": "touch-target",
+    "reason": "Desktop-only window: the Connectors page renders it only when the nav is not the tab bar. These are the design's pointer-sized controls (34px buttons, 36px close, 22px switch, inline links, 28px copy button, checkbox); the entry card and the confirmation buttons are not listed and must stay 44px.",
+    "removeIn": "n/a"
+  },
+  {
+    "screen": "meeting-sources-lookup-failed",
     "selector": ".ms-soon",
     "check": "text-size",
     "reason": "The design's Coming soon badge is 10.5px uppercase.",

@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { buildHarness, serveHarness } from "./exo-ui/harness-server";
 
-setDefaultTimeout(30_000);
+const TEST_TIMEOUT_MS = 30_000;
 let browser: Browser;
 let server: ReturnType<typeof serveHarness>;
 
@@ -14,12 +14,22 @@ beforeAll(async () => {
 afterAll(async () => {
   server?.stop(true);
   // A dead DevTools pipe can leave close() pending after every test passed.
-  await Promise.race([browser?.close(), new Promise((resolve) => setTimeout(resolve, 10_000))]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      browser?.close(),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }, 20_000);
 
-async function open(theme: "dark" | "light"): Promise<Page> {
+async function open(theme: "dark" | "light", screen = "meeting-sources-interactive"): Promise<Page> {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page.goto(`${server.url}/?screen=meeting-sources-interactive&theme=${theme}&platform=web`);
+  await page.goto(`${server.url}/?screen=${screen}&theme=${theme}&platform=web`);
   await page.locator(".ms-entry").waitFor();
   return page;
 }
@@ -60,7 +70,7 @@ for (const theme of ["dark", "light"] as const) {
       await window.waitFor({ state: "hidden" });
       expect(await page.evaluate(() => document.activeElement?.className)).toContain("ms-entry");
       await page.close();
-    });
+    }, TEST_TIMEOUT_MS);
 
     test("Rotate asks first: Keep is focused, Escape keeps, and focus returns to the opener", async () => {
       const page = await open(theme);
@@ -87,7 +97,7 @@ for (const theme of ["dark", "light"] as const) {
       await confirm.waitFor({ state: "hidden" });
       expect(await activeText(page)).toBe("Rotate the webhook secret");
       await page.close();
-    });
+    }, TEST_TIMEOUT_MS);
 
     test("Disconnect asks first and says what stays", async () => {
       const page = await open(theme);
@@ -108,6 +118,19 @@ for (const theme of ["dark", "light"] as const) {
       // Nothing was disconnected.
       expect(await window.locator('[data-source="fireflies"] .ms-btn1').count()).toBe(0);
       await page.close();
-    });
+    }, TEST_TIMEOUT_MS);
+
+    test("A failed connection read says so and offers Try again, never Connect", async () => {
+      const page = await open(theme, "meeting-sources-lookup-failed");
+      const window = page.getByRole("dialog", { name: "Meeting sources" });
+      await window.waitFor();
+      const row = window.locator('[data-source="fireflies"]');
+      expect(await row.getByRole("alert").textContent()).toContain("Couldn't check Fireflies");
+      expect(await row.locator(".ms-btn1").count()).toBe(0);
+      await row.getByRole("button", { name: "Try again" }).click();
+      expect(await row.getByRole("alert").count()).toBe(0);
+      expect(await row.getByRole("button", { name: "Sync now" }).isVisible()).toBe(true);
+      await page.close();
+    }, TEST_TIMEOUT_MS);
   });
 }

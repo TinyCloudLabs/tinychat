@@ -35,22 +35,26 @@ const descriptor = (id: string) => {
 };
 
 type Confirm = "rotate" | "disconnect" | null;
+type Lookup = "loading" | "failed" | "ready";
 
 function MeetingSourcesFixture({
   connected: initiallyConnected = true,
   open: initiallyOpen = true,
   manage: initiallyManage = false,
   confirm: initialConfirm = null,
+  lookup: initialLookup = "ready",
 }: {
   connected?: boolean;
   open?: boolean;
   manage?: boolean;
   confirm?: Confirm;
+  lookup?: Lookup;
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   const [connected, setConnected] = useState(initiallyConnected);
   const [manage, setManage] = useState(initiallyManage);
   const [confirm, setConfirm] = useState<Confirm>(initialConfirm);
+  const [lookup, setLookup] = useState<Lookup>(initialLookup);
   const [instant, setInstant] = useState(true);
   const [autojoin, setAutojoin] = useState(false);
   const entryRef = useRef<HTMLButtonElement>(null);
@@ -80,11 +84,13 @@ function MeetingSourcesFixture({
             "42 minutes ago",
             416,
           )}
+          lookup={lookup}
           connected={connected}
           busy={false}
           syncing={false}
           manageOpen={manage}
           onConnect={() => setConnected(true)}
+          onRetryLookup={() => setLookup("ready")}
           onSync={noop}
           onToggleManage={() => setManage((was) => !was)}
           manage={
@@ -114,11 +120,13 @@ function MeetingSourcesFixture({
           description="Google Meet transcripts and Notes by Gemini."
           Icon={google.icon ?? PlugIcon}
           status={meetingSourceStatus("disconnected")}
+          lookup="ready"
           connected={false}
           busy={false}
           syncing={false}
           manageOpen={false}
           onConnect={noop}
+          onRetryLookup={noop}
           onSync={noop}
           onToggleManage={noop}
           manage={<DisconnectRow name={google.name} onDisconnect={noop} />}
@@ -131,11 +139,13 @@ function MeetingSourcesFixture({
           Icon={granola.icon ?? PlugIcon}
           comingSoon
           status={null}
+          lookup="ready"
           connected={false}
           busy={false}
           syncing={false}
           manageOpen={false}
           onConnect={noop}
+          onRetryLookup={noop}
           onSync={noop}
           onToggleManage={noop}
         />
@@ -195,5 +205,7 @@ export const meetingSourcesScreens: HarnessScreen[] = [
   screen("manage", `${WINDOW} [aria-expanded="true"]`, { manage: true }),
   screen("rotate", '[data-testid="confirm-rotate"]', { manage: true, confirm: "rotate" }),
   screen("disconnect", '[data-testid="confirm-disconnect"]', { manage: true, confirm: "disconnect" }),
+  screen("lookup-loading", `${WINDOW} [data-testid="ms-lookup-loading"]`, { lookup: "loading" }),
+  screen("lookup-failed", `${WINDOW} [role="alert"]`, { lookup: "failed" }),
   screen("interactive", ".ms-entry", { open: false }, true),
 ];

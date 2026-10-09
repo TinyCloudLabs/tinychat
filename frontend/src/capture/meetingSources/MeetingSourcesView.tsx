@@ -2,7 +2,7 @@
 // harness fixtures render the same markup. Nothing here fetches or decides:
 // state comes in through props, intent goes out through callbacks.
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronDownIcon, ChevronRightIcon, PlugIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, CircleAlertIcon, PlugIcon, XIcon } from "lucide-react";
 import { useRef, type ComponentType, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -65,6 +65,16 @@ export function MeetingSourcesWindow({
   );
 }
 
+/** Failures stay monochrome: the icon and the weight carry them, red is only for recording. */
+export function InlineError({ children }: { children: ReactNode }) {
+  return (
+    <p role="alert" className="ms-row-error">
+      <CircleAlertIcon aria-hidden="true" />
+      <span>{children}</span>
+    </p>
+  );
+}
+
 function HowItWorks() {
   return (
     <Link to={aboutHref("connectors")} className="ms-link">
@@ -114,6 +124,11 @@ export interface SourceRowProps {
   Icon: ComponentType<{ className?: string }>;
   comingSoon?: boolean;
   status: MeetingSourceStatus | null;
+  /**
+   * Whether the connection has been read. Connect is offered only after a confirmed
+   * "not connected"; while loading there is no action, and a failed read says so.
+   */
+  lookup: "loading" | "failed" | "ready";
   connected: boolean;
   /** Connecting or syncing: the primary action is inert and says what is happening. */
   busy: boolean;
@@ -121,6 +136,7 @@ export interface SourceRowProps {
   manageOpen: boolean;
   error?: string | null;
   onConnect: () => void;
+  onRetryLookup: () => void;
   onSync: () => void;
   onToggleManage: () => void;
   /** Manage panel contents (only rendered when connected and open). */
@@ -141,21 +157,30 @@ export function SourceRow(props: SourceRowProps) {
           {props.name}
         </h4>
         <p className="ms-desc">{props.description}</p>
-        {props.status && (
+        {props.lookup === "loading" && !props.comingSoon && (
+          <p className="ms-status" data-tone="busy" data-testid="ms-lookup-loading">
+            <i aria-hidden="true" />
+            <span className="ms-sr">Checking {props.name}</span>
+          </p>
+        )}
+        {props.lookup === "ready" && props.status && (
           <p className="ms-status" data-tone={props.status.tone}>
             <i aria-hidden="true" />
             <span>{props.status.text}</span>
           </p>
         )}
-        {props.error && (
-          <p role="alert" className="ms-row-error">
-            {props.error}
-          </p>
+        {props.lookup === "failed" && !props.comingSoon && (
+          <InlineError>Couldn&apos;t check {props.name}</InlineError>
         )}
+        {props.error && <InlineError>{props.error}</InlineError>}
       </div>
       <div className="ms-actions">
         {props.comingSoon ? (
           <span className="ms-soon">Coming soon</span>
+        ) : props.lookup === "loading" ? null : props.lookup === "failed" ? (
+          <button type="button" className="ms-btn2" onClick={props.onRetryLookup}>
+            Try again
+          </button>
         ) : props.connected ? (
           <>
             <button
@@ -302,11 +327,7 @@ export function CalendarAutojoinRow({
             Exo&apos;s notetaker joins the Google Meet calls on your calendar and transcribes them.
             Last scan: {scan}.
           </p>
-          {warning && (
-            <p role="alert" className="ms-row-error">
-              {warning}
-            </p>
-          )}
+          {warning && <InlineError>{warning}</InlineError>}
           <HowItWorks />
         </div>
         <Switch checked={on} label="Calendar autojoin" disabled={disabled} onToggle={onToggle} />
