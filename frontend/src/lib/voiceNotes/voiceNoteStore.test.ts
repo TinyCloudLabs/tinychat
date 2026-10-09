@@ -31,8 +31,11 @@ import {
   voiceNoteAudioManifestKey,
   voiceNoteAudioPartKey,
   voiceNoteAudioSourceFromBase64,
+  voiceNoteMarkdownKvKey,
+  syncRecordingNote,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
+import { saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 
 type KvValue = string | Uint8Array;
@@ -156,6 +159,25 @@ const AUDIO_BASE = `${APP_ID}/connectors/exo-voice-note/audio/rec-1`;
 beforeEach(() => _resetConnectorSchemaMemoForTests());
 
 describe("saveVoiceNote", () => {
+  test("a Markdown sync failure leaves the audio save successful and retries separately", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-sync-${++fakeSpaceNumber}` };
+    await saveNote(withNote.id, "# Local draft");
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    space.failPut((key) => key === noteKey ? { code: "KV_ERROR", message: "notes offline" } : null);
+    const saved = await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) throw new Error(saved.error.message);
+    expect(saved.data.noteSyncError).toContain("notes offline");
+    expect(space.kv.has(voiceNoteAudioManifestKey(withNote.id))).toBe(true);
+    expect(space.kv.has(noteKey)).toBe(false);
+
+    space.failPut(null);
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(space.kv.get(noteKey)).toContain("# Local draft");
+  });
+
   test("creates the indexed identity, then patches audio after its manifest", async () => {
     const { tcw, calls } = fakeSpace();
     const res = await saveVoiceNote(tcw, recording, voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
