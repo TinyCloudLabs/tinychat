@@ -8,12 +8,6 @@ import type { DesktopBridge } from "./desktopVoiceNotes";
 
 const PROGRESS_EVENT = "exo://recorder-model-progress";
 
-const isTerminal = (progress: DownloadProgress) => progress.status !== "downloading";
-
-function failed(progress: DownloadProgress): Error {
-  return new Error(progress.error ?? `The ${progress.id} download failed`);
-}
-
 /** DesktopCaptureExtras bound to TC-880's `recorder_models_*`, `recorder_system_audio_*` and `recorder_auto_save_to_space_*` commands. */
 export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopCaptureExtras {
   const subscribe = (callback: (progress: DownloadProgress) => void) =>
@@ -40,34 +34,9 @@ export function createTauriDesktopCaptureExtras(bridge: DesktopBridge): DesktopC
       list: () => bridge.invoke<WhisperModelInfo[]>("recorder_models_list"),
       get: () => bridge.invoke<WhisperModelId | null>("recorder_models_get"),
       select: (id) => bridge.invoke<void>("recorder_models_select", { id }),
-      async download(id) {
-        // Subscribe before invoking: the terminal event can arrive before the command returns.
-        let terminal: DownloadProgress | null = null;
-        let settle: (() => void) | null = null;
-        const ended = new Promise<void>((resolve) => {
-          settle = resolve;
-        });
-        const unlisten = await subscribe((progress) => {
-          if (progress.id !== id || !isTerminal(progress)) return;
-          terminal = progress;
-          settle?.();
-        });
-        try {
-          await bridge.invoke<void>("recorder_models_download", { id });
-          if (!terminal) {
-            // The command returns once the file is on disk; the event may still be in flight, or may have
-            // been emitted before the listener attached. The native snapshot keeps the terminal entry.
-            const snapshot = await bridge.invoke<DownloadProgress[]>("recorder_models_progress");
-            terminal = snapshot.find((progress) => progress.id === id && isTerminal(progress)) ?? null;
-          }
-          if (!terminal) await ended;
-          const result = terminal as DownloadProgress | null;
-          if (!result) throw new Error(`The ${id} download ended without a result`);
-          if (result.status === "error") throw failed(result);
-        } finally {
-          unlisten();
-        }
-      },
+      // The native command waits for the file to be on disk and rejects on failure, so its result is the outcome.
+      // Progress events are for onProgress only; waiting for one here could hang if it never arrives.
+      download: (id) => bridge.invoke<void>("recorder_models_download", { id }),
       onProgress,
     },
     systemAudio: {

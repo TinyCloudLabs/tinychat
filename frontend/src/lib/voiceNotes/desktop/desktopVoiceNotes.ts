@@ -342,7 +342,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           const defaults = await store.getCaptureDefaults();
           const signedIn = defaults.status === "signed_in" && !!defaults.accountDid;
           const captureOptions: CaptureOptions = {
-            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : "on-device",
+            // TODO(TC-888): use on-device when desktopWhisper
+            transcriber: signedIn ? startOptions?.transcriber ?? defaults.transcriber : "off",
             identifySpeakers: startOptions?.identifySpeakers ?? defaults.identifySpeakers,
           };
           id = newId();

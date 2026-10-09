@@ -37,14 +37,6 @@ class Bridge implements DesktopBridge {
 }
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-const pending = (promise: Promise<unknown>) => {
-  const state = { settled: false, error: null as unknown };
-  promise.then(
-    () => { state.settled = true; },
-    (error: unknown) => { state.settled = true; state.error = error; },
-  );
-  return state;
-};
 
 afterEach(() => registerDesktopCaptureExtras(null));
 
@@ -94,87 +86,38 @@ describe("Tauri DesktopCaptureExtras", () => {
     await expect(systemAudio.get()).rejects.toThrow("settings_unreadable");
   });
 
-  test("download listens before it invokes and resolves only on the terminal done event", async () => {
+  test("download resolves when the native command resolves, with or without a terminal event", async () => {
     const bridge = new Bridge();
     bridge.replies.set("recorder_models_download", () => null);
-    bridge.replies.set("recorder_models_progress", () => []);
     const { models } = createTauriDesktopCaptureExtras(bridge);
-    const state = pending(models.download("QuantizedBase"));
-    await tick();
-    expect(bridge.log.slice(0, 2)).toEqual([`listen:${EVENT}`, 'recorder_models_download:{"id":"QuantizedBase"}']);
-    // The command has returned, but no terminal event: still downloading.
-    expect(state.settled).toBe(false);
-    bridge.emit({ id: "QuantizedBase", fraction: 0.5, status: "downloading" });
-    await tick();
-    expect(state.settled).toBe(false);
-    bridge.emit({ id: "QuantizedBase", fraction: 1, status: "done" });
-    await tick();
-    expect(state.settled).toBe(true);
-    expect(state.error).toBeNull();
+    // No event is ever delivered: the command's success already means the file is on disk.
+    await models.download("QuantizedBase");
+    expect(bridge.log).toEqual(['recorder_models_download:{"id":"QuantizedBase"}']);
     expect(bridge.listeners()).toBe(0);
   });
 
-  test("a terminal event for another model does not end the download", async () => {
+  test("a done event that arrives before the command returns neither blocks nor is overwritten by a snapshot", async () => {
     const bridge = new Bridge();
-    bridge.replies.set("recorder_models_download", () => null);
-    bridge.replies.set("recorder_models_progress", () => []);
-    const { models } = createTauriDesktopCaptureExtras(bridge);
-    const state = pending(models.download("QuantizedBase"));
-    await tick();
-    bridge.emit({ id: "QuantizedTiny", fraction: 1, status: "done" });
-    await tick();
-    expect(state.settled).toBe(false);
-    bridge.emit({ id: "QuantizedBase", fraction: 1, status: "done" });
-    await tick();
-    expect(state.settled).toBe(true);
-  });
-
-  test("an error event rejects with its message", async () => {
-    const bridge = new Bridge();
-    bridge.replies.set("recorder_models_download", () => null);
-    bridge.replies.set("recorder_models_progress", () => []);
-    const { models } = createTauriDesktopCaptureExtras(bridge);
-    const state = pending(models.download("QuantizedBase"));
-    await tick();
-    bridge.emit({ id: "QuantizedBase", fraction: 0.3, status: "error", error: "disk full" });
-    await tick();
-    expect(state.settled).toBe(true);
-    expect(String(state.error)).toContain("disk full");
-    expect(bridge.listeners()).toBe(0);
-  });
-
-  test("a rejected command rejects the download and stops listening", async () => {
-    const bridge = new Bridge();
-    bridge.replies.set("recorder_models_download", () => { throw new Error("unsupported_model"); });
-    const { models } = createTauriDesktopCaptureExtras(bridge);
-    await expect(models.download("QuantizedBase")).rejects.toThrow("unsupported_model");
-    expect(bridge.listeners()).toBe(0);
-  });
-
-  test("a terminal event emitted before the command returns settles it without waiting again", async () => {
-    const bridge = new Bridge();
+    let snapshotCalls = 0;
+    bridge.replies.set("recorder_models_progress", () => {
+      snapshotCalls += 1;
+      return [{ id: "QuantizedBase", fraction: 0.4, status: "downloading" }];
+    });
     bridge.replies.set("recorder_models_download", () => {
       bridge.emit({ id: "QuantizedBase", fraction: 1, status: "done" });
       return null;
     });
     const { models } = createTauriDesktopCaptureExtras(bridge);
     await models.download("QuantizedBase");
-    expect(bridge.log).not.toContain("recorder_models_progress");
+    expect(snapshotCalls).toBe(0);
   });
 
-  test("a terminal result the event stream missed is read from the native snapshot", async () => {
+  test("a rejected command rejects the download with its error", async () => {
     const bridge = new Bridge();
-    bridge.replies.set("recorder_models_download", () => null);
-    bridge.replies.set("recorder_models_progress", () => [
-      { id: "QuantizedBase", fraction: 1, status: "done" },
-    ]);
+    bridge.replies.set("recorder_models_download", () => { throw new Error("model_download_cancelled"); });
     const { models } = createTauriDesktopCaptureExtras(bridge);
-    await models.download("QuantizedBase");
-
-    bridge.replies.set("recorder_models_progress", () => [
-      { id: "QuantizedBase", fraction: 0.2, status: "error", error: "model_download_cancelled" },
-    ]);
     await expect(models.download("QuantizedBase")).rejects.toThrow("model_download_cancelled");
+    expect(bridge.listeners()).toBe(0);
   });
 
   test("onProgress forwards every event and stops when removed, even before the listener attached", async () => {

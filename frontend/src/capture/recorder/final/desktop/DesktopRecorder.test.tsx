@@ -119,7 +119,7 @@ describe("DesktopRecorder", () => {
     })).toContain('aria-valuetext="Audio only"');
   });
 
-  test("signed out, only Local is open on the scale, as on the phone", () => {
+  test("signed out on the Mac, Audio only is selected and the rest are locked until desktop Whisper exists (TC-888)", () => {
     const stops = (patch: Partial<RecorderValue>) =>
       [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
         (m) => m[1],
@@ -130,11 +130,14 @@ describe("DesktopRecorder", () => {
       source: "default" as const,
     };
     expect(stops({ signedIn: false, transcriber: local })).toEqual([
-      "false",
       "true",
       "false",
       "false",
+      "false",
     ]);
+    const html = render({ signedIn: false, transcriber: local });
+    expect(html).toContain('aria-valuetext="Audio only"');
+    expect(html).toContain("Sign in to transcribe it.");
     expect(stops({ signedIn: true, transcriber: local })).toEqual([
       "true",
       "false",
