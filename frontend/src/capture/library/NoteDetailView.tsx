@@ -22,10 +22,13 @@ import { transcriptionStatusText } from "@/lib/voiceNotes/voiceNoteTranscription
 import { voiceNoteTranscriptState, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { PAGE_COLUMN, PageHeader } from "@/shell/PageHeader";
 import { detailWhen, formatSpokenDuration } from "./formatters";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { HowThisGotHere } from "./HowThisGotHere";
 import { librarySourceLabel } from "./libraryKinds";
 import type { LibraryItem } from "./LibraryRow";
 import type { LibraryStatus } from "./LibraryListView";
+import { LazySavedNote } from "./savedNote/LazySavedNote";
+import type { SavedNoteStore } from "./savedNote/savedNoteStore";
 
 export type AudioLoad = (signal: AbortSignal, onProgress: (loadedBytes: number, totalBytes: number) => void) => Promise<Blob | null>;
 
@@ -47,6 +50,8 @@ export interface NoteDetailViewProps {
   /** A screen of its own (compact), with Back; otherwise a pane beside the list. */
   pushed: boolean;
   onBack: () => void;
+  /** Behind the recorder flag: a voice note opens as its editable note (a page, or a sheet on a phone) instead of this view. */
+  savedNote?: { tcw: TinyCloudWeb; layout: "page" | "sheet"; store?: SavedNoteStore };
 }
 
 /** Consecutive sentences of one speaker as one block. */
@@ -264,6 +269,23 @@ export function NoteDetailView(props: NoteDetailViewProps) {
           <Empty data-testid="note-absent" title="This note isn’t in your Library." description="It may have been removed from your space." />
         )}
       </Frame>
+    );
+  }
+
+  if (props.savedNote && item.source === VOICE_NOTE_SOURCE) {
+    return (
+      <LazySavedNote
+        key={item.id}
+        item={item}
+        metadata={metadata}
+        loadAudio={props.loadAudio}
+        tcw={props.savedNote.tcw}
+        store={props.savedNote.store}
+        layout={props.savedNote.layout}
+        onBack={props.onBack}
+        transcript={<Transcript {...props} item={item} />}
+        footer={<HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
+      />
     );
   }
 

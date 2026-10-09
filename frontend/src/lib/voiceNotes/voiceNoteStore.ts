@@ -54,7 +54,7 @@ import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity,
   patchVoiceNoteMarkdown, resolveVoiceNoteRow } from "./voiceNoteRows";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { base64ToBytes, bytesToBase64 } from "./voiceNoteAudio";
-import { loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
+import { adoptNote, loadNote, noteMarkdown, parseNoteMarkdown, type RecordingNote } from "./recordingNotes";
 
 /** `connector_meeting.source` for every voice note. */
 export const VOICE_NOTE_SOURCE = "exo-voice-note";
@@ -111,7 +111,14 @@ export function syncRecordingNote(tcw: TinyCloudWeb, id: string,
       if (!row) return false;
       const key = voiceNoteMarkdownKvKey(id);
       if (row.metadata.note_kv_key === key && row.metadata.note_edited_at === note.editedAt) return true;
-      const body = noteMarkdown(note);
+      // The space may hold a saved-edit time this device has not seen; a put must never erase it.
+      const remote = await readRecordingNoteFromSpace(tcw, id);
+      checkpoint();
+      const theirs = remote?.savedEditAt ?? null;
+      const mine = note.savedEditAt;
+      const adopted = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine))
+        ? (await adoptNote({ ...note, savedEditAt: theirs })).savedEditAt : mine;
+      const body = noteMarkdown({ ...note, savedEditAt: adopted });
       const put = await runOnSpaceLane(() => { checkpoint(); return tcw.kv.put(key, body, { contentType: "text/markdown" }); });
       if (!put.ok) throw new Error(`Could not sync recording note: ${put.error.message}`);
       checkpoint();
