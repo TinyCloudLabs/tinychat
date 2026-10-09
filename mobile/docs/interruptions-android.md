@@ -56,6 +56,8 @@ Opening Exo attempts one restart if the session needs attention.
   probe contains 43 complete frames and a 68-sample tail. The final short
   tail is not queued because some codecs pad it with silence; the test requires
   all 43 complete packets. The maximum dropped tail is 1,023 samples (23 ms).
+  The round-two guarded full suite later ran 25 tests: 21 passed, 4 skipped,
+  0 failed (`review-r1-api28-full-guard-9b60938.txt`).
 - API 34: the pre-review full emulator connected suite ran 20 tests with 3 skipped,
   0 failed, and `BUILD SUCCESSFUL`, including the five-minute background
   Resume. A separate pre-review five-minute run saved a 13.862313 s AAC note
@@ -65,16 +67,20 @@ Opening Exo attempts one restart if the session needs attention.
   (about −39 dB RMS in half-second windows), which rules out digital silence,
   but the test did not establish intelligible speech. Instrumentation sent
   the notification action directly; G2 checks the locked-screen SystemUI tap.
-- API 36: stale action and injected read error tests passed (2/2). On the
-  requested five-minute retry, the guest again stopped answering `adb shell`
-  during the paused interval; the runner could not reach Resume. Evidence is
-  in `/tmp/exo-capture/evidence/T14/api36-five-minute-36d33ec.txt` and
-  `api36-adb-probe-36d33ec.txt`. The API 36 background and audio-level gate
-  remains open due to emulator infrastructure.
-- API 24: stale notification, in-flight Resume invalidation, and injected
-  read-error tests passed (3/3). Direct-start buffer and blocked-Resume
-  regression cases passed after fixes. A full connected suite attempt lost
-  the emulator mid-run.
+  The round-two guarded full suite later ran 25 tests: 22 passed, 3 skipped,
+  0 failed, including the five-minute background Resume
+  (`review-r1-api34-full-guard-9b60938.txt`). The pulled AAC note is
+  `review-r1-api34-background-note-guard-9b60938.m4a`; its post-pause volume
+  averaged −77.5 dB (maximum −68 dB). The required `-no-audio` emulator guard
+  prevents this run from establishing intelligible recorded speech.
+- API 36: an earlier five-minute retry lost `adb shell` during the pause
+  (`api36-five-minute-36d33ec.txt`, `api36-adb-probe-36d33ec.txt`). The later
+  guarded retry completed in 318 seconds with `OK (1 test)`, no app crashes,
+  and a committed 13.862-second note
+  (`review-r1-api36-five-minute-guard-9b60938.txt`). Its audio-level check
+  remains limited by the required `-no-audio` launch.
+- API 24: the round-two guarded full suite ran 25 tests: 19 passed, 6 skipped,
+  0 failed (`review-r1-api24-full-guard-9b60938.txt`).
 - Unit tests, debug APK, unsigned release AAB/APK, and the throwaway-key
   release signing rehearsal passed. The physical Moto gate G2 remains open.
 
@@ -92,9 +98,9 @@ With the system recorder holding the mic, record which outcome occurs: genuine
 start failure → `mic_unavailable`; successful but silenced start → an
 `isClientSilenced` span; or Exo receives normal input. Also check Stop during
 a route rebuild and that interruption → Pause makes an old alert action stale.
-Run the `start.beforeAttach` case directly with `am instrument -e class` (never
-Gradle connected tests on the phone), and verify no input remains active after
-Pause, Stop, or Discard. Check a saved headset preference while unplugged at
+The `start.beforeAttach` case passed on an emulator. Do not run instrumented
+tests on the physical phone; the plan's Moto-specific case remains an explicit
+deviation under the phone restriction. Check a saved headset preference while unplugged at
 start and unplug the headset mid-recording; both should keep recording on the
 system route while preserving the choice. Check the `BLUETOOTH_CONNECT` prompt
 and denial, the built-in mic list for duplicate ids, and saved duration against
