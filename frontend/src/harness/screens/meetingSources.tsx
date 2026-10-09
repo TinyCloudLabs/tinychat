@@ -5,7 +5,7 @@ import { createRuntimeShim } from "../runtimeShim";
 
 function MeetingSourcesHarness() {
   const shim = useMemo(() => createRuntimeShim(), []);
-  return <MeetingSourcesFeature tcw={shim.tcw} backendUrl="https://example.invalid" sessionStore={shim.sessionStore} />;
+  return <MeetingSourcesFeature initialOpen tcw={shim.tcw} backendUrl="https://example.invalid" sessionStore={shim.sessionStore} />;
 }
 
 export const meetingSourcesScreens: HarnessScreen[] = [
