@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { CheckIcon, ChevronDownIcon, MicOffIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { LevelTrace } from "./LevelTrace";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { micWarning, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
@@ -11,6 +13,32 @@ import { RecorderTimer, useAudioElapsed } from "./RecorderTimer";
 import { voiceNoteRoute } from "./RouteLine";
 import { SavedReceipt } from "./SavedReceipt";
 import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
+
+/**
+ * `lastSaved` (recorderReducer.ts) carries only id/durationMs/at, so the receipt looks the note's
+ * own transcriber up directly rather than threading it through the reducer's event types.
+ */
+function useSavedTranscriber(id: string | undefined): TranscriberId | null {
+  const [transcriber, setTranscriber] = useState<TranscriberId | null>(null);
+  useEffect(() => {
+    setTranscriber(null);
+    if (!id) return;
+    let active = true;
+    VoiceNotes.listPending()
+      .then(({ recordings }) => {
+        if (!active) return;
+        const found = recordings.find((note) => note.id === id);
+        setTranscriber((found?.options?.transcriber as TranscriberId | undefined) ?? null);
+      })
+      .catch(() => {
+        // Best-effort: the receipt falls back to the private-cloud/off line below.
+      });
+    return () => {
+      active = false;
+    };
+  }, [id]);
+  return transcriber;
+}
 
 export interface RecordingViewProps {
   recorder: RecorderValue;
@@ -27,7 +55,8 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
   const audioElapsed = useAudioElapsed(recorder.audioMs, active && (mic.state === "recording" || mic.state === "silenced"));
   const transcribing = outcome === "saved" && recorder.transcription?.availability === "available" &&
     recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
-  const savedRoute = transcribing ? "private-cloud" : "off";
+  const savedTranscriber = useSavedTranscriber(outcome === "saved" ? lastSaved?.id : undefined);
+  const savedRoute = savedTranscriber === "on-device" ? "on-device" : transcribing ? "private-cloud" : "off";
   const paused = mic.state === "paused" || mic.state === "interrupted" || mic.state === "needs_user";
 
   if (recorder.permissionDenied) return <MicrophoneAccessOff onMinimise={recorder.minimiseSheet} onOpenSettings={recorder.openSettings} />;

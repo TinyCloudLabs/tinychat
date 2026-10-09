@@ -180,6 +180,8 @@ dependencies {
     // Health spike (TC-525): Health Connect client, and the coroutines its suspend API needs from Java.
     implementation "androidx.health.connect:connect-client:$healthConnectClientVersion"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
+    // On-device STT (TC-836): extracts the small model pack's .tar.bz2 release asset.
+    implementation 'org.apache.commons:commons-compress:1.26.1'
     testImplementation "junit:junit:$junitVersion"
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

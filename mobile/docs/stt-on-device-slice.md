@@ -56,13 +56,23 @@ Per the scoping discussion before this slice was built:
 - **No model card or licences screen.** `OnDeviceStt.status()` is shown as one line with a
   Download/Cancel action, not the full model card, queue display and licences T27 adds.
   `deleteModels()` is implemented but not yet exposed in the UI.
-- **The small (110M, <6 GB RAM) pack is not downloadable in this slice.** Its release asset is a
-  `.tar.bz2`, and this slice does not implement on-device archive extraction (the full pack's
-  files are plain per-file HTTPS downloads; so is Silero VAD). `OnDeviceStt.downloadNow()` rejects
-  with `small_pack_unsupported` on a phone under 6 GB RAM. Both verification devices (Vonnegut,
-  7.4 GiB; the Moto, 7.4 GiB) use the full pack, so this does not block verification on them. T17
-  needs to add archive extraction (or find individual-file hosting for the small pack) before it
-  ships to a real low-RAM phone.
+- **The small (110M, <6 GB RAM) pack downloads its `.tar.bz2` release asset and extracts it
+  on-device** (no individual-file hosting exists for it, confirmed against both the GitHub
+  release and Hugging Face). Android uses Apache Commons Compress
+  (`BZip2CompressorInputStream` + `TarArchiveInputStream`, factored into the pure, unit-tested
+  `stt/core/ArchiveExtractor.kt`); iOS links the system `libbz2` through a small `CBZip2`
+  system-library target and a minimal streaming USTAR reader (`Bzip2.swift`/`TarReader.swift`,
+  ~90 lines together). The whole archive is sha256-verified before extraction, and each extracted
+  file is sha256-verified again against its own pinned hash before it replaces anything in the
+  model directory. Verified directly against the real published asset — on iOS, standalone
+  (all four extracted files' sha256 matched `mobile/stt-fixtures.lock` exactly); on Android, via
+  a real emulator download-and-extract run that caught and fixed two real bugs before the host
+  was reclaimed for another task (see the TC-836 report): a missing `ACCESS_NETWORK_STATE`
+  permission that crashed the app as soon as a download started, and a missing
+  `BufferedInputStream` around the bzip2 stream that made extraction pathologically slow (bzip2
+  decoders read their input almost a byte at a time). Both verification devices (Vonnegut,
+  7.4 GiB; the Moto, 7.4 GiB) use the full pack regardless, so the full pack's path is the one
+  that matters for G2; this path still needs a clean end-to-end emulator run once one is free.
 - **Decode holds the whole note in memory.** `AudioDecoder.decode16kMono` (both platforms) decodes
   the full note before VAD/ASR, matching the existing T7/T8 benchmark harness's approach. A
   multi-hour note can use several hundred MB doing this. T23/T24's blockwise decode bounds it.
@@ -70,10 +80,6 @@ Per the scoping discussion before this slice was built:
   segment (so it still never transcribes while recording), but there is no measured ≤ 5 s release
   guarantee or diarization-case handling — those are T23/T24's capture-priority work, and there is
   no diarization in this slice at all (speaker separation is out of scope, per the task).
-- **The recorder's saved-receipt route diagram does not yet say "On this phone."** `lastSaved` in
-  `recorderReducer.ts` does not carry `options.transcriber`, and threading it through was out of
-  scope for this pass; the receipt shows "This phone → Your space" for an on-device note, same as
-  "Off," while the live recording's `TranscriptionRouteControl` does show the on-device route.
 - **The per-recording control does not visually lock to "On this phone" when signed out.** The
   underlying behaviour is already fail-closed (native forces `on-device` regardless of what the
   control shows, verified in `CaptureEngine.setRecordingOptions`/`.kt`), so this is a cosmetic gap:

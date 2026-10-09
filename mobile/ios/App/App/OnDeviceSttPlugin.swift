@@ -69,7 +69,7 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func downloadNow(_ call: CAPPluginCall) {
         let memory = ProcessInfo.processInfo.physicalMemory
         let modelId = ModelManifest.primaryModel(physicalMemoryBytes: memory)
-        guard ModelManifest.downloadable[modelId] != nil else {
+        guard ModelManifest.filesFor(modelId) != nil else {
             call.reject("The on-device model for this phone's memory tier is not downloadable yet", "small_pack_unsupported")
             return
         }
@@ -111,6 +111,7 @@ public final class OnDeviceSttPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func deleteModels(_ call: CAPPluginCall) {
         store.delete(ModelManifest.parakeetFull)
+        store.delete(ModelManifest.parakeetSmall)
         store.delete(ModelManifest.sileroVad)
         call.resolve()
         notifyListeners("status", data: statusDict(), retainUntilConsumed: true)

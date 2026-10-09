@@ -66,7 +66,7 @@ class OnDeviceSttPlugin : Plugin() {
     @PluginMethod
     fun downloadNow(call: PluginCall) {
         val modelId = primaryModelId()
-        if (ModelManifest.DOWNLOADABLE[modelId] == null) {
+        if (ModelManifest.filesFor(modelId) == null) {
             call.reject("The on-device model for this phone's memory tier is not downloadable yet", "small_pack_unsupported")
             return
         }
@@ -102,6 +102,7 @@ class OnDeviceSttPlugin : Plugin() {
     @PluginMethod
     fun deleteModels(call: PluginCall) {
         store.delete(ModelManifest.PARAKEET_FULL)
+        store.delete(ModelManifest.PARAKEET_SMALL)
         store.delete(ModelManifest.SILERO_VAD)
         call.resolve()
         notifyListeners("status", statusObject(), true)
