@@ -89,7 +89,10 @@
   display: inline-flex;
   align-items: center;
   gap: 9px;
+  /* Never reaches the 44 px Minimise button (left 18) and its 8 px gap, however long the label. */
+  max-width: calc(100% - 104px);
   padding: 8px 16px;
+  text-align: center;
   border-radius: 999px;
   font-size: 13px;
   font-weight: 500;
@@ -572,7 +575,7 @@
 }
 .pr-mprow {
   display: grid;
-  grid-template-columns: 26px 1fr auto;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
   gap: 1px 10px;
   align-items: center;
   width: 100%;
@@ -601,8 +604,9 @@
 }
 .pr-mptitle {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 7px;
+  gap: 0 7px;
   min-width: 0;
 }
 .pr-mptitle .n {
@@ -610,9 +614,18 @@
   font-size: 16px;
 }
 .pr-mptitle .s {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
   color: var(--dim);
+}
+/* On a 320 px phone the sub-label takes its own line: the selected row's check stays beside the name. */
+@media (max-width: 359px) {
+  .pr-mptitle .s {
+    order: 2;
+  }
 }
 .pr-mpdots {
   display: flex;

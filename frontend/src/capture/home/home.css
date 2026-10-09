@@ -378,6 +378,17 @@ button.soft-row:focus-visible {
   box-shadow: none;
   color: var(--bgc);
 }
+/* On a 320 px phone the three actions cannot keep 1fr 1.3fr 1fr and their 8 px gaps: size them to their labels and share the rest. */
+@media (max-width: 359px) {
+  .soft-actions {
+    grid-template-columns: repeat(3, auto);
+    gap: 6px;
+  }
+  .soft-act {
+    gap: 6px;
+    padding: 0 4px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .soft-act {
     transition: none;
