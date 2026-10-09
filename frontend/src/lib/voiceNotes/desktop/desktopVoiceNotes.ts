@@ -252,7 +252,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           } finally {
             for (const release of releases) release();
           }
-          if (cleanupError !== null) throw new AggregateError([error, cleanupError], "Could not stop capture after its metadata write failed");
+          if (cleanupError !== null) throw new AggregateError([error, cleanupError],
+            "Could not stop capture after its metadata write failed", { cause: error });
           throw error;
         }
       });
