@@ -15,7 +15,7 @@ import { HeaderLiveChip } from "@/capture/recorder/HeaderLiveChip";
 import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RecordButton } from "@/capture/recorder/RecordButton";
 import { RecorderProvider, StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
-import { RecorderShell } from "@/capture/recorder/RecorderShell";
+import { FinalRecorderShell, RecorderShell } from "@/capture/recorder/RecorderShell";
 import { useOpenSavedNote } from "@/capture/library/useOpenSavedNote";
 import { ChatWorkspace } from "@/chat/ChatWorkspace";
 import { DEFAULT_CONTEXT_TOKENS } from "@/chat/compaction";
@@ -68,9 +68,11 @@ export interface ShellAppProps {
   captureTcw?: TinyCloudWeb;
   /** A fixed recorder state in place of the real controller (the screens' recorder fixtures). */
   recorder?: Partial<RecorderValue>;
+  /** The Soft-skin minimised recorder (TC-870); the harness build has no env, so the flag cannot say. */
+  finalRecorder?: boolean;
 }
 
-export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder }: ShellAppProps) {
+export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder, finalRecorder = false }: ShellAppProps) {
   useVisualViewportFit();
   const location = useLocation();
   const navigate = useNavigate();
@@ -95,8 +97,9 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
     navigate(state === "ready" ? legacy.to : homePath(platform), { replace: true });
   }, [legacy, settled, state, platform, navigate]);
 
+  const Shell = finalRecorder ? FinalRecorderShell : RecorderShell;
   const recorderShell = (
-    <RecorderShell
+    <Shell
       onOpenNote={openSavedNote}
       screen={screen}
       platform={platform}
