@@ -3,6 +3,7 @@ package xyz.tinycloud.exo.stt
 import android.os.SystemClock
 import com.getcapacitor.JSObject
 import com.k2fsa.sherpa.onnx.FastClusteringConfig
+import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
@@ -21,6 +22,7 @@ import xyz.tinycloud.exo.stt.core.SpeakerAttribution
 import xyz.tinycloud.exo.stt.core.SpeakerTurn
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
+import xyz.tinycloud.exo.stt.core.VadFrames
 import xyz.tinycloud.exo.stt.core.Wav16
 import xyz.tinycloud.exo.stt.core.WordErrorRate
 import java.io.File
@@ -134,6 +136,7 @@ internal object Benchmark {
         require(vadModel.isFile) { "Missing model: $vadModel" }
         val loadBegan = now()
         val recognizer = OfflineRecognizer(config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = RATE, featureDim = 80, dither = 0f),
             modelConfig = OfflineModelConfig(
                 transducer = OfflineTransducerModelConfig(
                     encoder = File(model, required[0]).path,
@@ -148,8 +151,9 @@ internal object Benchmark {
             val vadCreationBegan = now()
             val vad = Vad(config = VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(model = vadModel.path,
-                    minSilenceDuration = .4f, minSpeechDuration = .1f, maxSpeechDuration = 25f),
-                numThreads = threads, provider = "cpu"))
+                    minSilenceDuration = .4f, minSpeechDuration = .1f,
+                    windowSize = VadFrames.SIZE, maxSpeechDuration = 25f),
+                sampleRate = RATE, numThreads = threads, provider = "cpu"))
             val vadCreationSeconds = now() - vadCreationBegan
             try {
                 val decodeBegan = now()
@@ -183,15 +187,17 @@ internal object Benchmark {
                             if (aligned.isEmpty() && rms > NON_SILENT_RMS) emptyNonSilent++
                             segments.put(JSONObject().put("start", start.toDouble() / RATE)
                                 .put("end", (start + chunk.size).toDouble() / RATE)
-                                .put("decodedWords", aligned.size).put("rms", rms))
+                                .put("decodedWords", aligned.size).put("rms", rms)
+                                .put("tokens", JSONArray(result.tokens)))
                             words.addAll(aligned)
                         } finally { stream.release() }
                     }
                 }
-                // VAD's buffer is 30 seconds. Feeding 0.5 second blocks preserves the source sample origin.
-                for (start in samples.indices step RATE / 2) {
+                // Sherpa 1.13.8 reduces every acceptWaveform call to one speech decision.
+                // Feed one Silero window per call so short pauses are retained as cut points.
+                VadFrames.feed(samples) { frame ->
                     val vadBegan = now()
-                    vad.acceptWaveform(samples.copyOfRange(start, minOf(start + RATE / 2, samples.size)))
+                    vad.acceptWaveform(frame)
                     vadProcessingSeconds += now() - vadBegan
                     drain()
                 }
