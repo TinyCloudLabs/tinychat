@@ -17,6 +17,11 @@ export interface RecorderMic {
   input?: AudioInput | null;
 }
 
+export type RecorderCaptureIssue =
+  | { kind: "finalization_timed_out" }
+  | { kind: "recoveryFailed"; detail: string }
+  | { kind: "write_failed"; detail: string };
+
 export interface RecorderState {
   phase: RecorderPhase;
   recordingId: string | null;
@@ -25,6 +30,10 @@ export interface RecorderState {
   audioMs: number;
   /** Native recorded-time checkpoint: wall time minus user pauses, including interruptions. */
   elapsedMs: number;
+  /** Native failures keyed by recording ID, including notes no longer on the recorder screen. */
+  captureIssues: Record<string, RecorderCaptureIssue>;
+  /** A recovery scan can fail before native knows which recording caused it. */
+  recoveryScanFailure: string | null;
   maxDurationMs: number;
   mic: RecorderMic;
   /** A native Pause or Resume call is outstanding; repeat taps stay disabled. */
@@ -62,6 +71,8 @@ export type RecorderEvent =
   /** A recording was already running (a WebView reload, or one started offline). */
   | { type: "PICKED_UP"; id: string | null; startedAt: number; maxDurationMs: number; audioMs: number; elapsedMs: number; mic: RecorderMic }
   | { type: "MIC_STATE"; mic: RecorderMic; audioMs?: number; elapsedMs?: number }
+  | { type: "CAPTURE_ISSUE"; id: string | null; issue: RecorderCaptureIssue }
+  | { type: "CAPTURE_RECOVERED"; id: string }
   | { type: "PAUSE_REQUESTED" }
   | { type: "PAUSE_CONFIRMED" }
   | { type: "PAUSE_FAILED"; error: string }
@@ -107,6 +118,8 @@ export const initialRecorderState: RecorderState = {
   startedAt: null,
   audioMs: 0,
   elapsedMs: 0,
+  captureIssues: {},
+  recoveryScanFailure: null,
   maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
   mic: IDLE_MIC,
   controlPending: null,
@@ -197,6 +210,16 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "MIC_STATE":
       if (state.phase !== "recording") return state;
       return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs, elapsedMs: event.elapsedMs ?? state.elapsedMs };
+    case "CAPTURE_ISSUE":
+      if (event.id === null) return event.issue.kind === "recoveryFailed"
+        ? { ...state, recoveryScanFailure: event.issue.detail } : state;
+      return { ...state, captureIssues: { ...state.captureIssues, [event.id]: event.issue } };
+    case "CAPTURE_RECOVERED": {
+      if (!(event.id in state.captureIssues)) return state;
+      const captureIssues = { ...state.captureIssues };
+      delete captureIssues[event.id];
+      return { ...state, captureIssues };
+    }
     case "PERMISSION_DENIED":
       if (state.phase === "recording" || state.phase === "stopping" || state.phase === "discarding") return state;
       return { ...state, permissionDenied: true, error: null };

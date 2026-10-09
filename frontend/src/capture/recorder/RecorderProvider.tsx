@@ -17,7 +17,7 @@ import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, nativeVoiceNotesAvailable, type
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { liveCapture } from "./liveCapture";
 import { DISCARDED, micWarning, recorderStatusText, RECEIPT_KEPT } from "./recorderCopy";
-import type { RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
+import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } from "./recorderReducer";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
@@ -36,6 +36,8 @@ export interface RecorderValue {
   audioMs: number;
   /** Native recorded-time checkpoint; useRecordedElapsed ticks it through interruptions and blocked resumes, except user Pause. */
   elapsedMs: number;
+  captureIssues: Record<string, RecorderCaptureIssue>;
+  recoveryScanFailure: string | null;
   controlPending: RecorderState["controlPending"];
   maxDurationMs: number;
   limitNotice: string | null;
@@ -206,6 +208,8 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       startedAt: state.startedAt,
       audioMs: state.audioMs,
       elapsedMs: state.elapsedMs,
+      captureIssues: state.captureIssues,
+      recoveryScanFailure: state.recoveryScanFailure,
       controlPending: state.controlPending,
       maxDurationMs: state.maxDurationMs,
       limitNotice: state.limitNotice,
@@ -284,6 +288,8 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       startedAt: null,
       audioMs: 0,
       elapsedMs: 0,
+      captureIssues: {},
+      recoveryScanFailure: null,
       controlPending: null,
       maxDurationMs: VOICE_NOTE_MAX_DURATION_MS,
       limitNotice: null,

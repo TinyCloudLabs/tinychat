@@ -4,7 +4,7 @@ import type {
   MicStateReason, MissingAudioSpan, NoteLedger, OutboxEntry, RemoteOpReceipt, VoiceNoteRecording, VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
 
-type EventName = "micState" | "captureAlert" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "committed" | "inputs";
+type EventName = "micState" | "captureAlert" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "recoveryFailed" | "writeFailure" | "committed" | "inputs";
 type Listener = (value: unknown) => void;
 type Intent = NonNullable<CaptureStatus["intent"]>;
 type Availability = NonNullable<CaptureStatus["availability"]>;
@@ -49,6 +49,8 @@ export interface FakeVoiceNotes {
     routeChange(): void;
     mediaReset(): void;
     stall(): void;
+    writeFailure(error: string): void;
+    recoveryFailed(id: string | null, reason: string): void;
     silence(active: boolean): void;
     appActive(success?: boolean): void;
     appSuspended(): void;
@@ -482,6 +484,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     mediaReset() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "media_services_reset"); restart(s, true);
       emit("captureAlert", { id: s.id, reason: "media_services_reset", message: "Recording restarted after an audio system reset" }); } } },
     stall() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "stalled"); restart(s, true); } } },
+    writeFailure(error) { if (session) emit("writeFailure", { id: session.id, error }); },
+    recoveryFailed(id, reason) { emit("recoveryFailed", id === null ? { reason } : { id, reason }); },
     silence(active) {
       const s = session; if (!s) return;
       s.osSilenced = active;

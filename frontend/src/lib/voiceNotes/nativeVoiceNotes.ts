@@ -129,6 +129,24 @@ export interface CaptureAlertEvent {
   message: string;
 }
 
+export interface RecoveryFailedEvent {
+  /** iOS supplies an ID for a failed session; a scan failure or Android sweep may not. */
+  id?: string;
+  reason?: string;
+  error?: string;
+}
+
+export interface WriteFailureEvent {
+  id: string;
+  error: string;
+}
+
+export interface RecoveryCompletedEvent {
+  /** iOS emits the committed note fields; Android wraps them in recording. */
+  id?: string;
+  recording?: VoiceNoteRecording;
+}
+
 export interface VoiceNoteRecording {
   id: string;
   startedAt: number;
@@ -169,6 +187,7 @@ export interface CaptureStatus {
  * (listPending) until saved, so a missed event loses nothing.
  */
 export interface VoiceNoteAutoStopEvent {
+  id?: string;
   reason: "max_duration" | "disk_full" | "write_failed" | "permission_revoked";
   maxDurationMs: number;
   at: number;
@@ -233,11 +252,13 @@ export interface VoiceNotesPlugin {
   completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
   addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "captureAlert", listener: (event: CaptureAlertEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "recoveryFailed", listener: (event: RecoveryFailedEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "writeFailure", listener: (event: WriteFailureEvent) => void): Promise<PluginListenerHandle>;
+  addListener(event: "recovered" | "committed", listener: (event: RecoveryCompletedEvent) => void): Promise<PluginListenerHandle>;
   openSettings(): Promise<void>;
   addListener(event: "level", listener: (event: { level: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
-  addListener(event: "recovered" | "committed", listener: (event: { id: string }) => void): Promise<PluginListenerHandle>;
   addListener(event: "inputs", listener: (event: { inputs: AudioInput[]; selectedId: string | null; activeId: string | null }) => void): Promise<PluginListenerHandle>;
 }
 

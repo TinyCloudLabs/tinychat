@@ -53,7 +53,7 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
                 val code = data.optString("code", "start_failed")
                 main.post { pending.second.reject(code, code) }
             }
-        } else notifyListeners(name, JSObject.fromJSONObject(data), name in listOf("micState", "autoStopped", "autoStopFailed", "presentRecorder", "recovered", "recoveryFailed", "committed"))
+        } else notifyListeners(name, JSObject.fromJSONObject(data), name in listOf("micState", "autoStopped", "autoStopFailed", "presentRecorder", "recovered", "recoveryFailed", "writeFailure", "committed"))
     }
     @PluginMethod fun start(call: PluginCall) {
         if (getPermissionState("microphone") != PermissionState.GRANTED) { requestPermissionForAlias("microphone", call, "afterMic"); return }

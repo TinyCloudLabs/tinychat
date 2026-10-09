@@ -146,9 +146,9 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
-  test("listeners: four while attached, none after teardown", async () => {
+  test("listeners: seven while attached, none after teardown", async () => {
     const { detach } = await attached();
-    expect(fake.stats().active).toBe(4);
+    expect(fake.stats().active).toBe(7);
     detach();
     await tick();
     expect(fake.stats().active).toBe(0);
@@ -175,7 +175,7 @@ describe("voice-note recorder controller", () => {
 
     const second = await attached();
     expect(second.recorder.getState()).toMatchObject({ phase: "recording", recordingId: id });
-    expect(fake.stats().adds).toBe(8);
+    expect(fake.stats().adds).toBe(14);
   });
 
   test("Stop shows a phone receipt before cloud upload resolves", async () => {
@@ -495,7 +495,23 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState()).toMatchObject({
       phase: "idle", error: "Recording kept on this phone. Exo will finish it automatically.",
     });
+    expect(recorder.getState().captureIssues[currentId ?? onPhone[0].id]).toEqual({ kind: "finalization_timed_out" });
     expect(onPhone).toHaveLength(1);
+  });
+
+  test("native recovery and write failures stay attached to their recording until recovery succeeds", async () => {
+    const { recorder, detach } = await attached();
+    await recorder.record();
+    const id = recorder.getState().recordingId!;
+    fake.emit("writeFailure", { id, error: "AAC write failed" });
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "AAC write failed" });
+    fake.emit("recoveryFailed", { id, reason: "mux failed" });
+    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "recoveryFailed", detail: "mux failed" });
+    fake.emit("recovered", { id });
+    expect(recorder.getState().captureIssues[id]).toBeUndefined();
+    fake.emit("recoveryFailed", { error: "scan failed" });
+    expect(recorder.getState().recoveryScanFailure).toBe("scan failed");
+    detach();
   });
 
   test("a timed-out limit auto-stop explains recovery instead of saying no audio", async () => {

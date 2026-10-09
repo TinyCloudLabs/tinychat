@@ -193,6 +193,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
 
   const onAutoStopped = (event: VoiceNoteAutoStopEvent) => {
     const recording = event.recording;
+    if (event.error === "finalization_timed_out") {
+      send({ type: "CAPTURE_ISSUE", id: recording?.id ?? event.id ?? state.recordingId, issue: { kind: "finalization_timed_out" } });
+    }
     if (recording && state.phase === "idle" && state.lastSaved?.id === recording.id) return;
     if (!autoStopIsCurrent(state, recording?.id ?? null)) {
       if (recording) void saveInBackground(recording);
@@ -233,6 +236,18 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
+        VoiceNotes.addListener("recoveryFailed", (event) => {
+          send({ type: "CAPTURE_ISSUE", id: event.id ?? null,
+            issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });
+        }),
+        VoiceNotes.addListener("writeFailure", (event) => {
+          send({ type: "CAPTURE_ISSUE", id: event.id,
+            issue: { kind: "write_failed", detail: event.error } });
+        }),
+        VoiceNotes.addListener("recovered", (event) => {
+          const id = event.id ?? event.recording?.id;
+          if (id) send({ type: "CAPTURE_RECOVERED", id });
+        }),
         VoiceNotes.addListener("presentRecorder", async (event) => {
           if (event.reason === "permission_denied" && event.id === null) {
             const status = await VoiceNotes.status();
@@ -341,6 +356,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       } catch (caught) {
         // "not_recording": the limit stopped it first, and its "autoStopped" event saves it.
         const code = errorCode(caught);
+        if (code === "finalization_timed_out") {
+          send({ type: "CAPTURE_ISSUE", id: state.recordingId, issue: { kind: "finalization_timed_out" } });
+        }
         await reconcileFailedStop(code === "not_recording" ? null
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
           : `Could not stop: ${messageOf(caught)}`);
