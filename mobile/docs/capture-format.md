@@ -40,7 +40,7 @@ voice-notes/
 
 **ADTS.** MPEG-4 (ID=0), layer 0, no CRC, profile LC; sampling-frequency index 3 (48 000, iOS) or 4 (44 100, Android); channel configuration 1; `frame_length` = 7 + payload; buffer fullness 0x7FF; one raw data block per frame.
 
-**Canonical encoding.** Journal records, v2 sidecars, outbox entries and quarantine records are UTF-8 without a BOM. Every JSON object has keys in ascending ASCII order at every nesting level; all contract keys are ASCII. There is no insignificant whitespace. Strings use `\"` and `\\` for quote and backslash, the short JSON escapes for backspace, tab, newline, form feed and carriage return, and lowercase `\u00xx` for other U+0000–U+001F controls. `/` is never escaped. Valid non-ASCII Unicode is written directly as UTF-8 without normalization; invalid surrogate sequences are rejected. Numbers are finite base-10 integers without leading zeros, `+`, exponent or `.0`; booleans and `null` are lowercase. Arrays preserve chronological order. Every journal object ends in exactly one LF (`\n`), including the last complete line. Every canonical single-object file also ends in one LF. Writers emit exactly the event fields in the table and the full key set shown by the v2 golden sidecar; a nullable field is written as `null`, not omitted. New fields require a format version change; readers distinguish absent from explicit `null` in older files. V1 sidecars are parsed as legacy JSON regardless of key order or spacing. A torn final journal line is ignored; an invalid complete line is an error. Byte comparison applies to canonical JSON and ADTS fixtures.
+**Canonical encoding.** Journal records, v2 sidecars, outbox entries and quarantine records are UTF-8 without a BOM. Every JSON object has keys in ascending ASCII order at every nesting level; all contract keys are ASCII. There is no insignificant whitespace. Strings use `\"` and `\\` for quote and backslash, the short JSON escapes for backspace, tab, newline, form feed and carriage return, and lowercase `\u00xx` for other U+0000–U+001F controls. `/` is never escaped. Valid non-ASCII Unicode is written directly as UTF-8 without normalization; invalid surrogate sequences are rejected. Numbers are finite base-10 integers without leading zeros, `+`, exponent or `.0`; booleans and `null` are lowercase. Arrays preserve chronological order. Every journal object ends in exactly one LF (`\n`), including the last complete line. Every canonical single-object file also ends in one LF. Writers emit exactly the event fields in the table and the full key set shown by the v2 golden sidecar; a nullable field is written as `null`, not omitted. New fields require a shared format and golden-fixture update; readers distinguish absent from explicit `null` in older files. V1 sidecars are parsed as legacy JSON regardless of key order or spacing. A torn final journal line is ignored; an invalid complete line is an error. Byte comparison applies to canonical JSON and ADTS fixtures.
 
 Swift can use `JSONEncoder` with `.sortedKeys` and `.withoutEscapingSlashes`, but must encode required nulls explicitly with `encodeNil`; a hand writer is also valid. Android must sort keys and leave `/` unescaped with a canonical writer. Swift `JSONSerialization` sorting and Android `org.json` output are not suitable as-is.
 
@@ -59,10 +59,14 @@ Swift can use `JSONEncoder` with `.sortedKeys` and `.withoutEscapingSlashes`, bu
 | `input` | `id, name, kind` | the input in use changes |
 | `options` | `transcriber, identifySpeakers` | per-recording options change |
 | `owner` | `did` | the live session is claimed |
+| `first_audio` | none | first delivered PCM buffer for this session; `t` is its delivery time |
+| `capture_stopped` | none | the engine/input stops; `t` is the stop time, journaled after in-flight tap callbacks drain |
 | `low_battery` | `level` (integer percent, 0–5) | ≤ 5 % and discharging |
 | `stop` | `reason` (`user`, `max_duration`, `disk_full`, `write_failed`, `discard`, `permission_revoked`) | before commit |
 
 `avail.reason` is `null` when `value=available`. For `interrupted`, it is one of `call`, `interruption`, `route_change`, `media_services_reset`, `read_error`, `stalled` or `app_suspended`; for `blocked`, it is `resume_blocked` or `permission_revoked`. An iOS `AVAudioSession` interruption alone maps to `interruption`, and maps to `call` only if `CXCallObserver` confirms a call. Android maps an ordinary focus/input interruption to `interruption`, and maps to `call` only with a positive telephony signal. Route, media-reset, read-error, stall and suspension events use their named reasons.
+
+`firstAudioAt` is the first `first_audio.t` and `captureStoppedAt` is the last `capture_stopped.t` in a session. Both are nullable for a session recovered before those events were durable. `low_battery.level` is an integer percent; canonical JSON rejects fractional numbers.
 
 **Missing-audio spans**, durable in the journal and sidecar, in live status, and in the space row's `capture.spans`:
 ```ts
@@ -96,7 +100,17 @@ A user pause is not a missing span; it is counted in `pausedMs` and the `intent`
 - **Tombstone retirement** happens during recovery/GC only, when a transaction confirms that: `active[id] == 0`; a fresh listing shows no `<id>.*`, `sessions/<id>`, `staging/<id>.*` or progress file; and the deletions it performed were followed by `dsync`. Age is never a criterion. A failed unlink keeps the tombstone forever, and GC retries it at each recovery.
 - **Sidecar mutations** (claim, ledger, STT state) are transactions with `tmp → fsync → rename → dsync` and a monotonic `rev` (CAS for JS). `putTranscript()` publishes `<id>.transcript.json` only; it does **not** bump the sidecar `rev` by itself. Any accompanying `stt`/ledger change is a separate sidecar mutation and does bump `rev`.
 - **Recovery runs once per process** (`recoverOnce()`, idempotent): started by `ExoCaptureBootstrap.start()` / `CaptureBootstrap.onProcessStart()`. The plugin's `load()` and `listPending()` await it. Sessions owned by the live engine are skipped. A session with zero full frames is deleted silently. A recovered session's `wallMs` ends at the `t` of its last complete durable journal event, not the relaunch time. `pausedMs` sums closed pause intervals; if the last intent is `paused`, the open pause is clipped to that same last `t` (so an `intent paused` that is the last line adds zero after its timestamp). `durationMs` comes from the durable AAC frames. Recovered notes get `recovered: true`, `endedUnexpectedly: !journal.has("stop")`, `lastHeartbeatAt`, `exitReason` (Android API 30+, else null), a retained `recovered` event and a notification (T11/T15). A paused iOS session may be killed because its audio session is inactive; recovery commits it as an unexpectedly ended note.
-- **Cleanup outbox**: an entry is `{ entryId, did, provider: "assemblyai" | "ptx", mode: "hosted" | "own" | null, kind: "transcript" | "hosted_upload" | "ptx_job" | "own_upload_lookup", handle, createdAt, attempts }`. It is written inside the delete/cleanup transaction for every `ledger.remote` resource whose `cleanup` isn't `done`. A known AssemblyAI transcript `jobId` makes a `transcript` entry; a hosted `uploadId` makes a separate `hosted_upload` entry even when a transcript also exists. An own-key `submit_unknown` with a known `uploadUrl` and no `jobId` makes `own_upload_lookup` keyed by that URL; `create_unknown` with no handle makes no invented outbox entry. A known PTX `jobId` makes `ptx_job`. Entries are listed and completed through the plugin (§1.8). Tombstones never carry cleanup state.
+**Remote receipt and outbox contract** (§1.3, §2.3, §2.4). `beginRemoteOp` stores one `ledger.remote[]` entry with exactly `{ opId, provider, mode, kind, fingerprint, startedAt, stage, uploadId, uploadUrl, jobId, handleExpiresAt, cleanup }`; nullable handles and expiry are explicit `null`. The containing sidecar supplies `id` and `owner` (`did`), so those are not duplicated in the ledger. A receipt outbox entry has `{ entryId: "<id>:<opId>", did, provider, mode, kind, receiptKind, handle, handleExpiresAt, state, createdAt, attempts }`; `receiptKind` is the original receipt kind and survives every outbox state/kind change. `handle` and `handleExpiresAt` are nullable. Standalone legacy cleanup entries have `receiptKind: null`. During the Android rollout, readers accept an absent `receiptKind` and use the legacy kind inference; T15 currently omits this field and will add it in a follow-up. An open receipt transferred by delete keeps its `startedAt` as `createdAt`. The same rules apply when `beginRemoteOp` goes directly to the outbox because the note is tombstoned, absent, owned by a different account, or the account is not `signed_in`. `recordRemoteResult` updates the existing ledger or outbox entry atomically. A `failed` outcome confirms that request created no resource: remove its open receipt or outbox entry; any independent earlier resource retains its own receipt. The table is authoritative for iOS, Android, and the fake.
+
+| Receipt `kind` | Stage on begin → `created` → `unknown` (`failed` removes receipt) | Outbox kind and handle after begin/`unknown`/`created`; state | Outbox `receiptKind` |
+|---|---|---|---|
+| `hosted_create` | `create_unknown` → `uploading` → `create_unknown` | `hosted_upload`, `uploadId` (or result `handle`); known handle `pending`, absent handle `unknown` | `hosted_create` |
+| `hosted_submit` | `submit_unknown` → `submitted` → `submit_unknown` | `transcript`, `jobId` (or result `handle`) → `pending`; otherwise `hosted_submit`, `uploadId` → `lookup`; without either handle → `unknown`/`unknown` | `hosted_submit` |
+| `own_upload` | `create_unknown` → `uploaded` → `create_unknown` | `own_upload_lookup`, `uploadUrl` (or result `handle`); known URL `lookup`, absent URL `unknown` | `own_upload` |
+| `own_create` | `create_unknown` → `submitted` → `create_unknown` | `transcript`, `jobId` (or result `handle`) → `pending`; otherwise `own_upload_lookup`, `uploadUrl` → `lookup`; without either handle → `unknown`/`unknown` | `own_create` |
+| `ptx_create` | `create_unknown` → `submitted` → `create_unknown` | `ptx_job`, `jobId` (or result `handle`); known handle `pending`, absent handle `unknown` | `ptx_create` |
+
+For `outcome: "unknown"`, a known definitive job or upload handle still uses the table's handle state; an absent handle stays `unknown` except the hosted submit and own-key URL lookup paths. `cleanup` begins as `none`, becomes `pending` when the resource is abandoned or local transcript is written, and becomes `done` only on confirmed cleanup; at that point `stage` is `done`. `done` receipts make no outbox entry. A result's `handleExpiresAt` is preserved. A hosted transcript and its upload require separate receipt `opId`s, and therefore separate outbox entries. Outbox `done` removes the entry; `authority_expired` retains it (§2.3). The stored `receiptKind` resolves the `own_create` URL-lookup case: a later generic job `handle` changes that entry to `transcript`/`pending`, rather than treating it as another audio URL. Tombstones never carry cleanup state.
 
 **Failpoints and suspension gates.** `FileOps` wraps create/write/sync/rename/unlink/rmdir with named failpoints: `start.mkdir`, `start.journal`, `seg.write`, `seg.sync`, `roll.create`, `stop.journal`, `stage.write`, `publish.m4aRename`, `publish.sidecarTmp`, `publish.sidecarRename`, `publish.gc`, `claim.write`, `ledger.write`, `delete.tombstone`, `delete.outbox`, `delete.unlink`, `import.sidecar`, `tombstone.retire`. A failpoint crash drops unsynced data from the in-memory FS, modelling power loss. **Suspension gates** pause a long operation at `stage.begin`, `stage.afterMux`, `probe.afterLoad` and `stt.beforePublish`, so tests can interleave delete, discard, claim, recovery or another commit there. After every scenario, recovery runs twice. The invariants: (I1) no committed note is lost; (I2) no tombstoned id reappears or gets any published artifact; (I3) no sidecar is regenerated over a newer `rev`; (I4) recovery is idempotent; (I5) unsynced loss stays within the policy bound; (I6) every remote resource is either in a sidecar ledger or in the outbox. Extra scenarios: a failed unlink followed by a clock advanced 8 days and a relaunch (the tombstone stays, nothing resurrects); delete during a gated commit; discard during a gated legacy probe.
 
@@ -108,6 +122,7 @@ A user pause is not a missing span; it is counted in `pausedMs` and the `intent`
   "version": 2, "rev": 7,
   "wallMs": 2600000, "pausedMs": 60000, "spans": [ /* MissingAudioSpan */ ],
   "recovered": false, "endedUnexpectedly": false, "lastHeartbeatAt": null, "exitReason": null,
+  "firstAudioAt": null, "captureStoppedAt": null, // wall-ms journal times; null when no matching durable event
   "legacyImport": false, "ownerUnknown": false,          // true for every legacy note (§1.9)
   "source": "in_app", "owner": "did:pkh:eip155:1:0x…",   // null = recorded signed out, not claimed yet
   "transitionGen": 12,                                    // the account-transition generation at start (§2.1)
@@ -120,9 +135,11 @@ A user pause is not a missing span; it is counted in `pausedMs` and the `intent`
                     "outcome": "transcribed" | "no_speech" | null, "reason": null, "attempts": 0, "nextAttemptAt": null },
     "transcriptSync": { "state": "pending" | "saved", "rev": 0, "at": null },
     "landed":     { "state": "none" | "pending" | "emitted", "eventId": null },
-    "remote":     [ { "provider": "assemblyai" | "ptx", "mode": "hosted" | "own" | null,
+    "remote":     [ { "opId": "…", "provider": "assemblyai" | "ptx", "mode": "hosted" | "own" | null,
+                      "kind": "hosted_create" | "hosted_submit" | "own_upload" | "own_create" | "ptx_create",
+                      "fingerprint": "…", "startedAt": 1759800000000,
                       "stage": "create_unknown" | "uploading" | "uploaded" | "submit_unknown" | "submitted" | "done",
-                      "uploadId": null, "uploadUrl": null, "jobId": null,
+                      "uploadId": null, "uploadUrl": null, "jobId": null, "handleExpiresAt": null,
                       "cleanup": "none" | "pending" | "done" } ]
   },
   "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null }
@@ -183,7 +200,13 @@ export interface CaptureOptions { transcriber: TranscriberId; identifySpeakers: 
 export interface CaptureDefaults extends CaptureOptions { accountDid: string | null; transitionGen: number }
 export interface AudioInput { id: string; name: string; kind: "built_in" | "wired" | "bluetooth" | "usb" | "car" | "other" }
 export interface OutboxEntry { entryId: string; did: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
-  kind: "transcript" | "hosted_upload" | "ptx_job" | "own_upload_lookup"; handle: string; createdAt: number; attempts: number }
+  kind: "transcript" | "hosted_upload" | "hosted_submit" | "ptx_job" | "own_upload_lookup" | "unknown";
+  receiptKind?: RemoteOpReceipt["kind"] | null; // optional only until Android adds it; null for standalone cleanup
+  handle: string | null; handleExpiresAt: number | null;
+  state: "pending" | "lookup" | "unknown" | "authority_expired" | "done"; createdAt: number; attempts: number }
+export interface RemoteOpReceipt { id: string; did: string; opId: string; provider: "assemblyai" | "ptx";
+  mode: "hosted" | "own" | null; kind: "hosted_create" | "hosted_submit" | "own_upload" | "own_create" | "ptx_create";
+  fingerprint: string; startedAt: number }
 export type ClaimOptions =
   | { id: string; did: string; evidence: "signed_out_v2" | "user_choice" }
   | { id: string; did: string; evidence: "space_row"; rowId: string };
@@ -192,6 +215,7 @@ export interface VoiceNoteRecording {        // v1 fields unchanged; the rest mi
   silencedMs: number; silencedEvents: number; noSignalMs: number;
   version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
+  firstAudioAt?: number | null; captureStoppedAt?: number | null;
   legacyImport?: boolean; ownerUnknown?: boolean;            // native reports ownerUnknown: true for every v1 sidecar and legacy import
   source?: CaptureSource; owner?: string | null; transitionGen?: number;
   options?: CaptureOptions; input?: AudioInput | null; sampleRate?: number; bitrate?: number;
@@ -217,8 +241,15 @@ export interface VoiceNotesPlugin {
   // v2
   pause(): Promise<void>; resume(): Promise<void>; discard(): Promise<{ id: string | null }>;
   setRecordingOptions(o: Partial<CaptureOptions>): Promise<void>;
-  getCaptureDefaults(): Promise<CaptureDefaults>;
+  getCaptureDefaults(): Promise<CaptureDefaults & { status: "signed_in" | "transitioning" | "signed_out" }>;
   setCaptureDefaults(o: CaptureDefaults): Promise<{ claimed: string[] }>;   // rejects `stale_transition` if o.transitionGen < stored; with accountDid non-null, claims the live unowned session and unowned v2 notes (never legacy notes)
+  setAccountState(o: { status: "signed_in" | "transitioning" | "signed_out"; accountDid: string | null; transitionGen: number }): Promise<void>;
+  beginRemoteOp(receipt: RemoteOpReceipt): Promise<void>;
+  recordRemoteResult(o: { id: string; did: string; opId: string; result: {
+    handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string; handleExpiresAt?: number;
+    outcome: "created" | "failed" | "unknown" } }): Promise<{ destination: "ledger" | "outbox" }>;
+  retryRecovery(o: { id: string }): Promise<void>;
+  discardFailedRecording(o: { id: string }): Promise<void>;
   claim(o: ClaimOptions): Promise<{ owner: string | null }>;  // row_id_required | claim_evidence_required | claim_evidence_invalid | owner_mismatch | tombstoned
   updateLedger(o: { id: string; did: string; rev: number; patch: Partial<NoteLedger> }): Promise<{ rev: number }>;  // owner_mismatch | rev_conflict | tombstoned
   localAudioUrl(o: { id: string }): Promise<{ url: string }>;
@@ -229,11 +260,12 @@ export interface VoiceNotesPlugin {
   listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
   deleteQuarantined(o: { id: string }): Promise<void>;
   listOutbox(o: { did: string }): Promise<{ entries: OutboxEntry[] }>;
-  completeOutbox(o: { entryId: string; result: "done" | "retry" }): Promise<void>;
+  completeOutbox(o: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
   // events: micState (retained; includes id, audioMs, openSpan), level, autoStopped (retained), presentRecorder (retained),
   //         recovered (retained), committed (retained; every commit incl. native-only stops), inputs
 }
 ```
+The recovery actions reject `not_found` when the id is absent and `recording_in_progress` for the live id. `discardFailedRecording` rejects `not_failed_recording` when the id exists but has no completed recovery failure; its plugin signature remains `({ id }) → Promise<void>`.
 - `start()` without options uses the persisted native defaults. With `accountDid: null`, the transcriber is forced to `on-device` (decision 6).
 - `presentRecorder` is emitted for every start that didn't come from `start()`.
 - Retained `micState`, `autoStopped`, `presentRecorder`, `recovered` and `committed` events are queued in order until delivered to a listener, then consumed; multiple commits are never coalesced into the last one.

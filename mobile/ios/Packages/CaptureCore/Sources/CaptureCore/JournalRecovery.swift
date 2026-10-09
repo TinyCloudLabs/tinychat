@@ -4,6 +4,8 @@ public struct JournalRecovery {
     public let wallMs: Int64
     public let pausedMs: Int64
     public let lastHeartbeatAt: Int64?
+    public let firstAudioAt: Int64?
+    public let captureStoppedAt: Int64?
     public let endedUnexpectedly: Bool
     public let spans: [MissingAudioSpan]
     public let owner: String?
@@ -15,6 +17,8 @@ public struct JournalRecovery {
         let lastT = max(startedAt, events.last?["t"] as? Int64 ?? startedAt)
         wallMs = lastT - startedAt
         lastHeartbeatAt = events.last(where: { $0["e"] as? String == "hb" })?["t"] as? Int64
+        firstAudioAt = events.first(where: { $0["e"] as? String == "first_audio" })?["t"] as? Int64
+        captureStoppedAt = events.last(where: { $0["e"] as? String == "capture_stopped" })?["t"] as? Int64
         endedUnexpectedly = !events.contains { $0["e"] as? String == "stop" }
         owner = events.last(where: { $0["e"] as? String == "owner" })?["did"] as? String
             ?? first["owner"] as? String

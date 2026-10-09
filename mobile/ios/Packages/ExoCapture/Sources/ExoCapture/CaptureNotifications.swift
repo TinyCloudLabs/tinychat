@@ -41,6 +41,19 @@ public enum CaptureNotifications {
         }
     }
 
+    public static func recovered(id: String, pauseTimedOut: Bool = false) {
+        let content = UNMutableNotificationContent()
+        content.title = "Recording saved"
+        content.body = pauseTimedOut ? "Exo saved your recording after an hour paused." :
+            "Exo recovered your recording. Tap to open it."
+        content.sound = .default
+        content.userInfo = ["id": id, "recovered": true]
+        center.add(UNNotificationRequest(identifier: "capture.recovered.\(id)",
+                                         content: content, trigger: nil)) { error in
+            if let error { NSLog("Exo recovered notification failed: %@", String(describing: error)) }
+        }
+    }
+
     public static func remove(id: String) {
         queue.async {
             let key = identifier(id)
@@ -51,6 +64,10 @@ public enum CaptureNotifications {
 
     public static func handle(response: UNNotificationResponse, completion: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
+        if info["recovered"] as? Bool == true {
+            completion()
+            return
+        }
         if let id = info["id"] as? String, let epoch = info["epoch"] as? Int {
             DispatchQueue.main.async {
                 CaptureEngine.shared.resumeFromNotification(id: id, epoch: epoch)

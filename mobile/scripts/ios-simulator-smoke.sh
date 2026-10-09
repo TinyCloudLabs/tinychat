@@ -169,6 +169,8 @@ check '.voiceNotesReadChunk.code == "not_found"' "VoiceNotes.readAudioChunk() an
 check '.voiceNotesInputs.listed == true and .voiceNotesInputs.reset == true and .voiceNotesInputs.count >= 0' \
   "VoiceNotes.listInputs() and selectInput(null) answered over the bridge"
 if [ "$capture_smoke" = 1 ]; then
+  check '.recovery == "ok"' "stopped journal and ADTS segments recovered into a committed note"
+  check '.accountFailpoint == "ok"' "Debug account-state failpoint rejects an acknowledged write"
   check '.capture.committed == true and .capture.sampleRate == 48000 and .capture.channels == 1' \
     "synthetic sine passed the AAC writer, muxer and native commit"
   check '.capture.sessionsGone == true and .capture.legacyHeld == true and .capture.orphanHeld == true' \
