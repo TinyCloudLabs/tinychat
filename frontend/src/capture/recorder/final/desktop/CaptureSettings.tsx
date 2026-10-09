@@ -29,6 +29,7 @@ import {
   type Downloads,
   type FocusTarget,
 } from "./captureSettingsModel";
+import { onOpenCaptureSettings } from "./openCaptureSettings";
 import "../soft.css";
 import "./captureSettings.css";
 
@@ -518,6 +519,9 @@ export function CaptureSettings({
     },
     [extras, focusedProgress],
   );
+
+  // The recorder's "Get Whisper for this Mac" opens this panel.
+  useEffect(() => onOpenCaptureSettings(() => setOpen(true)), []);
 
   useEffect(() => {
     if (!open || !extras) return;

@@ -14,6 +14,12 @@ import {
   type ModeStop,
 } from "./transcriptionModes";
 import { FINAL_COPY } from "./finalCopy";
+import {
+  localDesktopCaption,
+  localDesktopExplanation,
+  NO_DESKTOP_WHISPER,
+  type DesktopWhisperState,
+} from "./desktop/useDesktopWhisper";
 import type { RecorderValue } from "../RecorderProvider";
 import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 
@@ -105,6 +111,8 @@ export interface TranscriptionChoiceOptions {
   transcriber: TranscriberApi;
   /** The account's current state: signed out, the provider is locked to Local. */
   signedIn: boolean;
+  /** The Mac's Whisper (desktop shell only); the other shells never pass it. */
+  whisper?: DesktopWhisperState;
   /** Tells the user something that did not work. */
   notify: (message: string) => void;
 }
@@ -121,19 +129,22 @@ export function useTranscriptionChoice({
   model,
   transcriber: api,
   signedIn,
+  whisper = NO_DESKTOP_WHISPER,
   notify,
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
-  // TODO(TC-888): drop this when desktopWhisper lands; until then a signed-out Mac recording has no transcription path.
-  const desktopSignedOut = shell === "desktop" && !signedIn;
+  const desktop = shell === "desktop";
+  const whisperReady = desktop && whisper.ready;
+  // Signed out with no Whisper on this Mac there is nothing to transcribe with: the recording is kept as audio only.
+  const desktopSignedOut = desktop && !signedIn && !whisperReady;
   const mode: ModeId = desktopSignedOut ? "skip" : MODE_FOR[api.transcriber.id];
 
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<ModeId | null>(null);
   const [retry, setRetry] = useState<ModeId | null>(null);
 
-  const stops: ScaleStop[] = scaleStops(shell, model).map(
+  const stops: ScaleStop[] = scaleStops(shell, model, whisperReady).map(
     ({ availability, ...stop }) => {
       if (desktopSignedOut) {
         if (stop.id === "skip") return { stop, available: true };
@@ -256,7 +267,18 @@ export function useTranscriptionChoice({
 
   return {
     mode,
-    caption: desktopSignedOut ? DESKTOP_SIGNED_OUT_CAPTION : null,
+    caption: desktopSignedOut
+      ? DESKTOP_SIGNED_OUT_CAPTION
+      : desktop && mode === "local"
+        ? localDesktopCaption(whisper.modelLabel)
+        : null,
+    /** The Mac's explanations for the modes card, where the shell's state makes the default untrue or incomplete. */
+    explanationFor: desktop
+      ? {
+          ...(desktopSignedOut ? { skip: DESKTOP_SIGNED_OUT_CAPTION } : {}),
+          local: localDesktopExplanation(whisperReady ? whisper.modelLabel : null),
+        }
+      : undefined,
     stops,
     select,
     step,

@@ -26,6 +26,7 @@ import {
   useTranscriptionChoice,
   type TranscriberApi,
 } from "./useTranscriptionChoice";
+import { useDesktopWhisper } from "./desktop/useDesktopWhisper";
 
 /** What the selector reads of the recorder; the fields it does not use are inert. */
 export function recorderState(recorder: RecorderValue): RecorderState {
@@ -97,12 +98,14 @@ export function useFinalRecorderControls({
   const audio = useAudioInputs(inputsSource);
   const input = mic.input ?? audio.current;
   const onDevice = useOnDeviceModel();
+  const whisper = useDesktopWhisper(shell === "desktop");
   const choice = useTranscriptionChoice({
     shell,
     transcription: recorder.transcription,
     model: onDevice.model,
     transcriber: transcriberApi ?? recorder,
     signedIn: recorder.signedIn,
+    whisper,
     notify,
   });
 

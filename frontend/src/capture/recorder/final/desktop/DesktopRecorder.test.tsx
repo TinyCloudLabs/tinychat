@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { PlatformContext } from "@/lib/platform";
+import { __resetCaptureEngineForTests, __setInstalledEngineForTests } from "@/lib/voiceNotes/captureEngine";
 import {
   StaticRecorderProvider,
   type RecorderValue,
@@ -53,7 +54,14 @@ const render = (
 
 const withNotes = { onOpenNotes: () => {} };
 
+const MAC_CAPABILITIES = {
+  nativeShortcuts: false, presentRecorder: false, openSettings: false, micDeniedPresentation: false,
+  background: true, localTranscription: false, desktopWhisper: true, offlineRecorder: true,
+};
+
 describe("DesktopRecorder", () => {
+  afterEach(() => __resetCaptureEngineForTests());
+
   test("recording shows the timer, the pause ring and the three controls", () => {
     const html = render();
     expect(html).toContain("12:48");
@@ -119,7 +127,7 @@ describe("DesktopRecorder", () => {
     })).toContain('aria-valuetext="Audio only"');
   });
 
-  test("signed out on the Mac, Audio only is selected and the rest are locked until desktop Whisper exists (TC-888)", () => {
+  test("signed out on the Mac, Audio only is selected and the rest are locked while there is no Whisper model", () => {
     const stops = (patch: Partial<RecorderValue>) =>
       [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
         (m) => m[1],
@@ -139,7 +147,7 @@ describe("DesktopRecorder", () => {
     expect(html).toContain('aria-valuetext="Audio only"');
     expect(html).toContain("Just the recording, kept on this Mac.");
     expect(html).not.toContain("transcribe it");
-    // TODO(TC-888): the open modes card says the same, not "Transcribe it later".
+    // The open modes card says the same, not "Transcribe it later".
     const card = renderToStaticMarkup(
       <MemoryRouter>
         <PlatformContext.Provider value="tauri">
@@ -160,6 +168,24 @@ describe("DesktopRecorder", () => {
       "false",
     ]);
   });
+  test("signed out on the Mac with Whisper ready, Local is selected and available with the Whisper caption", () => {
+    __setInstalledEngineForTests("tauri", MAC_CAPABILITIES);
+    const local = { id: "on-device" as const, identifySpeakers: false, source: "default" as const };
+    const html = render({ signedIn: false, transcriber: local });
+    expect(html).toContain('aria-valuetext="Local"');
+    expect(html).toContain("Whisper on this Mac, after you stop.");
+    expect([...html.matchAll(/data-available="(true|false)"/g)].map((m) => m[1])).toEqual(["false", "true", "false", "false"]);
+    expect(html).not.toContain("Just the recording, kept on this Mac.");
+  });
+
+  test("signed in on the Mac with Whisper ready, Local and Private are both open", () => {
+    __setInstalledEngineForTests("tauri", MAC_CAPABILITIES);
+    const local = { id: "on-device" as const, identifySpeakers: false, source: "default" as const };
+    const html = render({ signedIn: true, transcriber: local });
+    expect(html).toContain('aria-valuetext="Local"');
+    expect([...html.matchAll(/data-available="(true|false)"/g)].map((m) => m[1])).toEqual(["true", "true", "true", "false"]);
+  });
+
   test("a failed note save changes the notes button and raises an alert", () => {
     const failed = render({}, { ...withNotes, noteSaveFailed: true });
     expect(failed).toContain("Note not saved");

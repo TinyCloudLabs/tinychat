@@ -55,6 +55,8 @@ import { useIssueController } from "../useIssueController";
 import { desktopHomeCapabilities } from "./captureHomeKind";
 import { ConnectMeetingsLink } from "./ConnectMeetingsLink";
 import { DESKTOP_HOME_COPY as COPY, onThisMac } from "./desktopCopy";
+import { retryWhisperJob, whisperJobMeta, WHISPER_JOB_COPY } from "@/capture/library/DesktopWhisperStatus";
+import { useDesktopWhisperJob } from "@/lib/voiceNotes/desktop/useDesktopWhisperJob";
 import {
   desktopIssueMeta,
   desktopRecent,
@@ -255,6 +257,39 @@ function rowLabel(parts: {
   return label.filter(Boolean).join(". ");
 }
 
+/** Retry for a failed Whisper job, beside its row. A retry that could not start says so beside the row, with generic copy. */
+export function WhisperRetryControl(props: {
+  label: string;
+  error: boolean;
+  onRetry: () => void;
+}) {
+  const errorId = useId();
+  return (
+    <>
+      <button
+        type="button"
+        className="dch-dismiss"
+        aria-label={props.label}
+        aria-describedby={props.error ? errorId : undefined}
+        onClick={props.onRetry}
+        data-testid="recent-whisper-retry"
+      >
+        {COPY.retry}
+      </button>
+      {props.error && (
+        <p
+          id={errorId}
+          role="alert"
+          className="soft-sheet-error dch-dismiss-error"
+          data-testid="recent-whisper-retry-error"
+        >
+          {WHISPER_JOB_COPY.retryFailed}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** Dismiss for a partial-audio notice. A dismissal that is not saved leaves the notice up, says so beside it, and keeps focus on the button. */
 export function DismissControl(props: {
   label: string;
@@ -299,6 +334,10 @@ export function RecentRow(props: {
 }) {
   const { entry } = props;
   const [dismissError, setDismissError] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState(false);
+  const whisperJob = useDesktopWhisperJob(
+    entry.type === "item" && libraryKind(entry.item.source) === "note" ? entry.item.sourceId : null,
+  );
   let icon: LucideIcon = MicIcon;
   let title: string = COPY.voiceNoteTitle;
   let meta: string;
@@ -306,6 +345,7 @@ export function RecentRow(props: {
   let href: string | undefined;
   let attention = false;
   let dismissId: string | undefined;
+  let retryId: string | undefined;
   let sourceId: string | undefined;
   let issueKind: HomeIssue["kind"] | undefined;
   let sheetId: string | undefined;
@@ -326,6 +366,10 @@ export function RecentRow(props: {
       attention = issueNeedsAttention(entry.issue);
       issueKind = entry.issue.kind;
       if (issueHasSheet(entry.issue)) sheetId = item.sourceId;
+    } else if (whisperJob && whisperJobMeta(whisperJob) !== null) {
+      meta = whisperJobMeta(whisperJob)!;
+      attention = whisperJob.state === "failed";
+      if (whisperJob.state === "failed") retryId = item.sourceId;
     }
   } else if (entry.type === "partial") {
     meta = COPY.partialAudio;
@@ -414,6 +458,16 @@ export function RecentRow(props: {
           label={COPY.dismissLabel(title)}
           error={dismissError}
           onDismiss={() => setDismissError(dismissNotice(dismissId, props.onDismiss))}
+        />
+      )}
+      {retryId !== undefined && (
+        <WhisperRetryControl
+          label={COPY.retryLabel(title)}
+          error={retryError}
+          onRetry={() => {
+            setRetryError(false);
+            retryWhisperJob(retryId, () => setRetryError(true));
+          }}
         />
       )}
     </li>

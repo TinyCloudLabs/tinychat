@@ -3,7 +3,8 @@ import type {
   AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
 } from "../nativeVoiceNotes";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "../nativeVoiceNotes";
-import { registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
+import { notifyCaptureCapabilitiesChanged, registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
+import { refreshEffectiveTranscriber } from "../transcriberPreference";
 import { registerDesktopCaptureExtras } from "../desktopCaptureExtras";
 import { createFileAudioBlobStore, type CommandBridge } from "./fileAudioBlobStore";
 import { createDesktopWhisperQueue, getDesktopWhisperQueue, loadDesktopWhisperBridge, registerDesktopWhisperQueue,
@@ -58,6 +59,8 @@ export interface DesktopVoiceNotesOptions {
   whisper?: DesktopWhisperBridge;
   store?: WebStore;
   storeOptions?: Omit<WebStoreOptions, "audio">;
+  /** The selected Whisper model became ready or went away; the installed engine rewrites its default choice. */
+  onWhisperReadyChanged?: () => Promise<void>;
   now?: () => number;
   newId?: () => string;
 }
@@ -85,7 +88,12 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
   const refreshWhisperCapability = async () => {
     const selected = await bridge.invoke<string | null>("recorder_models_get");
     const models = selected ? await bridge.invoke<{ id: string; downloaded: boolean }[]>("recorder_models_list") : [];
-    capabilities.desktopWhisper = !!selected && models.some((model) => model.id === selected && model.downloaded);
+    const ready = !!selected && models.some((model) => model.id === selected && model.downloaded);
+    const changed = ready !== capabilities.desktopWhisper;
+    capabilities.desktopWhisper = ready;
+    notifyCaptureCapabilitiesChanged();
+    // The shown choice and the default a new recording journals both follow the capability.
+    if (changed) await options.onWhisperReadyChanged?.();
   };
   refreshSelectedWhisper = refreshWhisperCapability;
   const now = options.now ?? (() => Date.now());
@@ -630,9 +638,12 @@ async function tauriBridge(): Promise<DesktopBridge> {
 }
 
 /** Opens the desktop engine and registers the extras that bind the same bridge. */
-export async function installDesktopEngine(bridge: DesktopBridge, storeOptions?: DesktopVoiceNotesOptions["storeOptions"],
-  whisper?: DesktopWhisperBridge): Promise<CaptureEngine> {
-  const engine = await openDesktopVoiceNotes({ bridge, storeOptions, whisper });
+export async function installDesktopEngine(
+  bridge: DesktopBridge,
+  storeOptions?: DesktopVoiceNotesOptions["storeOptions"],
+  whisper?: DesktopWhisperBridge,
+): Promise<CaptureEngine> {
+  const engine = await openDesktopVoiceNotes({ bridge, storeOptions, whisper, onWhisperReadyChanged: refreshEffectiveTranscriber });
   registerDesktopCaptureExtras((await import("./tauriDesktopCaptureExtras")).createTauriDesktopCaptureExtras(bridge));
   try { await engine.recoverInterrupted(); }
   catch (error) { console.error("[desktopVoiceNotes] Recovery will retry; recorder stays available", error); }
