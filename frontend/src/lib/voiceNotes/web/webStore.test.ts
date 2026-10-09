@@ -428,7 +428,7 @@ describe("interrupted-session recovery", () => {
       console.error = log;
     }
     expect(errors).toHaveLength(MAX_RECOVERY_ATTEMPTS);
-    expect(await store.listQuarantine()).toEqual({ items: [{ id: "n", reason: "recovery_failed", sizeBytes: 21 }] });
+    expect(await store.listQuarantine()).toEqual({ items: [{ id: "n", reason: "recovery_failed", sizeBytes: 21, owner: null }] });
     expect(await store.getSession("n")).toBeNull();
     expect((await store.recoverInterruptedSessions()).recovered).toEqual([]);
 
@@ -624,7 +624,7 @@ describe("recovered recordings are decode-checked: whole up to the cap, a prefix
     expect(result.failed).toEqual([{ id: "n", reason: UNDECODABLE_REASON, error: "no moov atom" }]);
     expect(logged).toHaveLength(1);
     expect((await tab.listPending()).recordings).toEqual([]);
-    expect(await tab.listQuarantine()).toEqual({ items: [{ id: "n", reason: UNDECODABLE_REASON, sizeBytes: 30 }] });
+    expect(await tab.listQuarantine()).toEqual({ items: [{ id: "n", reason: UNDECODABLE_REASON, sizeBytes: 30, owner: null }] });
     expect(await tab.getSession("n")).toBeNull();
     expect(await tab.audio.size("n")).toBe(30);
     await expect(tab.readAudioChunk({ id: "n", offset: 0, length: 4 })).rejects.toEqual(code("not_found"));

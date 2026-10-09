@@ -56,7 +56,7 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   limitNotice: null, savePercent: null, error: null, outcome: null, lastSaved: null,
   pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
   transcription: { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop },
-  signedIn: true, sheetOpen: true,
+  signedIn: true, sheetOpen: true, captureIssues: {},
   transcriber: { id: "private-cloud", identifySpeakers: false, source: "default" },
   setTranscriber: async () => "ok",
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
