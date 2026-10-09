@@ -299,12 +299,13 @@ button.soft-row:focus-visible {
   padding-bottom: 0;
 }
 .soft-row-notice {
-  position: relative;
   box-sizing: border-box;
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
+  min-height: 44px;
   margin: 0;
-  padding: 2px 12px 9px 62px;
+  padding: 0 12px 0 62px;
   border: 0;
   border-radius: 0 0 16px 16px;
   background: none;
@@ -316,11 +317,6 @@ button.soft-row:focus-visible {
   overflow-wrap: anywhere;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-}
-.soft-row-notice::after {
-  content: "";
-  position: absolute;
-  inset: -9px 0 -5px;
 }
 .soft-row-notice:hover,
 .soft-row-notice:active {

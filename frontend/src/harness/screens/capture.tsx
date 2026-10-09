@@ -148,7 +148,8 @@ function ClearableIssues(props: { issues: NonNullable<RecorderValue["captureIssu
   const [issues, setIssues] = useState(props.issues);
   window.exoUiClearIssues = () => setIssues({});
   window.exoUiAddLost = (id) => setIssues({ [id]: { kind: "recoveryFailed", detail: "native: segment unreadable" } });
-  const [dismiss] = useState<NonNullable<Window["exoUiDismiss"]>>(() => (window.exoUiDismiss = { calls: [], fail: null }));
+  const [dismiss] = useState<NonNullable<Window["exoUiDismiss"]>>(() => ({ calls: [], fail: null }));
+  window.exoUiDismiss = dismiss;
   const recorder = useMemo<Partial<RecorderValue>>(
     () => ({
       ...SOFT_IDLE,
