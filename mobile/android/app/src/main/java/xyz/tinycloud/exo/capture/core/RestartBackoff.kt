@@ -11,7 +11,10 @@ class RestartBackoff(
     private var step = 0
 
     fun interruptionEnded() {
-        if (startedAtMs == null) startedAtMs = nowMs()
+        // A fresh end-of-interruption begins a fresh budget. Quick flaps use
+        // failedAttempt() directly and retain the current budget instead.
+        startedAtMs = nowMs()
+        step = 0
         postNow()
     }
 

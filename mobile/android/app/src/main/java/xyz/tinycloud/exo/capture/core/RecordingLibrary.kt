@@ -58,6 +58,19 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     }
     fun closeSession(id: String) = lock.withLock { openSessions.remove(id) }
     fun adoptSession(id: String) = lock.withLock { requireId(id); openSessions.add(id) }
+    /** Adoption uses the same durable attempt budget as mux recovery. */
+    fun beginParkedAdoption(id: String): Boolean = lock.withLock {
+        requireId(id)
+        if (quarantineIfExhausted(id)) return@withLock false
+        beginRecoveryAttempt(id)
+        true
+    }
+    fun completeParkedAdoption(id: String) = adoptSession(id)
+    fun acknowledgeParkedAdoption(id: String) = clearRecoveryFailure(id)
+    fun failParkedAdoption(id: String, error: Exception) = lock.withLock {
+        closeSession(id)
+        recordRecoveryFailure(id, error)
+    }
     fun prepareRetryRecovery(id: String) = lock.withLock {
         requireId(id)
         val parked = File(quarantine, "$id.session")
@@ -75,15 +88,21 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
     fun discardFailedRecording(id: String) = lock.withLock {
         requireId(id)
         if (id in openSessions || sidecar(id).exists()) throw IllegalStateException("recording_in_progress")
+        if (!recoveryMarker(id).isFile) throw IllegalStateException(
+            if (session(id).exists() || File(quarantine, "$id.session").exists()) "not_failed_recording" else "not_found")
         val dirs = listOf(session(id), File(quarantine, "$id.session"))
         if (dirs.none { it.exists() } && !File(quarantine, "$id.failure.json").exists())
             throw IllegalStateException("not_found")
+        ops.write(tombstone(id), byteArrayOf(), false, "recovery.discard")
+        ops.syncDir(tombstones)
         for (dir in dirs) {
             dir.listFiles()?.forEach { ops.unlink(it, "recovery.discard") }
             ops.rmdir(dir, "recovery.discard")
         }
+        gcArtifacts(id)
         File(quarantine, "$id.failure.json").takeIf { it.exists() }?.let { ops.unlink(it, "recovery.discard") }
         ops.syncDir(sessions); ops.syncDir(quarantine)
+        retire(id)
     }
     fun failedRecoveryItems(): JSONArray = lock.withLock {
         JSONArray().also { result ->
@@ -116,7 +135,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         val item = JSONObject(marker.readText())
         if (item.optInt("attempts") < 3 || item.optBoolean("retryAuthorized")) return@withLock false
         val dir = session(id)
-        if (dir.isDirectory) ops.rename(dir, File(quarantine, "$id.session"), "recovery.quarantine")
+        if (dir.isDirectory) {
+            ops.rename(dir, File(quarantine, "$id.session"), "recovery.quarantine")
+            ops.syncDir(sessions)
+        }
         true
     }
     private fun recordRecoveryFailure(id: String, error: Exception) = lock.withLock {
@@ -124,8 +146,10 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         val item = marker.takeIf { it.isFile }?.let { JSONObject(it.readText()) } ?: JSONObject().put("id", id)
         item.put("reason", error.message ?: "recovery_failed").put("inFlight", false)
         saveRecoveryMarker(id, item, "recovery.failure")
-        if (item.optInt("attempts") >= 3 && session(id).isDirectory)
+        if (item.optInt("attempts") >= 3 && session(id).isDirectory) {
             ops.rename(session(id), File(quarantine, "$id.session"), "recovery.quarantine")
+            ops.syncDir(sessions)
+        }
     }
     fun openFirstSegment(id: String, audioMs: Long, gen: Long, at: Long = System.currentTimeMillis()) = lock.withLock {
         appendJournal(id, event("avail", audioMs, JSONObject().put("value", "available")
@@ -490,7 +514,9 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
             val originalKind = when (previous.optString("kind")) {
                 "hosted_upload" -> "hosted_create"
                 "hosted_submit" -> "hosted_submit"
-                "own_upload_lookup" -> if (previous.optString("mode") == "own") "own_create" else "own_upload"
+                // The table's begin row gives own_upload_lookup for own_upload,
+                // while an own_create with no job starts as unknown.
+                "own_upload_lookup" -> "own_upload"
                 "ptx_job" -> "ptx_create"
                 "unknown" -> if (previous.optString("mode") == "hosted") "hosted_submit" else "own_create"
                 else -> "own_create"
@@ -629,7 +655,8 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
         }
         for (file in root.listFiles().orEmpty().filter { it.name.endsWith(".m4a") && it.name.removeSuffix(".m4a").isNoteId() }) {
             val id = file.name.removeSuffix(".m4a")
-            if (sidecar(id).exists() || tombstone(id).exists() || session(id).exists()) continue
+            if (sidecar(id).exists() || tombstone(id).exists() || session(id).exists() ||
+                File(quarantine, "$id.session").exists() || recoveryMarker(id).isFile) continue
             val opGen = try { begin(id) } catch (_: Exception) { continue }
             try {
                 val note = probe(file)
@@ -649,6 +676,7 @@ class RecordingLibrary(val root: File, val ops: FileOps = FileOps()) {
                             .put("wallMs", durationMs).put("pausedMs", 0).put("spans", JSONArray())
                             .put("endedUnexpectedly", false).put("lastHeartbeatAt", JSONObject.NULL)
                             .put("exitReason", JSONObject.NULL).put("source", "in_app")
+                            .put("firstAudioAt", JSONObject.NULL).put("captureStoppedAt", JSONObject.NULL)
                             .put("transitionGen", 0).put("options", defaultOptions())
                             .put("input", JSONObject.NULL)
                             .put("sampleRate", note.opt("sampleRate") ?: JSONObject.NULL)

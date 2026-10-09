@@ -4,6 +4,43 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RestartBackoffTest {
+    @Test fun exhaustedSessionDoesNotConsumeTheNextRecordingBudget() {
+        var now = 1_000L
+        val delayed = mutableListOf<Long>()
+        val backoff = RestartBackoff({ now }, {}, { delayed += it })
+        backoff.interruptionEnded()
+        now += 600_001
+        assertFalse(backoff.failedAttempt())
+        backoff.reset() // Stop, then a new start.
+        now += 60_000
+        backoff.interruptionEnded()
+        assertTrue(backoff.failedAttempt())
+        assertEquals(listOf(500L), delayed)
+    }
+    @Test fun stopWithinFiveSecondsOfRestartClearsTheNextSessionsWindow() {
+        var now = 1_000L
+        val delayed = mutableListOf<Long>()
+        val backoff = RestartBackoff({ now }, {}, { delayed += it })
+        backoff.interruptionEnded()
+        assertTrue(backoff.failedAttempt())
+        now += 1_000 // Restart succeeded, then Stop before the five-second healthy mark.
+        backoff.reset()
+        now += 600_000
+        backoff.interruptionEnded()
+        assertTrue(backoff.failedAttempt())
+        assertEquals(listOf(500L, 500L), delayed)
+    }
+    @Test fun interruptionEndRestampsAnAttemptMadeDuringALongCall() {
+        var now = 1_000L
+        val delayed = mutableListOf<Long>()
+        val backoff = RestartBackoff({ now }, {}, { delayed += it })
+        backoff.interruptionEnded()
+        assertTrue(backoff.failedAttempt()) // An app-active attempt while the call continues.
+        now += 12 * 60_000
+        backoff.interruptionEnded()
+        assertTrue(backoff.failedAttempt())
+        assertEquals(listOf(500L, 500L), delayed)
+    }
     @Test fun quickFailuresKeepTheOriginalTenMinuteBudget() {
         var now = 1_000L
         val delayed = mutableListOf<Long>()
@@ -12,7 +49,8 @@ class RestartBackoffTest {
         repeat(4) {
             now += 1_000
             assertTrue(backoff.failedAttempt())
-            backoff.interruptionEnded() // a successful start followed by another quick failure
+            // A successful restart followed by a quick failure uses the engine's
+            // quick path, which calls failedAttempt without interruptionEnded.
         }
         assertEquals(listOf(500L, 1000L, 2000L, 5000L), delayed)
         now += 600_000

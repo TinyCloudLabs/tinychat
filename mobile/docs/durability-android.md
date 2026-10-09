@@ -30,7 +30,8 @@ The journal records `first_audio` at the first delivered PCM buffer and
 `firstAudioAt` and `captureStoppedAt`. They bound the capture interval more
 accurately than `wallMs`, which includes mic-open latency and drain work.
 At ≤5% while discharging, the service journal records one `low_battery`
-event with the measured fraction.
+event with the measured integer percent. A failed journal write is logged and
+surfaced as `writeFailure`, and the service retries on the next limit tick.
 
 The Debug failure hook is the `exo.debug.failAccountState` string in the
 `exo.debug` preferences (or a Java system property of that name): `1` fails
@@ -42,3 +43,18 @@ loss cannot be measured in this task. The `no_signal` check therefore keeps
 the exact-zero threshold until a Moto measurement can choose a safe windowed
 threshold. The recovery-only `START_STICKY` trial is also deferred until the
 Moto can verify that no foreground-service deadline exception occurs.
+
+## Follow-ups
+
+- Recovery still holds the engine control lock while muxing another orphaned
+  session, so a paused note's controls can wait behind a large recovery.
+- Only one parked session is adopted per launch. Additional parked sessions
+  need a visible resolution policy and a `pause_timeout` notification.
+- Explicit retry reports a coarse `recovery_failed` error; map its durable
+  failure reason to a documented code.
+- Move first-audio and low-battery journal fsyncs off the engine/audio callback
+  path after measuring their effect on recorder controls.
+- Native STT still marks private-cloud notes `waiting_for_model`; align that
+  state with the selected transcriber.
+- Refresh the T14 interruption test counts on a physical device; the current
+  T14 doc points at the rebased log but the counts were not rerun.

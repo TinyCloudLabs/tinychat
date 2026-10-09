@@ -345,6 +345,30 @@ class CaptureInstrumentedTest {
             activity.finish()
         }
     }
+    @Test fun corruptParkedAdoptionLeavesEngineIdleAndRecoversOtherSession() {
+        val engine = CaptureEngine.get(context)
+        val parked = UUID.randomUUID().toString(); val other = UUID.randomUUID().toString()
+        val crashed = RecordingLibrary(engine.library.root, AndroidFileOps())
+        crashed.start(parked, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        crashed.openFirstSegment(parked, 0, 1)
+        crashed.append(parked, 0, ByteArray(8) { 0 })
+        crashed.transition(parked, "intent", 0, JSONObject().put("value", "paused"))
+        crashed.closeSession(parked)
+        crashed.start(other, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        crashed.openFirstSegment(other, 0, 1)
+        crashed.append(other, 0, byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0))
+        crashed.stopJournal(other, 23, "user"); crashed.closeSession(other)
+        try {
+            engine.recoverForTest()
+            assertEquals("idle", engine.status().getString("state"))
+            assertTrue(engine.status().isNull("id"))
+            assertNotNull(engine.library.read(other))
+            assertEquals(1, engine.library.failedRecoveryItems().length())
+        } finally {
+            engine.library.discardFailedRecording(parked)
+            engine.library.delete(other)
+        }
+    }
     @Test fun encodeFinalizeAndProbe44100Hz() {
         val root = File(context.cacheDir, "capture-test-${UUID.randomUUID()}")
         val library = RecordingLibrary(root, AndroidFileOps())
