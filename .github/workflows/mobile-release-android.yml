@@ -121,8 +121,15 @@ jobs:
         run: bun install --frozen-lockfile
 
       # `vite build` runs in production mode, so frontend/.env.production supplies the production service URLs.
+      # VITE_EXO_CHANNEL is the release channel the build line reports (TC-840).
       - name: Build workspace packages and the production frontend
-        run: bun run build:packages && bun run build:frontend
+        run: |
+          version=$(node -p 'require("./frontend/package.json").version')
+          case "$version" in
+            *-beta.*) export VITE_EXO_CHANNEL=beta ;;
+            *) export VITE_EXO_CHANNEL=stable ;;
+          esac
+          bun run build:packages && bun run build:frontend
 
       - name: Sync Capacitor (bundled web app, no dev server)
         env:

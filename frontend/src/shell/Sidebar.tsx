@@ -6,6 +6,7 @@ import { Link, useLocation } from "react-router-dom";
 import { SettingsIcon, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { BuildInfoLine } from "@/components/BuildInfoLine";
 import { NavBadge } from "./NavBadge";
 import { tabTarget } from "./navigation";
 import { PATHS } from "./routes";
@@ -87,6 +88,9 @@ export function Sidebar({
           </Link>
         </div>
       )}
+      {/* The build line at the menu's foot (TC-840). The tab bar and the 64 px
+          rail have no room for it; Settings carries it on those sizes. */}
+      <BuildInfoLine />
     </nav>
   );
 }
