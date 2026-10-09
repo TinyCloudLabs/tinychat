@@ -138,7 +138,9 @@ public final class TranscriptionQueue {
             let words = try engine.recognize(samples: chunk.samples, origin: Double(chunk.start) / 16_000)
             if !words.isEmpty {
                 decodedAny = true
-                segments.append(["start": Double(chunk.start) / 16_000, "end": Double(chunk.end) / 16_000,
+                // Milliseconds, not fractional seconds: CanonicalJSON only accepts whole-integer
+                // NSNumbers (TC-836 — the only type every other timestamp in this schema already uses).
+                segments.append(["start": chunk.start * 1000 / 16_000, "end": chunk.end * 1000 / 16_000,
                                   "text": words.map(\.text).joined(separator: " "), "speaker": NSNull()])
             }
             done += 1
