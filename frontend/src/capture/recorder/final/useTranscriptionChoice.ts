@@ -19,6 +19,7 @@ import type {
 
 export const PRIVATE_UNAVAILABLE = "Not available right now";
 export const SIGNED_OUT = "Sign in to choose another mode";
+export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
 export const TRANSCRIBER_FOR: Record<ModeId, RecorderTranscriberId> = {
   skip: "off",
@@ -210,11 +211,24 @@ export function useTranscriptionChoice({
   };
 
   const setIdentifySpeakers = async (enabled: boolean) => {
+    let result: SetTranscriberResult;
     try {
-      await api.setIdentifySpeakers(enabled, "recording");
+      result = await api.setIdentifySpeakers(enabled, "recording");
     } catch (caught) {
       failed("change Identify speakers", caught);
+      return;
     }
+    if (result === "ok") return;
+    // The switch shows the provider's value, so a refusal leaves it where it was.
+    console.error(`[Recorder] Identify speakers was refused: ${result}`);
+    if (result === "locked_signed_out") setLocked(true);
+    notify(
+      result === "needs_consent"
+        ? SPEAKERS_NEEDS_CONSENT
+        : result === "locked_signed_out"
+          ? SIGNED_OUT
+          : PRIVATE_UNAVAILABLE,
+    );
   };
 
   return {

@@ -30,7 +30,7 @@ export interface TranscriberApi {
   setIdentifySpeakers(
     on: boolean,
     scope: TranscriberScope,
-  ): void | Promise<void>;
+  ): SetTranscriberResult | Promise<SetTranscriberResult>;
 }
 
 /** The API over this screen's own state, with the consent the existing private-cloud route holds. */
@@ -53,7 +53,9 @@ export function useTranscriberApi(
       setState((current) => ({ ...current, id }));
       return "ok";
     },
-    setIdentifySpeakers: (on) =>
-      setState((current) => ({ ...current, identifySpeakers: on })),
+    setIdentifySpeakers: (on) => {
+      setState((current) => ({ ...current, identifySpeakers: on }));
+      return "ok";
+    },
   };
 }

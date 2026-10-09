@@ -10,6 +10,7 @@ import type {
 import {
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
+  SPEAKERS_NEEDS_CONSENT,
   TRANSCRIBER_FOR,
   useTranscriptionChoice,
 } from "./useTranscriptionChoice";
@@ -52,6 +53,7 @@ type Call = [string, ...unknown[]];
 function fakeApi(
   id: RecorderTranscriberId,
   result: SetTranscriberResult | Error = "ok",
+  speakers: SetTranscriberResult | Error = "ok",
 ) {
   const calls: Call[] = [];
   const api: TranscriberApi = {
@@ -63,6 +65,8 @@ function fakeApi(
     },
     setIdentifySpeakers: async (on, scope) => {
       calls.push(["setIdentifySpeakers", on, scope]);
+      if (speakers instanceof Error) throw speakers;
+      return speakers;
     },
   };
   return { api, calls };
@@ -203,6 +207,45 @@ describe("useTranscriptionChoice", () => {
     const { result } = choice(transcription(), api);
     await result.setIdentifySpeakers(true);
     expect(calls).toEqual([["setIdentifySpeakers", true, "recording"]]);
+  });
+
+  describe("a refused Identify speakers is shown and logged, and the switch stays with the provider", () => {
+    const refused = async (result: SetTranscriberResult | Error) => {
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      const { api } = fakeApi("assemblyai", "ok", result);
+      const { result: scale, notices } = choice(transcription(), api);
+      await scale.setIdentifySpeakers(true);
+      const errors = logged.mock.calls.map((call) => String(call[0]));
+      logged.mockRestore();
+      return { notices, errors, shown: scale.identifySpeakers };
+    };
+
+    test("each refusal gives a reason and one log", async () => {
+      for (const [result, reason] of [
+        ["needs_consent", SPEAKERS_NEEDS_CONSENT],
+        ["locked_signed_out", SIGNED_OUT],
+        ["unavailable", PRIVATE_UNAVAILABLE],
+      ] as const) {
+        const { notices, errors, shown } = await refused(result);
+        expect(notices).toEqual([reason]);
+        expect(errors).toHaveLength(1);
+        expect(shown).toBe(false);
+      }
+    });
+
+    test("a rejection is shown and logged with its reason", async () => {
+      const { notices, errors } = await refused(new Error("plugin down"));
+      expect(notices).toEqual([
+        "Could not change Identify speakers: plugin down",
+      ]);
+      expect(errors).toEqual(["[Recorder] Could not change Identify speakers"]);
+    });
+
+    test("ok says nothing", async () => {
+      const { notices, errors } = await refused("ok");
+      expect(notices).toEqual([]);
+      expect(errors).toEqual([]);
+    });
   });
 
   describe("results and failures are shown and logged", () => {

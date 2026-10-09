@@ -146,6 +146,7 @@ function Interactive({
     setIdentifySpeakers: (on, scope) => {
       log.calls.push(`identifySpeakers:${on}:${scope}`);
       setTranscriber((current) => ({ ...current, identifySpeakers: on }));
+      return "ok";
     },
   };
 
