@@ -4,6 +4,7 @@
   "description": "Default capability for the main Exo window",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-set-title"
   ]
 }
