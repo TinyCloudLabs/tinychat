@@ -9,8 +9,10 @@ import { useEffect, useRef } from "react";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import { edgeLevel, liveCapture, useLiveCapture } from "./liveCapture";
 
-export function LiveEdge() {
-  const recorderFinal = recorderFinalEnabled();
+export function LiveEdge({
+  finalEnabled = recorderFinalEnabled(),
+}: { finalEnabled?: boolean } = {}) {
+  const recorderFinal = finalEnabled;
   const capture = useLiveCapture();
   const ref = useRef<HTMLDivElement>(null);
   const moving = capture !== null && !capture.warning && capture.source !== "desktop-local";
