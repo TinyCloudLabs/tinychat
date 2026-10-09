@@ -6,16 +6,28 @@
 // Mounted once at the app root; it never takes a pointer event.
 import { useEffect, useRef } from "react";
 
-import { edgeLevel, liveCapture, useLiveCapture } from "./liveCapture";
+import { recorderFinalEnabled } from "./final/recorderFinalFlag";
+import {
+  edgeLevel,
+  liveCapture,
+  useLiveCapture,
+  type LiveCapture,
+} from "./liveCapture";
 
-export function LiveEdge() {
-  const capture = useLiveCapture();
+export function LiveEdge({
+  finalEnabled = recorderFinalEnabled(),
+  capture: captureOverride,
+}: { finalEnabled?: boolean; capture?: LiveCapture | null } = {}) {
+  const recorderFinal = finalEnabled;
+  const liveCaptureSnapshot = useLiveCapture();
+  const capture =
+    captureOverride === undefined ? liveCaptureSnapshot : captureOverride;
   const ref = useRef<HTMLDivElement>(null);
   const moving = capture !== null && !capture.warning && capture.source !== "desktop-local";
 
   useEffect(() => {
     const element = ref.current;
-    if (!element || !moving) return;
+    if (recorderFinal || !element || !moving) return;
     let level = 0;
     const unsubscribe = liveCapture.subscribeLevel((sample) => {
       level = edgeLevel(sample, level);
@@ -25,9 +37,10 @@ export function LiveEdge() {
       unsubscribe();
       element.style.removeProperty("--live-level");
     };
-  }, [moving]);
+  }, [moving, recorderFinal]);
 
-  if (capture === null) return null;
+  // Final design uses the ring, Ribbon, dock and Capture dot as recording indicators.
+  if (recorderFinal || capture === null) return null;
   return (
     <div
       ref={ref}
