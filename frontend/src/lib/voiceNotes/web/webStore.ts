@@ -157,8 +157,13 @@ export interface WebStore extends PluginProtocol {
   readNoteAudio(id: string): Promise<{ bytes: Uint8Array; mimeType: string }>;
   /** Drops a session that captured nothing (no tombstone: there is nothing to protect). Rejects `audio_not_empty` rather than delete durable bytes. */
   dropEmptySession(id: string): Promise<void>;
+  /** Durably marks a live session discarded before native capture is stopped. */
+  tombstoneSession(id: string): Promise<void>;
+  hasTombstone(id: string): Promise<boolean>;
   /** Discards a session and its audio and tombstones the id. */
   discardSession(id: string): Promise<void>;
+  /** Quarantines a native segment failure while retaining every durable byte. */
+  quarantineInterrupted(id: string, reason: string, error: string): Promise<RecoveryResult["failed"][number]>;
   /** Commits every session whose tab died before it was committed. */
   recoverInterruptedSessions(): Promise<RecoveryResult>;
   /** Finishes audio deletes a crash interrupted. */
@@ -430,7 +435,7 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
       await transact(db, [STORES.sessions], "readwrite", (tx) => del(tx, STORES.sessions, id));
     },
 
-    async discardSession(id) {
+    async tombstoneSession(id) {
       await before("tombstone", id);
       await transact(db, [STORES.sessions, STORES.tombstones, STORES.notes, STORES.transcripts], "readwrite", async (tx) => {
         await put(tx, STORES.tombstones, { id, at: now(), audioPending: true } satisfies TombstoneRow);
@@ -438,8 +443,17 @@ export async function openWebStore(options: WebStoreOptions = {}): Promise<WebSt
         await del(tx, STORES.notes, id);
         await del(tx, STORES.transcripts, id);
       });
+    },
+
+    hasTombstone: (id) => transact(db, [STORES.tombstones], "readonly", async (tx) =>
+      !!(await get(tx, STORES.tombstones, id))),
+
+    async discardSession(id) {
+      await store.tombstoneSession(id);
       await finishAudioDelete(id);
     },
+
+    quarantineInterrupted: (id, reason, error) => quarantine(id, reason, error),
 
     async sweepTombstones() {
       const pending = await transact(db, [STORES.tombstones], "readonly", async (tx) =>
