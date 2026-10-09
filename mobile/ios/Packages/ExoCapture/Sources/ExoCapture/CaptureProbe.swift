@@ -59,6 +59,34 @@ public enum CaptureProbe {
                                        "reason": "user"], fullSync: true)
         let segmentPath = library.segmentURL(id, index: 0)
         let adts = try Data(contentsOf: segmentPath)
+        // Simulate a prior process leaving a stopped journal plus durable ADTS data.
+        let recoveryID = UUID().uuidString.lowercased()
+        let recoveryInfo = SessionInfo(id: recoveryID, source: "in_app", owner: nil,
+                                       transitionGen: 0, options: CaptureOptions(), startedAt: openedAt)
+        try library.startSession(recoveryInfo)
+        try library.openFirstSegment(recoveryID, at: openedAt)
+        let recoveredSegment = library.segmentURL(recoveryID, index: 0)
+        let recoveredHandle = try FileHandle(forWritingTo: recoveredSegment)
+        try recoveredHandle.write(contentsOf: adts)
+        try recoveredHandle.close()
+        try library.checkpoint(recoveryID, segment: 0, bytes: Int64(adts.count), audioMs: paused.audioMs,
+                               intent: "recording", availability: "available", fullSync: true)
+        try library.appendJournal(recoveryID, ["e": "stop", "t": stoppedAt, "a": paused.audioMs,
+                                               "reason": "user"], fullSync: true)
+        let recoveredJournal = try JournalRecovery(events: library.readJournal(recoveryID))
+        let recoverySidecar = SidecarFactory.v2(session: recoveryInfo, durationMs: paused.audioMs,
+                                                wallMs: recoveredJournal.wallMs,
+                                                pausedMs: recoveredJournal.pausedMs,
+                                                spans: recoveredJournal.spans, input: nil,
+                                                recovered: true,
+                                                endedUnexpectedly: recoveredJournal.endedUnexpectedly,
+                                                lastHeartbeatAt: recoveredJournal.lastHeartbeatAt)
+        let recoveryItem = try library.commit(recoveryID, sidecar: recoverySidecar) { staged in
+            try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(recoveryID)),
+                                       expectedAudioMs: paused.audioMs, to: staged)
+        }
+        let recoveryOK = recoveryItem["recovered"] as? Bool == true &&
+            !FileManager.default.fileExists(atPath: library.sessionURL(recoveryID).path)
         let segmentTrack = AVURLAsset(url: segmentPath).tracks(withMediaType: .audio).first
         let segmentDescription = segmentTrack?.formatDescriptions.first
         let segmentAsbd = segmentDescription.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0 as! CMAudioFormatDescription)?.pointee }
@@ -133,6 +161,7 @@ public enum CaptureProbe {
             orphanSidecar["legacyImport"] as? Bool == true
         let sync = library.syncMetrics()
         return ["committed": item["version"] as? Int == 2,
+                "recovery": recoveryOK ? "ok" : "failed",
                 "durationMs": audioMs,
                 "probedDurationMs": Int64(CMTimeGetSeconds(asset.duration) * 1000),
                 "sampleRate": Int(asbd?.mSampleRate ?? 0),

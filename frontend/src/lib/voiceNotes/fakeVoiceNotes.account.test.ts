@@ -57,6 +57,83 @@ test("a late provider result for a tombstoned note reaches its owner's outbox", 
   expect((await fake.plugin.listOutbox({ did })).entries[0]?.state).toBe("authority_expired");
 });
 
+test("receipt stages and failed outcomes match the native outbox contract", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  const receipt = (opId: string, kind: "hosted_create" | "hosted_submit") => ({
+    id, did, opId, provider: "assemblyai" as const, mode: "hosted" as const, kind,
+    fingerprint: opId, startedAt: 10,
+  });
+  await fake.plugin.beginRemoteOp(receipt("upload", "hosted_create"));
+  expect((await fake.plugin.listPending()).recordings[0]?.ledger?.remote.find((r) => r.opId === "upload")?.stage).toBe("create_unknown");
+  await fake.plugin.recordRemoteResult({ id, did, opId: "upload", result: { outcome: "created", uploadId: "up-1" } });
+  expect((await fake.plugin.listPending()).recordings[0]?.ledger?.remote.find((r) => r.opId === "upload")?.stage).toBe("uploading");
+  await fake.plugin.beginRemoteOp(receipt("submit", "hosted_submit"));
+  await fake.plugin.recordRemoteResult({ id, did, opId: "submit", result: { outcome: "failed" } });
+  expect((await fake.plugin.listPending()).recordings[0]?.ledger?.remote.some((r) => r.opId === "submit")).toBe(false);
+  await fake.plugin.deleteAudio({ id });
+  expect((await fake.plugin.listOutbox({ did })).entries).toMatchObject([{ entryId: `${id}:upload`, kind: "hosted_upload", handle: "up-1", state: "pending" }]);
+});
+
+test("own-key create keeps its receipt kind through URL lookup and a late job handle", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+    transcriber: "assemblyai", identifySpeakers: false });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  await fake.plugin.beginRemoteOp({ id, did, opId: "create", provider: "assemblyai", mode: "own",
+    kind: "own_create", fingerprint: "one", startedAt: 10 });
+  await fake.plugin.deleteAudio({ id });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create",
+    result: { outcome: "unknown", uploadUrl: "https://example.test/audio" } });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]).toMatchObject({
+    kind: "own_upload_lookup", receiptKind: "own_create", handle: "https://example.test/audio", state: "lookup",
+  });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create", result: { outcome: "unknown" } });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]?.kind).toBe("own_upload_lookup");
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create",
+    result: { outcome: "created", handle: "job-42" } });
+  expect((await fake.plugin.listOutbox({ did })).entries[0]).toMatchObject({
+    kind: "transcript", receiptKind: "own_create", handle: "job-42", state: "pending",
+  });
+});
+
+test("own-key lookup survives an unchanged result before deleting the note", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+    transcriber: "assemblyai", identifySpeakers: false });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  await fake.plugin.beginRemoteOp({ id, did, opId: "create", provider: "assemblyai", mode: "own",
+    kind: "own_create", fingerprint: "one", startedAt: 10 });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create",
+    result: { outcome: "unknown", uploadUrl: "https://example.test/audio" } });
+  await fake.plugin.recordRemoteResult({ id, did, opId: "create", result: { outcome: "unknown" } });
+  await fake.plugin.deleteAudio({ id });
+  expect((await fake.plugin.listOutbox({ did })).entries).toContainEqual(expect.objectContaining({
+    kind: "own_upload_lookup", receiptKind: "own_create", handle: "https://example.test/audio", state: "lookup",
+  }));
+});
+
+test("preference changes retain transitioning and recovery actions report absent sessions", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
+  await fake.plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1, transcriber: "on-device", identifySpeakers: true });
+  expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning", accountDid: null });
+  await expect(fake.plugin.retryRecovery({ id: "missing" })).rejects.toMatchObject({ code: "not_found" });
+  await expect(fake.plugin.discardFailedRecording({ id: "missing" })).rejects.toMatchObject({ code: "not_found" });
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  await expect(fake.plugin.discardFailedRecording({ id })).rejects.toMatchObject({ code: "not_failed_recording" });
+  fake.controls.quarantine("retryable", "bad journal", 1024);
+  await fake.plugin.retryRecovery({ id: "retryable" });
+  fake.controls.quarantine("discardable", "bad journal", 1024);
+  await fake.plugin.discardFailedRecording({ id: "discardable" });
+  expect((await fake.plugin.listQuarantine()).items).toEqual([]);
+});
+
 test("legacy notes require matching space-row evidence; old discard markers become tombstones", async () => {
   const original = VoiceNotes;
   const fake = createFakeVoiceNotes();

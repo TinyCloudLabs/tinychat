@@ -498,8 +498,10 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.sidecarURL(id).path))
         let relaunched = try RecordingLibrary(root: root)
         _ = try relaunched.recoverableSessions()
-        let kinds = try relaunched.listOutbox(did: "did:test").compactMap { $0["kind"] as? String }.sorted()
+        let entries = try relaunched.listOutbox(did: "did:test")
+        let kinds = entries.compactMap { $0["kind"] as? String }.sorted()
         XCTAssertEqual(kinds, ["hosted_upload", "transcript"])
+        XCTAssertTrue(entries.allSatisfy { $0["receiptKind"] is NSNull })
         XCTAssertTrue(try relaunched.listCommitted().isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: relaunched.audioURL(id).path))
     }
@@ -542,5 +544,274 @@ final class RecordingLibraryTests: XCTestCase {
         let relaunched = try RecordingLibrary(root: root)
         _ = try relaunched.recoverableSessions()
         XCTAssertFalse(try relaunched.listCommitted().contains { $0["id"] as? String == discarded })
+    }
+    func testAccountStateFailsClosedAndSurvivesRelaunch() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try library.migrateLegacyAccount(CaptureDefaults(accountDid: "did:old", transitionGen: 4))
+        XCTAssertEqual(try library.accountState().status, "transitioning")
+        XCTAssertNil(try library.accountState().defaults.accountDid)
+        library.failpoint = { if $0 == "account.tmp" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 5)))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().status, "transitioning")
+        library.failpoint = { if $0 == "account.rename" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 5)))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().status, "transitioning")
+        library.failpoint = nil
+        try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 5))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().transitionGen, 5)
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_in",
+            accountDid: "did:old", transitionGen: 4)))
+    }
+
+    func testLateRemoteResultAfterDeleteKeepsDeterministicOutboxEntry() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased(), opId = "submit-1"
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test",
+                                                        transitionGen: 1))
+        _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+        let receipt: [String: Any] = ["id": id, "did": "did:test", "opId": opId,
+            "provider": "assemblyai", "mode": "hosted", "kind": "hosted_submit",
+            "fingerprint": "one", "startedAt": 100]
+        library.failpoint = { if $0 == "receipt.begin" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.beginRemoteOp(receipt))
+        let before = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertFalse(before.contains { $0["opId"] as? String == opId })
+        library.failpoint = nil
+        try library.beginRemoteOp(receipt)
+        library.failpoint = { if $0 == "delete.outbox" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.delete(id))
+        library.failpoint = nil
+        _ = try RecordingLibrary(root: root).recoverableSessions()
+        library.failpoint = { if $0 == "receipt.result" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.recordRemoteResult(id: id, did: "did:test", opId: opId,
+            result: ["outcome": "created", "jobId": "job-late"]))
+        library.failpoint = nil
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: opId,
+            result: ["outcome": "created", "jobId": "job-late"]), "outbox")
+        let reloaded = try RecordingLibrary(root: root)
+        let entry = try XCTUnwrap(reloaded.listOutbox(did: "did:test")
+            .first(where: { $0["entryId"] as? String == "\(id):\(opId)" }))
+        XCTAssertEqual(entry["handle"] as? String, "job-late")
+        try reloaded.completeOutbox("\(id):\(opId)", result: "authority_expired")
+        XCTAssertEqual(try reloaded.listOutbox(did: "did:test")
+            .first(where: { $0["entryId"] as? String == "\(id):\(opId)" })?["state"] as? String,
+            "authority_expired")
+    }
+
+    func testRepeatedRecoveryFailureQuarantinesUntilExplicitRetryOrDiscard() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
+                                             transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        library.endLiveCapture(id)
+        for _ in 0..<3 {
+            let launch = try RecordingLibrary(root: root)
+            XCTAssertTrue(try launch.recoverableSessions().contains(id))
+            try launch.beginRecoveryAttempt(id)
+            try launch.noteRecoveryFailure(id, reason: "corrupt journal")
+        }
+        XCTAssertFalse(try RecordingLibrary(root: root).recoverableSessions().contains(id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.url("quarantine/\(id).session").path))
+        XCTAssertEqual(try library.listRecoveryFailures().first?["attempts"] as? Int, 3)
+        XCTAssertFalse(try library.listQuarantine().contains { $0["id"] as? String == id })
+        try library.prepareRecoveryRetry(id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+        try library.discardFailedRecording(id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+    }
+
+    func testDiscardRequiresFailedRecoveryAndDeletesOrphanAudio() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
+                                             transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        XCTAssertThrowsError(try library.discardFailedRecording(id))
+        library.endLiveCapture(id)
+        XCTAssertThrowsError(try library.discardFailedRecording(id)) {
+            XCTAssertEqual($0 as? CaptureError, .notFailedRecording)
+        }
+        try library.beginRecoveryAttempt(id)
+        XCTAssertThrowsError(try library.discardFailedRecording(id))
+        try library.noteRecoveryFailure(id, reason: "bad segment")
+        try Data("partial audio".utf8).write(to: library.url("\(id).m4a"))
+        try library.discardFailedRecording(id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.url("\(id).m4a").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+    }
+
+    func testCrashDuringRecoveryCountsAcrossThreeLaunches() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
+                                             transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        for attempt in 1...3 {
+            let launch = try RecordingLibrary(root: root)
+            XCTAssertTrue(try launch.recoverableSessions().contains(id))
+            try launch.beginRecoveryAttempt(id)
+            // Drop this library without reporting success or a thrown error: process death.
+            let next = try RecordingLibrary(root: root)
+            XCTAssertEqual(try next.listRecoveryFailures().first?["attempts"] as? Int, attempt)
+        }
+        let next = try RecordingLibrary(root: root)
+        XCTAssertFalse(try next.recoverableSessions().contains(id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: next.url("quarantine/\(id).session").path))
+        XCTAssertEqual(try next.listRecoveryFailures().first?["quarantined"] as? Bool, true)
+    }
+
+    func testRemoteReceiptsChooseLedgerOrOutboxAndAdvanceStages() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+        _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+        func receipt(_ op: String, _ did: String = "did:test") -> [String: Any] {
+            ["id": id, "did": did, "opId": op, "provider": "assemblyai", "mode": "hosted",
+             "kind": "hosted_submit", "fingerprint": op, "startedAt": 100]
+        }
+        try library.beginRemoteOp(receipt("live"))
+        var remote = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertEqual(remote.first { $0["opId"] as? String == "live" }?["stage"] as? String, "submit_unknown")
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "live",
+            result: ["outcome": "created", "jobId": "job-live"]), "ledger")
+        remote = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertEqual(remote.first { $0["opId"] as? String == "live" }?["stage"] as? String, "submitted")
+
+        try library.setAccountState(CaptureAccountState(status: "transitioning", accountDid: "did:test", transitionGen: 2))
+        try library.beginRemoteOp(receipt("transition"))
+        try library.beginRemoteOp(receipt("wrong-owner", "did:other"))
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:other", opId: "wrong-owner",
+            result: ["outcome": "created", "jobId": "job-other"]), "outbox")
+        try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 3))
+        try library.beginRemoteOp(receipt("signedout"))
+        try library.delete(id)
+        try library.beginRemoteOp(receipt("deleted"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sidecarURL(id).path))
+        _ = try RecordingLibrary(root: root).recoverableSessions()
+        _ = try RecordingLibrary(root: root).recoverableSessions()
+        let entries = try library.listOutbox(did: "did:test")
+        for op in ["live", "transition", "signedout", "deleted"] {
+            XCTAssertEqual(entries.filter { $0["entryId"] as? String == "\(id):\(op)" }.count, 1)
+        }
+        XCTAssertEqual(entries.first { $0["entryId"] as? String == "\(id):live" }?["kind"] as? String, "transcript")
+        XCTAssertEqual(entries.first { $0["entryId"] as? String == "\(id):live" }?["state"] as? String, "pending")
+        XCTAssertEqual(entries.first { $0["entryId"] as? String == "\(id):transition" }?["state"] as? String, "unknown")
+        XCTAssertEqual(try library.listOutbox(did: "did:other").first?["handle"] as? String, "job-other")
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "deleted",
+            result: ["outcome": "failed"]), "outbox")
+        XCTAssertFalse(try library.listOutbox(did: "did:test").contains { $0["entryId"] as? String == "\(id):deleted" })
+    }
+
+    func testReceiptKindStageAndOutboxTable() throws {
+        let cases: [(String, String, [String: Any], String, String)] = [
+            ("hosted_create", "uploading", ["uploadId": "up"], "hosted_upload", "pending"),
+            ("hosted_submit", "submitted", ["jobId": "job"], "transcript", "pending"),
+            ("own_upload", "uploaded", ["uploadUrl": "https://example.test/a"], "own_upload_lookup", "lookup"),
+            ("own_create", "submitted", ["jobId": "job"], "transcript", "pending"),
+            ("ptx_create", "submitted", ["jobId": "job"], "ptx_job", "pending")]
+        for (kind, stage, fields, outboxKind, state) in cases {
+            let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let id = UUID().uuidString.lowercased()
+            try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+            _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+            try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "op",
+                "provider": kind == "ptx_create" ? "ptx" : "assemblyai",
+                "mode": kind == "ptx_create" ? NSNull() as Any : (kind.hasPrefix("own") ? "own" : "hosted") as Any,
+                "kind": kind, "fingerprint": "one", "startedAt": 100])
+            var result = fields; result["outcome"] = "created"
+            XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "op", result: result), "ledger")
+            let remote = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+            XCTAssertEqual(remote.first { $0["opId"] as? String == "op" }?["stage"] as? String, stage)
+            try library.delete(id)
+            let entry = try XCTUnwrap(library.listOutbox(did: "did:test").first { $0["entryId"] as? String == "\(id):op" })
+            XCTAssertEqual(entry["kind"] as? String, outboxKind)
+            XCTAssertEqual(entry["receiptKind"] as? String, kind)
+            XCTAssertEqual(entry["state"] as? String, state)
+            XCTAssertEqual(entry["handle"] as? String, fields.values.first as? String)
+            XCTAssertNil(entry["opKind"])
+        }
+    }
+
+    func testOutboxResultsUseOriginalReceiptKindForGenericHandle() throws {
+        let cases: [(kind: String, mode: String?, expectedKind: String, state: String)] = [
+            ("hosted_create", "hosted", "hosted_upload", "pending"),
+            ("hosted_submit", "hosted", "transcript", "pending"),
+            ("own_upload", "own", "own_upload_lookup", "lookup"),
+            ("own_create", "own", "transcript", "pending"),
+            ("ptx_create", nil, "ptx_job", "pending")]
+        for item in cases {
+            let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let id = UUID().uuidString.lowercased()
+            try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "op",
+                "provider": item.kind == "ptx_create" ? "ptx" : "assemblyai",
+                "mode": item.mode as Any? ?? NSNull(), "kind": item.kind,
+                "fingerprint": "one", "startedAt": 100])
+            _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "op",
+                result: ["outcome": "created", "handle": "generic-handle"])
+            let after = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+            XCTAssertEqual(after["kind"] as? String, item.expectedKind)
+            XCTAssertEqual(after["receiptKind"] as? String, item.kind)
+            XCTAssertEqual(after["state"] as? String, item.state)
+            XCTAssertEqual(after["handle"] as? String, "generic-handle")
+        }
+    }
+
+    func testRepeatedBeginRemoteOpPreservesResultAlreadyInOutbox() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        let receipt: [String: Any] = ["id": id, "did": "did:test", "opId": "create",
+            "provider": "assemblyai", "mode": "own", "kind": "own_create",
+            "fingerprint": "one", "startedAt": 100]
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 1))
+        _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+        try library.setAccountState(CaptureAccountState(status: "transitioning", accountDid: "did:test", transitionGen: 2))
+        try library.beginRemoteOp(receipt)
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "created", "jobId": "job-42"]), "outbox")
+        let path = library.url("outbox/\(id):create.json")
+        let before = try Data(contentsOf: path)
+
+        // This account can use the sidecar again, but the result still belongs to the outbox.
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test", transitionGen: 3))
+        try library.beginRemoteOp(receipt)
+
+        XCTAssertEqual(try Data(contentsOf: path), before)
+        let entry = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+        XCTAssertEqual(entry["kind"] as? String, "transcript")
+        XCTAssertEqual(entry["handle"] as? String, "job-42")
+        let remote = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertFalse(remote.contains { $0["opId"] as? String == "create" })
+    }
+
+    func testJournalRecoveryCarriesCaptureIntervalMarkers() throws {
+        let recovered = try JournalRecovery(events: [
+            ["e": "session", "t": Int64(100), "a": Int64(0)],
+            ["e": "first_audio", "t": Int64(120), "a": Int64(0)],
+            ["e": "capture_stopped", "t": Int64(400), "a": Int64(200)],
+            ["e": "stop", "t": Int64(410), "a": Int64(200)]])
+        XCTAssertEqual(recovered.firstAudioAt, 120)
+        XCTAssertEqual(recovered.captureStoppedAt, 400)
+    }
+
+    func testOwnCreateURLLookupKeepsOriginalKindForLateJobHandle() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.beginRemoteOp(["id": id, "did": "did:test", "opId": "create",
+            "provider": "assemblyai", "mode": "own", "kind": "own_create",
+            "fingerprint": "one", "startedAt": 100])
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "unknown", "uploadUrl": "https://example.test/audio"])
+        let lookup = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+        XCTAssertEqual(lookup["kind"] as? String, "own_upload_lookup")
+        XCTAssertEqual(lookup["receiptKind"] as? String, "own_create")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "unknown"])
+        XCTAssertEqual(try library.listOutbox(did: "did:test").first?["kind"] as? String,
+                       "own_upload_lookup")
+        _ = try library.recordRemoteResult(id: id, did: "did:test", opId: "create",
+            result: ["outcome": "created", "handle": "job-42"])
+        let job = try XCTUnwrap(library.listOutbox(did: "did:test").first)
+        XCTAssertEqual(job["kind"] as? String, "transcript")
+        XCTAssertEqual(job["receiptKind"] as? String, "own_create")
+        XCTAssertEqual(job["handle"] as? String, "job-42")
+        XCTAssertEqual(job["state"] as? String, "pending")
     }
 }

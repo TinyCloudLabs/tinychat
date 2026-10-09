@@ -13,7 +13,8 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
         "pause", "resume", "discard", "setRecordingOptions", "getCaptureDefaults",
         "setCaptureDefaults", "claim", "updateLedger", "localAudioUrl", "putTranscript",
         "getTranscript", "listInputs", "selectInput", "listQuarantine",
-        "deleteQuarantined", "listOutbox", "completeOutbox"
+        "deleteQuarantined", "listOutbox", "completeOutbox", "setAccountState",
+        "beginRemoteOp", "recordRemoteResult", "retryRecovery", "discardFailedRecording"
     ].map { CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise) }
 
     private let capture = CaptureEngine.shared
@@ -142,10 +143,68 @@ public final class VoiceNotesPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func getCaptureDefaults(_ call: CAPPluginCall) {
-        let defaults = capture.defaults()
-        call.resolve(["accountDid": defaults.accountDid as Any? ?? NSNull(),
-                      "transitionGen": defaults.transitionGen, "transcriber": defaults.transcriber,
-                      "identifySpeakers": defaults.identifySpeakers])
+        do {
+            let state = try capture.accountState()
+            call.resolve(["status": state.status, "accountDid": state.accountDid as Any? ?? NSNull(),
+                          "transitionGen": state.transitionGen, "transcriber": state.options.transcriber,
+                          "identifySpeakers": state.options.identifySpeakers])
+        } catch { reject(call, error) }
+    }
+
+    @objc func setAccountState(_ call: CAPPluginCall) {
+        guard let status = call.getString("status"),
+              let gen = call.getDouble("transitionGen"), gen.isFinite, gen >= 0,
+              gen < Double(Int64.max), gen.rounded(.towardZero) == gen else {
+            call.reject("status and transitionGen are required", "invalid_argument"); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try self.capture.setAccountState(status: status, accountDid: call.getString("accountDid"),
+                                                   transitionGen: Int64(gen)); call.resolve() }
+            catch { self.reject(call, error) }
+        }
+    }
+
+    @objc func beginRemoteOp(_ call: CAPPluginCall) {
+        let receipt = Dictionary(uniqueKeysWithValues: call.options.compactMap { key, value -> (String, Any)? in
+            guard let name = key as? String else { return nil }
+            return (name, value)
+        })
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try self.capture.library.beginRemoteOp(receipt); call.resolve() }
+            catch { self.reject(call, error) }
+        }
+    }
+
+    @objc func recordRemoteResult(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), let did = call.getString("did"),
+              let opId = call.getString("opId"), let result = call.getObject("result") else {
+            call.reject("id, did, opId and result are required", "invalid_argument"); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { call.resolve(["destination": try self.capture.library.recordRemoteResult(
+                id: id, did: did, opId: opId, result: result)]) }
+            catch { self.reject(call, error) }
+        }
+    }
+
+    @objc func retryRecovery(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), RecordingLibrary.validID(id) else {
+            call.reject("A valid id is required", "invalid_argument"); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try self.capture.retryRecovery(id); call.resolve() }
+            catch { self.reject(call, error) }
+        }
+    }
+
+    @objc func discardFailedRecording(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), RecordingLibrary.validID(id) else {
+            call.reject("A valid id is required", "invalid_argument"); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try self.capture.discardFailedRecording(id); call.resolve() }
+            catch { self.reject(call, error) }
+        }
     }
 
     @objc func setCaptureDefaults(_ call: CAPPluginCall) {

@@ -155,6 +155,8 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
       return { claimed: [] };
     },
     setAccountState: unsupported,
+    retryRecovery: unsupported,
+    discardFailedRecording: unsupported,
     beginRemoteOp: unsupported,
     recordRemoteResult: unsupported,
     claim: unsupported,
@@ -172,8 +174,6 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
     deleteQuarantined: unsupported,
     listOutbox: unsupported,
     completeOutbox: unsupported,
-    retryRecovery: unsupported,
-    discardFailedRecording: unsupported,
     addListener(event: string, listener: Listener) {
       adds += 1;
       active += 1;

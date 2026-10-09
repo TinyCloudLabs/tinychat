@@ -2,7 +2,7 @@ import Foundation
 import CoreFoundation
 
 public enum CaptureError: Error, Equatable, LocalizedError {
-    case alreadyRecording, notRecording, invalidArgument, notFound, tombstoned
+    case alreadyRecording, notRecording, invalidArgument, notFound, notFailedRecording, tombstoned
     case staleTransition, ownerMismatch, revConflict, recordingInProgress
     case insufficientStorage, noAudio, cancelled, pauseFailed, resumeFailed, io(String)
     case finalizationTimedOut(String)
@@ -14,6 +14,7 @@ public enum CaptureError: Error, Equatable, LocalizedError {
         case .notRecording: "not_recording"
         case .invalidArgument: "invalid_argument"
         case .notFound: "not_found"
+        case .notFailedRecording: "not_failed_recording"
         case .tombstoned: "tombstoned"
         case .staleTransition: "stale_transition"
         case .ownerMismatch: "owner_mismatch"
@@ -70,6 +71,27 @@ public struct CaptureDefaults: Codable, Equatable {
 
     public func validateTransition(from stored: CaptureDefaults) throws {
         guard transitionGen >= stored.transitionGen else { throw CaptureError.staleTransition }
+    }
+}
+
+public struct CaptureAccountState: Codable, Equatable {
+    public var status: String
+    public var accountDid: String?
+    public var transitionGen: Int64
+    public var options: CaptureOptions
+
+    public init(status: String = "signed_out", accountDid: String? = nil,
+                transitionGen: Int64 = 0, options: CaptureOptions = CaptureOptions()) {
+        self.status = status
+        self.accountDid = accountDid
+        self.transitionGen = transitionGen
+        self.options = options
+    }
+
+    public var defaults: CaptureDefaults {
+        CaptureDefaults(accountDid: status == "signed_in" ? accountDid : nil,
+                        transitionGen: transitionGen, transcriber: options.transcriber,
+                        identifySpeakers: options.identifySpeakers)
     }
 }
 

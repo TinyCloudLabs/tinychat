@@ -110,6 +110,9 @@ def fixture_for(script: dict) -> tuple[str, str]:
         "stt": {"state": "waiting_for_model", "pack": None, "engine": None, "segmentsDone": 0,
                 "windowsDone": 0, "error": None},
     }
+    if platform == "ios":
+        sidecar["firstAudioAt"] = None
+        sidecar["captureStoppedAt"] = None
     assert sidecar["durationMs"] == events[-1]["a"]
     assert sidecar["wallMs"] - sidecar["pausedMs"] == 6000
     return "".join(map(canonical, events)), canonical(sidecar)
@@ -176,10 +179,10 @@ def main(write: bool) -> None:
                           "channelConfiguration": 1, "originalCopy": 0, "home": 0,
                           "copyrightIdBit": 0, "copyrightIdStart": 0, "frameLength": 107,
                           "bufferFullness": 0x7FF, "rawDataBlocks": 0}
-    for name in ("outbox-entry.json", "outbox-own-lookup.json", "quarantine-record.json"):
+    for name in ("outbox-entry.json", "outbox-own-lookup.json", "outbox-receipt-upload.json", "outbox-receipt-own-lookup.json", "remote-receipt-open.json", "quarantine-record.json"):
         obj = json.loads((ROOT / name).read_text())
         compare(ROOT / name, canonical(obj), write)
-    for name in ("sidecar-v2-ios.json", "sidecar-v2-android.json", "outbox-entry.json", "outbox-own-lookup.json", "quarantine-record.json"):
+    for name in ("sidecar-v2-ios.json", "sidecar-v2-android.json", "outbox-entry.json", "outbox-own-lookup.json", "outbox-receipt-upload.json", "outbox-receipt-own-lookup.json", "remote-receipt-open.json", "quarantine-record.json"):
         obj = json.loads((ROOT / name).read_text())
         assert (ROOT / name).read_text() == canonical(obj), f"noncanonical {name}"
     assert '"handle":"https://cdn.example.test/uploads/x"' in (ROOT / "outbox-own-lookup.json").read_text()

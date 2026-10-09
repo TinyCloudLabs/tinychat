@@ -4,7 +4,8 @@ public enum SidecarFactory {
     public static func v2(session: SessionInfo, durationMs: Int64, wallMs: Int64,
                           pausedMs: Int64, spans: [MissingAudioSpan], input: [String: Any]?,
                           recovered: Bool, endedUnexpectedly: Bool,
-                          lastHeartbeatAt: Int64?, noSignalMs: Int64 = 0) -> [String: Any] {
+                          lastHeartbeatAt: Int64?, noSignalMs: Int64 = 0,
+                          firstAudioAt: Int64? = nil, captureStoppedAt: Int64? = nil) -> [String: Any] {
         let silenced = spans.filter { $0.kind == "silenced" }
         return [
             "id": session.id, "startedAt": session.startedAt, "durationMs": durationMs,
@@ -18,6 +19,8 @@ public enum SidecarFactory {
             },
             "recovered": recovered, "endedUnexpectedly": endedUnexpectedly,
             "lastHeartbeatAt": lastHeartbeatAt as Any? ?? NSNull(), "exitReason": NSNull(),
+            "firstAudioAt": firstAudioAt as Any? ?? NSNull(),
+            "captureStoppedAt": captureStoppedAt as Any? ?? NSNull(),
             "legacyImport": false, "ownerUnknown": false,
             "source": session.source, "owner": session.owner as Any? ?? NSNull(),
             "transitionGen": session.transitionGen,
