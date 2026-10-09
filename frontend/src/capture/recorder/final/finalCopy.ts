@@ -19,8 +19,6 @@ export const FINAL_COPY = {
   micUnavailable:
     "The microphone is unavailable. Choose another input or reconnect it.",
   stalledNeedsUser: "The microphone stopped sending sound.",
-  resumeNotAllowed:
-    "Recording cannot resume while the app is in the background.",
   inputChanged: "The microphone input changed. Waiting for capture to recover.",
   audioServicesReset:
     "Audio services restarted. Waiting for capture to recover.",
@@ -38,7 +36,7 @@ export const FINAL_COPY = {
   stopAndSaveRecorded: "Stop and save what's recorded.",
   stopAt: (text: string) => `Stops at ${text}`,
   comingNextUpdate: "Coming with the next update",
-  skipDisabled: "Skip is not available",
+  disabled: "Disabled",
   needsApp: "needs the app",
   onThisPhone: "on this phone",
   onThisMac: "on this Mac",

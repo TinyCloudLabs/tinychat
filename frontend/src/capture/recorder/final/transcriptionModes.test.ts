@@ -105,7 +105,7 @@ describe("transcription modes availability", () => {
     expect(modeAvailability("skip", "phone")).toEqual(
       SKIP_ENABLED
         ? { available: true }
-        : { available: false, reason: "Skip is not available" },
+        : { available: false, reason: "Disabled" },
     );
     expect(
       modeAvailability("skip", "phone", null, false, {
@@ -192,12 +192,9 @@ describe("transcription modes availability", () => {
         const [caption, subLabel, explanation] = expected[stop.id][shell];
         expect(stop.captions[shell]).toBe(caption);
         expect(stop.subLabel[shell]).toBe(subLabel);
-        const actualExplanation = stop.explanations[shell];
-        expect(
-          typeof actualExplanation === "function"
-            ? actualExplanation("Large")
-            : actualExplanation,
-        ).toBe(explanation);
+        expect(stop.explanations[shell]({ modelName: "Large" })).toBe(
+          explanation,
+        );
       }
     }
   });

@@ -19,6 +19,10 @@ const COPY = FINAL_COPY.modes;
 export type ModeShell = "phone" | "desktop" | "web";
 export type ModeId = "skip" | "local" | "private" | "powerful";
 export type DotCount = 0 | 1 | 2 | 3 | 4;
+export interface ModeExplanationContext {
+  modelName: string;
+}
+export type ModeExplanation = (context: ModeExplanationContext) => string;
 export type Availability =
   | { available: true }
   | { available: false; reason: string };
@@ -35,13 +39,17 @@ function isOnDeviceReadyInterim(
   );
 }
 
+function explain(text: string): ModeExplanation {
+  return () => text;
+}
+
 export interface ModeStop {
   id: ModeId;
   transcriber: TranscriberId | null;
   shortName: string;
   subLabel: Record<ModeShell, string>;
   captions: Record<ModeShell, string>;
-  explanations: Record<ModeShell, string | ((modelName: string) => string)>;
+  explanations: Record<ModeShell, ModeExplanation>;
   privacyDots: DotCount;
   accuracyDots: DotCount;
 }
@@ -58,9 +66,9 @@ export const MODE_STOPS: readonly ModeStop[] = [
     },
     captions: COPY.skipCaption,
     explanations: {
-      phone: COPY.skipExplanation,
-      desktop: COPY.skipExplanation,
-      web: COPY.skipExplanation,
+      phone: explain(COPY.skipExplanation),
+      desktop: explain(COPY.skipExplanation),
+      web: explain(COPY.skipExplanation),
     },
     privacyDots: 4,
     accuracyDots: 0,
@@ -80,9 +88,9 @@ export const MODE_STOPS: readonly ModeStop[] = [
       web: FINAL_COPY.needsApp,
     },
     explanations: {
-      phone: COPY.localPhoneExplanation,
-      desktop: COPY.localDesktopExplanation,
-      web: COPY.localWebExplanation,
+      phone: explain(COPY.localPhoneExplanation),
+      desktop: ({ modelName }) => COPY.localDesktopExplanation(modelName),
+      web: explain(COPY.localWebExplanation),
     },
     privacyDots: 4,
     accuracyDots: 2,
@@ -102,9 +110,9 @@ export const MODE_STOPS: readonly ModeStop[] = [
       web: COPY.privateCaption,
     },
     explanations: {
-      phone: COPY.privateExplanation,
-      desktop: COPY.privateExplanation,
-      web: COPY.privateExplanation,
+      phone: explain(COPY.privateExplanation),
+      desktop: explain(COPY.privateExplanation),
+      web: explain(COPY.privateExplanation),
     },
     privacyDots: 3,
     accuracyDots: 3,
@@ -124,9 +132,9 @@ export const MODE_STOPS: readonly ModeStop[] = [
       web: COPY.powerfulCaption,
     },
     explanations: {
-      phone: COPY.powerfulExplanation,
-      desktop: COPY.powerfulExplanation,
-      web: COPY.powerfulExplanation,
+      phone: explain(COPY.powerfulExplanation),
+      desktop: explain(COPY.powerfulExplanation),
+      web: explain(COPY.powerfulExplanation),
     },
     privacyDots: 1,
     accuracyDots: 4,
@@ -143,7 +151,7 @@ export function modeAvailability(
   if (id === "skip") {
     return features.skipEnabled
       ? { available: true }
-      : { available: false, reason: FINAL_COPY.skipDisabled };
+      : { available: false, reason: FINAL_COPY.disabled };
   }
   if (id === "private") return { available: true };
   if (id === "powerful") {

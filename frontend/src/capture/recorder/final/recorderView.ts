@@ -12,6 +12,8 @@ export interface RecorderViewInput {
   elapsedMs: number;
   inputName: string | null;
   silencedSinceMs: number | null;
+  /** Overrides the build environment for deterministic tests. */
+  isDevelopmentOrTest?: boolean;
 }
 
 export interface RecorderView {
@@ -33,6 +35,7 @@ export interface RecorderView {
   };
   micDenied: boolean;
   tapRingAction: "pause" | "resume" | null;
+  emphasis: "input" | "stop" | null;
 }
 
 interface MicPresentation {
@@ -43,6 +46,7 @@ interface MicPresentation {
   busy?: boolean;
   openSettings?: boolean;
   stopEnabled?: boolean;
+  emphasis?: RecorderView["emphasis"];
 }
 
 const WARNING_WINDOW_MS = 10 * 60 * 1000;
@@ -54,13 +58,16 @@ function unreachable(value: never): never {
 function unexpectedCombination(
   state: MicState,
   reason: MicStateReason,
+  isDevelopmentOrTest: boolean,
 ): MicPresentation {
-  const message = `Unexpected recorder mic combination: ${state}/${String(reason)}`;
-  if (
-    import.meta.env.DEV ||
-    import.meta.env.MODE === "test" ||
-    (typeof process !== "undefined" && process.env.NODE_ENV === "test")
-  ) {
+  const reasonText = String(reason);
+  const rawAndroidReason =
+    reasonText.startsWith("read_failed:") ||
+    reasonText.startsWith("write_failed:");
+  const message = rawAndroidReason
+    ? `Native mic reason violates the contract: ${state}/${reasonText}`
+    : `Unexpected recorder mic combination: ${state}/${reasonText}`;
+  if (isDevelopmentOrTest && !rawAndroidReason) {
     throw new Error(message);
   }
 
@@ -70,6 +77,24 @@ function unexpectedCombination(
     flat: false,
     pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
     statusLine: FINAL_COPY.unexpectedMicState,
+  };
+}
+
+function buildIsDevelopmentOrTest(input: RecorderViewInput): boolean {
+  return (
+    input.isDevelopmentOrTest ??
+    (import.meta.env.DEV || import.meta.env.MODE === "test")
+  );
+}
+
+function writeFailedPresentation(): MicPresentation {
+  return {
+    ring: "still",
+    flat: false,
+    pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
+    statusLine: FINAL_COPY.stopAndSaveRecorded,
+    stopEnabled: true,
+    emphasis: "stop",
   };
 }
 
@@ -86,7 +111,10 @@ function silenceLine(input: RecorderViewInput): string | null {
     : FINAL_COPY.noSoundFrom(input.inputName);
 }
 
-function interruptedPresentation(reason: MicStateReason): MicPresentation {
+function interruptedPresentation(
+  reason: MicStateReason,
+  isDevelopmentOrTest: boolean,
+): MicPresentation {
   switch (reason) {
     case "call":
       return {
@@ -151,9 +179,15 @@ function interruptedPresentation(reason: MicStateReason): MicPresentation {
     case "disk_full":
     case "write_failed":
     case "permission_revoked":
-      return unexpectedCombination("interrupted", reason);
-    default:
-      return unreachable(reason);
+      return unexpectedCombination("interrupted", reason, isDevelopmentOrTest);
+    default: {
+      const exhaustive: never = reason;
+      return unexpectedCombination(
+        "interrupted",
+        exhaustive,
+        isDevelopmentOrTest,
+      );
+    }
   }
 }
 
@@ -178,12 +212,18 @@ function livePresentation(
   };
 }
 
-function needsUserPresentation(reason: MicStateReason): MicPresentation {
+function needsUserPresentation(
+  reason: MicStateReason,
+  isDevelopmentOrTest: boolean,
+): MicPresentation {
   switch (reason) {
     case "resume_blocked":
       return retryPresentation(FINAL_COPY.resumeBlockedReason);
     case "mic_unavailable":
-      return retryPresentation(FINAL_COPY.micUnavailable);
+      return {
+        ...retryPresentation(FINAL_COPY.micUnavailable),
+        emphasis: "input",
+      };
     case "stalled":
       return {
         ring: "still-resumable",
@@ -193,10 +233,10 @@ function needsUserPresentation(reason: MicStateReason): MicPresentation {
       };
     case "resume_not_allowed":
       return {
-        ring: "still",
+        ring: "still-resumable",
         flat: false,
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.resumeNotAllowed,
+        pill: { label: FINAL_COPY.tapToResume, dot: "hollow" },
+        statusLine: null,
       };
     case "permission_revoked":
       return {
@@ -207,13 +247,7 @@ function needsUserPresentation(reason: MicStateReason): MicPresentation {
         openSettings: true,
       };
     case "write_failed":
-      return {
-        ring: "still",
-        flat: false,
-        pill: { label: FINAL_COPY.interrupted, dot: "hollow" },
-        statusLine: FINAL_COPY.stopAndSaveRecorded,
-        stopEnabled: true,
-      };
+      return writeFailedPresentation();
     case null:
     case "os_silenced":
     case "no_signal":
@@ -229,13 +263,22 @@ function needsUserPresentation(reason: MicStateReason): MicPresentation {
     case "pause_timeout":
     case "max_duration":
     case "disk_full":
-      return unexpectedCombination("needs_user", reason);
-    default:
-      return unreachable(reason);
+      return unexpectedCombination("needs_user", reason, isDevelopmentOrTest);
+    default: {
+      const exhaustive: never = reason;
+      return unexpectedCombination(
+        "needs_user",
+        exhaustive,
+        isDevelopmentOrTest,
+      );
+    }
   }
 }
 
-function idlePresentation(reason: MicStateReason): MicPresentation {
+function idlePresentation(
+  reason: MicStateReason,
+  isDevelopmentOrTest: boolean,
+): MicPresentation {
   switch (reason) {
     case "max_duration":
       return {
@@ -246,6 +289,7 @@ function idlePresentation(reason: MicStateReason): MicPresentation {
         busy: true,
       };
     case null:
+    case "user":
       return {
         ring: "idle",
         flat: false,
@@ -280,7 +324,6 @@ function idlePresentation(reason: MicStateReason): MicPresentation {
     case "no_signal":
     case "input_muted":
     case "call":
-    case "user":
     case "interruption":
     case "route_change":
     case "media_services_reset":
@@ -292,9 +335,11 @@ function idlePresentation(reason: MicStateReason): MicPresentation {
     case "resume_not_allowed":
     case "mic_unavailable":
     case "pause_timeout":
-      return unexpectedCombination("idle", reason);
-    default:
-      return unreachable(reason);
+      return unexpectedCombination("idle", reason, isDevelopmentOrTest);
+    default: {
+      const exhaustive: never = reason;
+      return unexpectedCombination("idle", exhaustive, isDevelopmentOrTest);
+    }
   }
 }
 
@@ -303,9 +348,10 @@ function micPresentation(
   reason: MicStateReason,
   input: RecorderViewInput,
 ): MicPresentation {
+  const isDevelopmentOrTest = buildIsDevelopmentOrTest(input);
   switch (micState) {
     case "idle":
-      return idlePresentation(reason);
+      return idlePresentation(reason, isDevelopmentOrTest);
     case "recording":
       switch (reason) {
         case null:
@@ -315,12 +361,15 @@ function micPresentation(
         case "os_silenced":
         case "input_muted":
           return livePresentation(true, silenceLine(input));
+        case "read_error":
+          return interruptedPresentation(reason, isDevelopmentOrTest);
+        case "write_failed":
+          return writeFailedPresentation();
         case "call":
         case "user":
         case "interruption":
         case "route_change":
         case "media_services_reset":
-        case "read_error":
         case "stalled":
         case "app_suspended":
         case "resume_blocked":
@@ -329,11 +378,20 @@ function micPresentation(
         case "pause_timeout":
         case "max_duration":
         case "disk_full":
-        case "write_failed":
         case "permission_revoked":
-          return unexpectedCombination("recording", reason);
-        default:
-          return unreachable(reason);
+          return unexpectedCombination(
+            "recording",
+            reason,
+            isDevelopmentOrTest,
+          );
+        default: {
+          const exhaustive: never = reason;
+          return unexpectedCombination(
+            "recording",
+            exhaustive,
+            isDevelopmentOrTest,
+          );
+        }
       }
     case "silenced":
       switch (reason) {
@@ -359,12 +417,20 @@ function micPresentation(
         case "disk_full":
         case "write_failed":
         case "permission_revoked":
-          return unexpectedCombination("silenced", reason);
-        default:
-          return unreachable(reason);
+          return unexpectedCombination("silenced", reason, isDevelopmentOrTest);
+        default: {
+          const exhaustive: never = reason;
+          return unexpectedCombination(
+            "silenced",
+            exhaustive,
+            isDevelopmentOrTest,
+          );
+        }
       }
     case "paused":
-      if (reason !== "user") return unexpectedCombination("paused", reason);
+      if (reason !== "user") {
+        return unexpectedCombination("paused", reason, isDevelopmentOrTest);
+      }
       return {
         ring: "paused",
         flat: false,
@@ -372,9 +438,9 @@ function micPresentation(
         statusLine: null,
       };
     case "interrupted":
-      return interruptedPresentation(reason);
+      return interruptedPresentation(reason, isDevelopmentOrTest);
     case "needs_user":
-      return needsUserPresentation(reason);
+      return needsUserPresentation(reason, isDevelopmentOrTest);
     default:
       return unreachable(micState);
   }
@@ -478,5 +544,6 @@ export function selectRecorderView(
     controls,
     micDenied: permissionDenied,
     tapRingAction: controls.resume ? "resume" : controls.pause ? "pause" : null,
+    emphasis: presentation.emphasis ?? null,
   };
 }

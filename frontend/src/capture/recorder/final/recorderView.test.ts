@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type {
   MicState,
   MicStateReason,
@@ -7,13 +7,12 @@ import { initialRecorderState, type RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
 import { selectRecorderView, type RecorderViewInput } from "./recorderView";
 
-process.env.NODE_ENV = "test";
-
 const input: RecorderViewInput = {
   nowMs: 20_000,
   elapsedMs: 30_000,
   inputName: null,
   silencedSinceMs: null,
+  isDevelopmentOrTest: true,
 };
 const base: RecorderState = {
   ...initialRecorderState,
@@ -123,10 +122,10 @@ describe("selectRecorderView: needs_user reason decisions", () => {
     ],
     [
       "resume_not_allowed",
-      "Recording cannot resume while the app is in the background.",
-      "still",
-      "Interrupted",
-      false,
+      null,
+      "still-resumable",
+      "Tap to resume",
+      true,
       true,
       false,
     ],
@@ -176,7 +175,6 @@ describe("selectRecorderView: needs_user reason decisions", () => {
     "no_signal",
     "input_muted",
     "call",
-    "user",
     "interruption",
     "route_change",
     "media_services_reset",
@@ -248,7 +246,6 @@ describe("selectRecorderView: idle reason decisions", () => {
     "no_signal",
     "input_muted",
     "call",
-    "user",
     "interruption",
     "route_change",
     "media_services_reset",
@@ -268,6 +265,88 @@ describe("selectRecorderView: idle reason decisions", () => {
 });
 
 describe("selectRecorderView: live, paused and transient phases", () => {
+  test("recording read_error uses the interrupted read-error presentation", () => {
+    expect(recordingView("recording", "read_error")).toMatchObject({
+      ring: "still",
+      flat: false,
+      pill: { label: "Interrupted", dot: "hollow" },
+      statusLine:
+        "The microphone could not be read. Waiting for capture to recover.",
+      emphasis: null,
+    });
+  });
+
+  test("recording write_failed uses the stop-and-save presentation", () => {
+    expect(recordingView("recording", "write_failed")).toMatchObject({
+      ring: "still",
+      statusLine: "Stop and save what's recorded.",
+      controls: { resume: false, stop: true },
+      emphasis: "stop",
+    });
+  });
+
+  test("raw Android reasons log as contract violations without throwing in dev", () => {
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const reason of [
+        "read_failed:9",
+        "write_failed: disk unavailable",
+      ]) {
+        const view = recordingView("recording", reason as MicStateReason, {
+          isDevelopmentOrTest: true,
+        });
+        expect(view.statusLine).toBe(
+          "The microphone state is unexpected. Check the recording.",
+        );
+      }
+      expect(consoleError).toHaveBeenCalledTimes(2);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  test("production logs impossible combinations and returns generic copy", () => {
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(
+        recordingView("recording", "call", {
+          isDevelopmentOrTest: false,
+        }),
+      ).toMatchObject({
+        ring: "still",
+        statusLine: "The microphone state is unexpected. Check the recording.",
+        emphasis: null,
+      });
+      expect(
+        recordingView("recording", "read_failed:9" as MicStateReason, {
+          isDevelopmentOrTest: false,
+        }),
+      ).toMatchObject({
+        ring: "still",
+        statusLine: "The microphone state is unexpected. Check the recording.",
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "Unexpected recorder mic combination: recording/call",
+        { state: "recording", reason: "call" },
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        "Native mic reason violates the contract: recording/read_failed:9",
+        { state: "recording", reason: "read_failed:9" },
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  test("idle/user after user Stop or Discard uses the saving view", () => {
+    expect(recordingView("idle", "user")).toMatchObject({
+      ring: "idle",
+      pill: { label: "Saving…", dot: "hollow" },
+      statusLine: null,
+      controls: { busy: true, stop: false, discard: false },
+    });
+  });
+
   test("recording and writer_stalled remain live; no_signal is flat", () => {
     expect(recordingView("recording", null)).toMatchObject({
       ring: "live",
