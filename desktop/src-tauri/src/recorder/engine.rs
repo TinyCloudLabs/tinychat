@@ -49,6 +49,8 @@ struct AutoStopped {
     reason: &'static str,
     max_duration_ms: u64,
     at: u64,
+    elapsed_ms: u64,
+    paused_ms: u64,
 }
 
 pub fn install(app: &tauri::App) {
@@ -98,6 +100,8 @@ pub fn install(app: &tauri::App) {
                                 reason: "max_duration",
                                 max_duration_ms: result.max_duration_ms,
                                 at: now_ms(),
+                                elapsed_ms: result.elapsed_ms,
+                                paused_ms: result.paused_ms,
                             },
                         );
                     } else {
