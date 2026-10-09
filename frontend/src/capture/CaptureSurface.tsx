@@ -40,6 +40,11 @@ import { CaptureActions } from "./CaptureActions";
 import { CaptureHomeView, FirstUse } from "./CaptureHomeView";
 import { captureEvents } from "./captureEvents";
 import { LocalRecorderCard } from "./desktop/LocalRecorderCard";
+import { HOME_COPY } from "./home/homeCopy";
+import { SoftActions } from "./home/SoftActions";
+import { SoftCaptureHome } from "./home/SoftCaptureHome";
+import { SoftHomeProvider, softHomeEnabled, softHomeNoteTitles } from "./home/softHome";
+import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
 import { LibraryScreen } from "./library/LibraryScreen";
 import { NoteDetail } from "./library/NoteDetail";
@@ -71,9 +76,23 @@ const LIST_COLUMN = "w-full px-4";
 
 type Sheet = "upload" | "meeting";
 
-export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot }: CaptureSurfaceProps) {
+export function CaptureSurface(props: CaptureSurfaceProps) {
+  // The Soft skin (TC-862, behind the flag) is a phone's: the tab bar, compact width.
+  const tabbar = useNavKind() === "tabbar";
+  const compact = useSizeClass().size === "compact";
+  const soft = softHomeEnabled() && tabbar && compact;
+  const recorder = useRecorder();
+  return (
+    <SoftHomeProvider enabled={soft} issues={recorder.captureIssues} noteTitles={softHomeNoteTitles()}>
+      <CaptureSurfaceBody {...props} soft={soft} />
+    </SoftHomeProvider>
+  );
+}
+
+function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, meetingsSlot, soft }: CaptureSurfaceProps & { soft: boolean }) {
   const navigate = useNavigate();
   const nav = useNavKind();
+  const softTheme = useSoftTheme();
   const platform = useContext(PlatformContext);
   const wide = useSizeClass().size !== "compact";
   const libraryScreen = screen.id === "library";
@@ -156,7 +175,11 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
       data-layout={wide ? "panes" : "stack"}
     >
       <div
-        className={wide ? `${SCROLLER} border-r border-border` : noteScreen ? "hidden" : "relative h-full"}
+        className={cn(
+          wide ? `${SCROLLER} border-r border-border` : noteScreen ? "hidden" : "relative h-full",
+          soft && `soft-skin soft-home ${softTheme}`,
+        )}
+        data-layout={soft ? "phone" : undefined}
         data-testid="capture-list-pane"
         data-scroll-root={wide ? "" : undefined}
       >
@@ -170,34 +193,61 @@ export function CaptureSurface({ tcw, backendUrl, sessionStore, active, screen, 
             className={column}
             trailing={
               <>
-                <Link
-                  to={PATHS.library}
-                  className="tap-transparent flex h-11 items-center rounded-full px-3 text-callout font-medium text-primary transition-colors hover:bg-surface-2 active:bg-surface-2"
-                >
-                  Library
-                </Link>
-                {nav === "tabbar" && <SettingsGear />}
+                {soft ? (
+                  <Link to={PATHS.library} className="soft-header-link">
+                    {HOME_COPY.library}
+                  </Link>
+                ) : (
+                  <>
+                    <Link
+                      to={PATHS.library}
+                      className="tap-transparent flex h-11 items-center rounded-full px-3 text-callout font-medium text-primary transition-colors hover:bg-surface-2 active:bg-surface-2"
+                    >
+                      Library
+                    </Link>
+                    {nav === "tabbar" && <SettingsGear />}
+                  </>
+                )}
               </>
             }
           />
           <div className={cn(column, "flex flex-1 flex-col gap-6 pt-2", wide ? "order-2 pb-6" : "pb-4")}>
             {localRecorder && <LocalRecorderCard tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />}
-            <CaptureHomeView
-              platform={platform}
-              inProgress={inProgress}
-              recent={wide ? null : { status: library.status, items: library.items }}
-              onRetryRecent={library.retry}
-              now={now}
-            />
+            {soft ? (
+              <SoftCaptureHome
+                inProgress={inProgress}
+                recent={{ status: library.status, items: library.items }}
+                scanFailure={recorder.recoveryScanFailure}
+                onRetryRecent={library.retry}
+                now={now}
+              />
+            ) : (
+              <CaptureHomeView
+                platform={platform}
+                inProgress={inProgress}
+                recent={wide ? null : { status: library.status, items: library.items }}
+                onRetryRecent={library.retry}
+                now={now}
+              />
+            )}
           </div>
           <div className={wide ? "order-1 pb-2 pt-1" : "sticky bottom-0 z-10 bg-background pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"}>
-            <CaptureActions
-              // Beside the note the pane is narrow: with large text an action wraps rather than being cut.
-              className={cn(column, wide && "flex-wrap")}
-              record={<RecordButton variant="action" />}
-              onUpload={() => setSheet("upload")}
-              {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
-            />
+            {soft ? (
+              <div className={column}>
+                <SoftActions
+                  onUpload={() => setSheet("upload")}
+                  {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
+                />
+              </div>
+            ) : (
+              <CaptureActions
+                // Beside the note the pane is narrow: with large text an action wraps rather than being cut.
+                className={cn(column, wide && "flex-wrap")}
+                record={<RecordButton variant="action" />}
+                onUpload={() => setSheet("upload")}
+                {...(bot.listStatus === "dark" ? {} : { onMeeting: () => setSheet("meeting") })}
+              />
+            )}
           </div>
         </div>
         <div

@@ -142,6 +142,8 @@ beforeAll(async () => {
   const config = (await import(`${frontend}tailwind.config.js`)).default;
   config.content = [`${frontend}index.html`, `${frontend}src/**/*.{js,ts,jsx,tsx}`];
   css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css;
+  // Stylesheets a component imports (e.g. the Soft skin) come out of Bun.build as extra css outputs.
+  for (const output of built.outputs.filter((entry) => entry.path.endsWith(".css"))) css += `\n${await output.text()}`;
 
   // The app's own index.html (metas, font preload, the pre-paint script), with the harness bundle.
   const index = await Bun.file(`${frontend}index.html`).text();

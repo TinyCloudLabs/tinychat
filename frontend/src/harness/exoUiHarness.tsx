@@ -19,7 +19,7 @@ import { applyTheme } from "@/lib/theme";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeVoiceNotes as createCaptureFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import type { HarnessScreen } from "./screen";
-import { captureScreens } from "./screens/capture";
+import { captureScreens, captureSoftScreens } from "./screens/capture";
 import { legacyScreens } from "./screens/legacy";
 import { libraryScreens } from "./screens/library";
 import { primitivesScreens } from "./screens/primitives";
@@ -45,6 +45,7 @@ const SCREENS: HarnessScreen[] = [
   ...recorderScreens,
   recorderFinalHaloScreen,
   ...captureScreens,
+  ...captureSoftScreens,
   ...libraryScreens,
 ];
 const PLATFORMS: readonly AppPlatform[] = ["ios", "android", "tauri", "web"];
