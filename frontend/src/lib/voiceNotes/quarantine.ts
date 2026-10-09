@@ -1,10 +1,35 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import {
-  listQuarantine,
-  nativeVoiceNotesAvailable,
-  type QuarantinedRecording,
-} from "./nativeVoiceNotes";
+import { captureEngineAvailable } from "./captureEngine";
+import { listQuarantine, type QuarantinedRecording } from "./nativeVoiceNotes";
+
+// The account the recorder is attached for. The browser engine lists every parked recording with its owner;
+// native lists none with one, and shows them all as before.
+let account: string | null = null;
+const accountListeners = new Set<() => void>();
+
+/** The recorder controller calls this on attach, so parked recordings are re-read and filtered for the account it serves. */
+export function setQuarantineAccount(did: string | null): void {
+  if (did === account) return;
+  account = did;
+  for (const listener of accountListeners) listener();
+}
+
+const subscribeAccount = (listener: () => void) => {
+  accountListeners.add(listener);
+  return () => {
+    accountListeners.delete(listener);
+  };
+};
+const readAccount = () => account;
+
+/** What `did` may see of the parked recordings: its own and the unclaimed. Native lists no owner, so it shows all. */
+export function quarantinedFor(
+  items: readonly QuarantinedRecording[],
+  did: string | null,
+): readonly QuarantinedRecording[] {
+  return items.filter((item) => item.owner == null || item.owner === did);
+}
 
 /** The rejection's code, however the platform spells it (Capacitor's own is upper case). */
 export function rejectionCode(caught: unknown): string | null {
@@ -80,9 +105,10 @@ export function useQuarantinedRecordings(
   enabled: boolean,
   refreshKey = "",
 ): QuarantinedRecordings {
-  const [items, setItems] = useState<readonly QuarantinedRecording[]>([]);
+  const [listed, setItems] = useState<readonly QuarantinedRecording[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [tick, setTick] = useState(0);
+  const accountDid = useSyncExternalStore(subscribeAccount, readAccount, readAccount);
   const mounted = useRef(true);
   const apply = useRef((read: QuarantineRead) => {
     if (!mounted.current) return;
@@ -102,9 +128,10 @@ export function useQuarantinedRecordings(
     };
   }, []);
   useEffect(() => {
-    if (!enabled || !nativeVoiceNotesAvailable()) return;
+    if (!enabled || !captureEngineAvailable()) return;
     request.current?.();
-  }, [enabled, refreshKey, tick]);
+  }, [enabled, refreshKey, tick, accountDid]);
   const refresh = useCallback(() => setTick((n) => n + 1), []);
+  const items = useMemo(() => quarantinedFor(listed, accountDid), [listed, accountDid]);
   return { items, error, refresh };
 }

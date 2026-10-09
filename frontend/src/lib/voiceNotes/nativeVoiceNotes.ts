@@ -140,6 +140,8 @@ export interface RecoveryFailedEvent {
   id?: string;
   reason?: string;
   error?: string;
+  /** The browser engine names the account the recording belongs to (null: not yet claimed); the controller shows it to that account only. */
+  owner?: string | null;
 }
 
 export interface WriteFailureEvent {
@@ -256,7 +258,7 @@ export interface VoiceNotesPlugin {
   getTranscript(options: { id: string }): Promise<{ transcript: LocalTranscript | null }>;
   listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;
   selectInput(options: { id: string | null }): Promise<void>;
-  listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
+  listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number; owner?: string | null }[] }>;
   deleteQuarantined(options: { id: string }): Promise<void>;
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
   completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
@@ -425,7 +427,7 @@ export function selectInput(id: string | null): Promise<void> {
   return VoiceNotes.selectInput({ id });
 }
 
-export type QuarantinedRecording = { id: string; reason: string; sizeBytes: number };
+export type QuarantinedRecording = { id: string; reason: string; sizeBytes: number; owner?: string | null };
 
 export function listQuarantine(): Promise<{ items: QuarantinedRecording[] }> {
   return VoiceNotes.listQuarantine();

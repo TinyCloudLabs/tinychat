@@ -200,6 +200,14 @@ function audioFailure(op: string, err: unknown): StoreFailure {
   }
 }
 
+/** The saved file's extension from the recording's container: WebM and Ogg from a browser, MP4/AAC (the phones) otherwise. */
+export function audioFileExtension(mimeType: string): string {
+  const base = mimeType.split(";")[0]!.trim().toLowerCase();
+  if (base === "audio/webm" || base === "video/webm") return "webm";
+  if (base === "audio/ogg") return "ogg";
+  return "m4a";
+}
+
 /**
  * Store a note's audio with the shared audio store: raw parts of at most 1 MiB,
  * then its manifest (last, so a manifest always means a complete file). Saving
@@ -216,7 +224,7 @@ export async function putVoiceNoteAudio(
   try {
     const manifest = await putAudio(tcw.kv, voiceNoteAudioKvKey(id), source, {
       ...opts,
-      fileName: `${id}.m4a`,
+      fileName: `${id}.${audioFileExtension(source.mimeType)}`,
       mimeType: source.mimeType,
     });
     return { ok: true, data: manifest };
