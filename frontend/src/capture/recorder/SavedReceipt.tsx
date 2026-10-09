@@ -25,6 +25,11 @@ export interface SavedReceiptProps {
   route: readonly RouteNode[];
   /** This note's chosen transcriber, looked up natively; null once it's known not to be on-device. */
   transcriber?: TranscriberId | null;
+  /** The sidecar's durable on-device STT state, from the same native `listPending()` read
+   * RecordingView already made to learn `transcriber` — the seed for useOnDeviceReceipt's first
+   * render, so this component does not repeat that read (and the recovery scan behind it) on
+   * every mount. */
+  sttHint?: NoteSttState | null;
   /** Private cloud has the note now. */
   transcribing?: boolean;
   error?: string | null;
@@ -34,27 +39,37 @@ export interface SavedReceiptProps {
   onDone: () => void;
   onSaveNow: () => void;
   onPlayingChange?: (playing: boolean) => void;
+  /** The local Play control is ready to show (or has visibly failed to load) — the provider's
+   * receipt-display clock starts here, not at commit, so it can never run out before there is
+   * anything to look at. Called at most once per note. */
+  onReady?: () => void;
   className?: string;
 }
 
 /** On-device transcription's state for this note: the sidecar's durable `stt.state` is the source
  * of truth (round-2 finding 1) — a missed `transcribed`/`failed` event (fired before this
- * component mounted, or before a previous mount's listeners were attached) never strands the UI,
- * because `VoiceNotes.listPending()` is read fresh on every mount and after every retry, not just
- * accumulated from retained events. The live native queue (`onDeviceSttStore`) still drives the
- * "Transcribing…" progress line while a job runs. Works signed out and offline — never touches the
- * space. */
-export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean) {
+ * component mounted, or before a previous mount's listeners were attached) never strands the UI.
+ * The initial read comes from `sttHint`, the caller's own `listPending()` call (RecordingView
+ * already makes one to learn the note's transcriber) — not a second one here. Two `listPending()`
+ * calls on every receipt mount used to serialize behind native's recovery-scan lock and could
+ * outrun the saved receipt's fixed display window on a phone with many notes (TC-781 round 4). A
+ * fresh native read still happens after a `transcribed`/`failed` event or Retry, since those are
+ * not on every mount. The live native queue (`onDeviceSttStore`) still drives the "Transcribing…"
+ * progress line while a job runs. Works signed out and offline — never touches the space. */
+export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean, sttHint?: NoteSttState | null) {
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const [transcript, setTranscript] = useState<LocalTranscript | null>(null);
   const [durable, setDurable] = useState<NoteSttState | null>(null);
   const active = useRef(false);
 
-  const read = () => {
+  const readTranscript = () => {
     void VoiceNotes.getTranscript({ id: id! }).then(
       ({ transcript: found }) => { if (active.current) setTranscript(found); },
       () => { /* Best-effort: the durable/queue state below still renders. */ },
     );
+  };
+  const read = () => {
+    readTranscript();
     void VoiceNotes.listPending().then(
       ({ recordings }) => {
         if (!active.current) return;
@@ -67,10 +82,10 @@ export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean) {
 
   useEffect(() => {
     setTranscript(null);
-    setDurable(null);
+    setDurable(sttHint ?? null);
     if (!id || !onDevice) return;
     active.current = true;
-    read();
+    readTranscript();
     const subs = [
       OnDeviceStt.addListener("transcribed", (event) => { if (active.current && event.id === id) read(); }),
       OnDeviceStt.addListener("failed", (event) => { if (active.current && event.id === id) read(); }),
@@ -79,7 +94,7 @@ export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean) {
       active.current = false;
       for (const sub of subs) void sub.then((handle) => handle.remove());
     };
-  }, [id, onDevice]);
+  }, [id, onDevice, sttHint]);
 
   if (!id || !onDevice) return { kind: "none" as const, retry: () => {} };
   const retry = () => {
@@ -97,18 +112,23 @@ export function SavedReceipt(props: SavedReceiptProps) {
   const saved = props.outcome === "saved";
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  // A ref, not a dependency: onReady must fire exactly once per note's own fetch (keyed on
+  // props.saved?.id below), regardless of whether the caller's callback identity happens to change
+  // across renders in between.
+  const onReadyRef = useRef(props.onReady);
+  onReadyRef.current = props.onReady;
   useEffect(() => {
     if (!props.saved) return;
     let active = true;
     setLocalUrl(null);
     setLocalError(null);
     void VoiceNotes.localAudioUrl({ id: props.saved.id }).then(
-      ({ url }) => { if (active) setLocalUrl(Capacitor.convertFileSrc(url)); },
-      (caught: unknown) => { if (active) setLocalError(`Could not open this phone's audio: ${caught instanceof Error ? caught.message : String(caught)}`); },
+      ({ url }) => { if (active) { setLocalUrl(Capacitor.convertFileSrc(url)); onReadyRef.current?.(); } },
+      (caught: unknown) => { if (active) { setLocalError(`Could not open this phone's audio: ${caught instanceof Error ? caught.message : String(caught)}`); onReadyRef.current?.(); } },
     );
     return () => { active = false; };
   }, [props.saved?.id]);
-  const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device");
+  const onDevice = useOnDeviceReceipt(props.saved?.id, props.transcriber === "on-device", props.sttHint);
   return (
     <section
       aria-label="Saved on this phone"

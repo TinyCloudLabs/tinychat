@@ -24,8 +24,12 @@ import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberCho
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
-/** How long a saved receipt stays before the sheet closes and the island lets go. */
+/** How long a saved receipt stays, once its content is actually visible, before the sheet closes
+ * and the island lets go. */
 export const RECEIPT_MS = 3000;
+/** A hard ceiling on how long a receipt may hold the sheet open waiting for that content — a
+ * native read that never resolves must not keep Stop from ever returning to Capture home. */
+export const RECEIPT_MAX_MS = 15000;
 
 export function permissionDeniedAnnouncement(wasDenied: boolean, denied: boolean): string | null {
   return !wasDenied && denied ? "Microphone access is off" : null;
@@ -78,6 +82,9 @@ export interface RecorderValue {
   openSheet(): void;
   minimiseSheet(): void | Promise<void>;
   setReceiptPlaying(playing: boolean): void;
+  /** The receipt's local Play control is ready (or has visibly failed to load): starts the
+   * display clock, so it can never close the sheet before there is anything to show. */
+  setReceiptReady(): void;
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
@@ -147,6 +154,11 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
+  const [receiptReady, setReceiptReadyState] = useState(false);
+  const setReceiptReady = useCallback(() => setReceiptReadyState(true), []);
+  // A new note's receipt starts unready again — each one waits for its own Play control (or
+  // load error), not whatever the previous note left behind.
+  useEffect(() => { setReceiptReadyState(false); }, [state.lastSaved?.id]);
   const [announcement, setAnnouncement] = useState("");
 
   // The Live Edge follows the live microphone.
@@ -193,17 +205,34 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     }
   }, [state]);
 
-  // Local commit starts the receipt clock. Playback keeps it open.
+  // The receipt clock starts once its content is actually visible — the local Play control, or
+  // its load error (receiptReady) — not at commit: a native read slow enough to still be loading
+  // must not let the sheet close before the user ever sees it. Playback keeps it open past that.
+  // A hard ceiling (RECEIPT_MAX_MS) bounds only the *wait* for that content: it stops counting the
+  // instant readiness arrives, so a read that lands late (even near the ceiling itself) still gets
+  // its own full, playback-aware RECEIPT_MS window below, not whatever was left of the ceiling.
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
     if (state.permissionDenied) return;
+    if (receiptReady) return;
+    const ceiling = setTimeout(() => {
+      setSheetOpen(false);
+      dismissOutcome();
+    }, RECEIPT_MAX_MS);
+    return () => clearTimeout(ceiling);
+  }, [dismissOutcome, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
+
+  useEffect(() => {
+    if (state.outcome !== "local" && state.outcome !== "saved") return;
+    if (state.permissionDenied) return;
+    if (!receiptReady) return;
     if (receiptPlaying) return;
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MS);
     return () => clearTimeout(timer);
-  }, [dismissOutcome, receiptPlaying, state.outcome, state.lastSaved, state.permissionDenied]);
+  }, [dismissOutcome, receiptPlaying, receiptReady, state.outcome, state.lastSaved, state.permissionDenied]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
@@ -260,6 +289,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       openSheet,
       minimiseSheet,
       setReceiptPlaying,
+      setReceiptReady,
       subscribeLevel,
     }),
     [
@@ -280,6 +310,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.setTranscriber,
       recorder.setIdentifySpeakers,
       defaultsError,
+      setReceiptReady,
       sheetOpen,
       state,
       subscribeLevel,
@@ -349,6 +380,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       openSheet: noop,
       minimiseSheet: noop,
       setReceiptPlaying: noop,
+      setReceiptReady: noop,
       subscribeLevel: (listener) => {
         for (const level of levels ?? []) listener(level);
         return noop;

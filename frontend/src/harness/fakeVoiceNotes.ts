@@ -33,7 +33,20 @@ export interface FakeVoiceNotes {
   retainPresentRecorder(payload: { id: string | null; reason?: string }): void;
 }
 
-export function createFakeVoiceNotes(): FakeVoiceNotes {
+export interface FakeVoiceNotesOptions {
+  /** Delays `listPending` and `localAudioUrl` by this long (default: resolve immediately) — for
+   * exercising the receipt's display-clock gating (TC-781) against a native read slow enough that
+   * the immediate fake can never establish the timing. */
+  nativeReadDelayMs?: number;
+  /** Reports every committed note as unowned, regardless of the signed-in account defaults ever
+   * carry — so the frontend's own background space-save holds it rather than attempting one. */
+  unownedNotes?: boolean;
+}
+
+export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeVoiceNotes {
+  const nativeReadDelayMs = options.nativeReadDelayMs ?? 0;
+  const unownedNotes = options.unownedNotes ?? false;
+  const delay = () => (nativeReadDelayMs > 0 ? new Promise((resolve) => setTimeout(resolve, nativeReadDelayMs)) : Promise.resolve());
   const listeners = new Map<string, Set<Listener>>();
   let retainedPresent: { id: string | null; reason?: string } | null = null;
   let adds = 0;
@@ -44,6 +57,9 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   let maxDurationMs = 10_800_000;
   let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
   const deleted: string[] = [];
+  /** Committed recordings, for `listPending` — a real note's own transcriber and durable on-device
+   * state (e.g. TranscriptionRouteControl's live-session read, SavedReceipt's seed). */
+  const committed: VoiceNoteRecording[] = [];
   const unsupported = async (): Promise<never> => {
     throw Object.assign(new Error("This action is not implemented in the browser harness"), { code: "not_implemented_in_harness" });
   };
@@ -75,12 +91,14 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         silencedEvents: 0,
         noSignalMs: 0,
         version: 2,
-        owner: defaults.accountDid,
+        owner: unownedNotes ? null : defaults.accountDid,
         rev: 1,
         options: current.options,
       };
       current = null;
       state = "idle";
+      committed.push({ ...recording, stt: recording.options?.transcriber === "on-device"
+        ? { state: "waiting_for_model", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null } : undefined });
       return recording;
     },
     async status(): Promise<CaptureStatus> {
@@ -111,7 +129,8 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       deleted.push(id);
     },
     async listPending() {
-      return { recordings: [] };
+      await delay();
+      return { recordings: committed };
     },
     pause: unsupported,
     resume: unsupported,
@@ -140,9 +159,13 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     recordRemoteResult: unsupported,
     claim: unsupported,
     updateLedger: unsupported,
-    localAudioUrl: unsupported,
+    // A tiny silent WAV data URL: real enough for MeetingAudioPlayer to mount and show Play.
+    async localAudioUrl() {
+      await delay();
+      return { url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=" };
+    },
     putTranscript: unsupported,
-    getTranscript: unsupported,
+    async getTranscript() { return { transcript: null }; },
     listInputs: unsupported,
     selectInput: unsupported,
     listQuarantine: unsupported,

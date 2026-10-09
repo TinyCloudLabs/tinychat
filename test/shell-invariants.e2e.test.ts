@@ -224,6 +224,97 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
+  test("full-page Stop shows the saved receipt, not an immediate close to Capture home", async () => {
+    // TC-781, "Stop loses the local playback receipt": the full-page recorder (unlike the
+    // island, covered above) was never actually checked end to end for Stop -> receipt.
+    const { page, errors } = await open("/chat/capture");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+
+    await page.getByTestId("voice-note-stop").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    // The full-page recorder stays open and shows the receipt, with its Play control, for the
+    // RECEIPT_MS window — not an immediate close to Capture home.
+    await page.getByTestId("voice-note-receipt").waitFor({ timeout: 1_000 });
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 2_000 });
+    expect(await page.getByTestId("recording-overlay").count()).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("the receipt's display clock waits for Play before it starts, even with a slow native read", async () => {
+    // Round 2: removing one of two redundant listPending() scans was not enough on its own — a
+    // single slow listPending() or localAudioUrl() can still outrun a clock anchored at commit.
+    // The instant fake can't establish this timing, so this delays both by 2.5 s: well under the
+    // 3 s RECEIPT_MS window, but enough that the old commit-anchored timer (which started
+    // counting at Stop, not at Play) would have closed the sheet before Play ever showed, or cut
+    // its visible time far short of a full 3 s. `unownedNotes=1` so the background space-save is
+    // held rather than attempted — outcome stays "local" (not "failed") long enough to actually
+    // exercise the display clock, instead of racing the harness's incomplete voice-note-identity
+    // SQL schema fixture.
+    const { page, errors } = await open("/chat/capture?nativeReadDelayMs=2500&unownedNotes=1");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+
+    const stoppedAt = Date.now();
+    await page.getByTestId("voice-note-stop").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 8_000 });
+    const readyAfterMs = Date.now() - stoppedAt;
+    expect(readyAfterMs).toBeGreaterThan(2_000); // genuinely waited for the slow read, not a fluke
+
+    // Once Play is up, it must stay for its own full RECEIPT_MS window from there — not an
+    // abbreviated one left over from a clock that had already been running since Stop.
+    await page.waitForTimeout(2_500);
+    expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
+    expect(await page.getByTestId("note-audio-play").count()).toBe(1);
+
+    // It still closes eventually — the display clock, not the hard ceiling, is what's exercised
+    // here (RECEIPT_MAX_MS is 15 s).
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null, undefined, { timeout: 10_000 });
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
+  test("a receipt that becomes ready near the 15 s ceiling still gets its own full 3 s, not whatever the ceiling had left", async () => {
+    // Round 2: the hard ceiling (RECEIPT_MAX_MS, 15 s) bounds only the *wait* for readiness — it
+    // used to keep running after Play appeared, so a read landing at 14 s got cut to ~1 s instead
+    // of its own full 3 s window, and a user who pressed Play near the ceiling could have playback
+    // itself interrupted. Delaying the native read to 14 s (close enough to the 15 s ceiling that
+    // the display window, 3 s from readiness, runs well past it) exercises exactly that boundary.
+    // The check point below is an absolute time from Stop, not relative to when the Play control
+    // was detected, so it isn't eaten into by that detection's own polling/IPC latency.
+    const { page, errors } = await open("/chat/capture?nativeReadDelayMs=14000&unownedNotes=1");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+
+    const stoppedAt = Date.now();
+    await page.getByTestId("voice-note-stop").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 18_000 });
+    expect(Date.now() - stoppedAt).toBeGreaterThan(12_000); // genuinely waited for the slow read, not a fluke
+
+    // 16 s from Stop: a full 1 s past the old, still-running ceiling (15 s) — which would have
+    // closed the sheet by now — and comfortably inside the ready-based window, due to run out
+    // around 17 s (3 s after a ~14 s-late readiness).
+    await page.waitForTimeout(Math.max(0, stoppedAt + 16_000 - Date.now()));
+    expect(await page.getByTestId("voice-note-receipt").count()).toBe(1);
+    expect(await page.getByTestId("note-audio-play").count()).toBe(1);
+
+    // And it still closes eventually, once that window actually elapses.
+    await page.waitForFunction(() => document.querySelector('[data-testid="recording-overlay"]') === null, undefined, { timeout: 3_000 });
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
   test("discard: the question takes focus to Keep and turns back after 5 s; confirmed, the recording is deleted and the recorder closes", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());

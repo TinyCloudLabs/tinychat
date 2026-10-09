@@ -3,7 +3,7 @@ import { CheckIcon, ChevronDownIcon, MicOffIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { LevelTrace } from "./LevelTrace";
 import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { micWarning, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
@@ -16,19 +16,24 @@ import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
 
 /**
  * `lastSaved` (recorderReducer.ts) carries only id/durationMs/at, so the receipt looks the note's
- * own transcriber up directly rather than threading it through the reducer's event types.
+ * own transcriber and durable on-device STT state up directly, in one native `listPending()` read
+ * shared with SavedReceipt's on-device receipt (`sttHint`) — not a second one. Android's
+ * `listPending()` runs a full recovery scan over every note on the phone before it answers; two of
+ * them firing on every Stop (one here, one inside SavedReceipt) serialize behind that scan's lock,
+ * and on a phone with many notes that reliably outran the saved receipt's fixed display window,
+ * closing it before anything useful rendered (TC-781, "Stop loses the local playback receipt").
  */
-function useSavedTranscriber(id: string | undefined): TranscriberId | null {
-  const [transcriber, setTranscriber] = useState<TranscriberId | null>(null);
+function useSavedNote(id: string | undefined): { transcriber: TranscriberId | null; stt: NoteSttState | null } {
+  const [note, setNote] = useState<{ transcriber: TranscriberId | null; stt: NoteSttState | null }>({ transcriber: null, stt: null });
   useEffect(() => {
-    setTranscriber(null);
+    setNote({ transcriber: null, stt: null });
     if (!id) return;
     let active = true;
     VoiceNotes.listPending()
       .then(({ recordings }) => {
         if (!active) return;
-        const found = recordings.find((note) => note.id === id);
-        setTranscriber((found?.options?.transcriber as TranscriberId | undefined) ?? null);
+        const found = recordings.find((recording) => recording.id === id);
+        setNote({ transcriber: (found?.options?.transcriber as TranscriberId | undefined) ?? null, stt: found?.stt ?? null });
       })
       .catch(() => {
         // Best-effort: the receipt falls back to the private-cloud/off line below.
@@ -37,7 +42,7 @@ function useSavedTranscriber(id: string | undefined): TranscriberId | null {
       active = false;
     };
   }, [id]);
-  return transcriber;
+  return note;
 }
 
 export interface RecordingViewProps {
@@ -57,7 +62,8 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
     recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
   // Looked up for every outcome with a note (not just "saved"): a signed-out or offline on-device
   // recording lands as "local" and must still show its real route and transcript.
-  const savedTranscriber = useSavedTranscriber(lastSaved?.id);
+  const savedNote = useSavedNote(lastSaved?.id);
+  const savedTranscriber = savedNote.transcriber;
   const savedRoute = savedTranscriber === "on-device" ? "on-device" : transcribing ? "private-cloud" : "off";
   const paused = mic.state === "paused" || mic.state === "interrupted" || mic.state === "needs_user";
 
@@ -89,9 +95,9 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
 
         <div className="flex min-h-0 flex-col justify-end land:col-start-2 land:row-start-1">
           {receipt ? (
-            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
+            <SavedReceipt outcome={outcome} localUpload={recorder.localUpload} saved={lastSaved} route={voiceNoteRoute(savedRoute)} transcriber={savedTranscriber} sttHint={savedNote.stt} transcribing={transcribing} error={recorder.error} retrying={recorder.pending.running}
               onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
-              onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} />
+              onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} onReady={recorder.setReceiptReady} />
           ) : (
             <TranscriptionRouteControl transcription={recorder.transcription} signedIn={recorder.signedIn}
               recorder={recorder} defaultAsking={consentAsking} />
