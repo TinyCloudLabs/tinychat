@@ -103,6 +103,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: EXO_UI_ENGINE=chromium EXO_UI_VIEWPORTS=phone-halo-review EXO_UI_HALO_FORCE_CANVAS=1 bun run --cwd test exo-ui:screens
 
+      - name: Upload the halo Canvas 2D screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exo-ui-screens-${{ github.event.pull_request.number }}-halo-canvas2d-${{ github.run_attempt }}
+          path: screenshots/exo-ui/
+          if-no-files-found: warn
+
   # One job per viewport: phone, landscape phone, desktop and 200% text on a
   # phone (where Linux fonts have caught clipping macOS hides). The full
   # nine-viewport matrix, WebKit included, runs locally.
