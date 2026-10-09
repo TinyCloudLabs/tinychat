@@ -20,6 +20,7 @@ import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSt
 import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import type { RecorderValue } from "./RecorderProvider";
+import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
@@ -34,6 +35,46 @@ export function setRecordingRoute(recorder: RecordingRoute, id: Route) {
 export function consentToRecordingPrivateCloud(recorder: RecordingRoute, onConsent: () => void) {
   onConsent();
   return setRecordingRoute(recorder, "private-cloud");
+}
+
+const ROUTE_NAME: Record<Route, string> = { off: "Off", "on-device": "On this phone", "private-cloud": "Private cloud" };
+export const SIGNED_OUT_ROUTE = "Sign in to choose another mode";
+
+export function routeUnavailable(next: Route): string {
+  return `${ROUTE_NAME[next]} isn't available right now`;
+}
+
+/** Runs a route change and tells the user when the provider refuses or fails; the selection stays
+ * wherever the provider says it is, so there is nothing to undo. */
+export async function requestRecordingRoute(
+  next: Route,
+  request: () => Promise<SetTranscriberResult>,
+  outcome: { needsConsent: () => void; settled: () => void; notify: (message: string) => void },
+): Promise<void> {
+  let result: SetTranscriberResult;
+  try {
+    result = await request();
+  } catch (caught) {
+    console.error("[Recorder] Could not change the transcription route", caught);
+    outcome.notify(`Could not change the transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
+    return;
+  }
+  switch (result) {
+    case "ok":
+      outcome.settled();
+      return;
+    case "needs_consent":
+      outcome.needsConsent();
+      return;
+    case "locked_signed_out":
+      console.error(`[Recorder] The provider is locked to on-device while signed out; ${next} was refused`);
+      outcome.notify(SIGNED_OUT_ROUTE);
+      return;
+    case "unavailable":
+      console.error(`[Recorder] The provider cannot use ${next} right now`);
+      outcome.notify(routeUnavailable(next));
+      return;
+  }
 }
 
 function asRoute(transcriber: TranscriberId): Route {
@@ -104,6 +145,7 @@ export function TranscriptionRouteControl(props: {
   const offered = signedIn && transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
   const [asking, setAsking] = useState(props.defaultAsking ?? false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [offPicked, setOffPicked] = useState(false);
   // Native's own default is on-device (CaptureEngine's defaultOptions()) unless an account has
   // set something else; seed from that instead of defaulting to Off until the native read
@@ -128,10 +170,11 @@ export function TranscriptionRouteControl(props: {
   const choose = (next: Route) => {
     if (next === route || !signedIn) return;
     hapticSelection();
+    setNotice(null);
     if (recorder) {
       if (next === "private-cloud" && !consented) { setAsking(true); return; }
       setAsking(false);
-      void setRecordingRoute(recorder, next);
+      void requestRecordingRoute(next, () => setRecordingRoute(recorder, next), { needsConsent: () => setAsking(true), settled: () => {}, notify: setNotice });
       return;
     }
     if (next === "off") {
@@ -185,8 +228,11 @@ export function TranscriptionRouteControl(props: {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <Button type="button" onClick={() => {
               if (!recorder) { transcription!.onConsent(); return; }
-              void consentToRecordingPrivateCloud(recorder, transcription!.onConsent).then((result) => {
-                if (result === "ok") setAsking(false);
+              setNotice(null);
+              void requestRecordingRoute("private-cloud", () => consentToRecordingPrivateCloud(recorder, transcription!.onConsent), {
+                needsConsent: () => {},
+                settled: () => setAsking(false),
+                notify: setNotice,
               });
             }} data-testid="voice-note-transcription-enable">
               Use private cloud
@@ -218,6 +264,11 @@ export function TranscriptionRouteControl(props: {
           )}
           <HowItWorksLink section="transcription" className="ml-auto" />
         </div>
+      )}
+      {notice && (
+        <p role="alert" className="text-callout text-destructive" data-testid="transcription-route-notice">
+          {notice}
+        </p>
       )}
     </section>
   );
