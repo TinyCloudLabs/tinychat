@@ -36,7 +36,7 @@ function Probe({ id, store }: { id: string; store: SavedNoteStore }) {
   return null;
 }
 
-const record = (md: string): SavedNoteRecord => ({ md, editedAt: "2026-10-09T10:00:00Z" });
+const record = (md: string): SavedNoteRecord => ({ md, savedEditAt: "2026-10-09T10:00:00Z" });
 
 function fakeStore(over: Partial<SavedNoteStore> = {}): SavedNoteStore {
   return {

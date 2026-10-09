@@ -123,12 +123,10 @@ async function typeAtEnd(page: Page, text: string) {
 }
 
 describe.serial(`recorder-final saved note, ${engineName}`, () => {
-  test("page: Edit → type → ⌘S saves, shows the new text and a changed Edited line", async () => {
+  test("page: Edit → type → ⌘S saves, shows the new text and adds the Edited line (none before the first saved edit)", async () => {
     const { page, errors } = await open(PAGE);
     await shown(rendered(page));
-    await shown(edited(page));
-    const before = await editedText(page);
-    expect(before).toMatch(/^Edited /);
+    expect(await edited(page).count()).toBe(0);
     expect(await button(page, "Copy").count()).toBe(1);
 
     await typeAtEnd(page, "\n\nAlso: park the budget.");
@@ -140,7 +138,7 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     await renders(page, "park the budget");
     expect(await saves(page)).toHaveLength(1);
     expect((await saves(page))[0]).toEndWith("Also: park the budget.");
-    await until("the Edited line to change", async () => (await editedText(page)) !== before);
+    await shown(edited(page));
     expect(await editedText(page)).toMatch(/^Edited /);
     // Focus returns to Edit.
     await focused(button(page, "Edit"));
@@ -196,17 +194,18 @@ describe.serial(`recorder-final saved note, ${engineName}`, () => {
     expect(errors).toEqual([]);
   });
 
-  test("sheet: Edit → type → Save shows the new text and a changed Edited line", async () => {
+  test("sheet: Edit → type → Save shows the new text and adds the Edited line", async () => {
     const { page, errors } = await open(SHEET);
     await shown(rendered(page));
-    const before = await editedText(page);
+    expect(await edited(page).count()).toBe(0);
     await typeAtEnd(page, "\n\nsheet line");
     await button(page, "Save").click();
     await gone(field(page));
     await shown(rendered(page));
     await renders(page, "sheet line");
     expect(await saves(page)).toHaveLength(1);
-    await until("the Edited line to change", async () => (await editedText(page)) !== before);
+    await shown(edited(page));
+    expect(await editedText(page)).toMatch(/^Edited /);
     expect(errors).toEqual([]);
   });
 

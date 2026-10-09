@@ -11,8 +11,8 @@ import {
 
 export interface SavedNoteRecord {
   md: string;
-  /** ISO time of the last edit. */
-  editedAt: string;
+  /** ISO time of the last saved edit; null when the note has only been written during recording. */
+  savedEditAt: string | null;
 }
 
 /** Where a saved recording's note is read and rewritten. The app's is the device's note store plus the space. */
@@ -38,12 +38,12 @@ export function spaceSavedNoteStore(tcw: TinyCloudWeb): SavedNoteStore {
         const remote = await readRecordingNoteFromSpace(tcw, id);
         if (remote) note = await adoptNote(remote);
       }
-      return note ? { md: note.md, editedAt: note.editedAt } : null;
+      return note ? { md: note.md, savedEditAt: note.savedEditAt } : null;
     },
     async save(id, md) {
-      const note = await saveNote(id, md);
+      const note = await saveNote(id, md, { savedEdit: true });
       return {
-        record: { md: note.md, editedAt: note.editedAt },
+        record: { md: note.md, savedEditAt: note.savedEditAt },
         synced: syncRecordingNote(tcw, id).then(() => undefined),
       };
     },

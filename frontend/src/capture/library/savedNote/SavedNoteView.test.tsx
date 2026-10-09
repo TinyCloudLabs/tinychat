@@ -21,7 +21,7 @@ function screenOf(over: {
   const md = over.md ?? "";
   return {
     note: {
-      load: over.load ?? { status: "ready", record: { md, editedAt: "2026-10-09T10:00:00Z" } },
+      load: over.load ?? { status: "ready", record: { md, savedEditAt: "2026-10-09T10:00:00Z" } },
       retryLoad: noop,
       saving: over.saving ?? false,
       saveError: over.saveError ?? null,
@@ -89,6 +89,24 @@ describe("SavedNotePage", () => {
       expect(out).not.toContain(">Edit<");
       expect(out).not.toContain(">Copy<");
       expect(out).not.toContain("Edited");
+    }
+  });
+
+  test("a note never edited after saving shows no Edited line, on the page or the sheet", () => {
+    for (const layout of ["page", "sheet"] as const) {
+      const out = html(
+        screenOf({ md: "typed while recording", load: { status: "ready", record: { md: "typed while recording", savedEditAt: null } } }),
+        { layout },
+      );
+      expect(out).toContain(">Edit<");
+      expect(out).not.toContain("Edited");
+      expect(out).not.toContain('data-testid="saved-note-edited"');
+    }
+  });
+
+  test("a note edited after saving shows when, from the record, on the page and the sheet", () => {
+    for (const layout of ["page", "sheet"] as const) {
+      expect(html(screenOf({ md: "hi" }), { layout })).toContain(`Edited ${editedLabel("2026-10-09T10:00:00Z")}`);
     }
   });
 

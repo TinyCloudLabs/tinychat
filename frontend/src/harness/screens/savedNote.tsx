@@ -37,7 +37,10 @@ const NOTE_MD = [
 ].join("\n");
 const EDITED_MD = `${NOTE_MD}\n\nAlso: park the offsite budget until Monday.`;
 
-const record = (md: string, laterMs = 0) => ({ md, editedAt: new Date(FROZEN_NOW + laterMs).toISOString() });
+const record = (md: string, laterMs?: number) => ({
+  md,
+  savedEditAt: laterMs === undefined ? null : new Date(FROZEN_NOW + laterMs).toISOString(),
+});
 
 declare global {
   interface Window {
@@ -109,7 +112,7 @@ function memoryStore(options: { failSave?: boolean; empty?: boolean } = {}): Sav
     save: async (_id, md) => {
       (window.exoSavedNote ??= { saves: [] }).saves.push(md);
       if (options.failSave) throw new Error("The device storage is full.");
-      // Each save is an hour and a half later than the last, so the "Edited" line visibly changes.
+      // The note starts with no Edited line; each save is an hour and a half later than the last, so the line appears, then changes.
       current = record(md, ++saves * 90 * 60_000);
       options = { ...options, empty: false };
       return { record: current, synced: Promise.resolve() };

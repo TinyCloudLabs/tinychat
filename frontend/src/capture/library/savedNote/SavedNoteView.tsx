@@ -62,8 +62,8 @@ function Notes({
 
   const ready = note.load.status === "ready";
   const editedWhen =
-    note.load.status === "ready" && note.load.record && savedMd.trim() !== ""
-      ? editedLabel(note.load.record.editedAt)
+    note.load.status === "ready" && note.load.record?.savedEditAt && savedMd.trim() !== ""
+      ? editedLabel(note.load.record.savedEditAt)
       : null;
   const onKeys = (event: KeyboardEvent) => {
     const save =

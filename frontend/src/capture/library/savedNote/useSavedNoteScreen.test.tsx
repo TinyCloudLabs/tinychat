@@ -42,7 +42,7 @@ function Probe({ store }: { store: SavedNoteStore }) {
   return null;
 }
 
-const record = (md: string): SavedNoteRecord => ({ md, editedAt: "2026-10-09T10:00:00Z" });
+const record = (md: string): SavedNoteRecord => ({ md, savedEditAt: "2026-10-09T10:00:00Z" });
 const writes: string[] = [];
 const mode = { fail: false };
 const store: SavedNoteStore = {
@@ -149,11 +149,42 @@ describe("useSavedNoteScreen", () => {
     expect(screen.draft.draft).toBe("changed");
   });
 
+  test("a note with no saved edit has no Edited line until Save, then the sheet and the page show one", async () => {
+    const fresh: SavedNoteStore = {
+      load: async () => ({ md: "typed while recording", savedEditAt: null }),
+      save: async (_id, md) => ({ record: { md, savedEditAt: "2026-10-09T03:20:00Z" }, synced: Promise.resolve() }),
+    };
+    const view = (layout: "page" | "sheet") =>
+      renderToStaticMarkup(
+        <SavedNotePage
+          screen={screen}
+          layout={layout}
+          theme="night"
+          id="rec-1"
+          title="Standup"
+          meta=""
+          loadAudio={null}
+          transcript={null}
+          partialAudio={false}
+          onBack={() => {}}
+        />,
+      );
+    await show(<Probe store={fresh} />);
+    expect(view("page")).not.toContain("Edited");
+    expect(view("sheet")).not.toContain("Edited");
+    await act(async () => screen.startEdit());
+    await act(async () => screen.draft.type("typed while recording\nmore"));
+    await act(async () => screen.save());
+    for (const layout of ["page", "sheet"] as const) {
+      expect(view(layout)).toContain(`Edited ${editedLabel("2026-10-09T03:20:00Z")}`);
+    }
+  });
+
   test("Save turns the note view's Edited line to the time the store recorded", async () => {
     const dated: SavedNoteStore = {
-      load: async () => ({ md: "first line", editedAt: "2026-10-08T09:00:00Z" }),
+      load: async () => ({ md: "first line", savedEditAt: "2026-10-08T09:00:00Z" }),
       save: async (_id, md) => ({
-        record: { md, editedAt: "2026-10-09T03:20:00Z" },
+        record: { md, savedEditAt: "2026-10-09T03:20:00Z" },
         synced: Promise.resolve(),
       }),
     };

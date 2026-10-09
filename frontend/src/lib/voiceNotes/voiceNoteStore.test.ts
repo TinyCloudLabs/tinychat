@@ -33,6 +33,7 @@ import {
   voiceNoteAudioSourceFromBase64,
   voiceNoteMarkdownKvKey,
   syncRecordingNote,
+  readRecordingNoteFromSpace,
   recordingNoteSyncError,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
@@ -180,6 +181,26 @@ describe("saveVoiceNote", () => {
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect(recordingNoteSyncError(space.tcw, withNote.id)).toBeNull();
     expect(space.kv.get(noteKey)).toContain("# Local draft");
+  });
+
+  test("sync carries the saved-edit time to the space and a recorder write after it does not clear it", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-saved-edit-${++fakeSpaceNumber}` };
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    await saveNote(withNote.id, "# Recorded");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    expect(space.kv.get(noteKey)).not.toContain("edited:");
+    expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBeNull();
+
+    const edited = await saveNote(withNote.id, "# Edited after saving", { savedEdit: true });
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(edited.savedEditAt);
+    expect(edited.savedEditAt).toBe(edited.editedAt);
+
+    await saveNote(withNote.id, "# Edited after saving, then a recorder write");
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(edited.savedEditAt);
   });
 
   test("creates the indexed identity, then patches audio after its manifest", async () => {
