@@ -1,5 +1,11 @@
 # @tinychat/frontend
 
+## 0.6.0-beta.16
+
+### Patch Changes
+
+- 6d9a101: Keep the native renewal test's voice-note save fixture from leaking into later Bun test files.
+
 ## 0.6.0-beta.15
 
 ### Minor Changes
