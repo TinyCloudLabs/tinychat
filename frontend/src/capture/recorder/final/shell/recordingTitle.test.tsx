@@ -7,6 +7,7 @@ import {
   createTitleController,
   documentTitleTarget,
   recordingTitle,
+  tauriRuntimePresent,
   tauriWindowTitleTarget,
   titleTargetFor,
   useRecordingTitle,
@@ -24,9 +25,28 @@ describe("recordingTitle", () => {
 
   test("the web writes the tab, the desktop app the window, the phone apps nothing", () => {
     expect(titleTargetFor("web")).toBe(documentTitleTarget);
-    expect(titleTargetFor("tauri")).toBe(tauriWindowTitleTarget);
+    expect(titleTargetFor("tauri", true)).toBe(tauriWindowTitleTarget);
     expect(titleTargetFor("ios")).toBeNull();
     expect(titleTargetFor("android")).toBeNull();
+  });
+
+  test("a simulated tauri platform without the Tauri runtime falls to the document title", () => {
+    expect(titleTargetFor("tauri", false)).toBe(documentTitleTarget);
+  });
+
+  test("the runtime check needs the real Tauri internals, not just a key", () => {
+    const original = (globalThis as { window?: unknown }).window;
+    try {
+      (globalThis as { window?: unknown }).window = {};
+      expect(tauriRuntimePresent()).toBe(false);
+      (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+      expect(tauriRuntimePresent()).toBe(false);
+      (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: { metadata: { currentWindow: { label: "main" } } } };
+      expect(tauriRuntimePresent()).toBe(true);
+      expect(titleTargetFor("tauri")).toBe(tauriWindowTitleTarget);
+    } finally {
+      (globalThis as { window?: unknown }).window = original;
+    }
   });
 });
 

@@ -33,10 +33,16 @@ export const tauriWindowTitleTarget: TitleTarget = {
   },
 };
 
+/** True only inside the real Tauri runtime; the app's platform value alone (the screens harness simulates "tauri") is not proof. */
+export function tauriRuntimePresent(): boolean {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return false;
+  return Boolean((window as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__?.metadata);
+}
+
 /** The phone apps have no title to set. */
-export function titleTargetFor(platform: AppPlatform): TitleTarget | null {
+export function titleTargetFor(platform: AppPlatform, hasTauriRuntime: boolean = tauriRuntimePresent()): TitleTarget | null {
   if (platform === "web") return documentTitleTarget;
-  if (platform === "tauri") return tauriWindowTitleTarget;
+  if (platform === "tauri") return hasTauriRuntime ? tauriWindowTitleTarget : documentTitleTarget;
   return null;
 }
 
