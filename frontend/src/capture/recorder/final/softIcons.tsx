@@ -1,7 +1,15 @@
 import type { ReactNode } from "react";
 import type { ModeId } from "./transcriptionModes";
 
-function Icon({ size, children, className }: { size: number; children: ReactNode; className?: string }) {
+function Icon({
+  size,
+  children,
+  className,
+}: {
+  size: number;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
     <svg
       width={size}
@@ -96,7 +104,18 @@ export const HeadphonesIcon = ({ size = 18 }: { size?: number }) => (
 /** ⓘ⌄: the modes card opener. */
 export function InfoChevronIcon() {
   return (
-    <svg width="21" height="16" viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <svg
+      width="21"
+      height="16"
+      viewBox="0 0 32 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
       <circle cx="10.5" cy="12" r="8.2" />
       <path d="M10.5 11v5.2M10.5 7.7v.1" />
       <path d="M22.5 10.5l3.25 3.25L29 10.5" />
@@ -107,14 +126,25 @@ export function InfoChevronIcon() {
 /** The ring's centre glyph: pause while it records (faint), play when a tap would resume. */
 export function RingGlyph({ kind }: { kind: "pause" | "play" }) {
   return (
-    <svg className="pr-mid" data-glyph={kind} width="32" height="32" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+    <svg
+      className="pr-mid"
+      data-glyph={kind}
+      width="32"
+      height="32"
+      viewBox="0 0 48 48"
+      aria-hidden="true"
+      focusable="false"
+    >
       {kind === "pause" ? (
         <g opacity=".28">
           <rect x="15" y="12" width="6.5" height="24" rx="3.2" />
           <rect x="26.5" y="12" width="6.5" height="24" rx="3.2" />
         </g>
       ) : (
-        <path opacity=".9" d="M18 13.8v20.4a2.6 2.6 0 0 0 4 2.2l15.6-10.2a2.6 2.6 0 0 0 0-4.4L22 11.6a2.6 2.6 0 0 0-4 2.2z" />
+        <path
+          opacity=".9"
+          d="M18 13.8v20.4a2.6 2.6 0 0 0 4 2.2l15.6-10.2a2.6 2.6 0 0 0 0-4.4L22 11.6a2.6 2.6 0 0 0-4 2.2z"
+        />
       )}
     </svg>
   );
