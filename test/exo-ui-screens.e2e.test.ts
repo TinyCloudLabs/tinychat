@@ -71,6 +71,8 @@ interface ScreenInfo {
   platform?: string;
   /** Driven by its own test; not captured. */
   interactive?: boolean;
+  /** Not captured at viewports narrower than this. */
+  minViewportWidth?: number;
 }
 
 interface AllowEntry {
@@ -297,6 +299,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 viewport.screenPrefixes &&
                 !viewport.screenPrefixes.some((prefix) => screen.id.startsWith(prefix))
               ) continue;
+              if (screen.minViewportWidth !== undefined && viewport.width < screen.minViewportWidth) continue;
               const page = await context.newPage();
               const errors: string[] = [];
               page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));

@@ -287,9 +287,9 @@
     min-width: 44px;
     text-align: center;
   }
-  .cs-switch {
+  .cs .cs-switch {
     padding: 12px 5px;
-    margin: -12px -5px;
+    margin: -11px -5px -12px;
   }
   .cs-link {
     min-height: 44px;

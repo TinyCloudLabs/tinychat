@@ -33,6 +33,9 @@ declare global {
 
 const noop = () => {};
 
+// The ⚙︎ lives on the desktop Capture header, which the rail (768 and up) and desktop layouts place.
+const RAIL_MIN_WIDTH = 768;
+
 const MICROPHONE: AudioInputsSource = {
   list: async () => ({
     inputs: [{ id: "mac", name: "MacBook Pro Microphone", kind: "built_in" }],
@@ -151,6 +154,7 @@ function screen(
     group: "recorder",
     layout: "pane",
     displayTitle: false,
+    minViewportWidth: RAIL_MIN_WIDTH,
     readyWhen: ".cs-row[data-testid=settings-mic]",
     ...options,
     render,
