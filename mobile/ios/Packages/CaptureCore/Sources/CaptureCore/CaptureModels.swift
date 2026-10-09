@@ -73,6 +73,27 @@ public struct CaptureDefaults: Codable, Equatable {
     }
 }
 
+public struct CaptureAccountState: Codable, Equatable {
+    public var status: String
+    public var accountDid: String?
+    public var transitionGen: Int64
+    public var options: CaptureOptions
+
+    public init(status: String = "signed_out", accountDid: String? = nil,
+                transitionGen: Int64 = 0, options: CaptureOptions = CaptureOptions()) {
+        self.status = status
+        self.accountDid = accountDid
+        self.transitionGen = transitionGen
+        self.options = options
+    }
+
+    public var defaults: CaptureDefaults {
+        CaptureDefaults(accountDid: status == "signed_in" ? accountDid : nil,
+                        transitionGen: transitionGen, transcriber: options.transcriber,
+                        identifySpeakers: options.identifySpeakers)
+    }
+}
+
 public struct MissingAudioSpan: Codable, Equatable {
     public var kind: String
     public var reason: String

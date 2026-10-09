@@ -52,6 +52,34 @@ import XCTest
         }
     }
 
+    func testParkedPauseIsAdoptedThenTimesOutOnNextLaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("exo-parked-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = TestClock()
+        let first = try CaptureEngine(testRoot: root, clock: clock)
+        first.debugForeground = true
+        let id = try XCTUnwrap(first.start()["id"] as? String)
+        try enqueueTone(first)
+        try first.pause()
+        let resumed = try CaptureEngine(testRoot: root, clock: clock)
+        resumed.debugForeground = true
+        resumed.recoverOnce()
+        let adopted = expectation(description: "parked session adopted")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            XCTAssertEqual(resumed.status()["id"] as? String, id)
+            XCTAssertEqual(resumed.status()["state"] as? String, "paused")
+            adopted.fulfill()
+        }
+        wait(for: [adopted], timeout: 5)
+        clock.advance(by: 3_600_001)
+        let expired = try CaptureEngine(testRoot: root, clock: clock)
+        expired.recoverOnce()
+        try expired.awaitRecovery()
+        let saved = try expired.library.readSidecar(id)
+        XCTAssertEqual(saved["exitReason"] as? String, "pause_timeout")
+        XCTAssertEqual(saved["endedUnexpectedly"] as? Bool, false)
+    }
+
     func testBackgroundRefusalAndForegroundBlockedAttempt() throws {
         try withEngine { engine in
             let id = try XCTUnwrap(engine.start()["id"] as? String)

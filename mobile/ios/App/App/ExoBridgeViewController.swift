@@ -1,4 +1,5 @@
 import Capacitor
+import CaptureCore
 import Darwin
 import ExoCapture
 import UIKit
@@ -124,8 +125,22 @@ class ExoBridgeViewController: CAPBridgeViewController {
             if ProcessInfo.processInfo.environment["EXO_CAPTURE_SMOKE"] == "1" {
                 DispatchQueue.global(qos: .userInitiated).async {
                     var object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? [:]
-                    do { object["capture"] = try CaptureProbe.run() }
+                    do {
+                        let capture = try CaptureProbe.run()
+                        object["capture"] = capture
+                        object["recovery"] = capture["recovery"]
+                    }
                     catch { object["capture"] = ["error": String(describing: error)] }
+                    let account = CaptureEngine.shared.defaults()
+                    UserDefaults.standard.set(true, forKey: "exo.debug.failAccountState")
+                    do {
+                        try CaptureEngine.shared.setAccountState(status: "signed_out", accountDid: nil,
+                                                                 transitionGen: account.transitionGen)
+                        object["accountFailpoint"] = "failed"
+                    } catch {
+                        object["accountFailpoint"] = (error as? CaptureError)?.code == "io_failed" ? "ok" : "failed"
+                    }
+                    UserDefaults.standard.removeObject(forKey: "exo.debug.failAccountState")
                     DispatchQueue.main.async {
                         object["transitions"] = CaptureEngine.shared.simulate("transitions")
                         let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])

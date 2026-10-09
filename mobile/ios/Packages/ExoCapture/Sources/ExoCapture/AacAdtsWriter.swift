@@ -39,6 +39,16 @@ final class AacAdtsWriter {
         self.handle = try FileHandle(forWritingTo: library.segmentURL(id, index: 0))
     }
 
+    init(parkedLibrary library: RecordingLibrary, id: String, lastSegment: Int,
+         audioFrames: Int64, clock: CaptureClock) {
+        self.library = library; self.id = id; self.clock = clock
+        self.segment = lastSegment; self.audioFrames = audioFrames
+        self.segmentStartFrames = audioFrames
+        self.heartbeat = HeartbeatSchedule(segmentOpenedAt: clock.nowMilliseconds())
+        self.handle = nil
+        self.accepting = false
+    }
+
     var audioMs: Int64 { queue.sync { audioFrames * 1000 / 48_000 } }
     var rejectedStaleFrames: Int {
         queueLock.lock(); defer { queueLock.unlock() }

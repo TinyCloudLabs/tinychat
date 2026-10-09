@@ -543,4 +543,74 @@ final class RecordingLibraryTests: XCTestCase {
         _ = try relaunched.recoverableSessions()
         XCTAssertFalse(try relaunched.listCommitted().contains { $0["id"] as? String == discarded })
     }
+    func testAccountStateFailsClosedAndSurvivesRelaunch() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try library.migrateLegacyAccount(CaptureDefaults(accountDid: "did:old", transitionGen: 4))
+        XCTAssertEqual(try library.accountState().status, "transitioning")
+        XCTAssertNil(try library.accountState().defaults.accountDid)
+        library.failpoint = { if $0 == "account.tmp" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 5)))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().status, "transitioning")
+        library.failpoint = { if $0 == "account.rename" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 5)))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().status, "transitioning")
+        library.failpoint = nil
+        try library.setAccountState(CaptureAccountState(status: "signed_out", transitionGen: 5))
+        XCTAssertEqual(try RecordingLibrary(root: root).accountState().transitionGen, 5)
+        XCTAssertThrowsError(try library.setAccountState(CaptureAccountState(status: "signed_in",
+            accountDid: "did:old", transitionGen: 4)))
+    }
+
+    func testLateRemoteResultAfterDeleteKeepsDeterministicOutboxEntry() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased(), opId = "submit-1"
+        try library.setAccountState(CaptureAccountState(status: "signed_in", accountDid: "did:test",
+                                                        transitionGen: 1))
+        _ = try library.commit(id, sidecar: sidecar(id)) { try Data("audio".utf8).write(to: $0) }
+        let receipt: [String: Any] = ["id": id, "did": "did:test", "opId": opId,
+            "provider": "assemblyai", "mode": "hosted", "kind": "hosted_submit",
+            "fingerprint": "one", "startedAt": 100]
+        library.failpoint = { if $0 == "receipt.begin" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.beginRemoteOp(receipt))
+        let before = ((try library.readSidecar(id))["ledger"] as? [String: Any])?["remote"] as? [[String: Any]] ?? []
+        XCTAssertFalse(before.contains { $0["opId"] as? String == opId })
+        library.failpoint = nil
+        try library.beginRemoteOp(receipt)
+        library.failpoint = { if $0 == "delete.outbox" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.delete(id))
+        library.failpoint = nil
+        _ = try RecordingLibrary(root: root).recoverableSessions()
+        library.failpoint = { if $0 == "receipt.result" { throw CaptureError.io("injected") } }
+        XCTAssertThrowsError(try library.recordRemoteResult(id: id, did: "did:test", opId: opId,
+            result: ["outcome": "created", "jobId": "job-late"]))
+        library.failpoint = nil
+        XCTAssertEqual(try library.recordRemoteResult(id: id, did: "did:test", opId: opId,
+            result: ["outcome": "created", "jobId": "job-late"]), "outbox")
+        let reloaded = try RecordingLibrary(root: root)
+        let entry = try XCTUnwrap(reloaded.listOutbox(did: "did:test")
+            .first(where: { $0["entryId"] as? String == "\(id):\(opId)" }))
+        XCTAssertEqual(entry["handle"] as? String, "job-late")
+        try reloaded.completeOutbox("\(id):\(opId)", result: "authority_expired")
+        XCTAssertEqual(try reloaded.listOutbox(did: "did:test")
+            .first(where: { $0["entryId"] as? String == "\(id):\(opId)" })?["state"] as? String,
+            "authority_expired")
+    }
+
+    func testRepeatedRecoveryFailureQuarantinesUntilExplicitRetryOrDiscard() throws {
+        let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString.lowercased()
+        try library.startSession(SessionInfo(id: id, source: "in_app", owner: nil,
+                                             transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        for _ in 0..<3 {
+            try RecordingLibrary(root: root).noteRecoveryFailure(id, reason: "corrupt journal")
+        }
+        XCTAssertFalse(try RecordingLibrary(root: root).recoverableSessions().contains(id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.url("quarantine/\(id).session").path))
+        XCTAssertEqual(try library.listRecoveryFailures().first?["attempts"] as? Int, 3)
+        XCTAssertFalse(try library.listQuarantine().contains { $0["id"] as? String == id })
+        try library.prepareRecoveryRetry(id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+        try library.discardFailedRecording(id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.sessionURL(id).path))
+    }
 }
