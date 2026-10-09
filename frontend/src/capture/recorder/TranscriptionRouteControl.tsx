@@ -1,9 +1,13 @@
 // The centre of the recorder: where this note's audio goes (plan §2.7). A
-// "Transcription" heading, Off · Private cloud when private cloud is offered
+// "Transcription" heading, Off · On this phone · Private cloud when private cloud is offered
 // to this build and account, the route as a RouteLine, one short line, and a
 // link to How it works for the rest. Choosing Private cloud the first time
 // asks once ("Use private cloud"); the full disclosure is on How it works.
-import { useId, useState } from "react";
+// On this phone never needs a sign-in or a network check: native capture defaults to it
+// already, and the only extra state to show is the model's download progress. Signed out, native
+// (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
+// "On this phone" is ever offered or shown selected — never "Off".
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -11,48 +15,120 @@ import { InfoTip } from "@/components/ui/info-tip";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { hapticSelection } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
+import { VoiceNotes, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
+import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
-type Route = "off" | "private-cloud";
+type Route = "off" | "on-device" | "private-cloud";
 
-const ROUTE_OPTIONS = [
-  { value: "off", label: "Off" },
-  { value: "private-cloud", label: "Private cloud" },
-] as const;
+function asRoute(transcriber: TranscriberId): Route {
+  return transcriber === "private-cloud" ? "private-cloud" : transcriber === "on-device" ? "on-device" : "off";
+}
+
+function routeOptions(signedIn: boolean, offered: boolean): { value: Route; label: string }[] {
+  if (!signedIn) return [{ value: "on-device", label: "On this phone" }];
+  return offered
+    ? [
+        { value: "off", label: "Off" },
+        { value: "on-device", label: "On this phone" },
+        { value: "private-cloud", label: "Private cloud" },
+      ]
+    : [
+        { value: "off", label: "Off" },
+        { value: "on-device", label: "On this phone" },
+      ];
+}
 
 function minutes(seconds: number): number {
   return Math.round(seconds / 60);
 }
 
+/** Round-2 finding 2: while a recording is already live (picked up after minimizing/reopening, or
+ * a remount for any other reason), its own `options.transcriber` is the ground truth for what
+ * route to show — not the stored default, which this same recording may have been overridden away
+ * from via `setRecordingTranscriber`. Only when no recording exists yet does the stored default
+ * apply, via `onDeviceDefault`. Exported for testing: there is no DOM in this workspace, so this
+ * hook (no host elements) is mounted directly rather than the full component. */
+export function useLiveRouteOverride(signedIn: boolean): { activeOverride: Route | null; onDeviceDefault: boolean | null } {
+  const [activeOverride, setActiveOverride] = useState<Route | null>(null);
+  const [onDeviceDefault, setOnDeviceDefault] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!signedIn) return; // forced on-device; nothing to read
+    let active = true;
+    const fallbackToDefault = () => readDefaultTranscriber().then((transcriber) => { if (active) setOnDeviceDefault(transcriber === "on-device"); }, () => {});
+    void VoiceNotes.status().then(
+      (status) => {
+        if (!active) return;
+        if (status.intent !== "stopped" && status.options) { setActiveOverride(asRoute(status.options.transcriber)); return; }
+        void fallbackToDefault();
+      },
+      fallbackToDefault,
+    );
+    return () => { active = false; };
+  }, [signedIn]);
+  return { activeOverride, onDeviceDefault };
+}
+
 export function TranscriptionRouteControl(props: {
   /** Absent in a build without private cloud transcription. */
   transcription: VoiceNoteTranscriptionProps | undefined;
+  /** Native forces on-device while signed out, no matter what's selected (CaptureEngine). */
+  signedIn: boolean;
   /** Start on the one-time question, as if Private cloud had just been chosen (the harness). */
   defaultAsking?: boolean;
   className?: string;
 }) {
-  const { transcription } = props;
+  const { transcription, signedIn } = props;
   const headingId = useId();
-  const offered = transcription?.availability === "available";
+  const offered = signedIn && transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
   const [asking, setAsking] = useState(props.defaultAsking ?? false);
+  // Native's own default is on-device (CaptureEngine's defaultOptions()) unless an account has
+  // set something else; seed from that instead of defaulting to Off until the native read
+  // resolves, then correct from the real stored default once it lands. Already-consented private
+  // cloud is a stronger, synchronously-known signal of intent than that still-loading default.
+  const [onDevicePicked, setOnDevicePicked] = useState(!consented);
+  const { activeOverride: liveOverride, onDeviceDefault } = useLiveRouteOverride(signedIn);
+  const [activeOverride, setActiveOverride] = useState<Route | null>(null);
+  useEffect(() => { if (liveOverride) setActiveOverride(liveOverride); }, [liveOverride]);
+  useEffect(() => { if (onDeviceDefault !== null) setOnDevicePicked(onDeviceDefault); }, [onDeviceDefault]);
+  const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const askingNow = offered && !consented && asking;
-  const route: Route = offered && (consented || askingNow) ? "private-cloud" : "off";
+  const route: Route = !signedIn ? "on-device"
+    : activeOverride ?? (onDevicePicked && !askingNow ? "on-device"
+    : offered && (consented || askingNow) ? "private-cloud" : "off");
 
   const choose = (next: Route) => {
-    if (!transcription || next === route) return;
+    if (next === route || !signedIn) return;
     hapticSelection();
     if (next === "off") {
       setAsking(false);
-      if (consented) transcription.onTurnOff();
+      setOnDevicePicked(false);
+      setActiveOverride("off");
+      void setRecordingTranscriber("off");
+      if (consented) transcription?.onTurnOff();
+    } else if (next === "on-device") {
+      setAsking(false);
+      setOnDevicePicked(true);
+      setActiveOverride("on-device");
+      void setRecordingTranscriber("on-device");
     } else {
+      setOnDevicePicked(false);
+      setActiveOverride(null); // defers to the consent flow below, as before
+      if (!transcription) return;
       setAsking(true);
     }
   };
 
+  const modelLine = onDeviceModelLine(sttStatus);
+  const primaryModel = sttStatus.models.find((m) => m.id === "parakeet-tdt-0.6b-v3-int8" || m.id === "parakeet-tdt-110m-en-int8");
+
   let line: string;
   if (askingNow) line = "";
+  else if (route === "on-device") line = isOnDeviceReady(sttStatus) ? "Transcribed on this phone." : `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
   else if (offered && consented) line = `Private cloud transcribes notes up to ${minutes(transcription!.maxSeconds)} minutes.`;
   else if (transcription?.availability === "checking" && consented) line = "Checking private cloud…";
   else if (transcription?.availability === "failed" && consented) line = "Private cloud is unavailable right now.";
@@ -64,12 +140,10 @@ export function TranscriptionRouteControl(props: {
         <h3 id={headingId} className="text-headline">
           Transcription
         </h3>
-        {offered && <InfoTip label="About transcription">Your choice applies to this note and new ones.</InfoTip>}
+        <InfoTip label="About transcription">Your choice applies to this note and new ones.</InfoTip>
       </div>
-      {offered && (
-        <SegmentedControl<Route> aria-label="Transcription" value={route} onValueChange={choose} options={ROUTE_OPTIONS} />
-      )}
-      <RouteLine nodes={voiceNoteRoute(route === "private-cloud")} />
+      <SegmentedControl<Route> aria-label="Transcription" value={route} onValueChange={choose} options={routeOptions(signedIn, offered)} />
+      <RouteLine nodes={voiceNoteRoute(route)} />
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">
           <p className="text-callout text-muted-foreground">
@@ -91,6 +165,18 @@ export function TranscriptionRouteControl(props: {
           {transcription?.availability === "failed" && consented && (
             <Button type="button" variant="outline" size="sm" onClick={transcription.onRecheck} data-testid="voice-note-transcription-recheck">
               Check again
+            </Button>
+          )}
+          {route === "on-device" && primaryModel && primaryModel.state !== "ready" && primaryModel.state !== "downloading" && primaryModel.state !== "queued" && (
+            <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-download"
+              onClick={() => void OnDeviceStt.downloadNow({ allowCellular: false })}>
+              Download
+            </Button>
+          )}
+          {route === "on-device" && (primaryModel?.state === "downloading" || primaryModel?.state === "queued") && (
+            <Button type="button" variant="outline" size="sm" data-testid="voice-note-on-device-cancel-download"
+              onClick={() => void OnDeviceStt.cancelDownload()}>
+              Cancel
             </Button>
           )}
           <HowItWorksLink section="transcription" className="ml-auto" />

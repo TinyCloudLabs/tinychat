@@ -160,6 +160,14 @@ public final class CaptureEngine {
             try? attemptResume(automatic: true, retryOnFailure: availability != "blocked")
         }
     }
+    /// Set by `ExoSttBootstrap` to `TranscriptionQueue.shared.captureStarted` / `.captureEnded`
+    /// (ExoCapture cannot depend on ExoStt directly without a package cycle, since ExoStt depends
+    /// on ExoCapture). `captureSessionStarted` is pushed the instant a session begins — it never
+    /// blocks, so capture never waits on it before opening the mic (capture-priority handoff, plan
+    /// §2.5, round-2 finding 3 override). `captureSessionEnded` is pushed once a session has fully
+    /// ended, so the STT queue can resume from its checkpoint.
+    public var captureSessionStarted: (() -> Void)?
+    public var captureSessionEnded: (() -> Void)?
     public func presentRecorder() {
         if let id = info?.id {
             log.notice("presentRecorder id=\(id, privacy: .public)")
@@ -253,6 +261,10 @@ public final class CaptureEngine {
                                   startedAt: now)
         try library.startSession(session)
         info = session; options = selected; intent = "recording"; availability = "available"
+        // Capture priority (plan §2.5, round-2 finding 3 override): this never waits for STT.
+        // Push the signal and open the mic immediately; the queue releases at its next checkpoint
+        // (between windows/segments, never mid-recognize()) and stays idle until captureSessionEnded.
+        captureSessionStarted?()
         transitions = CaptureTransitionMachine()
         reason = nil; spans = []; openSpan = nil; audioMs = 0; pausedMs = 0; pausedSince = nil
         currentInput = nil; currentInputRate = nil
@@ -276,6 +288,7 @@ public final class CaptureEngine {
                 limitTimer?.invalidate(); limitTimer = nil
                 try? library.delete(session.id)
                 info = nil; intent = "stopped"; attempts.stop()
+                captureSessionEnded?()
             }
             throw error
         }
@@ -814,6 +827,7 @@ public final class CaptureEngine {
             deactivateGraph(tapRemoved: true)
             limitTimer?.invalidate(); limitTimer = nil
             writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = "write_failed"
+            captureSessionEnded?()
             emitState()
             DispatchQueue.global(qos: .utility).async { [self] in
                 do { try recoverSession(session.id) }
@@ -848,6 +862,7 @@ public final class CaptureEngine {
         #endif
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
+        captureSessionEnded?()
         emitState()
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish voice note") {
             self.log.error("Voice-note finalization exceeded background time; recovery will retry on launch")
@@ -937,6 +952,7 @@ public final class CaptureEngine {
         deactivateGraph(tapRemoved: true)
         _ = try? writer?.finish(at: wallClock.nowMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
+        captureSessionEnded?()
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
         return session.id

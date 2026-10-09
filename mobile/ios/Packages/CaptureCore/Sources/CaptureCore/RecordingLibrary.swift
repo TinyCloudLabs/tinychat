@@ -376,6 +376,20 @@ public final class RecordingLibrary {
         }
     }
 
+    /// Native-only progress/state updates for the on-device STT queue (no owner/rev check: the
+    /// queue is the sole writer of this field, and JS only ever reads it).
+    public func updateStt(_ id: String, patch: [String: Any]) throws {
+        try queue.sync {
+            try check("stt.write")
+            var item = try readSidecarUnlocked(id)
+            var stt = item["stt"] as? [String: Any] ?? [:]
+            stt.merge(patch) { _, newer in newer }
+            item["stt"] = stt
+            item["rev"] = (item["rev"] as? Int ?? 0) + 1
+            try publishSidecarUnlocked(id, item, failpointName: "stt.write")
+        }
+    }
+
     public func putTranscript(_ id: String, object: [String: Any]) throws {
         let generation = try beginOperation(id)
         let staged = url("staging/\(id).\(generation).\(UUID().uuidString.lowercased()).transcript.json")

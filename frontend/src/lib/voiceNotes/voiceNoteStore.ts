@@ -385,8 +385,10 @@ export async function saveVoiceNoteTranscript(
 
 /** T22's on-device lane sends this directly to the commit-table writer. */
 export function localTranscriptToSave(local: LocalTranscript): VoiceNoteTranscriptSave {
+  // local.segments' start/end are milliseconds (the native sidecar's canonical-JSON writer only
+  // accepts integers); start_time/end_time follow every other transcript source's seconds.
   const sentences: FirefliesSentence[] = local.segments.map((segment, index) => ({
-    index, text: segment.text, start_time: segment.start, end_time: segment.end, speaker_name: segment.speaker ?? "You",
+    index, text: segment.text, start_time: segment.start / 1000, end_time: segment.end / 1000, speaker_name: segment.speaker ?? "You",
   }));
   return { rev: local.rev, sentences, speakers: [...new Set(local.segments.map((s) => s.speaker ?? "You"))],
     metadata: { transcription_outcome: local.outcome, transcript_text: local.outcome === "transcribed"

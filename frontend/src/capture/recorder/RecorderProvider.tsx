@@ -53,6 +53,9 @@ export interface RecorderValue {
   lastSaved: RecorderState["lastSaved"];
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
+  /** Capture always forces on-device while signed out (CaptureEngine), so the transcription route
+   * must too — never offer "Off" or "Private cloud" without an account. */
+  signedIn: boolean;
   sheetOpen: boolean;
   record(): void;
   stop(): void;
@@ -228,6 +231,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       lastSaved: state.lastSaved,
       pending: recorder.pending,
       transcription: recorder.transcription,
+      signedIn: tcw.did != null,
       sheetOpen,
       record,
       stop: recorder.stop,
@@ -260,6 +264,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       sheetOpen,
       state,
       subscribeLevel,
+      tcw.did,
     ],
   );
 
@@ -308,6 +313,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       lastSaved: null,
       pending: NO_PENDING,
       transcription: undefined,
+      signedIn: true,
       sheetOpen: false,
       record: noop,
       stop: noop,
