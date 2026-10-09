@@ -1,14 +1,17 @@
 // The route control: what it offers in each private cloud state, and that the
 // longer explanation is one link away (How it works), never a paragraph here.
 // On this phone is offered unconditionally (TC-836): it needs no account or network check.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { aboutHref } from "@/lib/about";
+import { __setVoiceNotesForTests, type CaptureStatus, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { TranscriptionRouteControl } from "./TranscriptionRouteControl";
+import { TranscriptionRouteControl, useLiveRouteOverride } from "./TranscriptionRouteControl";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
 const noop = () => {};
@@ -105,5 +108,79 @@ describe("TranscriptionRouteControl", () => {
       expect(html).not.toContain(">Off</span>");
       expect(html).not.toContain(">Private cloud</span>");
     }
+  });
+});
+
+// useLiveRouteOverride, mounted (TC-836 round-2 finding 2): while a recording is already live
+// (the "minimized and reopened" remount case the review called out), native's own
+// `status().options.transcriber` must win over the stored default — which this very recording
+// may have been overridden away from. There is no DOM in this workspace, so the hook (no host
+// elements) is mounted directly, as SavedReceipt.test.tsx does for useOnDeviceReceipt.
+describe("useLiveRouteOverride, mounted", () => {
+  const domSaved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    (globalThis as { window?: unknown }).window = { setTimeout, clearTimeout, event: undefined, HTMLIFrameElement: class {} };
+  });
+  afterAll(() => {
+    (globalThis as { window?: unknown }).window = domSaved.window;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = domSaved.act;
+  });
+
+  /** `getCaptureDefaults` backs the stored-default fallback (`readDefaultTranscriber`); every
+   * test supplies it so that path resolves deterministically instead of silently rejecting. */
+  function fakeStatus(status: Partial<CaptureStatus>, defaultTranscriber: "off" | "on-device" = "on-device") {
+    const plugin = {
+      status: async () => status,
+      getCaptureDefaults: async () => ({ accountDid: null, transitionGen: 0, transcriber: defaultTranscriber, identifySpeakers: false, status: "signed_in" as const }),
+    } as unknown as VoiceNotesPlugin;
+    __setVoiceNotesForTests(plugin, { available: true });
+  }
+
+  function Probe(props: { signedIn: boolean; seen: ReturnType<typeof useLiveRouteOverride>[] }) {
+    props.seen.push(useLiveRouteOverride(props.signedIn));
+    return null;
+  }
+  const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: null, textContent: "", addEventListener() {}, removeEventListener() {} } as unknown as HTMLElement;
+  let root: Root | null = null;
+  afterEach(async () => {
+    if (root) await act(async () => root!.unmount());
+    root = null;
+  });
+  async function render(signedIn: boolean, seen: ReturnType<typeof useLiveRouteOverride>[]) {
+    root = createRoot(container);
+    await act(async () => root!.render(<Probe signedIn={signedIn} seen={seen} />));
+    await act(async () => {});
+  }
+
+  test("a live recording already set to Off overrides the stored default on remount", async () => {
+    fakeStatus({ intent: "recording", options: { transcriber: "off", identifySpeakers: false } });
+    const seen: ReturnType<typeof useLiveRouteOverride>[] = [];
+    await render(true, seen);
+    expect(seen.at(-1)!.activeOverride).toBe("off");
+    expect(seen.at(-1)!.onDeviceDefault).toBeNull();
+  });
+
+  test("a live recording set to Private cloud overrides the stored default on remount", async () => {
+    fakeStatus({ intent: "paused", options: { transcriber: "private-cloud", identifySpeakers: false } });
+    const seen: ReturnType<typeof useLiveRouteOverride>[] = [];
+    await render(true, seen);
+    expect(seen.at(-1)!.activeOverride).toBe("private-cloud");
+  });
+
+  test("no live recording falls back to the stored default, with no override", async () => {
+    fakeStatus({ intent: "stopped" });
+    const seen: ReturnType<typeof useLiveRouteOverride>[] = [];
+    await render(true, seen);
+    expect(seen.at(-1)!.activeOverride).toBeNull();
+    expect(seen.at(-1)!.onDeviceDefault).toBe(true);
+  });
+
+  test("signed out never reads native status: no override, no default", async () => {
+    fakeStatus({ intent: "recording", options: { transcriber: "off", identifySpeakers: false } });
+    const seen: ReturnType<typeof useLiveRouteOverride>[] = [];
+    await render(false, seen);
+    expect(seen.at(-1)!.activeOverride).toBeNull();
+    expect(seen.at(-1)!.onDeviceDefault).toBeNull();
   });
 });
