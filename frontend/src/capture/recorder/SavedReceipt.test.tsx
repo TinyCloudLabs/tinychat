@@ -60,9 +60,9 @@ afterEach(async () => {
 });
 /** `sttHint` mirrors what RecordingView's own `listPending()` read already has by the time
  * SavedReceipt mounts in production — the hook no longer repeats that native call itself. */
-async function render(id: string, seen: ReturnType<typeof useOnDeviceReceipt>[], sttHint: NoteSttState | null = null) {
+async function render(id: string, seen: ReturnType<typeof useOnDeviceReceipt>[], sttHint: NoteSttState | null = null, onDevice = true) {
   root = createRoot(container);
-  await act(async () => root!.render(<Probe id={id} onDevice sttHint={sttHint} seen={seen} />));
+  await act(async () => root!.render(<Probe id={id} onDevice={onDevice} sttHint={sttHint} seen={seen} />));
   await act(async () => {});
 }
 
@@ -117,6 +117,33 @@ describe("useOnDeviceReceipt, mounted", () => {
 
     expect(seen.at(-1)!.kind).toBe("pending");
     expect(sidecar.listPendingCalls()).toBe(0);
+  });
+
+  test("a private-cloud note whose sidecar says waiting_for_model never shows the on-device state", async () => {
+    // RecordingView passes `onDevice` only when the note's own options.transcriber is "on-device";
+    // a private-cloud note can still carry a waiting_for_model sidecar, and that must stay invisible.
+    const fake = createFakeOnDeviceStt();
+    __setOnDeviceSttForTests(fake.plugin);
+    const waiting: NoteSttState = { state: "waiting_for_model", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: null };
+    const sidecar = fakeVoiceNotesWithSidecar("note-1", waiting);
+
+    const seen: ReturnType<typeof useOnDeviceReceipt>[] = [];
+    await render("note-1", seen, waiting, false);
+
+    expect(seen.every((receipt) => receipt.kind === "none")).toBe(true);
+    expect(sidecar.listPendingCalls()).toBe(0);
+  });
+
+  test("an on-device note whose sidecar says waiting_for_model does show it", async () => {
+    const fake = createFakeOnDeviceStt();
+    __setOnDeviceSttForTests(fake.plugin);
+    const waiting: NoteSttState = { state: "waiting_for_model", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: null };
+    fakeVoiceNotesWithSidecar("note-1", waiting);
+
+    const seen: ReturnType<typeof useOnDeviceReceipt>[] = [];
+    await render("note-1", seen, waiting, true);
+
+    expect(seen.at(-1)).toMatchObject({ kind: "pending", state: "waiting_for_model" });
   });
 
   test("a failed event triggers a fresh read that picks up the now-failed persisted state", async () => {
