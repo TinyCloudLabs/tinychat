@@ -248,18 +248,30 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     return { owner: note.owner };
   };
 
-  const outboxFor = (receipt: RemoteOpReceipt, handle: string | null, result: {
+  const outboxFor = (receipt: RemoteOpReceipt, result: {
+    handle?: string; uploadId?: string; uploadUrl?: string; jobId?: string;
     handleExpiresAt?: number; outcome: "created" | "failed" | "unknown";
-  }): OutboxEntry => {
+  }): OutboxEntry | null => {
     const entryId = `${receipt.id}:${receipt.opId}`;
+    if (result.outcome === "failed") { outbox.delete(entryId); return null; }
+    const old = outbox.get(entryId);
+    const job = result.jobId ?? (receipt.kind === "hosted_submit" || receipt.kind === "own_create" || receipt.kind === "ptx_create" ? result.handle : undefined);
+    const upload = result.uploadId ?? (receipt.kind === "hosted_create" ? result.handle : undefined);
+    const url = result.uploadUrl ?? (receipt.kind === "own_upload" ? result.handle : undefined);
     const kind: OutboxEntry["kind"] = receipt.kind === "ptx_create" ? "ptx_job"
       : receipt.kind === "hosted_create" ? "hosted_upload"
-      : receipt.kind === "hosted_submit" ? "hosted_submit"
-      : receipt.kind === "own_upload" ? "own_upload_lookup" : "transcript";
+      : receipt.kind === "hosted_submit" ? job ? "transcript" : upload ? "hosted_submit" : "unknown"
+      : receipt.kind === "own_upload" ? "own_upload_lookup"
+      : job ? "transcript" : url ? "own_upload_lookup" : "unknown";
+    const handle = kind === "transcript" || kind === "ptx_job" ? job ?? old?.handle ?? null
+      : kind === "hosted_upload" || kind === "hosted_submit" ? upload ?? old?.handle ?? null
+      : kind === "own_upload_lookup" ? url ?? old?.handle ?? null : null;
+    const state: OutboxEntry["state"] = kind === "unknown" ? "unknown"
+      : kind === "hosted_submit" || kind === "own_upload_lookup" ? handle ? "lookup" : "unknown"
+      : handle ? "pending" : "unknown";
     const entry: OutboxEntry = { entryId, did: receipt.did, provider: receipt.provider, mode: receipt.mode,
-      kind, handle, handleExpiresAt: result.handleExpiresAt ?? null,
-      state: result.outcome === "unknown" ? "unknown" : handle ? "pending" : "lookup",
-      createdAt: receipt.startedAt, attempts: 0 };
+      kind, handle, handleExpiresAt: result.handleExpiresAt ?? old?.handleExpiresAt ?? null,
+      state, createdAt: receipt.startedAt, attempts: old?.attempts ?? 0 };
     outbox.set(entryId, entry);
     return entry;
   };
@@ -305,6 +317,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       tombstones.add(id);
       if (note?.owner) for (const remote of note.ledger?.remote ?? []) {
         if (remote.cleanup === "done") continue;
+        if (remote.opId) continue;
         const add = (kind: OutboxEntry["kind"], handle: string) => {
           const entryId = `${id}:${++outboxCounter}`;
           const receipt = [...receiptResults.values()].find((item) => item.handle === handle);
@@ -324,9 +337,12 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       transcripts.delete(id);
       for (const receipt of receipts.values()) if (receipt.id === id && !outbox.has(`${id}:${receipt.opId}`)) {
         const settled = receiptResults.get(`${id}:${receipt.opId}`);
+        if (settled?.outcome === "failed") continue;
         if (settled?.handle && [...outbox.values()].some((entry) => entry.did === receipt.did && entry.handle === settled.handle)) continue;
-        outboxFor(receipt, settled?.handle ?? null,
-          { outcome: settled?.outcome ?? "unknown", handleExpiresAt: settled?.handleExpiresAt ?? undefined });
+        outboxFor(receipt, { outcome: settled?.outcome ?? "unknown", handleExpiresAt: settled?.handleExpiresAt ?? undefined,
+          ...(receipt.kind === "hosted_create" ? { uploadId: settled?.handle ?? undefined }
+            : receipt.kind === "own_upload" ? { uploadUrl: settled?.handle ?? undefined }
+              : { jobId: settled?.handle ?? undefined }) });
       }
     },
     async listPending() { return { recordings: [...notes.values()].map((note) => structuredClone(note)) }; },
@@ -363,13 +379,20 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       s.options = { ...s.options, ...options, transcriber: s.owner ? (options.transcriber ?? s.options.transcriber) : "on-device" };
       stateChanged();
     },
-    async getCaptureDefaults() { return { ...defaults, status: accountStatus }; },
+    async getCaptureDefaults() { return { ...defaults,
+      accountDid: accountStatus === "signed_in" ? defaults.accountDid : null,
+      transcriber: accountStatus === "signed_in" ? defaults.transcriber : "on-device",
+      status: accountStatus }; },
     async setCaptureDefaults(next) {
       if (next.transitionGen < defaults.transitionGen) throw failure("stale_transition");
-      defaults = { ...next, transcriber: next.accountDid ? next.transcriber : "on-device" };
-      accountStatus = next.accountDid ? "signed_in" : "signed_out";
+      const sameGeneration = next.transitionGen === defaults.transitionGen;
+      const effectiveDid = accountStatus === "signed_in" ? defaults.accountDid : null;
+      if (sameGeneration && next.accountDid !== effectiveDid) throw failure("stale_transition");
+      if (!sameGeneration) accountStatus = next.accountDid ? "signed_in" : "signed_out";
+      defaults = { ...next, accountDid: sameGeneration ? defaults.accountDid : next.accountDid,
+        transcriber: accountStatus === "signed_in" ? next.transcriber : "on-device" };
       const claimed: string[] = [];
-      if (next.accountDid) {
+      if (accountStatus === "signed_in" && next.accountDid) {
         if (session && !session.owner) { session.owner = next.accountDid; claimed.push(session.id); }
         for (const note of notes.values()) {
           if (note.version === 2 && !note.owner && !note.ownerUnknown) {
@@ -386,12 +409,33 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
         transcriber: next.status === "signed_in" ? defaults.transcriber : "on-device" };
       accountStatus = next.status;
     },
+    async retryRecovery({ id }) {
+      if (session?.id === id) throw failure("recording_in_progress");
+      if (!quarantine.has(id)) throw failure("not_found");
+      quarantine.delete(id);
+    },
+    async discardFailedRecording({ id }) {
+      if (session?.id === id) throw failure("recording_in_progress");
+      if (!quarantine.delete(id)) throw failure("not_found");
+      notes.delete(id); tombstones.add(id);
+    },
     async beginRemoteOp(receipt) {
       if (remoteBeginFailure) { remoteBeginFailure = false; throw failure("receipt_begin_failed"); }
       const existing = receipts.get(`${receipt.id}:${receipt.opId}`);
       if (existing && JSON.stringify(existing) !== JSON.stringify(receipt)) throw failure("receipt_conflict");
       receipts.set(`${receipt.id}:${receipt.opId}`, structuredClone(receipt));
-      if (tombstones.has(receipt.id)) outboxFor(receipt, null, { outcome: "unknown" });
+      const note = notes.get(receipt.id);
+      if (tombstones.has(receipt.id) || !note || note.owner !== receipt.did ||
+          accountStatus !== "signed_in" || defaults.accountDid !== receipt.did) {
+        if (!outbox.has(`${receipt.id}:${receipt.opId}`)) outboxFor(receipt, { outcome: "unknown" });
+      } else if (!(note.ledger?.remote ?? []).some((entry) => entry.opId === receipt.opId)) {
+        note.ledger ??= ledger();
+        note.ledger.remote.push({ opId: receipt.opId, provider: receipt.provider, mode: receipt.mode,
+          kind: receipt.kind, fingerprint: receipt.fingerprint, startedAt: receipt.startedAt,
+          stage: receipt.kind === "hosted_submit" ? "submit_unknown" : "create_unknown",
+          uploadId: null, uploadUrl: null, jobId: null, handleExpiresAt: null, cleanup: "none" });
+        note.rev = (note.rev ?? 0) + 1;
+      }
     },
     async recordRemoteResult({ id, did, opId, result }) {
       if (remoteResultFailure) { remoteResultFailure = false; throw failure("receipt_result_failed"); }
@@ -402,18 +446,25 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
       const note = notes.get(id);
       const handle = result.handle ?? result.jobId ?? result.uploadId ?? result.uploadUrl ?? null;
       if (!note || tombstones.has(id) || note.owner !== did) {
-        outboxFor(receipt, handle, result);
+        outboxFor(receipt, result);
         receiptResults.set(`${id}:${opId}`, { destination: "outbox", handle,
           handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });
         return { destination: "outbox" };
       }
       note.ledger ??= ledger();
-      note.ledger.remote.push({ provider: receipt.provider, mode: receipt.mode,
-        stage: result.outcome !== "created"
-          ? receipt.kind === "hosted_submit" ? "submit_unknown" : "create_unknown"
-          : receipt.kind === "hosted_submit" ? "submitted" : "uploaded",
-        uploadId: result.uploadId ?? null, uploadUrl: result.uploadUrl ?? null,
-        jobId: result.handle ?? result.jobId ?? null, cleanup: "pending" });
+      const entry = note.ledger.remote.find((remote) => remote.opId === opId);
+      if (entry) {
+        if (result.outcome === "failed") note.ledger.remote.splice(note.ledger.remote.indexOf(entry), 1);
+        else {
+          entry.stage = result.outcome !== "created"
+            ? receipt.kind === "hosted_submit" ? "submit_unknown" : "create_unknown"
+            : receipt.kind === "hosted_create" ? "uploading" : receipt.kind === "own_upload" ? "uploaded" : "submitted";
+          entry.uploadId = result.uploadId ?? (receipt.kind === "hosted_create" ? result.handle : undefined) ?? entry.uploadId;
+          entry.uploadUrl = result.uploadUrl ?? (receipt.kind === "own_upload" ? result.handle : undefined) ?? entry.uploadUrl;
+          entry.jobId = result.jobId ?? (["hosted_submit", "own_create", "ptx_create"].includes(receipt.kind) ? result.handle : undefined) ?? entry.jobId;
+          entry.handleExpiresAt = result.handleExpiresAt ?? entry.handleExpiresAt ?? null;
+        }
+      }
       note.rev = (note.rev ?? 0) + 1;
       receiptResults.set(`${id}:${opId}`, { destination: "ledger", handle,
         handleExpiresAt: result.handleExpiresAt ?? null, outcome: result.outcome });

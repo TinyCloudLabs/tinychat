@@ -11,8 +11,7 @@ class RestartBackoff(
     private var step = 0
 
     fun interruptionEnded() {
-        startedAtMs = nowMs()
-        step = 0
+        if (startedAtMs == null) startedAtMs = nowMs()
         postNow()
     }
 

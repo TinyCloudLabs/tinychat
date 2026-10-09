@@ -4,6 +4,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RestartBackoffTest {
+    @Test fun quickFailuresKeepTheOriginalTenMinuteBudget() {
+        var now = 1_000L
+        val delayed = mutableListOf<Long>()
+        val backoff = RestartBackoff({ now }, {}, { delayed += it })
+        backoff.interruptionEnded()
+        repeat(4) {
+            now += 1_000
+            assertTrue(backoff.failedAttempt())
+            backoff.interruptionEnded() // a successful start followed by another quick failure
+        }
+        assertEquals(listOf(500L, 1000L, 2000L, 5000L), delayed)
+        now += 600_000
+        assertFalse(backoff.failedAttempt())
+    }
     @Test fun twelveMinuteInterruptionGetsAnImmediateRestartAndAFullRetryWindow() {
         var now = 1_000L
         var immediate = 0

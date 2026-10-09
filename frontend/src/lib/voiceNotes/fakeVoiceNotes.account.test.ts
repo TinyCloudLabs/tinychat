@@ -23,6 +23,22 @@ test("durable account acknowledgement fails closed and claims only signed-out v2
   await expect(fake.plugin.setAccountState({ status: "signed_out", accountDid: null, transitionGen: 1 })).rejects.toMatchObject({ code: "stale_transition" });
 });
 
+test("a preference write at the current generation keeps the transitioning account closed", async () => {
+  const fake = createFakeVoiceNotes();
+  await fake.plugin.setAccountState({ status: "transitioning", accountDid: did, transitionGen: 1 });
+  expect((await fake.plugin.getCaptureDefaults()).accountDid).toBeNull();
+  await fake.plugin.setCaptureDefaults({ accountDid: null, transitionGen: 1,
+    transcriber: "private-cloud", identifySpeakers: true });
+  expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ status: "transitioning",
+    accountDid: null, transcriber: "on-device" });
+  const { id } = await fake.plugin.start();
+  expect((await fake.plugin.status()).owner).toBeNull();
+  await fake.plugin.discard();
+  await expect(fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1,
+    transcriber: "private-cloud", identifySpeakers: true })).rejects.toMatchObject({ code: "stale_transition" });
+  expect(id).toBeTruthy();
+});
+
 test("a late provider result for a tombstoned note reaches its owner's outbox", async () => {
   const fake = createFakeVoiceNotes();
   await fake.plugin.setCaptureDefaults({ accountDid: did, transitionGen: 1, transcriber: "assemblyai", identifySpeakers: false });
@@ -88,4 +104,17 @@ test("the fake exposes pause timeout and explicit resume refusal reasons", async
   fake.controls.failNextResume("mic_unavailable");
   await expect(fake.plugin.resume()).rejects.toMatchObject({ code: "mic_unavailable" });
   expect((await fake.plugin.status()).reason).toBe("mic_unavailable");
+});
+
+test("failed recovery has explicit retry and discard actions", async () => {
+  const fake = createFakeVoiceNotes();
+  const { id } = await fake.plugin.start();
+  await fake.plugin.stop();
+  fake.controls.quarantine(id, "corrupt_journal", 1024);
+  await fake.plugin.retryRecovery({ id });
+  expect((await fake.plugin.listPending()).recordings.some((note) => note.id === id)).toBe(true);
+  fake.controls.quarantine(id, "corrupt_journal", 1024);
+  await fake.plugin.discardFailedRecording({ id });
+  expect((await fake.plugin.listQuarantine()).items).toEqual([]);
+  expect((await fake.plugin.listPending()).recordings.some((note) => note.id === id)).toBe(false);
 });

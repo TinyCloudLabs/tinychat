@@ -172,6 +172,8 @@ export function createFakeVoiceNotes(options: FakeVoiceNotesOptions = {}): FakeV
     deleteQuarantined: unsupported,
     listOutbox: unsupported,
     completeOutbox: unsupported,
+    retryRecovery: unsupported,
+    discardFailedRecording: unsupported,
     addListener(event: string, listener: Listener) {
       adds += 1;
       active += 1;

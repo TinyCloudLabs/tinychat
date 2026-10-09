@@ -60,9 +60,11 @@ export interface NoteLedger {
     outcome: "transcribed" | "no_speech" | null; reason: string | null; attempts: number; nextAttemptAt: number | null };
   transcriptSync: { state: "pending" | "saved"; rev: number; at: number | null };
   landed: { state: "none" | "pending" | "emitted"; eventId: string | null };
-  remote: { provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
+  remote: { opId?: string; provider: "assemblyai" | "ptx"; mode: "hosted" | "own" | null;
+    kind?: RemoteOpReceipt["kind"]; fingerprint?: string; startedAt?: number;
     stage: "create_unknown" | "uploading" | "uploaded" | "submit_unknown" | "submitted" | "done";
-    uploadId: string | null; uploadUrl: string | null; jobId: string | null; cleanup: "none" | "pending" | "done" }[];
+    uploadId: string | null; uploadUrl: string | null; jobId: string | null; handleExpiresAt?: number | null;
+    cleanup: "none" | "pending" | "done" }[];
 }
 export interface NoteSttState {
   state: "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled";
@@ -161,6 +163,7 @@ export interface VoiceNoteRecording {
   /** Time the input level stayed at zero while the OS said we were live. */
   noSignalMs: number;
   version?: 2; rev?: number; wallMs?: number; pausedMs?: number; spans?: MissingAudioSpan[];
+  firstAudioAt?: number | null; captureStoppedAt?: number | null;
   recovered?: boolean; endedUnexpectedly?: boolean; lastHeartbeatAt?: number | null; exitReason?: string | null;
   legacyImport?: boolean; ownerUnknown?: boolean;
   source?: CaptureSource; owner?: string | null; transitionGen?: number;
@@ -249,6 +252,8 @@ export interface VoiceNotesPlugin {
   listInputs(): Promise<{ inputs: AudioInput[]; selectedId: string | null; activeId: string | null }>;
   selectInput(options: { id: string | null }): Promise<void>;
   listQuarantine(): Promise<{ items: { id: string; reason: string; sizeBytes: number }[] }>;
+  retryRecovery(options: { id: string }): Promise<void>;
+  discardFailedRecording(options: { id: string }): Promise<void>;
   deleteQuarantined(options: { id: string }): Promise<void>;
   listOutbox(options: { did: string }): Promise<{ entries: OutboxEntry[] }>;
   completeOutbox(options: { entryId: string; result: "done" | "retry" | "lookup" | "unknown" | "authority_expired" }): Promise<void>;
