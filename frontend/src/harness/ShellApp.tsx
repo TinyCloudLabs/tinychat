@@ -70,11 +70,13 @@ export interface ShellAppProps {
   recorder?: Partial<RecorderValue>;
   /** The Soft-skin minimised recorder (TC-870); the harness build has no env, so the flag cannot say. */
   finalRecorder?: boolean;
+  /** The desktop recorder's Write notes / View notes (a harness placeholder until the note view lands). */
+  onOpenNotes?: () => void;
   /** Rendered inside the real recorder provider, beside the shell (a harness driver). */
   inside?: ReactNode;
 }
 
-export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder, finalRecorder = false, inside }: ShellAppProps) {
+export function ShellApp({ platform, shim, state, probe = (_id, node) => node, captureTcw = harnessTcw, recorder, finalRecorder = false, onOpenNotes, inside }: ShellAppProps) {
   useVisualViewportFit();
   const location = useLocation();
   const navigate = useNavigate();
@@ -103,6 +105,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
   const recorderShell = (
     <Shell
       onOpenNote={openSavedNote}
+      onOpenNotes={onOpenNotes}
       screen={screen}
       platform={platform}
       pendingMeetings={0}
