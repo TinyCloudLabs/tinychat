@@ -37,7 +37,10 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
         }
     }
     fun finish() {
-        if (frameBytes > 0) { queueFrame(frameBytes); frameBytes = 0 }
+        // A short final input may be padded by a codec into a silent AAC frame.
+        // Keep every submitted buffer at exactly one access unit; at most 1023
+        // trailing samples (23 ms) are omitted when recording stops.
+        frameBytes = 0
         var slot = codec.dequeueInputBuffer(1_000_000)
         while (slot < 0) { drain(false); slot = codec.dequeueInputBuffer(1_000_000) }
         codec.queueInputBuffer(slot, 0, 0, samples * 1_000_000L / SAMPLE_RATE, MediaCodec.BUFFER_FLAG_END_OF_STREAM)

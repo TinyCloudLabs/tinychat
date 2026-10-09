@@ -52,8 +52,10 @@ Opening Exo attempts one restart if the session needs attention.
   `c2.android.aac.encoder` allocator timed out; both passed on rerun. The
   synthetic AAC test exposed a real encoder bug: on this API, one 8 KiB input
   queued to `MediaCodec` produced only one 1024-sample AAC packet. Limiting
-  each input to one AAC access unit fixed the packet count without relaxing
-  the assertion.
+  each input to one complete AAC access unit fixed the loss. A 44,100-sample
+  probe contains 43 complete frames and a 68-sample tail. The final short
+  tail is not queued because some codecs pad it with silence; the test requires
+  all 43 complete packets. The maximum dropped tail is 1,023 samples (23 ms).
 - API 34: the pre-review full emulator connected suite ran 20 tests with 3 skipped,
   0 failed, and `BUILD SUCCESSFUL`, including the five-minute background
   Resume. A separate pre-review five-minute run saved a 13.862313 s AAC note
