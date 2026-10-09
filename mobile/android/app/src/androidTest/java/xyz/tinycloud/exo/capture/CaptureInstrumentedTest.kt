@@ -370,7 +370,7 @@ class CaptureInstrumentedTest {
         val entered = CountDownLatch(1)
         val releaseWriter = CountDownLatch(1)
         val delivered = AtomicInteger()
-        val capture = AudioCapture({
+        val capture = AudioCapture(context, {
             if (delivered.get() == 0) {
                 entered.countDown()
                 releaseWriter.await(5, TimeUnit.SECONDS)

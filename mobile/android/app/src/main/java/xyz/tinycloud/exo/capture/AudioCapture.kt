@@ -1,21 +1,27 @@
 package xyz.tinycloud.exo.capture
 
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Process
 import android.os.SystemClock
+import xyz.tinycloud.exo.BuildConfig
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
 import xyz.tinycloud.exo.capture.core.MicStateContract
+import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
-/** AudioRecord owns the mic; the 10 s queue bounds PCM memory while the writer stalls. */
+/** AudioRecord owns the mic; the 10 s queue bounds PCM memory while the writer stalls. Debug
+ * builds may instead read from [DebugWavSource] (see [debugSourceFile]) for verification without
+ * a device microphone or any host audio routing (TC-836): never reachable in a release build. */
 class AudioCapture(
+    context: Context,
     private val onPcm: (ByteArray) -> Unit,
     private val onLevel: (Double, Double) -> Unit,
     private val onSilenced: (Boolean) -> Unit,
@@ -23,13 +29,23 @@ class AudioCapture(
     private val inputs: InputDevices? = null,
     private val onRoute: () -> Unit = {}
 ) {
+    companion object {
+        /** `adb push` a 16-bit PCM mono WAV at `SAMPLE_RATE` here (app-external files dir) on a
+         * debug build to make `start()` read from it on loop instead of the microphone. */
+        fun debugSourceFile(context: Context): File? {
+            if (!BuildConfig.DEBUG) return null
+            val file = File(context.getExternalFilesDir(null), "debug-audio-source.wav")
+            return if (file.isFile) file else null
+        }
+    }
     private val running = AtomicBoolean(false)
     private val producerDone = AtomicBoolean(false)
     private val cutting = AtomicBoolean(false)
     private val queue = ArrayBlockingQueue<ByteArray>(200) // 200 × 50 ms = 10 s
     private val firstPcm = CountDownLatch(1)
     private val minBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-    private val record: AudioRecord
+    private val debugSource: DebugWavSource? = debugSourceFile(context)?.let { DebugWavSource(it) }
+    private val record: AudioRecord?
     private var reader: Thread? = null
     private var writer: Thread? = null
     private var watchdog: Thread? = null
@@ -42,38 +58,46 @@ class AudioCapture(
     private var recordingCallback: Any? = null
     private val routingListener = android.media.AudioRouting.OnRoutingChangedListener { onRoute() }
     init {
-        require(minBytes > 0) { "Unsupported capture format" }
-        val size = maxOf(minBytes * 4, SAMPLE_RATE * 2 / 5)
-        val builder = AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(SAMPLE_RATE).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build())
-            .setBufferSizeInBytes(size)
-        if (Build.VERSION.SDK_INT >= 30) builder.setPrivacySensitive(true)
-        record = builder.build()
-        require(record.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord initialization failed" }
-        try { inputs?.apply(record) } catch (e: Exception) {
-            inputs?.clearCommunicationDevice(record); record.release(); throw e
-        }
-        record.addOnRoutingChangedListener(routingListener, android.os.Handler(android.os.Looper.getMainLooper()))
-        if (Build.VERSION.SDK_INT >= 29) {
-            val callback = object : android.media.AudioManager.AudioRecordingCallback() {
-                override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>) {
-                    val config = record.activeRecordingConfiguration
-                    if (config != null) onSilenced(config.isClientSilenced)
-                }
+        if (debugSource != null) {
+            record = null
+        } else {
+            require(minBytes > 0) { "Unsupported capture format" }
+            val size = maxOf(minBytes * 4, SAMPLE_RATE * 2 / 5)
+            val builder = AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(SAMPLE_RATE).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build())
+                .setBufferSizeInBytes(size)
+            if (Build.VERSION.SDK_INT >= 30) builder.setPrivacySensitive(true)
+            val built = builder.build()
+            require(built.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord initialization failed" }
+            try { inputs?.apply(built) } catch (e: Exception) {
+                inputs?.clearCommunicationDevice(built); built.release(); throw e
             }
-            recordingCallback = callback
-            record.registerAudioRecordingCallback(android.os.Handler(android.os.Looper.getMainLooper())::post, callback)
+            built.addOnRoutingChangedListener(routingListener, android.os.Handler(android.os.Looper.getMainLooper()))
+            record = built
+            if (Build.VERSION.SDK_INT >= 29) {
+                val callback = object : android.media.AudioManager.AudioRecordingCallback() {
+                    override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>) {
+                        val config = record.activeRecordingConfiguration
+                        if (config != null) onSilenced(config.isClientSilenced)
+                    }
+                }
+                recordingCallback = callback
+                record.registerAudioRecordingCallback(android.os.Handler(android.os.Looper.getMainLooper())::post, callback)
+            }
         }
     }
     fun start(afterRecordStarted: () -> Unit = {}) {
-        record.startRecording()
-        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("mic_unavailable")
+        val record = record
+        if (record != null) {
+            record.startRecording()
+            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("mic_unavailable")
+        }
         try {
             afterRecordStarted()
             if (writer == null) startWorkers()
         } catch (e: Exception) {
-            try { record.stop(); inputStopped = true } catch (_: Exception) { }
+            if (record != null) try { record.stop(); inputStopped = true } catch (_: Exception) { }
             throw e
         }
     }
@@ -100,12 +124,20 @@ class AudioCapture(
             val scratch = ByteArray(SAMPLE_RATE / 10) // 50 ms, mono PCM16
             var lastLevel = 0L
             var stalled = false
+            var debugPosition = 0
             while (running.get()) {
-                val n = record.read(scratch, 0, scratch.size, AudioRecord.READ_BLOCKING)
-                if (n < 0) {
-                    if (running.get() && !cutting.get()) onError(MicStateContract.READ_ERROR,
-                        if (n == AudioRecord.ERROR_DEAD_OBJECT) "AudioRecord.ERROR_DEAD_OBJECT" else "AudioRecord.read returned $n")
-                    break
+                val n: Int
+                if (record != null) {
+                    n = record.read(scratch, 0, scratch.size, AudioRecord.READ_BLOCKING)
+                    if (n < 0) {
+                        if (running.get() && !cutting.get()) onError(MicStateContract.READ_ERROR,
+                            if (n == AudioRecord.ERROR_DEAD_OBJECT) "AudioRecord.ERROR_DEAD_OBJECT" else "AudioRecord.read returned $n")
+                        break
+                    }
+                } else {
+                    debugPosition = debugSource!!.read(scratch, debugPosition)
+                    n = scratch.size
+                    Thread.sleep(50) // paced like a real 50 ms read, so levels/no-signal detection behave normally
                 }
                 if (n == 0) continue
                 lastReadAt = SystemClock.elapsedRealtime()
@@ -152,10 +184,13 @@ class AudioCapture(
         // remain live so the caller can truthfully report recording.
         if (!inputStopped) {
             cutting.set(true)
-            try { record.stop() } catch (e: Exception) { cutting.set(false); throw e }
-            if (record.recordingState != AudioRecord.RECORDSTATE_STOPPED) {
-                cutting.set(false)
-                throw IllegalStateException("AudioRecord did not stop")
+            val record = record
+            if (record != null) {
+                try { record.stop() } catch (e: Exception) { cutting.set(false); throw e }
+                if (record.recordingState != AudioRecord.RECORDSTATE_STOPPED) {
+                    cutting.set(false)
+                    throw IllegalStateException("AudioRecord did not stop")
+                }
             }
             inputStopped = true
         }
@@ -166,12 +201,15 @@ class AudioCapture(
         if (tailLost) throw IllegalStateException("Audio tail could not reach the writer")
         // The reader may have returned an in-flight block after stop(). Drain
         // anything else Android still makes readable before ending production.
-        val scratch = ByteArray(SAMPLE_RATE / 10)
-        while (true) {
-            val count = record.read(scratch, 0, scratch.size, AudioRecord.READ_NON_BLOCKING)
-            if (count <= 0) break // ERROR_INVALID_OPERATION means no post-stop read is available.
-            while (!queue.offer(scratch.copyOf(count), 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
-                if (writer?.isAlive != true) throw IllegalStateException("Audio writer stopped before tail drain")
+        val record = record
+        if (record != null) {
+            val scratch = ByteArray(SAMPLE_RATE / 10)
+            while (true) {
+                val count = record.read(scratch, 0, scratch.size, AudioRecord.READ_NON_BLOCKING)
+                if (count <= 0) break // ERROR_INVALID_OPERATION means no post-stop read is available.
+                while (!queue.offer(scratch.copyOf(count), 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    if (writer?.isAlive != true) throw IllegalStateException("Audio writer stopped before tail drain")
+                }
             }
         }
         producerDone.set(true)
@@ -185,7 +223,7 @@ class AudioCapture(
         if (drained) return
         running.set(false)
         watchdog?.interrupt()
-        try { record.stop() } catch (_: Exception) { }
+        try { record?.stop() } catch (_: Exception) { }
         inputStopped = true
         reader?.join(2000)
         producerDone.set(true)
@@ -198,11 +236,14 @@ class AudioCapture(
         running.set(false)
         watchdog?.interrupt()
         producerDone.set(true)
-        try {
-            record.removeOnRoutingChangedListener(routingListener)
-            if (Build.VERSION.SDK_INT >= 29) record.unregisterAudioRecordingCallback(
-                recordingCallback as android.media.AudioManager.AudioRecordingCallback)
-        } finally { record.release(); inputs?.clearCommunicationDevice(record) }
+        val record = record
+        if (record != null) {
+            try {
+                record.removeOnRoutingChangedListener(routingListener)
+                if (Build.VERSION.SDK_INT >= 29) record.unregisterAudioRecordingCallback(
+                    recordingCallback as android.media.AudioManager.AudioRecordingCallback)
+            } finally { record.release(); inputs?.clearCommunicationDevice(record) }
+        }
     }
     fun activeInputId(): String? = inputs?.activeId(record)
     fun activeInput(): org.json.JSONObject? = inputs?.activeInput(record)
