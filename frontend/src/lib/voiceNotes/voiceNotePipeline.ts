@@ -4,6 +4,7 @@ import { associateLegacyNotes, markLegacyOwnerUnknown, migrateLegacyDiscardLedge
 import { VoiceNotes } from "./nativeVoiceNotes";
 import { isDiscarded, saveNoteForAccount } from "./recorderSaves";
 import { ensureVoiceNoteIdentity, sweepArchived } from "./voiceNoteRows";
+import { syncRecordingNote } from "./voiceNoteStore";
 
 export interface VoiceNotePipeline {
   process(ctx: AccountContext, id: string): Promise<void>;
@@ -54,6 +55,13 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
     const result = await saveNoteForAccount(tcw, ctx, note, check);
     if (result.kind === "failed") { check(); throw new Error(result.failure); }
     if (result.kind === "discarded" && result.cleanupError) throw new Error(result.cleanupError);
+    if (result.kind === "saved" || result.kind === "already-saved") {
+      try { await syncRecordingNote(tcw, id, check); }
+      catch (error) {
+        check(); // A stale account/cancelled pass must still stop.
+        console.warn("[VoiceNotes] Audio saved, but its Markdown did not sync", error);
+      }
+    }
   };
   return {
     process(ctx, id) {
