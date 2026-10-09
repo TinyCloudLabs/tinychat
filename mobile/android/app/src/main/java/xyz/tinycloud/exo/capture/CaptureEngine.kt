@@ -84,9 +84,11 @@ class CaptureEngine private constructor(private val context: Context) {
             }
         }
     }
-    private val retryDelaysMs = longArrayOf(500, 1000, 2000, 5000, 10_000, 30_000)
-    private var retryStep = 0
-    private var interruptedAt = 0L
+    private val restartBackoff = RestartBackoff(
+        SystemClock::elapsedRealtime,
+        { main.removeCallbacks(retry); main.post(retry) },
+        { delay -> main.removeCallbacks(retry); main.postDelayed(retry, delay) },
+    )
     private var retryFailureReason: String? = null
     init {
         context.getSystemService(AudioManager::class.java).registerAudioDeviceCallback(object : AudioDeviceCallback() {
@@ -126,8 +128,7 @@ class CaptureEngine private constructor(private val context: Context) {
             transitionExecutor.execute { rebuild("route_change") }
     }
     private fun scheduleRetry() {
-        if (interruptedAt == 0L) interruptedAt = SystemClock.elapsedRealtime()
-        if (SystemClock.elapsedRealtime() - interruptedAt >= 600_000) {
+        if (!restartBackoff.failedAttempt()) {
             if (availability != "interrupted" || id == null) return
             transitions.send(TransitionMachine.Event.BACKOFF_EXHAUSTED)
             state = "needs_user"
@@ -137,9 +138,6 @@ class CaptureEngine private constructor(private val context: Context) {
             CaptureNotifications.showResumeAlert(context, status())
             return
         }
-        main.removeCallbacks(retry)
-        main.postDelayed(retry, retryDelaysMs[retryStep])
-        retryStep = minOf(retryStep + 1, retryDelaysMs.lastIndex)
     }
     private fun interruptionBegan(why: String) = controlLock.withLock {
         val current = id ?: return@withLock
@@ -160,11 +158,12 @@ class CaptureEngine private constructor(private val context: Context) {
         openSpan = JSONObject().put("kind", "omitted").put("reason", why)
             .put("startedAt", at).put("endedAt", JSONObject.NULL).put("atAudioMs", audioMs).put("audioMs", 0)
         state = "interrupted"; reason = why
-        interruptedAt = SystemClock.elapsedRealtime(); retryStep = 0; retryFailureReason = null
+        restartBackoff.reset(); retryFailureReason = null
         publishState()
     }
     private fun interruptionEnded() {
-        if (id != null && intent == "recording" && availability == "interrupted") scheduleRetry()
+        if (id != null && intent == "recording" && availability == "interrupted")
+            restartBackoff.interruptionEnded()
     }
     private fun rebuild(why: String) {
         interruptionBegan(why)
@@ -425,8 +424,8 @@ class CaptureEngine private constructor(private val context: Context) {
             input = null
         }
         if (teardownFailed) autoStop("write_failed") else {
-            interruptedAt = SystemClock.elapsedRealtime(); retryStep = 0; retryFailureReason = null
-            scheduleRetry()
+            restartBackoff.reset(); retryFailureReason = null
+            interruptionEnded()
         }
     }
     internal fun injectReadErrorForTest() {
@@ -436,7 +435,7 @@ class CaptureEngine private constructor(private val context: Context) {
     }
     internal fun rebuildForTest() = rebuild("route_change")
     internal fun exhaustRetryForTest() {
-        interruptedAt = SystemClock.elapsedRealtime() - 600_001
+        restartBackoff.expireForTest()
         scheduleRetry()
     }
     internal fun retryFailureForTest(): String? = retryFailureReason
@@ -558,7 +557,7 @@ class CaptureEngine private constructor(private val context: Context) {
         transitions.acquired(attempt)
         reason = if (silencedAt != 0L) "os_silenced" else null
         state = if (silencedAt != 0L) "silenced" else "recording"
-        interruptedAt = 0; retryStep = 0; retryFailureReason = null; main.removeCallbacks(retry)
+        restartBackoff.reset(); retryFailureReason = null; main.removeCallbacks(retry)
         lastRoutedInputId = input?.activeInputId()
         journalActiveInput(current)
         CaptureNotifications.cancelAlert(context)

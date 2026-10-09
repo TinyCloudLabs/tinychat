@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
@@ -50,10 +51,16 @@ class InputDevices(private val context: Context) {
     @Synchronized fun apply(record: android.media.AudioRecord) {
         val device = preferred() ?: return
         if (kind(device) == "bluetooth" && Build.VERSION.SDK_INT >= 31) {
-            if (!manager.setCommunicationDevice(device)) return
+            if (!manager.setCommunicationDevice(device)) {
+                Log.w("ExoCapture", "Could not set communication input ${id(device)}; using system route")
+                return
+            }
             communicationOwner = record
         }
-        if (!record.setPreferredDevice(device)) clearCommunicationDevice(record)
+        if (!record.setPreferredDevice(device)) {
+            Log.w("ExoCapture", "Could not apply preferred input ${id(device)}; using system route")
+            clearCommunicationDevice(record)
+        }
     }
 
     @Synchronized fun clearCommunicationDevice(record: android.media.AudioRecord) {

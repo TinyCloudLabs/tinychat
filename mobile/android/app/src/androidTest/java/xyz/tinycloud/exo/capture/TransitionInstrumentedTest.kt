@@ -33,11 +33,9 @@ class TransitionInstrumentedTest {
     }
 
     @Test fun committedDurationTracksLiveRecordingTime() {
-        // The API 24 generic emulator without host audio delivers PCM about
-        // 18% faster than elapsed time (9.8 s audio in 8.3 s wall time).
-        // Its synthetic AAC packet test still runs; this timing check runs on
-        // every other API and on non-generic API 24 devices.
-        assumeTrue(Build.VERSION.SDK_INT != 24 || !Build.FINGERPRINT.contains("generic_arm64"))
+        // The API 24 generic emulator can deliver more PCM than wall time.
+        // Keep the lower bound everywhere so packet loss is still detected.
+        val fastGenericHal = Build.VERSION.SDK_INT == 24 && Build.FINGERPRINT.contains("generic_arm64")
         InstrumentationRegistry.getInstrumentation().uiAutomation
             .executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").close()
         val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
@@ -58,9 +56,11 @@ class TransitionInstrumentedTest {
             val note = engine.stop()
             val capturedMs = until - from
             val addedAudioMs = note.getLong("durationMs") - beforeAudioMs
-            val difference = kotlin.math.abs(addedAudioMs - capturedMs)
-            assertTrue("audio added $addedAudioMs ms vs live $capturedMs ms",
-                difference <= capturedMs / 20 + 250)
+            val tolerance = capturedMs / 20 + 250
+            assertTrue("audio added $addedAudioMs ms vs live $capturedMs ms (too little)",
+                addedAudioMs >= capturedMs - tolerance)
+            if (!fastGenericHal) assertTrue("audio added $addedAudioMs ms vs live $capturedMs ms (too much)",
+                addedAudioMs <= capturedMs + tolerance)
             engine.library.delete(note.getString("id"))
         } finally {
             if (!engine.status().isNull("id")) engine.discard()

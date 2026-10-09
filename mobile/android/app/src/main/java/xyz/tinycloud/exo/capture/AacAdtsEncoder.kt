@@ -3,6 +3,7 @@ package xyz.tinycloud.exo.capture
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.os.SystemClock
 import xyz.tinycloud.exo.capture.core.BITRATE
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
 import xyz.tinycloud.exo.capture.core.Adts
@@ -41,15 +42,23 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
         // Keep every submitted buffer at exactly one access unit; at most 1023
         // trailing samples (23 ms) are omitted when recording stops.
         frameBytes = 0
+        val deadline = SystemClock.elapsedRealtime() + 5_000
         var slot = codec.dequeueInputBuffer(1_000_000)
-        while (slot < 0) { drain(false); slot = codec.dequeueInputBuffer(1_000_000) }
+        while (slot < 0) {
+            check(SystemClock.elapsedRealtime() < deadline) { "AAC encoder input timed out" }
+            drain(false); slot = codec.dequeueInputBuffer(1_000_000)
+        }
         codec.queueInputBuffer(slot, 0, 0, samples * 1_000_000L / SAMPLE_RATE, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
         drain(true)
         codec.stop(); codec.release()
     }
     private fun queueFrame(count: Int) {
+        val deadline = SystemClock.elapsedRealtime() + 5_000
         var slot = codec.dequeueInputBuffer(10_000)
-        while (slot < 0) { drain(false); slot = codec.dequeueInputBuffer(10_000) }
+        while (slot < 0) {
+            check(SystemClock.elapsedRealtime() < deadline) { "AAC encoder input timed out" }
+            drain(false); slot = codec.dequeueInputBuffer(10_000)
+        }
         val input = codec.getInputBuffer(slot)!!
         input.clear()
         check(input.remaining() >= count) { "AAC input buffer cannot hold an access unit" }
@@ -60,8 +69,10 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
     }
     fun abort() { codec.stop(); codec.release() }
     private fun drain(final: Boolean) {
+        val deadline = SystemClock.elapsedRealtime() + 5_000
         var tries = 0
         while (true) {
+            check(SystemClock.elapsedRealtime() < deadline) { "AAC encoder output timed out" }
             val index = codec.dequeueOutputBuffer(info, if (final) 100_000 else 0)
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (!final) return
