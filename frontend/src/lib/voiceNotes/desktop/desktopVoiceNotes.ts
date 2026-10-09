@@ -192,7 +192,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         const pausedThrough = session.pauseStartedAt === null ? session.pausedMs
           : session.pausedMs + Math.max(0, session.lastHeartbeatAt - session.pauseStartedAt);
         const heartbeatMs = Math.max(0, session.lastHeartbeatAt - session.startedAt - pausedThrough);
-        const estimatedMs = Math.max(session.audioMs, imported.recordedMs, heartbeatMs);
+        const estimatedMs = Math.min(imported.maxDurationMs,
+          Math.max(session.audioMs, imported.recordedMs, heartbeatMs));
         await store.updateSession(imported.id, { bytes: size, audioMs: estimatedMs,
           firstAudioAt: session.firstAudioAt ?? session.startedAt });
       }
