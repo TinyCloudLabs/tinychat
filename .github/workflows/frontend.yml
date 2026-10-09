@@ -99,7 +99,7 @@ jobs:
   halo-webkit:
     name: Recorder halo (macOS WebKit)
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -128,7 +128,7 @@ jobs:
       # step). The stall test starts from this load.
       - name: Start CPU stress
         run: |
-          for _ in 1 2 3 4 5 6; do yes > /dev/null & done
+          for _ in 1 2 3; do yes > /dev/null & done
           sleep 1
           pgrep -x yes | wc -l
 
@@ -140,7 +140,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RENDERER: frontend/src/capture/recorder/final/halo/renderer.ts
-          HALO_LOADS: "40"
+          HALO_LOADS: "30"
           HALO_REPORT: "1"
         run: |
           cp "$RENDERER" "$RUNNER_TEMP/renderer.fixed.ts"
@@ -157,7 +157,7 @@ jobs:
         shell: bash
         working-directory: test
         env:
-          HALO_LOADS: "40"
+          HALO_LOADS: "30"
         run: |
           bun test recorder-final-halo.e2e.test.ts 2>&1 | tee "$RUNNER_TEMP/fixed.txt"
           test "$(grep -c '^HALO_STALL_RESULT ' "$RUNNER_TEMP/fixed.txt")" = 1

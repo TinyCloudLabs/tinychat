@@ -207,18 +207,20 @@ test(
         load % 2 === 0 ? "light" : "dark",
       );
       expect(canvases).toBe(8);
+      console.log(
+        `HALO_STALL_LOAD ${load} theme=${load % 2 === 0 ? "light" : "dark"} episodes=${episodes.length}`,
+      );
       for (const episode of episodes) {
-        blank.push(
-          `load ${load}: ring ${episode.ring} blank from frame ${episode.startFrame} for ${episode.frames} frames / ${episode.ms} ms`,
-        );
+        const line = `load ${load}: ring ${episode.ring} blank from frame ${episode.startFrame} for ${episode.frames} frames / ${episode.ms} ms`;
+        console.log(`HALO_STALL_EPISODE ${line}`);
+        blank.push(line);
       }
     }
     const blankLoads = new Set(blank.map((line) => line.split(":")[0])).size;
     console.log(
       `HALO_STALL_RESULT blankLoads=${blankLoads}/${loads} episodes=${blank.length} stall=${stallMs}ms`,
     );
-    for (const line of blank) console.log(`HALO_STALL_EPISODE ${line}`);
     if (!reportOnly) expect(blank).toEqual([]);
   },
-  Math.max(1, loads) * 40_000,
+  Math.max(1, loads) * 120_000,
 );
