@@ -101,6 +101,7 @@ export function PhoneRecorder({
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
 
   const audio = useAudioInputs(inputsSource);
+  const input = mic.input ?? audio.current;
   const onDevice = useOnDeviceModel();
   const choice = useTranscriptionChoice({
     shell,
@@ -112,7 +113,7 @@ export function PhoneRecorder({
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
     elapsedMs,
-    inputName: audio.current?.name ?? null,
+    inputName: input?.name ?? null,
     silencedSinceMs,
   });
 
@@ -185,7 +186,7 @@ export function PhoneRecorder({
   const stop = MODE_STOPS.find((s) => s.id === choice.mode)!;
   const sheetOpen = discardOpen || choice.asking;
   const mustSave = view.emphasis === "stop";
-  const inputName = audio.current?.name ?? "Microphone";
+  const inputName = input?.name ?? "Microphone";
   const resume = view.controls.resume;
   const denied = view.micDenied;
   const idleDenied = denied && phase === "idle";
@@ -352,7 +353,7 @@ export function PhoneRecorder({
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}
-              currentId={audio.current?.id ?? null}
+              currentId={input?.id ?? null}
               currentName={inputName}
               recording={view.ring === "live"}
               theme={theme}

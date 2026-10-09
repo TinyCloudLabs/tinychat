@@ -103,6 +103,17 @@ describe("PhoneRecorder", () => {
     expect(html).not.toContain('aria-label="Record from');
   });
 
+  test("via names the input the recording is on, from the native status", () => {
+    const html = render({
+      mic: {
+        state: "recording",
+        reason: null,
+        input: { id: "bt-1", name: "AirPods Pro", kind: "bluetooth" },
+      },
+    });
+    expect(html).toContain('aria-label="Record from AirPods Pro"');
+  });
+
   test("busy states disable the controls", () => {
     const html = render({ phase: "saving" });
     expect(html).toContain("Saving");
