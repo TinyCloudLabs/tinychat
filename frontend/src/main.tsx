@@ -12,9 +12,11 @@ import { appPlatform } from "./lib/platform";
 import { setupPwa } from "./lib/pwa";
 import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
+import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 
 // False on the web and in the desktop (Tauri) app; true only inside Exo mobile.
 const nativeShell = Capacitor.isNativePlatform();
+registerDesktopVoiceNotes();
 
 // <html data-platform> for platform-specific CSS; the size class and the theme
 // stay current from here on (index.html's inline script set both before paint).
