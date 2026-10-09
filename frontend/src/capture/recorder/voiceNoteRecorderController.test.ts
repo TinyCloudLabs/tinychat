@@ -13,6 +13,8 @@ import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNo
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -61,12 +63,12 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller(options: { tcw?: TinyCloudWeb; consented?: boolean; onDeviceReady?: boolean; appleInterim?: boolean } = {}) {
+function controller(options: { tcw?: TinyCloudWeb; consented?: boolean | (() => boolean); onDeviceReady?: boolean; appleInterim?: boolean; transcriber?: VoiceNoteTranscriber } = {}) {
   return createVoiceNoteRecorderController({
     tcw: options.tcw ?? tcw,
     available: true,
-    transcriber: { noteSaved: (recording) => noted.push(recording.id),
-      snapshot: () => ({ availability: "available", consented: options.consented ?? false,
+    transcriber: options.transcriber ?? { noteSaved: (recording) => noted.push(recording.id),
+      snapshot: () => ({ availability: "available", consented: typeof options.consented === "function" ? options.consented() : options.consented ?? false,
         capabilities: null, jobs: new Map() }) },
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
@@ -151,6 +153,56 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("the recorder route control journals Private cloud after first-use consent", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    let consented = false;
+    const recorder = controller({ consented: () => consented });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect(await setRecordingRoute(recorder, "private-cloud")).toBe("needs_consent");
+    expect((await fake.plugin.status()).options?.transcriber).toBe("on-device");
+
+    expect(await consentToRecordingPrivateCloud(recorder, () => { consented = true; })).toBe("ok");
+    expect((await fake.plugin.status()).options?.transcriber).toBe("private-cloud");
+    expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "recording" });
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    const saved = await stopNatively();
+    expect(saved.options?.transcriber).toBe("private-cloud");
+    detach();
+  });
+
+  test("a saved native Private cloud note starts the JS cloud job", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "private-cloud", identifySpeakers: false });
+    const started: string[] = [];
+    const transcriber = createVoiceNoteTranscriber({
+      cloud: {
+        capabilities: async () => ({ max_bytes: 120_960_000, max_duration_seconds: 7_200, content_types: ["audio/mp4"] }),
+        pendingSourceIds: () => [],
+        transcribe: async () => { throw new Error("runNote is injected"); },
+        finish: async () => {},
+        releaseUnsent: async () => {},
+      },
+      consent: { get: () => true, set: () => {} },
+      tcw: () => tcw,
+      runNote: async ({ sourceId }) => { started.push(sourceId); return "transcribed"; },
+    });
+    await transcriber.check();
+    const recorder = controller({ transcriber });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect((await fake.plugin.status()).options?.transcriber).toBe("private-cloud");
+    await recorder.stop();
+    await tick();
+    expect(onPhone[0]?.options?.transcriber).toBe("private-cloud");
+    expect(started).toEqual([onPhone[0]!.id]);
+    expect(transcriber.snapshot().jobs.get(onPhone[0]!.id)).toMatchObject({ kind: "done" });
+    detach();
+  });
+
   test("native options own a live recording across a mid-recording change and WebView reload", async () => {
     await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
       transcriber: "on-device", identifySpeakers: false });

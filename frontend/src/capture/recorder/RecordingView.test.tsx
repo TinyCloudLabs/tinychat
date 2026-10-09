@@ -13,6 +13,8 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   limitNotice: null, savePercent: null, error: null, outcome: null, lastSaved: null,
   pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
   transcription: undefined, signedIn: true, sheetOpen: true,
+  transcriber: { id: "on-device", identifySpeakers: false, source: "recording" },
+  setTranscriber: async () => "ok",
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
   dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
   subscribeLevel: () => noop, ...patch,

@@ -93,7 +93,8 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
               onOpen={onOpenNote && lastSaved ? () => { recorder.dismissOutcome(); onOpenNote(lastSaved.id); } : undefined}
               onDone={recorder.dismissOutcome} onSaveNow={recorder.retryPending} onPlayingChange={recorder.setReceiptPlaying} />
           ) : (
-            <TranscriptionRouteControl transcription={recorder.transcription} signedIn={recorder.signedIn} defaultAsking={consentAsking} />
+            <TranscriptionRouteControl transcription={recorder.transcription} signedIn={recorder.signedIn}
+              recorder={recorder} defaultAsking={consentAsking} />
           )}
         </div>
         {!receipt && <div className="land:col-start-2 land:row-start-2"><RecorderControls recorder={recorder} discardAsking={discardAsking} /></div>}
