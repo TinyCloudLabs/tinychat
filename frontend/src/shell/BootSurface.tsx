@@ -22,7 +22,7 @@ export function BootSurface(props: {
             ? (props.error ?? "Something went wrong.")
             : props.state === "offline"
               ? (props.error ?? "You're offline.")
-              : "Sign in to start chatting.";
+              : (props.error ?? "Sign in to start chatting.");
 
   const busy = props.state === "booting" || props.state === "connecting" || props.state === "signing";
 

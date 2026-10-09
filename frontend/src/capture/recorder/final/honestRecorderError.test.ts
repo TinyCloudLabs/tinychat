@@ -8,7 +8,7 @@ import {
   type RecorderCaptureIssue,
   type RecorderState,
 } from "../recorderReducer";
-import { honestRecorderError } from "./honestRecorderError";
+import { honestRecorderError, receiptPartialNotice } from "./honestRecorderError";
 
 const failed: RecorderCaptureIssue = {
   kind: "recoveryFailed",
@@ -101,4 +101,32 @@ describe("through the reducer", () => {
       expect(honestRecorderError(recorderReducer(idle, { type: "CAPTURE_ISSUE", id: "rec-1", issue }))).toBe(expected);
     });
   }
+});
+
+describe("receiptPartialNotice", () => {
+  const partial: RecorderCaptureIssue = { kind: "partial_audio", missingMs: 1000 };
+  const notice = (state: Partial<RecorderState>, ...[id = "a"]: [id?: string]) =>
+    receiptPartialNotice({ error: null, captureIssues: {}, finalizationPendingId: null, ...state }, id);
+
+  test("the saved recording's partial_audio is the informational line", () => {
+    expect(notice({ captureIssues: { a: partial } })).toBe("Saved — part of this recording couldn't be written");
+  });
+
+  test("none without a saved recording, without the notice, or for another recording's", () => {
+    expect(receiptPartialNotice({ error: null, captureIssues: { a: partial }, finalizationPendingId: null }, undefined)).toBeNull();
+    expect(notice({})).toBeNull();
+    expect(notice({ captureIssues: { z: partial } })).toBeNull();
+    expect(notice({ captureIssues: { a: writeFailed } })).toBeNull();
+  });
+
+  test("never beside 'Exo will finish it automatically', whichever recording it is about", () => {
+    const pending = { error: FINALIZATION_PENDING, finalizationPendingId: "a" };
+    expect(notice({ ...pending, captureIssues: { a: partial } })).toBeNull();
+    expect(notice({ ...pending, captureIssues: { z: partial } }, "z")).toBeNull();
+    expect(honestRecorderError({ ...pending, captureIssues: { a: partial } })).toBe(FINALIZATION_PENDING);
+  });
+
+  test("another error does not hide it: it is information, not the promise", () => {
+    expect(notice({ error: "No connection", captureIssues: { a: partial } })).toBe(HOME_COPY.partialAudioMeta);
+  });
 });

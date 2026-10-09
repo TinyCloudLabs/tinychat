@@ -18,9 +18,20 @@ import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import type { PendingRun } from "@/lib/voiceNotes/recorderSaves";
-import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import { whenVoiceNoteSavesIdle, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { advanceAccountGeneration, currentAccountGeneration } from "@/lib/voiceNotes/accountContext";
 import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
+
+let recovery: (() => Promise<void>) | null = null;
+/** Keep the mounted saver available to renewal without remounting the view. */
+export function registerPendingVoiceNotesRecovery(run: () => Promise<void>): () => void {
+  recovery = run;
+  return () => { if (recovery === run) recovery = null; };
+}
+/** A forced native session swap can abort a save without remounting this component. */
+export function schedulePendingVoiceNotesRecovery(): void {
+  void whenVoiceNoteSavesIdle().then(() => recovery?.());
+}
 
 /**
  * An on-device transcription that finishes after its note is already saved (the common case: the
@@ -75,14 +86,16 @@ export function PendingVoiceNotesSaver({
 
   useEffect(() => {
     if (!captureEngineAvailable()) return;
-    const generation = advanceAccountGeneration();
+    advanceAccountGeneration();
     const did = tcw.did;
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
     pipeline.resume();
-    void pipeline.reconcileAll({ did, spaceId, generation })
+    const run = () => pipeline.reconcileAll({ did, spaceId, generation: currentAccountGeneration() })
       .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
-    return () => pipeline.cancelAll();
+    const unregister = registerPendingVoiceNotesRecovery(run);
+    void run();
+    return () => { unregister(); pipeline.cancelAll(); };
   }, [pipeline, tcw]);
   return null;
 }

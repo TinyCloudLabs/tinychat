@@ -99,6 +99,8 @@ declare global {
     exoUiClearIssues?: () => void;
     /** The provider reports a recording that failed recovery, for the interactive screen. */
     exoUiAddLost?: (id: string) => void;
+    /** The recorder's dismissCaptureIssue, for the partial-audio sheet's Dismiss: the ids it was called with, and how the next call fails (`false`: not saved; `throw`). */
+    exoUiDismiss?: { calls: string[]; fail: "false" | "throw" | null };
   }
 }
 const ON_PHONE: Partial<RecorderValue> = {
@@ -146,7 +148,22 @@ function ClearableIssues(props: { issues: NonNullable<RecorderValue["captureIssu
   const [issues, setIssues] = useState(props.issues);
   window.exoUiClearIssues = () => setIssues({});
   window.exoUiAddLost = (id) => setIssues({ [id]: { kind: "recoveryFailed", detail: "native: segment unreadable" } });
-  const recorder = useMemo<Partial<RecorderValue>>(() => ({ ...SOFT_IDLE, captureIssues: issues }), [issues]);
+  const [dismiss] = useState<NonNullable<Window["exoUiDismiss"]>>(() => ({ calls: [], fail: null }));
+  window.exoUiDismiss = dismiss;
+  const recorder = useMemo<Partial<RecorderValue>>(
+    () => ({
+      ...SOFT_IDLE,
+      captureIssues: issues,
+      dismissCaptureIssue: (id) => {
+        dismiss.calls.push(id);
+        if (dismiss.fail === "throw") throw new Error("native: storage unavailable");
+        if (dismiss.fail === "false") return false;
+        setIssues((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
+        return true;
+      },
+    }),
+    [issues, dismiss],
+  );
   return <SoftHome recorder={recorder} />;
 }
 const LOST = { "rec-lost": { kind: "recoveryFailed", detail: "native: segment unreadable" } } as const;
@@ -240,6 +257,10 @@ function FailedHome(props: {
 const LOST_ROW = '[data-testid="capture-recent"] li[data-issue="recoveryFailed"] button';
 const PARKED_ROW = '[data-testid="capture-recent"] li[data-issue="quarantined"] button';
 const SHEET = '[data-testid="capture-issue-sheet"]';
+// A saved voice note (the first fixture row) missing some audio.
+const PARTIAL = { "rec-0928": { kind: "partial_audio", missingMs: 12_000 } } as const;
+const PARTIAL_UNKNOWN = { "rec-0928": { kind: "partial_audio" } } as const;
+const PARTIAL_LINE = '[data-testid="capture-recent"] [data-testid="soft-row-notice"]';
 const CONFIRM = '[role="alertdialog"]';
 // The Soft home is drawn on a phone only, so its open-sheet captures run at the phone viewports.
 const PHONE_VIEWPORTS = ["phone", "phone-small"];
@@ -267,6 +288,9 @@ export const captureSoftScreens: HarnessScreen[] = [
     interactive: true,
     render: () => <ClearableIssues issues={LOST} />,
   },
+  { ...SOFT, id: "capture-soft-partial-audio", render: () => <SoftHome recorder={{ ...SOFT_IDLE, captureIssues: PARTIAL }} /> },
+  { ...SOFT, id: "capture-soft-library-partial-audio", path: "/chat/capture/library", render: () => <SoftHome recorder={{ ...SOFT_IDLE, captureIssues: PARTIAL }} /> },
+  { ...SOFT, id: "capture-soft-partial-actions", interactive: true, render: () => <FailedHome issues={PARTIAL} /> },
   { ...SOFT, id: "capture-soft-override", render: () => <SoftHome recorder={ISSUES_WITH_CARD} /> },
   { ...SOFT, id: "capture-soft-failed-actions", interactive: true, render: () => <FailedHome issues={LOST} /> },
   { ...SOFT, id: "capture-soft-failed-parked", interactive: true, render: () => <FailedHome issues={{}} parked={["rec-parked"]} /> },
@@ -276,4 +300,6 @@ export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-quarantined", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-parked"]} open={PARKED_ROW} /> },
   { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-unplayable", readyWhen: SHEET, render: () => <FailedHome issues={{}} parked={["rec-unplayable"]} reasons={{ "rec-unplayable": "unplayable" }} open={PARKED_ROW} /> },
   { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-confirm", readyWhen: CONFIRM, render: () => <FailedHome issues={LOST} open={LOST_ROW} confirm /> },
+  { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-partial", readyWhen: SHEET, render: () => <FailedHome issues={PARTIAL} open={PARTIAL_LINE} /> },
+  { ...SOFT, viewports: PHONE_VIEWPORTS, id: "capture-soft-sheet-partial-unknown", readyWhen: SHEET, render: () => <FailedHome issues={PARTIAL_UNKNOWN} open={PARTIAL_LINE} /> },
 ];

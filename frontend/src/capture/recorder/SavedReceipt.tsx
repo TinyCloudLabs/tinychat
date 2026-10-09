@@ -33,6 +33,8 @@ export interface SavedReceiptProps {
   /** Private cloud has the note now. */
   transcribing?: boolean;
   error?: string | null;
+  /** Saved, but some audio could not be written: an informational line, not an error. */
+  notice?: string | null;
   /** A save of the notes on this phone is running. */
   retrying?: boolean;
   onOpen?: () => void;
@@ -141,6 +143,11 @@ export function SavedReceipt(props: SavedReceiptProps) {
           <CheckIcon className="size-5 text-primary" aria-hidden="true" /> Saved on this phone
         </h3>
         {props.saved && <p className="tnum text-meta text-muted-foreground">{receiptMetaText(props.saved.durationMs, props.saved.at)}</p>}
+        {props.notice && (
+          <p className="text-meta text-muted-foreground" data-testid="voice-note-partial-audio">
+            {props.notice}
+          </p>
+        )}
         {props.error && (
           <p role="alert" className="text-meta text-muted-foreground">
             {props.error}

@@ -738,7 +738,7 @@ describe("voice-note recorder controller", () => {
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "AAC write failed" });
     fake.emit("recoveryFailed", { id, reason: "mux failed" });
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "recoveryFailed", detail: "mux failed" });
-    recorder.dismissCaptureIssue(id);
+    expect(recorder.dismissCaptureIssue(id)).toBe(false);
     expect(recorder.getState().captureIssues[id]?.kind).toBe("recoveryFailed");
     fake.emit("recovered", { id });
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "partial_audio" });
@@ -890,8 +890,9 @@ describe("voice-note recorder controller", () => {
       detachOther();
       const third = await attached();
       expect(third.recorder.getState().captureIssues[recording.id]?.kind).toBe("partial_audio");
-      third.recorder.dismissCaptureIssue(recording.id);
+      expect(third.recorder.dismissCaptureIssue(recording.id)).toBe(true);
       expect(third.recorder.getState().captureIssues[recording.id]).toBeUndefined();
+      expect(third.recorder.dismissCaptureIssue(recording.id)).toBe(false);
       fake.emit("writeFailure", { id: recording.id, error: "late replay" });
       expect(third.recorder.getState().captureIssues[recording.id]).toBeUndefined();
       third.detach();

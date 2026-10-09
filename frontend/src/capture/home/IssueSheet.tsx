@@ -1,14 +1,19 @@
 // The small sheet a failed Recent row opens (TC-871): what went wrong, in a
 // sentence, and Close. A recording that could not be recovered also gets Try
-// again and Delete (TC-868); Delete asks first. A labelled modal dialog;
-// closing returns focus to the row that opened it.
+// again and Delete (TC-868); Delete asks first. A saved recording that is
+// missing some audio gets an informational sheet instead: what is missing (when
+// the recorder knows) and Dismiss. A labelled modal dialog; closing returns
+// focus to the control that opened it.
 import * as Dialog from "@radix-ui/react-dialog";
-import { useId, useRef, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 
 import {
+  dismissNotice,
   issueCanRetry,
+  issueIsInformational,
   issueIsRecoverable,
   issueSheetCopy,
+  partialAudioMissingLine,
   type HomeIssue,
 } from "./captureIssues";
 import {
@@ -60,6 +65,37 @@ function Actions(props: {
   );
 }
 
+function Notice(props: {
+  error: string | null;
+  onDismiss: () => void;
+  closeRef: RefObject<HTMLButtonElement | null>;
+}) {
+  return (
+    <div className="soft-sheet-actions">
+      {props.error !== null && (
+        <p role="alert" className="soft-sheet-error" data-testid="capture-issue-error">
+          {props.error}
+        </p>
+      )}
+      <Dialog.Close
+        ref={props.closeRef}
+        className="soft-sheet-close"
+        data-testid="capture-issue-close"
+      >
+        {HOME_COPY.close}
+      </Dialog.Close>
+      <button
+        type="button"
+        className="soft-sheet-quiet"
+        onClick={props.onDismiss}
+        data-testid="capture-issue-dismiss"
+      >
+        {HOME_COPY.dismiss}
+      </button>
+    </div>
+  );
+}
+
 export function IssueSheet(props: {
   id: string | null;
   issue: HomeIssue | null;
@@ -70,6 +106,8 @@ export function IssueSheet(props: {
   refresh: () => void;
   /** Native says the recording is deleted, or no longer failed: its rows go. */
   onGone: (id: string) => void;
+  /** Dismisses a partial-audio notice: whether it is dismissed (false: it could not be saved). */
+  onDismiss: (id: string) => boolean;
   onClose: () => void;
 }) {
   const theme = useSoftTheme();
@@ -87,6 +125,14 @@ export function IssueSheet(props: {
     onGone: props.onGone,
   });
   const shown = recoverable !== null;
+  const notice = props.issue !== null && issueIsInformational(props.issue);
+  const missing = props.issue ? partialAudioMissingLine(props.issue) : null;
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  const [dismissError, setDismissError] = useState<string | null>(null);
+  useEffect(() => setDismissError(null), [props.id]);
+  const dismiss = () => {
+    if (props.id !== null) setDismissError(dismissNotice(props.id, props.onDismiss));
+  };
   const confirming = shown && actions.confirming;
   return (
     <Dialog.Root
@@ -105,6 +151,11 @@ export function IssueSheet(props: {
             event.preventDefault();
             actions.keep();
           }}
+          onOpenAutoFocus={(event) => {
+            if (!notice) return;
+            event.preventDefault();
+            closeButton.current?.focus();
+          }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             const row = props.returnFocusTo.current;
@@ -118,17 +169,26 @@ export function IssueSheet(props: {
             <Dialog.Description className="soft-sheet-body">
               {copy?.body}
             </Dialog.Description>
+            {missing !== null && (
+              <p className="soft-sheet-body" data-testid="capture-issue-missing">
+                {missing}
+              </p>
+            )}
             {shown && <Actions
                 actions={actions}
                 canRetry={props.issue !== null && issueCanRetry(props.issue)}
                 deleteRef={deleteButton}
               />}
-            <Dialog.Close
-              className={shown ? "soft-sheet-quiet" : "soft-sheet-close"}
-              data-testid="capture-issue-close"
-            >
-              {HOME_COPY.close}
-            </Dialog.Close>
+            {notice ? (
+              <Notice error={dismissError} onDismiss={dismiss} closeRef={closeButton} />
+            ) : (
+              <Dialog.Close
+                className={shown ? "soft-sheet-quiet" : "soft-sheet-close"}
+                data-testid="capture-issue-close"
+              >
+                {HOME_COPY.close}
+              </Dialog.Close>
+            )}
           </div>
           {confirming && (
             <SheetDialog

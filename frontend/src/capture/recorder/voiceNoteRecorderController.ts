@@ -107,8 +107,8 @@ export interface VoiceNoteRecorderController {
   dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
-  /** Only a saved recording's partial-audio notice can be dismissed. */
-  dismissCaptureIssue(id: string): void;
+  /** Only a saved recording's partial-audio notice can be dismissed. False: it was not (no such notice, or the dismissal could not be saved). */
+  dismissCaptureIssue(id: string): boolean;
   /** Input levels (0..1), fanned out without React state. */
   subscribeLevel(listener: (level: number) => void): () => void;
 }
@@ -763,9 +763,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       send({ type: "DISMISSED" });
     },
     dismissCaptureIssue(id) {
-      if (state.captureIssues[id]?.kind !== "partial_audio") return;
+      if (state.captureIssues[id]?.kind !== "partial_audio") return false;
       const key = scope();
-      if (key !== null && dismissPartialAudioIssue(key, id)) send({ type: "CAPTURE_DISMISSED", id });
+      if (key === null || !dismissPartialAudioIssue(key, id)) return false;
+      send({ type: "CAPTURE_DISMISSED", id });
+      return true;
     },
     subscribeLevel(listener) {
       levelListeners.add(listener);

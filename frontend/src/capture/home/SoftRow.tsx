@@ -1,7 +1,9 @@
 // One Recent / Library row in the Soft skin (TC-871): a kind tile, the title, a
 // time-and-source line, then the length and a chevron. A capture issue swaps the
-// tile for "!" and the state line for the issue's. Each row is one control,
-// labelled with all of it: the issue is in the label, never in colour alone.
+// tile for "!" and the state line for the issue's. A saved recording that is
+// missing some audio keeps its row and adds a quiet line under it, which opens
+// its details. Each row is labelled with all of it: the state is in the label,
+// never in colour alone.
 // T22 adds pipeline status to this row.
 import { ChevronRightIcon, type LucideIcon } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -10,7 +12,12 @@ import {
   formatClockDuration,
   formatSpokenDuration,
 } from "../library/formatters";
-import { issueMeta, type HomeIssue } from "./captureIssues";
+import {
+  issueIsFailure,
+  issueIsInformational,
+  issueMeta,
+  type HomeIssue,
+} from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
 
 export interface SoftRowProps {
@@ -24,9 +31,16 @@ export interface SoftRowProps {
   href?: string;
   /** Otherwise a button (an issue's sheet); neither makes a plain, labelled row. */
   onActivate?: (row: HTMLElement) => void;
+  /** The informational line's button, for a partial-audio recording: opens its details. */
+  onDetails?: (opener: HTMLElement) => void;
   selected?: boolean;
   testId: string;
   sourceId?: string;
+}
+
+/** What sits under the title: the issue's line, except for an informational one, which has a line of its own below. */
+function stateLine(issue: HomeIssue | undefined, meta: string): string {
+  return issue && !issueIsInformational(issue) ? issueMeta(issue) : meta;
 }
 
 /** The row's one accessible name: the title, what it says under it, how long, and its state. */
@@ -36,13 +50,12 @@ export function softRowLabel(
     "title" | "meta" | "durationSecs" | "issue" | "onActivate"
   >,
 ): string {
-  const parts = [
-    props.title,
-    props.issue ? issueMeta(props.issue) : props.meta,
-  ];
+  const parts = [props.title, stateLine(props.issue, props.meta)];
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
-  if (props.issue && props.issue.kind !== "finalization_timed_out" && props.issue.kind !== "partial_audio")
+  if (props.issue && issueIsInformational(props.issue))
+    parts.push(issueMeta(props.issue));
+  if (props.issue && issueIsFailure(props.issue))
     parts.push(HOME_COPY.needsAttention);
   if (props.issue && props.onActivate) parts.push(HOME_COPY.opensDetails);
   return parts.join(". ");
@@ -60,7 +73,8 @@ function Spinner() {
 
 export function SoftRow(props: SoftRowProps) {
   const { issue } = props;
-  const failed = issue !== undefined && issue.kind !== "finalization_timed_out" && issue.kind !== "partial_audio";
+  const failed = issue !== undefined && issueIsFailure(issue);
+  const notice = issue !== undefined && issueIsInformational(issue) ? issueMeta(issue) : null;
   const Icon = props.icon;
   const label = softRowLabel(props);
   const body = (
@@ -84,7 +98,7 @@ export function SoftRow(props: SoftRowProps) {
           data-failed={failed ? "true" : undefined}
         >
           {issue?.kind === "finalization_timed_out" && <Spinner />}
-          {issue ? issueMeta(issue) : props.meta}
+          {stateLine(issue, props.meta)}
         </span>
       </span>
       {(props.durationSecs != null ||
@@ -114,6 +128,7 @@ export function SoftRow(props: SoftRowProps) {
       data-testid={props.testId}
       data-source-id={props.sourceId}
       data-issue={issue?.kind}
+      data-notice={notice !== null ? "true" : undefined}
     >
       {props.href !== undefined ? (
         <Link
@@ -135,6 +150,17 @@ export function SoftRow(props: SoftRowProps) {
         <div role="group" {...common}>
           {body}
         </div>
+      )}
+      {notice !== null && props.onDetails && (
+        <button
+          type="button"
+          className="soft-row-notice"
+          aria-label={`${notice}. ${HOME_COPY.opensDetails}`}
+          onClick={(event) => props.onDetails?.(event.currentTarget)}
+          data-testid="soft-row-notice"
+        >
+          {notice}
+        </button>
       )}
     </li>
   );

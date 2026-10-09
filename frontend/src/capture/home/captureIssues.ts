@@ -5,7 +5,7 @@
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import type { LibraryItem } from "../library/LibraryRow";
-import { FINALIZATION_PENDING } from "../recorder/recorderCopy";
+import { FINALIZATION_PENDING, formatDuration } from "../recorder/recorderCopy";
 import { HOME_COPY } from "./homeCopy";
 
 /** The recorder's issues, plus a session native gave up on and parked with its audio kept (`listQuarantine`). */
@@ -28,8 +28,30 @@ export function issueMeta(issue: HomeIssue): string {
     case "write_failed":
       return HOME_COPY.writeFailedMeta;
     case "partial_audio":
-      return ""; // Informational notice; the recorder-final UI supplies its copy.
+      return HOME_COPY.partialAudioMeta;
   }
+}
+
+/** Saved, with some audio missing: a quiet line under a normal row, never an error. */
+export function issueIsInformational(
+  issue: HomeIssue,
+): issue is Extract<HomeIssue, { kind: "partial_audio" }> {
+  return issue.kind === "partial_audio";
+}
+
+/** A real failure: the "!" tile and "Needs attention". A timed-out save is still finishing, and a partial one was saved. */
+export function issueIsFailure(issue: HomeIssue): boolean {
+  return issue.kind !== "finalization_timed_out" && !issueIsInformational(issue);
+}
+
+/** "About 0:12 is missing", or null when the recorder doesn't know how much (never a guess). */
+export function partialAudioMissingLine(issue: HomeIssue): string | null {
+  if (!issueIsInformational(issue)) return null;
+  const { missingMs } = issue;
+  if (missingMs === undefined || !Number.isFinite(missingMs) || missingMs <= 0) return null;
+  return missingMs < 1000
+    ? HOME_COPY.partialAudioMissingBrief
+    : HOME_COPY.partialAudioMissing(formatDuration(missingMs));
 }
 
 /** Whether Try again and Delete can apply: the recording could not be recovered, and its audio is still on the phone. */
@@ -56,12 +78,27 @@ export function recoveryFailedKey(
 
 /**
  * The recorder's issues with what native parked: a quarantined session
- * replaces a `recoveryFailed` one (same recording, now with its audio kept),
+ * replaces a `recoveryFailed` one or a `partial_audio` notice (same recording,
+ * now with its audio kept: a real failure outranks an informational line),
  * and a recording the user deleted drops out.
  */
 /** What native calls audio it kept but can never play back: Android `unplayable`, iOS `no_audio_track`. */
 export function isUnplayableReason(reason: string): boolean {
   return reason === "unplayable" || reason === "no_audio_track";
+}
+
+/** Dismisses a partial-audio notice. Null once it is dismissed; otherwise the line to show, with the failure logged (a dismissal that is not saved leaves the notice up). */
+export function dismissNotice(
+  id: string,
+  dismiss: (id: string) => boolean,
+): string | null {
+  try {
+    if (dismiss(id)) return null;
+    console.error("[CaptureHome] The partial-audio notice was not dismissed", id);
+  } catch (caught) {
+    console.error("[CaptureHome] Dismissing the partial-audio notice failed", id, caught);
+  }
+  return HOME_COPY.dismissFailed;
 }
 
 export function withQuarantine(
@@ -72,7 +109,7 @@ export function withQuarantine(
   const merged: Record<string, HomeIssue> = { ...issues };
   for (const { id, reason } of quarantined) {
     const current = merged[id];
-    if (current === undefined || current.kind === "recoveryFailed")
+    if (current === undefined || current.kind === "recoveryFailed" || current.kind === "partial_audio")
       merged[id] =
         isUnplayableReason(reason)
           ? { kind: "quarantined", unplayable: true }
@@ -82,9 +119,9 @@ export function withQuarantine(
   return merged;
 }
 
-/** The issues whose Library row opens a sheet instead of its note; a timed-out one resolves itself, so its row still opens the note. */
+/** The issues whose Library row opens a sheet instead of its note. A timed-out one resolves itself, and a partial one was saved: those rows still open the note (a partial one has its own Details control). */
 export function issueHasSheet(issue: HomeIssue): boolean {
-  return issue.kind !== "finalization_timed_out" && issue.kind !== "partial_audio";
+  return issue.kind !== "finalization_timed_out" && !issueIsInformational(issue);
 }
 
 export function issueSheetCopy(issue: HomeIssue): {
@@ -103,7 +140,7 @@ export function issueSheetCopy(issue: HomeIssue): {
     case "write_failed":
       return HOME_COPY.writeFailedSheet;
     case "partial_audio":
-      return null; // Informational notices do not open an error sheet.
+      return HOME_COPY.partialAudioSheet;
   }
 }
 
@@ -113,8 +150,7 @@ export function sheetIssue(
   issues: CaptureIssues,
   enabled: boolean,
 ): HomeIssue | null {
-  const issue = enabled && id !== null ? issues[id] : undefined;
-  return issue?.kind === "partial_audio" ? null : issue ?? null;
+  return (enabled && id !== null ? issues[id] : undefined) ?? null;
 }
 
 /** The issue a Library item carries: a voice note whose recording id has one. */
@@ -122,8 +158,7 @@ export function issueForItem(
   item: LibraryItem,
   issues: CaptureIssues,
 ): HomeIssue | undefined {
-  const issue = item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
-  return issue?.kind === "partial_audio" ? undefined : issue;
+  return item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
 }
 
 export interface OrphanIssue {
@@ -133,7 +168,9 @@ export interface OrphanIssue {
 
 /**
  * Recordings with an issue and no Library row yet (they are not in the space),
- * newest issue first. Recent and the Library list both show these.
+ * newest issue first. Recent and the Library list both show these. A partial
+ * one is not among them: it marks a normal row, and with no row the "on this
+ * phone" card already accounts for the recording.
  */
 export function orphanIssues(
   items: readonly LibraryItem[],

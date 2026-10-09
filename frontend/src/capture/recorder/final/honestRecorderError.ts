@@ -19,3 +19,14 @@ export function honestRecorderError(recorder: Source): string | null {
   if (kind === "write_failed") return HOME_COPY.writeFailedError;
   return recorder.error;
 }
+
+/**
+ * The informational line under a receipt: the recording that just saved is
+ * missing some audio. It is not an error, and the receipt never carries it
+ * beside "Exo will finish it automatically" (that promise outranks it, as on
+ * the "on this phone" card).
+ */
+export function receiptPartialNotice(recorder: Source, id: string | undefined): string | null {
+  if (id === undefined || recorder.captureIssues[id]?.kind !== "partial_audio") return null;
+  return honestRecorderError(recorder) === FINALIZATION_PENDING ? null : HOME_COPY.partialAudioMeta;
+}

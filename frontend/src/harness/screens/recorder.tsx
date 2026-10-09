@@ -11,6 +11,7 @@ import { liveCapture } from "@/capture/recorder/liveCapture";
 import { LiveEdge } from "@/capture/recorder/LiveEdge";
 import { RailLiveButton } from "@/capture/recorder/RailLiveButton";
 import { RecordingOverlay } from "@/capture/recorder/RecordingOverlay";
+import { forceSoftHome } from "@/capture/home/softHome";
 import { StaticRecorderProvider, type RecorderValue } from "@/capture/recorder/RecorderProvider";
 import { SidebarLiveCard } from "@/capture/recorder/SidebarLiveCard";
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
@@ -63,7 +64,7 @@ function Backdrop(props: { children?: ReactNode }) {
 function sheet(
   id: string,
   value: Partial<RecorderValue>,
-  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean; discardAsking?: boolean } = {},
+  options: { levels?: readonly number[]; live?: boolean; warning?: boolean; consentAsking?: boolean; discardAsking?: boolean; soft?: boolean } = {},
 ): HarnessScreen {
   return {
     id: `recorder-${id}`,
@@ -71,13 +72,17 @@ function sheet(
     layout: "pane",
     platform: "ios",
     displayTitle: false,
-    render: () => (
+    render: () => {
+      // The receipt's informational line is behind the recorder-final flag, which the harness build does not set.
+      if (options.soft) forceSoftHome(true);
+      return (
       <StaticRecorderProvider value={{ ...value, sheetOpen: true }} levels={options.levels ?? LEVELS}>
         <Backdrop />
         <RecordingOverlay onOpenNote={noop} consentAsking={options.consentAsking} discardAsking={options.discardAsking} />
         {options.live && <LiveMic warning={options.warning} />}
       </StaticRecorderProvider>
-    ),
+      );
+    },
   };
 }
 
@@ -161,6 +166,11 @@ export const recorderScreens: HarnessScreen[] = [
   sheet("interrupted", { ...LIVE, mic: { state: "interrupted", reason: "call" } }, { levels: QUIET }),
   sheet("saving", { ...LIVE, phase: "saving", savePercent: 42 }),
   sheet("landed", { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
+  sheet(
+    "landed-partial",
+    { phase: "idle", outcome: "saved", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON, captureIssues: { "rec-1": { kind: "partial_audio", missingMs: 12_000 } } },
+    { soft: true },
+  ),
   sheet("local", { phase: "idle", outcome: "local", localUpload: "uploading", lastSaved: SAVED, transcription: PRIVATE_CLOUD_ON }),
   sheet("failed", {
     phase: "idle",
