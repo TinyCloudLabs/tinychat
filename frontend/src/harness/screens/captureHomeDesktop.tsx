@@ -128,6 +128,32 @@ function FailedHome(props: {
   return <Home recorder={recorder} />;
 }
 
+const PARTIAL: NonNullable<RecorderValue["captureIssues"]> = {
+  "rec-0928": { kind: "partial_audio", missingMs: 4000 },
+};
+
+/** The Recent row's Dismiss over `window.exoUiDismiss`: the ids it was called with, and how the next call fails (`false`: not saved; `throw`). */
+function DismissHome() {
+  const [issues, setIssues] = useState(PARTIAL);
+  const [dismiss] = useState<NonNullable<Window["exoUiDismiss"]>>(() => ({ calls: [], fail: null }));
+  window.exoUiDismiss = dismiss;
+  const recorder = useMemo<Partial<RecorderValue>>(
+    () => ({
+      ...IDLE,
+      captureIssues: issues,
+      dismissCaptureIssue: (id) => {
+        dismiss.calls.push(id);
+        if (dismiss.fail === "throw") throw new Error("native: storage unavailable");
+        if (dismiss.fail === "false") return false;
+        setIssues((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
+        return true;
+      },
+    }),
+    [issues, dismiss],
+  );
+  return <Home recorder={recorder} />;
+}
+
 const screen = (
   id: string,
   render: () => ReactNode,
@@ -164,6 +190,10 @@ export const captureHomeDesktopScreens: HarnessScreen[] = [
   interactiveScreen,
   {
     ...screen("failed", () => <FailedHome />),
+    interactive: true,
+  },
+  {
+    ...screen("dismiss", () => <DismissHome />),
     interactive: true,
   },
   { ...screen("failed-sheet", () => <FailedHome open={LOST_ROW} />), readyWhen: SHEET },

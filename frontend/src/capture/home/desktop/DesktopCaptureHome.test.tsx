@@ -1,5 +1,5 @@
 // The desktop Capture home: the markup of each state, rendered statically.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -13,8 +13,11 @@ import {
   StaticRecorderProvider,
   type RecorderValue,
 } from "../../recorder/RecorderProvider";
+import { dismissNotice } from "../captureIssues";
+import { HOME_COPY } from "../homeCopy";
 import {
   DesktopCaptureHome,
+  DismissControl,
   FilterChips,
   RecentRow,
   type DesktopCaptureHomeProps,
@@ -195,6 +198,43 @@ describe("Recent", () => {
     expect(html).not.toContain("Your recordings appear here");
   });
 
+  test("a Dismiss that is not saved (false, or a throw) is the phone sheet's inline alert beside the button, which stays", () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const outcomes = [
+        dismissNotice("rec-1", () => false),
+        dismissNotice("rec-1", () => {
+          throw new Error("native: storage unavailable");
+        }),
+      ];
+      expect(outcomes).toEqual([HOME_COPY.dismissFailed, HOME_COPY.dismissFailed]);
+      expect(error).toHaveBeenCalledTimes(2);
+      for (const outcome of outcomes) {
+        const html = renderToStaticMarkup(
+          <DismissControl label="Dismiss the notice for X" error={outcome} onDismiss={noop} />,
+        );
+        expect(html).toContain('role="alert"');
+        expect(html).toContain('data-testid="capture-issue-error"');
+        expect(html).toContain(HOME_COPY.dismissFailed.replace("'", "&#x27;"));
+        expect(html).toContain('data-testid="capture-issue-dismiss"');
+        const id = /aria-describedby="([^"]+)"/.exec(html)?.[1];
+        expect(id).toBeDefined();
+        expect(html).toContain(`id="${id}"`);
+      }
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test("a Dismiss with nothing to report shows no alert", () => {
+    const html = renderToStaticMarkup(
+      <DismissControl label="Dismiss the notice for X" error={null} onDismiss={noop} />,
+    );
+    expect(html).not.toContain("role=\"alert\"");
+    expect(html).not.toContain("aria-describedby");
+    expect(html).toContain('data-testid="capture-issue-dismiss"');
+  });
+
   test("loading and failed keep their own states", () => {
     expect(home({ props: { recent: { status: "loading", items: [] } } })).toContain("Loading your recent captures…");
     const failed = home({ props: { recent: { status: "failed", items: [] } } });
@@ -238,7 +278,7 @@ describe("failed recordings", () => {
             entry={{ type: "issue", id: "p", issue: { kind: "quarantined" } }}
             now={NOW}
             grouped={false}
-            onDismiss={noop}
+            onDismiss={() => true}
             onOpenIssue={noop}
           />
         </ul>
@@ -291,7 +331,7 @@ describe("a row", () => {
             entry={{ type: "item", item: note(3), startedAt: note(3).startedAt }}
             now={NOW}
             grouped
-            onDismiss={noop}
+            onDismiss={() => true}
             onOpenIssue={noop}
           />
         </ul>
