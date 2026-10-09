@@ -107,8 +107,13 @@ describe("recording Markdown", () => {
     expect(adopted.savedEditAt).toBe(saved.savedEditAt);
     expect(adopted.md).toBe("edited after saving");
     expect((await loadNote(recordingId))?.savedEditAt).toBe(saved.savedEditAt);
-    // An explicit null does not overwrite a stored note either: adopting never changes one.
+    // An explicit null does not clear a stored one either.
     expect((await adoptNote({ ...olderClient, savedEditAt: null })).savedEditAt).toBe(saved.savedEditAt);
+    // A later saved-edit time on the remote moves a stored one forward; an earlier one does not move it back.
+    expect((await adoptNote({ ...olderClient, savedEditAt: "2000-01-01T00:00:00.000Z" })).savedEditAt).toBe(saved.savedEditAt);
+    expect((await adoptNote({ ...olderClient, savedEditAt: "2099-01-01T00:00:00.000Z" })).savedEditAt).toBe("2099-01-01T00:00:00.000Z");
+    expect((await loadNote(recordingId))?.savedEditAt).toBe("2099-01-01T00:00:00.000Z");
+    expect((await loadNote(recordingId))?.md).toBe("edited after saving");
     const fresh = id();
     expect((await adoptNote({ ...olderClient, recordingId: fresh, savedEditAt: "2026-10-09T11:00:00.000Z" })).savedEditAt)
       .toBe("2026-10-09T11:00:00.000Z");

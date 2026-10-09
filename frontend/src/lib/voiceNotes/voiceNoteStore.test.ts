@@ -37,7 +37,7 @@ import {
   recordingNoteSyncError,
   type VoiceNoteAudioSource,
 } from "./voiceNoteStore";
-import { saveNote } from "./recordingNotes";
+import { loadNote, noteMarkdown, saveNote } from "./recordingNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
 
 type KvValue = string | Uint8Array;
@@ -59,6 +59,7 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
   let seeded = false;
   let putFailure: ((key: string) => KvFailure | null) | null = null;
   let listFailure: KvFailure | null = null;
+  let getFailure: ((key: string) => KvFailure | null) | null = null;
   const inserted: string[] = [];
   const tcw = {
     did: `did:pkh:eip155:1:0xabc${++fakeSpaceNumber}`,
@@ -101,6 +102,8 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
       },
       async get(key: string, options?: { binary?: boolean }) {
         calls.push({ kind: "kv.get", target: key, options });
+        const failure = getFailure?.(key) ?? null;
+        if (failure) return { ok: false, error: failure };
         if (!kv.has(key)) return { ok: false, error: { code: "KV_NOT_FOUND", message: "missing" } };
         return { ok: true, data: { data: kv.get(key) } };
       },
@@ -118,6 +121,9 @@ function fakeSpace(opts: { kv?: Map<string, KvValue>; rows?: unknown[][] } = {})
     inserted,
     failPut(fn: ((key: string) => KvFailure | null) | null) {
       putFailure = fn;
+    },
+    failGet(fn: ((key: string) => KvFailure | null) | null) {
+      getFailure = fn;
     },
     failList(failure: KvFailure | null) {
       listFailure = failure;
@@ -201,6 +207,74 @@ describe("saveVoiceNote", () => {
     await saveNote(withNote.id, "# Edited after saving, then a recorder write");
     expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
     expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(edited.savedEditAt);
+  });
+
+  test("a stale device's sync keeps the saved-edit time another device stored, and adopts it", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-remote-edit-${++fakeSpaceNumber}` };
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    await saveNote(withNote.id, "# Recorded on A");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const first = (await loadNote(withNote.id))!;
+    expect(first.savedEditAt).toBeNull();
+
+    // Device B saves an edit and syncs its `edited:` line to the space.
+    const bEditedAt = "2099-01-01T00:00:00.000Z";
+    space.kv.set(noteKey, noteMarkdown({ ...first, md: "# Edited on B", savedEditAt: bEditedAt, editedAt: bEditedAt }));
+
+    // Device A, still without a marker, writes again and syncs.
+    await saveNote(withNote.id, "# Recorded on A, more");
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(space.kv.get(noteKey)).toContain(`edited: ${JSON.stringify(bEditedAt)}`);
+    expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(bEditedAt);
+    expect((await loadNote(withNote.id))?.savedEditAt).toBe(bEditedAt);
+  });
+
+  test("when both devices hold a saved-edit time the later one is written", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-both-edit-${++fakeSpaceNumber}` };
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    await saveNote(withNote.id, "# Recorded");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const base = (await loadNote(withNote.id))!;
+
+    const localEdit = await saveNote(withNote.id, "# Local edit", { savedEdit: true });
+    const olderRemote = "2000-01-01T00:00:00.000Z";
+    space.kv.set(noteKey, noteMarkdown({ ...base, savedEditAt: olderRemote }));
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(localEdit.savedEditAt);
+
+    const newerRemote = "2099-01-01T00:00:00.000Z";
+    space.kv.set(noteKey, noteMarkdown({ ...base, savedEditAt: newerRemote }));
+    await saveNote(withNote.id, "# Local edit, recorder write");
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect((await readRecordingNoteFromSpace(space.tcw, withNote.id))?.savedEditAt).toBe(newerRemote);
+    expect((await loadNote(withNote.id))?.savedEditAt).toBe(newerRemote);
+  });
+
+  test("a failed read of the space note makes no put and shows a sync error", async () => {
+    const space = fakeSpace();
+    const withNote = { ...recording, id: `rec-note-read-fail-${++fakeSpaceNumber}` };
+    const noteKey = voiceNoteMarkdownKvKey(withNote.id);
+    await saveNote(withNote.id, "# Recorded");
+    await saveVoiceNote(space.tcw, withNote,
+      voiceNoteAudioSourceFromBase64({ mimeType: "audio/mp4", base64: "AAAA" }), "android");
+    const stored = space.kv.get(noteKey);
+    await saveNote(withNote.id, "# Changed while offline");
+    const putsBefore = puts(space.calls).length;
+
+    space.failGet((key) => key === noteKey ? { code: "KV_ERROR", message: "read offline" } : null);
+    await expect(syncRecordingNote(space.tcw, withNote.id)).rejects.toThrow("Could not load recording note");
+    expect(puts(space.calls).length).toBe(putsBefore);
+    expect(space.kv.get(noteKey)).toBe(stored);
+    expect(recordingNoteSyncError(space.tcw, withNote.id)).toBe("sync_failed");
+
+    space.failGet(null);
+    expect(await syncRecordingNote(space.tcw, withNote.id)).toBe(true);
+    expect(recordingNoteSyncError(space.tcw, withNote.id)).toBeNull();
+    expect(space.kv.get(noteKey)).toContain("# Changed while offline");
   });
 
   test("creates the indexed identity, then patches audio after its manifest", async () => {

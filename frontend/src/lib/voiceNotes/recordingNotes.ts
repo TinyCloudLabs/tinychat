@@ -133,8 +133,14 @@ export function adoptNote(remote: Omit<RecordingNote, "savedEditAt"> & { savedEd
   return ordered(remote.recordingId, async () => {
     const stored = await readStored(remote.recordingId);
     if (stored && "deleted" in stored) throw new Error("This recording was discarded");
-    // A stored note wins whole, so a record from a client that predates savedEditAt cannot clear it.
-    if (stored) return { ...stored, savedEditAt: stored.savedEditAt ?? null, moments: parseMomentLines(stored.md) };
+    // A stored note keeps its text; its saved-edit time only ever moves forward, so a record without one cannot clear it.
+    if (stored) {
+      const mine = stored.savedEditAt ?? null;
+      const theirs = remote.savedEditAt ?? null;
+      const savedEditAt = theirs !== null && (mine === null || Date.parse(theirs) > Date.parse(mine)) ? theirs : mine;
+      if (savedEditAt !== mine) await writeStored({ ...stored, savedEditAt });
+      return { ...stored, savedEditAt, moments: parseMomentLines(stored.md) };
+    }
     const record: Omit<RecordingNote, "moments"> = { recordingId: remote.recordingId, md: remote.md,
       createdAt: remote.createdAt, editedAt: remote.editedAt, savedEditAt: remote.savedEditAt ?? null,
       revision: remote.revision };
