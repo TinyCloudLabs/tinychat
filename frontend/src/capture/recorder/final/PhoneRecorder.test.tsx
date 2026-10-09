@@ -72,6 +72,30 @@ describe("PhoneRecorder", () => {
     expect((html.match(/data-available=/g) ?? []).length).toBe(4);
   });
 
+  test("signed out, the first render has Local open and the other stops closed; signed in opens Audio only and Private (Local waits for its model)", () => {
+    const stops = (patch: Partial<RecorderValue>) =>
+      [...render(patch).matchAll(/data-available="(true|false)"/g)].map(
+        (m) => m[1],
+      );
+    const local = {
+      id: "on-device" as const,
+      identifySpeakers: false,
+      source: "recording" as const,
+    };
+    expect(stops({ signedIn: false, transcriber: local })).toEqual([
+      "false",
+      "true",
+      "false",
+      "false",
+    ]);
+    expect(stops({ signedIn: true, transcriber: local })).toEqual([
+      "true",
+      "false",
+      "true",
+      "false",
+    ]);
+  });
+
   test("paused offers Resume on the ring", () => {
     const html = render({ mic: { state: "paused", reason: "user" } });
     expect(html).toContain('aria-label="Resume recording"');

@@ -1,4 +1,6 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
@@ -76,6 +78,7 @@ function choice(
   props: VoiceNoteTranscriptionProps | undefined,
   api: TranscriberApi,
   model: OnDeviceSttStatus | null = MODEL,
+  signedIn = true,
 ) {
   const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
@@ -85,6 +88,7 @@ function choice(
       transcription: props,
       model,
       transcriber: api,
+      signedIn,
       notify: (message) => void notices.push(message),
     });
     return null;
@@ -256,6 +260,123 @@ describe("useTranscriptionChoice", () => {
       const { notices, errors } = await refused("ok");
       expect(notices).toEqual([]);
       expect(errors).toEqual([]);
+    });
+  });
+
+  describe("signed-out availability follows the account", () => {
+    const availability = (signedIn: boolean, id: TranscriberId) =>
+      choice(
+        transcription(),
+        fakeApi(id).api,
+        MODEL,
+        signedIn,
+      ).result.stops.map((s) => s.available);
+
+    test("signed out, from the first render: Local is open and every other stop says to sign in", () => {
+      const { result } = choice(
+        transcription(),
+        fakeApi("on-device").api,
+        MODEL,
+        false,
+      );
+      expect(result.stops.map((s) => [s.stop.id, s.available])).toEqual([
+        ["skip", false],
+        ["local", true],
+        ["private", false],
+        ["powerful", false],
+      ]);
+      expect(
+        result.stops.filter((s) => !s.available).map((s) => s.reason),
+      ).toEqual([SIGNED_OUT, SIGNED_OUT, SIGNED_OUT]);
+      expect(result.mode).toBe("local");
+    });
+
+    test("signed out, Audio only cannot be requested at all", async () => {
+      const { api, calls } = fakeApi("on-device");
+      const { result } = choice(transcription(), api, MODEL, false);
+      expect(result.select("skip")).toBe(SIGNED_OUT);
+      await settle();
+      expect(calls).toEqual([]);
+    });
+
+    test("signed in, the same account opens the stops again", () => {
+      expect(availability(true, "on-device")).toEqual([
+        true,
+        true,
+        true,
+        false,
+      ]);
+    });
+
+    test("a refusal toasts but locks nothing: the stops follow the account", async () => {
+      const { api } = fakeApi("private-cloud", "locked_signed_out");
+      const { result, notices } = choice(transcription(), api);
+      result.select("skip");
+      await settle();
+      expect(notices).toEqual([SIGNED_OUT]);
+      expect(
+        choice(transcription(), api).result.stops.map((s) => s.available),
+      ).toEqual([true, true, true, false]);
+    });
+
+    describe("mounted: signing out and back in", () => {
+      const saved = {
+        window: (globalThis as { window?: unknown }).window,
+        act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+          .IS_REACT_ACT_ENVIRONMENT,
+      };
+      beforeAll(() => {
+        (
+          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+        ).IS_REACT_ACT_ENVIRONMENT = true;
+        (globalThis as { window?: unknown }).window = {
+          setTimeout,
+          clearTimeout,
+          event: undefined,
+          HTMLIFrameElement: class {},
+        };
+      });
+      afterAll(() => {
+        (globalThis as { window?: unknown }).window = saved.window;
+        (
+          globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+        ).IS_REACT_ACT_ENVIRONMENT = saved.act;
+      });
+
+      test("sign-in reopens the stops, and signing out closes them again", async () => {
+        const { api } = fakeApi("on-device");
+        const seen: boolean[][] = [];
+        function Probe({ signedIn }: { signedIn: boolean }) {
+          seen.push(
+            useTranscriptionChoice({
+              shell: "phone",
+              transcription: transcription(),
+              model: MODEL,
+              transcriber: api,
+              signedIn,
+              notify: noop,
+            }).stops.map((s) => s.available),
+          );
+          return null;
+        }
+        const container = {
+          nodeType: 1,
+          nodeName: "DIV",
+          tagName: "DIV",
+          ownerDocument: null,
+          textContent: "",
+          addEventListener() {},
+          removeEventListener() {},
+        } as unknown as HTMLElement;
+        const root = createRoot(container);
+        await act(async () => root.render(<Probe signedIn={false} />));
+        expect(seen.at(-1)).toEqual([false, true, false, false]);
+        await act(async () => root.render(<Probe signedIn />));
+        expect(seen.at(-1)).toEqual([true, true, true, false]);
+        await act(async () => root.render(<Probe signedIn={false} />));
+        expect(seen.at(-1)).toEqual([false, true, false, false]);
+        await act(async () => root.unmount());
+      });
     });
   });
 

@@ -114,6 +114,7 @@ export function PhoneRecorder({
     transcription: recorder.transcription,
     model: onDevice.model,
     transcriber: transcriberApi ?? recorder,
+    signedIn: recorder.signedIn,
     notify: showToast,
   });
 

@@ -56,7 +56,7 @@ export async function requestRecordingRoute(
     result = await request();
   } catch (caught) {
     console.error("[Recorder] Could not change the transcription route", caught);
-    outcome.notify(`Could not change the transcription: ${caught instanceof Error ? caught.message : String(caught)}`);
+    outcome.notify(`Could not change the transcription to ${ROUTE_NAME[next]}: ${caught instanceof Error ? caught.message : String(caught)}`);
     return;
   }
   switch (result) {
@@ -160,9 +160,10 @@ export function TranscriptionRouteControl(props: {
   useEffect(() => { if (offDefault !== null) setOffPicked(offDefault); }, [offDefault]);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const askingNow = offered && !consented && asking;
+  // With a live recorder the selection is always the provider's; `asking` only shows the consent question.
   const route: Route = !signedIn ? "on-device"
-    : askingNow ? "private-cloud"
     : recorder ? asRoute(recorder.transcriber.id)
+    : askingNow ? "private-cloud"
     : activeOverride ?? (offPicked && !askingNow ? "off"
     : onDevicePicked && !askingNow ? "on-device"
     : offered && (consented || askingNow) ? "private-cloud" : "off");

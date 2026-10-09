@@ -102,6 +102,8 @@ export interface TranscriptionChoiceOptions {
   transcription: VoiceNoteTranscriptionProps | undefined;
   model: OnDeviceSttStatus | null;
   transcriber: TranscriberApi;
+  /** The account's current state: signed out, the provider is locked to Local. */
+  signedIn: boolean;
   /** Tells the user something that did not work. */
   notify: (message: string) => void;
 }
@@ -117,22 +119,22 @@ export function useTranscriptionChoice({
   transcription,
   model,
   transcriber: api,
+  signedIn,
   notify,
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
   const mode = MODE_FOR[api.transcriber.id];
 
-  const [locked, setLocked] = useState(false);
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<ModeId | null>(null);
   const [retry, setRetry] = useState<ModeId | null>(null);
 
   const stops: ScaleStop[] = scaleStops(shell, model).map(
     ({ availability, ...stop }) => {
-      if (locked && stop.id !== "local")
+      if (!signedIn && stop.id !== "local")
         return { stop, available: false, reason: SIGNED_OUT };
-      if (locked) return { stop, available: true };
+      if (!signedIn) return { stop, available: true };
       if (stop.id === "private" && !offered)
         return { stop, available: false, reason: PRIVATE_UNAVAILABLE };
       return availability.available
@@ -166,7 +168,6 @@ export function useTranscriptionChoice({
         setAsking(true);
         return;
       case "locked_signed_out":
-        setLocked(true);
         notify(SIGNED_OUT);
         return;
       case "unavailable":
@@ -231,7 +232,6 @@ export function useTranscriptionChoice({
     if (result === "ok") return;
     // The switch shows the provider's value, so a refusal leaves it where it was.
     console.error(`[Recorder] Identify speakers was refused: ${result}`);
-    if (result === "locked_signed_out") setLocked(true);
     notify(
       result === "needs_consent"
         ? SPEAKERS_NEEDS_CONSENT

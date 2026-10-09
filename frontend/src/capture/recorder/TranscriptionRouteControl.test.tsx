@@ -117,6 +117,38 @@ describe("TranscriptionRouteControl", () => {
 // `status().options.transcriber` must win over the stored default — which this very recording
 // may have been overridden away from. There is no DOM in this workspace, so the hook (no host
 // elements) is mounted directly, as SavedReceipt.test.tsx does for useOnDeviceReceipt.
+describe("a live recorder's selection is always the provider's", () => {
+  const checked = (html: string) =>
+    [...html.matchAll(/<button[^>]*role="radio"[^>]*aria-checked="true"[^>]*>(.*?)<\/button>/g)].map((m) => m[1]!.replace(/<[^>]*>/g, ""));
+  const renderWith = (id: "off" | "on-device" | "private-cloud", value: VoiceNoteTranscriptionProps, asking: boolean) => {
+    __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+    return renderToStaticMarkup(
+      <MemoryRouter>
+        <TranscriptionRouteControl
+          transcription={value}
+          signedIn
+          defaultAsking={asking}
+          recorder={{ transcriber: { id, identifySpeakers: false, source: "recording" }, setTranscriber: async () => "ok" }}
+        />
+      </MemoryRouter>,
+    );
+  };
+
+  test("while the consent question is open, the selected route is still the provider's", () => {
+    for (const id of ["off", "on-device"] as const) {
+      const html = renderWith(id, transcription({ consented: false }), true);
+      expect(html).toContain('data-testid="voice-note-transcription-consent"');
+      expect(html).toContain(`data-route="${id}"`);
+      expect(checked(html)).toEqual([id === "off" ? "Off" : "On this phone"]);
+    }
+  });
+
+  test("with consent given the selection is the provider's too", () => {
+    expect(checked(renderWith("private-cloud", transcription(), false))).toEqual(["Private cloud"]);
+    expect(checked(renderWith("on-device", transcription(), false))).toEqual(["On this phone"]);
+  });
+});
+
 describe("requestRecordingRoute: the provider's answer is shown, logged, and never overridden", () => {
   async function run(request: () => Promise<SetTranscriberResult>, next: "off" | "on-device" | "private-cloud" = "private-cloud") {
     const events: string[] = [];
@@ -151,7 +183,7 @@ describe("requestRecordingRoute: the provider's answer is shown, logged, and nev
 
   test("a rejected change says why, and is logged", async () => {
     const { events, errors } = await run(async () => { throw new Error("plugin down"); });
-    expect(events).toEqual(["notify:Could not change the transcription: plugin down"]);
+    expect(events).toEqual(["notify:Could not change the transcription to Private cloud: plugin down"]);
     expect(errors).toBe(1);
   });
 });
