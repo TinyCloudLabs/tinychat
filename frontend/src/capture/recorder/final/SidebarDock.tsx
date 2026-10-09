@@ -1,21 +1,24 @@
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { useRecorder, type RecorderValue } from "../RecorderProvider";
-import { MirroredSpectrumBars } from "./halo";
+import type { RecorderValue } from "../RecorderProvider";
+import { MinimizedBars } from "./MinimizedBars";
 import { ExpandGlyph, PauseGlyph, PlayGlyph } from "./minimizedIcons";
 import {
   useEntrance,
   useMinimizedAnnouncement,
   useMinimizedElapsed,
+  useMinimizedRecorder,
+  useMinimizedSilencedSince,
 } from "./MinimizedProvider";
 import { minimizedView } from "./minimizedView";
-import { useLevelSource } from "./useLevelSource";
 import "./soft.css";
 import "./ribbon.css";
 
 export interface SidebarDockViewProps {
   recorder: RecorderValue;
   elapsedMs: number;
+  /** When the mic went silent, for the no-sound line. */
+  silencedSinceMs?: number | null;
   theme: "night" | "day";
   entering?: boolean;
   /** The polite live region's text. */
@@ -26,13 +29,13 @@ export interface SidebarDockViewProps {
 export function SidebarDockView({
   recorder,
   elapsedMs,
+  silencedSinceMs = null,
   theme,
   entering = false,
   announcement = "",
 }: SidebarDockViewProps) {
-  const view = minimizedView(recorder, elapsedMs);
+  const view = minimizedView(recorder, elapsedMs, silencedSinceMs);
   const live = view.ring === "live";
-  const subscribe = useLevelSource(recorder);
   const canToggle = view.controls.resume || view.controls.pause;
   return (
     <div
@@ -90,15 +93,17 @@ export function SidebarDockView({
           </button>
         </div>
         <div className="dock-bars">
-          <MirroredSpectrumBars
-            subscribe={subscribe}
+          <MinimizedBars
+            recorder={recorder}
+            view={view}
             bars={22}
-            paused={!live}
             theme={theme}
           />
         </div>
         <div className="dock-foot" aria-hidden="true">
-          <span data-testid="dock-status">{view.pill.label}</span>
+          <span className="dock-status" data-testid="dock-status">
+            {view.statusLine ?? view.pill.label}
+          </span>
           <span className="dock-foot-gap" />
           <ExpandGlyph size={14} />
         </div>
@@ -115,8 +120,9 @@ export function SidebarDockView({
 }
 
 export function SidebarDock() {
-  const recorder = useRecorder();
+  const recorder = useMinimizedRecorder();
   const elapsedMs = useMinimizedElapsed();
+  const silencedSinceMs = useMinimizedSilencedSince();
   const entering = useEntrance();
   const announcement = useMinimizedAnnouncement(entering);
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
@@ -124,6 +130,7 @@ export function SidebarDock() {
     <SidebarDockView
       recorder={recorder}
       elapsedMs={elapsedMs}
+      silencedSinceMs={silencedSinceMs}
       theme={theme}
       entering={entering}
       announcement={announcement}

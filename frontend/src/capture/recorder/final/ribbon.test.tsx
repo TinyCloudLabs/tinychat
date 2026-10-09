@@ -9,6 +9,7 @@ import {
   type RecorderValue,
 } from "../RecorderProvider";
 import { CaptureDot } from "./CaptureDot";
+import { MinimizedAlert } from "./MinimizedAlert";
 import { MinimizedProvider } from "./MinimizedProvider";
 import { RibbonView } from "./Ribbon";
 import { SidebarDockView } from "./SidebarDock";
@@ -50,7 +51,11 @@ const INTERRUPTED: Partial<RecorderValue> = {
 const ribbon = (
   patch: Partial<RecorderValue>,
   elapsedMs = patch.elapsedMs ?? 0,
-  extra: { announcement?: string; entering?: boolean } = {},
+  extra: {
+    announcement?: string;
+    entering?: boolean;
+    silencedSinceMs?: number | null;
+  } = {},
 ) =>
   renderToStaticMarkup(
     <RibbonView
@@ -63,14 +68,20 @@ const ribbon = (
 const dock = (
   patch: Partial<RecorderValue>,
   elapsedMs = patch.elapsedMs ?? 0,
+  silencedSinceMs: number | null = null,
 ) =>
   renderToStaticMarkup(
     <SidebarDockView
       recorder={recorderWith(patch)}
       elapsedMs={elapsedMs}
+      silencedSinceMs={silencedSinceMs}
       theme="night"
     />,
   );
+const SILENCED: Partial<RecorderValue> = {
+  ...LIVE,
+  mic: { state: "silenced", reason: "os_silenced" },
+};
 const bars = (html: string) => (html.match(/data-bar="/g) ?? []).length;
 
 describe("RibbonView", () => {
@@ -140,6 +151,69 @@ describe("RibbonView", () => {
   test("entering is the only state that carries the entrance class", () => {
     expect(ribbon(LIVE, 6000, { entering: true })).toContain("is-entering");
     expect(ribbon(LIVE)).not.toContain("is-entering");
+  });
+});
+
+describe("a silenced mic", () => {
+  const SINCE = Date.now() - 60_000;
+
+  test("the Ribbon stays red but its bars are flat: nothing follows the level", () => {
+    const html = ribbon(SILENCED);
+    expect(html).toContain('data-state="live"');
+    expect(html).toContain('data-spectrum-bars="" data-paused="false"');
+    expect(html).toContain("#ff6b62");
+    expect(html).not.toContain("#8f8993");
+    // Resting height, the same for every bar.
+    expect(html.match(/scaleY\(0\.120\)/g)).toHaveLength(30);
+  });
+
+  test("the dock's bars rest at their own floor, in red", () => {
+    const html = dock(SILENCED);
+    expect(html).toContain("#ff6b62");
+    expect(html.match(/scaleY\(0\.200\)/g)).toHaveLength(22);
+  });
+
+  test("after five seconds of silence the no-sound line is in the accessible name and the dock's foot", () => {
+    expect(ribbon(SILENCED, 6000, { silencedSinceMs: SINCE })).toContain(
+      'aria-label="Recording. No sound from the microphone. Open recorder"',
+    );
+    expect(dock(SILENCED, 6000, SINCE)).toContain(
+      'data-testid="dock-status">No sound from the microphone<',
+    );
+  });
+
+  test("before that, it is only Recording", () => {
+    expect(ribbon(SILENCED, 6000, { silencedSinceMs: Date.now() })).toContain(
+      'aria-label="Recording. Open recorder"',
+    );
+  });
+});
+
+describe("MinimizedAlert", () => {
+  const alert = (patch: Partial<RecorderValue>) =>
+    withProvider(patch, <MinimizedAlert />);
+
+  test("a failed Pause is a role=alert with a way to open the recorder", () => {
+    const html = alert({ ...LIVE, error: "Could not pause: microphone busy" });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Could not pause: microphone busy");
+    expect(html).toContain('aria-label="Open recorder"');
+    expect(html).not.toContain("Try again");
+  });
+
+  test("a Stop whose outcome is unknown offers Stop again", () => {
+    const html = alert({ ...LIVE, phase: "stopping", error: "Could not stop" });
+    expect(html).toContain('data-testid="minimized-alert-retry"');
+    expect(html).toContain("Try again");
+  });
+
+  test("nothing without an error, or with none of a recording's phases under way", () => {
+    expect(alert(LIVE)).toBe("");
+    expect(alert({ error: "Could not save" })).toBe("");
+  });
+
+  test("nothing outside the final recorder", () => {
+    expect(() => renderToStaticMarkup(<MinimizedAlert />)).toThrow();
   });
 });
 

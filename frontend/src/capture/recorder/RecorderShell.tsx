@@ -4,7 +4,9 @@
 // the browser harnesses render this inside the one RecorderProvider.
 import { useNavKind } from "@/shell/navItems";
 import { AppShell, type AppShellProps } from "@/shell/AppShell";
+import { MinimizedAlert } from "./final/MinimizedAlert";
 import { MinimizedProvider } from "./final/MinimizedProvider";
+import { showsMinimizedError } from "./final/minimizedView";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import { FloatingRibbon, Ribbon } from "./final/Ribbon";
 import { SidebarDock } from "./final/SidebarDock";
@@ -38,23 +40,35 @@ export function FinalRecorderShell({ onOpenNote, ...shell }: RecorderShellProps)
   if (minimized && navKind === "tabbar") {
     island = recording ? (
       <div className="px-[14px] py-1">
+        <MinimizedAlert />
         <Ribbon />
       </div>
     ) : (
       <div className="px-3 py-1">
+        <MinimizedAlert />
         <Island onOpenNote={onOpenNote} />
       </div>
     );
-  } else if (minimized && navKind === "rail" && recording) {
-    island = <FloatingRibbon />;
+  } else if (minimized && navKind === "rail" && (recording || showsMinimizedError(recorder))) {
+    island = <FloatingRibbon ribbon={recording} />;
   }
+  const dock = minimized && recording ? <SidebarDock /> : null;
+  const sidebarCard = recording ? dock : <SidebarLiveCard />;
+  const sidebarAlert = minimized && showsMinimizedError(recorder);
   return (
     <MinimizedProvider>
       <AppShell
         {...shell}
         island={island}
         railLive={recording ? null : <RailLiveButton />}
-        sidebarLive={recording ? minimized ? <SidebarDock /> : null : <SidebarLiveCard />}
+        sidebarLive={
+          sidebarAlert || sidebarCard ? (
+            <>
+              {sidebarAlert ? <MinimizedAlert layout="desktop" /> : null}
+              {sidebarCard}
+            </>
+          ) : null
+        }
       />
       <RecordingOverlay onOpenNote={onOpenNote} />
     </MinimizedProvider>

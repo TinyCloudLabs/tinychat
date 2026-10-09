@@ -1,22 +1,26 @@
 import { useId } from "react";
 import { useResolvedTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { useRecorder, type RecorderValue } from "../RecorderProvider";
-import { MirroredSpectrumBars } from "./halo";
+import type { RecorderValue } from "../RecorderProvider";
+import { MinimizedBars } from "./MinimizedBars";
 import { PauseGlyph, PlayGlyph } from "./minimizedIcons";
+import { MinimizedAlert } from "./MinimizedAlert";
 import {
   useEntrance,
   useMinimizedAnnouncement,
   useMinimizedElapsed,
+  useMinimizedRecorder,
+  useMinimizedSilencedSince,
 } from "./MinimizedProvider";
 import { minimizedView } from "./minimizedView";
-import { useLevelSource } from "./useLevelSource";
 import "./soft.css";
 import "./ribbon.css";
 
 export interface RibbonViewProps {
   recorder: RecorderValue;
   elapsedMs: number;
+  /** When the mic went silent, for the no-sound line. */
+  silencedSinceMs?: number | null;
   theme: "night" | "day";
   /** The token set: the phone tab bar, or the floating Ribbon on the rail. */
   layout?: "phone" | "rail";
@@ -29,14 +33,14 @@ export interface RibbonViewProps {
 export function RibbonView({
   recorder,
   elapsedMs,
+  silencedSinceMs = null,
   theme,
   layout = "phone",
   entering = false,
   announcement = "",
 }: RibbonViewProps) {
-  const view = minimizedView(recorder, elapsedMs);
+  const view = minimizedView(recorder, elapsedMs, silencedSinceMs);
   const live = view.ring === "live";
-  const subscribe = useLevelSource(recorder);
   const timerId = useId();
   const canToggle = view.controls.resume || view.controls.pause;
   return (
@@ -68,10 +72,10 @@ export function RibbonView({
             {view.timer.text}
           </span>
           <span className="ribbon-bars">
-            <MirroredSpectrumBars
-              subscribe={subscribe}
+            <MinimizedBars
+              recorder={recorder}
+              view={view}
               bars={30}
-              paused={!live}
               theme={theme}
             />
           </span>
@@ -119,8 +123,9 @@ export function RibbonView({
 }
 
 export function Ribbon({ layout }: { layout?: RibbonViewProps["layout"] }) {
-  const recorder = useRecorder();
+  const recorder = useMinimizedRecorder();
   const elapsedMs = useMinimizedElapsed();
+  const silencedSinceMs = useMinimizedSilencedSince();
   const entering = useEntrance();
   const announcement = useMinimizedAnnouncement(entering);
   const theme = useResolvedTheme() === "dark" ? "night" : "day";
@@ -128,6 +133,7 @@ export function Ribbon({ layout }: { layout?: RibbonViewProps["layout"] }) {
     <RibbonView
       recorder={recorder}
       elapsedMs={elapsedMs}
+      silencedSinceMs={silencedSinceMs}
       theme={theme}
       layout={layout}
       entering={entering}
@@ -136,12 +142,16 @@ export function Ribbon({ layout }: { layout?: RibbonViewProps["layout"] }) {
   );
 }
 
-/** From 768 to 1023 px the Ribbon floats at the foot of the main area without taking any of its height. */
-export function FloatingRibbon() {
+/**
+ * From 768 to 1023 px the Ribbon floats at the foot of the main area without taking any of its height.
+ * Without the Ribbon (after Stop) it holds only the error, if there is one.
+ */
+export function FloatingRibbon({ ribbon = true }: { ribbon?: boolean }) {
   return (
     <div className="ribbon-float">
       <div className="ribbon-float-inner">
-        <Ribbon layout="rail" />
+        <MinimizedAlert layout="rail" />
+        {ribbon && <Ribbon layout="rail" />}
       </div>
     </div>
   );

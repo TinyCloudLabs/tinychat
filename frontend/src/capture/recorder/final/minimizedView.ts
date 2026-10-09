@@ -37,18 +37,27 @@ function recorderState(recorder: RecorderValue): RecorderState {
 export function minimizedView(
   recorder: RecorderValue,
   elapsedMs: number,
+  silencedSinceMs: number | null = null,
 ): MinimizedView {
   const view = selectRecorderView(recorderState(recorder), {
     nowMs: Date.now(),
     elapsedMs,
     inputName: null,
-    silencedSinceMs: null,
+    silencedSinceMs,
   });
-  const status =
+  const state =
     view.ring === "live"
       ? "Recording"
       : view.ring === "paused"
         ? "Paused"
         : view.pill.label;
+  const status = view.statusLine ? `${state}. ${view.statusLine}` : state;
   return { ...view, status };
+}
+
+/** A rejected control leaves its error on the recorder while a phase is under way. */
+export function showsMinimizedError(
+  recorder: Pick<RecorderValue, "error" | "phase">,
+): boolean {
+  return recorder.error !== null && recorder.phase !== "idle";
 }
