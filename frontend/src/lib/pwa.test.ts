@@ -70,7 +70,7 @@ describe("PWA build config", () => {
   });
 
   test("the 7.7 MB notes renderer WASM is not precached: it is fetched on first Preview, never at install", () => {
-    expect(config).toContain('globIgnores: ["agents/**", "**/franken_markdown_bg*.wasm"]');
+    expect(config).toMatch(/globIgnores: \[[^\]]*"\*\*\/franken_markdown_bg\*\.wasm"[^\]]*\]/);
   });
 
   test("an update waits for the user instead of swapping the shell under the page", () => {
