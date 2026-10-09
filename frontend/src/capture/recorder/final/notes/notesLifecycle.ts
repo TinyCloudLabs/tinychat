@@ -4,9 +4,10 @@ import { clearNotesUi, clearNotesUiExcept } from "./notesUiState";
 import { recordingKey } from "./recordingKey";
 
 /**
- * Drops the notes UI state when its recording is over (Done, discard) or another one has started. Mount it above
- * the views (they unmount at Done); its unmount also counts as the end when the recording is no longer live, so
- * a view that is only mounted while the recorder is open can host it.
+ * Drops the notes UI state when its recording is over (Done, discard) or another one has started. Mount it in an
+ * owner that stays mounted across minimise and stop (FinalRecorderShell), never in a view: the views unmount when
+ * the sheet is minimised, and a recording stopped or discarded then would never be cleared. Its unmount also counts
+ * as the end when the recording is no longer live.
  */
 export function useNotesLifecycle(): void {
   const recorder = useRecorder();

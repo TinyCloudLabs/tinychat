@@ -17,7 +17,7 @@ import { useRecordedElapsed } from "../useRecordedElapsed";
 import { useKeyboardInset } from "./keyboardInset";
 import { ModesCard } from "./ModesCard";
 import { MomentField } from "./MomentField";
-import { readNotesUi, recordingKey, updateNotesUi, useNotesUi, warmRenderer } from "./notes";
+import { recordingKey, updateNotesUi, useNotesUi, warmRenderer } from "./notes";
 import { NOTES_COPY } from "./notesCopy";
 import { NotesListIcon, PlusIcon } from "./notesIcons";
 import { NotesSheet } from "./NotesSheet";
@@ -27,7 +27,7 @@ import {
   type NotesView,
 } from "./notesViewPreference";
 import { hasNote } from "./momentLines";
-import { finishWithNote, type DoneGate } from "./doneGate";
+import { finishRecording, type DoneGate } from "./doneGate";
 import { useMomentFlow } from "./useMomentFlow";
 import { useNoteSaver } from "./useNoteSaver";
 import { PrivacyScale } from "./PrivacyScale";
@@ -258,12 +258,9 @@ export function PhoneRecorder({
   // Done never ends the recording over an unsaved note without the user knowing (doneGate.ts).
   const doneGate = useRef<DoneGate>({ acknowledged: null });
   const finish = () =>
-    finishWithNote(doneGate.current, {
+    finishRecording(doneGate.current, key, {
       flush: saving.flush,
-      unsaved: () => (key === null ? null : (readNotesUi(key)?.draft ?? null)),
       stop: () => control("stop"),
-      onUnsaved: (error) =>
-        console.error("[Recorder] Finishing with an unsaved note", error),
     });
 
   const ringKind =

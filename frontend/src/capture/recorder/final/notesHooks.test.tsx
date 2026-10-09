@@ -2,9 +2,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-import { StaticRecorderProvider, type RecorderValue } from "../RecorderProvider";
+import { StaticRecorderProvider, useRecorder, type RecorderValue } from "../RecorderProvider";
 import { finishWithNote, type DoneGate } from "./doneGate";
-import { clearNotesUi, readNotesUi, updateNotesUi, useNotesLifecycle } from "./notes";
+import { clearNotesUi, dismissUnsavedNote, readNotesUi, readUnsavedNote, recordingKey, retainUnsavedNote, updateNotesUi, useNotesLifecycle } from "./notes";
 import { useNoteSaver, type NoteSaving } from "./useNoteSaver";
 
 // A root over a stand-in container: the components here render nothing, so only React's effects run.
@@ -24,11 +24,15 @@ afterAll(() => {
   (globalThis as { window?: unknown }).window = saved.window;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = saved.act;
 });
-beforeEach(clearNotesUi);
+beforeEach(() => {
+  clearNotesUi();
+  dismissUnsavedNote();
+});
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
   clearNotesUi();
+  dismissUnsavedNote();
 });
 
 async function show(node: ReactNode) {
@@ -186,5 +190,50 @@ describe("useNotesLifecycle", () => {
     await show(mount(live(5)));
     await unmount();
     expect(readNotesUi("5")?.draft).toBe("x");
+  });
+
+  describe("in a stable owner (FinalRecorderShell) above a view that minimising unmounts", () => {
+    function Owner({ children }: { children: ReactNode }) {
+      useNotesLifecycle();
+      return <>{children}</>;
+    }
+    function View() {
+      const recorder = useRecorder();
+      useNoteSaver(recordingKey(recorder), recorder);
+      return null;
+    }
+    const tree = (patch: Partial<RecorderValue>, viewMounted: boolean) => (
+      <StaticRecorderProvider value={patch}>
+        <Owner>{viewMounted ? <View /> : null}</Owner>
+      </StaticRecorderProvider>
+    );
+
+    test("minimise, then stop while minimised: the state is cleared", async () => {
+      updateNotesUi("5", () => ({ draft: "x", open: true }));
+      await show(tree(live(5), true));
+      await show(tree(live(5), false));
+      expect(readNotesUi("5")?.open).toBe(true);
+      await show(tree({ phase: "idle", startedAt: null, outcome: "saved" }, false));
+      expect(readNotesUi("5")).toBeNull();
+    });
+
+    test("minimise, then discard while minimised: the state is cleared", async () => {
+      updateNotesUi("5", () => ({ draft: "x" }));
+      await show(tree(live(5), true));
+      await show(tree(live(5), false));
+      await show(tree({ phase: "idle", startedAt: null, outcome: null }, false));
+      expect(readNotesUi("5")).toBeNull();
+    });
+
+    test("a note lost at Done outlives that clear, until the next recording starts", async () => {
+      updateNotesUi("5", () => ({ draft: "x" }));
+      retainUnsavedNote("5", "x");
+      await show(tree(live(5), true));
+      await show(tree({ phase: "idle", startedAt: null, outcome: "saved" }, false));
+      expect(readNotesUi("5")).toBeNull();
+      expect(readUnsavedNote()).toEqual({ key: "5", md: "x" });
+      await show(tree(live(6), false));
+      expect(readUnsavedNote()).toBeNull();
+    });
   });
 });

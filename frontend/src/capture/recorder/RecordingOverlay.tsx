@@ -8,13 +8,17 @@ import {
   LazyDesktopRecorder,
   type DesktopRecorderLoader,
 } from "./final/desktop/LazyDesktopRecorder";
-import { PhoneRecorder } from "./final/PhoneRecorder";
+import {
+  LazyPhoneRecorder,
+  type PhoneRecorderLoader,
+} from "./final/LazyPhoneRecorder";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import {
   recorderLayout,
   shellForPlatform,
   type RecorderLayout,
 } from "./final/shellCapabilities";
+import { ReceiptNoteNotice } from "./final/UnsavedNoteNotice";
 import { overlayMount } from "./overlayMount";
 import { RecordingView, type RecordingViewProps } from "./RecordingView";
 import { useRecorder } from "./RecorderProvider";
@@ -51,6 +55,8 @@ export type RecordingOverlayProps = Omit<RecordingViewProps, "recorder"> & {
   finalSkin?: boolean;
   /** Where the desktop view is imported from; a test replaces it. */
   loadDesktopRecorder?: DesktopRecorderLoader;
+  /** Where the phone view is imported from; a test replaces it. */
+  loadPhoneRecorder?: PhoneRecorderLoader;
 };
 
 export function RecordingOverlay({
@@ -58,6 +64,7 @@ export function RecordingOverlay({
   onOpenNotes,
   finalSkin = recorderFinalEnabled(),
   loadDesktopRecorder,
+  loadPhoneRecorder,
   ...props
 }: RecordingOverlayProps) {
   const recorder = useRecorder();
@@ -113,9 +120,12 @@ export function RecordingOverlay({
             Voice note recorder
           </DialogPrimitive.Title>
           {final ? (
-            <PhoneRecorder />
+            <LazyPhoneRecorder load={loadPhoneRecorder} />
           ) : (
-            <RecordingView recorder={recorder} {...props} />
+            <>
+              <RecordingView recorder={recorder} {...props} />
+              <ReceiptNoteNotice />
+            </>
           )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

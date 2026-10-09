@@ -8,6 +8,7 @@ import { AppShell, type AppShellProps } from "@/shell/AppShell";
 import { MinimizedAlert } from "./final/MinimizedAlert";
 import { MinimizedProvider } from "./final/MinimizedProvider";
 import { showsMinimizedError } from "./final/minimizedView";
+import { useNotesLifecycle } from "./final/notes/notesLifecycle";
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
 import { FloatingRibbon, Ribbon } from "./final/Ribbon";
 import { ShellChrome } from "./final/shell/ShellChrome";
@@ -37,6 +38,8 @@ export function RecorderShell(props: RecorderShellProps) {
  */
 export function FinalRecorderShell({ onOpenNote, onOpenNotes, ...shell }: RecorderShellProps) {
   const recorder = useRecorder();
+  // Mounted here because this shell outlives the recorder views: minimising or stopping while minimised still ends the notes UI state.
+  useNotesLifecycle();
   const navKind = useNavKind();
   const [recorderHost, setRecorderHost] = useState<HTMLElement | null>(null);
   const minimized = islandShown(recorder);

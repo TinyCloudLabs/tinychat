@@ -12,8 +12,15 @@ export interface NotesUiFields {
   saveFailed: boolean;
 }
 
+/**
+ * The notes UI, for whichever layout is mounted. This is the one API the phone sheet and the desktop note view
+ * share; both read the same state, so a layout switch loses nothing.
+ */
 export interface NotesUi extends NotesUiFields {
-  /** Opens the notes in `view`. The desktop note view always passes "write". */
+  /**
+   * Opens the notes in `view` ("write" or "preview"). The desktop note view's "Write notes" passes `"write"`; the
+   * phone's "View notes" passes the view the user last used. Does nothing when no recording is in progress.
+   */
   openNotes(view: NotesView): void;
   closeNotes(): void;
   setView(view: NotesView): void;
@@ -65,16 +72,49 @@ export function readNotesUi(key: string): NotesUiFields | null {
   return stored?.key === key ? stored.fields : null;
 }
 
-/** Forgets everything: the recording ended (Done or discard), or a test starts clean. */
+/** Forgets everything of the recording in progress: it ended (Done or discard), or a test starts clean. Leaves `unsavedNote`. */
 export function clearNotesUi(): void {
   if (stored === null) return;
   stored = null;
   emit();
 }
 
-/** Forgets the state of every recording but `key` (null: all of it). */
+/** Forgets the state of every recording but `key` (null: all of it), and the unsaved note of any other recording than `key`. */
 export function clearNotesUiExcept(key: string | null): void {
   if (stored !== null && stored.key !== key) clearNotesUi();
+  if (key !== null && unsaved !== null && unsaved.key !== key) dismissUnsavedNote();
+}
+
+/** A note whose last text could not be saved when its recording ended with Done anyway. */
+export interface UnsavedNote {
+  /** The recording it belongs to (`recordingKey`). */
+  key: string;
+  md: string;
+}
+
+// Kept after the recording's own state is cleared, so the saved receipt can still tell the user and offer the text.
+let unsaved: UnsavedNote | null = null;
+const unsavedSnapshot = () => unsaved;
+
+/** The recording `key` ended with `md` unsaved. Held until the user dismisses it or another recording starts. */
+export function retainUnsavedNote(key: string, md: string): void {
+  unsaved = { key, md };
+  emit();
+}
+
+export function dismissUnsavedNote(): void {
+  if (unsaved === null) return;
+  unsaved = null;
+  emit();
+}
+
+export function readUnsavedNote(): UnsavedNote | null {
+  return unsaved;
+}
+
+/** The note the last recording ended without saving; null when there is none. */
+export function useUnsavedNote(): UnsavedNote | null {
+  return useSyncExternalStore(subscribe, unsavedSnapshot, unsavedSnapshot);
 }
 
 /**
