@@ -315,7 +315,6 @@ describe("vite:preloadError", () => {
   test("before the recorder has loaded, its own failure shows the failed surface", () => {
     const load = loads(new Promise(() => {}));
     within(<LazyDesktopRecorder layout="desktop" load={load} />);
-    expect(isDesktopRecorderPreloadError(load, preloadEvent())).toBe(true);
     expect(
       isDesktopRecorderPreloadError(
         load,
@@ -338,6 +337,25 @@ describe("vite:preloadError", () => {
     );
     expect(isDesktopRecorderPreloadError(load, event)).toBe(false);
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  test("before it has loaded, URL-less and similarly named failures are not the recorder's", () => {
+    const load = loads(new Promise(() => {}));
+    expect(isDesktopRecorderPreloadError(load, preloadEvent())).toBe(false);
+    expect(
+      isDesktopRecorderPreloadError(
+        load,
+        preloadEvent("Importing a module script failed."),
+      ),
+    ).toBe(false);
+    expect(
+      isDesktopRecorderPreloadError(
+        load,
+        preloadEvent(
+          "Failed to fetch dynamically imported module: /assets/OtherDesktopRecorder-abc.js",
+        ),
+      ),
+    ).toBe(false);
   });
 
   test("once the recorder has loaded, a later preload failure leaves it in place", async () => {

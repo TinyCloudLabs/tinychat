@@ -154,7 +154,11 @@ export function isDesktopRecorderPreloadError(
   const text =
     payload instanceof Error ? payload.message : String(payload ?? "");
   const urls = text.match(/[^\s"'()]+\.(?:js|css)\b/g);
-  return !urls || urls.some((url) => /DesktopRecorder/.test(url));
+  // URL-less failures are left to the recorder's own import and error boundary.
+  return (
+    urls !== null &&
+    urls.some((url) => /(?:^|\/)DesktopRecorder-[\w-]+\.(?:js|css)$/.test(url))
+  );
 }
 
 export const reloadExo = () => window.location.reload();
