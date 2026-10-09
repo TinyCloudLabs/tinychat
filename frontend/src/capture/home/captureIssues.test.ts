@@ -156,13 +156,16 @@ describe("matching rows", () => {
 describe("the on-this-phone card's note", () => {
   const pending = "Kept on this phone. Exo will finish it automatically.";
   const retry = "Not in your space yet · Exo will retry when it next opens";
+  const parkedNote = "Not in your space yet · Couldn't recover · audio kept";
   const kept = "Not in your space yet · Couldn't save all of this recording";
   const cases: [string, Record<string, HomeIssue>, string | null, string][] = [
     ["nothing wrong keeps the plain line", {}, null, "Not in your space yet"],
     ["a timed-out recording says Exo will finish it", { a: timedOut }, null, pending],
     ["recoveryFailed overrides it: never both", { a: timedOut, b: failed }, null, retry],
     ["recoveryFailed alone", { b: failed }, null, retry],
-    ["quarantined is the same as recoveryFailed", { b: { kind: "quarantined" } }, null, retry],
+    ["quarantined promises no retry", { b: { kind: "quarantined" } }, null, parkedNote],
+    ["unplayable quarantined promises no retry", { b: { kind: "quarantined", unplayable: true } }, null, parkedNote],
+    ["recoveryFailed still wins over quarantined", { a: failed, b: { kind: "quarantined" } }, null, retry],
     ["write_failed has its own line", { b: writeFailed }, null, kept],
     ["write_failed overrides a timed-out one", { a: timedOut, b: writeFailed }, null, kept],
     ["a save error is what the card already said", { a: failed }, "No connection", "No connection"],
@@ -210,7 +213,13 @@ describe("quarantined recordings", () => {
   });
 
   test("unplayable audio is Delete only, with an honest sheet", () => {
-    const merged = withQuarantine({}, [q("u", "unplayable"), q("v")], new Set());
+    const merged = withQuarantine(
+      {},
+      [q("u", "unplayable"), q("n", "no_audio_track"), q("v")],
+      new Set(),
+    );
+    expect(merged.n).toEqual({ kind: "quarantined", unplayable: true });
+    expect(issueCanRetry(merged.n!)).toBe(false);
     expect(merged.u).toEqual({ kind: "quarantined", unplayable: true });
     expect(issueCanRetry(merged.u!)).toBe(false);
     expect(issueCanRetry(merged.v!)).toBe(true);

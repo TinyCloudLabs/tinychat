@@ -145,24 +145,24 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       mic: micFromStatus(status) };
   };
 
-  const reconcileFailedStop = async (error: string | null) => {
+  const reconcileFailedStop = async (error: string | null, id?: string | null) => {
     try {
       const status = await VoiceNotes.status();
       if (state.phase !== "stopping") return;
       if (status.state === "idle") {
-        send({ type: "STOP_FAILED", status: "idle", error });
+        send({ type: "STOP_FAILED", status: "idle", error, id });
         void pendingStore.refresh();
       } else if (status.id === state.recordingId) {
         acceptNativeOptions(status);
-        send({ type: "STOP_FAILED", status: "active", error,
+        send({ type: "STOP_FAILED", status: "active", error, id,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs, elapsedAt: Date.now() });
       } else {
-        send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone." });
+        send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone.", id });
         acceptNativeOptions(status);
         send(activePickup(status));
       }
     } catch (caught) {
-      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this phone stopped recording: ${messageOf(caught)}` });
+      send({ type: "STOP_FAILED", status: "unknown", error: `Could not check whether this phone stopped recording: ${messageOf(caught)}`, id });
     }
   };
 
@@ -263,7 +263,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     const finalElapsed = recording && typeof recording.wallMs === "number" && typeof recording.pausedMs === "number"
       ? Math.max(0, recording.wallMs - recording.pausedMs) : undefined;
     send({ type: "AUTO_STOPPED", id: recording?.id ?? null, notice: limitNoticeText(event.maxDurationMs),
-      captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error });
+      captured: recording !== null, at: Date.now(), elapsedMs: finalElapsed, error: event.error,
+      pendingId: event.error === "finalization_timed_out" ? event.id ?? state.recordingId : null });
     if (!recording) return;
     void saveStopped(recording).catch((caught: unknown) =>
       send({ type: "SAVE_FAILED", error: messageOf(caught), recording: { id: recording.id, durationMs: recording.durationMs } }),
@@ -469,7 +470,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     async stop() {
       // Stop waits for STARTED: the plugin cannot cancel a start in flight.
       if (state.phase === "stopping" && state.error) {
-        await reconcileFailedStop(state.error);
+        await reconcileFailedStop(state.error, state.finalizationPendingId);
         return;
       }
       if (state.phase !== "recording") return;
@@ -485,7 +486,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         }
         await reconcileFailedStop(code === "not_recording" ? null
           : code === "finalization_timed_out" ? FINALIZATION_PENDING
-          : `Could not stop: ${messageOf(caught)}`);
+          : `Could not stop: ${messageOf(caught)}`, code === "finalization_timed_out" ? state.recordingId : null);
         return;
       }
       send({ type: "CAPTURE_RESOLVED", id: recording.id });

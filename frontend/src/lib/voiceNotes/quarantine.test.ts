@@ -25,7 +25,7 @@ describe("readQuarantine", () => {
     });
   });
 
-  for (const code of ["unsupported", "unimplemented", "UNIMPLEMENTED"]) {
+  for (const code of ["unsupported", "UNSUPPORTED"]) {
     test(`a ${code} rejection is an empty list, not an error`, async () => {
       const error = spyOn(console, "error").mockImplementation(() => {});
       __setVoiceNotesForTests(rejecting(Object.assign(new Error("x"), { code })), {
@@ -33,6 +33,17 @@ describe("readQuarantine", () => {
       });
       expect(await readQuarantine()).toEqual({ kind: "items", items: [] });
       expect(error).not.toHaveBeenCalled();
+      error.mockRestore();
+    });
+  }
+
+  for (const code of ["unimplemented", "UNIMPLEMENTED"]) {
+    test(`a ${code} rejection is a real bridge failure: surfaced and logged`, async () => {
+      const error = spyOn(console, "error").mockImplementation(() => {});
+      const caught = Object.assign(new Error("x"), { code });
+      __setVoiceNotesForTests(rejecting(caught), { available: true });
+      expect(await readQuarantine()).toEqual({ kind: "failed", caught });
+      expect(error).toHaveBeenCalledTimes(1);
       error.mockRestore();
     });
   }
@@ -60,4 +71,5 @@ test("rejection codes", () => {
   expect(rejectionCode(null)).toBeNull();
   expect(isUnsupported({ code: "unsupported" })).toBe(true);
   expect(isUnsupported({ code: "not_found" })).toBe(false);
+  expect(isUnsupported({ code: "unimplemented" })).toBe(false);
 });

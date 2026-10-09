@@ -125,7 +125,7 @@ describe("Soft Capture home interactions (phone)", () => {
     await page.keyboard.press("Enter");
     const sheet = page.getByRole("dialog");
     await sheet.waitFor({ timeout: 5_000 });
-    expect(await sheet.innerText()).toContain("kept on this phone");
+    expect(await sheet.innerText()).toMatch(/kept on this phone/i);
     expect(await sheet.innerText()).not.toMatch(/Try again|Delete/);
     await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached", timeout: 5_000 });
@@ -315,8 +315,12 @@ describe("Soft Capture home interactions (phone)", () => {
       await page.context().close();
     });
 
-    test("an unplayable quarantined recording offers Delete only, with an honest line", async () => {
-      const page = await open("capture-soft-failed-unplayable");
+    for (const [screen, reason] of [
+      ["capture-soft-failed-unplayable", "unplayable (Android)"],
+      ["capture-soft-failed-no-audio", "no_audio_track (iOS)"],
+    ] as const)
+    test(`a quarantined recording native calls ${reason} offers Delete only, with an honest line`, async () => {
+      const page = await open(screen);
       await page.locator(PARKED).tap();
       await sheetOf(page).waitFor({ timeout: 5_000 });
       expect(await sheetOf(page).innerText()).toContain("This recording can't be recovered. You can delete it.");
@@ -339,19 +343,25 @@ describe("Soft Capture home interactions (phone)", () => {
       await page.locator('[data-testid="capture-issue-retry"]').tap();
       await page.locator('[data-testid="capture-issue-error"]').waitFor({ timeout: 5_000 });
       expect(await page.evaluate(() => window.exoUiFailed!.listCalls())).toBeGreaterThan(before);
-      expect(await page.locator('li[data-issue="quarantined"]').count()).toBe(1);
+      expect(await page.locator(PARKED).count()).toBe(1);
       await page.context().close();
     });
 
-    test("quarantine is read on mount, and read again after an action", async () => {
+    test("quarantine is read on mount, again after an action, and again when a recoveryFailed issue appears", async () => {
       const page = await open("capture-soft-failed-parked");
       await page.locator(PARKED).waitFor({ timeout: 5_000 });
-      expect(await page.evaluate(() => window.exoUiFailed!.listCalls())).toBe(1);
+      const reads = () => page.evaluate(() => window.exoUiFailed!.listCalls());
+      const mounted = await reads();
+      expect(mounted).toBeGreaterThanOrEqual(1);
+      await page.evaluate(() => window.exoUiAddLost?.("rec-new"));
+      await page.waitForFunction((before) => window.exoUiFailed!.listCalls() > before, mounted);
+      const appeared = await reads();
+      expect(appeared).toBe(mounted + 1);
       await page.locator(PARKED).tap();
       await sheetOf(page).waitFor({ timeout: 5_000 });
       await page.locator('[data-testid="capture-issue-retry"]').tap();
       await sheetOf(page).waitFor({ state: "detached", timeout: 5_000 });
-      expect(await page.evaluate(() => window.exoUiFailed!.listCalls())).toBe(2);
+      expect(await reads()).toBe(appeared + 1);
       await page.context().close();
     });
   });

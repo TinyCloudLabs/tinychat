@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import { HOME_COPY } from "../../home/homeCopy";
 import { FINALIZATION_PENDING } from "../recorderCopy";
-import type {
-  RecorderCaptureIssue,
-  RecorderState,
+import {
+  initialRecorderState,
+  recorderReducer,
+  type RecorderCaptureIssue,
+  type RecorderState,
 } from "../recorderReducer";
 import { honestRecorderError } from "./honestRecorderError";
 
@@ -15,134 +17,82 @@ const failed: RecorderCaptureIssue = {
 const writeFailed: RecorderCaptureIssue = { kind: "write_failed", detail: "EIO" };
 const timedOut: RecorderCaptureIssue = { kind: "finalization_timed_out" };
 
-type Case = {
-  name: string;
-  state: Partial<RecorderState>;
-  expected: string | null;
-};
-
-const cases: Case[] = [
-  {
-    name: "no error stays none",
-    state: { error: null, captureIssues: { a: failed }, recordingId: "a" },
-    expected: null,
-  },
-  {
-    name: "pending with no issue stays the finishing promise",
-    state: { error: FINALIZATION_PENDING, recordingId: "a" },
-    expected: FINALIZATION_PENDING,
-  },
-  {
-    name: "pending with a timed-out issue keeps the promise",
-    state: {
-      error: FINALIZATION_PENDING,
-      recordingId: "a",
-      captureIssues: { a: timedOut },
-    },
-    expected: FINALIZATION_PENDING,
-  },
-  {
-    name: "recoveryFailed on the live recording",
-    state: {
-      error: FINALIZATION_PENDING,
-      recordingId: "a",
-      captureIssues: { a: failed },
-    },
-    expected: "Couldn't recover this recording. Exo will try again when it next opens.",
-  },
-  {
-    name: "stop timeout: only recordingId names the recording (no lastSaved, no failedRecording)",
-    state: {
-      error: FINALIZATION_PENDING,
-      recordingId: "a",
-      lastSaved: null,
-      failedRecording: null,
-      captureIssues: { a: writeFailed },
-    },
-    expected: HOME_COPY.writeFailedError,
-  },
-  {
-    name: "recoveryFailed on the failed recording",
-    state: {
-      error: FINALIZATION_PENDING,
-      failedRecording: { id: "b", durationMs: 1 },
-      captureIssues: { b: failed },
-    },
-    expected: HOME_COPY.recoveryFailedError,
-  },
-  {
-    name: "recoveryFailed on the last saved recording",
-    state: {
-      error: FINALIZATION_PENDING,
-      lastSaved: { id: "c", durationMs: 1, at: 0 },
-      captureIssues: { c: failed },
-    },
-    expected: HOME_COPY.recoveryFailedError,
-  },
-  {
-    name: "write_failed",
-    state: {
-      error: FINALIZATION_PENDING,
-      recordingId: "a",
-      captureIssues: { a: writeFailed },
-    },
-    expected: "Couldn't save all of this recording.",
-  },
-  {
-    name: "another recording's failure does not change this one's line",
-    state: {
-      error: FINALIZATION_PENDING,
-      recordingId: "a",
-      captureIssues: { z: failed },
-    },
-    expected: FINALIZATION_PENDING,
-  },
-  {
-    name: "a different error is left alone, whatever the issues",
-    state: {
-      error: "Could not stop: boom",
-      recordingId: "a",
-      captureIssues: { a: failed },
-    },
-    expected: "Could not stop: boom",
-  },
-];
+const line = (state: Partial<RecorderState>) =>
+  honestRecorderError({ error: null, captureIssues: {}, finalizationPendingId: null, ...state });
 
 describe("honestRecorderError", () => {
-  for (const { name, state, expected } of cases) {
-    test(name, () => {
-      expect(
-        honestRecorderError({
-          error: null,
-          lastSaved: null,
-          captureIssues: {},
-          ...state,
-        }),
-      ).toBe(expected);
-    });
-  }
+  test("no error stays none", () => {
+    expect(line({ captureIssues: { a: failed }, finalizationPendingId: "a" })).toBeNull();
+  });
+
+  test("pending with no issue stays the finishing promise", () => {
+    expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a" })).toBe(FINALIZATION_PENDING);
+  });
+
+  test("pending with a timed-out issue keeps the promise", () => {
+    expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: timedOut } })).toBe(FINALIZATION_PENDING);
+  });
+
+  test("recoveryFailed on the pending recording", () => {
+    expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: failed } }))
+      .toBe("Couldn't recover this recording. Exo will try again when it next opens.");
+  });
+
+  test("write_failed on the pending recording", () => {
+    expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: writeFailed } }))
+      .toBe(HOME_COPY.writeFailedError);
+  });
+
+  test("another recording's failure does not change this one's line", () => {
+    expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { z: failed } })).toBe(FINALIZATION_PENDING);
+  });
+
+  test("a pending line with no pending id is never rewritten", () => {
+    expect(line({ error: FINALIZATION_PENDING, captureIssues: { a: failed } })).toBe(FINALIZATION_PENDING);
+  });
+
+  test("a different error is left alone, whatever the issues", () => {
+    expect(line({ error: "Could not stop: boom", finalizationPendingId: "a", captureIssues: { a: failed } })).toBe("Could not stop: boom");
+  });
+
+  test("a last-saved recording's failure does not rewrite another recording's pending line", () => {
+    expect(line({
+      error: FINALIZATION_PENDING,
+      finalizationPendingId: "a",
+      lastSaved: { id: "c", durationMs: 1, at: 0 },
+      captureIssues: { c: failed },
+    })).toBe(FINALIZATION_PENDING);
+  });
 
   test("never renders an issue's detail", () => {
-    const line = honestRecorderError({
-      error: FINALIZATION_PENDING,
-      lastSaved: null,
-      recordingId: "a",
-      captureIssues: { a: failed },
-    });
-    expect(line).not.toContain("ENOSPC");
-    expect(line).not.toContain("secret");
+    const text = line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: failed } });
+    expect(text).not.toContain("ENOSPC");
+    expect(text).not.toContain("secret");
   });
 
   test("a failed recording never reads 'will finish it automatically'", () => {
     for (const issue of [failed, writeFailed]) {
-      expect(
-        honestRecorderError({
-          error: FINALIZATION_PENDING,
-          lastSaved: null,
-          recordingId: "a",
-          captureIssues: { a: issue },
-        }),
-      ).not.toContain("automatically");
+      expect(line({ error: FINALIZATION_PENDING, finalizationPendingId: "a", captureIssues: { a: issue } })).not.toContain("automatically");
     }
   });
+});
+
+describe("through the reducer", () => {
+  const live = (): RecorderState => recorderReducer(
+    recorderReducer(initialRecorderState, { type: "START_REQUESTED" }),
+    { type: "STARTED", id: "rec-1", startedAt: 1, maxDurationMs: 3_600_000, elapsedAt: 0 },
+  );
+
+  for (const [issue, expected] of [
+    [failed, HOME_COPY.recoveryFailedError],
+    [writeFailed, HOME_COPY.writeFailedError],
+  ] as const) {
+    test(`stop timeout, then the recorder goes idle, then ${issue.kind}: the line is honest`, () => {
+      const stopping = recorderReducer(live(), { type: "STOP_REQUESTED", at: 0 });
+      const idle = recorderReducer(stopping, { type: "STOP_FAILED", status: "idle", error: FINALIZATION_PENDING, id: "rec-1" });
+      expect(idle.recordingId).toBeNull();
+      expect(honestRecorderError(idle)).toBe(FINALIZATION_PENDING);
+      expect(honestRecorderError(recorderReducer(idle, { type: "CAPTURE_ISSUE", id: "rec-1", issue }))).toBe(expected);
+    });
+  }
 });

@@ -57,6 +57,11 @@ export function recoveryFailedKey(
  * replaces a `recoveryFailed` one (same recording, now with its audio kept),
  * and a recording the user deleted drops out.
  */
+/** What native calls audio it kept but can never play back: Android `unplayable`, iOS `no_audio_track`. */
+export function isUnplayableReason(reason: string): boolean {
+  return reason === "unplayable" || reason === "no_audio_track";
+}
+
 export function withQuarantine(
   issues: Readonly<Record<string, RecorderCaptureIssue>>,
   quarantined: readonly { id: string; reason: string }[],
@@ -67,7 +72,7 @@ export function withQuarantine(
     const current = merged[id];
     if (current === undefined || current.kind === "recoveryFailed")
       merged[id] =
-        reason === "unplayable"
+        isUnplayableReason(reason)
           ? { kind: "quarantined", unplayable: true }
           : { kind: "quarantined" };
   }
@@ -178,8 +183,10 @@ export function cardNote(
 ): string {
   if (lastError && lastError !== FINALIZATION_PENDING) return lastError;
   const kinds = Object.values(issues).map((issue) => issue.kind);
-  if (kinds.includes("recoveryFailed") || kinds.includes("quarantined"))
+  if (kinds.includes("recoveryFailed"))
     return `${HOME_COPY.notInSpace} · ${HOME_COPY.willRetry}`;
+  if (kinds.includes("quarantined"))
+    return `${HOME_COPY.notInSpace} · ${HOME_COPY.quarantinedCard}`;
   if (kinds.includes("write_failed"))
     return `${HOME_COPY.notInSpace} · ${HOME_COPY.writeFailedMeta}`;
   if (lastError || kinds.includes("finalization_timed_out"))

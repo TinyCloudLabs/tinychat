@@ -2,28 +2,20 @@ import { HOME_COPY } from "../../home/homeCopy";
 import { FINALIZATION_PENDING } from "../recorderCopy";
 import type { RecorderState } from "../recorderReducer";
 
-type Source = Pick<
-  RecorderState,
-  "error" | "lastSaved" | "captureIssues" | "recordingId" | "failedRecording"
->;
+type Source = Pick<RecorderState, "error" | "captureIssues" | "finalizationPendingId">;
 
 /**
  * The recorder's error line. "Exo will finish it automatically" is only true
- * while native is still finishing the recording; once native reports
- * `recoveryFailed` or `write_failed` for it, the line says that instead. Only
+ * while native is still finishing the recording whose stop timed out
+ * (`finalizationPendingId`); once native reports `recoveryFailed` or
+ * `write_failed` for that recording, the line says that instead. Only
  * FINALIZATION_PENDING is replaced, and an issue's `detail` is never read.
  */
 export function honestRecorderError(recorder: Source): string | null {
   if (recorder.error !== FINALIZATION_PENDING) return recorder.error;
-  const ids = [
-    recorder.recordingId,
-    recorder.failedRecording?.id,
-    recorder.lastSaved?.id,
-  ];
-  for (const id of ids) {
-    const kind = id ? recorder.captureIssues[id]?.kind : undefined;
-    if (kind === "recoveryFailed") return HOME_COPY.recoveryFailedError;
-    if (kind === "write_failed") return HOME_COPY.writeFailedError;
-  }
+  const id = recorder.finalizationPendingId;
+  const kind = id ? recorder.captureIssues[id]?.kind : undefined;
+  if (kind === "recoveryFailed") return HOME_COPY.recoveryFailedError;
+  if (kind === "write_failed") return HOME_COPY.writeFailedError;
   return recorder.error;
 }

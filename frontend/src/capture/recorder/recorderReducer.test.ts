@@ -264,4 +264,58 @@ describe("recorderReducer", () => {
     const saving = run([{ type: "STOP_REQUESTED", at: 0 }, { type: "SAVE_PROGRESS", percent: 5 }], { ...recording(), limitNotice: "n" });
     expect(recorderReducer(saving, { type: "RESET" })).toMatchObject({ phase: "idle", savePercent: null, limitNotice: "n", outcome: null });
   });
+
+  describe("finalizationPendingId", () => {
+    const PENDING = "Kept on this phone. Exo will finish it automatically.";
+    const stopTimedOut = () => recorderReducer(recorderReducer(recording(), { type: "STOP_REQUESTED", at: 0 }),
+      { type: "STOP_FAILED", status: "idle", error: PENDING, id: "rec-1" });
+
+    test("starts null", () => {
+      expect(initialRecorderState.finalizationPendingId).toBeNull();
+    });
+
+    test("a stop that times out finalizing names its recording, though the phase goes idle", () => {
+      expect(stopTimedOut()).toMatchObject({ phase: "idle", error: PENDING, recordingId: null, finalizationPendingId: "rec-1" });
+    });
+
+    test("a timed-out stop whose native status is still active names it too", () => {
+      const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED", at: 0 });
+      expect(recorderReducer(stopping, { type: "STOP_FAILED", status: "active", error: PENDING, id: "rec-1",
+        mic: { state: "recording", reason: null }, audioMs: 1, elapsedMs: 1, elapsedAt: 0 }))
+        .toMatchObject({ phase: "recording", finalizationPendingId: "rec-1" });
+    });
+
+    test("a stop failure with any other error leaves it null", () => {
+      const stopping = recorderReducer(recording(), { type: "STOP_REQUESTED", at: 0 });
+      expect(recorderReducer(stopping, { type: "STOP_FAILED", status: "idle", error: "Could not stop: boom", id: "rec-1" }).finalizationPendingId).toBeNull();
+    });
+
+    test("the auto-stop finalization timeout names its recording from the event, or the live one", () => {
+      const auto = { type: "AUTO_STOPPED", at: 0, notice: "n", captured: false, error: "finalization_timed_out" } as const;
+      expect(recorderReducer(recording(), { ...auto, id: null, pendingId: "rec-9" })).toMatchObject({ phase: "idle", error: PENDING, finalizationPendingId: "rec-9" });
+      expect(recorderReducer(recording(), { ...auto, id: null })).toMatchObject({ finalizationPendingId: "rec-1" });
+    });
+
+    test("an auto-stop that captured no audio is not a pending finalization", () => {
+      expect(recorderReducer(recording(), { type: "AUTO_STOPPED", at: 0, id: null, notice: "n", captured: false }).finalizationPendingId).toBeNull();
+    });
+
+    test("it clears whenever the error clears", () => {
+      const timedOut = stopTimedOut();
+      expect(recorderReducer(timedOut, { type: "DISMISSED" })).toMatchObject({ error: null, finalizationPendingId: null });
+      expect(recorderReducer(timedOut, { type: "START_REQUESTED" })).toMatchObject({ error: null, finalizationPendingId: null });
+    });
+
+    test("it clears when the error becomes a different one", () => {
+      const stopping = recorderReducer({ ...recording(), finalizationPendingId: "rec-1", error: PENDING }, { type: "STOP_REQUESTED", at: 0 });
+      expect(recorderReducer(stopping, { type: "STOP_FAILED", status: "unknown", error: "Could not check" }))
+        .toMatchObject({ error: "Could not check", finalizationPendingId: null });
+    });
+
+    test("capture resolved for that recording clears it, another recording's does not", () => {
+      const timedOut = stopTimedOut();
+      expect(recorderReducer(timedOut, { type: "CAPTURE_RESOLVED", id: "other" }).finalizationPendingId).toBe("rec-1");
+      expect(recorderReducer(timedOut, { type: "CAPTURE_RESOLVED", id: "rec-1" }).finalizationPendingId).toBeNull();
+    });
+  });
 });

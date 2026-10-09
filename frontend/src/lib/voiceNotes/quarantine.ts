@@ -15,10 +15,9 @@ export function rejectionCode(caught: unknown): string | null {
   return typeof code === "string" ? code.toLowerCase() : null;
 }
 
-/** iOS until its recovery actions land, and the browser harness: the shell has no quarantine to list, which is not a failure. */
+/** The browser harness and other shells with no quarantine to list: not a failure. Any other rejection (`unimplemented` included) is one. */
 export function isUnsupported(caught: unknown): boolean {
-  const code = rejectionCode(caught);
-  return code === "unsupported" || code === "unimplemented";
+  return rejectionCode(caught) === "unsupported";
 }
 
 export interface QuarantinedRecordings {

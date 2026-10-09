@@ -307,7 +307,9 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
                 }
               });
               await page.goto(`http://127.0.0.1:${server.port}/?screen=${screen.id}&theme=${theme}&platform=${screen.platform ?? "web"}&freeze=1`);
-              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+              await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 }).catch((error: unknown) => {
+                throw new Error(`${screen.id} at ${viewport.id}/${theme} never became ready: ${errors.join("; ") || "no page errors"}`, { cause: error });
+              });
               await page.waitForLoadState("networkidle");
               await page.waitForTimeout(300);
 

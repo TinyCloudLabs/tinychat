@@ -51,6 +51,7 @@ function recorderState(recorder: RecorderValue): RecorderState {
   return {
     phase: recorder.phase,
     recordingId: null,
+    finalizationPendingId: null,
     startedAt: recorder.startedAt,
     audioMs: recorder.audioMs,
     elapsedMs: recorder.elapsedMs,

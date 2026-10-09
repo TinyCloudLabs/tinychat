@@ -19,6 +19,8 @@ export const HOME_COPY = {
   saveNow: "Save now",
   willFinish: "Kept on this phone. Exo will finish it automatically.",
   willRetry: "Exo will retry when it next opens",
+  /** Native has used up its automatic retries on a quarantined recording: no promise to try again. */
+  quarantinedCard: "Couldn't recover · audio kept",
   timedOutMeta: "Saving… · kept on this phone",
   recoveryFailedMeta: RECOVERY_FAILED,
   quarantinedMeta: `${RECOVERY_FAILED} · audio kept`,
