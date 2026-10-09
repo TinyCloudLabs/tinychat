@@ -31,14 +31,16 @@ object CaptureNotifications {
     fun foreground(context: Context, status: JSONObject): Notification {
         val paused = status.optString("state") == "paused"
         val elapsedSeconds = status.optLong("audioMs") / 1000
+        val pausedText = if (elapsedSeconds >= 3600) context.getString(R.string.capture_paused_recorded_hours,
+            elapsedSeconds / 3600, elapsedSeconds / 60 % 60, elapsedSeconds % 60)
+            else context.getString(R.string.capture_paused_recorded, elapsedSeconds / 60, elapsedSeconds % 60)
         val open = PendingIntent.getActivity(context, 1,
             Intent(context, MainActivity::class.java).setAction(CaptureService.SHOW_RECORDER),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(context, "voice-notes")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(if (paused) context.getString(R.string.capture_paused) else context.getString(R.string.capture_recording))
-            .setContentText(if (paused) context.getString(R.string.capture_paused_recorded,
-                elapsedSeconds / 60, elapsedSeconds % 60) else context.getString(R.string.capture_running_hint))
+            .setContentText(if (paused) pausedText else context.getString(R.string.capture_running_hint))
             .setContentIntent(open).setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setUsesChronometer(!paused).setWhen(System.currentTimeMillis() - status.optLong("elapsedMs"))
@@ -51,8 +53,8 @@ object CaptureNotifications {
     fun showResumeAlert(context: Context, status: JSONObject) {
         if (status.isNull("id") || status.optString("intent") != "recording") return
         val manager = context.getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(ALERT_CHANNEL) == null)
-            manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, context.getString(R.string.capture_channel),
+        if (Build.VERSION.SDK_INT >= 26)
+            manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, context.getString(R.string.capture_alert_channel),
                 NotificationManager.IMPORTANCE_HIGH))
         val open = PendingIntent.getActivity(context, 4,
             Intent(context, MainActivity::class.java).setAction(CaptureService.SHOW_RECORDER),
@@ -60,8 +62,13 @@ object CaptureNotifications {
         manager.notify(ALERT_ID, NotificationCompat.Builder(context, ALERT_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(context.getString(R.string.capture_tap_to_resume))
-            .setContentText(status.optString("reason"))
+            .setContentText(context.getString(when (status.optString("reason")) {
+                "resume_not_allowed" -> R.string.capture_resume_not_allowed
+                "mic_unavailable" -> R.string.capture_mic_unavailable
+                else -> R.string.capture_resume_blocked
+            }))
             .setContentIntent(open).setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .addAction(0, context.getString(R.string.capture_resume),
                 action(context, CaptureService.ACTION_RESUME, 5, status)).build())
     }

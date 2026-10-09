@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.media.AudioManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -29,6 +30,172 @@ class TransitionInstrumentedTest {
         val end = System.currentTimeMillis() + 10_000
         while (!engine.hasAttachedInputForTest() && System.currentTimeMillis() < end) Thread.sleep(50)
         assertTrue("recording never attached an AudioRecord: ${engine.status()}", engine.hasAttachedInputForTest())
+    }
+
+    @Test fun committedDurationTracksLiveRecordingTime() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").close()
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            CaptureService.startFromVisibleActivity(context, "duration-test", "in_app")
+            await(engine, "recording")
+            awaitAttached(engine)
+            val from = SystemClock.elapsedRealtime()
+            Thread.sleep(8_000)
+            val until = SystemClock.elapsedRealtime()
+            val note = engine.stop()
+            val capturedMs = until - from
+            val difference = kotlin.math.abs(note.getLong("durationMs") - capturedMs)
+            assertTrue("note ${note.getLong("durationMs")} ms vs live $capturedMs ms",
+                difference <= capturedMs / 20 + 250)
+            engine.library.delete(note.getString("id"))
+        } finally {
+            if (!engine.status().isNull("id")) engine.discard()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+
+    @Test fun missingSavedInputUsesSystemRouteAtStartAndAfterRebuild() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").close()
+        val prefs = context.getSharedPreferences("exo.capture.inputs", android.content.Context.MODE_PRIVATE)
+        val previous = prefs.getString("selectedId", null)
+        val missing = "999:Disconnected headset"
+        check(prefs.edit().putString("selectedId", missing).commit())
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            try { engine.selectInput("999:Another absent input"); fail("Selection must reject an absent device") }
+            catch (expected: IllegalArgumentException) { assertEquals("input_unavailable", expected.message) }
+            CaptureService.startFromVisibleActivity(context, "missing-input-test", "in_app")
+            await(engine, "recording")
+            awaitAttached(engine)
+            assertEquals(missing, engine.listInputs().getString("selectedId"))
+            assertNotEquals(missing, engine.status().getString("activeId"))
+            assertEquals(engine.status().getString("activeId"), engine.status().getJSONObject("input").getString("id"))
+            engine.rebuildForTest() // Mirrors the selected headset disappearing during capture.
+            await(engine, "recording")
+            awaitAttached(engine)
+            assertEquals(missing, engine.listInputs().getString("selectedId"))
+            assertNotEquals(missing, engine.status().getString("activeId"))
+            val active = engine.status().getString("activeId")
+            assertEquals(active, engine.library.events(engine.status().getString("id"))
+                .last { it.optString("e") == "input" }.getString("id"))
+            val note = engine.stop()
+            assertEquals(active, note.getJSONObject("input").getString("id"))
+            engine.library.delete(note.getString("id"))
+        } finally {
+            if (!engine.status().isNull("id")) engine.discard()
+            check(prefs.edit().putString("selectedId", previous).commit())
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+
+    @Test fun failedAutomaticRetryStaysInterruptedWithoutAlertOrBlockedJournal() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").close()
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        val entered = CountDownLatch(1)
+        try {
+            await(engine, "recording"); awaitAttached(engine)
+            val id = engine.status().getString("id")
+            Thread.sleep(500)
+            engine.startBeforeAttach = { entered.countDown(); throw IllegalStateException("mic_unavailable") }
+            engine.injectReadErrorForTest()
+            assertTrue("automatic retry never attempted", entered.await(10, TimeUnit.SECONDS))
+            val failureDeadline = SystemClock.elapsedRealtime() + 5_000
+            while (engine.retryFailureForTest() == null && SystemClock.elapsedRealtime() < failureDeadline) Thread.sleep(50)
+            assertEquals("mic_unavailable", engine.retryFailureForTest())
+            assertEquals("interrupted", engine.status().getString("state"))
+            assertEquals("interrupted", engine.status().getString("availability"))
+            assertFalse(engine.library.events(id).any { it.optString("e") == "avail" && it.optString("value") == "blocked" })
+            assertFalse(context.getSystemService(android.app.NotificationManager::class.java)
+                .activeNotifications.any { it.id == 7202 })
+            engine.exhaustRetryForTest()
+            await(engine, "needs_user")
+            val blocked = engine.library.events(id).count { it.optString("e") == "avail" && it.optString("value") == "blocked" }
+            assertEquals(1, blocked)
+            assertTrue(context.getSystemService(android.app.NotificationManager::class.java)
+                .activeNotifications.any { it.id == 7202 })
+            engine.exhaustRetryForTest()
+            assertEquals(blocked, engine.library.events(id).count { it.optString("e") == "avail" && it.optString("value") == "blocked" })
+            engine.startBeforeAttach = null
+            engine.resume()
+            await(engine, "recording")
+            val note = engine.stop()
+            engine.library.delete(note.getString("id"))
+        } finally {
+            engine.startBeforeAttach = null
+            if (!engine.status().isNull("id")) engine.discard()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+
+    @Test fun automaticRestartInvalidatedByPauseAndStaleResume() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").close()
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        try {
+            await(engine, "recording"); awaitAttached(engine)
+            val id = engine.status().getString("id")
+            val stale = CaptureNotifications.action(context, CaptureService.ACTION_RESUME, 87, engine.status())
+            Thread.sleep(500)
+            engine.startBeforeAttach = { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)) }
+            engine.injectReadErrorForTest()
+            assertTrue("automatic restart never reached attach gate", entered.await(10, TimeUnit.SECONDS))
+            val before = engine.library.events(id).count { it.optString("e") == "segment" }
+            engine.pause()
+            release.countDown()
+            Thread.sleep(500)
+            stale.send()
+            Thread.sleep(300)
+            assertEquals("paused", engine.status().getString("state"))
+            assertEquals(before, engine.library.events(id).count { it.optString("e") == "segment" })
+            assertTrue(context.getSystemService(AudioManager::class.java).activeRecordingConfigurations
+                .none { it.clientAudioSource == android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION })
+            val note = engine.stop()
+            engine.library.delete(note.getString("id"))
+        } finally {
+            release.countDown(); engine.startBeforeAttach = null
+            if (!engine.status().isNull("id")) engine.discard()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
+    }
+
+    @Test fun stopDuringBackoffCannotRestartTheMic() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}").close()
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .setAction(CaptureService.RECORD).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        try {
+            await(engine, "recording"); awaitAttached(engine)
+            Thread.sleep(500)
+            engine.injectReadErrorForTest()
+            val note = engine.stop()
+            Thread.sleep(1200)
+            assertTrue(engine.status().isNull("id"))
+            assertTrue(context.getSystemService(AudioManager::class.java).activeRecordingConfigurations
+                .none { it.clientAudioSource == android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION })
+            engine.library.delete(note.getString("id"))
+        } finally {
+            if (!engine.status().isNull("id")) engine.discard()
+            context.stopService(Intent(context, CaptureService::class.java))
+            activity.finish()
+        }
     }
 
     @Test fun pausedNotificationResumesAndStaleResumeIsIgnored() {
@@ -66,6 +233,7 @@ class TransitionInstrumentedTest {
                 await(engine, "recording")
                 awaitAttached(engine)
                 val currentId = engine.status().getString("id")
+                val segmentsBefore = engine.library.events(currentId).count { it.optString("e") == "segment" }
                 Thread.sleep(400)
                 engine.pause()
                 val entered = CountDownLatch(1)
@@ -84,6 +252,8 @@ class TransitionInstrumentedTest {
                     release.countDown(); worker.join(10_000); engine.startBeforeAttach = null
                 }
                 assertFalse("in-flight Resume did not finish", worker.isAlive)
+                if (ending == "pause") assertEquals("stale Resume opened a segment", segmentsBefore,
+                    engine.library.events(currentId).count { it.optString("e") == "segment" })
                 assertTrue("AudioRecord was left active after $ending",
                     audioManager.activeRecordingConfigurations.none { it.clientAudioSource == android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION })
                 if (ending == "pause") {

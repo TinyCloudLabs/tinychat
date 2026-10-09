@@ -5,4 +5,9 @@
     <string name="capture_bluetooth_permission">Allow Bluetooth access to use this microphone</string>
     <string name="capture_tap_to_resume">Tap to resume recording</string>
     <string name="capture_paused_recorded">Paused · %1$d:%2$02d recorded</string>
+    <string name="capture_paused_recorded_hours">Paused · %1$d:%2$02d:%3$02d recorded</string>
+    <string name="capture_alert_channel">Recording needs attention</string>
+    <string name="capture_resume_not_allowed">Open Exo to allow the microphone, then resume.</string>
+    <string name="capture_mic_unavailable">The microphone is unavailable. Tap Resume to try again.</string>
+    <string name="capture_resume_blocked">Recording could not resume. Open Exo to try again.</string>
 </resources>

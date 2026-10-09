@@ -19,7 +19,7 @@ class TransitionMachineTest {
                 else -> TransitionMachine.Intent.RECORDING
             }, m.intent)
             assertEquals(when (event) {
-                INTERRUPTION_BEGAN, MEDIA_RESET, STALL -> TransitionMachine.Availability.INTERRUPTED
+                INTERRUPTION_BEGAN, MEDIA_RESET, STALL, ROUTE_CHANGE -> TransitionMachine.Availability.INTERRUPTED
                 BACKOFF_EXHAUSTED -> TransitionMachine.Availability.BLOCKED
                 else -> TransitionMachine.Availability.AVAILABLE
             }, m.availability)
@@ -88,5 +88,38 @@ class TransitionMachineTest {
         assertTrue(m.send(RESUME))
         assertTrue(m.acquired(m.gen))
         assertEquals(epoch + 1, m.epoch)
+    }
+
+    @Test fun automaticFailuresStayInterruptedUntilBackoffIsExhausted() {
+        val m = TransitionMachine(); m.start(); m.acquired(m.gen)
+        m.send(INTERRUPTION_BEGAN)
+        val epoch = m.epoch
+        repeat(3) {
+            assertTrue(m.send(INTERRUPTION_ENDED))
+            assertTrue(m.failed(m.gen, automatic = true))
+            assertEquals(TransitionMachine.Availability.INTERRUPTED, m.availability)
+            assertEquals(epoch, m.epoch)
+        }
+        m.send(BACKOFF_EXHAUSTED)
+        assertEquals(TransitionMachine.Availability.BLOCKED, m.availability)
+        assertTrue(m.send(APP_ACTIVE))
+        assertTrue(m.failed(m.gen))
+        assertEquals(TransitionMachine.Availability.BLOCKED, m.availability)
+        assertTrue(m.send(RESUME))
+        assertTrue(m.acquired(m.gen))
+        assertEquals(epoch + 1, m.epoch)
+    }
+
+    @Test fun stopAndPauseInvalidateAnAutomaticRestart() {
+        for (event in listOf(STOP, PAUSE, DISCARD)) {
+            val m = TransitionMachine(); m.start(); m.acquired(m.gen)
+            m.send(STALL)
+            assertTrue(m.send(INTERRUPTION_ENDED))
+            val attempt = m.gen
+            m.send(event)
+            assertFalse(m.accepts(attempt))
+            assertFalse(m.acquired(attempt))
+            assertFalse(m.send(INTERRUPTION_ENDED))
+        }
     }
 }

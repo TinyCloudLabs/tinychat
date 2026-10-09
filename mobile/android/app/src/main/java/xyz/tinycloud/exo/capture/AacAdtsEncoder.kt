@@ -12,6 +12,8 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
     private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
     private val info = MediaCodec.BufferInfo()
     private var samples = 0L
+    private val frame = ByteArray(1024 * 2)
+    private var frameBytes = 0
     init {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SAMPLE_RATE, 1)
         format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -21,28 +23,37 @@ class AacAdtsEncoder(private val onFrame: (ByteArray) -> Unit) {
         codec.start()
     }
     fun offer(pcm: ByteArray, size: Int) {
+        require(size in 0..pcm.size && size % 2 == 0) { "AAC PCM must contain whole samples" }
         var offset = 0
         while (offset < size) {
-            val slot = codec.dequeueInputBuffer(10_000)
-            if (slot < 0) { drain(false); continue }
-            val input = codec.getInputBuffer(slot)!!
-            input.clear()
-            // Some platform AAC encoders emit only one 1024-sample access unit per
-            // queued buffer, even when the buffer has room for more PCM.
-            val count = minOf(input.remaining() and -2, 1024 * 2, size - offset)
-            if (count == 0) throw IllegalStateException("AAC input buffer cannot hold a sample")
-            input.put(pcm, offset, count)
-            codec.queueInputBuffer(slot, 0, count, samples * 1_000_000L / SAMPLE_RATE, 0)
-            samples += count / 2
+            val count = minOf(frame.size - frameBytes, size - offset)
+            pcm.copyInto(frame, frameBytes, offset, offset + count)
+            frameBytes += count
             offset += count
-            drain(false)
+            if (frameBytes == frame.size) {
+                queueFrame(frame.size)
+                frameBytes = 0
+            }
         }
     }
     fun finish() {
-        val slot = codec.dequeueInputBuffer(1_000_000)
-        if (slot >= 0) codec.queueInputBuffer(slot, 0, 0, samples * 1_000_000L / SAMPLE_RATE, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+        if (frameBytes > 0) { queueFrame(frameBytes); frameBytes = 0 }
+        var slot = codec.dequeueInputBuffer(1_000_000)
+        while (slot < 0) { drain(false); slot = codec.dequeueInputBuffer(1_000_000) }
+        codec.queueInputBuffer(slot, 0, 0, samples * 1_000_000L / SAMPLE_RATE, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
         drain(true)
         codec.stop(); codec.release()
+    }
+    private fun queueFrame(count: Int) {
+        var slot = codec.dequeueInputBuffer(10_000)
+        while (slot < 0) { drain(false); slot = codec.dequeueInputBuffer(10_000) }
+        val input = codec.getInputBuffer(slot)!!
+        input.clear()
+        check(input.remaining() >= count) { "AAC input buffer cannot hold an access unit" }
+        input.put(frame, 0, count)
+        codec.queueInputBuffer(slot, 0, count, samples * 1_000_000L / SAMPLE_RATE, 0)
+        samples += count / 2
+        drain(false)
     }
     fun abort() { codec.stop(); codec.release() }
     private fun drain(final: Boolean) {

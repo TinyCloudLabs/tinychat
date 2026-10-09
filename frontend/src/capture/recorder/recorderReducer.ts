@@ -6,7 +6,7 @@
 // which deletes the recording instead.
 // `useVoiceNoteRecorder` turns the plugin's answers and events into these
 // events; every view reads the result through RecorderProvider.
-import { VOICE_NOTE_MAX_DURATION_MS, type MicState, type MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, type AudioInput, type MicState, type MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { FINALIZATION_PENDING } from "./recorderCopy";
 
 export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "saving" | "discarding";
@@ -14,6 +14,7 @@ export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "sa
 export interface RecorderMic {
   state: MicState;
   reason: MicStateReason;
+  input?: AudioInput | null;
 }
 
 export interface RecorderState {

@@ -19,9 +19,14 @@ class InputDevices(private val context: Context) {
         get() = prefs.getString("selectedId", null)
         private set(value) { check(prefs.edit().putString("selectedId", value).commit()) { "input_preference_write_failed" } }
 
-    fun devices(): List<AudioDeviceInfo> = manager.getDevices(AudioManager.GET_DEVICES_INPUTS).filter { kind(it) != null }
+    fun devices(): List<AudioDeviceInfo> = manager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        .filter { it.isSource && kind(it) != null }.distinctBy(::id)
     fun id(device: AudioDeviceInfo): String = "${device.type}:${device.productName}"
     fun activeId(record: android.media.AudioRecord?): String? = record?.routedDevice?.let(::id)
+    fun activeInput(record: android.media.AudioRecord?): JSONObject? = record?.routedDevice?.let { device ->
+        JSONObject().put("id", id(device)).put("name", device.productName.toString())
+            .put("kind", kind(device) ?: "other")
+    }
 
     fun list(activeId: String?): JSONObject = JSONObject().put("inputs", JSONArray().also { array ->
         devices().forEach { device -> array.put(JSONObject().put("id", id(device))
@@ -39,16 +44,16 @@ class InputDevices(private val context: Context) {
     }
 
     fun preferred(): AudioDeviceInfo? = selectedId?.let { selected ->
-        devices().firstOrNull { id(it) == selected } ?: throw IllegalStateException("input_unavailable")
+        devices().firstOrNull { id(it) == selected }
     }
 
     @Synchronized fun apply(record: android.media.AudioRecord) {
         val device = preferred() ?: return
         if (kind(device) == "bluetooth" && Build.VERSION.SDK_INT >= 31) {
-            if (!manager.setCommunicationDevice(device)) throw IllegalStateException("input_unavailable")
+            if (!manager.setCommunicationDevice(device)) return
             communicationOwner = record
         }
-        if (!record.setPreferredDevice(device)) throw IllegalStateException("input_unavailable")
+        if (!record.setPreferredDevice(device)) clearCommunicationDevice(record)
     }
 
     @Synchronized fun clearCommunicationDevice(record: android.media.AudioRecord) {

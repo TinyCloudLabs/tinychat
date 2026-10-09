@@ -5,6 +5,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
@@ -78,7 +79,7 @@ class AudioCapture(
     /** Called while the engine's control lock is held, before this input is visible to Pause. */
     fun startWorkers() {
         running.set(true)
-        lastReadAt = System.currentTimeMillis()
+        lastReadAt = SystemClock.elapsedRealtime()
         writer = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             while (!producerDone.get() || queue.isNotEmpty()) {
@@ -104,7 +105,7 @@ class AudioCapture(
                     break
                 }
                 if (n == 0) continue
-                lastReadAt = System.currentTimeMillis()
+                lastReadAt = SystemClock.elapsedRealtime()
                 val chunk = scratch.copyOf(n)
                 var accepted = queue.offer(chunk)
                 if (!accepted && cutting.get()) {
@@ -131,7 +132,7 @@ class AudioCapture(
         watchdog = Thread {
             while (running.get()) {
                 try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
-                if (running.get() && !cutting.get() && System.currentTimeMillis() - lastReadAt >= 3000) {
+                if (running.get() && !cutting.get() && SystemClock.elapsedRealtime() - lastReadAt >= 3000) {
                     onError("stalled")
                     return@Thread
                 }
@@ -201,5 +202,6 @@ class AudioCapture(
         } finally { record.release(); inputs?.clearCommunicationDevice(record) }
     }
     fun activeInputId(): String? = inputs?.activeId(record)
+    fun activeInput(): org.json.JSONObject? = inputs?.activeInput(record)
     fun stop() { drain(); release() }
 }

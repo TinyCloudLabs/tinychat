@@ -49,9 +49,11 @@ class CaptureService : Service() {
             worker.execute {
                 try {
                     val status = engine.status()
-                    if (action in listOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD) &&
-                        (intent.getStringExtra("id") != status.optString("id") ||
-                            !intent.hasExtra("epoch") || intent.getLongExtra("epoch", -1) != status.optLong("epoch"))) {
+                    val recordingAction = action in listOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD)
+                    val idMatches = intent.getStringExtra("id") == status.optString("id") && !status.isNull("id")
+                    val epochMatches = intent.hasExtra("epoch") && intent.getLongExtra("epoch", -1) == status.optLong("epoch")
+                    if (recordingAction && (!idMatches ||
+                            (action in listOf(ACTION_PAUSE, ACTION_RESUME) && !epochMatches))) {
                         if (status.isNull("id")) stopNow(startId)
                         else update()
                         return@execute
