@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import "./index.css";
 import { App } from "./App";
+import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
 import { appPlatform } from "./lib/platform";
@@ -38,7 +39,7 @@ createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<RootRoute nativeShell={nativeShell} />} />
-        <Route path="/chat/*" element={<App />} />
+        <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

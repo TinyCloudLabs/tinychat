@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { cn } from "@/lib/utils";
 import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { localTranscriptionUnavailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { receiptMetaText } from "./recorderCopy";
@@ -56,7 +57,8 @@ export interface SavedReceiptProps {
  * fresh native read still happens after a `transcribed`/`failed` event or Retry, since those are
  * not on every mount. The live native queue (`onDeviceSttStore`) still drives the "Transcribing…"
  * progress line while a job runs. Works signed out and offline — never touches the space. */
-export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean, sttHint?: NoteSttState | null) {
+export function useOnDeviceReceipt(id: string | undefined, wantsOnDevice: boolean, sttHint?: NoteSttState | null) {
+  const onDevice = wantsOnDevice && !localTranscriptionUnavailable();
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const [transcript, setTranscript] = useState<LocalTranscript | null>(null);
   const [durable, setDurable] = useState<NoteSttState | null>(null);

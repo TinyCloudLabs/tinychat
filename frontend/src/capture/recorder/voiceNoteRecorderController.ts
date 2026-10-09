@@ -22,6 +22,7 @@ import {
   type CaptureOptions,
   type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { effectiveCaptureOptions, readTranscriberPreference, setDefaultIdentifySpeakers,
@@ -472,6 +473,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async setTranscriber(id, { scope, waitForModel = false }) {
       if (!available || id === "assemblyai") return "unavailable";
+      if (id === "on-device" && !captureCapabilities().localTranscription) return "unavailable";
       if (!signedIn && id !== "on-device") return "locked_signed_out";
       if (id === "on-device" && !waitForModel && !(onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())))
         return "unavailable";
@@ -498,6 +500,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
       if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
       if (id !== "on-device" && id !== "assemblyai") return "unavailable";
+      if (id === "on-device" && !captureCapabilities().localTranscription) return "unavailable";
       if (id === "assemblyai" || (id === "on-device" && (appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")))
         return "unavailable";
       if (scope === "recording") {
@@ -603,7 +606,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
             const status = await VoiceNotes.status();
             if (attached && !status.micDeniedPresentation && status.microphonePermissionGranted) {
               send({ type: "PERMISSION_GRANTED" });
-              if (status.shortcutRecordPending) {
+              if (status.shortcutRecordPending && captureCapabilities().nativeShortcuts) {
                 onPresent?.();
                 void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
                   console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
@@ -629,10 +632,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         .then(
           (status) => {
             if (!attached) return;
-            if (status.micDeniedPresentation) {
+            const capabilities = captureCapabilities();
+            if (capabilities.micDeniedPresentation && status.micDeniedPresentation) {
               send({ type: "PERMISSION_DENIED" });
               onPresent?.();
-            } else if (status.shortcutRecordPending && status.microphonePermissionGranted) {
+            } else if (capabilities.nativeShortcuts && status.shortcutRecordPending && status.microphonePermissionGranted) {
               send({ type: "PERMISSION_GRANTED" });
               onPresent?.();
               void VoiceNotes.consumeShortcutRecord().catch((caught: unknown) =>
@@ -707,11 +711,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
       }
     },
     async openSettings() {
+      if (!captureCapabilities().openSettings) throw Object.assign(new Error("This shell cannot open settings"), { code: "unsupported" });
       await VoiceNotes.openSettings();
     },
     async dismissShortcutRecovery() {
-      const status = await VoiceNotes.status();
-      if (status.micDeniedPresentation !== undefined) await VoiceNotes.dismissShortcutRecovery();
+      if (captureCapabilities().nativeShortcuts) {
+        const status = await VoiceNotes.status();
+        if (status.micDeniedPresentation !== undefined) await VoiceNotes.dismissShortcutRecovery();
+      }
       send({ type: "PERMISSION_GRANTED" });
     },
     async stop() {
