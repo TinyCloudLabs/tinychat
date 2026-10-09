@@ -28,24 +28,35 @@ export function toAudioInputs(devices: readonly MediaDeviceInfo[]): AudioInput[]
 /** The microphones a browser lists through enumerateDevices(), following devicechange; a choice goes to the engine. */
 export function createBrowserAudioInputs(deps: BrowserAudioInputsDeps): AudioInputsSource {
   let selectedId: string | null = null;
+  const listeners = new Set<{ listener: (snapshot: AudioInputsSnapshot) => void; onError?: (caught: unknown) => void }>();
   const snapshot = async (): Promise<AudioInputsSnapshot> => {
     const inputs = toAudioInputs(await deps.mediaDevices().enumerateDevices());
     if (selectedId !== null && !inputs.some((input) => input.id === selectedId)) selectedId = null;
     return { inputs, selectedId, activeId: null };
+  };
+  // A choice changes the snapshot without a devicechange, so the subscribers are told directly.
+  const publish = () => {
+    for (const { listener, onError } of [...listeners]) snapshot().then(listener, (caught: unknown) => onError?.(caught));
   };
   return {
     list: snapshot,
     async select(id) {
       await deps.selectInput(id);
       selectedId = id;
+      publish();
     },
     subscribe(listener, onError) {
       const devices = deps.mediaDevices();
+      const subscriber = { listener, onError };
+      listeners.add(subscriber);
       const onChange = () => {
         snapshot().then(listener, (caught: unknown) => onError?.(caught));
       };
       devices.addEventListener("devicechange", onChange);
-      return () => devices.removeEventListener("devicechange", onChange);
+      return () => {
+        listeners.delete(subscriber);
+        devices.removeEventListener("devicechange", onChange);
+      };
     },
   };
 }

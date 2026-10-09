@@ -44,27 +44,38 @@ const logTitleFailure = (caught: unknown) => console.error("[Recorder] Could not
 
 /**
  * Applies a title and puts back the one it replaced, in order, so a slow window call cannot
- * overtake a later one. A failed call is logged, never swallowed.
+ * overtake a later one. If another feature changes the title mid-recording, that title becomes
+ * the one to put back. A failed call is logged, never swallowed.
  */
 export function createTitleController(target: TitleTarget, onError: (caught: unknown) => void = logTitleFailure) {
-  let saved: string | null = null;
+  let base: string | null = null;
+  let lastWritten: string | null = null;
   let queue: Promise<void> = Promise.resolve();
+  const adoptForeignTitle = async () => {
+    const current = await target.read();
+    if (base === null || current !== lastWritten) base = current;
+  };
   return {
     /** A title while recording, or null to restore the one from before. */
     apply(title: string | null): void {
       queue = queue
         .then(async () => {
           if (title !== null) {
-            if (saved === null) saved = await target.read();
+            await adoptForeignTitle();
             await target.write(title);
-          } else if (saved !== null) {
-            const previous = saved;
-            saved = null;
+            lastWritten = title;
+          } else if (base !== null) {
+            await adoptForeignTitle();
+            const previous = base as string;
+            base = null;
+            lastWritten = null;
             await target.write(previous);
           }
         })
         .catch(onError);
     },
+    /** Resolves once every queued call has run. */
+    settled: () => queue,
   };
 }
 

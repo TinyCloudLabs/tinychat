@@ -81,13 +81,30 @@ describe("createBrowserAudioInputs", () => {
     expect((await source.list()).selectedId).toBe("b");
   });
 
+  test("a choice is published to subscribers, so the list does not wait for a device event", async () => {
+    const { source } = setup([device("a", "Mic A"), device("b", "Mic B")]);
+    const seen: Array<string | null> = [];
+    const unsubscribe = source.subscribe((snapshot) => seen.push(snapshot.selectedId));
+    await source.select("b");
+    await flush();
+    expect(seen).toEqual(["b"]);
+    unsubscribe();
+    await source.select("a");
+    await flush();
+    expect(seen).toEqual(["b"]);
+  });
+
   test("a choice the engine refuses is not recorded as selected, and the refusal reaches the caller", async () => {
     const refused = Object.assign(new Error("unsupported"), { code: "unsupported" });
     const source = createBrowserAudioInputs({
       mediaDevices: () => ({ enumerateDevices: async () => [device("a", "Mic A")], addEventListener() {}, removeEventListener() {} }),
       selectInput: () => Promise.reject(refused),
     });
+    const seen: unknown[] = [];
+    source.subscribe((snapshot) => seen.push(snapshot));
     await expect(source.select("a")).rejects.toBe(refused);
+    await flush();
+    expect(seen).toEqual([]);
     expect((await source.list()).selectedId).toBeNull();
   });
 
