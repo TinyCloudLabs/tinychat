@@ -63,9 +63,9 @@ describe("PhoneRecorder", () => {
     expect(html).toContain('aria-live="polite"');
   });
 
-  test("the scale has three stops while Skip is off", () => {
+  test("the scale has four stops: Skip, Local, Private and Powerful", () => {
     const html = render();
-    expect((html.match(/data-available=/g) ?? []).length).toBe(3);
+    expect((html.match(/data-available=/g) ?? []).length).toBe(4);
   });
 
   test("paused offers Resume on the ring", () => {

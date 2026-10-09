@@ -55,13 +55,14 @@ const memory = (
 function choice(
   props: VoiceNoteTranscriptionProps | undefined,
   storage = memory(),
+  model: OnDeviceSttStatus | null = MODEL,
 ) {
   let result!: ReturnType<typeof useTranscriptionChoice>;
   function Probe() {
     result = useTranscriptionChoice({
       shell: "phone",
       transcription: props,
-      model: MODEL,
+      model,
       storage,
     });
     return null;
@@ -71,9 +72,10 @@ function choice(
 }
 
 describe("useTranscriptionChoice", () => {
-  test("the scale has Local, Private and Powerful while Skip is off; Powerful is disabled", () => {
+  test("the scale has Skip, Local, Private and Powerful; Powerful is disabled", () => {
     const { result } = choice(transcription());
     expect(result.stops.map((s) => s.stop.id)).toEqual([
+      "skip",
       "local",
       "private",
       "powerful",
@@ -146,9 +148,12 @@ describe("useTranscriptionChoice", () => {
       return { ...choice(props, storage), calls };
     };
 
-    test("the default Private is not displayed or stored: the route is Off until consent", () => {
+    test("the default Private is not displayed or stored: a fresh account shows Skip, the Off route", () => {
       const { result, storage } = firstRun();
-      expect(result.mode).toBe("local");
+      expect(result.mode).toBe("skip");
+      expect(
+        result.stops.find((s) => s.stop.id === "skip")?.stop.captions.phone,
+      ).toBe("Just the recording, kept on this phone.");
       expect(result.needsConsent).toBe(true);
       expect(storage.data).toEqual({});
     });
@@ -171,6 +176,47 @@ describe("useTranscriptionChoice", () => {
       const { result } = choice(transcription({ consented: true }));
       expect(result.mode).toBe("private");
       expect(result.needsConsent).toBe(false);
+    });
+
+    test("a fresh account shows Skip even when Local is unavailable", () => {
+      const { result } = choice(
+        transcription({ consented: false }),
+        memory(),
+        null,
+      );
+      expect(result.stops.find((s) => s.stop.id === "local")?.available).toBe(
+        false,
+      );
+      expect(result.mode).toBe("skip");
+    });
+
+    test("choosing Skip when never consented stores it without calling onTurnOff", () => {
+      const { result, storage, calls } = firstRun();
+      expect(result.select("skip")).toBeNull();
+      expect(calls).toEqual([]);
+      expect(storage.data["exo.recorder.transcription-mode"]).toBe("skip");
+    });
+
+    test("choosing Skip when consented turns the route off, as TranscriptionRouteControl does", () => {
+      const calls: string[] = [];
+      const { result, storage } = choice(
+        transcription({
+          consented: true,
+          onTurnOff: () => void calls.push("off"),
+        }),
+      );
+      expect(result.mode).toBe("private");
+      expect(result.select("skip")).toBeNull();
+      expect(calls).toEqual(["off"]);
+      expect(storage.data["exo.recorder.transcription-mode"]).toBe("skip");
+    });
+
+    test("from Skip, choosing Private asks for consent before storing", () => {
+      const { result, storage, calls } = firstRun();
+      expect(result.mode).toBe("skip");
+      expect(result.select("private")).toBeNull();
+      expect(calls).toEqual([]);
+      expect(storage.data).toEqual({});
     });
 
     test("choosing Local stores it, without turning off a route that was never on", () => {

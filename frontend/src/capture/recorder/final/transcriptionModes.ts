@@ -2,7 +2,7 @@ import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { FINAL_COPY } from "./finalCopy";
 
-export const SKIP_ENABLED = false;
+export const SKIP_ENABLED = true;
 export const POWERFUL_ENABLED = false;
 
 export interface ModeFeatures {

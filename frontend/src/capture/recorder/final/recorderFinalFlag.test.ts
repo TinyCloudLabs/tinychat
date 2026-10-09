@@ -10,6 +10,9 @@ describe("resolveRecorderFinal", () => {
     expect(resolveRecorderFinal(env("true"))).toBe(true);
   });
   test("anything else is a configuration error", () => {
-    for (const value of ["", "1", "TRUE", "yes"]) expect(() => resolveRecorderFinal(env(value))).toThrow("VITE_EXO_RECORDER_FINAL must be true or false");
+    for (const value of ["", "1", "TRUE", "yes"])
+      expect(() => resolveRecorderFinal(env(value))).toThrow(
+        "VITE_EXO_RECORDER_FINAL must be true or false",
+      );
   });
 });

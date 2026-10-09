@@ -180,30 +180,33 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.mouse.down();
     await page.mouse.move(box.x + 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Local");
+    await modeIs(page, "Skip");
     expect(await calls()).toEqual(["turnOff"]);
 
     await page.mouse.move(box.x + 12, y);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Local");
+    await modeIs(page, "Skip");
     await shown(page.getByText("Coming with the next update").first());
     await page.context().close();
   });
 
   test("first run: Private is not shown or stored until consent; consent turns the route on", async () => {
     const { page, calls, activeName } = await open("first-run");
-    await modeIs(page, "Local");
+    await modeIs(page, "Skip");
+    await shown(page.getByText("Just the recording, kept on this phone."));
     expect(await storedMode(page)).toBeNull();
 
     await slider(page).focus();
+    await page.keyboard.press("ArrowRight");
+    await modeIs(page, "Local");
+    expect(await storedMode(page)).toBe("local");
     await page.keyboard.press("ArrowRight");
     const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
     await shown(dialog);
     expect(await activeName()).toBe("Use private cloud");
     await modeIs(page, "Local");
-    expect(await storedMode(page)).toBeNull();
     expect(await calls()).toEqual([]);
 
     await page.getByRole("button", { name: "Use private cloud" }).click();
@@ -215,10 +218,12 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("the consent sheet gives focus back on Not now, Escape and the veil, and a pointer opens it too", async () => {
+  test("the consent sheet gives focus back on Not now, Escape, the veil and consent", async () => {
     const { page, calls } = await open("first-run");
     const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
     await slider(page).focus();
+    await page.keyboard.press("ArrowRight");
+    await modeIs(page, "Local");
     for (const close of [
       () => page.getByRole("button", { name: "Not now" }).click(),
       () => page.keyboard.press("Escape"),
@@ -231,19 +236,12 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       await focused(slider(page));
     }
     expect(await calls()).toEqual([]);
-    expect(await storedMode(page)).toBeNull();
+    expect(await storedMode(page)).toBe("local");
 
-    // From the caption link: Not now returns to the link; consent removes it, so focus falls to the slider.
-    const link = page.getByRole("button", {
-      name: "Turn on private transcription",
-    });
-    await link.click();
+    await page.keyboard.press("ArrowRight");
     await shown(dialog);
-    await page.getByRole("button", { name: "Not now" }).click();
-    await focused(link);
-    await link.click();
     await page.getByRole("button", { name: "Use private cloud" }).click();
-    await gone(link);
+    await gone(dialog);
     await focused(slider(page));
     expect(await calls()).toEqual(["consent"]);
     await page.context().close();

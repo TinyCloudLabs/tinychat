@@ -20,7 +20,10 @@ describe("trackModality", () => {
 describe("markKeyboardOpened", () => {
   const element = () => {
     const attributes = new Set<string>();
-    return { attributes, setAttribute: (name: string) => void attributes.add(name) };
+    return {
+      attributes,
+      setAttribute: (name: string) => void attributes.add(name),
+    };
   };
 
   test("a dialog opened from the keyboard shows its focus ring at once", () => {

@@ -126,7 +126,6 @@ export function PhoneRecorder({
   const opener = useRef<HTMLButtonElement>(null);
   const scale = useRef<HTMLDivElement>(null);
   const discardButton = useRef<HTMLButtonElement>(null);
-  const captionButton = useRef<HTMLButtonElement>(null);
   // What opened the consent sheet: the scale, the caption link, or the modes card's button.
   const consentOpener = useRef<HTMLElement | null>(null);
   const ids = useId();
@@ -334,22 +333,7 @@ export function PhoneRecorder({
             <span>more private</span>
             <span>more capable</span>
           </div>
-          <div className="pr-capline">
-            {choice.needsConsent ? (
-              <button
-                ref={captionButton}
-                type="button"
-                onClick={() => {
-                  consentOpener.current = captionButton.current;
-                  choice.select("private");
-                }}
-              >
-                Turn on private transcription
-              </button>
-            ) : (
-              stop.captions[shell]
-            )}
-          </div>
+          <div className="pr-capline">{stop.captions[shell]}</div>
           {!idleDenied && !audio.unsupported && (
             <ViaMenu
               inputs={audio.inputs}

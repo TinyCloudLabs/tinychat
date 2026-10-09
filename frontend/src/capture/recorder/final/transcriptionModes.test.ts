@@ -82,9 +82,14 @@ describe("transcription modes availability", () => {
     }
   });
 
-  test("scaleStops includes disabled rows but removes Skip when the flag is off", () => {
+  test("scaleStops includes disabled rows and removes Skip only when the flag is off", () => {
     const stops = scaleStops("web");
-    expect(stops.map(({ id }) => id)).toEqual(["local", "private", "powerful"]);
+    expect(stops.map(({ id }) => id)).toEqual([
+      "skip",
+      "local",
+      "private",
+      "powerful",
+    ]);
     expect(stops.find(({ id }) => id === "powerful")?.availability).toEqual({
       available: false,
       reason: "Coming with the next update",
@@ -95,10 +100,10 @@ describe("transcription modes availability", () => {
     });
     expect(
       scaleStops("web", null, false, {
-        skipEnabled: true,
+        skipEnabled: false,
         powerfulEnabled: false,
       }).map(({ id }) => id),
-    ).toEqual(["skip", "local", "private", "powerful"]);
+    ).toEqual(["local", "private", "powerful"]);
   });
 
   test("Skip availability follows the feature flag", () => {
@@ -232,15 +237,15 @@ describe("transcription modes availability", () => {
     );
     expect(
       availableStops("desktop", null, false).map((stop) => stop.id),
-    ).toEqual(["private"]);
+    ).toEqual(["skip", "private"]);
     expect(
       availableStops("desktop", null, true).map((stop) => stop.id),
-    ).toEqual(["local", "private"]);
-    expect(scaleStops("desktop", null, false)[0]?.availability).toEqual({
+    ).toEqual(["skip", "local", "private"]);
+    expect(scaleStops("desktop", null, false)[1]?.availability).toEqual({
       available: false,
       reason: "Get Whisper for this Mac",
     });
-    expect(scaleStops("desktop", null, true)[0]?.availability).toEqual({
+    expect(scaleStops("desktop", null, true)[1]?.availability).toEqual({
       available: true,
     });
   });

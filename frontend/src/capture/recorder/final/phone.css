@@ -334,11 +334,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pr-capline button {
-  min-height: 44px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
 
 .pr-src-wrap {
   position: relative;
