@@ -3,10 +3,12 @@ import { Button } from "@/components/ui/button";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt, type OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { readTranscriberPreference, setDefaultIdentifySpeakers } from "@/lib/voiceNotes/transcriberPreference";
 
 export function LocalSettings({ onBack }: { onBack: () => void }) {
   const [quarantine, setQuarantine] = useState<{ id: string; reason: string }[]>([]);
   const [model, setModel] = useState<OnDeviceSttStatus | null>(null);
+  const [identifySpeakers, setIdentifySpeakers] = useState(() => readTranscriberPreference().identifySpeakers);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
@@ -26,6 +28,9 @@ export function LocalSettings({ onBack }: { onBack: () => void }) {
         onChange={(event) => { void OnDeviceStt.setAutoDownload({ enabled: event.target.checked }).catch((caught: unknown) => setError(String(caught))); }} />Download on Wi-Fi automatically</label>}
       <Button variant="outline" onClick={() => { void OnDeviceStt.downloadNow({ allowCellular: false }).catch((caught: unknown) => setError(String(caught))); }}>Download now</Button>
     </div>
+    <label className="flex gap-2"><input type="checkbox" checked={identifySpeakers}
+      onChange={(event) => { const next = event.target.checked; void setDefaultIdentifySpeakers(next)
+        .then(() => setIdentifySpeakers(next), (caught: unknown) => setError(String(caught))); }} />Identify speakers by default</label>
     <div className="flex items-center gap-3"><span>Appearance</span><ThemeToggle /></div>
     <Button variant="outline" onClick={() => { void VoiceNotes.listQuarantine().then(({ items }) => setQuarantine(items), (caught: unknown) => setError(String(caught))); }}>Recordings Exo couldn't recover</Button>
     {quarantine.map((item) => <p key={item.id}>{item.reason} <Button variant="outline" onClick={() => { void VoiceNotes.deleteQuarantined({ id: item.id }).then(() => setQuarantine((items) => items.filter((other) => other.id !== item.id)), (caught: unknown) => setError(String(caught))); }}>Delete</Button></p>)}
