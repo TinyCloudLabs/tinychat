@@ -126,6 +126,8 @@ A user pause is not a missing span; it is counted in `pausedMs` and the `intent`
                       "cleanup": "none" | "pending" | "done" } ]
   },
   "stt": { "state": "waiting_for_model" | "queued" | "running" | "done" | "failed" | "cancelled", "pack": null, "engine": null, "segmentsDone": 0, "windowsDone": 0, "error": null }
+  // "attempts" (Int, TC-836) is added once a note first enters "running": a crash-loop guard
+  // persisted before each decode attempt, absent until then; readers default a missing value to 0.
 }
 ```
 `durationMs` in v2 is `a` at the final durable frame, including any written priming or padding access units; `wallMs` is start→stop (or the last durable event in recovery). `pausedMs` is the sum of user-pause intervals within `wallMs`. V1 sidecars keep their wall-clock `durationMs`. A v2 writer emits the full exact key set of `sidecar-v2-ios.json` or `sidecar-v2-android.json` (with platform-specific values), including explicit `null` for unknown nullable fields and empty arrays for no spans or remote handles. Readers remain tolerant of older v2 files that omit newly added fields.

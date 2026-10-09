@@ -1,25 +1,26 @@
 import AVFoundation
 import Foundation
 
-/// Decodes a committed note's `.m4a` to 16 kHz mono Float32 (plan §2.5 step 1), the format
-/// sherpa-onnx's VAD and recognizer both expect. The whole note is decoded into memory at once
-/// (as the T7 benchmark already does for its fixtures): correct for the recordings this slice was
-/// verified against, but a multi-hour note can use several hundred MB doing this; T23 moves to a
-/// blockwise decode to bound that.
+/// Decodes a committed note's `.m4a` to 16 kHz mono Float32 windows (plan §2.5 step 1), the format
+/// sherpa-onnx's VAD and recognizer both expect. Unlike an earlier version of this file, it never
+/// materializes the whole note in memory: `AVAudioConverter` already reads and converts the file in
+/// ~10 s chunks, and each converted chunk is immediately re-batched into fixed-size windows
+/// (`WindowAccumulator`) and handed to `onWindow`, so memory stays bounded by one window and one
+/// converter buffer regardless of note length (TC-836: a note left recording for a long time once
+/// OOM'd the old whole-array decode). Mirrors Android's `AudioDecoder.decodeWindows`.
 enum AudioDecoder {
     enum Error: Swift.Error { case openFailed, converterFailed, readFailed }
 
-    static func decode16kMono(_ url: URL) throws -> [Float] {
+    static func decodeWindows(_ url: URL, windowSize: Int, onWindow: @escaping ([Float]) throws -> Void) throws {
         let file = try AVAudioFile(forReading: url)
-        guard file.length > 0 else { return [] }
+        guard file.length > 0 else { return }
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
         guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else { throw Error.converterFailed }
         let readChunkFrames: AVAudioFrameCount = 48_000 * 10 // ~10 s of source audio per read.
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: readChunkFrames) else {
             throw Error.converterFailed
         }
-        var result: [Float] = []
-        result.reserveCapacity(Int(Double(file.length) * target.sampleRate / file.processingFormat.sampleRate))
+        let windows = WindowAccumulator(windowSize: windowSize, onWindow: onWindow)
         var reachedEndOfFile = false
         // One AVAudioConverterInputBlock call per source read; loop `convert` until it has drained
         // that read (status `.inputRanDry`) before asking for the next chunk of the file.
@@ -53,7 +54,7 @@ enum AudioDecoder {
                 }
                 if let error { throw error }
                 if let channel = outputBuffer.floatChannelData?[0], outputBuffer.frameLength > 0 {
-                    result.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(outputBuffer.frameLength)))
+                    try windows.push(UnsafeBufferPointer(start: channel, count: Int(outputBuffer.frameLength)))
                 }
                 switch status {
                 case .haveData: continue conversionLoop
@@ -64,6 +65,6 @@ enum AudioDecoder {
                 }
             }
         }
-        return result
+        try windows.finish()
     }
 }

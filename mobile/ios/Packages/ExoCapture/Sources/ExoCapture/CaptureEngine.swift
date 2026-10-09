@@ -12,6 +12,10 @@ public enum CaptureResumeError: Error, LocalizedError {
 
 public final class CaptureEngine {
     public static let shared = CaptureEngine()
+    /// Capture-priority handoff bound (plan §2.5): how long capture-start waits for STT to release
+    /// its native engine before opening the mic regardless. Short enough that a user never notices
+    /// Record feeling slow; long enough to usually dodge a wasteful bit of model-unload contention.
+    static let captureStartReleaseWaitSeconds: TimeInterval = 0.3
     public let library: RecordingLibrary
     private let log = Logger(subsystem: "xyz.tinycloud.exo", category: "capture")
     private let defaultsKey = "exo.capture.defaults.v2"
@@ -164,6 +168,11 @@ public final class CaptureEngine {
     /// checks this before and between work units, and releases its model instead of competing
     /// with capture for CPU/memory (plan capture-priority handoff, §2.5).
     public var isCapturing: Bool { intent != "stopped" }
+    /// Set by `ExoSttBootstrap` to `TranscriptionQueue.shared.awaitReleaseForCapture` (ExoCapture
+    /// cannot depend on ExoStt directly without a package cycle, since ExoStt depends on
+    /// ExoCapture). Called before the mic opens; must never block longer than the timeout it's
+    /// given — capture always proceeds regardless of whether STT actually released in time.
+    public var sttReleaseHandoff: ((TimeInterval) -> Void)?
     public func presentRecorder() {
         if let id = info?.id {
             log.notice("presentRecorder id=\(id, privacy: .public)")
@@ -257,6 +266,11 @@ public final class CaptureEngine {
                                   startedAt: now)
         try library.startSession(session)
         info = session; options = selected; intent = "recording"; availability = "available"
+        // Capture priority (plan §2.5): `intent` just flipped, so the STT queue's next check of
+        // `isCapturing` will abandon its current attempt. Wait briefly for it to actually release
+        // its native engine before the mic opens, but never block the recording start on it —
+        // a single VAD segment's recognize() call can't be interrupted mid-call.
+        sttReleaseHandoff?(CaptureEngine.captureStartReleaseWaitSeconds)
         transitions = CaptureTransitionMachine()
         reason = nil; spans = []; openSpan = nil; audioMs = 0; pausedMs = 0; pausedSince = nil
         currentInput = nil; currentInputRate = nil

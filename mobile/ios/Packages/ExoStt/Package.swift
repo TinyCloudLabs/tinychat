@@ -21,6 +21,7 @@ let package = Package(
             .product(name: "sherpa-onnx", package: "sherpa-onnx"),
             "CBZip2"
         ]),
-        .executableTarget(name: "SttBenchMac", dependencies: ["ExoStt"])
+        .executableTarget(name: "SttBenchMac", dependencies: ["ExoStt"]),
+        .testTarget(name: "ExoSttTests", dependencies: ["ExoStt"])
     ]
 )
