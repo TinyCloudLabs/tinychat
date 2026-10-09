@@ -683,7 +683,7 @@ this is untested. Google sign-in inside a WebView is blocked by Google
 system-browser handoff on OpenKey's side (TC-520 territory). The Google
 connectors have one already (see "Google connectors (OAuth)").
 
-### Native sign-in (TC-775 E1, flag off)
+### Native sign-in and renewal (TC-775 E1/E2, flag off)
 
 `VITE_EXO_NATIVE_OPENKEY=true` switches sign-in inside the app to the OpenKey
 native delegation flow instead of the embedded widget (iOS and Android only;
@@ -719,10 +719,17 @@ The session JWK never touches WebView localStorage. Details:
   registered client are not deployed). The local gate L1 runs it against a
   local OpenKey over a tunnel; `scripts/android-dev/signin-openkey-native.sh`
   is the emulator harness (Custom Tab + mailinator email OTP).
-- E1 retires any surviving native session at app boot. The same SDK instance
-  handles boot, sign-in and sign-out so queued revocations and unfinished
-  exchanges are retried; persistent native restore and renewal belong to E2.
-  A failed new sign-in leaves an existing SDK session in place. A failed
+- The same SDK instance handles boot, sign-in, renewal and sign-out so queued
+  revocations and unfinished exchanges are retried. Boot restores a surviving
+  native session before checking the backend JWT; an expired JWT is replaced
+  through delegation renewal and backend verification. Renewal runs on a timer,
+  when the app returns to the foreground, and before TinyCloud KV/SQL calls.
+  It installs the renewed delegation into the live TinyCloudWeb instance. A
+  voice-note save delays the swap until it finishes or the old delegation has
+  less than 60 seconds left; a forced swap schedules recovery of any aborted
+  pending save after its save guard settles. A terminal renewal signs out
+  locally, while a secure-storage error remains retryable and is shown in the
+  app. A failed new sign-in leaves an existing SDK session in place. A failed
   handoff after consent revokes the new grant before showing an error. If
   secure storage fails during sign-out, the app keeps the native session for
   another attempt.

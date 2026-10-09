@@ -21,6 +21,8 @@ import type {
   NativeSession,
   OpenKeyNative,
 } from "@openkey/sdk-capacitor";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { nativeRenewAt, renewalLeadMs, terminalRenewalError, nativeCode } from "./openkeyNativeRenewal";
 
 // ── Gate ──────────────────────────────────────────────────────────────
 
@@ -170,6 +172,10 @@ class NativeSpaceUnavailableError extends Error {
   readonly code = "SPACE_UNAVAILABLE";
 }
 
+class NativeHandoffRetryError extends Error {
+  readonly code = "HANDOFF_RETRY";
+}
+
 function nativeErrorCode(error: unknown): string | null {
   if (error instanceof NativeSpaceUnavailableError) return error.code;
   return error instanceof Error && error.name === "OpenKeyNativeError" &&
@@ -233,6 +239,8 @@ export interface NativeSignInResult {
   /** SIWE + signature the backend /api/auth/verify exchanged for a session token. */
   verified: { token: string; expiresIn: number; address: string };
   delegationExpiresAt: string;
+  session: NativeSession;
+  openkey: OpenKeyNative;
 }
 
 /** Injectable seams so unit tests drive the flow without a device or network. */
@@ -287,6 +295,25 @@ function nativeClient(
   return defaultOpenKeyNative ??= create(options);
 }
 
+/** iOS 15 WKWebView predates AbortSignal.timeout. */
+function withNativeFetchTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  return run(controller.signal).finally(() => clearTimeout(timeout));
+}
+
+export const NATIVE_SIGN_OUT_DEADLINE_MS = 10_000;
+
+function withNativeDeadline<T>(run: Promise<T>, ms = NATIVE_SIGN_OUT_DEADLINE_MS): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("OpenKey sign-out timed out")), ms);
+    run.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 /** Tests only: isolate the module-level SDK client between mocked flows. */
 export function resetNativeOpenKeyClientForTests(): void {
   defaultOpenKeyNative = null;
@@ -299,12 +326,15 @@ async function defaultDeps(): Promise<NativeSignInDeps> {
     import("@tinyboilerplate/client"),
   ]);
   return {
-    createOpenKeyNative: (options) => new OpenKeyNative({ ...options, ephemeralSession: true }),
-    requestNonce: client.requestNonce,
+    createOpenKeyNative: (options) => new OpenKeyNative({ ...options, ephemeralSession: true,
+      fetchFn: (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) =>
+        withNativeFetchTimeout((signal) => fetch(url, { ...init, signal })),
+    }),
+    requestNonce: (backendUrl, address) => withNativeFetchTimeout((signal) => client.requestNonce(backendUrl, address, { signal })),
     loadManifest: client.loadAppManifest,
     activateSession: activateSessionWithHost,
     restoreSession: client.restoreTinyCloudWebSession,
-    verifySession: client.verifySession,
+    verifySession: (backendUrl, siwe, signature) => withNativeFetchTimeout((signal) => client.verifySession(backendUrl, siwe, signature, { signal })),
   };
 }
 
@@ -364,20 +394,73 @@ export async function signInNative(
   }
 }
 
-/** Construct the SDK at app boot so it retries pending revokes, then retire an E1 session. */
-export async function retireNativeSessionAtBoot(
-  config: Pick<NativeSignInConfig, "tinycloudHost" | "env">,
-  deps?: Pick<NativeSignInDeps, "createOpenKeyNative">,
-  beforeRetire?: () => Promise<void>,
-): Promise<boolean> {
-  const env = config.env ?? import.meta.env;
-  const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
-  const openkey = nativeClient(nativeClientOptions(env, config.tinycloudHost), create);
-  const current = await openkey.current();
-  if (!current) return false;
-  await beforeRetire?.();
-  await openkey.signOut();
-  return true;
+export type NativeBootOutcome =
+  | { kind: "none" }
+  | { kind: "restored"; address: string; tcw: TinyCloudWeb; session: NativeSession; openkey: OpenKeyNative; verified?: NativeSignInResult["verified"]; renewAt?: number }
+  | { kind: "unavailable" }
+  | { kind: "storage" }
+  | { kind: "configuration" }
+  | { kind: "terminal"; revoke: () => Promise<void> };
+
+/** Restore before the backend JWT gate: a live native grant can mint a new JWT. */
+export async function restoreNativeAtBoot(
+  config: NativeSignInConfig,
+  backendJwtValid: boolean,
+  deps?: NativeSignInDeps,
+): Promise<NativeBootOutcome> {
+  let openkey: OpenKeyNative | null = null;
+  try {
+    const d = deps ?? await defaultDeps();
+    openkey = nativeClient(nativeClientOptions(config.env ?? import.meta.env, config.tinycloudHost), d.createOpenKeyNative);
+    let session = await openkey.current();
+    if (!session) return { kind: "none" };
+    let renewed = false;
+    let renewAt: number | undefined;
+    const expiresAt = new Date(session.delegation.expiresAt).getTime();
+    const issuedAt = session.delegation.issuedAt ? new Date(session.delegation.issuedAt).getTime() : NaN;
+    const minimumAt = Number.isFinite(issuedAt)
+      ? issuedAt + Math.min(60_000, renewalLeadMs(session.delegation)) : 0;
+    const wantsRenewal = !backendJwtValid || Date.now() >= nativeRenewAt(session);
+    if (wantsRenewal && Date.now() < minimumAt && Date.now() < expiresAt) {
+      // OpenKey rejects renewal inside its minimum interval. Restore the live
+      // delegation now and let the scheduler refresh the JWT at the first legal time.
+      renewAt = minimumAt;
+    } else if (wantsRenewal) {
+      let siweNonce: string | undefined;
+      try { siweNonce = await d.requestNonce(config.backendUrl, session.delegation.address); }
+      catch { /* A nonce fetch outage does not prevent delegation renewal. */ }
+      try {
+        session = await openkey.renew(siweNonce ? { siweNonce } : {});
+        renewed = true;
+      } catch (error) {
+        if (nativeCode(error) !== "RENEWAL_TOO_SOON" || Date.now() >= expiresAt) throw error;
+        const retryAfterSeconds = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+        renewAt = Date.now() + (typeof retryAfterSeconds === "number" ? retryAfterSeconds * 1000 : 15_000);
+      }
+    }
+    const installed = await installNativeSession(openkey, session, config, d, undefined, !renewed);
+    let verified: NativeSignInResult["verified"] | undefined;
+    if (renewed) {
+      try {
+        verified = await d.verifySession(config.backendUrl, session.delegation.siwe!, session.delegation.signature!);
+      } catch (error) {
+        installed.tcw.cleanup();
+        logNativeOpenKeyError("backend verification", error);
+        return { kind: "unavailable" };
+      }
+    }
+    return { kind: "restored", address: installed.address, tcw: installed.tcw, session, openkey, verified, renewAt };
+  } catch (error) {
+    logNativeOpenKeyError("boot restore", error);
+    if (error instanceof Error && error.message.startsWith("Native sign-in is not configured")) return { kind: "configuration" };
+    if (nativeCode(error) === "STORAGE") return { kind: "storage" };
+    if (!terminalRenewalError(error)) return { kind: "unavailable" };
+    const client = openkey;
+    return { kind: "terminal", revoke: () => {
+      if (!client) return Promise.reject(new Error("Native OpenKey client unavailable during terminal revoke"));
+      return withNativeDeadline(client.signOut());
+    } };
+  }
 }
 
 /**
@@ -391,6 +474,34 @@ async function handoffNativeSession(
   config: NativeSignInConfig,
   d: NativeSignInDeps,
 ): Promise<NativeSignInResult> {
+  const installed = await installNativeSession(openkey, session, config, d);
+  const verified = await d.verifySession(config.backendUrl, session.delegation.siwe!, session.delegation.signature!);
+  return { ...installed, verified, delegationExpiresAt: delegationExpiryIso(session.delegation.expiresAt), session, openkey };
+}
+
+/** Reuse the same SDK instance and E1 handoff for every live renewal. */
+export async function nativeRenewalServices(
+  config: NativeSignInConfig,
+  openkey: OpenKeyNative,
+  deps?: NativeSignInDeps,
+) {
+  const d = deps ?? await defaultDeps();
+  return {
+    requestNonce: (address: string) => d.requestNonce(config.backendUrl, address),
+    verifySession: (siwe: string, signature: string) => d.verifySession(config.backendUrl, siwe, signature),
+    install: (session: NativeSession, tcw: TinyCloudWeb) => installNativeSession(openkey, session, config, d, tcw).then(() => undefined),
+  };
+}
+
+/** SDK persistence precedes this; the adapter record is saved, activated, then swapped. */
+export async function installNativeSession(
+  openkey: OpenKeyNative,
+  session: NativeSession,
+  config: NativeSignInConfig,
+  d: NativeSignInDeps,
+  liveTcw?: TinyCloudWeb,
+  alreadyStored = false,
+): Promise<{ address: string; tcw: TinyCloudWeb }> {
   const { delegation, sessionKey } = session;
   const address = delegation.address;
   const chainId = delegation.chainId;
@@ -408,7 +519,8 @@ async function handoffNativeSession(
   }
 
   const storage = openkey.sessionStorageAdapter();
-  await storage.save(address, {
+  const stored = alreadyStored ? await storage.load(address) : null;
+  if (!stored || stored.tinycloudSession?.delegationCid !== delegation.delegationCid) await storage.save(address, {
     address,
     chainId,
     sessionKey: JSON.stringify(sessionKey.privateJwk),
@@ -428,7 +540,7 @@ async function handoffNativeSession(
 
   const activation = await d.activateSession(delegation.tinycloudHost, delegation.delegationHeader);
   if (!activation.success) {
-    throw new Error(activation.error ?? "TinyCloud space activation failed");
+    throw new NativeHandoffRetryError(activation.error ?? "TinyCloud space activation failed");
   }
   // OpenKey may already have hosted the space during consent. In that case
   // /delegate returns a successful reconciliation with activated: [].
@@ -436,6 +548,11 @@ async function handoffNativeSession(
     throw new NativeSpaceUnavailableError("TinyCloud could not host the delegated space");
   }
 
+  if (liveTcw) {
+    const restored = await liveTcw.restoreSession(address);
+    if (restored.status !== "restored") throw new NativeHandoffRetryError("TinyCloud live session swap failed");
+    return { address, tcw: liveTcw };
+  }
   const restored = await d.restoreSession(address, {
     tinycloudHosts: config.tinycloudHosts ?? [delegation.tinycloudHost],
     autoCreateSpace: false,
@@ -443,16 +560,9 @@ async function handoffNativeSession(
     provider: createNativeReadOnlyProvider(address, chainId),
   });
   if (restored.status !== "restored" || !restored.tcw) {
-    throw restored.error ?? new Error("TinyCloud session restore failed");
+    throw new NativeHandoffRetryError(restored.error?.message ?? "TinyCloud session restore failed");
   }
-
-  const verified = await d.verifySession(config.backendUrl, delegation.siwe, delegation.signature);
-  return {
-    address,
-    tcw: restored.tcw,
-    verified,
-    delegationExpiresAt: delegationExpiryIso(delegation.expiresAt),
-  };
+  return { address, tcw: restored.tcw as TinyCloudWeb };
 }
 
 /** Sign the native OpenKey session out: revoke the delegation grant and drop the secure-store record. */
@@ -466,5 +576,5 @@ export async function signOutNative(deps?: {
     nativeClientOptions(env, env.VITE_TINYCLOUD_HOST ?? "https://tee.node.tinycloud.xyz"),
     create,
   );
-  await openkey.signOut();
+  await withNativeDeadline(openkey.signOut());
 }
