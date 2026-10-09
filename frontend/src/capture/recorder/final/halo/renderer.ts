@@ -9,6 +9,8 @@ const RA = 1 / BLEED;
 const compareByPixelSize = (a: HaloEntry, b: HaloEntry) =>
   b.pixelSize - a.pixelSize;
 
+const VARIANT: string =
+  (window as unknown as { __haloVariant?: string }).__haloVariant ?? "base";
 const L = (...a: unknown[]) => {
   const w = window as unknown as { __hl?: unknown[] };
   (w.__hl ??= []).push([Math.round(performance.now()), ...a]);
@@ -385,12 +387,14 @@ class SharedHaloRenderer {
     HTMLCanvasElement
   >();
   private startTime = performance.now();
+  private retired: ImageBitmap[] = [];
+  private frameBitmaps: ImageBitmap[] = [];
   private lost = false;
 
   constructor() {
     const selected = selectRenderSurface(
       () =>
-        typeof OffscreenCanvas === "undefined"
+        typeof OffscreenCanvas === "undefined" || VARIANT === "B3"
           ? null
           : new OffscreenCanvas(ATLAS_SIZE, ATLAS_SIZE),
       () => {
@@ -400,6 +404,7 @@ class SharedHaloRenderer {
       },
     );
     (window as unknown as { __halo?: unknown }).__halo = this;
+    L("path", selected.path, VARIANT);
     this.canvas = selected.canvas;
     this.gl = selected.gl;
     this.path = selected.path;
@@ -445,13 +450,11 @@ class SharedHaloRenderer {
     const intersection = new IntersectionObserver(
       ([item]) => {
         entry.visible = item.isIntersecting;
-        L("IO", entry.config.size, entry.pixelSize, item.isIntersecting);
         if (entry.visible) this.frameLoop.start();
       },
       { rootMargin: "80px" },
     );
     const resize = new ResizeObserver(() => {
-      L("RO", entry.config.size, entry.visible);
       this.resize(entry);
       if (entry.visible) this.frameLoop.start();
     });
@@ -695,7 +698,6 @@ class SharedHaloRenderer {
       Math.round(entry.config.size * BLEED * dpr),
     );
     if (entry.pixelSize > 0) {
-      L("resize-clear", entry.config.size, entry.pixelSize, entry.visible);
       entry.canvas.width = entry.canvas.height = entry.pixelSize;
       entry.lastDraw = 0;
     }
@@ -754,11 +756,13 @@ class SharedHaloRenderer {
     gl.enable(gl.SCISSOR_TEST);
     gl.clearColor(0, 0, 0, 0);
 
+    const previousBitmaps = this.retired;
+    this.retired = this.frameBitmaps;
+    this.frameBitmaps = [];
     let x = 0;
     let y = 0;
     let shelfHeight = 0;
     this.todo.sort(compareByPixelSize);
-    L("drawWebgl", this.todo.map((e) => e.pixelSize));
     for (const entry of this.todo) {
       const size = entry.pixelSize;
       if (x + size > ATLAS_SIZE) {
@@ -784,6 +788,7 @@ class SharedHaloRenderer {
       shelfHeight = Math.max(shelfHeight, size);
     }
     this.flushBatch(now);
+    for (const old of previousBitmaps) old.close();
   }
 
   private flushBatch(now: number) {
@@ -793,10 +798,11 @@ class SharedHaloRenderer {
       return;
     }
     const offscreen = this.canvas as OffscreenCanvas;
+    if (VARIANT === "B2" || VARIANT === "B12") this.gl!.flush();
     const bitmap =
       this.path === "webgl-atlas" ? offscreen.transferToImageBitmap() : null;
+    L("flush", this.batch.map((e) => [e.pixelSize, e.atlasX, e.atlasY]));
     const source = bitmap ?? (this.canvas as HTMLCanvasElement);
-    L("flush", this.batch.map((e) => [e.pixelSize, e.atlasX, e.atlasY, [...document.querySelectorAll(".halo-ring__canvas")].indexOf(e.canvas)]), bitmap?.width, bitmap?.height);
     for (const entry of this.batch) {
       const size = entry.pixelSize;
       entry.context.clearRect(0, 0, size, size);
@@ -812,9 +818,11 @@ class SharedHaloRenderer {
         size,
       );
       entry.lastDraw = now;
-      L("drawn", size);
     }
-    bitmap?.close();
+    if (bitmap) {
+      if (VARIANT === "B1" || VARIANT === "B12") this.frameBitmaps.push(bitmap);
+      else bitmap.close();
+    }
     this.batch.length = 0;
   }
 

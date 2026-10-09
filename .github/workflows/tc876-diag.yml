@@ -7,7 +7,7 @@ permissions:
 jobs:
   diag:
     runs-on: macos-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -22,16 +22,14 @@ jobs:
       - working-directory: test
         run: bunx playwright install webkit
       - name: cpu stress
-        run: for i in 1 2 3 4; do (yes > /dev/null &) ; done
-      - name: repro
+        run: for i in 1 2 3 4 5 6; do (yes > /dev/null &) ; done
+      - name: diagnostics
         working-directory: test
-        run: LOG=1 STOP=1 N=60 SETTLE=700 bun _repro.ts 2>&1 | tee /tmp/repro.log
-      - name: repro with poller
-        if: ${{ !cancelled() }}
-        working-directory: test
-        run: POLL=1 LOG=1 STOP=1 N=40 SETTLE=700 bun _repro.ts 2>&1 | tee /tmp/repro-poll.log
+        run: NOGATE=1 N=30 timeout 18m bun _repro.ts 2>&1 | tee /tmp/repro.log || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
           name: repro-log
-          path: /tmp/repro.log
+          path: |
+            /tmp/repro.log
+            /tmp/tc876/
