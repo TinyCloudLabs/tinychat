@@ -1,17 +1,20 @@
 /* Moments (＋, the field under the timer, View notes) and the notes sheet, on the phone layout. */
+/* A 44px target; the 36px disc is drawn behind the glyph. */
 .pr-mark {
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  background: var(--glass);
-  box-shadow: inset 0 0 0 1px var(--gedge);
+  isolation: isolate;
   color: var(--ink);
   transition: transform 0.2s cubic-bezier(0.3, 1.7, 0.4, 1);
 }
 .pr-mark::before {
   content: "";
   position: absolute;
-  inset: -4px;
+  inset: 4px;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--gedge);
 }
 .pr-mark:not(:disabled):not([aria-disabled="true"]):active {
   transform: translateY(-50%) scale(0.86);
@@ -26,9 +29,10 @@
   margin-top: 0;
 }
 .pr-notes {
-  margin-top: 8px;
+  margin-top: 6px;
+  margin-bottom: -2px;
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -37,15 +41,24 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: 44px;
   padding: 6px 13px 6px 11px;
-  border-radius: 999px;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--ink);
+  position: relative;
+  isolation: isolate;
+  animation: pr-pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+/* A 44px target; the 32px pill is drawn behind the label. */
+.pr-vnotes::before {
+  content: "";
+  position: absolute;
+  inset: 6px 0;
+  z-index: -1;
+  border-radius: 999px;
   background: var(--glass);
   box-shadow: inset 0 0 0 1px var(--gedge);
-  animation: pr-pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1);
 }
 @keyframes pr-pop {
   from {
@@ -83,19 +96,31 @@
   /* 16px: a smaller field makes iOS zoom the page when it takes focus. */
   font: 500 16px var(--soft-body-font);
   caret-color: var(--red);
+  height: 44px;
+  margin-block: -1px;
 }
 .pr-moment input::placeholder {
   color: color-mix(in srgb, var(--dim) 70%, transparent);
 }
+/* A 44px target; the 30px key is drawn behind the glyph. */
 .pr-moment button {
   flex: none;
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
+  position: relative;
+  isolation: isolate;
+  width: 44px;
+  height: 44px;
+  margin: -7px;
   display: grid;
   place-items: center;
-  background: var(--ink);
   color: var(--bgc);
+}
+.pr-moment button::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  z-index: -1;
+  border-radius: 10px;
+  background: var(--ink);
 }
 
 /* While a moment is being typed the scale and controls step aside; the ring and timer stay. */
@@ -150,13 +175,23 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 36px;
+  min-height: 44px;
+  margin-block: -4px;
   padding: 5px 12px 5px 11px;
+  position: relative;
+  isolation: isolate;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+/* A 44px target; the 36px pill is drawn behind the content. */
+.pr-nrec::before {
+  content: "";
+  position: absolute;
+  inset: 4px 0;
+  z-index: -1;
   border-radius: 999px;
   background: var(--glass);
   box-shadow: inset 0 0 0 1px var(--gedge);
-  font-size: 17px;
-  font-variant-numeric: tabular-nums;
 }
 .pr-nrec:disabled {
   opacity: 0.6;
@@ -175,13 +210,23 @@
   opacity: 1;
 }
 .pr-ndone {
-  min-height: 40px;
+  position: relative;
+  isolation: isolate;
+  min-height: 44px;
+  margin-block: -2px;
   padding: 0 20px;
-  border-radius: 999px;
   font-size: 14px;
   font-weight: 700;
-  background: var(--ink);
   color: var(--bgc);
+}
+/* A 44px target; the 40px pill is drawn behind the label. */
+.pr-ndone::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  z-index: -1;
+  border-radius: 999px;
+  background: var(--ink);
 }
 .pr-ntabs {
   align-self: flex-start;
@@ -191,17 +236,29 @@
   background: var(--glass);
   box-shadow: inset 0 0 0 1px var(--gedge);
 }
+/* A 44px target; the 30px segment is drawn behind the label. */
 .pr-ntabs button {
-  min-height: 30px;
+  position: relative;
+  isolation: isolate;
+  min-height: 44px;
+  margin-block: -7px;
   padding: 4px 13px;
-  border-radius: 999px;
   font-size: 12px;
   font-weight: 700;
   color: var(--dim);
 }
+.pr-ntabs button::before {
+  content: "";
+  position: absolute;
+  inset: 7px 0;
+  z-index: -1;
+  border-radius: 999px;
+}
 .pr-ntabs button[aria-pressed="true"] {
-  background: var(--ink);
   color: var(--bgc);
+}
+.pr-ntabs button[aria-pressed="true"]::before {
+  background: var(--ink);
 }
 .pr-nbody {
   flex: 1;

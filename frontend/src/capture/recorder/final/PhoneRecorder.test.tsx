@@ -305,19 +305,19 @@ describe("PhoneRecorder", () => {
   });
 
   describe("the note could not be synced", () => {
-    const sync = (code: string | null) =>
-      ({ ...withNote("a note"), noteSyncError: code }) as Partial<RecorderValue>;
+    const sync = (code: string | null): Partial<RecorderValue> => ({
+      ...withNote("a note"),
+      noteSyncError: code,
+    });
 
-    // TODO(TC-878b): RecorderValue gains noteSyncError; the value here is injected until it does.
     test("shows Note not synced yet, never the code", () => {
       const html = render(sync("sync_rejected"));
       expect(html).toContain("Note not synced yet");
       expect(html).not.toContain("sync_rejected");
     });
 
-    test("shows nothing when there is no error, or no field for it yet", () => {
+    test("shows nothing when there is no error", () => {
       expect(render(sync(null))).not.toContain("Note not synced yet");
-      expect(render(withNote("a note"))).not.toContain("Note not synced yet");
     });
   });
 

@@ -177,9 +177,7 @@ export function PhoneRecorder({
     },
   );
   const noteMd = noteText;
-  // TODO(TC-878b): `noteSyncError` (a short code) joins RecorderValue after T19; until then it is absent.
-  const noteSyncFailed =
-    (recorder as { noteSyncError?: string | null }).noteSyncError != null;
+  const noteSyncFailed = recorder.noteSyncError !== null;
   const notesOpen = ui.open;
   const keyboardInset = useKeyboardInset();
   const markButton = useRef<HTMLButtonElement>(null);

@@ -60,7 +60,7 @@
 .soft-skin .nt-wmd {
   margin-left: 6px;
   padding-right: 6px;
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -230,4 +230,59 @@
 }
 .soft-skin .fmd th {
   font-weight: 700;
+}
+
+/* Touch: 44px targets around the same 34x30 keys, overlapping their neighbours by a few px so the bar and its hint keep their width. */
+@media (pointer: coarse) {
+  .soft-skin .nt-wtools {
+    flex-wrap: wrap;
+  }
+  .soft-skin .nt-wtools button {
+    position: relative;
+    isolation: isolate;
+    width: 44px;
+    height: 44px;
+    margin: -7px -3px;
+  }
+  .soft-skin .nt-wtools button::before {
+    content: "";
+    position: absolute;
+    inset: 7px 5px;
+    z-index: -1;
+    border-radius: 9px;
+  }
+  .soft-skin .nt-wtools button:active {
+    background: none;
+  }
+  .soft-skin .nt-wtools button:active::before {
+    background: var(--glass);
+  }
+  /* 16px: a smaller field makes iOS zoom the page when it takes focus. */
+  .soft-skin .nt-wta {
+    font-size: 16px;
+  }
+  /* The rendered task markers are display-only (disabled), but still count as targets: a 44px box around the 15px mark. */
+  .soft-skin .fmd li.task input {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    margin: calc(0.24em - 14.5px) -14.5px -14.5px;
+    box-shadow: none;
+    background: none;
+    pointer-events: none;
+  }
+  .soft-skin .fmd li.task input:checked {
+    background: none;
+  }
+  .soft-skin .fmd li.task input::before {
+    content: "";
+    position: absolute;
+    inset: 14.5px;
+    border-radius: 5px;
+    box-shadow: inset 0 0 0 1.5px var(--dim);
+  }
+  .soft-skin .fmd li.task input:checked::before {
+    background: var(--ink);
+    box-shadow: none;
+  }
 }
