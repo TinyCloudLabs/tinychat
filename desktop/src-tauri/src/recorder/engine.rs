@@ -198,15 +198,6 @@ impl EngineState {
 
 fn emit_status(app: &tauri::AppHandle) {
     let status = app.state::<Engine>().0.lock().unwrap().status();
-    if let Some(window) = app.get_webview_window("main") {
-        let title = match status.state {
-            "recording" => "Exo • Recording",
-            "paused" => "Exo • Paused",
-            "needs_user" => "Exo • Microphone needs attention",
-            _ => "Exo",
-        };
-        let _ = window.set_title(title);
-    }
     let _ = app.emit(MIC_EVENT, status);
 }
 
@@ -396,6 +387,13 @@ fn source_mp3(session: &std::path::Path) -> Result<std::path::PathBuf, String> {
     if !mp3.exists() {
         let wav = session.join("audio.wav");
         if wav.exists() {
+            if hound::WavReader::open(&wav)
+                .map_err(|e| format!("recovery_wav_failed: {e}"))?
+                .duration()
+                == 0
+            {
+                return Err("capture_audio_empty".into());
+            }
             anlg_mp3::encode_wav(&wav, &mp3).map_err(|e| format!("recovery_encode_failed: {e}"))?;
         } else if session.join("audio.ogg").exists() {
             return Err("unsupported_capture_format".into());
@@ -403,7 +401,14 @@ fn source_mp3(session: &std::path::Path) -> Result<std::path::PathBuf, String> {
             return Err("capture_audio_missing".into());
         }
     }
+    if std::fs::metadata(&mp3).map_err(|e| e.to_string())?.len() == 0 {
+        return Err("capture_audio_empty".into());
+    }
     Ok(mp3)
+}
+
+fn empty_capture(error: &str) -> bool {
+    matches!(error, "capture_audio_missing" | "capture_audio_empty")
 }
 
 #[tauri::command]
@@ -442,7 +447,7 @@ pub async fn recorder_pause(app: tauri::AppHandle) -> Result<CaptureStatus, Stri
     };
     let result = stopped.and_then(|_| {
         match import_finished_segment(&app, &segment_id, &id, current.system_audio) {
-            Err(error) if error == "capture_audio_missing" && elapsed < 1_000 => {
+            Err(error) if empty_capture(&error) && elapsed < 1_000 => {
                 files::remove_source_session(&files::sessions_root(&app)?, &segment_id)
             }
             result => result,
@@ -522,6 +527,14 @@ pub async fn recorder_resume(app: tauri::AppHandle) -> Result<CaptureStatus, Str
         let mut state = state.0.lock().unwrap();
         if state.id.is_none() {
             return Err("no_recording".into());
+        }
+        // A failed earlier segment cannot be appended after a later segment.
+        // Keep the mic released until recovery or discard resolves the failure.
+        if journal::list_failed(&app)?
+            .iter()
+            .any(|failed| Some(&failed.id) == state.id.as_ref())
+        {
+            return Err("recovery_pending".into());
         }
         if state.segment_id.is_some() {
             return Err("already_recording".into());
@@ -654,6 +667,9 @@ pub fn recorder_recover(app: tauri::AppHandle) -> Result<RecoveryReport, String>
             {
                 match import_finished_segment(&app, &segment_id, &current.id, current.system_audio)
                 {
+                    Err(error) if empty_capture(&error) => {
+                        files::remove_source_session(&files::sessions_root(&app)?, &segment_id)?;
+                    }
                     Err(error) => journal::save_failed(
                         &app,
                         &journal::FailedSegment {
@@ -707,6 +723,11 @@ pub fn recorder_failed_retry(
     {
         match import_finished_segment(&app, &failed.segment_id, &id, failed.journal.system_audio) {
             Ok(()) => journal::remove_failed(&app, &failed.segment_id)?,
+            Err(error) if empty_capture(&error) => {
+                files::remove_source_session(&files::sessions_root(&app)?, &failed.segment_id)?;
+                journal::remove_failed_source(&app, &failed.segment_id)?;
+                journal::remove_failed(&app, &failed.segment_id)?;
+            }
             Err(error) => journal::save_failed(&app, &journal::FailedSegment { error, ..failed })?,
         }
     }
@@ -858,6 +879,33 @@ mod tests {
         let mp3 = source_mp3(&dir).unwrap();
         assert!(std::fs::metadata(mp3).unwrap().len() > 0);
         assert!(wav.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_resume_segment_is_skipped_without_touching_earlier_audio() {
+        let dir = std::env::temp_dir().join(format!("exo-empty-resume-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("note.mp3");
+        std::fs::write(&note, b"earlier durable segment").unwrap();
+        // The listener may never write a file before a crash immediately after Resume.
+        assert!(empty_capture(
+            &source_mp3(&dir.join("rec-empty")).unwrap_err()
+        ));
+        let resumed = dir.join("rec-empty-wav");
+        std::fs::create_dir_all(&resumed).unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        hound::WavWriter::create(resumed.join("audio.wav"), spec)
+            .unwrap()
+            .finalize()
+            .unwrap();
+        assert!(empty_capture(&source_mp3(&resumed).unwrap_err()));
+        assert_eq!(std::fs::read(&note).unwrap(), b"earlier durable segment");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

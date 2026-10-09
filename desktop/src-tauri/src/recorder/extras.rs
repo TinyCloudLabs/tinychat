@@ -2,7 +2,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
@@ -113,7 +113,9 @@ fn watch_download(app: tauri::AppHandle, id: String) {
     tauri::async_runtime::spawn(async move {
         let model = parse_model(&id);
         let mut inactive = 0;
-        for _ in 0..3600 {
+        // Downloads started by local transcription can outlive the recorder
+        // window. Keep watching until the shared task really terminates.
+        loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             if app
                 .state::<ExtrasState>()
@@ -165,32 +167,6 @@ fn watch_download(app: tauri::AppHandle, id: String) {
                 );
                 break;
             }
-        }
-        if app
-            .state::<ExtrasState>()
-            .progress
-            .lock()
-            .unwrap()
-            .get(&id)
-            .is_some_and(|p| p.status == "downloading")
-        {
-            let fraction = app
-                .state::<ExtrasState>()
-                .progress
-                .lock()
-                .unwrap()
-                .get(&id)
-                .map(|p| p.fraction)
-                .unwrap_or(0.0);
-            report_progress(
-                &app,
-                Progress {
-                    id: id.clone(),
-                    fraction,
-                    status: "error",
-                    error: Some("model_download_timeout".into()),
-                },
-            );
         }
         app.state::<ExtrasState>()
             .watching
@@ -265,7 +241,13 @@ pub fn install(app: &tauri::App) {
         if let Some(fraction) = fraction {
             // A shared local-transcription download may start without calling
             // recorder_models_download. Its first event can already be > 0%.
-            if value["status"].get("downloading").is_some() {
+            if !handle
+                .state::<ExtrasState>()
+                .watching
+                .lock()
+                .unwrap()
+                .contains(id)
+            {
                 let state = handle.state::<ExtrasState>();
                 let mut current = state.progress.lock().unwrap();
                 if current.get(id).is_some_and(|p| p.status != "downloading") {
@@ -497,7 +479,6 @@ async fn download_model_until_done(
             return Err(error);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(60 * 60);
     let mut inactive_polls = 0;
     loop {
         if app
@@ -542,27 +523,6 @@ async fn download_model_until_done(
             if inactive_polls >= 2 {
                 return Err("model_download_cancelled".into());
             }
-        }
-        if Instant::now() >= deadline {
-            let error = "model_download_timeout".to_string();
-            let fraction = app
-                .state::<ExtrasState>()
-                .progress
-                .lock()
-                .unwrap()
-                .get(&id)
-                .map(|p| p.fraction)
-                .unwrap_or(0.0);
-            report_progress(
-                &app,
-                Progress {
-                    id,
-                    fraction,
-                    status: "error",
-                    error: Some(error.clone()),
-                },
-            );
-            return Err(error);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

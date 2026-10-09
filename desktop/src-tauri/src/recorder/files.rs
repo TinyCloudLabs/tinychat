@@ -505,13 +505,13 @@ mod tests {
             let wav = source.join("audio.wav");
             let spec = hound::WavSpec {
                 channels: 2,
-                sample_rate: 48_000,
+                sample_rate: 16_000,
                 bits_per_sample: 32,
                 sample_format: hound::SampleFormat::Float,
             };
             let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
-            for frame in 0..48_000 {
-                let mic = ((frame as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin()) * 0.25;
+            for frame in 0..16_000 {
+                let mic = ((frame as f32 * 440.0 * std::f32::consts::TAU / 16_000.0).sin()) * 0.25;
                 writer.write_sample(mic).unwrap();
                 // A separate inverse channel makes the two policies observably
                 // different: mic-only keeps the left signal, mixing cancels it.
@@ -558,14 +558,13 @@ mod tests {
                     "default=noprint_wrappers=1",
                 ])
                 .arg(&note)
-                .output();
-            if let Ok(probe) = probe {
-                assert!(probe.status.success());
-                let report = String::from_utf8(probe.stdout).unwrap();
-                assert!(report.contains("channels=1"), "{report}");
-                assert!(report.contains("sample_rate=48000"), "{report}");
-                assert!(report.contains("bit_rate=64000"), "{report}");
-            }
+                .output()
+                .expect("ffprobe is required to verify the real capture encode");
+            assert!(probe.status.success());
+            let report = String::from_utf8(probe.stdout).unwrap();
+            assert!(report.contains("channels=1"), "{report}");
+            assert!(report.contains("sample_rate=16000"), "{report}");
+            assert!(report.contains("bit_rate=64000"), "{report}");
             fs::remove_dir_all(base).unwrap();
         }
     }

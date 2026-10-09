@@ -84,8 +84,13 @@ pub fn save_failed(app: &tauri::AppHandle, failed: &FailedSegment) -> Result<(),
     // A vault may live on another filesystem, where renaming into app data
     // cannot work. The manifest still makes the source recoverable by its
     // original session path and must not leave Stop retrying the import.
-    let _ = quarantine_source(app, &failed.segment_id);
-    save_failed_at(&failed_root(app)?, failed)
+    let mut reported = failed.clone();
+    if let Err(error) = quarantine_source(app, &failed.segment_id) {
+        // Keep the source in its original vault location for retry, but expose
+        // the failed move to the renderer instead of silently discarding it.
+        reported.error = format!("{}; quarantine_move_failed: {error}", reported.error);
+    }
+    save_failed_at(&failed_root(app)?, &reported)
 }
 
 pub fn failed_source(app: &tauri::AppHandle, segment_id: &str) -> Result<PathBuf, String> {
