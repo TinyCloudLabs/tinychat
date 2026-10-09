@@ -46,6 +46,10 @@ Opening Exo attempts one restart if the session needs attention.
 
 ## Emulator verification
 
+The post-rebase T14 baseline is `2d61296`. The older pre-rebase log labels below
+describe historical runs only; T15's guarded runs and logs are recorded in
+`durability-android.md`.
+
 - API 28: the pre-review full emulator connected suite ran 20 tests with 4 skipped,
   0 failed, and `BUILD SUCCESSFUL` after disabling Play Services in the
   private AVD. A preceding run had two startup failures because the guest's

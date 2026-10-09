@@ -19,6 +19,13 @@ class CaptureService : Service() {
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "ExoCaptureService") }
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var observing = false
+    private val pauseTick = object : Runnable {
+        override fun run() {
+            if (!observing) return
+            CaptureEngine.get(this@CaptureService).enforcePauseIdleLimit()
+            main.postDelayed(this, 1000)
+        }
+    }
     @Volatile private var foregroundStarted = false
     private val stateListener = object : CaptureEngine.Listener {
         override fun event(name: String, data: org.json.JSONObject) {
@@ -30,6 +37,7 @@ class CaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
         if (observing) CaptureEngine.get(this).removeListener(stateListener)
+        main.removeCallbacks(pauseTick)
         observing = false
         foregroundStarted = false
         worker.shutdown()
@@ -40,7 +48,7 @@ class CaptureService : Service() {
         val engine = CaptureEngine.get(this)
         try {
             ensureChannel()
-            if (!observing) { observing = true; engine.addListener(stateListener) }
+            if (!observing) { observing = true; engine.addListener(stateListener); main.postDelayed(pauseTick, 1000) }
             if (!foregroundStarted) {
                 val type = if (Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
                 ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type)

@@ -16,6 +16,35 @@ import xyz.tinycloud.exo.R
 object CaptureNotifications {
     private const val ALERT_CHANNEL = "capture-alerts"
     private const val ALERT_ID = 7202
+    private const val RECOVERED_ID = 7203
+    private const val PARKED_ID = 7204
+    private fun alertChannel(context: Context): NotificationManager {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26)
+            manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, context.getString(R.string.capture_alert_channel),
+                NotificationManager.IMPORTANCE_HIGH))
+        return manager
+    }
+    fun showRecovered(context: Context, id: String) {
+        val open = PendingIntent.getActivity(context, 6,
+            Intent(context, MainActivity::class.java).setAction(CaptureService.RECORD)
+                .setData(Uri.parse("exo://capture/recovered/$id")),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alertChannel(context).notify(RECOVERED_ID, NotificationCompat.Builder(context, ALERT_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Recording recovered")
+            .setContentText("Your recording was saved. Record again")
+            .setContentIntent(open).setAutoCancel(true).build())
+    }
+    fun showParked(context: Context, id: String) {
+        val open = PendingIntent.getActivity(context, 7,
+            Intent(context, MainActivity::class.java).setAction(CaptureService.SHOW_RECORDER)
+                .setData(Uri.parse("exo://capture/paused/$id")),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alertChannel(context).notify(PARKED_ID, NotificationCompat.Builder(context, ALERT_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentTitle("Recording paused — open Exo to resume")
+            .setContentIntent(open).setAutoCancel(true).build())
+    }
 
     fun action(context: Context, value: String, request: Int, status: JSONObject): PendingIntent {
         val id = status.optString("id")

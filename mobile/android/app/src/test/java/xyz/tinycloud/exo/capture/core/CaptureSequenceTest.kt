@@ -9,6 +9,29 @@ import java.io.File
 import java.util.UUID
 
 class CaptureSequenceTest {
+    @Test fun lowBatteryJournalUsesCanonicalIntegerPercent() {
+        val lib = RecordingLibrary(temp.newFolder())
+        val sequence = CaptureSequence(lib, noteId)
+        sequence.start("in_app", null, 0, defaultOptions(), MAX_DURATION_MS, base)
+        sequence.transition("low_battery", JSONObject().put("level", 5))
+        val event = lib.events(noteId).last()
+        assertEquals("low_battery", event.getString("e"))
+        assertEquals(5, event.getInt("level"))
+        assertTrue(File(lib.session(noteId), "journal.jsonl").readText().contains("\"level\":5"))
+    }
+    @Test fun audioBoundariesSurviveTheCommit() {
+        val lib = RecordingLibrary(temp.newFolder())
+        val sequence = CaptureSequence(lib, noteId)
+        sequence.start("in_app", null, 0, defaultOptions(), MAX_DURATION_MS, base)
+        sequence.firstInput(1)
+        sequence.firstAudio(base + 387)
+        sequence.frame(frame)
+        sequence.captureStopped(base + 1000)
+        sequence.stop("user", base + 1100)
+        val note = lib.commit(noteId, { it.writeBytes(byteArrayOf(1, 2, 3)) })
+        assertEquals(base + 387, note.getLong("firstAudioAt"))
+        assertEquals(base + 1000, note.getLong("captureStoppedAt"))
+    }
     @get:Rule val temp = TemporaryFolder()
     private val noteId = "11111111-1111-4111-8111-111111111111"
     private val base = 1_759_800_000_000L
@@ -60,7 +83,11 @@ class CaptureSequenceTest {
         assertArrayEquals(fixture("journal-android.jsonl"),
             File(library.session(noteId), "journal.jsonl").readBytes())
         library.commit(noteId, { it.writeBytes(ByteArray(19_000)) })
-        assertArrayEquals(fixture("sidecar-v2-android.json"), library.sidecar(noteId).readBytes())
+        val sidecar = JSONObject(library.sidecar(noteId).readText())
+        assertTrue(sidecar.isNull("firstAudioAt"))
+        assertTrue(sidecar.isNull("captureStoppedAt"))
+        sidecar.remove("firstAudioAt"); sidecar.remove("captureStoppedAt")
+        assertArrayEquals(fixture("sidecar-v2-android.json"), CanonicalJson.line(sidecar))
         assertEquals(3970, sequence.durableAudioMs)
     }
 

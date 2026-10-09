@@ -7,6 +7,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.Process
 import android.os.SystemClock
+import android.util.Log
 import xyz.tinycloud.exo.BuildConfig
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
 import xyz.tinycloud.exo.capture.core.MicStateContract
@@ -54,6 +55,8 @@ class AudioCapture(
     @Volatile private var tailLost = false
     @Volatile private var writerFailure: Exception? = null
     @Volatile var inputStopped = false
+        private set
+    @Volatile var captureStoppedAt = 0L
         private set
     private var recordingCallback: Any? = null
     private val routingListener = android.media.AudioRouting.OnRoutingChangedListener { onRoute() }
@@ -109,7 +112,9 @@ class AudioCapture(
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             while (!producerDone.get() || queue.isNotEmpty()) {
                 val pcm = queue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-                try { onPcm(pcm); firstPcm.countDown() } catch (e: Exception) {
+                try {
+                    onPcm(pcm); firstPcm.countDown()
+                } catch (e: Exception) {
                     writerFailure = e
                     firstPcm.countDown()
                     onError(MicStateContract.WRITE_FAILED, e.message ?: e.javaClass.simpleName)
@@ -125,6 +130,7 @@ class AudioCapture(
             var lastLevel = 0L
             var stalled = false
             var debugPosition = 0
+            var firstReadLogged = false
             while (running.get()) {
                 val n: Int
                 if (record != null) {
@@ -140,6 +146,10 @@ class AudioCapture(
                     Thread.sleep(50) // paced like a real 50 ms read, so levels/no-signal detection behave normally
                 }
                 if (n == 0) continue
+                if (!firstReadLogged && record != null) {
+                    firstReadLogged = true
+                    Log.i("ExoCapture", "AudioRecord first read bytes=$n bufferBytes=${scratch.size} minBufferBytes=$minBytes")
+                }
                 lastReadAt = SystemClock.elapsedRealtime()
                 val chunk = scratch.copyOf(n)
                 var accepted = queue.offer(chunk)
@@ -193,6 +203,7 @@ class AudioCapture(
                 }
             }
             inputStopped = true
+            captureStoppedAt = System.currentTimeMillis()
         }
         running.set(false)
         watchdog?.interrupt()
@@ -225,6 +236,7 @@ class AudioCapture(
         watchdog?.interrupt()
         try { record?.stop() } catch (_: Exception) { }
         inputStopped = true
+        captureStoppedAt = System.currentTimeMillis()
         reader?.join(2000)
         producerDone.set(true)
         writer?.join(30_000)

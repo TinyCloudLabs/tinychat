@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Base64
+import xyz.tinycloud.exo.BuildConfig
 import com.getcapacitor.JSObject
 import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
@@ -34,7 +35,7 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     override fun load() {
         engine = CaptureEngine.get(context)
         engine.addConsumerListener(this)
-        Thread({ engine.recover() }, "ExoCapturePluginRecovery").start()
+        engine.beginLaunchRecovery()
     }
     override fun handleOnDestroy() { engine.removeListener(this); super.handleOnDestroy() }
     override fun event(name: String, data: JSONObject) {
@@ -126,7 +127,7 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         }
     }
     @PluginMethod fun listPending(call: PluginCall) = async(call) {
-        engine.recover()
+        engine.awaitRecovery()
         JSONObject().put("recordings", JSONArray(engine.library.list()))
     }
     @PluginMethod fun deleteAudio(call: PluginCall) = async(call) {
@@ -158,6 +159,32 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     @PluginMethod fun getCaptureDefaults(call: PluginCall) { call.resolve(JSObject.fromJSONObject(engine.defaults())) }
     @PluginMethod fun setCaptureDefaults(call: PluginCall) = async(call) {
         JSONObject().put("claimed", engine.setDefaults(call.data))
+    }
+    @PluginMethod fun setAccountState(call: PluginCall) = async(call) {
+        if (BuildConfig.DEBUG) {
+            val prefs = context.getSharedPreferences("exo.debug", 0)
+            val failure = System.getProperty("exo.debug.failAccountState")
+                ?: prefs.getString("exo.debug.failAccountState", null)
+                ?: prefs.getString("failAccountState", null)
+            if (failure == "1" && call.getString("status") == "transitioning" ||
+                failure == "3" && call.getString("status") == "signed_out" ||
+                failure == "compensation" && call.getString("status") == "signed_in" &&
+                    engine.defaults().optString("status") == "transitioning")
+                throw IllegalStateException("account_state_write_failed")
+        }
+        engine.setAccountState(call.data); null
+    }
+    @PluginMethod fun beginRemoteOp(call: PluginCall) = async(call) {
+        val defaults = engine.defaults()
+        val stale = defaults.optString("status") != "signed_in" ||
+            defaults.optString("accountDid") != call.getString("did")
+        engine.library.beginRemoteOp(call.data, forceOutbox = stale); null
+    }
+    @PluginMethod fun recordRemoteResult(call: PluginCall) = async(call) {
+        val destination = engine.library.recordRemoteResult(call.getString("id") ?: "",
+            call.getString("did") ?: "", call.getString("opId") ?: "",
+            call.data.optJSONObject("result") ?: JSONObject())
+        JSONObject().put("destination", destination)
     }
     @PluginMethod fun claim(call: PluginCall) = async(call) {
         val note = engine.library.claim(call.getString("id") ?: "", call.getString("did") ?: "",
@@ -193,20 +220,32 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         JSONObject().put("transcript", engine.library.getTranscript(call.getString("id") ?: "") ?: JSONObject.NULL)
     }
     @PluginMethod fun listQuarantine(call: PluginCall) = async(call) {
-        val array = JSONArray()
+        val array = engine.library.failedRecoveryItems()
         for (file in engine.library.quarantine.listFiles().orEmpty().filter { it.name.endsWith(".m4a") })
             array.put(JSONObject().put("id", file.name.removeSuffix(".m4a")).put("reason", "unplayable").put("sizeBytes", file.length()))
         JSONObject().put("items", array)
     }
     @PluginMethod fun deleteQuarantined(call: PluginCall) = async(call) {
         val id = call.getString("id") ?: ""; engine.library.requireId(id)
-        engine.library.quarantine.resolve("$id.m4a").delete(); engine.library.quarantine.resolve("$id.json").delete(); null
+        if (engine.library.quarantine.resolve("$id.failure.json").exists())
+            engine.library.discardFailedRecording(id)
+        else {
+            engine.library.quarantine.resolve("$id.m4a").delete()
+            engine.library.quarantine.resolve("$id.json").delete()
+        }
+        null
+    }
+    @PluginMethod fun retryRecovery(call: PluginCall) = async(call) {
+        engine.retryRecovery(call.getString("id") ?: ""); null
+    }
+    @PluginMethod fun discardFailedRecording(call: PluginCall) = async(call) {
+        engine.library.discardFailedRecording(call.getString("id") ?: ""); null
     }
     @PluginMethod fun listOutbox(call: PluginCall) = async(call) {
         JSONObject().put("entries", engine.library.listOutbox(call.getString("did") ?: ""))
     }
     @PluginMethod fun completeOutbox(call: PluginCall) = async(call) {
-        engine.library.completeOutbox(call.getString("entryId") ?: "", call.getString("result") == "done"); null
+        engine.library.completeOutbox(call.getString("entryId") ?: "", call.getString("result") ?: ""); null
     }
     @PluginMethod fun listInputs(call: PluginCall) = async(call) { engine.listInputs() }
     @PluginMethod fun selectInput(call: PluginCall) {

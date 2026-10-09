@@ -66,19 +66,25 @@ class RecordingLibraryTest {
         assertFalse(lib.tombstone(note).exists())
     }
 
-    @Test fun corruptCompleteJournalFailsRecoveryTwiceWithoutMuxing() {
+    @Test fun corruptCompleteJournalIsQuarantinedAfterThreeFailuresWithoutMuxing() {
         val lib = library(); val note = id(); begin(lib, note)
         File(lib.session(note), "journal.jsonl").appendText("{invalid complete line}\n")
         lib.closeSession(note)
         var muxCalls = 0
-        repeat(2) {
+        repeat(3) {
             expectFailure("Recovery needs retry") {
                 lib.recoverOnce({ _, out -> muxCalls++; out.writeBytes(byteArrayOf(1)) }, { null })
             }
             assertEquals("Corrupt journal was muxed on recovery pass ${it + 1}", 0, muxCalls)
-            assertTrue(lib.session(note).isDirectory)
             assertFalse(lib.sidecar(note).exists())
         }
+        assertFalse(lib.session(note).exists())
+        assertTrue(File(lib.quarantine, "$note.session").isDirectory)
+        assertEquals(3, lib.failedRecoveryItems().getJSONObject(0).getInt("attempts"))
+        lib.prepareRetryRecovery(note)
+        assertTrue(lib.session(note).isDirectory)
+        lib.discardFailedRecording(note)
+        assertFalse(lib.session(note).exists())
     }
 
     @Test fun retriedRecoveryLeavesLiveSequenceUntouchedWhileBrokenSessionPersists() {
@@ -94,7 +100,9 @@ class RecordingLibraryTest {
         val journalBefore = File(lib.session(live), "journal.jsonl").readBytes()
         val segmentBefore = File(lib.session(live), "seg-00000.aac").readBytes()
         repeat(2) {
-            expectFailure("Recovery needs retry") { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1, 2, 3)) }, { null }) }
+            expectFailure("Recovery needs retry") {
+                lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1, 2, 3)) }, { null })
+            }
             assertTrue(lib.session(live).isDirectory)
             assertArrayEquals(journalBefore, File(lib.session(live), "journal.jsonl").readBytes())
             assertArrayEquals(segmentBefore, File(lib.session(live), "seg-00000.aac").readBytes())
@@ -102,6 +110,209 @@ class RecordingLibraryTest {
         }
         sequence.frame(frame)
         assertEquals(segmentBefore.size + frame.size.toLong(), File(lib.session(live), "seg-00000.aac").length())
+    }
+    @Test fun receiptSurvivesDeleteAndLateResult() {
+        val lib = library(); val note = id(); begin(lib, note); commit(lib, note)
+        lib.mutate(note, "claim.write") { it.put("owner", "did:a") }
+        val receipt = JSONObject().put("id", note).put("did", "did:a").put("opId", "op-1")
+            .put("provider", "assemblyai").put("mode", "hosted").put("kind", "hosted_submit")
+            .put("fingerprint", "sha256").put("startedAt", 1000)
+        lib.beginRemoteOp(receipt)
+        lib.delete(note)
+        assertEquals(1, lib.listOutbox("did:a").length())
+        assertEquals("outbox", lib.recordRemoteResult(note, "did:a", "op-1",
+            JSONObject().put("uploadId", "upload-1").put("outcome", "created")))
+        val entry = lib.listOutbox("did:a").getJSONObject(0)
+        assertEquals("upload-1", entry.getString("handle"))
+        lib.completeOutbox(entry.getString("entryId"), "authority_expired")
+        assertEquals("authority_expired", lib.listOutbox("did:a").getJSONObject(0).getString("state"))
+        lib.recordRemoteResult(note, "did:a", "op-1", JSONObject().put("uploadId", "upload-1").put("outcome", "created"))
+        assertEquals("authority_expired", lib.listOutbox("did:a").getJSONObject(0).getString("state"))
+    }
+    @Test fun receiptStagesAndOutboxKindsFollowTheSharedTable() {
+        val cases = listOf(
+            Triple("hosted_create", "uploadId", "hosted_upload"),
+            Triple("hosted_submit", "jobId", "transcript"),
+            Triple("own_upload", "uploadUrl", "own_upload_lookup"),
+            Triple("own_create", "jobId", "transcript"),
+            Triple("ptx_create", "jobId", "ptx_job"),
+        )
+        for ((kind, field, outKind) in cases) {
+            val lib = library(); val note = id(); begin(lib, note); commit(lib, note)
+            lib.mutate(note, "claim.write") { it.put("owner", "did:a") }
+            val receipt = JSONObject().put("id", note).put("did", "did:a").put("opId", "op-1")
+                .put("provider", if (kind == "ptx_create") "ptx" else "assemblyai")
+                .put("mode", if (kind.startsWith("hosted")) "hosted" else if (kind.startsWith("own")) "own" else JSONObject.NULL)
+                .put("kind", kind).put("fingerprint", "sha256").put("startedAt", 1000)
+            lib.beginRemoteOp(receipt)
+            val opened = lib.read(note)!!.getJSONObject("ledger").getJSONArray("remote").getJSONObject(0)
+            assertEquals(if (kind == "hosted_submit") "submit_unknown" else "create_unknown", opened.getString("stage"))
+            assertEquals("none", opened.getString("cleanup"))
+            assertEquals(setOf("opId", "provider", "mode", "kind", "fingerprint", "startedAt", "stage",
+                "uploadId", "uploadUrl", "jobId", "handleExpiresAt", "cleanup"), opened.keys().asSequence().toSet())
+            lib.recordRemoteResult(note, "did:a", "op-1", JSONObject().put(field, "handle-1").put("outcome", "created"))
+            val updated = lib.read(note)!!.getJSONObject("ledger").getJSONArray("remote").getJSONObject(0)
+            assertEquals(when (kind) { "hosted_create" -> "uploading"; "own_upload" -> "uploaded"; else -> "submitted" },
+                updated.getString("stage"))
+            lib.delete(note)
+            val entry = lib.listOutbox("did:a").getJSONObject(0)
+            assertEquals(outKind, entry.getString("kind"))
+            assertEquals(if (kind == "own_upload") "lookup" else "pending", entry.getString("state"))
+            assertEquals("handle-1", entry.getString("handle"))
+            assertEquals(setOf("entryId", "did", "provider", "mode", "kind", "handle", "handleExpiresAt",
+                "state", "createdAt", "attempts"), entry.keys().asSequence().toSet())
+        }
+    }
+    @Test fun failedRemoteRequestRemovesItsOpenReceipt() {
+        val lib = library(); val note = id(); begin(lib, note); commit(lib, note)
+        lib.mutate(note, "claim.write") { it.put("owner", "did:a") }
+        val receipt = JSONObject().put("id", note).put("did", "did:a").put("opId", "op-1")
+            .put("provider", "ptx").put("mode", JSONObject.NULL).put("kind", "ptx_create")
+            .put("fingerprint", "sha256").put("startedAt", 1000)
+        lib.beginRemoteOp(receipt)
+        assertEquals("ledger", lib.recordRemoteResult(note, "did:a", "op-1", JSONObject().put("outcome", "failed")))
+        assertEquals(0, lib.read(note)!!.getJSONObject("ledger").getJSONArray("remote").length())
+        lib.delete(note)
+        assertEquals(0, lib.listOutbox("did:a").length())
+        lib.beginRemoteOp(receipt)
+        assertEquals(1, lib.listOutbox("did:a").length())
+        assertEquals("outbox", lib.recordRemoteResult(note, "did:a", "op-1", JSONObject().put("outcome", "failed")))
+        assertEquals(0, lib.listOutbox("did:a").length())
+    }
+    @Test fun outboxPathGenericHandlesKeepTheOriginalResourceKind() {
+        val cases = listOf(
+            Triple("hosted_create", "hosted_upload", "pending"),
+            Triple("hosted_submit", "transcript", "pending"),
+            Triple("own_upload", "own_upload_lookup", "lookup"),
+            Triple("own_create", "transcript", "pending"),
+            Triple("ptx_create", "ptx_job", "pending"),
+        )
+        for ((kind, expectedKind, expectedState) in cases) {
+            val lib = library(); val note = id()
+            val receipt = JSONObject().put("id", note).put("did", "did:a").put("opId", "op-1")
+                .put("provider", if (kind == "ptx_create") "ptx" else "assemblyai")
+                .put("mode", if (kind.startsWith("hosted")) "hosted" else if (kind.startsWith("own")) "own" else JSONObject.NULL)
+                .put("kind", kind).put("fingerprint", "sha256").put("startedAt", 1000)
+            lib.beginRemoteOp(receipt) // No local sidecar: receipt begins directly in the outbox.
+            lib.recordRemoteResult(note, "did:a", "op-1",
+                JSONObject().put("outcome", "created").put("handle", "remote-handle"))
+            val entry = lib.listOutbox("did:a").getJSONObject(0)
+            assertEquals(kind, expectedKind, entry.getString("kind"))
+            assertEquals(kind, expectedState, entry.getString("state"))
+            assertEquals("remote-handle", entry.getString("handle"))
+        }
+    }
+    @Test fun receiptFailpointsAndInterruptedOutboxTransferKeepAnAuthority() {
+        val ops = FileOps(); val dir = temp.newFolder(); val lib = RecordingLibrary(dir, ops)
+        val note = id(); begin(lib, note); commit(lib, note)
+        lib.mutate(note, "claim.write") { it.put("owner", "did:a") }
+        val receipt = JSONObject().put("id", note).put("did", "did:a").put("opId", "create-1")
+            .put("provider", "ptx").put("mode", JSONObject.NULL).put("kind", "ptx_create")
+            .put("fingerprint", "hash").put("startedAt", 1)
+        ops.failOnce("receipt.begin")
+        expectFailure("receipt.begin") { lib.beginRemoteOp(receipt) }
+        assertEquals(0, lib.read(note)!!.getJSONObject("ledger").getJSONArray("remote").length())
+        lib.beginRemoteOp(receipt)
+        ops.failOnce("receipt.result")
+        expectFailure("receipt.result") { lib.recordRemoteResult(note, "did:a", "create-1",
+            JSONObject().put("jobId", "job-1").put("outcome", "created")) }
+        assertEquals(0, lib.listOutbox("did:a").length())
+        ops.failOnce("delete.outbox")
+        expectFailure("delete.outbox") { lib.delete(note) }
+        assertTrue(lib.tombstone(note).exists())
+        val relaunched = RecordingLibrary(dir)
+        relaunched.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null })
+        assertEquals("unknown", relaunched.listOutbox("did:a").getJSONObject(0).getString("state"))
+        assertEquals("outbox", relaunched.recordRemoteResult(note, "did:a", "create-1",
+            JSONObject().put("jobId", "job-1").put("outcome", "created")))
+        assertEquals("job-1", relaunched.listOutbox("did:a").getJSONObject(0).getString("handle"))
+    }
+    @Test fun pausedSessionIsParkedUntilTimeoutStopIsJournaled() {
+        val lib = library(); val note = id()
+        lib.start(note, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS, at = 1_000)
+        lib.openFirstSegment(note, 0, 1, at = 1_100)
+        lib.append(note, 0, frame)
+        lib.checkpoint(note, 0, 23, "recording", "available", close = true, at = 2_000)
+        lib.transition(note, "intent", 23, JSONObject().put("value", "paused"), at = 2_000)
+        lib.closeSession(note)
+        assertEquals(note, lib.parkedSessions().single().first)
+        lib.adoptSession(note)
+        assertTrue(lib.parkedSessions().isEmpty())
+        lib.closeSession(note)
+        lib.stopJournal(note, 23, "pause_timeout", at = 3_600_000)
+        assertTrue(lib.parkedSessions().isEmpty())
+        val committed = lib.commit(note, { it.writeBytes(byteArrayOf(1)) }, recovered = true)
+        assertFalse(committed.getBoolean("endedUnexpectedly"))
+    }
+
+    @Test fun failedParkedAdoptionCountsCrashesAndDoesNotBlockOtherRecovery() {
+        val dir = temp.newFolder(); val parked = id(); val other = id()
+        val setup = RecordingLibrary(dir)
+        setup.start(parked, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        setup.openFirstSegment(parked, 0, 1)
+        setup.append(parked, 0, ByteArray(8) { 0 }) // nonempty but invalid ADTS
+        setup.transition(parked, "intent", 0, JSONObject().put("value", "paused"))
+        setup.closeSession(parked)
+        begin(setup, other); setup.closeSession(other)
+        repeat(3) { attempt ->
+            val lib = RecordingLibrary(dir)
+            assertEquals(parked, lib.parkedSessions().single().first)
+            assertTrue(lib.beginParkedAdoption(parked))
+            try { CaptureSequence(lib, parked).adoptPaused(); fail("invalid segment was adopted") }
+            catch (error: IOException) { lib.failParkedAdoption(parked, error) }
+            assertEquals(attempt + 1, lib.failedRecoveryItems().getJSONObject(0).getInt("attempts"))
+            lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1, 2, 3)) }, { null })
+            assertNotNull("Another orphan must still commit", lib.read(other))
+            assertEquals("Failed adoption must not retain a live mark", attempt < 2,
+                lib.parkedSessions().isNotEmpty())
+        }
+        val relaunched = RecordingLibrary(dir)
+        assertTrue(relaunched.parkedSessions().isEmpty())
+        assertTrue(File(relaunched.quarantine, "$parked.session").isDirectory)
+        assertEquals(3, relaunched.failedRecoveryItems().getJSONObject(0).getInt("attempts"))
+    }
+    @Test fun processDeathDuringParkedAdoptionQuarantinesBeforeAFourthScan() {
+        val dir = temp.newFolder(); val parked = id(); val setup = RecordingLibrary(dir)
+        setup.start(parked, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        setup.openFirstSegment(parked, 0, 1); setup.append(parked, 0, frame)
+        setup.transition(parked, "intent", 23, JSONObject().put("value", "paused"))
+        setup.closeSession(parked)
+        repeat(3) { attempt ->
+            val process = RecordingLibrary(dir)
+            assertTrue(process.beginParkedAdoption(parked))
+            assertEquals(attempt + 1, RecordingLibrary(dir).failedRecoveryItems()
+                .getJSONObject(0).getInt("attempts"))
+            // Simulated process death: no acknowledgement or caught exception.
+        }
+        val nextProcess = RecordingLibrary(dir)
+        assertFalse(nextProcess.beginParkedAdoption(parked))
+        assertTrue(File(nextProcess.quarantine, "$parked.session").isDirectory)
+    }
+    @Test fun failedRecordingDiscardRejectsHealthySessionsAndPreventsLegacyResurrection() {
+        val lib = library(); val healthy = id()
+        lib.start(healthy, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        lib.openFirstSegment(healthy, 0, 1); lib.append(healthy, 0, frame)
+        lib.transition(healthy, "intent", 23, JSONObject().put("value", "paused"))
+        lib.closeSession(healthy)
+        try { lib.discardFailedRecording(healthy); fail("healthy paused session was discarded") }
+        catch (error: IllegalStateException) { assertEquals("not_failed_recording", error.message) }
+        assertTrue(lib.session(healthy).isDirectory)
+
+        val failed = id(); begin(lib, failed); lib.closeSession(failed)
+        repeat(3) {
+            expectFailure("Recovery needs retry") {
+                lib.recoverOnce({ _, _ -> throw IOException("bad mux") }, { null })
+            }
+        }
+        assertTrue(File(lib.quarantine, "$failed.session").isDirectory)
+        lib.audio(failed).writeBytes(byteArrayOf(1, 2, 3)) // crash after m4a rename
+        var probes = 0
+        lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { probes++; null })
+        assertEquals(0, probes)
+        lib.discardFailedRecording(failed)
+        assertFalse(lib.audio(failed).exists())
+        lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { probes++; null })
+        assertEquals(0, probes)
     }
 
     @Test fun startAndRollAndStopFailuresRecoverTwice() {
@@ -319,7 +530,7 @@ class RecordingLibraryTest {
         val broken = id(); begin(lib, broken)
         File(lib.session(broken), "journal.jsonl").appendText("{invalid complete line}\n")
         lib.closeSession(broken) // Simulate the previous process dying.
-        repeat(2) {
+        repeat(3) {
             val failedIds = mutableListOf<String>()
             try { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null },
                 onFailure = { failedId, _ -> failedIds.add(failedId) }); fail("recovery must surface the broken session") }
@@ -330,7 +541,24 @@ class RecordingLibraryTest {
         val fresh = id()
         lib.start(fresh, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
         assertTrue(lib.session(fresh).isDirectory)
-        assertTrue(lib.session(broken).isDirectory)
+        assertTrue(File(lib.quarantine, "$broken.session").isDirectory)
+    }
+    @Test fun crashDuringRecoveryCountsBeforeTheNextLaunchAndEventuallyQuarantines() {
+        val dir = temp.newFolder()
+        val first = RecordingLibrary(dir); val note = id(); begin(first, note)
+        first.closeSession(note)
+        repeat(3) { attempt ->
+            // A new process dies after the durable attempt marker, before mux returns.
+            RecordingLibrary(dir).beginRecoveryAttempt(note)
+            assertEquals(attempt + 1, RecordingLibrary(dir).failedRecoveryItems()
+                .getJSONObject(0).getInt("attempts"))
+        }
+        val relaunched = RecordingLibrary(dir)
+        var muxCalls = 0
+        relaunched.recoverOnce({ _, out -> muxCalls++; out.writeBytes(byteArrayOf(1)) }, { null })
+        assertEquals(0, muxCalls)
+        assertFalse(relaunched.session(note).exists())
+        assertTrue(File(relaunched.quarantine, "$note.session").isDirectory)
     }
     @Test fun invalidLegacyOrphanIsQuarantinedAndValidImportHasEveryV2Key() {
         val lib = library(); val invalid = id(); val valid = id()

@@ -179,7 +179,7 @@ class CaptureInstrumentedTest {
             val id = engine.status().getString("id")
             instrumentation.runOnMainSync { activity.recreate() }
             instrumentation.waitForIdleSync()
-            engine.recover() // Plugin load also performs this on WebView recreation.
+            engine.recoverForTest() // A forced scan must leave the live session untouched.
             assertEquals(id, engine.status().getString("id"))
             assertFalse(engine.library.sidecar(id).exists())
             Thread.sleep(1200)
@@ -212,7 +212,7 @@ class CaptureInstrumentedTest {
         try {
             awaitState(engine, "recording")
             val live = engine.status().getString("id")
-            repeat(2) { engine.recover() }
+            repeat(2) { engine.recoverForTest() }
             assertTrue(engine.library.session(live).isDirectory)
             assertFalse(engine.library.sidecar(live).exists())
             Thread.sleep(1200)
@@ -244,7 +244,7 @@ class CaptureInstrumentedTest {
             try { engine.stop(); fail("stop.journal did not fail") } catch (_: java.io.IOException) { }
             assertEquals("needs_user", engine.status().getString("state"))
             assertEquals("write_failed", engine.status().getString("reason"))
-            engine.recover()
+            engine.recoverForTest()
             assertNotNull(engine.library.read(id))
             try { engine.discard(); fail("Discard deleted a committed note") }
             catch (e: IllegalStateException) { assertEquals("already_committed", e.message) }
@@ -296,7 +296,7 @@ class CaptureInstrumentedTest {
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val failure = AtomicReference<Throwable?>()
         engine.library.gate("stage.begin") { entered.countDown(); release.await(5, TimeUnit.SECONDS) }
-        val worker = Thread { try { engine.start(null, null, "in_app") } catch (e: Throwable) { failure.set(e) } }
+        val worker = Thread { try { engine.recoverForTest() } catch (e: Throwable) { failure.set(e) } }
         try {
             worker.start()
             assertTrue("recovery did not reach mux", entered.await(5, TimeUnit.SECONDS))
@@ -307,6 +307,7 @@ class CaptureInstrumentedTest {
             assertFalse(worker.isAlive)
             assertNull(failure.get())
             engine.library.clearGate("stage.begin")
+            engine.start(null, null, "in_app")
             Thread.sleep(1200)
             val note = engine.stop()
             engine.library.delete(note.getString("id"))
@@ -316,6 +317,56 @@ class CaptureInstrumentedTest {
             if (!engine.status().isNull("id")) engine.discard()
             context.stopService(Intent(context, CaptureService::class.java))
             activity.finish()
+        }
+    }
+    @Test fun transitioningAndSignedOutStartsAreUnownedAndOnDevice() {
+        grant(Manifest.permission.RECORD_AUDIO)
+        val activity = InstrumentationRegistry.getInstrumentation().startActivitySync(Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val engine = CaptureEngine.get(context)
+        val generation = engine.defaults().optLong("transitionGen") + 1
+        try {
+            for ((index, state) in listOf("transitioning", "signed_out").withIndex()) {
+                engine.setAccountState(JSONObject().put("status", state)
+                    .put("accountDid", if (state == "transitioning") "did:former" else JSONObject.NULL)
+                    .put("transitionGen", generation + index))
+                engine.start(null, JSONObject().put("transcriber", "private-cloud"), "in_app")
+                assertTrue(engine.status().isNull("owner"))
+                assertEquals("on-device", engine.status().getJSONObject("options").getString("transcriber"))
+                Thread.sleep(1200)
+                val note = engine.stop()
+                assertTrue(note.isNull("owner"))
+                engine.library.delete(note.getString("id"))
+            }
+        } finally {
+            if (!engine.status().isNull("id")) engine.discard()
+            engine.setAccountState(JSONObject().put("status", "signed_out")
+                .put("accountDid", JSONObject.NULL).put("transitionGen", generation + 2))
+            activity.finish()
+        }
+    }
+    @Test fun corruptParkedAdoptionLeavesEngineIdleAndRecoversOtherSession() {
+        val engine = CaptureEngine.get(context)
+        val parked = UUID.randomUUID().toString(); val other = UUID.randomUUID().toString()
+        val crashed = RecordingLibrary(engine.library.root, AndroidFileOps())
+        crashed.start(parked, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        crashed.openFirstSegment(parked, 0, 1)
+        crashed.append(parked, 0, ByteArray(8) { 0 })
+        crashed.transition(parked, "intent", 0, JSONObject().put("value", "paused"))
+        crashed.closeSession(parked)
+        crashed.start(other, "in_app", null, 0, defaultOptions(), MAX_DURATION_MS)
+        crashed.openFirstSegment(other, 0, 1)
+        crashed.append(other, 0, byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x1f, 0xfc.toByte(), 0))
+        crashed.stopJournal(other, 23, "user"); crashed.closeSession(other)
+        try {
+            engine.recoverForTest()
+            assertEquals("idle", engine.status().getString("state"))
+            assertTrue(engine.status().isNull("id"))
+            assertNotNull(engine.library.read(other))
+            assertEquals(1, engine.library.failedRecoveryItems().length())
+        } finally {
+            engine.library.discardFailedRecording(parked)
+            engine.library.delete(other)
         }
     }
     @Test fun encodeFinalizeAndProbe44100Hz() {

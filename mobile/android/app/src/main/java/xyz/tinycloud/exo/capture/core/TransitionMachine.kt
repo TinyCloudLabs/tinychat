@@ -19,6 +19,12 @@ class TransitionMachine {
         availability = Availability.AVAILABLE
         return ++gen
     }
+    fun adoptPaused() {
+        check(intent == Intent.STOPPED)
+        intent = Intent.PAUSED
+        availability = Availability.AVAILABLE
+        ++gen; ++epoch
+    }
 
     fun accepts(attempt: Long) = intent == Intent.RECORDING && gen == attempt
 

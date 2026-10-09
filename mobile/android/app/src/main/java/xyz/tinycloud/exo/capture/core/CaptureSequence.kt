@@ -27,6 +27,13 @@ class CaptureSequence(
               at: Long = clock()) {
         library.start(id, source, owner, transitionGen, options, maxMs, at)
     }
+    fun adoptPaused() {
+        val files = library.session(id).listFiles().orEmpty().filter { it.name.matches(Regex("seg-\\d{5}\\.aac")) }
+        segment = files.maxOfOrNull { it.name.substring(4, 9).toInt() } ?: 0
+        frames = files.sumOf { scanAdts(it).frames }
+        durableAudioMs = audioMs
+        segmentOpen = false
+    }
 
     fun firstInput(gen: Long) {
         val at = clock()
@@ -109,6 +116,8 @@ class CaptureSequence(
         }
         library.transition(id, name, durableAudioMs, extra, at)
     }
+    fun firstAudio(at: Long) = library.transition(id, "first_audio", audioMs, JSONObject(), at)
+    fun captureStopped(at: Long) = library.transition(id, "capture_stopped", audioMs, JSONObject(), at)
 
     private fun openNextSegment(at: Long) {
         val next = segment + 1
