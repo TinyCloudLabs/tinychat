@@ -237,6 +237,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         }),
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
+        // Retained events replay when each listener is added after a WebView reload.
+        // Register failures before recovered/committed so a later save clears its issue.
         VoiceNotes.addListener("recoveryFailed", (event) => {
           send({ type: "CAPTURE_ISSUE", id: event.id ?? null,
             issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });

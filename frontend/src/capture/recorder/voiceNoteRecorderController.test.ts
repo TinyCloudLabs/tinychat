@@ -514,6 +514,20 @@ describe("voice-note recorder controller", () => {
     detach();
   });
 
+  test("retained failure events replay before retained success after a WebView reload", async () => {
+    const committed = earlier().id;
+    const recovered = earlier().id;
+    fake.emit("writeFailure", { id: committed, error: "AAC write failed" });
+    fake.emit("recoveryFailed", { id: recovered, reason: "mux failed" });
+    fake.emit("recovered", { id: recovered });
+    fake.emit("committed", { id: committed });
+
+    const { recorder, detach } = await attached();
+    expect(recorder.getState().captureIssues[committed]).toBeUndefined();
+    expect(recorder.getState().captureIssues[recovered]).toBeUndefined();
+    detach();
+  });
+
   test("iOS writer failure followed by an auto-stop carrying the saved note clears its issue", async () => {
     const { recorder } = await attached();
     await recorder.record();
