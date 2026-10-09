@@ -399,6 +399,7 @@ class SharedHaloRenderer {
         return canvas;
       },
     );
+    (window as unknown as { __halo?: unknown }).__halo = this;
     this.canvas = selected.canvas;
     this.gl = selected.gl;
     this.path = selected.path;
@@ -857,11 +858,6 @@ class SharedHaloRenderer {
     gl.uniform1f(uniforms.light, config.theme === "day" ? 1 : 0);
     gl.uniform1f(uniforms.reduced, entry.reduced ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    if (size === 413) {
-      const px = new Uint8Array(4);
-      gl.readPixels(x + (size >> 1), y + (size >> 1), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      L("gl-centre", x, y, Array.from(px), "err", gl.getError(), "fb", gl.checkFramebufferStatus(gl.FRAMEBUFFER), "avatar", !!entry.avatarTexture, "data", !!entry.dataTexture);
-    }
   }
   private drawCanvas(now: number) {
     for (const entry of this.todo) {

@@ -32,6 +32,25 @@ for (let i = 0; i < N; i++) {
     const blank = res.out.filter((o) => o.a === 0);
     if (blank.length) {
       fails++; 
+      const probe = await page.evaluate(async () => {
+        const r = (window as any).__halo; const gl = r.gl; const out: any[] = [];
+        const orig = r.flushBatch.bind(r);
+        r.flushBatch = (now: number) => {
+          const batch = [...r.batch];
+          for (const e of r.batch) {
+            const px = new Uint8Array(4);
+            gl.readPixels(e.atlasX + (e.pixelSize >> 1), e.atlasY + (e.pixelSize >> 1), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+            out.push(["gl", e.pixelSize, e.atlasX, e.atlasY, Array.from(px)]);
+          }
+          orig(now);
+          for (const e of batch) out.push(["after", e.pixelSize, Array.from(e.context.getImageData(e.pixelSize >> 1, e.pixelSize >> 1, 1, 1).data)]);
+        };
+        for (const e of r.entries) e.lastDraw = 0;
+        r.frameLoop.start();
+        await new Promise((res) => setTimeout(res, 400));
+        return out;
+      });
+      console.log("PROBE", JSON.stringify(probe));
       console.log(`FAIL run ${i} ${theme}`, JSON.stringify(res.out));
       if (process.env.LOG) console.log("LOGSTART\n" + res.log.map((l: any) => JSON.stringify(l)).join("\n") + "\nLOGEND");
     } else if (i === 0 && theme === "light" && process.env.LOG) console.log("PASSLOG\n" + res.log.slice(0,60).map((l: any) => JSON.stringify(l)).join("\n"));
