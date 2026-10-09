@@ -8,6 +8,7 @@ import type {
   SessionRestoreResult,
   SiweConfig,
 } from "@tinycloud/web-sdk";
+import type { ISessionStorage } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "./openkey.js";
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -27,6 +28,12 @@ export interface TinyCloudWebConfig {
   capabilityRequest?: ComposedManifestRequest;
   /** Include implicit account registry permissions when composing `manifest`. Default true in the SDK. */
   includeAccountRegistryPermissions?: boolean;
+  /**
+   * Session storage backend. Defaults to BrowserSessionStorage (localStorage);
+   * the Exo native app passes the OpenKey secure-store adapter so the session
+   * key never touches web storage.
+   */
+  sessionStorage?: ISessionStorage;
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
 }
@@ -54,7 +61,7 @@ export function createTinyCloudWeb(
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
     tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? true,
-    sessionStorage: new BrowserSessionStorage(),
+    sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
     sessionExpirationMs: SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
@@ -96,14 +103,15 @@ export async function createAndSignIn(
 }
 
 /**
- * Restore a browser TinyCloudWeb session from BrowserSessionStorage without
- * connecting a wallet. The returned instance is session-only: it can use the
- * restored TinyCloud delegation for direct storage, but cannot create new
- * wallet-signed delegations until a provider is connected later.
+ * Restore a TinyCloudWeb session from the configured session storage (browser
+ * localStorage by default; the Exo native app's secure-store adapter when
+ * `sessionStorage` is given). `provider` lets the native app attach a
+ * read-only EIP-1193 stub so `tcw.session()` and `spaceId` are populated
+ * without any wallet-signing surface.
  */
 export async function restoreTinyCloudWebSession(
   address: string,
-  config?: TinyCloudWebConfig,
+  config?: TinyCloudWebConfig & { provider?: EIP1193Provider },
 ): Promise<RestoreTinyCloudWebSessionResult> {
   const manifest = config?.manifest ?? config?.capabilityRequest?.manifests;
   const tcwConfig: TinyCloudWebSdkConfig = {
@@ -111,13 +119,17 @@ export async function restoreTinyCloudWebSession(
     tinycloudRegistryUrl: config?.tinycloudRegistryUrl,
     tinycloudFallbackHosts: config?.tinycloudFallbackHosts,
     autoCreateSpace: config?.autoCreateSpace ?? false,
-    sessionStorage: new BrowserSessionStorage(),
+    sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     manifest,
     capabilityRequest: config?.capabilityRequest,
     includeAccountRegistryPermissions: config?.includeAccountRegistryPermissions,
   };
+
+  if (config?.provider) {
+    tcwConfig.provider = config.provider;
+  }
 
   const tcw = new TinyCloudWeb(tcwConfig);
 

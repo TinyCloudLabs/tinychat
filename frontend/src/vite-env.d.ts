@@ -18,6 +18,20 @@ interface ImportMetaEnv {
    */
   readonly VITE_EXO_NATIVE_GOOGLE_OAUTH?: string;
   /**
+   * "true" makes the Exo app (iOS/Android only) sign in through the native OpenKey
+   * delegation flow (PAR + PKCE in the system browser) instead of the embedded
+   * widget (TC-775 E1). Leave unset until the OpenKey native endpoints and the
+   * registered Exo native client exist in production; web and desktop are
+   * unaffected either way.
+   */
+  readonly VITE_EXO_NATIVE_OPENKEY?: string;
+  /** OpenKey issuer for the native delegation flow; defaults to https://api.openkey.so/api/auth. */
+  readonly VITE_OPENKEY_ISSUER?: string;
+  /** The registered public native OAuth client id (public value). */
+  readonly VITE_OPENKEY_NATIVE_CLIENT_ID?: string;
+  /** The client's registered redirect; defaults to xyz.tinycloud.exo://openkey/callback. */
+  readonly VITE_OPENKEY_NATIVE_REDIRECT_URI?: string;
+  /**
    * The TinyCloud Private Transcription (ptx-batch) origin that voice notes (Exo mobile) and Upload
    * audio (every platform) upload to, e.g. `https://<app_id>-8080.<gateway>`. Unset = neither offers
    * private transcription, whatever the backend says; the backend never supplies an upload origin.

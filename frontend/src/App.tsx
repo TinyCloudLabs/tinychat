@@ -119,6 +119,12 @@ import type {
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
+import {
+  isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
+  nativeSessionWasActive, retireNativeSessionAtBoot, secretsAvailable,
+  setNativeSessionActive, signInNative, signOutNative,
+  NATIVE_SIGN_OUT_WARNING, NATIVE_SIGN_OUT_STORAGE_WARNING,
+} from "./lib/openkeyNative";
 import { isAuthSettledSignedOut } from "./lib/authRouting";
 import { browserIsOffline, restorePersistedSession } from "./lib/sessionRestore";
 import { onAgentPaywallError, onAgentModelSelectionError } from "./lib/agentChatApi";
@@ -287,6 +293,32 @@ export function App() {
     setError(null);
     setState("booting");
     try {
+      if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
+        const wasNative = nativeSessionWasActive();
+        try {
+          // Creating the SDK client retries any pending revocation. E1 retires
+          // surviving native sessions at boot; E2 will restore and renew them.
+          await retireNativeSessionAtBoot({
+            tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+          });
+        } catch (caught) {
+          logNativeOpenKeyError("boot revoke", caught);
+          if (wasNative) {
+            sessionStoreRef.current.clear();
+            setError(isNativeStorageError(caught) ? NATIVE_SIGN_OUT_STORAGE_WARNING : NATIVE_SIGN_OUT_WARNING);
+            setState("recoverableError");
+            return;
+          }
+        }
+        if (wasNative) {
+          const storedAddress = sessionStoreRef.current.getAddress();
+          if (storedAddress) clearPersistedSession(storedAddress);
+          sessionStoreRef.current.clear();
+          setNativeSessionActive(false);
+          setState("unauthenticated");
+          return;
+        }
+      }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
         isOffline: browserIsOffline,
         loadManifest: async () => {
@@ -547,6 +579,29 @@ export function App() {
     resetNavigationMemory();
     try {
       setState("connecting");
+      if (isNativeOpenKeySignIn()) {
+        // TC-775 E1: OpenKey delegation sign-in in the system browser. The SDK
+        // keeps the session key in the device secure store; nothing wallet-shaped
+        // signs in the WebView. Throws a user-facing message on cancel/deny.
+        const native = await signInNative({
+          backendUrl: BACKEND_URL,
+          tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+          tinycloudHosts: TINYCLOUD_HOSTS,
+        });
+        setAddress(native.verified.address);
+        sessionStoreRef.current.setSession(
+          native.verified.token,
+          native.verified.expiresIn,
+          native.verified.address,
+        );
+        setNativeSessionActive(true);
+        const nativeTcw = native.tcw as TinyCloudWeb;
+        setTcw(nativeTcw);
+        setDid(nativeTcw.did ?? `did:pkh:eip155:1:${native.verified.address}`);
+        setSpaceId(nativeTcw.spaceId ?? null);
+        setState("ready");
+        return;
+      }
       const { address: connectedAddress, openkey, web3Provider } = await connectWallet({
         appName: APP_NAME,
         host: OPENKEY_HOST,
@@ -609,37 +664,64 @@ export function App() {
     // The next account must not reopen this one's Library or note addresses.
     resetNavigationMemory();
     try {
-      const openKeyOutcome = await signOutOpenKeySession(
-        openkeyRef.current,
-        () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
-      );
-      // OpenKey clears this client's local auth before showing its widget, even
-      // when the user cancels. Never retain that spent client for another flow.
-      openkeyRef.current = null;
-
       let openKeyWarning: string | null = null;
-      if (openKeyOutcome.status === "cancelled") {
-        openKeyWarning =
-          "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
-          "Sign out at openkey.so before choosing another account.";
-      } else if (openKeyOutcome.status === "unverified") {
-        const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
-        openKeyWarning =
-          `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
-          "Sign out at openkey.so before choosing another account.";
+      const nativeSession = isNativeOpenKeySession();
+      if (nativeSession) {
+        // Native sign-out revokes the OpenKey delegation grant and clears the
+        // secure-store session unless secure storage needs another attempt.
+        try {
+          await signOutNative();
+        } catch (caught) {
+          logNativeOpenKeyError("sign-out revoke", caught);
+          if (isNativeStorageError(caught)) {
+            // The SDK may still have the session and grant in secure storage.
+            // Keep the native marker and current session for another attempt.
+            setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
+            setState("ready");
+            return;
+          }
+          if (caught instanceof Error && caught.message.startsWith("Native sign-in is not configured")) {
+            // Keep the SDK record and key available for revocation once the
+            // native client is configured again.
+            setError(caught.message);
+            setState("ready");
+            return;
+          }
+          openKeyWarning = NATIVE_SIGN_OUT_WARNING;
+        }
+      } else {
+        const openKeyOutcome = await signOutOpenKeySession(
+          openkeyRef.current,
+          () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
+        );
+        // OpenKey clears this client's local auth before showing its widget, even
+        // when the user cancels. Never retain that spent client for another flow.
+        openkeyRef.current = null;
+
+        if (openKeyOutcome.status === "cancelled") {
+          openKeyWarning =
+            "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
+            "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "unverified") {
+          const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
+          openKeyWarning =
+            `OpenKey sign-out could not be verified${detail}. TinyChat is signed out locally. ` +
+            "Sign out at openkey.so before choosing another account.";
+        }
       }
 
-      if (tcw) {
+      if (tcw && !nativeSession) {
         try {
           await tcw.signOut?.();
         } catch (caught) {
-          console.warn("[App] TinyCloud sign-out cleanup failed", caught);
+          logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
       }
       // TinyCloudWeb.signOut is local cleanup. Remove the persisted session
       // directly as well so a client cleanup failure cannot restore this user.
       if (address) clearPersistedSession(address);
       sessionStoreRef.current.clear();
+      if (nativeSession) setNativeSessionActive(false);
       // Drop the in-memory history prefetch cache and stop its queue — it holds
       // the signed-out account's message docs.
       historyPrefetch.clear();
@@ -962,7 +1044,7 @@ export function App() {
           visit"). Same gate as the authenticated surfaces; renders nothing in
           every state, coordinates with Settings on a shared lane, and never
           unlocks — see useBackgroundDrain.ts. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <BackgroundDrainer
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -985,7 +1067,7 @@ export function App() {
           drainer above (gmeet has no webhook queue). Same ready gate; renders
           nothing, defers silently while the vault is locked, and is a no-op for
           every user while the registry row is coming-soon. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <GmeetSessionSync
           tcw={tcw}
           sessionStore={sessionStoreRef.current}
@@ -998,7 +1080,7 @@ export function App() {
           them. Renders nothing, queues on the drain's lane so the one space has
           a single writer, and is a no-op for every address outside the dark
           cohort — see BackendReconciler.tsx. */}
-      {!LOCAL_VALIDATION && state === "ready" && tcw && (
+      {!LOCAL_VALIDATION && state === "ready" && tcw && secretsAvailable() && (
         <BackendReconciler
           tcw={tcw}
           sessionStore={sessionStoreRef.current}

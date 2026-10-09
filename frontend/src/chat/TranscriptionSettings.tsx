@@ -26,6 +26,7 @@ import {
 } from "@/lib/assemblyai";
 import { readDefaultUploadEngine, UPLOAD_ENGINE_LABELS, writeDefaultUploadEngine, type UploadEngine } from "@/lib/audioUpload";
 import { isSecretsUnlocked } from "@/lib/connectors/connectorSecrets";
+import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
 
 export type KeyPhase = "idle" | "checking" | "validating" | "saving" | "removing";
 
@@ -97,20 +98,24 @@ export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
 
       <div className="mt-4 flex flex-col gap-2">
         <span className="text-xs font-medium">AssemblyAI</span>
-        <div role="radiogroup" aria-label="AssemblyAI account" className="inline-flex w-fit flex-wrap rounded-md border p-0.5">
-          {(["hosted", "own"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="radio"
-              aria-checked={keyMode === m}
-              onClick={() => onKeyModeChange(m)}
-              className={`${SEGMENT} ${keyMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
-            >
-              {KEY_MODE_LABELS[m]}
-            </button>
-          ))}
-        </div>
+        {secretsAvailable() ? (
+          <div role="radiogroup" aria-label="AssemblyAI account" className="inline-flex w-fit flex-wrap rounded-md border p-0.5">
+            {(["hosted", "own"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={keyMode === m}
+                onClick={() => onKeyModeChange(m)}
+                className={`${SEGMENT} ${keyMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+              >
+                {KEY_MODE_LABELS[m]}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">{SECRETS_UNAVAILABLE_IN_APP_MESSAGE}</p>
+        )}
         {/* One sentence on where uploads go; the rest (deletion, the key's one
             trip to Exo's server) is How it works → Where your audio goes. */}
         <p className="text-xs text-muted-foreground">
@@ -119,7 +124,7 @@ export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
             : "Uploads go from this device to AssemblyAI under your own key, kept in your encrypted TinyCloud secrets."}
         </p>
         {howItWorks}
-        {keyMode === "hosted" ? null : keyStatus === "saved" ? (
+        {!secretsAvailable() || keyMode === "hosted" ? null : keyStatus === "saved" ? (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs">A key is saved.</span>
             <Button type="button" size="sm" variant="outline" onClick={onRemoveKey} disabled={busy} className="gap-1.5">
@@ -186,7 +191,9 @@ export const TranscriptionSettingsView: FC<TranscriptionSettingsViewProps> = ({
 
 export const TranscriptionSettings: FC<{ tcw: TinyCloudWeb }> = ({ tcw }) => {
   const [engine, setEngine] = useState<UploadEngine>(readDefaultUploadEngine);
-  const [keyMode, setKeyMode] = useState<AssemblyAiKeyMode>(readAssemblyAiKeyMode);
+  const [keyMode, setKeyMode] = useState<AssemblyAiKeyMode>(() =>
+    secretsAvailable() ? readAssemblyAiKeyMode() : "hosted",
+  );
   const [keyStatus, setKeyStatus] = useState<AssemblyAiKeyStatus>(readAssemblyAiKeyHint);
   const [phase, setPhase] = useState<KeyPhase>("idle");
   const [keyInput, setKeyInput] = useState("");

@@ -311,13 +311,13 @@ describe("Google Meet OAuth connect variant", () => {
   test("the native flow is off unless the build enables it", () => {
     const authorize = connectHalf.slice(connectHalf.indexOf("const handleAuthorize"));
     const nativeBranch = authorize.slice(0, authorize.indexOf("authorizeInSystemBrowser(nativePorts);"));
-    expect(nativeBranch).toContain("if (!nativeGoogleOAuthEnabled()) {");
+    expect(nativeBranch).toContain("if (!secretsAvailable() || !nativeGoogleOAuthEnabled()) {");
     expect(nativeBranch).toContain('setError({ kind: "native-unavailable", message: "" });');
   });
 
   test("inside the app with native OAuth off, the dialog explains instead of offering Continue with Google (TC-522)", () => {
     const render = connectHalf.slice(connectHalf.indexOf("<Dialog open={open}"), connectHalf.indexOf("</Dialog>"));
-    expect(connectHalf).toContain("const authorizeSurface = googleAuthorizeSurface();");
+    expect(connectHalf).toContain("googleAuthorizeSurface()");
     // No consent copy, no custody checkbox: the explanation alone…
     expect(render).toContain('{phase === "authorize" && authorizeSurface === "unavailable-in-app" && <NativeUnavailablePanel />}');
     expect(render).toContain('{phase === "authorize" && authorizeSurface !== "unavailable-in-app" && (');
