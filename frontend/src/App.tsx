@@ -834,6 +834,10 @@ export function App() {
           openKeyWarning =
             "OpenKey stayed signed in on this device. TinyChat is signed out locally. " +
             "Sign out at openkey.so before choosing another account.";
+        } else if (openKeyOutcome.status === "remote-unavailable") {
+          openKeyWarning =
+            "Remote OpenKey sign-out is unavailable in this app right now. TinyChat is signed out locally. " +
+            "Sign out at openkey.so before choosing another account.";
         } else if (openKeyOutcome.status === "unverified") {
           const detail = openKeyOutcome.reason ? ` (${openKeyOutcome.reason})` : "";
           openKeyWarning =

@@ -70,6 +70,17 @@ describe("signOutOpenKeySession", () => {
     });
   });
 
+  test("embedded WebView popup-unavailable rejects promptly and leaves remote sign-out warning to the app", async () => {
+    const current: OpenKeySignOutClient = {
+      async signOut() {
+        throw { code: "POPUP_BLOCKED", reason: "embedded-webview",
+          message: "Popups are not available in this embedded app WebView" };
+      },
+    };
+    await expect(signOutOpenKeySession(current, () => current))
+      .resolves.toEqual({ status: "remote-unavailable" });
+  });
+
   test("a sign-out widget that never acknowledges reaches the local sign-out deadline", async () => {
     const current: OpenKeySignOutClient = { signOut: async () => new Promise(() => {}) };
     await expect(withCaptureDeadline(signOutOpenKeySession(current, () => current), 5))
