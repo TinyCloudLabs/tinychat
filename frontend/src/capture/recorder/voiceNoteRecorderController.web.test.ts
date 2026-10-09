@@ -1,5 +1,5 @@
-// The real recorder controller over the web engine: a slice the engine proves lost keeps its
-// write_failed capture issue after the committed/autoStopped events that resolve issues by design.
+// The real recorder controller over the web engine: a slice the engine proves lost is never
+// cleared by the committed/autoStopped events; since #219 it ends as a partial_audio issue.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
@@ -54,7 +54,8 @@ describe("a lost slice keeps its capture issue through the controller", () => {
     failAppend = true;
     await quietly(async () => { await rig.chunk([4, 5, 6]); await rig.settle(); });
     expect(await rig.store.audio.size(id)).toBe(3);
-    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "write failed" });
+    // #219: a loss after commit becomes the informational partial_audio issue, never cleared silently.
+    expect(recorder.getState().captureIssues[id]).toMatchObject({ kind: "partial_audio" });
     detach();
   });
 
@@ -74,7 +75,7 @@ describe("a lost slice keeps its capture issue through the controller", () => {
       await until(() => recorder.getState().captureIssues[id] !== undefined, "the lost-tail capture issue");
     });
     expect(await rig.store.audio.size(id)).toBe(3);
-    expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "pause_flush_timeout" });
+    expect(recorder.getState().captureIssues[id]).toMatchObject({ kind: "partial_audio" });
     detach();
   });
 
