@@ -236,6 +236,22 @@ final class RecordingLibraryTests: XCTestCase {
         XCTAssertTrue(library.isLiveCapture(live))
     }
 
+    func testLaunchRecoverySkipsSessionStartedHereAfterStop() throws {
+        let (previousProcess, root) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = UUID().uuidString.lowercased()
+        try previousProcess.startSession(SessionInfo(id: old, source: "in_app", owner: nil,
+                                                     transitionGen: 0, options: CaptureOptions(), startedAt: 1))
+        let currentProcess = try RecordingLibrary(root: root)
+        let current = UUID().uuidString.lowercased()
+        try currentProcess.startSession(SessionInfo(id: current, source: "in_app", owner: nil,
+                                                   transitionGen: 0, options: CaptureOptions(), startedAt: 2))
+        currentProcess.endLiveCapture(current)
+
+        XCTAssertEqual(try currentProcess.recoverableSessions(), [old])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentProcess.sessionURL(current).path))
+    }
+
     func testDeleteDuringGatedCommitCannotRepublishAndPreservesOutbox() throws {
         let (library, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased()
