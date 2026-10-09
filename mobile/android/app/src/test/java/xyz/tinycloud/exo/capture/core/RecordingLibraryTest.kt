@@ -320,8 +320,11 @@ class RecordingLibraryTest {
         File(lib.session(broken), "journal.jsonl").appendText("{invalid complete line}\n")
         lib.closeSession(broken) // Simulate the previous process dying.
         repeat(2) {
-            try { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null }); fail("recovery must surface the broken session") }
+            val failedIds = mutableListOf<String>()
+            try { lib.recoverOnce({ _, out -> out.writeBytes(byteArrayOf(1)) }, { null },
+                onFailure = { failedId, _ -> failedIds.add(failedId) }); fail("recovery must surface the broken session") }
             catch (e: IOException) { assertTrue(e.message!!.contains(broken)) }
+            assertEquals(listOf(broken), failedIds)
             assertEquals(saved, lib.list().single().getString("id"))
         }
         val fresh = id()

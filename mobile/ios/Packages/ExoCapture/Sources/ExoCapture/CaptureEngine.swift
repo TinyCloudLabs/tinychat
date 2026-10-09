@@ -133,9 +133,9 @@ public final class CaptureEngine {
         return 30
     }
 
-    private func emitAutoStopped(reason: String, result: Result<[String: Any], Error>,
+    private func emitAutoStopped(id: String, reason: String, result: Result<[String: Any], Error>,
                                  maxDurationMs: Int64? = nil) {
-        var data: [String: Any] = ["reason": reason, "at": wallClock.nowMilliseconds()]
+        var data: [String: Any] = ["id": id, "reason": reason, "at": wallClock.nowMilliseconds()]
         if let maxDurationMs { data["maxDurationMs"] = maxDurationMs }
         switch result {
         case .success(let recording): data["recording"] = recording
@@ -458,7 +458,7 @@ public final class CaptureEngine {
         if let session = info, intent == "recording",
            (status()["elapsedMs"] as? Int64 ?? 0) >= session.maxDurationMs {
             stop(reason: "max_duration") { [weak self] result in
-                self?.emitAutoStopped(reason: "max_duration", result: result,
+                self?.emitAutoStopped(id: session.id, reason: "max_duration", result: result,
                                       maxDurationMs: session.maxDurationMs)
             }
             return
@@ -492,9 +492,9 @@ public final class CaptureEngine {
                 guard let free = try library.root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity else {
                     throw CaptureError.io("read available storage")
                 }
-                if free < 100 * 1024 * 1024 {
+                if free < 100 * 1024 * 1024, let id = info?.id {
                     stop(reason: "disk_full") { [weak self] result in
-                        self?.emitAutoStopped(reason: "disk_full", result: result)
+                        self?.emitAutoStopped(id: id, reason: "disk_full", result: result)
                     }
                 }
             } catch { log.error("Disk capacity check failed: \(String(describing: error), privacy: .public)") }
@@ -502,10 +502,11 @@ public final class CaptureEngine {
     }
 
     private func writerFailed(_ error: Error) {
-        guard info != nil, intent == "recording" else { return }
+        guard let id = info?.id, intent == "recording" else { return }
         log.error("Writer failed: \(String(describing: error), privacy: .public)")
+        emit("writeFailure", ["id": id, "error": String(describing: error)], retained: true)
         stop(reason: "write_failed") { [weak self] result in
-            self?.emitAutoStopped(reason: "write_failed", result: result)
+            self?.emitAutoStopped(id: id, reason: "write_failed", result: result)
         }
     }
 
@@ -808,6 +809,7 @@ public final class CaptureEngine {
         let final: (audioMs: Int64, heartbeatAt: Int64?)
         do { final = try writer?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
         catch {
+            emit("writeFailure", ["id": session.id, "error": String(describing: error)], retained: true)
             library.endLiveCapture(session.id)
             deactivateGraph(tapRemoved: true)
             limitTimer?.invalidate(); limitTimer = nil
@@ -815,7 +817,12 @@ public final class CaptureEngine {
             emitState()
             DispatchQueue.global(qos: .utility).async { [self] in
                 do { try recoverSession(session.id) }
-                catch { log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)") }
+                catch {
+                    log.error("Write-failure recovery failed: \(String(describing: error), privacy: .public)")
+                    DispatchQueue.main.async {
+                        self.emit("recoveryFailed", ["id": session.id, "reason": String(describing: error)], retained: true)
+                    }
+                }
             }
             completion(.failure(error))
             return

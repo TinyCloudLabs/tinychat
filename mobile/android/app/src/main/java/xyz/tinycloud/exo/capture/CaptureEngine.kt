@@ -197,7 +197,7 @@ class CaptureEngine private constructor(private val context: Context) {
         }
     }
     private fun emit(name: String, data: JSONObject) {
-        if (name in listOf("autoStopped", "presentRecorder", "recovered", "committed"))
+        if (name in listOf("autoStopped", "presentRecorder", "recovered", "recoveryFailed", "writeFailure", "committed"))
             synchronized(retainedEvents) { if (retentionConsumer == null) retainedEvents.addLast(name to data.copy()) }
         for (listener in listeners) listener.event(name, data)
     }
@@ -207,10 +207,15 @@ class CaptureEngine private constructor(private val context: Context) {
             val manager = context.getSystemService(android.app.ActivityManager::class.java)
             manager.getHistoricalProcessExitReasons(context.packageName, 0, 1).firstOrNull()?.let { "android:${it.reason}" }
         } else null
-        try { library.recoverOnce({ note, out -> RecordingFinalizer.mux(library.session(note), out) }, LegacyProbe::inspect, exitReason) }
+        var reportedFailure = false
+        try { library.recoverOnce({ note, out -> RecordingFinalizer.mux(library.session(note), out) }, LegacyProbe::inspect, exitReason,
+            onFailure = { failedId, detail ->
+                reportedFailure = true
+                emit("recoveryFailed", JSONObject().put("id", failedId).put("reason", detail))
+            }) }
         catch (e: Exception) {
             Log.e("ExoCapture", "Recovery needs retry", e)
-            emit("recoveryFailed", JSONObject().put("error", e.message ?: "recovery_failed"))
+            if (!reportedFailure) emit("recoveryFailed", JSONObject().put("error", e.message ?: "recovery_failed"))
         }
         for (note in library.list()) if (note.optBoolean("recovered") && announcedRecovered.add(note.optString("id")))
             emit("recovered", JSONObject().put("recording", note))
@@ -352,7 +357,10 @@ class CaptureEngine private constructor(private val context: Context) {
             }, interrupt = { detail ->
                 transitionExecutor.execute { handleReadFailure(current, attempt, detail) }
             }, onViolation = { Log.e("ExoCapture", it) })
-            if (error == MicStateContract.WRITE_FAILED) scheduleAutoStop(MicStateContract.WRITE_FAILED)
+            if (error == MicStateContract.WRITE_FAILED) {
+                emit("writeFailure", JSONObject().put("id", current).put("error", errorDetail ?: MicStateContract.WRITE_FAILED))
+                scheduleAutoStop(MicStateContract.WRITE_FAILED)
+            }
             if (error == MicStateContract.STALLED) transitionExecutor.execute { rebuild(MicStateContract.STALLED) }
         }, inputs, { routedInputChanged() }) } catch (e: Exception) { localEncoder.abort(); throw e }
         // Resume releases the lock while Android opens its input, so Pause,
@@ -616,6 +624,9 @@ class CaptureEngine private constructor(private val context: Context) {
             if (pausedAt > 0) { pausedMs += System.currentTimeMillis() - pausedAt; pausedAt = 0 }
             val at = System.currentTimeMillis()
             finalReason = if (captureFailure != null) MicStateContract.WRITE_FAILED else reason
+            if (captureFailure != null)
+                emit("writeFailure", JSONObject().put("id", current)
+                    .put("error", captureFailure?.message ?: MicStateContract.WRITE_FAILED))
             sequence!!.stop(finalReason, at)
             library.commit(current, { RecordingFinalizer.mux(library.session(current), it) },
                 metrics = JSONObject().put("silencedMs", silencedMs).put("silencedEvents", silencedEvents).put("noSignalMs", noSignalMs))
@@ -651,14 +662,15 @@ class CaptureEngine private constructor(private val context: Context) {
         current
     }
     private fun autoStop(why: String) {
-        if (id == null || intent != "recording") return
+        val current = id ?: return
+        if (intent != "recording") return
         try {
             val note = stop(why)
-            emit("autoStopped", JSONObject().put("reason", why).put("maxDurationMs", maxMs)
+            emit("autoStopped", JSONObject().put("id", current).put("reason", why).put("maxDurationMs", maxMs)
                 .put("at", System.currentTimeMillis()).put("recording", note))
         } catch (e: Exception) {
             Log.e("ExoCapture", "Auto-stop failed", e)
-            emit("autoStopFailed", JSONObject().put("reason", why).put("error", e.message ?: "stop_failed"))
+            emit("autoStopFailed", JSONObject().put("id", current).put("reason", why).put("error", e.message ?: "stop_failed"))
         }
     }
     private fun scheduleAutoStop(why: String) {
