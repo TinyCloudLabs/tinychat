@@ -51,9 +51,8 @@ export async function savePendingVoiceNotes(deps: {
   transcriber: Pick<VoiceNoteTranscriber, "check" | "noteSaved"> | null;
 }): Promise<PendingRun> {
   const [run] = await Promise.all([deps.save(), deps.transcriber?.check()]);
-  // A note the user chose on-device for runs through ExoStt/stt instead (committed-event driven,
-  // not from here); private cloud never also picks it up.
-  for (const recording of run.saved) if (recording.options?.transcriber !== "on-device") deps.transcriber?.noteSaved(recording);
+  // noteSaved uses each committed sidecar's options, including Off; legacy notes have none.
+  for (const recording of run.saved) deps.transcriber?.noteSaved(recording);
   return run;
 }
 
