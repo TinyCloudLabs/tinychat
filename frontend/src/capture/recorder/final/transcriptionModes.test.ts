@@ -25,6 +25,13 @@ function model(
         totalBytes: 1,
         error: null,
       },
+      {
+        id: "silero-vad",
+        state: "ready",
+        bytes: 0,
+        totalBytes: 1,
+        error: null,
+      },
     ],
     pack: "full",
     autoDownload: false,
@@ -252,6 +259,79 @@ describe("transcription modes availability", () => {
     };
     expect(modeAvailability("local", "phone", status)).toEqual({
       available: true,
+    });
+  });
+
+  describe("Local readiness is native's own predicate", () => {
+    const local = (status: OnDeviceSttStatus) =>
+      modeAvailability("local", "phone", status).available;
+    const withModels = (
+      patch: Partial<OnDeviceSttStatus>,
+      ...models: OnDeviceSttStatus["models"]
+    ): OnDeviceSttStatus => ({
+      ...model("ready"),
+      ...patch,
+      models,
+    });
+    const entry = (
+      id: OnDeviceSttStatus["models"][number]["id"],
+      state: OnDeviceSttStatus["models"][number]["state"],
+    ) => ({ id, state, bytes: 0, totalBytes: 1, error: null });
+
+    test("parakeet needs this pack's model and the VAD, both ready", () => {
+      expect(local(model("ready"))).toBe(true);
+      expect(
+        local(withModels({}, entry("parakeet-tdt-0.6b-v3-int8", "ready"))),
+      ).toBe(false);
+      expect(local(withModels({}, entry("silero-vad", "ready")))).toBe(false);
+      expect(
+        local(
+          withModels(
+            {},
+            entry("parakeet-tdt-0.6b-v3-int8", "downloading"),
+            entry("silero-vad", "ready"),
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    test("the model must be the one this phone's pack uses", () => {
+      expect(
+        local(
+          withModels(
+            { pack: "small" },
+            entry("parakeet-tdt-0.6b-v3-int8", "ready"),
+            entry("silero-vad", "ready"),
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        local(
+          withModels(
+            { pack: "small" },
+            entry("parakeet-tdt-110m-en-int8", "ready"),
+            entry("silero-vad", "ready"),
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    test("the engine must be parakeet (or a ready apple-speech)", () => {
+      expect(local({ ...model("ready"), engine: "none" })).toBe(false);
+      expect(
+        local({
+          ...model("absent"),
+          engine: "apple-speech",
+          appleSpeech: "ready",
+        }),
+      ).toBe(true);
+      expect(
+        local({
+          ...model("ready"),
+          engine: "apple-speech",
+          appleSpeech: "unsupported",
+        }),
+      ).toBe(false);
     });
   });
 

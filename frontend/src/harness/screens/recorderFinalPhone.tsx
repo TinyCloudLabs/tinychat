@@ -102,6 +102,7 @@ const MODEL_READY: OnDeviceSttStatus = {
       totalBytes: 1,
       error: null,
     },
+    { id: "silero-vad", state: "ready", bytes: 1, totalBytes: 1, error: null },
   ],
   pack: "full",
   autoDownload: true,

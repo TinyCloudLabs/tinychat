@@ -1,5 +1,8 @@
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
-import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
+import {
+  isOnDeviceReady,
+  type OnDeviceSttStatus,
+} from "@/lib/voiceNotes/onDeviceStt";
 import { FINAL_COPY } from "./finalCopy";
 
 export const SKIP_ENABLED = true;
@@ -26,18 +29,6 @@ export type ModeExplanation = (context: ModeExplanationContext) => string;
 export type Availability =
   | { available: true }
   | { available: false; reason: string };
-
-function isOnDeviceReadyInterim(
-  status: OnDeviceSttStatus | null | undefined,
-): boolean {
-  // TODO(TC-836): replace with isOnDeviceReady from lib/voiceNotes/onDeviceStt once TC-836 exports it; this interim check is not native's predicate.
-  return Boolean(
-    status?.models.some(
-      (entry) => entry.id.startsWith("parakeet") && entry.state === "ready",
-    ) ||
-    (status?.engine === "apple-speech" && status.appleSpeech === "ready"),
-  );
-}
 
 function explain(text: string): ModeExplanation {
   return () => text;
@@ -168,7 +159,7 @@ export function modeAvailability(
       : { available: false, reason: FINAL_COPY.whisperUnavailable };
   }
 
-  return isOnDeviceReadyInterim(model)
+  return model && isOnDeviceReady(model)
     ? { available: true }
     : { available: false, reason: FINAL_COPY.modelUnavailable };
 }
