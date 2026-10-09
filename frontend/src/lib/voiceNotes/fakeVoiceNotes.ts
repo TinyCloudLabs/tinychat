@@ -4,7 +4,7 @@ import type {
   MicStateReason, MissingAudioSpan, NoteLedger, OutboxEntry, RemoteOpReceipt, VoiceNoteRecording, VoiceNotesPlugin,
 } from "./nativeVoiceNotes";
 
-type EventName = "micState" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "committed" | "inputs";
+type EventName = "micState" | "captureAlert" | "level" | "autoStopped" | "presentRecorder" | "recovered" | "committed" | "inputs";
 type Listener = (value: unknown) => void;
 type Intent = NonNullable<CaptureStatus["intent"]>;
 type Availability = NonNullable<CaptureStatus["availability"]>;
@@ -123,8 +123,11 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   };
   const stateChanged = () => {
     const s = session;
-    emit("micState", { ...(s ? mic(s) : { state: "idle", reason: null }), at: now(), id: s?.id ?? null,
-      audioMs: s?.audioMs ?? 0, openSpan: s?.openSpan ?? null });
+    const at = now();
+    emit("micState", { ...(s ? mic(s) : { state: "idle", reason: null }), at, id: s?.id ?? null,
+      audioMs: s?.audioMs ?? 0, elapsedMs: s ? Math.max(0, at - s.startedAt - s.pausedMs - (s.pauseStarted === null ? 0 : at - s.pauseStarted)) : 0,
+      pausedMs: s ? s.pausedMs + (s.pauseStarted === null ? 0 : at - s.pauseStarted) : 0,
+      openSpan: s?.openSpan ?? null });
   };
   const closeSpan = (s: Session) => {
     if (!s.openSpan) return;
@@ -472,7 +475,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     releaseFailureCount: () => releaseFailures,
     failNextResume(reason = "resume_blocked") { resumeShouldFail = reason; },
     routeChange() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "route_change"); restart(s, true); } } },
-    mediaReset() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "media_services_reset"); restart(s, true); } } },
+    mediaReset() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "media_services_reset"); restart(s, true);
+      emit("captureAlert", { id: s.id, reason: "media_services_reset", message: "Recording restarted after an audio system reset" }); } } },
     stall() { const s = session; if (s) { if (s.intent === "recording") { openSpan(s, "omitted", "stalled"); restart(s, true); } } },
     silence(active) {
       const s = session; if (!s) return;
