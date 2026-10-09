@@ -45,6 +45,8 @@ export interface AppShellProps {
   railLive?: ReactNode;
   /** The minimised recorder in the sidebar's foot, above Settings (PR4). */
   sidebarLive?: ReactNode;
+  /** Receives the element the desktop recorder is drawn into: a layer over the surfaces, inside <main>, so the sidebar or rail stays visible. */
+  recorderHost?: (element: HTMLElement | null) => void;
 }
 
 type Shown = Destination | "settings" | "about";
@@ -94,6 +96,7 @@ export function AppShellView({
   island = null,
   railLive = null,
   sidebarLive = null,
+  recorderHost,
   sizeClass,
   captureMounted,
   mainRef,
@@ -145,6 +148,7 @@ export function AppShellView({
         <div data-surface="about" className={surface("about")}>
           {shown === "about" ? about : null}
         </div>
+        {recorderHost ? <div ref={recorderHost} data-recorder-host="" className="absolute inset-0 z-20 empty:hidden" /> : null}
       </main>
       {island ? (
         <div className={cn("row-start-2 [html[data-keyboard=open]_&]:hidden", beside ? "col-start-2" : "col-start-1")}>{island}</div>

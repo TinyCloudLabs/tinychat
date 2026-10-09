@@ -1,4 +1,4 @@
-import { appPlatform, type AppPlatform } from "@/lib/platform";
+import type { AppPlatform } from "@/lib/platform";
 
 export type RecorderShell = "phone" | "desktop" | "web";
 export type RecorderLayout = "phone" | "rail" | "desktop";
@@ -8,7 +8,8 @@ export interface ShellCapabilities {
   backgroundRecording: boolean;
   systemAudio: boolean;
   meetingSources: boolean;
-  captureSettings: boolean;
+  /** `microphone-only`: the settings offer the microphone and nothing else (web at the desktop layout). */
+  captureSettings: boolean | "microphone-only";
   globalShortcuts: boolean;
   notYetUploadedList: boolean;
 }
@@ -20,7 +21,8 @@ export function shellForPlatform(platform: AppPlatform): RecorderShell {
   throw new Error(`Unsupported platform: ${String(exhaustive)}`);
 }
 export function shellCapabilities(
-  platform: AppPlatform = appPlatform(),
+  platform: AppPlatform,
+  layout: RecorderLayout,
 ): ShellCapabilities {
   const shell = shellForPlatform(platform);
   if (shell === "phone")
@@ -45,13 +47,14 @@ export function shellCapabilities(
       globalShortcuts: true,
       notYetUploadedList: true,
     };
+  const wide = layout !== "phone";
   return {
     shell,
     localTranscription: false,
     backgroundRecording: false,
     systemAudio: false,
-    meetingSources: false,
-    captureSettings: false,
+    meetingSources: wide,
+    captureSettings: wide ? "microphone-only" : false,
     globalShortcuts: false,
     notYetUploadedList: false,
   };
