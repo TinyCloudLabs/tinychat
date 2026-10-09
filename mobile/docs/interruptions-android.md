@@ -38,33 +38,35 @@ paused foreground notification remains the route for locked-screen Resume.
 
 ## Emulator verification
 
-- API 34: stale notification action, injected read error with restart, and
-  in-flight Resume invalidation by Pause/Stop/Discard passed in separate
-  instrumented runs. The five-minute background run passed after the test
-  granted `POST_NOTIFICATIONS`. The notification action resumed the running
-  foreground service at 00:05:32 local time, and the saved note lasted
-  13.444 s with 1.486 s before Pause. The pulled AAC file is in
-  `/tmp/exo-capture/evidence/T14/api34-background-note.m4a`; `ffprobe`
-  reports mono 44.1 kHz AAC. Its post-pause audio has `mean_volume: -37.0 dB`
-  and `max_volume: -2.8 dB` (`ffmpeg -ss 1.6 -af volumedetect`). This run
-  preceded the final first-PCM/state-publication fix and must be repeated on
-  the final build before closing the emulator gate.
-- API 36: stale action and injected read error tests passed (2/2). A later
-  five-minute run reached Pause, but the emulator stopped answering guest
-  commands before Resume and the runner never returned an assertion. The
-  background Resume and audio-level gate remains open for API 36.
-- API 24 and API 28: the stale notification, in-flight Resume invalidation,
-  and injected read-error tests passed (3/3 on each emulator). The existing
-  direct-start buffer and blocked-Resume regression cases also passed on
-  API 24 after fixes. A full connected suite attempt on API 24 lost the
-  emulator mid-run. On API 28 it completed with failures, including an
-  unrelated synthetic AAC packet-count assertion; the foreground-action
-  and immediate-Stop timing failures prompted the state publication fix.
-  Targeted foreground-action and stale-service retests then reported passes;
-  the API 28 guest stopped responding before the latter runner exited.
+- API 28: the full emulator connected suite finished 24 tests with 4 skipped,
+  0 failed, and `BUILD SUCCESSFUL` after disabling Play Services in the
+  private AVD. A preceding run had two startup failures because the guest's
+  `c2.android.aac.encoder` allocator timed out; both passed on rerun. The
+  synthetic AAC test exposed a real encoder bug: on this API, one 8 KiB input
+  queued to `MediaCodec` produced only one 1024-sample AAC packet. Limiting
+  each input to one AAC access unit fixed the packet count without relaxing
+  the assertion.
+- API 34: the full emulator connected suite finished 23 tests with 3 skipped,
+  0 failed, and `BUILD SUCCESSFUL`, including the five-minute background
+  Resume. A separate final-build five-minute run saved a 13.699773 s AAC note
+  after notification Resume. The pulled file is
+  `/tmp/exo-capture/evidence/T14/api34-background-note-36d33ec-audible.m4a`;
+  `ffprobe` reports mono 44.1 kHz AAC. Post-pause `volumedetect` reports
+  `mean_volume: -3.0 dB` and `max_volume: 0.0 dB` with BlackHole host-audio
+  loopback. The waveform is non-silent, though that source was loud enough
+  to reach the peak limit.
+- API 36: stale action and injected read error tests passed (2/2). On the
+  requested five-minute retry, the guest again stopped answering `adb shell`
+  during the paused interval; the runner could not reach Resume. Evidence is
+  in `/tmp/exo-capture/evidence/T14/api36-five-minute-36d33ec.txt` and
+  `api36-adb-probe-36d33ec.txt`. The API 36 background and audio-level gate
+  remains open due to emulator infrastructure.
+- API 24: stale notification, in-flight Resume invalidation, and injected
+  read-error tests passed (3/3). Direct-start buffer and blocked-Resume
+  regression cases passed after fixes. A full connected suite attempt lost
+  the emulator mid-run.
 - Unit tests, debug APK, unsigned release AAB/APK, and the throwaway-key
-  release signing rehearsal passed. The API 36 five-minute background check
-  and its host-audio `mean_volume` evidence remain open.
+  release signing rehearsal passed. The physical Moto gate G2 remains open.
 
 ## Moto G Power gate G2 (pending device release)
 
