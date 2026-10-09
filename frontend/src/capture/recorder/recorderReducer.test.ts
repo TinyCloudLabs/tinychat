@@ -130,6 +130,18 @@ describe("recorderReducer", () => {
     });
   });
 
+  test("a finalization timeout keeps audio for recovery instead of claiming no audio", () => {
+    const stopped = recorderReducer(recording(), {
+      type: "AUTO_STOPPED", id: null, notice: "Stopped at the 60-minute limit.",
+      captured: false, error: "finalization_timed_out",
+    });
+    expect(stopped).toMatchObject({
+      phase: "idle",
+      error: "Recording kept on this phone. Exo will finish it automatically.",
+    });
+    expect(stopped.error).not.toContain("captured no audio");
+  });
+
   test("another recording's auto-stop or save result never touches the one on screen", () => {
     const live = recording();
     expect(recorderReducer(live, { type: "AUTO_STOPPED", id: "rec-old", notice: "n", captured: true })).toBe(live);

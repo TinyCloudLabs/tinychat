@@ -7,6 +7,7 @@
 // `useVoiceNoteRecorder` turns the plugin's answers and events into these
 // events; every view reads the result through RecorderProvider.
 import { VOICE_NOTE_MAX_DURATION_MS, type MicState, type MicStateReason } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { FINALIZATION_PENDING } from "./recorderCopy";
 
 export type RecorderPhase = "idle" | "starting" | "recording" | "stopping" | "saving" | "discarding";
 
@@ -78,7 +79,7 @@ export type RecorderEvent =
    * A recorder stopped itself at its limit: `id` is that recording's (null when it
    * captured nothing). Applied only when it is the recording on screen (autoStopIsCurrent).
    */
-  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean }
+  | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; error?: string | null }
   /** status() and the retained events have been heard: Record may start. */
   | { type: "RECONCILED" }
   /** Back to idle without an outcome (the recording is being saved elsewhere). */
@@ -249,7 +250,10 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "AUTO_STOPPED":
       if (!autoStopIsCurrent(state, event.id)) return state;
       if (!event.captured) {
-        const failed = { ...state, limitNotice: event.notice, error: `${event.notice} The recording captured no audio.` };
+        const failed = { ...state, limitNotice: event.notice,
+          error: event.error === "finalization_timed_out"
+            ? FINALIZATION_PENDING
+            : `${event.notice} The recording captured no audio.` };
         return state.autoSaving ? failed : toIdle(failed);
       }
       return {

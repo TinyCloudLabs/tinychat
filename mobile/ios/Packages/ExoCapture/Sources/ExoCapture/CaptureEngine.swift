@@ -41,6 +41,7 @@ public final class CaptureEngine {
     private var pausedSince: Int64?
     private var pausedMs: Int64 = 0
     private var audioMs: Int64 = 0
+    private var wallClock: CaptureClock = SystemCaptureClock()
     private var spans: [MissingAudioSpan] = []
     private var openSpan: MissingAudioSpan?
     private var lastLevel = Date.distantPast
@@ -67,6 +68,9 @@ public final class CaptureEngine {
     var debugBeforeAttach: (() -> Void)?
     var debugInputRoute: (id: String?, sampleRate: Double?)?
     var debugNow: (() -> TimeInterval)?
+    var debugMuxWaitTimeout: TimeInterval?
+    var debugMuxOperationTimeout: TimeInterval?
+    var debugMuxWaitSeam: RecordingFinalizer.WaitSeam?
     #endif
     private var isForeground: Bool {
         #if DEBUG
@@ -91,8 +95,9 @@ public final class CaptureEngine {
     }
 
     #if DEBUG
-    init(testRoot: URL) throws {
+    init(testRoot: URL, clock: CaptureClock = SystemCaptureClock()) throws {
         library = try RecordingLibrary(root: testRoot)
+        wallClock = clock
         debugTesting = true
     }
     var debugGraphActive: Bool { graphActive || audioEngine?.isRunning == true }
@@ -114,7 +119,31 @@ public final class CaptureEngine {
         lastTapAt = retryNow
         tapTimeLock.unlock()
     }
+    func debugEnqueue(_ buffer: AVAudioPCMBuffer) throws {
+        guard let writer, intent == "recording" else { throw CaptureError.notRecording }
+        writer.enqueue(buffer, generation: generation)
+    }
     #endif
+
+    private var muxWaitTimeout: TimeInterval {
+        #if DEBUG
+        if let debugMuxWaitTimeout { return debugMuxWaitTimeout }
+        #endif
+        return 30
+    }
+
+    private func emitAutoStopped(reason: String, result: Result<[String: Any], Error>,
+                                 maxDurationMs: Int64? = nil) {
+        var data: [String: Any] = ["reason": reason, "at": wallClock.nowMilliseconds()]
+        if let maxDurationMs { data["maxDurationMs"] = maxDurationMs }
+        switch result {
+        case .success(let recording): data["recording"] = recording
+        case .failure(let error):
+            data["recording"] = NSNull()
+            data["error"] = (error as? CaptureError)?.code ?? "finalization_failed"
+        }
+        emit("autoStopped", data, retained: true)
+    }
 
     public func observe(_ body: @escaping (String, [String: Any], Bool) -> Void) -> UUID {
         let token = UUID(); observers[token] = body
@@ -185,7 +214,7 @@ public final class CaptureEngine {
         var claimed: [String] = []
         if let did = value.accountDid {
             if var live = info, live.owner == nil {
-                try library.appendJournal(live.id, ["e": "owner", "t": wallMilliseconds(),
+                try library.appendJournal(live.id, ["e": "owner", "t": wallClock.nowMilliseconds(),
                                                     "a": audioMs, "did": did])
                 live.owner = did; info = live
                 claimed.append(live.id)
@@ -216,7 +245,7 @@ public final class CaptureEngine {
                                                    testLimit.flatMap { $0 > 0 ? $0 : nil } ?? 10_800_000)))
         var selected = override ?? settings.options
         if settings.accountDid == nil { selected.transcriber = "on-device" }
-        let now = wallMilliseconds()
+        let now = wallClock.nowMilliseconds()
         let session = SessionInfo(id: UUID().uuidString.lowercased(), maxDurationMs: limit,
                                   source: source, owner: settings.accountDid,
                                   transitionGen: settings.transitionGen, options: selected,
@@ -295,7 +324,7 @@ public final class CaptureEngine {
         guard attempts.mayAttach(ticket), info?.id == ticket.id, intent == "recording" else {
             throw CaptureError.cancelled
         }
-        let acquiredAt = wallMilliseconds()
+        let acquiredAt = wallClock.nowMilliseconds()
         // The transition machine emits span_close, availability, and only a changed input.
         let input = inputRouter.active()
         if let input {
@@ -311,9 +340,10 @@ public final class CaptureEngine {
         let writer: AacAdtsWriter
         if let existing = self.writer { try existing.reopen(); writer = existing }
         else {
-            let openedAt = wallMilliseconds()
+            let openedAt = wallClock.nowMilliseconds()
             try library.openFirstSegment(session.id, at: openedAt)
-            writer = try AacAdtsWriter(library: library, id: session.id, segmentOpenedAt: openedAt)
+            writer = try AacAdtsWriter(library: library, id: session.id, segmentOpenedAt: openedAt,
+                                       clock: wallClock)
             self.writer = writer
         }
         #if DEBUG
@@ -427,9 +457,8 @@ public final class CaptureEngine {
         if let session = info, intent == "recording",
            (status()["elapsedMs"] as? Int64 ?? 0) >= session.maxDurationMs {
             stop(reason: "max_duration") { [weak self] result in
-                let recording: Any = (try? result.get()) ?? NSNull()
-                self?.emit("autoStopped", ["reason": "max_duration", "maxDurationMs": session.maxDurationMs,
-                                            "at": wallMilliseconds(), "recording": recording], retained: true)
+                self?.emitAutoStopped(reason: "max_duration", result: result,
+                                      maxDurationMs: session.maxDurationMs)
             }
             return
         }
@@ -464,8 +493,7 @@ public final class CaptureEngine {
                 }
                 if free < 100 * 1024 * 1024 {
                     stop(reason: "disk_full") { [weak self] result in
-                        self?.emit("autoStopped", ["reason": "disk_full", "at": wallMilliseconds(),
-                                                    "recording": (try? result.get()) ?? NSNull()], retained: true)
+                        self?.emitAutoStopped(reason: "disk_full", result: result)
                     }
                 }
             } catch { log.error("Disk capacity check failed: \(String(describing: error), privacy: .public)") }
@@ -476,9 +504,7 @@ public final class CaptureEngine {
         guard info != nil, intent == "recording" else { return }
         log.error("Writer failed: \(String(describing: error), privacy: .public)")
         stop(reason: "write_failed") { [weak self] result in
-            let recording: Any = (try? result.get()) ?? NSNull()
-            self?.emit("autoStopped", ["reason": "write_failed", "at": wallMilliseconds(),
-                                        "recording": recording], retained: true)
+            self?.emitAutoStopped(reason: "write_failed", result: result)
         }
     }
 
@@ -508,7 +534,7 @@ public final class CaptureEngine {
         let paused: (audioMs: Int64, at: Int64)
         do {
             paused = try next.pause(input: input, frames: frames, journal: journal,
-                                    clock: SystemCaptureClock(), currentAudioMs: audioMs) { [self] error in
+                                    clock: wallClock, currentAudioMs: audioMs) { [self] error in
                 log.error("Audio session remained active after Pause: \(String(describing: error), privacy: .public)")
             }
         } catch CaptureError.pauseFailed {
@@ -537,7 +563,7 @@ public final class CaptureEngine {
         let wasPaused = intent == "paused"
         if !automatic && !isForeground && !allowedBackgroundIntent {
             if wasPaused {
-                let now = wallMilliseconds()
+                let now = wallClock.nowMilliseconds()
                 var next = transitions ?? CaptureTransitionMachine()
                 for event in next.resumed(at: now, audioMs: audioMs) { try library.appendJournal(session.id, event) }
                 if let since = pausedSince { pausedMs += max(0, now - since) }
@@ -549,7 +575,7 @@ public final class CaptureEngine {
         }
         let ticket: CaptureAttemptGate.Ticket?
         if wasPaused {
-            let now = wallMilliseconds()
+            let now = wallClock.nowMilliseconds()
             var next = transitions ?? CaptureTransitionMachine()
             for event in next.resumed(at: now, audioMs: audioMs) { try library.appendJournal(session.id, event) }
             if let since = pausedSince { pausedMs += max(0, now - since) }
@@ -617,7 +643,7 @@ public final class CaptureEngine {
         catch { writerFailed(error); return }
         closeNoSignal()
         deactivateGraph(tapRemoved: true)
-        let interruptedAt = wallMilliseconds()
+        let interruptedAt = wallClock.nowMilliseconds()
         if openSpan != nil { closeSpan(at: interruptedAt) }
         var next = transitions ?? CaptureTransitionMachine()
         let events = next.interrupted(at: interruptedAt, audioMs: audioMs,
@@ -697,7 +723,7 @@ public final class CaptureEngine {
         availability = "blocked"; reason = why; attempts.blocked()
         var next = transitions ?? CaptureTransitionMachine()
         do {
-            for event in next.blocked(at: wallMilliseconds(), audioMs: audioMs,
+            for event in next.blocked(at: wallClock.nowMilliseconds(), audioMs: audioMs,
                                       generation: generation, reason: why) {
                 try library.appendJournal(session.id, event, fullSync: true)
             }
@@ -719,7 +745,7 @@ public final class CaptureEngine {
 
     private func openOmittedSpan(_ why: String) {
         guard openSpan == nil, let session = info else { return }
-        let at = wallMilliseconds()
+        let at = wallClock.nowMilliseconds()
         openSpan = MissingAudioSpan(kind: "omitted", reason: why, startedAt: at, atAudioMs: audioMs)
         var next = transitions ?? CaptureTransitionMachine()
         do {
@@ -733,7 +759,7 @@ public final class CaptureEngine {
 
     private func closeSpan(at timestamp: Int64? = nil, journal: Bool = true) {
         guard var span = openSpan else { return }
-        span.endedAt = timestamp ?? wallMilliseconds()
+        span.endedAt = timestamp ?? wallClock.nowMilliseconds()
         if span.kind == "silenced" { span.audioMs = max(0, audioMs - span.atAudioMs) }
         spans.append(span); openSpan = nil
         if journal, let session = info {
@@ -752,7 +778,7 @@ public final class CaptureEngine {
         guard let session = info, intent == "recording" else { return }
         if muted {
             guard openSpan == nil else { return }
-            let at = wallMilliseconds()
+            let at = wallClock.nowMilliseconds()
             openSpan = MissingAudioSpan(kind: "silenced", reason: "input_muted",
                                         startedAt: at, atAudioMs: audioMs)
             reason = "input_muted"
@@ -777,7 +803,7 @@ public final class CaptureEngine {
             return
         }
         closeNoSignal()
-        let stoppedAt = wallMilliseconds()
+        let stoppedAt = wallClock.nowMilliseconds()
         let final: (audioMs: Int64, heartbeatAt: Int64?)
         do { final = try writer?.finish(at: stoppedAt) ?? (audioMs: 0, heartbeatAt: nil) }
         catch {
@@ -804,6 +830,14 @@ public final class CaptureEngine {
         let spans = self.spans
         let input = currentInput
         let noSignal = noSignalMs
+        let muxWaitTimeout = self.muxWaitTimeout
+        #if DEBUG
+        let muxWaitSeam = debugMuxWaitSeam
+        let muxOperationTimeout = debugMuxOperationTimeout
+        #else
+        let muxWaitSeam: RecordingFinalizer.WaitSeam? = nil
+        let muxOperationTimeout: TimeInterval? = nil
+        #endif
         limitTimer?.invalidate(); limitTimer = nil
         writer = nil; info = nil; intent = "stopped"; availability = "available"; reason = stopReason
         emitState()
@@ -833,10 +867,15 @@ public final class CaptureEngine {
                                           endedUnexpectedly: false,
                                           lastHeartbeatAt: lastHeartbeat, input: input,
                                           noSignalMs: noSignal)
+                log.notice("finalize stage=mux_start id=\(session.id, privacy: .public) durationMs=\(duration)")
                 let committed = try library.commit(session.id, sidecar: sidecar) { staged in
                     try RecordingFinalizer.mux(segments: RecordingFinalizer.segments(in: library.sessionURL(session.id)),
-                                               expectedAudioMs: duration, to: staged)
+                                               expectedAudioMs: duration, to: staged,
+                                               waitTimeout: muxWaitTimeout,
+                                               seam: muxWaitSeam ?? RecordingFinalizer.WaitSeam(),
+                                               operationTimeout: muxOperationTimeout)
                 }
+                log.notice("finalize stage=committed id=\(session.id, privacy: .public)")
                 let flushes = library.syncMetrics()
                 for kind in ["F_FULLFSYNC", "F_BARRIERFSYNC", "fsync_fallback"] {
                     if let metric = flushes[kind] {
@@ -848,7 +887,30 @@ public final class CaptureEngine {
                     completion(.success(committed))
                 }
             } catch {
-                DispatchQueue.main.async { completion(.failure(error)) }
+                log.error("finalize stage=failed id=\(session.id, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                    if let captureError = error as? CaptureError,
+                       case .finalizationTimedOut = captureError {
+                        self.retryTimedOutSession(session.id)
+                    }
+                }
+            }
+        }
+    }
+
+    private func retryTimedOutSession(_ id: String) {
+        log.notice("finalize stage=recovery_scheduled id=\(id, privacy: .public) delaySeconds=2")
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            do {
+                try self.recoverSession(id)
+                self.log.notice("finalize stage=recovery_completed id=\(id, privacy: .public)")
+            } catch {
+                self.log.error("finalize stage=recovery_failed id=\(id, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                DispatchQueue.main.async {
+                    self.emit("recoveryFailed", ["id": id, "reason": String(describing: error)], retained: true)
+                }
             }
         }
     }
@@ -859,7 +921,7 @@ public final class CaptureEngine {
         try library.delete(session.id)
         _ = stopInput()
         deactivateGraph(tapRemoved: true)
-        _ = try? writer?.finish(at: wallMilliseconds())
+        _ = try? writer?.finish(at: wallClock.nowMilliseconds())
         writer = nil; info = nil; intent = "stopped"; reason = "user"
         limitTimer?.invalidate(); limitTimer = nil
         emitState()
@@ -870,7 +932,7 @@ public final class CaptureEngine {
         guard let session = info else { throw CaptureError.notRecording }
         var actual = changed
         if session.owner == nil { actual.transcriber = "on-device" }
-        try library.appendJournal(session.id, ["e": "options", "t": wallMilliseconds(), "a": audioMs,
+        try library.appendJournal(session.id, ["e": "options", "t": wallClock.nowMilliseconds(), "a": audioMs,
                                                "transcriber": actual.transcriber,
                                                "identifySpeakers": actual.identifySpeakers])
         options = actual
@@ -881,7 +943,7 @@ public final class CaptureEngine {
         let state: String = intent == "stopped" ? "idle" : intent == "paused" ? "paused" :
             availability == "interrupted" ? "interrupted" : availability == "blocked" ? "needs_user" :
             openSpan?.kind == "silenced" ? "silenced" : "recording"
-        let now = wallMilliseconds()
+        let now = wallClock.nowMilliseconds()
         let elapsed = info.map { CaptureTiming.elapsedMilliseconds(startedAt: $0.startedAt,
             closedPaused: pausedMs, pausedSince: pausedSince, now: now) } ?? 0
         return ["state": state, "reason": reason as Any? ?? NSNull(), "id": info?.id as Any? ?? NSNull(),
@@ -1035,7 +1097,7 @@ public final class CaptureEngine {
                 "inactiveAfterDiscard": audioEngine == nil && !graphActive]
     }
 
-    private func emitState() { emit("micState", status().merging(["at": wallMilliseconds()]) { _, newer in newer }, retained: true) }
+    private func emitState() { emit("micState", status().merging(["at": wallClock.nowMilliseconds()]) { _, newer in newer }, retained: true) }
 
     private static func spanObject(_ span: MissingAudioSpan) -> [String: Any] {
         ["kind": span.kind, "reason": span.reason, "startedAt": span.startedAt,

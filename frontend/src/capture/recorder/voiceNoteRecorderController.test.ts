@@ -372,6 +372,35 @@ describe("voice-note recorder controller", () => {
     expect(onPhone).toHaveLength(1);
   });
 
+  test("a timed-out native Stop explains that audio is being recovered", async () => {
+    const base = plugin;
+    __setVoiceNotesForTests({ ...base, async stop() {
+      await stopNatively();
+      throw Object.assign(new Error("Recording finalization timed out at finish_writing"),
+        { code: "finalization_timed_out" });
+    } }, { available: true });
+    const { recorder } = await attached();
+    await recorder.record();
+    await recorder.stop();
+    expect(recorder.getState()).toMatchObject({
+      phase: "idle", error: "Recording kept on this phone. Exo will finish it automatically.",
+    });
+    expect(onPhone).toHaveLength(1);
+  });
+
+  test("a timed-out limit auto-stop explains recovery instead of saying no audio", async () => {
+    const { recorder } = await attached();
+    await recorder.record();
+    fake.emit("autoStopped", {
+      reason: "max_duration", maxDurationMs: 60_000, at: Date.now(),
+      recording: null, error: "finalization_timed_out",
+    });
+    expect(recorder.getState()).toMatchObject({
+      phase: "idle", error: "Recording kept on this phone. Exo will finish it automatically.",
+    });
+    expect(saves).toEqual([]);
+  });
+
   test("a double tap sends only one native Pause and Resume", async () => {
     const base = plugin;
     let pauseCalls = 0;

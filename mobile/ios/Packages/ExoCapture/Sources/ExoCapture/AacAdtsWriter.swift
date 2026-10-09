@@ -7,6 +7,7 @@ import Foundation
 /// the writer queue, never on Core Audio's real-time callback.
 final class AacAdtsWriter {
     private let library: RecordingLibrary
+    private let clock: CaptureClock
     private let id: String
     private let queue = DispatchQueue(label: "xyz.tinycloud.exo.capture.writer")
     private let queueLock = NSLock()
@@ -31,8 +32,9 @@ final class AacAdtsWriter {
     var onStall: ((Bool, Int) -> Void)?
     var onStale: ((Int) -> Void)?
 
-    init(library: RecordingLibrary, id: String, segmentOpenedAt: Int64) throws {
-        self.library = library; self.id = id
+    init(library: RecordingLibrary, id: String, segmentOpenedAt: Int64,
+         clock: CaptureClock = SystemCaptureClock()) throws {
+        self.library = library; self.id = id; self.clock = clock
         self.heartbeat = HeartbeatSchedule(segmentOpenedAt: segmentOpenedAt)
         self.handle = try FileHandle(forWritingTo: library.segmentURL(id, index: 0))
     }
@@ -148,7 +150,7 @@ final class AacAdtsWriter {
         }
         let now = Date()
         let shouldRoll = audioFrames - segmentStartFrames >= 60 * 48_000
-        if heartbeat.periodicDue(at: wallMilliseconds(), closing: shouldRoll) {
+        if heartbeat.periodicDue(at: clock.nowMilliseconds(), closing: shouldRoll) {
             try library.checkpoint(id, segment: segment, bytes: segmentBytes,
                                    audioMs: audioFrames * 1000 / 48_000,
                                    intent: "recording", availability: "available")
@@ -165,7 +167,7 @@ final class AacAdtsWriter {
             onFrames?(audioFrames * 1000 / 48_000)
             try handle.close()
             segment += 1
-            let openedAt = wallMilliseconds()
+            let openedAt = clock.nowMilliseconds()
             let next = try library.rollSegment(id, next: segment,
                                                audioMs: audioFrames * 1000 / 48_000, at: openedAt)
             self.handle = try FileHandle(forWritingTo: next)
@@ -213,9 +215,9 @@ final class AacAdtsWriter {
     func closeForPause() throws -> (audioMs: Int64, at: Int64) {
         queueLock.lock(); accepting = false; queueLock.unlock()
         return try queue.sync {
-            guard handle != nil else { return (audioFrames * 1000 / 48_000, wallMilliseconds()) }
+            guard handle != nil else { return (audioFrames * 1000 / 48_000, clock.nowMilliseconds()) }
             try drainEncoder(to: handle!)
-            let at = wallMilliseconds()
+            let at = clock.nowMilliseconds()
             try library.checkpoint(id, segment: segment, bytes: segmentBytes,
                                    audioMs: audioFrames * 1000 / 48_000,
                                    intent: "recording", availability: "available", fullSync: true, at: at)
@@ -228,7 +230,7 @@ final class AacAdtsWriter {
     func reopen() throws {
         try queue.sync {
             let nextIndex = segment + 1
-            let openedAt = wallMilliseconds()
+            let openedAt = clock.nowMilliseconds()
             let next = try library.rollSegment(id, next: nextIndex,
                                                audioMs: audioFrames * 1000 / 48_000, at: openedAt)
             segment = nextIndex
