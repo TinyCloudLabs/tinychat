@@ -295,7 +295,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     });
     await slider(page).focus();
     await page.keyboard.press("ArrowLeft");
-    await shown(page.getByText("Not available right now").first());
+    await shown(page.getByText("Local isn't available right now").first());
     await modeIs(page, "Private");
     expect(errors.some((text) => text.includes("cannot use on-device"))).toBe(
       true,

@@ -5,11 +5,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
 import type {
-  RecorderTranscriber,
-  RecorderTranscriberId,
   SetTranscriberResult,
   TranscriberApi,
-} from "@/capture/recorder/final/transcriberApiStub";
+} from "@/capture/recorder/final/useTranscriptionChoice";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
 import {
   RecorderProvider,
@@ -41,7 +40,7 @@ declare global {
       /** What the provider answers to the next setTranscriber calls (null: decide as it would). */
       transcriberResult: SetTranscriberResult | null;
       /** The provider's transcriber changes from outside this screen. */
-      patchTranscriber: (patch: Partial<RecorderTranscriber>) => void;
+      patchTranscriber: (patch: Partial<RecorderValue["transcriber"]>) => void;
     };
     /** The real recorder over the fake native plugin: the control calls in order, and the ones that reject while flagged. */
     exoNative?: {
@@ -83,7 +82,7 @@ const minutes = (m: number) => m * 60_000;
 interface Setup {
   consented: boolean;
   /** The transcriber the provider starts with. */
-  transcriber: RecorderTranscriberId;
+  transcriber: TranscriberId;
   /** Starts with every plugin call rejecting. */
   failing: boolean;
 }
@@ -94,7 +93,7 @@ function Interactive({
   failing,
 }: Setup) {
   const [consented, setConsented] = useState(consentedAtStart);
-  const [transcriber, setTranscriber] = useState<RecorderTranscriber>({
+  const [transcriber, setTranscriber] = useState<RecorderValue["transcriber"]>({
     id: transcriberAtStart,
     identifySpeakers: false,
     source: "recording",
@@ -131,7 +130,7 @@ function Interactive({
   // The provider's transcriber API, over this screen's state.
   const transcriberApi: TranscriberApi = {
     transcriber,
-    setTranscriber: (id, { scope }) => {
+    setTranscriber: async (id, { scope }) => {
       log.calls.push(`transcriber:${id}:${scope}`);
       if (log.transcriberResult !== null) {
         if (log.transcriberResult === "locked_signed_out")
@@ -143,7 +142,7 @@ function Interactive({
       setTranscriber((current) => ({ ...current, id }));
       return "ok";
     },
-    setIdentifySpeakers: (on, scope) => {
+    setIdentifySpeakers: async (on, scope) => {
       log.calls.push(`identifySpeakers:${on}:${scope}`);
       setTranscriber((current) => ({ ...current, identifySpeakers: on }));
       return "ok";

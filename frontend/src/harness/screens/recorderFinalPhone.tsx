@@ -49,6 +49,11 @@ const LIVE: Partial<RecorderValue> = {
   audioMs: minutes(12, 48),
   elapsedMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
+  transcriber: {
+    id: "private-cloud",
+    identifySpeakers: false,
+    source: "recording",
+  },
   sheetOpen: true,
 };
 

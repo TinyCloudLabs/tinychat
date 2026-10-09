@@ -2,15 +2,14 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
-import type {
-  RecorderTranscriberId,
-  SetTranscriberResult,
-  TranscriberApi,
-} from "./transcriberApiStub";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import {
   PRIVATE_UNAVAILABLE,
   SIGNED_OUT,
   SPEAKERS_NEEDS_CONSENT,
+  unavailableNow,
+  type SetTranscriberResult,
+  type TranscriberApi,
   TRANSCRIBER_FOR,
   useTranscriptionChoice,
 } from "./useTranscriptionChoice";
@@ -51,7 +50,7 @@ const MODEL: OnDeviceSttStatus = {
 type Call = [string, ...unknown[]];
 
 function fakeApi(
-  id: RecorderTranscriberId,
+  id: TranscriberId,
   result: SetTranscriberResult | Error = "ok",
   speakers: SetTranscriberResult | Error = "ok",
 ) {
@@ -209,6 +208,17 @@ describe("useTranscriptionChoice", () => {
     expect(calls).toEqual([["setIdentifySpeakers", true, "recording"]]);
   });
 
+  test("Identify speakers is always the provider's value, and switching to on-device takes it back to the default", () => {
+    const shown = (id: TranscriberId, identifySpeakers: boolean) => {
+      const { api } = fakeApi(id);
+      api.transcriber = { id, identifySpeakers, source: "recording" };
+      return choice(transcription(), api).result.identifySpeakers;
+    };
+    expect(shown("assemblyai", true)).toBe(true);
+    expect(shown("on-device", false)).toBe(false);
+    expect(shown("assemblyai", false)).toBe(false);
+  });
+
   describe("a refused Identify speakers is shown and logged, and the switch stays with the provider", () => {
     const refused = async (result: SetTranscriberResult | Error) => {
       const logged = spyOn(console, "error").mockImplementation(() => {});
@@ -224,7 +234,7 @@ describe("useTranscriptionChoice", () => {
       for (const [result, reason] of [
         ["needs_consent", SPEAKERS_NEEDS_CONSENT],
         ["locked_signed_out", SIGNED_OUT],
-        ["unavailable", PRIVATE_UNAVAILABLE],
+        ["unavailable", unavailableNow("Identify speakers")],
       ] as const) {
         const { notices, errors, shown } = await refused(result);
         expect(notices).toEqual([reason]);
@@ -263,10 +273,13 @@ describe("useTranscriptionChoice", () => {
       return { notices, errors };
     };
 
-    test("unavailable: a toast, a log, and the selection stays with the provider", async () => {
-      const { notices, errors } = await failure("unavailable");
-      expect(notices).toEqual([PRIVATE_UNAVAILABLE]);
-      expect(errors).toHaveLength(1);
+    test("unavailable: a toast naming the mode asked for, a log, and the selection stays with the provider", async () => {
+      const skip = await failure("unavailable", "skip");
+      expect(skip.notices).toEqual([unavailableNow("Skip")]);
+      expect(skip.errors).toHaveLength(1);
+      const priv = await failure("unavailable", "private");
+      expect(priv.notices).toEqual([unavailableNow("Private")]);
+      expect(unavailableNow("Local")).toBe("Local isn't available right now");
     });
 
     test("locked_signed_out: says why", async () => {
