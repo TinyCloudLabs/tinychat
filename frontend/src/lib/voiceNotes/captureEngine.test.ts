@@ -61,7 +61,7 @@ describe("captureEngineKind: flag x native x tauri internals x MediaRecorder x r
         if (registeredTauri) registerCaptureEngine("tauri", async () => engine());
         const expected: CaptureEngineKind | null = native ? "native"
           : !flag ? null
-          : tauri && registeredTauri ? "tauri"
+          : tauri ? (registeredTauri ? "tauri" : null)
           : mediaRecorder && registeredWeb ? "web"
           : null;
         expect(captureEngineKind()).toBe(expected);

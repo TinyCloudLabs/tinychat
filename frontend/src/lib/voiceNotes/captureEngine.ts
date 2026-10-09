@@ -58,7 +58,8 @@ export function captureEngineKind(): CaptureEngineKind | null {
   if (installed) return installed.kind;
   if (nativeVoiceNotesAvailable()) return "native";
   if (!recorderFinalEnabled()) return null;
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window && factories.has("tauri")) return "tauri";
+  // Inside the desktop app only the Tauri engine records; never fall back to the browser engine.
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) return factories.has("tauri") ? "tauri" : null;
   if (typeof MediaRecorder !== "undefined" && typeof navigator !== "undefined" && navigator.mediaDevices && factories.has("web")) return "web";
   return null;
 }
