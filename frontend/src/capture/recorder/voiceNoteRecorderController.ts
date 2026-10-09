@@ -61,6 +61,9 @@ export interface RecorderTranscriberChoice {
   identifySpeakers: boolean;
   source: TranscriberChoiceScope;
 }
+export type SetTranscriberResult = TranscriberChoiceResult;
+export type TranscriberScope = TranscriberChoiceScope;
+export type RecorderTranscriber = RecorderTranscriberChoice;
 
 export interface VoiceNoteRecorderController {
   getState(): RecorderState;

@@ -823,8 +823,10 @@ export async function transcribeVoiceNote(args: {
     await finish();
     throw new PrivateCloudError("voice_note_not_found", "The voice note no longer exists");
   }
-  if (note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud")
+  if (note.data.captureVersion === 2 && note.data.captureTranscriber !== "private-cloud") {
+    await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
+  }
   if (note.data.transcript.status !== "none") {
     await finish();
     return note.data.transcript.status;
@@ -832,8 +834,10 @@ export async function transcribeVoiceNote(args: {
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
   // A manual Retry must obey the committed choice too. V1 notes have no options and retain
   // their historical, consent-gated private-cloud behaviour.
-  if (nativeNote?.options && nativeNote.options.transcriber !== "private-cloud")
+  if (nativeNote?.options && nativeNote.options.transcriber !== "private-cloud") {
+    await finish();
     throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
+  }
   if (nativeNote?.owner && nativeNote.owner !== tcw.did)
     throw new PrivateCloudError("transcript_save_failed", "This voice note is not owned by the current account");
   const local = nativeNote ? (await VoiceNotes.getTranscript({ id: sourceId })).transcript : null;

@@ -49,6 +49,7 @@ import {
 } from "./voiceNoteStore";
 import {
   accountStorageKey,
+  createVoiceNoteTranscriber,
   createVoiceNoteCloud,
   createVoiceNoteCloudForBuild,
   localStorageVoiceNoteConsentStore,
@@ -726,6 +727,46 @@ const RECORDING = {
 
 describe("transcribeVoiceNote (one note end to end)", () => {
   beforeEach(() => _resetConnectorSchemaMemoForTests());
+
+  test("launch resume deletes an old cloud job for an on-device note and the next launch does not retry it", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    space.sqlite.query(`UPDATE connector_meeting SET metadata = json_set(metadata,
+      '$.capture.version', 2, '$.capture.options.transcriber', 'on-device') WHERE source_id = 'rec-1'`).run();
+    VoiceNotes.listPending = async () => ({ recordings: [] }); // The native sidecar has been removed.
+    const h = harness({});
+    h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID });
+    const launch = () => createVoiceNoteTranscriber({
+      cloud: h.cloud, consent: { get: () => true, set: () => {} }, tcw: () => space.tcw,
+    });
+    await launch().check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.removed).toEqual([ID]);
+    expect(h.pending.sourceIds()).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+    expect(h.puts).toHaveLength(0);
+
+    await launch().check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.removed).toEqual([ID]);
+    expect(h.pending.sourceIds()).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+  });
+
+  test("a native on-device choice also deletes a pending cloud job for a legacy-shaped space row", async () => {
+    const space = sqliteSpace();
+    expect((await saveVoiceNote(space.tcw, RECORDING, AUDIO, "ios")).ok).toBe(true);
+    VoiceNotes.listPending = async () => ({ recordings: [{ ...RECORDING,
+      options: { transcriber: "on-device", identifySpeakers: false } } as never] });
+    const h = harness({});
+    h.pending.write("rec-1", { attemptId: "00000000-0000-4000-8000-00000000abcd", transcriptionId: ID2 });
+    const error = await transcribeVoiceNote({ tcw: space.tcw, cloud: h.cloud, capabilities: CAPS,
+      sourceId: "rec-1", report: () => {} }).catch((caught: unknown) => caught);
+    expect((error as PrivateCloudError).code).toBe("transcription_off");
+    expect(h.removed).toEqual([ID2]);
+    expect(h.pending.sourceIds()).toEqual([]);
+    expect(h.creates).toHaveLength(0);
+  });
 
   test("manual Retry obeys the committed v2 choice after the native sidecar is gone", async () => {
     for (const transcriber of ["off", "on-device", "private-cloud"] as const) {
