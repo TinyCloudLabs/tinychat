@@ -54,6 +54,8 @@ interface Live {
   pendingDevice: string | null | undefined;
   releaseLocks: (() => void)[];
   finishing: boolean;
+  /** Set once finish() has emitted its closing events; a later fault is then reported at once. */
+  closed: boolean;
 }
 
 export interface WebVoiceNotesOptions {
@@ -173,7 +175,8 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     if (l.writeFailed) return;
     l.writeFailed = error instanceof Error ? error : new Error(String(error));
     console.error("[webVoiceNotes] A recording chunk could not be stored", error);
-    emit("writeFailure", { id: l.id, error: l.writeFailed.message });
+    // Reported by finish() after committed/autoStopped, which resolve the note's capture issue by design.
+    if (l.closed) emit("writeFailure", { id: l.id, error: l.writeFailed.message });
     const reason: StopReason = error instanceof DOMException && error.name === "QuotaExceededError" ? "disk_full" : "write_failed";
     scheduleAutoStop(l, reason);
   };
@@ -213,12 +216,21 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
     }).catch((error: unknown) => onWriteFailure(l, error));
   };
 
+  const reportLoss = (l: Live, tailLost: boolean) => {
+    l.closed = true;
+    if (l.writeFailed) emit("writeFailure", { id: l.id, error: l.writeFailed.message });
+    if (tailLost) {
+      console.error("[webVoiceNotes] The recorder never delivered the last slice before the pause", l.id);
+      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
+    }
+  };
+
   /** Ends the live session: stops capture, drains writes, commits what is durable. Never throws for an empty recording. */
   async function finish(l: Live, reason: StopReason): Promise<{ recording: VoiceNoteRecording | null; error: string | null }> {
     l.finishing = true;
     const s = l.record;
     let outcome: { recording: VoiceNoteRecording | null; error: string | null };
-    let tailLost: boolean;
+    let tailLost = false;
     try {
       ({ tailLost } = await l.capture.stop());
       await l.queue;
@@ -243,19 +255,17 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
         emit("autoStopped", { id: l.id, reason, maxDurationMs: s.maxDurationMs, at: now(), recording: null,
           error: (error as { code?: string }).code ?? "finalization_failed" });
       }
+      reportLoss(l, tailLost);
       throw error;
     }
     releaseLive(l);
     if (outcome.recording) emit("committed", { id: outcome.recording.id, recording: outcome.recording });
-    // After the commit so the note's capture issue is not cleared by it: the audio before the pause is proven lost.
-    if (tailLost) {
-      console.error("[webVoiceNotes] The recorder never delivered the last slice before the pause", l.id);
-      emit("writeFailure", { id: l.id, error: "pause_flush_timeout" });
-    }
     emitMicState();
     if (reason !== "user") {
       emit("autoStopped", { id: l.id, reason, maxDurationMs: s.maxDurationMs, at: now(), recording: outcome.recording, error: outcome.error });
     }
+    // Last: committed and autoStopped resolve the note's capture issue, and a lost slice must outlive them.
+    reportLoss(l, tailLost);
     return outcome;
   }
 
@@ -348,7 +358,7 @@ export function createWebVoiceNotes(options: WebVoiceNotesOptions): WebVoiceNote
             transitionGen: defaults.transitionGen, options: opts, mimeType: capture.mimeType, input: null, maxDurationMs });
           began = true;
           const l: Live = { id, record: begun, capture, availability: "available", reason: null, queue: Promise.resolve(),
-            writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false };
+            writeFailed: null, lastDurableAt: now(), pendingDevice: undefined, releaseLocks: releases, finishing: false, closed: false };
           holder.live = l;
           let input: AudioInput;
           try {
