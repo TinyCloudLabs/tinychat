@@ -30,7 +30,7 @@ let browser: Browser;
 let server: ReturnType<typeof serveHarness>;
 
 type Harness = {
-  exoRecorder: { calls: string[]; patch: (patch: object) => void };
+  exoMinimized: { calls: string[]; patch: (patch: object) => void };
 };
 
 const PHONE = { width: 390, height: 844 };
@@ -107,11 +107,11 @@ async function open(
     errors,
     calls: () =>
       page.evaluate(() =>
-        (window as unknown as Harness).exoRecorder.calls.slice(),
+        (window as unknown as Harness).exoMinimized.calls.slice(),
       ),
     patch: (patch) =>
       page.evaluate(
-        (p) => (window as unknown as Harness).exoRecorder.patch(p),
+        (p) => (window as unknown as Harness).exoMinimized.patch(p),
         patch,
       ),
     minimizedAnnouncements: () =>

@@ -1,6 +1,6 @@
 // The minimised final recorder (TC-870) in the app shell: the Ribbon above the tab bar on a phone, the
 // floating Ribbon on the rail, the dock in the sidebar. The viewport picks which. Each screen runs over
-// a recorder that remembers what it is asked to do: the page exposes `window.exoRecorder` (the calls in
+// a recorder that remembers what it is asked to do: the page exposes `window.exoMinimized` (the calls in
 // order, and a patch for the recorder's state) for test/recorder-final-ribbon.e2e.test.ts to drive.
 import { useContext, useMemo, useRef, useState } from "react";
 
@@ -12,7 +12,7 @@ import { ShellApp } from "../ShellApp";
 
 declare global {
   interface Window {
-    exoRecorder?: {
+    exoMinimized?: {
       calls: string[];
       patch: (patch: Partial<RecorderValue>) => void;
     };
@@ -50,7 +50,7 @@ function Minimized({ paused, mic, elapsedMs }: Setup) {
     sheetOpen: false,
   });
   const log = useMemo(
-    () => (window.exoRecorder ??= { calls: [], patch: () => {} }),
+    () => (window.exoMinimized ??= { calls: [], patch: () => {} }),
     [],
   );
   log.patch = (patch) => setState((current) => ({ ...current, ...patch }));
