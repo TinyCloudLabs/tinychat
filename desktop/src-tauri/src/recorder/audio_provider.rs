@@ -38,7 +38,8 @@ impl Meter {
 
     pub fn take(&mut self) -> (f32, f32) {
         let reading = (self.level, self.peak.max(self.level));
-        self.peak = self.level;
+        self.level = 0.0;
+        self.peak = 0.0;
         reading
     }
 
@@ -132,6 +133,7 @@ mod tests {
         let (level, peak) = meter.take();
         assert!(level > 0.5 && level < 1.0);
         assert_eq!(peak, 1.0);
+        assert_eq!(meter.take(), (0.0, 0.0));
         meter.reset();
         assert_eq!(meter.take(), (0.0, 0.0));
         meter.observe(&[0.0; 4], &[0.5; 4]);
