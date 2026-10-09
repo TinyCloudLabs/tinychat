@@ -6,7 +6,6 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { createFakeVoiceNotes } from "@/lib/voiceNotes/fakeVoiceNotes";
 import {
-  __resetFailedActionsForTests,
   performFailedAction,
   runFailedAction,
   type ActionEffects,
@@ -43,7 +42,6 @@ function effects() {
     },
     refresh: () => void log.push("refresh"),
     onGone: (id) => void log.push(`gone:${id}`),
-    onUnavailable: () => void log.push("unavailable"),
   };
   return { e, log, states };
 }
@@ -56,7 +54,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   error.mockRestore();
-  __resetFailedActionsForTests();
   __setVoiceNotesForTests(createFakeVoiceNotes().plugin, { available: null });
 });
 
@@ -64,8 +61,7 @@ describe("runFailedAction", () => {
   test("sorts what came back", async () => {
     expect(await runFailedAction(async () => {})).toEqual({ status: "ok" });
     expect(await runFailedAction(() => reject("not_failed_recording"))).toEqual({ status: "gone" });
-    expect(await runFailedAction(() => reject("unimplemented"))).toEqual({ status: "unimplemented" });
-    expect(await runFailedAction(() => reject("UNIMPLEMENTED"))).toEqual({ status: "unimplemented" });
+    expect((await runFailedAction(() => reject("unimplemented"))).status).toBe("error");
     expect((await runFailedAction(() => reject("io_error"))).status).toBe("error");
     expect((await runFailedAction(() => Promise.reject(new Error("no code")))).status).toBe("error");
   });
@@ -113,13 +109,12 @@ describe("Try again", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  test("unimplemented hides the actions: no error, no log", async () => {
+  test("unimplemented is an ordinary rejection: inline error and a log", async () => {
     use({ retryRecovery: () => reject("unimplemented") });
     const { e, log } = effects();
     await performFailedAction("retry", "recoveryFailed", "a", e);
-    expect(log).toContain("unavailable");
-    expect(log.some((line) => line.includes('"error":"'))).toBe(false);
-    expect(error).not.toHaveBeenCalled();
+    expect(log).toContain(`update:${JSON.stringify({ busy: null, error: HOME_COPY.tryAgainFailed })}`);
+    expect(error).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -151,12 +146,13 @@ describe("Delete", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  test("unimplemented hides the actions", async () => {
+  test("unimplemented is an ordinary rejection: inline error, nothing gone", async () => {
     use({ discardFailedRecording: () => reject("unimplemented") });
     const { e, log } = effects();
     await performFailedAction("delete", "recoveryFailed", "a", e);
-    expect(log).toContain("unavailable");
+    expect(log).toContain(`update:${JSON.stringify({ busy: null, error: HOME_COPY.deleteFailed })}`);
     expect(log).not.toContain("gone:a");
+    expect(error).toHaveBeenCalledTimes(1);
   });
 
   test("any other rejection shows the inline error, logs, and keeps the recording", async () => {

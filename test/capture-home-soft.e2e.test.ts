@@ -280,23 +280,6 @@ describe("Soft Capture home interactions (phone)", () => {
       await page.context().close();
     });
 
-    test("unimplemented hides both buttons for the rest of the session", async () => {
-      const page = await open("capture-soft-failed-actions");
-      await page.locator(ROW).tap();
-      await sheetOf(page).waitFor({ timeout: 5_000 });
-      await fail(page, "retry", "unimplemented");
-      await page.locator('[data-testid="capture-issue-retry"]').tap();
-      await page.waitForFunction(() => !document.querySelector('[data-testid="capture-issue-retry"]'));
-      expect(await page.locator('[data-testid="capture-issue-delete"]').count()).toBe(0);
-      expect(await sheetOf(page).innerText()).toContain("It will try again when it next opens.");
-      await page.locator('[data-testid="capture-issue-close"]').tap();
-      await sheetOf(page).waitFor({ state: "detached", timeout: 5_000 });
-      await page.locator(ROW).tap();
-      await sheetOf(page).waitFor({ timeout: 5_000 });
-      expect(await page.locator('[data-testid="capture-issue-delete"]').count()).toBe(0);
-      await page.context().close();
-    });
-
     test("any other rejection is shown inline as an alert, and the buttons stay", async () => {
       const page = await open("capture-soft-failed-actions");
       const logged: string[] = [];

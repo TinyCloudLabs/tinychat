@@ -1,7 +1,7 @@
 // Try again and Delete on a recording that could not be recovered (TC-868 in
 // the UI). `runFailedAction` sorts a native call's outcome; `useFailedActions`
 // holds the sheet's busy / confirm / error state for one recording.
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 
 import {
   deleteQuarantined,
@@ -15,8 +15,6 @@ export type ActionOutcome =
   | { status: "ok" }
   /** `not_failed_recording`: native no longer holds it as failed. */
   | { status: "gone" }
-  /** The shell has no such action yet (iOS before T11). */
-  | { status: "unimplemented" }
   | { status: "error"; caught: unknown };
 
 export async function runFailedAction(
@@ -28,36 +26,8 @@ export async function runFailedAction(
   } catch (caught) {
     const code = rejectionCode(caught);
     if (code === "not_failed_recording") return { status: "gone" };
-    if (code === "unimplemented") return { status: "unimplemented" };
     return { status: "error", caught };
   }
-}
-
-// Once a shell says "unimplemented" the buttons stay hidden for the session.
-let unavailable = false;
-const listeners = new Set<() => void>();
-
-function markUnavailable(): void {
-  if (unavailable) return;
-  unavailable = true;
-  for (const listener of [...listeners]) listener();
-}
-
-/** Tests only. */
-export function __resetFailedActionsForTests(): void {
-  unavailable = false;
-  for (const listener of [...listeners]) listener();
-}
-
-export function useFailedActionsAvailable(): boolean {
-  return !useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => unavailable,
-    () => false,
-  );
 }
 
 export type RecoverableKind = "recoveryFailed" | "quarantined";
@@ -91,8 +61,6 @@ export interface ActionEffects {
   refresh(): void;
   /** The recording is deleted, or native no longer holds it as failed. */
   onGone(id: string): void;
-  /** The shell has no such action: hide the buttons. */
-  onUnavailable(): void;
 }
 
 /**
@@ -117,10 +85,6 @@ export async function performFailedAction(
     case "gone":
       effects.onGone(id);
       effects.refresh();
-      effects.update({ busy: null });
-      return;
-    case "unimplemented":
-      effects.onUnavailable();
       effects.update({ busy: null });
       return;
     case "error":
@@ -171,7 +135,6 @@ export function useFailedActions(options: {
       update,
       refresh,
       onGone,
-      onUnavailable: markUnavailable,
     });
   };
   return {

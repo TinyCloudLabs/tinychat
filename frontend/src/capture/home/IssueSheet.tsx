@@ -13,7 +13,6 @@ import {
 } from "./captureIssues";
 import {
   useFailedActions,
-  useFailedActionsAvailable,
   type FailedActions,
 } from "./failedActions";
 import { HOME_COPY } from "./homeCopy";
@@ -87,7 +86,7 @@ export function IssueSheet(props: {
     refresh: props.refresh,
     onGone: props.onGone,
   });
-  const shown = useFailedActionsAvailable() && recoverable !== null;
+  const shown = recoverable !== null;
   const confirming = shown && actions.confirming;
   return (
     <Dialog.Root
