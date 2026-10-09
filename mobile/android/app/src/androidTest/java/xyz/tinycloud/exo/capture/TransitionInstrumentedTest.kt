@@ -122,8 +122,11 @@ class TransitionInstrumentedTest {
             await(engine, "needs_user")
             val blocked = engine.library.events(id).count { it.optString("e") == "avail" && it.optString("value") == "blocked" }
             assertEquals(1, blocked)
-            assertTrue(context.getSystemService(android.app.NotificationManager::class.java)
-                .activeNotifications.any { it.id == 7202 })
+            val manager = context.getSystemService(android.app.NotificationManager::class.java)
+            val alertDeadline = SystemClock.elapsedRealtime() + 5_000
+            while (manager.activeNotifications.none { it.id == 7202 } &&
+                SystemClock.elapsedRealtime() < alertDeadline) Thread.sleep(50)
+            assertTrue("retry exhaustion did not post its alert", manager.activeNotifications.any { it.id == 7202 })
             engine.exhaustRetryForTest()
             assertEquals(blocked, engine.library.events(id).count { it.optString("e") == "avail" && it.optString("value") == "blocked" })
             engine.startBeforeAttach = null
