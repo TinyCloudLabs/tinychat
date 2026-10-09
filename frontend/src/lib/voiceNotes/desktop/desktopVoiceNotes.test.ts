@@ -5,6 +5,7 @@ import { memoryLocks, openWebStore, type WebStoreOptions } from "../web/webStore
 import type { IdbEnv } from "../web/idb";
 import { createFileAudioBlobStore } from "./fileAudioBlobStore";
 import { openDesktopVoiceNotes, type DesktopBridge } from "./desktopVoiceNotes";
+import type { MissingAudioSpan } from "../nativeVoiceNotes";
 
 type Callback = (payload: never) => void;
 
@@ -12,13 +13,15 @@ class FakeBridge implements DesktopBridge {
   files = new Map<string, Uint8Array>();
   calls: string[] = [];
   listeners = new Map<string, Set<Callback>>();
-  recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number } | null = null;
+  recover: { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
+    spans?: MissingAudioSpan[] } | null = null;
   failed: { id: string; segmentId: string; reason: string; error: string; journal: NonNullable<FakeBridge["recover"]> }[] = [];
   elapsed = 0;
   paused = 0;
   current: string | null = null;
   state: "idle" | "recording" | "paused" = "idle";
   selectedId: string | null = null;
+  spans: MissingAudioSpan[] = [];
   stopError: Error | null = null;
   now = 1_000_000;
 
@@ -29,7 +32,7 @@ class FakeBridge implements DesktopBridge {
     return { state: this.state, reason: this.state === "paused" ? "user" : null, id: this.current,
       startedAt: this.current ? this.now : null, elapsedMs: this.elapsed, audioMs: this.elapsed,
       pausedMs: this.paused, maxDurationMs: 10_000, intent: this.state === "idle" ? "stopped" : this.state,
-      availability: "available", at: this.now, elapsedAt: this.now };
+      availability: "available", at: this.now, elapsedAt: this.now, spans: this.spans };
   }
   async listen<T>(event: string, callback: (payload: T) => void): Promise<() => void> {
     const set = this.listeners.get(event) ?? new Set<Callback>();
@@ -225,6 +228,24 @@ describe("desktop recorder adapter", () => {
     engine.dispose();
   });
 
+  test("an empty live interval is kept as a stalled omission without adding recorded time", async () => {
+    const bridge = new FakeBridge();
+    const engine = await rig(bridge);
+    await engine.plugin.start();
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    bridge.elapsed = 1_500;
+    const span: MissingAudioSpan = { kind: "omitted", reason: "stalled",
+      startedAt: bridge.now + 1_500, endedAt: bridge.now + 121_500,
+      atAudioMs: 1_500, audioMs: 0 };
+    bridge.spans = [span];
+    await engine.plugin.pause();
+    expect((await engine.plugin.status()).spans).toEqual([span]);
+    const recording = await engine.plugin.stop();
+    expect(recording.durationMs).toBe(1_500);
+    expect(recording.spans).toEqual([span]);
+    engine.dispose();
+  });
+
   test("native auto-stop commits once with the terminal elapsed time", async () => {
     const bridge = new FakeBridge();
     const engine = await rig(bridge);
@@ -271,6 +292,26 @@ describe("desktop recorder adapter", () => {
     expect((await third.recoverInterrupted()).recovered).toHaveLength(0);
     expect((await third.plugin.listPending()).recordings).toHaveLength(1);
     third.dispose();
+  });
+
+  test("a native journal restores an empty-interval span after renderer loss", async () => {
+    const bridge = new FakeBridge();
+    const env = newIdbEnv();
+    const dbName = crypto.randomUUID();
+    const first = await rig(bridge, dbName, env);
+    await first.plugin.start();
+    first.dispose();
+    bridge.state = "idle"; bridge.current = null;
+    bridge.files.set("note-1", Uint8Array.of(1, 2, 3));
+    const span: MissingAudioSpan = { kind: "omitted", reason: "stalled",
+      startedAt: bridge.now + 1_500, endedAt: bridge.now + 121_500,
+      atAudioMs: 1_500, audioMs: 0 };
+    bridge.recover = { id: "note-1", startedAt: bridge.now, recordedMs: 1_500,
+      pausedMs: 0, maxDurationMs: 10_000, spans: [span] };
+    const second = await rig(bridge, dbName, env);
+    expect((await second.recoverInterrupted()).recovered[0]?.spans).toEqual([span]);
+    expect((await second.plugin.listPending()).recordings[0]?.spans).toEqual([span]);
+    second.dispose();
   });
 
   test("quarantined native recovery acknowledges its journal so another note can start", async () => {

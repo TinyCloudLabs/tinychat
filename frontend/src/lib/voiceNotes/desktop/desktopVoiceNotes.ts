@@ -1,6 +1,6 @@
 import type { PluginListenerHandle } from "@capacitor/core";
 import type {
-  AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, VoiceNoteRecording, VoiceNotesPlugin,
+  AudioInput, CaptureOptions, CaptureStatus, MicStateEvent, MissingAudioSpan, VoiceNoteRecording, VoiceNotesPlugin,
 } from "../nativeVoiceNotes";
 import { VOICE_NOTE_MAX_DURATION_MS, VOICE_NOTE_MIN_DURATION_LIMIT_MS } from "../nativeVoiceNotes";
 import { registerCaptureEngine, type CaptureCapabilities, type CaptureEngine } from "../captureEngine";
@@ -11,9 +11,12 @@ import { failure, memoryLocks, recordingFromSession, RECORDING_LOCK, sessionLock
 type EventName = "micState" | "level" | "autoStopped" | "committed" | "recovered" | "recoveryFailed"
   | "writeFailure" | "inputs" | "captureAlert" | "presentRecorder";
 type Listener = (event: never) => void;
-type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & { at: number; elapsedAt: number };
-type NativeAutoStop = { id: string; reason: "max_duration"; maxDurationMs: number; at: number; elapsedMs: number; pausedMs: number };
-type NativeJournal = { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number };
+type NativeStatus = Omit<CaptureStatus, "spans" | "openSpan" | "transitionGen"> & {
+  at: number; elapsedAt: number; spans?: MissingAudioSpan[] };
+type NativeAutoStop = { id: string; reason: "max_duration"; maxDurationMs: number; at: number; elapsedMs: number; pausedMs: number;
+  spans?: MissingAudioSpan[] };
+type NativeJournal = { id: string; startedAt: number; recordedMs: number; pausedMs: number; maxDurationMs: number;
+  spans?: MissingAudioSpan[] };
 type NativeFailed = { id: string; segmentId: string; reason: string; error: string; journal: NativeJournal };
 type NativeRecoveryReport = { journal: NativeJournal | null; quarantined: NativeFailed[] };
 
@@ -49,6 +52,12 @@ export interface DesktopVoiceNotesOptions {
 
 const copy = <T>(value: T): T => structuredClone(value);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const mergeSpans = (existing: MissingAudioSpan[], native: MissingAudioSpan[] = []): MissingAudioSpan[] => {
+  const merged = [...existing];
+  for (const span of native) if (!merged.some((item) => item.kind === span.kind && item.reason === span.reason
+    && item.startedAt === span.startedAt && item.endedAt === span.endedAt)) merged.push(span);
+  return merged.sort((a, b) => a.startedAt - b.startedAt);
+};
 
 export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): Promise<DesktopVoiceNotes> {
   const { bridge } = options;
@@ -90,6 +99,11 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           owner: null, transitionGen: defaults.transitionGen,
           options: { transcriber: "on-device", identifySpeakers: false }, mimeType: "audio/mpeg",
           input: null, maxDurationMs: native.maxDurationMs });
+      }
+      const spans = mergeSpans(session.spans, native.spans);
+      if (spans.length !== session.spans.length) {
+        await store.updateSession(session.id, { spans });
+        session.spans = spans;
       }
       live = { session, release: [releaseSession, releaseRecording] };
     } catch (error) { releaseSession(); releaseRecording(); throw error; }
@@ -156,7 +170,7 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     const firstAudioAt = bytes > 0 ? current.session.firstAudioAt ?? native.startedAt ?? now() : null;
     const patch: Partial<SessionRecord> = {
       bytes, audioMs: native.audioMs, pausedMs: native.pausedMs, firstAudioAt,
-      lastHeartbeatAt: now(),
+      lastHeartbeatAt: now(), spans: mergeSpans(current.session.spans, native.spans),
     };
     await store.updateSession(current.session.id, patch);
     Object.assign(current.session, patch);
@@ -192,7 +206,8 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
         // event after the file is durable; no second recorder_stop call is needed.
         const native = await bridge.invoke<NativeStatus>("recorder_status");
         const stopped = { ...native, id: event.id, state: "idle" as const, reason: event.reason,
-          audioMs: event.elapsedMs, elapsedMs: event.elapsedMs, pausedMs: event.pausedMs };
+          audioMs: event.elapsedMs, elapsedMs: event.elapsedMs, pausedMs: event.pausedMs,
+          spans: event.spans ?? native.spans };
         const failed = await nativeFailures(event.id);
         if (failed.length) {
           await quarantineFailures(failed);
@@ -284,6 +299,10 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
     if (imported) {
       const session = await store.getSession(imported.id);
       const size = await store.audio.size(imported.id);
+      if (session) {
+        const spans = mergeSpans(session.spans, imported.spans);
+        if (spans.length !== session.spans.length) await store.updateSession(imported.id, { spans });
+      }
       if (session && size > session.bytes) {
         const pausedThrough = session.pauseStartedAt === null ? session.pausedMs
           : session.pausedMs + Math.max(0, session.lastHeartbeatAt - session.pauseStartedAt);
@@ -466,7 +485,9 @@ export async function openDesktopVoiceNotes(options: DesktopVoiceNotesOptions): 
           await store.updateSession(live.session.id, { input: live.session.input });
         }
         emit("inputs", inputs);
-        emitMic(await bridge.invoke<NativeStatus>("recorder_status"));
+        const native = await bridge.invoke<NativeStatus>("recorder_status");
+        if (live) await syncDurable(native);
+        emitMic(native);
       });
     },
     async retryRecovery({ id }) {

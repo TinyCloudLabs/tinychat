@@ -16,7 +16,15 @@ test("an 86 MiB generated note keeps every 4 MiB read and T18 upload range exact
       requests.push({ offset, len });
       if (len > 4 * mib || offset < 0 || offset + len > size) throw new Error("bad native range");
       const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) bytes[i] = (offset + i) % 251;
+      // Seed one period, then copy it by doubling. Keep the offset-dependent
+      // pattern while avoiding 86 MiB of per-byte JS work on a busy host.
+      const period = Math.min(len, 251);
+      for (let i = 0; i < period; i++) bytes[i] = (offset + i) % 251;
+      for (let filled = period; filled < len;) {
+        const copy = Math.min(filled, len - filled);
+        bytes.set(bytes.subarray(0, copy), filled);
+        filled += copy;
+      }
       return bytes as T;
     },
   };
@@ -49,4 +57,4 @@ test("an 86 MiB generated note keeps every 4 MiB read and T18 upload range exact
     expect(requests[i]).toEqual({ offset: i * mib, len: Math.min(mib, size - i * mib) });
   }
   expect(requests.at(-1)).toEqual({ offset: 86 * mib, len: 123 });
-});
+}, 30_000);
