@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
+import { LibraryListView } from "../library/LibraryListView";
 import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
 import type { InProgressRowsViewProps } from "../InProgressRows";
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
@@ -36,11 +37,10 @@ const note = (i: number, patch: Partial<LibraryItem> = {}): LibraryItem => ({
 function home(
   patch: Partial<SoftCaptureHomeProps> = {},
   issues: Record<string, RecorderCaptureIssue> = {},
-  noteTitles?: ReadonlyMap<string, string>,
 ) {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <SoftHomeProvider enabled issues={issues} noteTitles={noteTitles}>
+      <SoftHomeProvider enabled issues={issues}>
         <SoftCaptureHome
           inProgress={idle}
           recent={{ status: "ready", items: [] }}
@@ -83,7 +83,6 @@ describe("Recent", () => {
     expect(html).toMatch(
       /aria-label="Voice note · Oct 9, 1:49 AM\. [^"]*1 min"/,
     );
-    expect(html).not.toContain("soft-tile-badge");
   });
 
   test("shows the last five", () => {
@@ -94,17 +93,6 @@ describe("Recent", () => {
       },
     });
     expect(html.match(/data-testid="recent-item"/g)).toHaveLength(5);
-  });
-
-  test("a note puts a pencil badge on the tile and its title under the time", () => {
-    const html = home(
-      { recent: { status: "ready", items: [note(1)] } },
-      {},
-      new Map([["row-1", "Weekly sync: follow-ups"]]),
-    );
-    expect(html).toContain('data-testid="soft-row-note-badge"');
-    expect(html).toContain("Weekly sync: follow-ups");
-    expect(html).toContain("Note: Weekly sync: follow-ups");
   });
 
   test("loading and failed keep their own states", () => {
@@ -272,6 +260,71 @@ describe("actions", () => {
     expect(actions({ available: false })).not.toContain("soft-act-main");
     expect(actions({ available: true, ready: true }, false)).not.toContain(
       "capture-meeting",
+    );
+  });
+});
+
+describe("Library list", () => {
+  const library = (
+    issues: Record<string, RecorderCaptureIssue>,
+    options: {
+      soft?: boolean;
+      filter?: "all" | "note" | "meeting";
+      items?: LibraryItem[];
+    } = {},
+  ) => {
+    const list = (
+      <LibraryListView
+        status="ready"
+        items={options.items ?? [note(1), note(2)]}
+        filter={options.filter ?? "all"}
+        onFilterChange={noop}
+        onRetry={noop}
+        now={NOW}
+      />
+    );
+    return renderToStaticMarkup(
+      <MemoryRouter>
+        {options.soft === false ? (
+          list
+        ) : (
+          <SoftHomeProvider enabled issues={issues}>
+            {list}
+          </SoftHomeProvider>
+        )}
+      </MemoryRouter>,
+    );
+  };
+  const failed: RecorderCaptureIssue = { kind: "recoveryFailed", detail: "x" };
+
+  test("a recording with an issue and no row shows above the days, as a row that opens its sheet", () => {
+    const html = library({ "rec-lost": failed });
+    expect(html).toContain('data-source-id="rec-lost"');
+    expect(html).toContain('data-issue="recoveryFailed"');
+    expect(html).toContain("Couldn&#x27;t recover this recording");
+    expect(html.indexOf("rec-lost")).toBeLessThan(
+      html.indexOf("Voice note · Oct 9, 1:49 AM"),
+    );
+  });
+
+  test("a recording that has its row is decorated, not shown twice", () => {
+    const html = library({ "rec-1": { kind: "write_failed", detail: "x" } });
+    expect(html.match(/data-source-id="rec-1"/g)).toHaveLength(1);
+    expect(html).toContain('data-issue="write_failed"');
+  });
+
+  test("the meetings filter leaves voice-note issues out; the empty Library still lists them", () => {
+    expect(
+      library({ "rec-lost": failed }, { filter: "meeting" }),
+    ).not.toContain("rec-lost");
+    const empty = library({ "rec-lost": failed }, { items: [] });
+    expect(empty).toContain('data-source-id="rec-lost"');
+    expect(empty).not.toContain("Nothing here yet.");
+  });
+
+  test("the Soft skin off: the Library list is unchanged", () => {
+    expect(library({ "rec-lost": failed }, { soft: false })).not.toContain(
+      "rec-lost",
     );
   });
 });

@@ -16,9 +16,9 @@ import {
 } from "../InProgressRows";
 import type { LibraryStatus } from "../library/LibraryListView";
 import { LibraryRow, type LibraryItem } from "../library/LibraryRow";
-import { cardNote, issueHasSheet, recentEntries } from "./captureIssues";
+import { cardNote, recentEntries } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
-import { SoftRow } from "./SoftRow";
+import { SoftIssueRow } from "./SoftIssueRow";
 import { useSoftHome } from "./softHome";
 
 export interface SoftCaptureHomeProps {
@@ -151,19 +151,11 @@ function Recent(props: SoftCaptureHomeProps) {
                 testId="recent-item"
               />
             ) : (
-              <SoftRow
+              <SoftIssueRow
                 key={`issue-${entry.id}`}
-                icon={MicIcon}
-                title={HOME_COPY.voiceNoteTitle}
-                meta=""
+                id={entry.id}
                 issue={entry.issue}
-                onActivate={
-                  issueHasSheet(entry.issue) && soft
-                    ? (row) => soft.openIssue(entry.issue, row)
-                    : undefined
-                }
                 testId="recent-item"
-                sourceId={entry.id}
               />
             ),
           )}

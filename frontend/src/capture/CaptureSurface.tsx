@@ -43,7 +43,7 @@ import { LocalRecorderCard } from "./desktop/LocalRecorderCard";
 import { HOME_COPY } from "./home/homeCopy";
 import { SoftActions } from "./home/SoftActions";
 import { SoftCaptureHome } from "./home/SoftCaptureHome";
-import { SoftHomeProvider, softHomeEnabled, softHomeNoteTitles } from "./home/softHome";
+import { SoftHomeProvider, softHomeEnabled } from "./home/softHome";
 import { useSoftTheme } from "./home/softTheme";
 import { inProgressShown, type InProgressRowsViewProps } from "./InProgressRows";
 import { LibraryScreen } from "./library/LibraryScreen";
@@ -83,7 +83,7 @@ export function CaptureSurface(props: CaptureSurfaceProps) {
   const soft = softHomeEnabled() && tabbar && compact;
   const recorder = useRecorder();
   return (
-    <SoftHomeProvider enabled={soft} issues={recorder.captureIssues} noteTitles={softHomeNoteTitles()}>
+    <SoftHomeProvider enabled={soft} issues={recorder.captureIssues}>
       <CaptureSurfaceBody {...props} soft={soft} />
     </SoftHomeProvider>
   );

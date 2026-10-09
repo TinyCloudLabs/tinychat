@@ -256,23 +256,6 @@ button.soft-row:focus-visible {
   font-weight: 800;
   line-height: 1;
 }
-.soft-tile-badge {
-  position: absolute;
-  right: -4px;
-  bottom: -4px;
-  display: grid;
-  place-items: center;
-  width: 17px;
-  height: 17px;
-  border-radius: 6px;
-  background: var(--ink);
-  color: var(--bgc);
-}
-.soft-home .soft-tile-badge .soft-ico {
-  width: 10px;
-  height: 10px;
-  stroke-width: 2.4;
-}
 .soft-row-text {
   display: flex;
   flex: 1;
@@ -285,8 +268,7 @@ button.soft-row:focus-visible {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.soft-row-meta,
-.soft-row-note {
+.soft-row-meta {
   color: var(--dim);
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -298,10 +280,6 @@ button.soft-row:focus-visible {
 }
 .soft-row-meta[data-failed] {
   color: var(--ink);
-}
-.soft-row-note {
-  color: var(--ink);
-  opacity: 0.8;
 }
 .soft-row-aside {
   display: flex;

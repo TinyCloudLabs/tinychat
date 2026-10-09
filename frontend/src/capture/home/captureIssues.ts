@@ -42,38 +42,54 @@ export function issueForItem(
   return item.source === VOICE_NOTE_SOURCE ? issues[item.sourceId] : undefined;
 }
 
+export interface OrphanIssue {
+  id: string;
+  issue: RecorderCaptureIssue;
+}
+
+/**
+ * Recordings with an issue and no Library row yet (they are not in the space),
+ * newest issue first. Recent and the Library list both show these.
+ */
+export function orphanIssues(
+  items: readonly LibraryItem[],
+  issues: CaptureIssues,
+): OrphanIssue[] {
+  const inLibrary = new Set(
+    items
+      .filter((item) => item.source === VOICE_NOTE_SOURCE)
+      .map((item) => item.sourceId),
+  );
+  return Object.keys(issues)
+    .filter((id) => !inLibrary.has(id))
+    .reverse()
+    .map((id) => ({ id, issue: issues[id]! }));
+}
+
 export type RecentEntry =
   | { type: "item"; item: LibraryItem; issue?: RecorderCaptureIssue }
   | { type: "issue"; id: string; issue: RecorderCaptureIssue };
 
 /**
- * Recent's rows: a recording with an issue and no Library row yet (it is not in
- * the space) comes first, newest issue first; then the Library's latest, up to
- * `limit` rows in all. An issue row is never cut to make room.
+ * Recent's rows: the recordings with an issue and no Library row come first
+ * (`orphanIssues`); then the Library's latest, up to `limit` rows in all. An
+ * issue row is never cut to make room.
  */
 export function recentEntries(
   items: readonly LibraryItem[],
   issues: CaptureIssues,
   limit: number,
 ): RecentEntry[] {
-  const inLibrary = new Set(
-    items
-      .filter((item) => item.source === VOICE_NOTE_SOURCE)
-      .map((item) => item.sourceId),
+  const orphans: RecentEntry[] = orphanIssues(items, issues).map(
+    (orphan): RecentEntry => ({ type: "issue", ...orphan }),
   );
-  const orphans: RecentEntry[] = Object.keys(issues)
-    .filter((id) => !inLibrary.has(id))
-    .reverse()
-    .map((id) => ({ type: "issue", id, issue: issues[id]! }));
-  const rest = items
-    .slice(0, Math.max(0, limit - orphans.length))
-    .map(
-      (item): RecentEntry => ({
-        type: "item",
-        item,
-        issue: issueForItem(item, issues),
-      }),
-    );
+  const rest = items.slice(0, Math.max(0, limit - orphans.length)).map(
+    (item): RecentEntry => ({
+      type: "item",
+      item,
+      issue: issueForItem(item, issues),
+    }),
+  );
   return [...orphans, ...rest];
 }
 

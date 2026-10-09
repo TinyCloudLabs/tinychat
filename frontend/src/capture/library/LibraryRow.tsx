@@ -34,7 +34,6 @@ export function LibraryRow(props: { item: LibraryItem; now: Date; grouped: boole
         icon={Icon}
         title={item.title ?? "Untitled"}
         meta={libraryRowMeta(item, props.now, props.grouped)}
-        noteTitle={soft.noteTitles.get(item.id)}
         durationSecs={item.durationSecs}
         issue={issue}
         {...(issue && issueHasSheet(issue) ? { onActivate: (row: HTMLElement) => soft.openIssue(issue, row) } : { href: notePath(item.id) })}

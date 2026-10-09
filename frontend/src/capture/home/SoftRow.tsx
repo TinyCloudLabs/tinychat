@@ -1,9 +1,9 @@
-// One Recent / Library row in the Soft skin (TC-871): a mic tile (a pencil
-// badge when the recording has a note), the title, a time-and-source line, the
-// note's title, then the length and a chevron. A capture issue swaps the
-// tile for "!" and the state line for the issue's. Each row is one control, labelled with all of
-// it: the issue is in the label, never in colour alone. T22 adds pipeline status to this row.
-import { ChevronRightIcon, PencilIcon, type LucideIcon } from "lucide-react";
+// One Recent / Library row in the Soft skin (TC-871): a kind tile, the title, a
+// time-and-source line, then the length and a chevron. A capture issue swaps the
+// tile for "!" and the state line for the issue's. Each row is one control,
+// labelled with all of it: the issue is in the label, never in colour alone.
+// T22 adds pipeline status to this row.
+import { ChevronRightIcon, type LucideIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import type { RecorderCaptureIssue } from "../recorder/recorderReducer";
@@ -19,7 +19,6 @@ export interface SoftRowProps {
   title: string;
   /** "Today 2:18 AM" (or the source and time). */
   meta: string;
-  noteTitle?: string | null;
   durationSecs?: number | null;
   issue?: RecorderCaptureIssue;
   /** A destination: the row is a link. */
@@ -35,14 +34,13 @@ export interface SoftRowProps {
 export function softRowLabel(
   props: Pick<
     SoftRowProps,
-    "title" | "meta" | "noteTitle" | "durationSecs" | "issue" | "onActivate"
+    "title" | "meta" | "durationSecs" | "issue" | "onActivate"
   >,
 ): string {
   const parts = [
     props.title,
     props.issue ? issueMeta(props.issue) : props.meta,
   ];
-  if (!props.issue && props.noteTitle) parts.push(`Note: ${props.noteTitle}`);
   if (props.durationSecs != null)
     parts.push(formatSpokenDuration(props.durationSecs));
   if (props.issue && props.issue.kind !== "finalization_timed_out")
@@ -78,11 +76,6 @@ export function SoftRow(props: SoftRowProps) {
         ) : (
           <Icon className="soft-ico" />
         )}
-        {!failed && props.noteTitle && (
-          <span className="soft-tile-badge" data-testid="soft-row-note-badge">
-            <PencilIcon className="soft-ico" />
-          </span>
-        )}
       </span>
       <span className="soft-row-text">
         <b className="soft-row-title">{props.title}</b>
@@ -94,12 +87,6 @@ export function SoftRow(props: SoftRowProps) {
           {issue?.kind === "finalization_timed_out" && <Spinner />}
           {issue ? issueMeta(issue) : props.meta}
         </span>
-        {!issue && props.noteTitle && (
-          <span className="soft-row-note" data-testid="soft-row-note">
-            <span aria-hidden="true">✎ </span>
-            {props.noteTitle}
-          </span>
-        )}
       </span>
       {(props.durationSecs != null ||
         props.href !== undefined ||

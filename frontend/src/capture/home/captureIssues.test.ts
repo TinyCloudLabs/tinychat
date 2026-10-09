@@ -9,6 +9,7 @@ import {
   issueHasSheet,
   issueMeta,
   issueSheetCopy,
+  orphanIssues,
   recentEntries,
 } from "./captureIssues";
 import { HOME_COPY } from "./homeCopy";
@@ -89,6 +90,23 @@ describe("matching rows", () => {
     expect(
       entries.map((e) => (e.type === "issue" ? `issue:${e.id}` : e.item.id)),
     ).toEqual(["issue:rec-new", "issue:rec-old", "row-1", "row-2", "row-3"]);
+  });
+
+  test("orphanIssues: only recordings with no Library row, newest issue first, shared by Recent and the Library", () => {
+    const items = [note(1), note(2)];
+    const issues = {
+      "rec-1": writeFailed,
+      "rec-old": timedOut,
+      "rec-new": failed,
+    };
+    expect(orphanIssues(items, issues).map((o) => o.id)).toEqual([
+      "rec-new",
+      "rec-old",
+    ]);
+    const recent = recentEntries(items, issues, 5).flatMap((e) =>
+      e.type === "issue" ? [e.id] : [],
+    );
+    expect(recent).toEqual(orphanIssues(items, issues).map((o) => o.id));
   });
 
   test("a recording already in the Library is decorated, not repeated", () => {

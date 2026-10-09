@@ -69,12 +69,11 @@ export const captureScreens: HarnessScreen[] = [
 // The Soft-skin phone Capture home (TC-871, behind VITE_EXO_RECORDER_FINAL; the
 // harness has no env, so each screen turns the skin on). Night and Day come
 // from the harness's themes.
-const SOFT_NOTES = new Map([["note-transcribed", "Weekly sync: follow-ups"]]);
 // The Soft skin sets its title in Fraunces, so the Literata font check does not apply.
 const SOFT = { ...CAPTURE, platform: "ios", readyWhen: LISTED, displayTitle: false } as const;
 
-function SoftHome(props: { recorder?: Partial<RecorderValue>; library?: boolean; notes?: boolean }) {
-  forceSoftHome(true, props.notes === false ? undefined : SOFT_NOTES);
+function SoftHome(props: { recorder?: Partial<RecorderValue>; library?: boolean }) {
+  forceSoftHome(true);
   return <CaptureShell library={props.library ?? true} recorder={props.recorder ?? SOFT_IDLE} />;
 }
 
@@ -114,5 +113,6 @@ export const captureSoftScreens: HarnessScreen[] = [
   { ...SOFT, id: "capture-soft-recovery-failed", render: () => <SoftHome recorder={RECOVERY_FAILED} /> },
   { ...SOFT, id: "capture-soft-write-failed", render: () => <SoftHome recorder={WRITE_FAILED} /> },
   { ...SOFT, id: "capture-soft-scan-failure", render: () => <SoftHome recorder={SCAN_FAILED} /> },
+  { ...SOFT, id: "capture-soft-library-issue", path: "/chat/capture/library", render: () => <SoftHome recorder={RECOVERY_FAILED} /> },
   { ...SOFT, id: "capture-soft-override", render: () => <SoftHome recorder={ISSUES_WITH_CARD} /> },
 ];
