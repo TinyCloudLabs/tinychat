@@ -1,5 +1,6 @@
 // The final phone recorder (TC-867) in each state, over a StaticRecorderProvider
 // on the frozen clock. Night and Day come from the harness theme.
+import { useState } from "react";
 import {
   PhoneRecorder,
   type PhoneRecorderProps,
@@ -15,6 +16,8 @@ import {
   type OnDeviceSttPlugin,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
+import { clearNotesUi } from "@/capture/recorder/final/notes";
+import { useHarnessNote } from "../harnessNote";
 import { FROZEN_NOW } from "../stubs";
 import type { HarnessScreen } from "../screen";
 
@@ -46,6 +49,7 @@ const LIVE: Partial<RecorderValue> = {
   phase: "recording",
   mic: { state: "recording", reason: null },
   startedAt: FROZEN_NOW - minutes(12, 48),
+  recordingId: "rec-harness",
   audioMs: minutes(12, 48),
   elapsedMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
@@ -153,7 +157,76 @@ function screen(
   };
 }
 
+// The notes surfaces (TC-881): 42 s in, with the moments the reference shows.
+const NOTED: Partial<RecorderValue> = {
+  startedAt: FROZEN_NOW - 42_000,
+  recordingId: "rec-harness",
+  audioMs: 42_000,
+  elapsedMs: 42_000,
+};
+const NOTE_MD = [
+  "# Sync with Hunter",
+  "",
+  "- **0:08** Hunter mentions the TTL setting",
+  "- **0:20** Decision: ship the cache behind a flag",
+  "",
+  "Follow-ups:",
+  "",
+  "- [ ] Send the **benchmark** numbers",
+  "- [ ] Write up the _rollout_ plan",
+  "",
+  "> Keep the first release small.",
+].join("\n");
+
+function Noted(props: PhoneRecorderProps & { md: string | null }) {
+  const { md, ...rest } = props;
+  useState(clearNotesUi);
+  const note = useHarnessNote(md, 42_000);
+  return (
+    <StaticRecorderProvider
+      value={{ ...LIVE, ...NOTED, ...note, subscribeLevel: steadyLevel }}
+    >
+      <PhoneRecorder inputs={INPUTS} {...rest} />
+    </StaticRecorderProvider>
+  );
+}
+
+function notesScreen(
+  id: string,
+  props: PhoneRecorderProps & { md: string | null },
+  readyWhen?: string,
+): HarnessScreen {
+  return {
+    ...screen(id, NOTED),
+    readyWhen,
+    render: () => {
+      __setOnDeviceSttForTests(ON_DEVICE_STT);
+      return <Noted {...props} />;
+    },
+  };
+}
+
 export const recorderFinalPhoneScreens: HarnessScreen[] = [
+  notesScreen(
+    "moment-field",
+    { md: null, defaultOpen: "moment" },
+    ".pr-moment input",
+  ),
+  notesScreen(
+    "after-moment",
+    { md: "- **0:08** Hunter mentions the TTL setting" },
+    ".pr-vnotes",
+  ),
+  notesScreen(
+    "notes-preview",
+    { md: NOTE_MD, defaultOpen: "notes", notesViewSeed: "preview" },
+    ".pr-nsheet .fmd",
+  ),
+  notesScreen(
+    "notes-write",
+    { md: NOTE_MD, defaultOpen: "notes", notesViewSeed: "write" },
+    ".pr-nsheet textarea",
+  ),
   screen("recording", {}),
   screen("paused", { mic: { state: "paused", reason: "user" } }, {}, QUIET),
   screen("modes", {}, { defaultOpen: "modes" }),
@@ -218,6 +291,7 @@ export const recorderFinalPhoneScreens: HarnessScreen[] = [
       mic: { state: "idle", reason: null },
       permissionDenied: true,
       startedAt: null,
+      recordingId: null,
       audioMs: 0,
       elapsedMs: 0,
     },

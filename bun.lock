@@ -42,7 +42,7 @@
     },
     "desktop": {
       "name": "exo-desktop",
-      "version": "0.6.0-beta.14",
+      "version": "0.6.0-beta.15",
       "dependencies": {
         "@tauri-apps/api": "^2.9.0",
       },
@@ -52,7 +52,7 @@
     },
     "frontend": {
       "name": "@tinychat/frontend",
-      "version": "0.6.0-beta.14",
+      "version": "0.6.0-beta.15",
       "dependencies": {
         "@assistant-ui/react": "^0.14.13",
         "@assistant-ui/react-markdown": "0.14.1",
@@ -60,6 +60,7 @@
         "@capacitor/browser": "^8.0.5",
         "@capacitor/core": "^8.5.2",
         "@capacitor/haptics": "^8.0.2",
+        "@franken-suite/franken-markdown": "0.5.0",
         "@openkey/sdk": "0.12.0-beta.1",
         "@openkey/sdk-capacitor": "0.1.0-beta.1",
         "@peculiar/x509": "^2.0.0",
@@ -513,6 +514,8 @@
     "@floating-ui/react-dom": ["@floating-ui/react-dom@2.1.8", "", { "dependencies": { "@floating-ui/dom": "^1.7.6" }, "peerDependencies": { "react": ">=16.8.0", "react-dom": ">=16.8.0" } }, "sha512-cC52bHwM/n/CxS87FH0yWdngEZrjdtLW/qVruo68qg+prK7ZQ4YGdut2GyDVpoGeAYe/h899rVeOVm6Oi40k2A=="],
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
+
+    "@franken-suite/franken-markdown": ["@franken-suite/franken-markdown@0.5.0", "", {}, "sha512-+vALZ+FfNq0ZqcIrg1/YiqwGvqR36ryQ6l4EENC0LpheF0w8B49RK4gGHimW7QVgGNcLnXLkhe2JmMLJslC4oA=="],
 
     "@humanfs/core": ["@humanfs/core@0.19.2", "", { "dependencies": { "@humanfs/types": "^0.15.0" } }, "sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA=="],
 
