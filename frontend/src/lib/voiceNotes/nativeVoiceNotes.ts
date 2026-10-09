@@ -114,6 +114,7 @@ export interface MicStateEvent {
   state: MicState;
   reason: MicStateReason;
   detail?: string;
+  options?: CaptureOptions;
   input?: AudioInput | null;
   at: number;
   id?: string | null;
