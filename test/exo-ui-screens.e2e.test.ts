@@ -6,6 +6,7 @@
 //
 //   EXO_UI_ONLY=primitives,legacy    screen groups or ids
 //   EXO_UI_VIEWPORTS=phone,zoom200   viewport ids, or a group (zoom200, text200)
+//   EXO_UI_VIEWPORTS=phone,halo-review  also enables the halo-only review captures
 //   EXO_UI_THEMES=dark               light, dark
 //   EXO_UI_ENGINE=chromium           webkit (default: Exo's WKWebView) or chromium (CI)
 //   EXO_UI_MOTION=no-preference      reduce (default) or no-preference
@@ -384,6 +385,7 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
             const file = `${screen.id}__${viewport.id}__${theme}.png`;
             await page.screenshot({ path: `${outDir}${file}`, fullPage: screen.layout === "document" });
             captures.push({ screen: screen.id, viewport: viewport.id, theme, file, findings });
+
             for (const finding of findings) {
               failures.push(`${file}: ${finding.check}${finding.element ? ` ${finding.element}` : ""} (${finding.detail})`);
             }
@@ -397,6 +399,96 @@ describe.serial(`exo-ui screens (${engineName}, motion ${motion})`, () => {
       // WebKit takes several seconds per page for the shell screens (they run the whole chat).
     }, 600_000);
   }
+
+  if (viewportFilter?.some((id) => ["phone", "phone-halo-review", "halo-review"].includes(id))) test("recorder halo in tall phone and eight-ring review captures", async () => {
+    const halo = screens.find((screen) => screen.id === "recorder-final-halo");
+    if (!halo) return;
+
+    const haloViewports: Viewport[] = [
+      ...(viewportFilter!.some((id) => ["phone", "phone-halo-review"].includes(id))
+        ? [{ id: "phone-halo-review", width: 390, height: 4400, deviceScaleFactor: 2, isMobile: true, hasTouch: true }]
+        : []),
+      ...(viewportFilter!.includes("halo-review")
+        ? [{ id: "halo-review", width: 1280, height: 2200, deviceScaleFactor: 2 }]
+        : []),
+    ];
+    const forceCanvas = process.env.EXO_UI_HALO_FORCE_CANVAS === "1";
+    const haloBrowser = await engine.launch({ headless: true });
+    browsers.push(haloBrowser);
+
+    for (const viewport of haloViewports) {
+      for (const theme of themes) {
+        const context = await haloBrowser.newContext({
+          viewport: { width: viewport.width, height: viewport.height },
+          deviceScaleFactor: viewport.deviceScaleFactor,
+          isMobile: viewport.isMobile ?? false,
+          hasTouch: viewport.hasTouch ?? false,
+          colorScheme: theme,
+          reducedMotion: motion,
+        });
+        if (forceCanvas) {
+          await context.addInitScript(() => {
+            const constructors = [HTMLCanvasElement, window.OffscreenCanvas].filter(Boolean) as Array<typeof HTMLCanvasElement>;
+            for (const Canvas of constructors) {
+              const getContext = Canvas.prototype.getContext;
+              Canvas.prototype.getContext = function(type: string, ...args: unknown[]) {
+                if (/^(webgl|webgl2|experimental-webgl)$/.test(type)) return null;
+                return Reflect.apply(getContext, this, [type, ...args]);
+              } as typeof Canvas.prototype.getContext;
+            }
+          });
+        }
+        try {
+          const page = await context.newPage();
+          const rendererPaths: string[] = [];
+          page.on("console", (message) => {
+            if (message.type() === "info" && message.text().includes("[HaloRing] renderer:")) rendererPaths.push(message.text());
+          });
+          await page.goto(`http://127.0.0.1:${server.port}/?screen=${halo.id}&theme=${theme}&platform=web&freeze=1`);
+          await page.waitForFunction(() => window.exoUi?.ready === true, undefined, { timeout: 20_000 });
+          await page.waitForFunction((checkCorners) => {
+            const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".halo-ring__canvas")];
+            if (canvases.length !== 8) return false;
+            return canvases.every((canvas) => {
+              const ctx = canvas.getContext("2d");
+              if (!ctx || canvas.width < 2) return false;
+              const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+              let centerVisible = false;
+              for (let y = Math.floor(canvas.height * 0.3); y < canvas.height * 0.7 && !centerVisible; y += 4) {
+                for (let x = Math.floor(canvas.width * 0.3); x < canvas.width * 0.7; x += 4) {
+                  if (pixels[(y * canvas.width + x) * 4 + 3] > 0) { centerVisible = true; break; }
+                }
+              }
+              const cornerAlpha = pixels[3] + pixels[(canvas.width - 1) * 4 + 3] + pixels[(canvas.height - 1) * canvas.width * 4 + 3] + pixels[(canvas.height * canvas.width - 1) * 4 + 3];
+              return centerVisible && (!checkCorners || cornerAlpha === 0);
+            });
+          }, forceCanvas, { timeout: 5_000 });
+          if (!forceCanvas && engineName === "webkit") {
+            const center = await page.locator(".halo-ring__canvas").nth(3).evaluate((canvas) => {
+              const element = canvas as HTMLCanvasElement;
+              const context = element.getContext("2d");
+              if (!context) throw new Error("Halo output canvas has no 2D context");
+              const x = Math.floor(element.width / 2);
+              const y = Math.floor(element.height / 2);
+              return {
+                size: element.width,
+                color: [...context.getImageData(x, y, 1, 1).data.slice(0, 3)],
+              };
+            });
+            expect(center.size % 2).toBe(1);
+            expect(center.color).toEqual(theme === "dark" ? [68, 59, 76] : [251, 248, 246]);
+          }
+          if (forceCanvas) expect(rendererPaths.some((path) => path.includes("canvas-2d"))).toBe(true);
+          const file = `${halo.id}__${viewport.id}__${theme}${forceCanvas ? "-canvas2d" : ""}.png`;
+          await page.screenshot({ path: `${outDir}${file}`, fullPage: false });
+          captures.push({ screen: halo.id, viewport: viewport.id, theme, file, findings: [] });
+          await page.close();
+        } finally {
+          await context.close();
+        }
+      }
+    }
+  }, 180_000);
 });
 
 function contactSheet(all: Capture[]): string {

@@ -234,7 +234,7 @@ export interface VoiceNotesPlugin {
   addListener(event: "micState", listener: (event: MicStateEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "captureAlert", listener: (event: CaptureAlertEvent) => void): Promise<PluginListenerHandle>;
   openSettings(): Promise<void>;
-  addListener(event: "level", listener: (event: { level: number }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "level", listener: (event: { level: number; peak?: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: "autoStopped", listener: (event: VoiceNoteAutoStopEvent) => void): Promise<PluginListenerHandle>;
   addListener(event: "presentRecorder", listener: (event: { id: string | null; reason?: "permission_denied" | "permission_granted" | string }) => void): Promise<PluginListenerHandle>;
   addListener(event: "recovered" | "committed", listener: (event: { id: string }) => void): Promise<PluginListenerHandle>;
