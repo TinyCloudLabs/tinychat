@@ -15,6 +15,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.capture.CaptureEngine
 import xyz.tinycloud.exo.stt.core.AttemptGuard
+import xyz.tinycloud.exo.stt.core.ReleaseHandoff
 import xyz.tinycloud.exo.stt.core.SherpaVadSource
 import xyz.tinycloud.exo.stt.core.TimedWord
 import xyz.tinycloud.exo.stt.core.TokenWordAlignment
@@ -42,12 +43,17 @@ private class CaptureStartedException : Exception()
  * recording for a long time once crashed every launch decoding itself whole (TC-836 incident).
  * Before each attempt, `AttemptGuard` persists an incremented attempt count to the note's sidecar;
  * after `AttemptGuard.MAX_ATTEMPTS` a note is marked `failed` instead of retried, so a note that
- * reliably crashes the decode can never crash-loop the app at every launch again.
+ * reliably crashes the decode can never crash-loop the app at every launch again. `ReleaseHandoff`
+ * lets `CaptureEngine` wait, bounded, for the current decode to release before opening the mic
+ * (`awaitReleaseForCapture`): a single VAD segment's recognize() call can't be interrupted mid-call,
+ * so capture never waits unboundedly — it proceeds regardless, and this queue's own per-window
+ * `CaptureStartedException` check is what actually abandons the attempt once it notices.
  */
 class TranscriptionQueue(private val context: Context, private val store: ModelStore) {
     private val capture get() = CaptureEngine.get(context)
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "exo-stt-queue").apply { isDaemon = true } }
     private val pending = LinkedBlockingDeque<String>()
+    private val releaseHandoff = ReleaseHandoff()
     @Volatile private var running = false
     var onQueueChanged: (() -> Unit)? = null
     var onProgress: ((String, Int) -> Unit)? = null
@@ -126,10 +132,12 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
             return
         }
         running = true
+        val releaseStarted = releaseHandoff.begin()
         val engine = try { Engine(store, modelId) } catch (e: Exception) {
             for (id in pending.toList()) fail(id, "model_load_failed", e.message ?: "load failed")
             pending.clear()
             running = false
+            releaseHandoff.release(releaseStarted)
             onQueueChanged?.invoke()
             return
         }
@@ -168,9 +176,15 @@ class TranscriptionQueue(private val context: Context, private val store: ModelS
         } finally {
             engine.release()
             running = false
+            releaseHandoff.release(releaseStarted)
         }
         if (pending.isNotEmpty()) executor.execute { Thread.sleep(2000); pump() }
     }
+
+    /** Called by `CaptureEngine` before opening the mic (capture-priority handoff, plan §2.5):
+     * returns as soon as the current decode has released its native engine, or after [timeoutMs] —
+     * whichever is first. Capture always proceeds either way; it must never wait unboundedly. */
+    fun awaitReleaseForCapture(timeoutMs: Long) = releaseHandoff.awaitRelease(timeoutMs)
 
     private fun fail(id: String, code: String, message: String) {
         try { capture.library.mutate(id, "stt.write") { it.getJSONObject("stt").put("state", "failed").put("error", code) } } catch (_: Exception) {}

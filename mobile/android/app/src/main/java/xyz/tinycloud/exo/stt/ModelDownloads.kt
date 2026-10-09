@@ -20,12 +20,22 @@ enum class DownloadPolicyState { IDLE, RUNNING, WAITING_FOR_NETWORK, FAILED;
     }
 }
 
+/** Wi-Fi dropped mid-transfer: retryable (pause for "Waiting for Wi-Fi", then start the file over),
+ * unlike every other failure here, which is terminal. Resuming from a byte offset is T13/T17. */
+private class WifiLostDuringTransferException : Exception()
+
+private const val WIFI_CHECK_INTERVAL_MS = 2_000L
+
 /**
  * Downloads the models this build supports (plan §2.9), Wi-Fi only: the slice uses a plain
  * `HttpURLConnection` on a background thread rather than `DownloadManager` (T17 adds that), so a
  * download pauses -- never silently fails -- while the app is backgrounded or killed, and resumes
  * the next time `downloadNow` runs. The small pack's `.tar.bz2` release asset is downloaded and
  * sha256-verified whole, then extracted (Apache Commons Compress) and each file verified again.
+ * The Wi-Fi gate is enforced for the whole transfer, not just before it starts: a drop mid-transfer
+ * pauses to `WAITING_FOR_NETWORK` ("Waiting for Wi-Fi") and retries the current file from scratch
+ * once Wi-Fi returns, rather than failing the download outright. Resuming from a byte offset instead
+ * of restarting the file is deferred (T13/T17).
  */
 class ModelDownloads(private val context: Context, val store: ModelStore) {
     companion object {
@@ -89,15 +99,23 @@ class ModelDownloads(private val context: Context, val store: ModelStore) {
         for (file in files) {
             if (!awaitWifi(modelId)) { onFinished(modelId, Result.failure(InterruptedException())); return }
             store.setState(modelId, ModelState.DOWNLOADING, bytes = done)
-            try {
-                val staged = File(store.modelDir(modelId).apply { mkdirs() }, "${file.name}.download")
-                downloadToFile(file.url, staged) { written -> onProgress(modelId, done + written, total) }
-                verifyAndPublish(modelId, file, staged)
-            } catch (error: Exception) {
-                state = DownloadPolicyState.FAILED
-                store.setState(modelId, ModelState.FAILED, error = error.message ?: "download_failed")
-                onFinished(modelId, Result.failure(error))
-                return
+            // Wi-Fi dropping mid-transfer retries the whole file (no byte-range resume: T13/T17)
+            // instead of failing the download outright; anything else is terminal.
+            while (true) {
+                try {
+                    val staged = File(store.modelDir(modelId).apply { mkdirs() }, "${file.name}.download")
+                    downloadToFile(file.url, staged) { written -> onProgress(modelId, done + written, total) }
+                    verifyAndPublish(modelId, file, staged)
+                    break
+                } catch (wifiLost: WifiLostDuringTransferException) {
+                    if (!awaitWifi(modelId)) { onFinished(modelId, Result.failure(InterruptedException())); return }
+                    store.setState(modelId, ModelState.DOWNLOADING, bytes = done)
+                } catch (error: Exception) {
+                    state = DownloadPolicyState.FAILED
+                    store.setState(modelId, ModelState.FAILED, error = error.message ?: "download_failed")
+                    onFinished(modelId, Result.failure(error))
+                    return
+                }
             }
             done += file.bytes
             store.setState(modelId, ModelState.DOWNLOADING, bytes = done)
@@ -113,20 +131,29 @@ class ModelDownloads(private val context: Context, val store: ModelStore) {
         store.setState(modelId, ModelState.DOWNLOADING, bytes = 0L)
         val dir = store.modelDir(modelId).apply { mkdirs() }
         val stagedArchive = File(dir, "archive.tar.bz2.download")
-        try {
-            downloadToFile(archive.url, stagedArchive) { written -> onProgress(modelId, written, archive.bytes) }
-            val archiveDigest = sha256(stagedArchive)
-            check(stagedArchive.length() == archive.bytes && archiveDigest == archive.sha256) { "sha256_mismatch:archive" }
-            store.setState(modelId, ModelState.VERIFYING, bytes = archive.bytes)
-            extractArchive(modelId, stagedArchive, archive.entries)
-        } catch (error: Exception) {
-            state = DownloadPolicyState.FAILED
-            store.setState(modelId, ModelState.FAILED, error = error.message ?: "download_failed")
-            onFinished(modelId, Result.failure(error))
-            return
-        } finally {
-            stagedArchive.delete()
+        // Wi-Fi dropping mid-transfer retries the whole archive (no byte-range resume: T13/T17)
+        // instead of failing the download outright; anything else is terminal.
+        while (true) {
+            try {
+                downloadToFile(archive.url, stagedArchive) { written -> onProgress(modelId, written, archive.bytes) }
+                val archiveDigest = sha256(stagedArchive)
+                check(stagedArchive.length() == archive.bytes && archiveDigest == archive.sha256) { "sha256_mismatch:archive" }
+                store.setState(modelId, ModelState.VERIFYING, bytes = archive.bytes)
+                extractArchive(modelId, stagedArchive, archive.entries)
+                break
+            } catch (wifiLost: WifiLostDuringTransferException) {
+                stagedArchive.delete()
+                if (!awaitWifi(modelId)) { onFinished(modelId, Result.failure(InterruptedException())); return }
+                store.setState(modelId, ModelState.DOWNLOADING, bytes = 0L)
+            } catch (error: Exception) {
+                stagedArchive.delete()
+                state = DownloadPolicyState.FAILED
+                store.setState(modelId, ModelState.FAILED, error = error.message ?: "download_failed")
+                onFinished(modelId, Result.failure(error))
+                return
+            }
         }
+        stagedArchive.delete()
         store.rescan()
         state = DownloadPolicyState.IDLE
         onFinished(modelId, if (store.isReady(modelId)) Result.success(Unit) else Result.failure(IllegalStateException("verification_failed")))
@@ -152,18 +179,30 @@ class ModelDownloads(private val context: Context, val store: ModelStore) {
         try {
             connection.connect()
             check(connection.responseCode in 200..299) { "http_${connection.responseCode}" }
-            connection.inputStream.use { input ->
-                FileOutputStream(staged).use { output ->
-                    val buffer = ByteArray(1 shl 16)
-                    while (true) {
-                        if (cancelled.get()) throw InterruptedException()
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        written += read
-                        onProgress(written)
+            try {
+                connection.inputStream.use { input ->
+                    FileOutputStream(staged).use { output ->
+                        val buffer = ByteArray(1 shl 16)
+                        var lastWifiCheck = System.currentTimeMillis()
+                        while (true) {
+                            if (cancelled.get()) throw InterruptedException()
+                            val now = System.currentTimeMillis()
+                            if (now - lastWifiCheck >= WIFI_CHECK_INTERVAL_MS) {
+                                if (!wifiAvailable()) throw WifiLostDuringTransferException()
+                                lastWifiCheck = now
+                            }
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            written += read
+                            onProgress(written)
+                        }
                     }
                 }
+            } catch (io: java.io.IOException) {
+                // The periodic check above catches Wi-Fi dropping between reads; this catches the
+                // connection dying from a drop that happened mid-read, before the next check fired.
+                if (!wifiAvailable()) throw WifiLostDuringTransferException() else throw io
             }
         } finally {
             connection.disconnect()
