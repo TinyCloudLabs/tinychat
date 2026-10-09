@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
+import { BackgroundSyncSection, BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
 import {
   HISTORICAL_RESYNC_CONFIRM_COPY,
   applyEnableResult,
@@ -513,5 +513,23 @@ describe("google-meet gets no background-sync surface", () => {
     expect(card.slice(0, at)).toContain(
       "supportsBackgroundNotifications(d, rows[d.id].connection) && secretsAvailable() && (",
     );
+  });
+});
+
+// The container's state machine now lives in `useBackgroundSync` so the
+// Meeting sources panel can run it too. The Connectors card must be unchanged:
+// before any effect has run, the section renders exactly what the view renders
+// for the initial state.
+describe("BackgroundSyncSection over useBackgroundSync", () => {
+  test("renders the view's initial state, byte for byte", () => {
+    const descriptor = { id: "fireflies", name: "Fireflies", source: "fireflies" } as ConnectorDescriptor;
+    const section = renderToStaticMarkup(
+      <BackgroundSyncSection
+        tcw={{} as never}
+        descriptor={descriptor}
+        webhooks={{} as never}
+      />,
+    );
+    expect(section).toBe(render(initialBackgroundSyncState()));
   });
 });
