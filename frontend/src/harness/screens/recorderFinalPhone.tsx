@@ -68,6 +68,26 @@ const INPUTS: NonNullable<PhoneRecorderProps["inputs"]> = {
   subscribe: () => noop,
 };
 
+// The Android emulator's built-in mic and a headset with a name as long as they come, for the 320 px phone.
+const LONG_SNAPSHOT: AudioInputsSnapshot = {
+  inputs: [
+    { id: "emulator", name: "sdk_gphone64_arm64", kind: "built_in" },
+    {
+      id: "headset",
+      name: "Samuel's Pixel Buds Pro 2 Wireless Headset",
+      kind: "bluetooth",
+    },
+  ],
+  selectedId: "emulator",
+  activeId: "emulator",
+};
+
+const LONG_INPUTS: NonNullable<PhoneRecorderProps["inputs"]> = {
+  list: async () => LONG_SNAPSHOT,
+  select: async () => {},
+  subscribe: () => noop,
+};
+
 const MODEL_READY: OnDeviceSttStatus = {
   models: [
     {
@@ -133,6 +153,14 @@ export const recorderFinalPhoneScreens: HarnessScreen[] = [
   screen("modes", {}, { defaultOpen: "modes" }),
   screen("via", {}, { defaultOpen: "via" }),
   screen("discard", {}, { defaultOpen: "discard" }),
+  screen("long-device", {}, { inputs: LONG_INPUTS }),
+  screen("long-device-menu", {}, { inputs: LONG_INPUTS, defaultOpen: "via" }),
+  screen(
+    "long-device-paused",
+    { mic: { state: "paused", reason: "user" } },
+    { inputs: LONG_INPUTS },
+    QUIET,
+  ),
   screen(
     "stalled",
     { mic: { state: "interrupted", reason: "stalled" } },
