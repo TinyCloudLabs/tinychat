@@ -89,12 +89,24 @@ export const recorderFinalHaloScreen: HarnessScreen = {
       <main
         style={{
           display: "grid",
+          gridTemplateColumns: window.innerWidth >= 1200 ? "1fr 1fr" : "1fr",
           gap: 20,
           padding: 20,
           background: "#100d14",
           fontFamily: "system-ui, sans-serif",
         }}
       >
+        <p
+          style={{
+            gridColumn: "1 / -1",
+            margin: 0,
+            color: "#b9b2be",
+            fontSize: 13,
+          }}
+        >
+          Rings draw while in view. Scroll to start rings outside the viewport;
+          full-page captures can show those rings blank.
+        </p>
         {previews.map((theme) => (
           <ThemePreview key={theme} theme={theme} />
         ))}
