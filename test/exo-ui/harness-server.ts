@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { OFFERED_CHAT_MODELS } from "../../packages/core/src/chatModels";
 
 const frontend = new URL("../../frontend/", import.meta.url).pathname;
+const franken = (file: string) =>
+  `${frontend}node_modules/@franken-suite/franken-markdown/${file}`;
 
 // The backend as a signed-in account with nothing set up sees it. Every other
 // /api/ path is a 404.
@@ -121,6 +123,12 @@ export function serveHarness({ bundle, css, html }: HarnessAssets) {
         });
       if (url.pathname === "/app.css")
         return new Response(css, { headers: { "content-type": "text/css" } });
+      // The Markdown renderer's WASM: the bundle keeps `new URL("franken_markdown_bg.wasm", import.meta.url)`,
+      // which resolves beside /bundle.js.
+      if (url.pathname === "/franken_markdown_bg.wasm")
+        return new Response(Bun.file(franken("pkg/franken_markdown_bg.wasm")), {
+          headers: { "content-type": "application/wasm" },
+        });
       if (url.pathname.startsWith("/fonts/")) {
         const file = Bun.file(`${frontend}public${url.pathname}`);
         return (await file.exists())

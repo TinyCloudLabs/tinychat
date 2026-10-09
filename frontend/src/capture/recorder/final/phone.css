@@ -139,14 +139,14 @@
 .pr-time[data-dim="true"] > span {
   opacity: 0.5;
 }
-/* The ＋ moments button goes at the right of the timer: left:100%, 14px out, 36px. Not built yet. */
+/* The ＋ moments button goes at the right of the timer: left:100%, 14px out. The button is a 44px target around the 36px disc (phoneNotes.css), so it starts 4px sooner. */
 .pr-time-slot {
   position: absolute;
   left: 100%;
-  margin-left: 14px;
+  margin-left: 10px;
   top: 50%;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   transform: translateY(-50%);
 }
 .pr-countdown {
