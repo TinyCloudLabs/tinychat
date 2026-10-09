@@ -66,6 +66,8 @@ function recorderState(recorder: RecorderValue): RecorderState {
     autoSaving: false,
     ready: recorder.ready,
     permissionDenied: recorder.permissionDenied,
+    captureIssues: {},
+    recoveryScanFailure: null,
   };
 }
 
