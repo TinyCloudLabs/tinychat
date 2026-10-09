@@ -4,14 +4,17 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export function MicrophoneAccessOff({ onMinimise, onOpenSettings }: {
-  onMinimise(): void;
+  onMinimise(): void | Promise<void>;
   onOpenSettings(): Promise<void>;
 }) {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   return (
     <div data-testid="voice-note-recorder" data-phase="permission-denied" className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <header className="flex min-h-14 shrink-0 items-center px-4 pt-[env(safe-area-inset-top)]">
-        <Button type="button" variant="ghost" size="icon" className="size-11" aria-label="Minimise recorder" onClick={onMinimise}><ChevronDownIcon className="!size-5" /></Button>
+        <Button type="button" variant="ghost" size="icon" className="size-11" aria-label="Minimise recorder" onClick={() => {
+          setSettingsError(null);
+          void Promise.resolve(onMinimise()).catch((error: unknown) => setSettingsError(error instanceof Error ? error.message : String(error)));
+        }}><ChevronDownIcon className="!size-5" /></Button>
       </header>
       <main className="mx-auto flex w-full max-w-xl flex-1 flex-col items-center justify-center gap-5 px-6 pb-[env(safe-area-inset-bottom)] text-center">
         <MicOffIcon className="size-12 text-warning" aria-hidden />

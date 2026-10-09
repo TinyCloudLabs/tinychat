@@ -60,7 +60,11 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
     }
     @PermissionCallback private fun afterMic(call: PluginCall) {
         if (getPermissionState("microphone") == PermissionState.GRANTED) startReady(call)
-        else call.reject("Microphone permission denied", "permission_denied")
+        else {
+            MicShortcutRecovery.markDenied(context, false)
+            engine.presentRecorder(null, "permission_denied")
+            call.reject("Microphone permission denied", "permission_denied")
+        }
     }
     private fun startReady(call: PluginCall) {
         if (Build.VERSION.SDK_INT >= 33 && getPermissionState("notifications") != PermissionState.GRANTED &&
@@ -94,14 +98,29 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         val id = engine.discard(); context.stopService(android.content.Intent(context, CaptureService::class.java))
         JSONObject().put("id", id ?: JSONObject.NULL)
     }
-    @PluginMethod fun status(call: PluginCall) { call.resolve(JSObject.fromJSONObject(engine.status())) }
+    @PluginMethod fun status(call: PluginCall) {
+        call.resolve(JSObject.fromJSONObject(engine.status()
+            .put("micDeniedPresentation", MicShortcutRecovery.denied(context) && !MicShortcutRecovery.permissionGranted(context))
+            .put("shortcutRecordPending", MicShortcutRecovery.recordPending(context))
+            .put("microphonePermissionGranted", MicShortcutRecovery.permissionGranted(context))))
+    }
+    @PluginMethod fun dismissShortcutRecovery(call: PluginCall) {
+        MicShortcutRecovery.dismiss(context)
+        call.resolve()
+    }
+    @PluginMethod fun consumeShortcutRecord(call: PluginCall) {
+        MicShortcutRecovery.consumeRecordOffer(context)
+        call.resolve()
+    }
     @PluginMethod fun openSettings(call: PluginCall) {
         try {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            MicShortcutRecovery.markSettingsOpened(context)
             context.startActivity(intent)
             call.resolve()
         } catch (error: Exception) {
+            MicShortcutRecovery.takeSettingsReturn(context)
             call.reject(error.message ?: "Could not open Settings", "settings_unavailable", error)
         }
     }

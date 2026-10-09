@@ -37,6 +37,7 @@ export interface VoiceNoteRecorder {
   discard(): void;
   retryPending(): void;
   openSettings(): Promise<void>;
+  dismissShortcutRecovery(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
   setOnPresent(onPresent: (() => void) | undefined): void;
@@ -79,6 +80,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       discard: () => void controller.discard(),
       retryPending: () => void controller.retryPending(),
       openSettings: () => controller.openSettings(),
+      dismissShortcutRecovery: () => controller.dismissShortcutRecovery(),
       dismissOutcome: controller.dismissOutcome,
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,

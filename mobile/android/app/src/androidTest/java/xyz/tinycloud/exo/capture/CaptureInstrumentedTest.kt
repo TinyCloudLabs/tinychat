@@ -107,17 +107,19 @@ class CaptureInstrumentedTest {
     }
 
     /** Run with RECORD_AUDIO revoked and permission flags reset before instrumentation starts. */
-    @Test fun shortcutDeniedTwiceClearsCommandAndGrantOnReturn() {
+    @Test fun shortcutDeniedTwiceHoldsCommandAndOffersRecordOnGrant() {
         assumeTrue("Run this case with RECORD_AUDIO revoked before instrumentation",
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
         val engine = CaptureEngine.get(context)
         val firstDenied = CountDownLatch(1)
         val denied = CountDownLatch(2)
+        val deniedCount = AtomicInteger(0)
         val granted = CountDownLatch(1)
         val listener = object : CaptureEngine.Listener {
             override fun event(name: String, data: JSONObject) {
                 if (name == "presentRecorder" && data.optString("reason") == "permission_denied") {
                     assertTrue(data.isNull("id"))
+                    deniedCount.incrementAndGet()
                     firstDenied.countDown()
                     denied.countDown()
                 }
@@ -135,12 +137,21 @@ class CaptureInstrumentedTest {
             }
             permissionButton(false)
             assertTrue("denial was not surfaced", denied.await(5, TimeUnit.SECONDS))
-            awaitNoPendingCommand()
+            assertEquals("RECORD", LaunchCommandStore(context).pending()?.action)
+            assertTrue(MicShortcutRecovery.recordPending(context))
             assertEquals("idle", engine.status().getString("state"))
             Thread.sleep(500)
             assertNull("denial triggered another permission dialog",
                 UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
                     .findObject(By.res("com.android.permissioncontroller", "permission_deny_button")))
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressHome()
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                InstrumentationRegistry.getInstrumentation().uiAutomation
+                    .executeShellCommand("am start -n ${context.packageName}/.MainActivity")
+            ).use { it.readBytes() }
+            Thread.sleep(300)
+            assertEquals("ordinary resume re-delivered the denial", 2, deniedCount.get())
+            MicShortcutRecovery.markSettingsOpened(context)
             UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressHome()
             grant(Manifest.permission.RECORD_AUDIO)
             android.os.ParcelFileDescriptor.AutoCloseInputStream(
@@ -148,8 +159,12 @@ class CaptureInstrumentedTest {
                     .executeShellCommand("am start -n ${context.packageName}/.MainActivity")
             ).use { it.readBytes() }
             assertTrue("grant on return was not surfaced", granted.await(5, TimeUnit.SECONDS))
-            assertFalse(context.getSharedPreferences("exo.capture", 0).getBoolean("micDeniedPresentation", false))
-        } finally { engine.removeListener(listener); activity.finish() }
+            assertFalse(MicShortcutRecovery.denied(context))
+            assertTrue(MicShortcutRecovery.recordPending(context))
+            assertEquals("idle", engine.status().getString("state"))
+            MicShortcutRecovery.consumeRecordOffer(context)
+            awaitNoPendingCommand()
+        } finally { MicShortcutRecovery.dismiss(context); engine.removeListener(listener); activity.finish() }
     }
 
     @Test fun shortcutCommandAndRecordingSurviveActivityRecreation() {

@@ -144,6 +144,10 @@ export interface CaptureStatus {
   spans: MissingAudioSpan[]; openSpan: MissingAudioSpan | null;
   source?: CaptureSource; options?: CaptureOptions; input?: AudioInput | null; owner?: string | null;
   transitionGen: number; androidSdkInt?: number;
+  /** Android shortcut recovery, queried without consuming a retained event. */
+  micDeniedPresentation?: boolean;
+  shortcutRecordPending?: boolean;
+  microphonePermissionGranted?: boolean;
 }
 
 /**
@@ -180,6 +184,8 @@ export interface VoiceNotesPlugin {
    * `androidSdkInt`: Android only, the OS API level (Build.VERSION.SDK_INT).
    */
   status(): Promise<CaptureStatus>;
+  dismissShortcutRecovery(): Promise<void>;
+  consumeShortcutRecord(): Promise<void>;
   /**
    * Up to `length` bytes of a stopped recording from `offset` (the shells cap one
    * call at 4 MiB). The audio crosses the bridge a part at a time, never whole.

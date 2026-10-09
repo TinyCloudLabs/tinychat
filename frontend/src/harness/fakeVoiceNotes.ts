@@ -23,10 +23,13 @@ export interface FakeVoiceNotes {
   emit(event: "level", payload: { level: number }): void;
   emit(event: "micState", payload: MicStateEvent): void;
   emit(event: "autoStopped", payload: VoiceNoteAutoStopEvent): void;
+  /** Capacitor hands a retained presentRecorder event to the first listener only. */
+  retainPresentRecorder(payload: { id: string | null; reason?: string }): void;
 }
 
 export function createFakeVoiceNotes(): FakeVoiceNotes {
   const listeners = new Map<string, Set<Listener>>();
+  let retainedPresent: { id: string | null; reason?: string } | null = null;
   let adds = 0;
   let active = 0;
   let current: { id: string; startedAt: number } | null = null;
@@ -41,6 +44,8 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
 
   const plugin: VoiceNotesPlugin = {
     openSettings: unsupported,
+    dismissShortcutRecovery: unsupported,
+    consumeShortcutRecord: unsupported,
     async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
       if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
       counter += 1;
@@ -138,6 +143,11 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         listeners.set(event, set);
       }
       set.add(listener);
+      if (event === "presentRecorder" && retainedPresent) {
+        const retained = retainedPresent;
+        retainedPresent = null;
+        (listener as (value: typeof retained) => void)(retained);
+      }
       let removed = false;
       return Promise.resolve({
         remove: async () => {
@@ -156,5 +166,6 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     emit(event: string, payload: unknown) {
       for (const listener of listeners.get(event) ?? []) (listener as (value: unknown) => void)(payload);
     },
+    retainPresentRecorder(payload) { retainedPresent = payload; },
   };
 }

@@ -930,7 +930,7 @@ export function App() {
           </main>
         )}
       </div>
-      <MicDeniedRecovery enabled={voiceNotesInApp && !LOCAL_VALIDATION && !isReady} />
+      <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={authAction} />
       {storageReadOnly && (
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
           <strong>Storage full: read-only.</strong>{" "}

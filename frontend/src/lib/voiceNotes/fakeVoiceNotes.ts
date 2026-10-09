@@ -258,6 +258,8 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
 
   const plugin: VoiceNotesPlugin = {
     async openSettings() {},
+    async dismissShortcutRecovery() {},
+    async consumeShortcutRecord() {},
     async start(options) {
       if (session) throw failure("already_recording");
       const id = `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;

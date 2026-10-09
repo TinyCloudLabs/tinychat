@@ -57,7 +57,7 @@ export interface RecorderValue {
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;
-  minimiseSheet(): void;
+  minimiseSheet(): void | Promise<void>;
   setReceiptPlaying(playing: boolean): void;
   subscribeLevel(listener: (level: number) => void): () => void;
 }
@@ -169,13 +169,14 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
   // Local commit starts the receipt clock. Playback keeps it open.
   useEffect(() => {
     if (state.outcome !== "local" && state.outcome !== "saved") return;
+    if (state.permissionDenied) return;
     if (receiptPlaying) return;
     const timer = setTimeout(() => {
       setSheetOpen(false);
       dismissOutcome();
     }, RECEIPT_MS);
     return () => clearTimeout(timer);
-  }, [dismissOutcome, receiptPlaying, state.outcome, state.lastSaved]);
+  }, [dismissOutcome, receiptPlaying, state.outcome, state.lastSaved, state.permissionDenied]);
 
   useEffect(() => recorder.setOnPresent(() => setSheetOpen(true)), [recorder.setOnPresent]);
 
@@ -188,7 +189,10 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
     dismissOutcome();
   }, [dismissOutcome]);
   const openSheet = useCallback(() => setSheetOpen(true), []);
-  const minimiseSheet = useCallback(() => setSheetOpen(false), []);
+  const minimiseSheet = useCallback(async () => {
+    if (state.permissionDenied) await recorder.dismissShortcutRecovery();
+    setSheetOpen(false);
+  }, [recorder.dismissShortcutRecovery, state.permissionDenied]);
 
   const value = useMemo<RecorderValue>(
     () => ({

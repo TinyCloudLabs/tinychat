@@ -19,6 +19,7 @@ mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
   saveVoiceNote: (...args: Parameters<typeof realStore.saveVoiceNote>) => (fakeVoiceNoteStore.save ?? realStore.saveVoiceNote)(...args),
 }));
 const { createVoiceNoteRecorderController } = await import("./voiceNoteRecorderController");
+const { micRecoveryMode, readMicRecoveryMode } = await import("./MicDeniedRecovery");
 const { isDiscarded, saveRecording } = await import("@/lib/voiceNotes/recorderSaves");
 
 const tcw = { did: "did:example:alice" } as TinyCloudWeb;
@@ -55,6 +56,9 @@ let deleteFailures: number;
 let deleteCalls: number;
 let nativeDiscards: number;
 let settingsOpens: number;
+let micDenied: boolean;
+let shortcutPending: boolean;
+let microphoneGranted: boolean;
 
 function controller() {
   return createVoiceNoteRecorderController({
@@ -83,9 +87,14 @@ beforeEach(() => {
   deleteCalls = 0;
   nativeDiscards = 0;
   settingsOpens = 0;
+  micDenied = false;
+  shortcutPending = false;
+  microphoneGranted = true;
   plugin = {
     ...fake.plugin,
     async openSettings() { settingsOpens++; },
+    async dismissShortcutRecovery() { micDenied = false; shortcutPending = false; },
+    async consumeShortcutRecord() { shortcutPending = false; },
     async start(options) {
       const started = await fake.plugin.start(options);
       currentId = `note-${++serial}`;
@@ -94,7 +103,9 @@ beforeEach(() => {
     stop: stopNatively,
     async status() {
       const status = await fake.plugin.status();
-      return { ...status, state: paused ? "paused" as const : status.state, id: status.id === null ? null : currentId, audioMs: 42_000 };
+      return { ...status, state: paused ? "paused" as const : status.state, id: status.id === null ? null : currentId,
+        audioMs: 42_000, micDeniedPresentation: micDenied, shortcutRecordPending: shortcutPending,
+        microphonePermissionGranted: microphoneGranted };
     },
     async pause() { paused = true; },
     async resume() { paused = false; },
@@ -242,15 +253,95 @@ describe("voice-note recorder controller", () => {
     let presented = 0;
     recorder.setOnPresent(() => presented++);
     const emit = fake.emit as unknown as (event: string, payload: { id: null; reason: string }) => void;
+    micDenied = true;
+    shortcutPending = true;
+    microphoneGranted = false;
     emit("presentRecorder", { id: null, reason: "permission_denied" });
+    await tick();
     expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null, permissionDenied: true });
     expect(presented).toBe(1);
     await recorder.openSettings();
     expect(settingsOpens).toBe(1);
+    micDenied = false;
+    microphoneGranted = true;
     emit("presentRecorder", { id: null, reason: "permission_granted" });
+    await tick();
     expect(recorder.getState().permissionDenied).toBe(false);
     await recorder.record();
     expect(recorder.getState().phase).toBe("recording");
+  });
+
+  test("a cold shortcut's retained event reaches the controller's first listener", async () => {
+    const started = await plugin.start();
+    fake.retainPresentRecorder({ id: started.id });
+    const listenersBeforeRead = fake.stats().adds;
+    expect(await readMicRecoveryMode()).toBeNull();
+    expect(fake.stats().adds).toBe(listenersBeforeRead);
+    const recorder = controller();
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    const detach = recorder.attach();
+    await tick();
+    expect(recorder.getState()).toMatchObject({ phase: "recording", recordingId: started.id });
+    expect(presented).toBeGreaterThan(0);
+    detach();
+  });
+
+  test("signed-out recovery explains a grant while the Record intent is held", async () => {
+    const status = await plugin.status();
+    expect(micRecoveryMode({ ...status, micDeniedPresentation: true, shortcutRecordPending: true })).toBe("denied");
+    expect(micRecoveryMode({ ...status, micDeniedPresentation: false, shortcutRecordPending: true,
+      microphonePermissionGranted: true })).toBe("sign-in");
+    expect(micRecoveryMode({ ...status, shortcutRecordPending: false })).toBeNull();
+  });
+
+  test("a retained denial already dismissed at the sign-in gate stays dismissed", async () => {
+    fake.retainPresentRecorder({ id: null, reason: "permission_denied" });
+    const recorder = controller();
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    const detach = recorder.attach();
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(false);
+    expect(presented).toBe(0);
+    detach();
+  });
+
+  test("minimising a denied recorder clears native recovery before another resume", async () => {
+    const { recorder } = await attached();
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    micDenied = true;
+    shortcutPending = true;
+    microphoneGranted = false;
+    const emit = fake.emit as unknown as (event: string, payload: { id: null; reason: string }) => void;
+    emit("presentRecorder", { id: null, reason: "permission_denied" });
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(true);
+    await recorder.dismissShortcutRecovery();
+    expect(micDenied).toBe(false);
+    expect(shortcutPending).toBe(false);
+    emit("presentRecorder", { id: null, reason: "permission_denied" });
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(false);
+    expect(presented).toBe(1);
+  });
+
+  test("a denied shortcut during a receipt shows microphone recovery", async () => {
+    const { recorder } = await attached();
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    await recorder.record();
+    await recorder.stop();
+    await tick();
+    expect(["local", "saved"]).toContain(recorder.getState().outcome);
+    const emit = fake.emit as unknown as (event: string, payload: { id: null; reason: string }) => void;
+    micDenied = true;
+    microphoneGranted = false;
+    emit("presentRecorder", { id: null, reason: "permission_denied" });
+    await tick();
+    expect(recorder.getState().permissionDenied).toBe(true);
+    expect(presented).toBe(1);
   });
 
   test("Stop racing the limit's auto-stop saves exactly once, whichever arrives first", async () => {
