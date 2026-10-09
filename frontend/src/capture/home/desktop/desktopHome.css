@@ -203,6 +203,7 @@
 }
 .dch-row-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -226,6 +227,10 @@
   font-size: 12.5px;
   font-weight: 700;
   cursor: pointer;
+}
+.dch-dismiss-error {
+  flex: 1 0 100%;
+  margin: 0 12px 6px;
 }
 .dch-dismiss::after {
   content: "";

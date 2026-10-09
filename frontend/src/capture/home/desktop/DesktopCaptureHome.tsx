@@ -14,7 +14,7 @@ import {
   VideoIcon,
   type LucideIcon,
 } from "lucide-react";
-import { useContext, useState } from "react";
+import { useContext, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -43,6 +43,7 @@ import { nativeAudioInputs } from "../../recorder/final/useAudioInputs";
 import { recorderActive, useRecorder } from "../../recorder/RecorderProvider";
 import { useRecordedElapsed } from "../../recorder/useRecordedElapsed";
 import {
+  dismissNotice,
   issueHasSheet,
   type CaptureIssues,
   type HomeIssue,
@@ -254,15 +255,50 @@ function rowLabel(parts: {
   return label.filter(Boolean).join(". ");
 }
 
+/** Dismiss for a partial-audio notice. A dismissal that is not saved leaves the notice up, says so beside it, and keeps focus on the button. */
+export function DismissControl(props: {
+  label: string;
+  error: string | null;
+  onDismiss: () => void;
+}) {
+  const errorId = useId();
+  return (
+    <>
+      <button
+        type="button"
+        className="dch-dismiss"
+        aria-label={props.label}
+        aria-describedby={props.error !== null ? errorId : undefined}
+        onClick={props.onDismiss}
+        data-testid="capture-issue-dismiss"
+      >
+        {COPY.dismiss}
+      </button>
+      {props.error !== null && (
+        <p
+          id={errorId}
+          role="alert"
+          className="soft-sheet-error dch-dismiss-error"
+          data-testid="capture-issue-error"
+        >
+          {props.error}
+        </p>
+      )}
+    </>
+  );
+}
+
 export function RecentRow(props: {
   entry: DesktopEntry;
   now: Date;
   grouped: boolean;
-  onDismiss: (id: string) => void;
+  /** The recorder's `dismissCaptureIssue`: whether the notice is dismissed (false: it could not be saved, and still shows). */
+  onDismiss: (id: string) => boolean;
   /** A tap on a row whose failure has a sheet: the recording's id, and the row to return focus to. */
   onOpenIssue: (id: string, row: HTMLElement) => void;
 }) {
   const { entry } = props;
+  const [dismissError, setDismissError] = useState<string | null>(null);
   let icon: LucideIcon = MicIcon;
   let title: string = COPY.voiceNoteTitle;
   let meta: string;
@@ -374,15 +410,11 @@ export function RecentRow(props: {
         </div>
       )}
       {dismissId !== undefined && (
-        <button
-          type="button"
-          className="dch-dismiss"
-          aria-label={COPY.dismissLabel(title)}
-          onClick={() => props.onDismiss(dismissId)}
-          data-testid="capture-issue-dismiss"
-        >
-          {COPY.dismiss}
-        </button>
+        <DismissControl
+          label={COPY.dismissLabel(title)}
+          error={dismissError}
+          onDismiss={() => setDismissError(dismissNotice(dismissId, props.onDismiss))}
+        />
       )}
     </li>
   );
@@ -421,7 +453,7 @@ export function RecentView(props: {
   filter: RecentFilter;
   onFilter: (value: RecentFilter) => void;
   onRetry: () => void;
-  onDismiss: (id: string) => void;
+  onDismiss: (id: string) => boolean;
   onOpenIssue: (id: string, row: HTMLElement) => void;
   now: Date;
 }) {
