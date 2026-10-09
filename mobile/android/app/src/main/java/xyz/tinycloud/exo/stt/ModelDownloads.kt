@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import xyz.tinycloud.exo.stt.core.ArchiveEntry
 import xyz.tinycloud.exo.stt.core.ArchiveExtractor
+import xyz.tinycloud.exo.stt.core.WifiNetworkRequestSpec
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -37,28 +38,41 @@ private const val WIFI_CHECK_INTERVAL_MS = 2_000L
  * -- [network] goes back to null the instant `onLost` fires, so the next periodic check in the
  * read loop (or the next `connect()`) sees it and pauses to "Waiting for Wi-Fi" instead of letting
  * the transfer continue, unnoticed, on cellular.
+ *
+ * Uses `registerNetworkCallback`, not `requestNetwork` (round-3 finding 3): the latter rejects a
+ * mutable capability like `NET_CAPABILITY_VALIDATED` in the request itself and needs
+ * `CHANGE_NETWORK_STATE`, which this app does not declare, so it failed before ever reaching
+ * `Network.openConnection`. `registerNetworkCallback` only observes networks Android already has
+ * -- it needs no extra permission -- so VALIDATED is checked separately, on the capabilities
+ * Android reports back for the Wi-Fi network it finds (`WifiNetworkRequestSpec`).
  */
 private class WifiNetworkBinding(context: Context) {
     private val manager = context.getSystemService(ConnectivityManager::class.java)
     private val current = AtomicReference<Network?>(null)
     private var callback: ConnectivityManager.NetworkCallback? = null
 
-    /** (Re-)requests a validated Wi-Fi network; safe to call again after a loss. */
+    /** (Re-)registers for a validated Wi-Fi network; safe to call again after a loss. */
     fun request() {
         release()
         val manager = manager ?: return
         val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .addTransportType(WifiNetworkRequestSpec.requiredTransport)
+            .addCapability(WifiNetworkRequestSpec.requiredCapability)
             .build()
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(net: Network) { current.set(net) }
+            override fun onAvailable(net: Network) { acceptIfValidated(net) }
+            override fun onCapabilitiesChanged(net: Network, capabilities: NetworkCapabilities) {
+                if (capabilities.hasCapability(WifiNetworkRequestSpec.validatedCapability)) current.set(net)
+                else current.compareAndSet(net, null)
+            }
             override fun onLost(net: Network) { current.compareAndSet(net, null) }
-            override fun onUnavailable() { current.set(null) }
         }
         callback = cb
-        manager.requestNetwork(request, cb)
+        manager.registerNetworkCallback(request, cb)
+    }
+
+    private fun acceptIfValidated(net: Network) {
+        if (manager?.getNetworkCapabilities(net)?.hasCapability(WifiNetworkRequestSpec.validatedCapability) == true) current.set(net)
     }
 
     fun network(): Network? = current.get()
