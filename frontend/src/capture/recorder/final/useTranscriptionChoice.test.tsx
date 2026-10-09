@@ -1,11 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
+import type {
+  RecorderTranscriberId,
+  SetTranscriberResult,
+  TranscriberApi,
+} from "./transcriberApiStub";
 import {
   PRIVATE_UNAVAILABLE,
+  SIGNED_OUT,
+  TRANSCRIBER_FOR,
   useTranscriptionChoice,
-  type TranscriptionChoiceStorage,
 } from "./useTranscriptionChoice";
 
 const noop = () => {};
@@ -41,39 +47,53 @@ const MODEL: OnDeviceSttStatus = {
   queue: [],
 };
 
-const memory = (
-  initial: Record<string, string> = {},
-): TranscriptionChoiceStorage & { data: Record<string, string> } => {
-  const data = { ...initial };
-  return {
-    data,
-    getItem: (key) => data[key] ?? null,
-    setItem: (key, value) => void (data[key] = value),
+type Call = [string, ...unknown[]];
+
+function fakeApi(
+  id: RecorderTranscriberId,
+  result: SetTranscriberResult | Error = "ok",
+) {
+  const calls: Call[] = [];
+  const api: TranscriberApi = {
+    transcriber: { id, identifySpeakers: false, source: "recording" },
+    setTranscriber: async (next, options) => {
+      calls.push(["setTranscriber", next, options]);
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    setIdentifySpeakers: async (on, scope) => {
+      calls.push(["setIdentifySpeakers", on, scope]);
+    },
   };
-};
+  return { api, calls };
+}
 
 function choice(
   props: VoiceNoteTranscriptionProps | undefined,
-  storage = memory(),
+  api: TranscriberApi,
   model: OnDeviceSttStatus | null = MODEL,
 ) {
+  const notices: string[] = [];
   let result!: ReturnType<typeof useTranscriptionChoice>;
   function Probe() {
     result = useTranscriptionChoice({
       shell: "phone",
       transcription: props,
       model,
-      storage,
+      transcriber: api,
+      notify: (message) => void notices.push(message),
     });
     return null;
   }
   renderToStaticMarkup(<Probe />);
-  return { result, storage };
+  return { result, notices };
 }
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("useTranscriptionChoice", () => {
   test("the scale has Skip, Local, Private and Powerful; Powerful is disabled", () => {
-    const { result } = choice(transcription());
+    const { result } = choice(transcription(), fakeApi("private-cloud").api);
     expect(result.stops.map((s) => s.stop.id)).toEqual([
       "skip",
       "local",
@@ -85,145 +105,140 @@ describe("useTranscriptionChoice", () => {
     expect(powerful.reason).toBe("Coming with the next update");
   });
 
+  test("the displayed mode is always the provider's transcriber, whatever else is stored or consented", () => {
+    for (const [mode, id] of Object.entries(TRANSCRIBER_FOR)) {
+      for (const consented of [true, false]) {
+        const { result } = choice(
+          transcription({ consented }),
+          fakeApi(id).api,
+        );
+        expect(result.mode).toBe(mode as typeof result.mode);
+      }
+    }
+  });
+
   test("Private is offered only when the account offers it", () => {
     const { result } = choice(
       transcription({
         availability: "unavailable",
       } as Partial<VoiceNoteTranscriptionProps>),
+      fakeApi("on-device").api,
     );
     const privateStop = result.stops.find((s) => s.stop.id === "private")!;
     expect(privateStop.available).toBe(false);
     expect(privateStop.reason).toBe(PRIVATE_UNAVAILABLE);
-    expect(result.mode).not.toBe("powerful");
   });
 
-  test("choosing an unavailable stop returns why and stores nothing", () => {
-    const { result, storage } = choice(transcription());
+  test("choosing an unavailable stop returns why and asks the provider for nothing", async () => {
+    const { api, calls } = fakeApi("private-cloud");
+    const { result } = choice(transcription(), api);
     expect(result.select("powerful")).toBe("Coming with the next update");
-    expect(storage.data).toEqual({});
+    await settle();
+    expect(calls).toEqual([]);
   });
 
   test("stepping skips unavailable stops and stops at the ends", () => {
-    const { result } = choice(
-      transcription({ consented: true }),
-      memory({ "exo.recorder.transcription-mode": "private" }),
-    );
-    expect(result.mode).toBe("private");
+    const { result } = choice(transcription(), fakeApi("private-cloud").api);
     expect(result.step(1)).toBe("private");
     expect(result.step(-1)).toBe("local");
   });
 
-  test("choosing Local with consent given turns the private route off and stores the choice", () => {
-    let off = 0;
-    const { result, storage } = choice(
-      transcription({ onTurnOff: () => void off++ }),
-      memory({ "exo.recorder.transcription-mode": "private" }),
-    );
-    expect(result.select("local")).toBeNull();
-    expect(off).toBe(1);
-    expect(storage.data["exo.recorder.transcription-mode"]).toBe("local");
-  });
-
-  test("Private without consent waits on the consent step", () => {
-    const { result, storage } = choice(
-      transcription({ consented: false }),
-      memory({ "exo.recorder.transcription-mode": "local" }),
-    );
+  test("each stop asks for its transcriber for this recording only", async () => {
+    for (const [mode, id] of [
+      ["skip", "off"],
+      ["local", "on-device"],
+    ] as const) {
+      const { api, calls } = fakeApi("private-cloud");
+      const { result } = choice(transcription(), api);
+      expect(result.select(mode)).toBeNull();
+      await settle();
+      expect(calls).toEqual([["setTranscriber", id, { scope: "recording" }]]);
+    }
+    const { api, calls } = fakeApi("on-device");
+    const { result } = choice(transcription(), api);
     expect(result.select("private")).toBeNull();
-    expect(storage.data["exo.recorder.transcription-mode"]).toBe("local");
+    await settle();
+    expect(calls).toEqual([
+      ["setTranscriber", "private-cloud", { scope: "recording" }],
+    ]);
   });
 
-  describe("first run: Private offered, consent not given", () => {
-    const firstRun = (
-      over: Partial<VoiceNoteTranscriptionProps> = {},
-      storage = memory(),
+  test("Skip is the provider's off, and never the legacy route's onTurnOff", async () => {
+    let off = 0;
+    const { api, calls } = fakeApi("private-cloud");
+    const { result } = choice(
+      transcription({ onTurnOff: () => void off++ }),
+      api,
+    );
+    result.select("skip");
+    await settle();
+    expect(calls).toEqual([["setTranscriber", "off", { scope: "recording" }]]);
+    expect(off).toBe(0);
+  });
+
+  test("choosing the mode already shown asks for nothing", async () => {
+    const { api, calls } = fakeApi("off");
+    const { result } = choice(transcription(), api);
+    expect(result.select("skip")).toBeNull();
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+  test("needs_consent does not touch the route until the user agrees", async () => {
+    let consents = 0;
+    const { api, calls } = fakeApi("on-device", "needs_consent");
+    const { result, notices } = choice(
+      transcription({ consented: false, onConsent: () => void consents++ }),
+      api,
+    );
+    result.select("private");
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(consents).toBe(0);
+    expect(notices).toEqual([]);
+  });
+
+  test("Identify speakers asks for this recording only", async () => {
+    const { api, calls } = fakeApi("assemblyai");
+    const { result } = choice(transcription(), api);
+    await result.setIdentifySpeakers(true);
+    expect(calls).toEqual([["setIdentifySpeakers", true, "recording"]]);
+  });
+
+  describe("results and failures are shown and logged", () => {
+    const failure = async (
+      result: SetTranscriberResult | Error,
+      id: "skip" | "private" = "skip",
     ) => {
-      const calls: string[] = [];
-      const props = transcription({
-        consented: false,
-        onConsent: () => void calls.push("consent"),
-        onTurnOff: () => void calls.push("off"),
-        ...over,
-      });
-      return { ...choice(props, storage), calls };
+      const logged = spyOn(console, "error").mockImplementation(() => {});
+      const { api } = fakeApi("on-device", result);
+      const { result: scale, notices } = choice(transcription(), api);
+      scale.select(id);
+      await settle();
+      const errors = logged.mock.calls.map((call) => String(call[0]));
+      logged.mockRestore();
+      return { notices, errors };
     };
 
-    test("the default Private is not displayed or stored: a fresh account shows Skip, the Off route", () => {
-      const { result, storage } = firstRun();
-      expect(result.mode).toBe("skip");
-      expect(
-        result.stops.find((s) => s.stop.id === "skip")?.stop.captions.phone,
-      ).toBe("Just the recording, kept on this phone.");
-      expect(result.needsConsent).toBe(true);
-      expect(storage.data).toEqual({});
+    test("unavailable: a toast, a log, and the selection stays with the provider", async () => {
+      const { notices, errors } = await failure("unavailable");
+      expect(notices).toEqual([PRIVATE_UNAVAILABLE]);
+      expect(errors).toHaveLength(1);
     });
 
-    test("choosing Private asks first and neither displays nor stores it", () => {
-      const { result, storage, calls } = firstRun();
-      expect(result.select("private")).toBeNull();
-      expect(calls).toEqual([]);
-      expect(storage.data).toEqual({});
+    test("locked_signed_out: says why", async () => {
+      const { notices } = await failure("locked_signed_out");
+      expect(notices).toEqual([SIGNED_OUT]);
     });
 
-    test("confirming consent turns the route on and stores Private", () => {
-      const { result, storage, calls } = firstRun();
-      result.confirmConsent();
-      expect(calls).toEqual(["consent"]);
-      expect(storage.data["exo.recorder.transcription-mode"]).toBe("private");
-    });
-
-    test("once consent is given, the scale shows Private", () => {
-      const { result } = choice(transcription({ consented: true }));
-      expect(result.mode).toBe("private");
-      expect(result.needsConsent).toBe(false);
-    });
-
-    test("a fresh account shows Skip even when Local is unavailable", () => {
-      const { result } = choice(
-        transcription({ consented: false }),
-        memory(),
-        null,
-      );
-      expect(result.stops.find((s) => s.stop.id === "local")?.available).toBe(
-        false,
-      );
-      expect(result.mode).toBe("skip");
-    });
-
-    test("choosing Skip when never consented stores it without calling onTurnOff", () => {
-      const { result, storage, calls } = firstRun();
-      expect(result.select("skip")).toBeNull();
-      expect(calls).toEqual([]);
-      expect(storage.data["exo.recorder.transcription-mode"]).toBe("skip");
-    });
-
-    test("choosing Skip when consented turns the route off, as TranscriptionRouteControl does", () => {
-      const calls: string[] = [];
-      const { result, storage } = choice(
-        transcription({
-          consented: true,
-          onTurnOff: () => void calls.push("off"),
-        }),
-      );
-      expect(result.mode).toBe("private");
-      expect(result.select("skip")).toBeNull();
-      expect(calls).toEqual(["off"]);
-      expect(storage.data["exo.recorder.transcription-mode"]).toBe("skip");
-    });
-
-    test("from Skip, choosing Private asks for consent before storing", () => {
-      const { result, storage, calls } = firstRun();
-      expect(result.mode).toBe("skip");
-      expect(result.select("private")).toBeNull();
-      expect(calls).toEqual([]);
-      expect(storage.data).toEqual({});
-    });
-
-    test("choosing Local stores it, without turning off a route that was never on", () => {
-      const { result, storage, calls } = firstRun();
-      expect(result.select("local")).toBeNull();
-      expect(calls).toEqual([]);
-      expect(storage.data["exo.recorder.transcription-mode"]).toBe("local");
+    test("a rejected request is shown and logged with its reason", async () => {
+      const { notices, errors } = await failure(new Error("plugin down"));
+      expect(notices).toEqual([
+        "Could not change the transcription mode: plugin down",
+      ]);
+      expect(errors).toEqual([
+        "[Recorder] Could not change the transcription mode",
+      ]);
     });
   });
 });

@@ -4,6 +4,12 @@
 // recorder's state, and the flags that make its plugins fail.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PhoneRecorder } from "@/capture/recorder/final/PhoneRecorder";
+import type {
+  RecorderTranscriber,
+  RecorderTranscriberId,
+  SetTranscriberResult,
+  TranscriberApi,
+} from "@/capture/recorder/final/transcriberApiStub";
 import type { AudioInputsSnapshot } from "@/capture/recorder/final/useAudioInputs";
 import {
   RecorderProvider,
@@ -32,6 +38,10 @@ declare global {
       patch: (patch: Partial<RecorderValue>) => void;
       /** Plugin calls that reject while their flag is set (all of them on the failing screen). */
       fail: Record<"openSettings" | "listInputs" | "modelStatus", boolean>;
+      /** What the provider answers to the next setTranscriber calls (null: decide as it would). */
+      transcriberResult: SetTranscriberResult | null;
+      /** The provider's transcriber changes from outside this screen. */
+      patchTranscriber: (patch: Partial<RecorderTranscriber>) => void;
     };
     /** The real recorder over the fake native plugin: the control calls in order, and the ones that reject while flagged. */
     exoNative?: {
@@ -72,12 +82,25 @@ const minutes = (m: number) => m * 60_000;
 
 interface Setup {
   consented: boolean;
+  /** The transcriber the provider starts with. */
+  transcriber: RecorderTranscriberId;
   /** Starts with every plugin call rejecting. */
   failing: boolean;
 }
 
-function Interactive({ consented: consentedAtStart, failing }: Setup) {
+function Interactive({
+  consented: consentedAtStart,
+  transcriber: transcriberAtStart,
+  failing,
+}: Setup) {
   const [consented, setConsented] = useState(consentedAtStart);
+  const [transcriber, setTranscriber] = useState<RecorderTranscriber>({
+    id: transcriberAtStart,
+    identifySpeakers: false,
+    source: "recording",
+  });
+  const consentedNow = useRef(consented);
+  consentedNow.current = consented;
   const [state, setState] = useState<Partial<RecorderValue>>({
     phase: "recording",
     mic: { state: "recording", reason: null },
@@ -96,10 +119,35 @@ function Interactive({ consented: consentedAtStart, failing }: Setup) {
         listInputs: failing,
         modelStatus: failing,
       },
+      transcriberResult: null,
+      patchTranscriber: () => {},
     });
     return api;
   }, []);
   log.patch = (patch) => setState((current) => ({ ...current, ...patch }));
+  log.patchTranscriber = (patch) =>
+    setTranscriber((current) => ({ ...current, ...patch }));
+
+  // The provider's transcriber API, over this screen's state.
+  const transcriberApi: TranscriberApi = {
+    transcriber,
+    setTranscriber: (id, { scope }) => {
+      log.calls.push(`transcriber:${id}:${scope}`);
+      if (log.transcriberResult !== null) {
+        if (log.transcriberResult === "locked_signed_out")
+          setTranscriber((current) => ({ ...current, id: "on-device" }));
+        return log.transcriberResult;
+      }
+      if (id === "private-cloud" && !consentedNow.current)
+        return "needs_consent";
+      setTranscriber((current) => ({ ...current, id }));
+      return "ok";
+    },
+    setIdentifySpeakers: (on, scope) => {
+      log.calls.push(`identifySpeakers:${on}:${scope}`);
+      setTranscriber((current) => ({ ...current, identifySpeakers: on }));
+    },
+  };
 
   const transcription: VoiceNoteTranscriptionProps = {
     availability: "available",
@@ -167,7 +215,7 @@ function Interactive({ consented: consentedAtStart, failing }: Setup) {
 
   return (
     <StaticRecorderProvider value={value}>
-      <PhoneRecorder inputs={inputs} />
+      <PhoneRecorder inputs={inputs} transcriberApi={transcriberApi} />
     </StaticRecorderProvider>
   );
 }
@@ -278,7 +326,19 @@ const nativeScreen: HarnessScreen = {
 
 export const recorderFinalPhoneInteractiveScreens: HarnessScreen[] = [
   nativeScreen,
-  screen("consented", { consented: true, failing: false }),
-  screen("first-run", { consented: false, failing: false }),
-  screen("failing", { consented: true, failing: true }),
+  screen("consented", {
+    consented: true,
+    transcriber: "private-cloud",
+    failing: false,
+  }),
+  screen("first-run", {
+    consented: false,
+    transcriber: "off",
+    failing: false,
+  }),
+  screen("failing", {
+    consented: true,
+    transcriber: "private-cloud",
+    failing: true,
+  }),
 ];

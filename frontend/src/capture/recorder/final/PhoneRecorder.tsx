@@ -37,8 +37,8 @@ import { useSilencedSince } from "./useSilencedSince";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
-  type TranscriptionChoiceStorage,
 } from "./useTranscriptionChoice";
+import { useTranscriberApi, type TranscriberApi } from "./transcriberApiStub";
 import { ViaMenu } from "./ViaMenu";
 import "./soft.css";
 import "./phone.css";
@@ -76,7 +76,8 @@ export interface PhoneRecorderProps {
   inputs?: AudioInputsSource | null;
   /** Starts the silence timer earlier than now (the harness). */
   silencedSinceMs?: number | null;
-  storage?: TranscriptionChoiceStorage;
+  /** The provider's transcriber API; the stand-in until the provider has it (the harness passes its own). */
+  transcriberApi?: TranscriberApi;
   /** Starts with one surface open (the harness). */
   defaultOpen?: "modes" | "via" | "discard";
 }
@@ -84,7 +85,7 @@ export interface PhoneRecorderProps {
 export function PhoneRecorder({
   inputs: inputsSource,
   silencedSinceMs: silencedSeed = null,
-  storage,
+  transcriberApi,
   defaultOpen,
 }: PhoneRecorderProps) {
   const recorder = useRecorder();
@@ -99,14 +100,22 @@ export function PhoneRecorder({
       (mic.state === "recording" && mic.reason === "no_signal"));
   const silencedSinceMs = useSilencedSince(silent, silencedSeed);
 
+  const [toast, setToast] = useState<{ message: string; key: number } | null>(
+    null,
+  );
+  const showToast = (message: string) => setToast({ message, key: Date.now() });
+
   const audio = useAudioInputs(inputsSource);
   const input = mic.input ?? audio.current;
   const onDevice = useOnDeviceModel();
+  // TODO(TC-781 transcriber API): read these from `recorder` once the provider has them.
+  const stubbedApi = useTranscriberApi(recorder.transcription);
   const choice = useTranscriptionChoice({
     shell,
     transcription: recorder.transcription,
     model: onDevice.model,
-    storage,
+    transcriber: transcriberApi ?? stubbedApi,
+    notify: showToast,
   });
 
   const view = selectRecorderView(recorderState(recorder), {
@@ -118,9 +127,6 @@ export function PhoneRecorder({
 
   const [modesOpen, setModesOpen] = useState(defaultOpen === "modes");
   const [discardOpen, setDiscardOpen] = useState(defaultOpen === "discard");
-  const [toast, setToast] = useState<{ message: string; key: number } | null>(
-    null,
-  );
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const opener = useRef<HTMLButtonElement>(null);
   const scale = useRef<HTMLDivElement>(null);
@@ -134,7 +140,6 @@ export function PhoneRecorder({
     const timer = setTimeout(() => setToast(null), TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
-  const showToast = (message: string) => setToast({ message, key: Date.now() });
 
   // The recorder provider announces every recording transition; this region only says what is new in this screen.
   const [said, setSaid] = useState("");

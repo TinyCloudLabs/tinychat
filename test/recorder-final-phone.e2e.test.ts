@@ -37,6 +37,8 @@ type Harness = {
     calls: string[];
     patch: (patch: object) => void;
     fail: Record<string, boolean>;
+    transcriberResult: string | null;
+    patchTranscriber: (patch: object) => void;
   };
 };
 
@@ -171,14 +173,14 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("the slider moves with the arrow keys; leaving Private turns the route off, and the choice is kept", async () => {
+  test("the slider moves with the arrow keys; leaving Private asks the provider for Local for this recording only", async () => {
     const { page, calls } = await open("consented");
     await modeIs(page, "Private");
     await slider(page).focus();
     await page.keyboard.press("ArrowLeft");
     await modeIs(page, "Local");
-    expect(await calls()).toEqual(["turnOff"]);
-    expect(await storedMode(page)).toBe("local");
+    expect(await calls()).toEqual(["transcriber:on-device:recording"]);
+    expect(await storedMode(page)).toBeNull();
     await text(page.getByTestId("phone-recorder-announcer"), "Local selected");
     await page.context().close();
   });
@@ -192,7 +194,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.mouse.move(box.x + 12, y, { steps: 6 });
     await page.mouse.up();
     await modeIs(page, "Skip");
-    expect(await calls()).toEqual(["turnOff"]);
+    expect(await calls()).toEqual(["transcriber:off:recording"]);
 
     await page.mouse.move(box.x + 12, y);
     await page.mouse.down();
@@ -203,29 +205,35 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("first run: Private is not shown or stored until consent; consent turns the route on", async () => {
+  test("first run: the scale shows the provider's mode; Private waits on consent, then asks again", async () => {
     const { page, calls, activeName } = await open("first-run");
     await modeIs(page, "Skip");
     await shown(page.getByText("Just the recording, kept on this phone."));
-    expect(await storedMode(page)).toBeNull();
 
     await slider(page).focus();
     await page.keyboard.press("ArrowRight");
     await modeIs(page, "Local");
-    expect(await storedMode(page)).toBe("local");
     await page.keyboard.press("ArrowRight");
     const dialog = page.getByRole("dialog", { name: "Use private cloud?" });
     await shown(dialog);
     expect(await activeName()).toBe("Use private cloud");
     await modeIs(page, "Local");
-    expect(await calls()).toEqual([]);
+    expect(await calls()).toEqual([
+      "transcriber:on-device:recording",
+      "transcriber:private-cloud:recording",
+    ]);
 
     await page.getByRole("button", { name: "Use private cloud" }).click();
-    expect(await calls()).toEqual(["consent"]);
     await modeIs(page, "Private");
-    expect(await storedMode(page)).toBe("private");
     await gone(dialog);
     await focused(slider(page));
+    expect(await calls()).toEqual([
+      "transcriber:on-device:recording",
+      "transcriber:private-cloud:recording",
+      "consent",
+      "transcriber:private-cloud:recording",
+    ]);
+    expect(await storedMode(page)).toBeNull();
     await page.context().close();
   });
 
@@ -246,15 +254,71 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       await gone(dialog);
       await focused(slider(page));
     }
-    expect(await calls()).toEqual([]);
-    expect(await storedMode(page)).toBe("local");
+    expect((await calls()).filter((c) => c === "consent")).toEqual([]);
+    await modeIs(page, "Local");
 
     await page.keyboard.press("ArrowRight");
     await shown(dialog);
     await page.getByRole("button", { name: "Use private cloud" }).click();
     await gone(dialog);
     await focused(slider(page));
-    expect(await calls()).toEqual(["consent"]);
+    expect((await calls()).filter((c) => c === "consent")).toEqual(["consent"]);
+    await page.context().close();
+  });
+
+  test("the scale always shows the provider's transcriber, including when it changes from outside while mounted", async () => {
+    const { page, calls } = await open("consented");
+    await modeIs(page, "Private");
+    for (const [id, label] of [
+      ["off", "Skip"],
+      ["on-device", "Local"],
+      ["private-cloud", "Private"],
+    ] as const) {
+      await page.evaluate(
+        (next) =>
+          (window as unknown as Harness).exoRecorder.patchTranscriber({
+            id: next,
+          }),
+        id,
+      );
+      await modeIs(page, label);
+    }
+    expect(await calls()).toEqual([]);
+    await page.context().close();
+  });
+
+  test("the provider can refuse: a toast says why, the scale stays where the provider is, and the failure is logged", async () => {
+    const { page, errors } = await open("consented");
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "unavailable";
+    });
+    await slider(page).focus();
+    await page.keyboard.press("ArrowLeft");
+    await shown(page.getByText("Not available right now").first());
+    await modeIs(page, "Private");
+    expect(errors.some((text) => text.includes("cannot use on-device"))).toBe(
+      true,
+    );
+    await page.context().close();
+  });
+
+  test("signed out: the provider forces on-device, Local is shown and the other stops say why they are off", async () => {
+    const { page } = await open("consented");
+    await page.evaluate(() => {
+      (window as unknown as Harness).exoRecorder.transcriberResult =
+        "locked_signed_out";
+    });
+    await slider(page).focus();
+    await page.keyboard.press("ArrowLeft");
+    await modeIs(page, "Local");
+    await shown(page.getByText("Sign in to choose another mode").first());
+    const available = await page
+      .locator("[data-available]")
+      .evaluateAll((stops) =>
+        stops.map((stop) => stop.getAttribute("data-available")),
+      );
+    expect(available).toEqual(["false", "true", "false", "false"]);
     await page.context().close();
   });
 
@@ -325,7 +389,10 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await menu.getByRole("menuitemradio", { name: "AirPods Pro" }).click();
     await gone(menu);
     await focused(via);
-    expect(await calls()).toEqual(["turnOff", "select:airpods"]);
+    expect(await calls()).toEqual([
+      "transcriber:on-device:recording",
+      "select:airpods",
+    ]);
     await page.context().close();
   });
 

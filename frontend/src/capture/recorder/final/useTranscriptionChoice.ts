@@ -6,27 +6,34 @@ import {
 import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import {
-  readIdentifySpeakers,
-  readMode,
   scaleStops,
-  writeIdentifySpeakers,
-  writeMode,
   type ModeId,
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
+import type {
+  RecorderTranscriberId,
+  SetTranscriberResult,
+  TranscriberApi,
+} from "./transcriberApiStub";
 
 export const PRIVATE_UNAVAILABLE = "Not available right now";
+export const SIGNED_OUT = "Sign in to choose another mode";
+
+export const TRANSCRIBER_FOR: Record<ModeId, RecorderTranscriberId> = {
+  skip: "off",
+  local: "on-device",
+  private: "private-cloud",
+  powerful: "assemblyai",
+};
+const MODE_FOR = Object.fromEntries(
+  Object.entries(TRANSCRIBER_FOR).map(([mode, id]) => [id, mode]),
+) as Record<RecorderTranscriberId, ModeId>;
 
 export interface ScaleStop {
   stop: ModeStop;
   available: boolean;
   reason?: string;
-}
-
-export interface TranscriptionChoiceStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
 }
 
 /**
@@ -83,27 +90,38 @@ export interface TranscriptionChoiceOptions {
   shell: ModeShell;
   transcription: VoiceNoteTranscriptionProps | undefined;
   model: OnDeviceSttStatus | null;
-  storage?: TranscriptionChoiceStorage;
+  transcriber: TranscriberApi;
+  /** Tells the user something that did not work. */
+  notify: (message: string) => void;
 }
 
 /**
- * The privacy scale's state. Private is the existing private-cloud route: it
- * is offered when the build and account offer it, and the first time it is
- * chosen the one-time consent step runs, as in TranscriptionRouteControl.
- * Choosing any other mode turns a given consent off, as its Off does. Private
- * is displayed and stored only once consent is given.
+ * The privacy scale's state. The mode shown is always the provider's
+ * `transcriber.id`: a choice is a request to the provider for this recording,
+ * and the scale moves only when the provider says so. Private asks for the
+ * one-time consent when the provider says it needs it, then asks again.
  */
 export function useTranscriptionChoice({
   shell,
   transcription,
   model,
-  storage = globalThis.localStorage,
+  transcriber: api,
+  notify,
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
+  const mode = MODE_FOR[api.transcriber.id];
+
+  const [locked, setLocked] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [pending, setPending] = useState<ModeId | null>(null);
+  const [retry, setRetry] = useState<ModeId | null>(null);
 
   const stops: ScaleStop[] = scaleStops(shell, model).map(
     ({ availability, ...stop }) => {
+      if (locked && stop.id !== "local")
+        return { stop, available: false, reason: SIGNED_OUT };
+      if (locked) return { stop, available: true };
       if (stop.id === "private" && !offered)
         return { stop, available: false, reason: PRIVATE_UNAVAILABLE };
       return availability.available
@@ -111,49 +129,57 @@ export function useTranscriptionChoice({
         : { stop, available: false, reason: availability.reason };
     },
   );
-  const isAvailable = (id: ModeId) =>
-    stops.some((s) => s.stop.id === id && s.available);
 
-  const [stored, setStored] = useState<ModeId>(() =>
-    readMode(shell, model, storage),
-  );
-  const [speakers, setSpeakers] = useState(() => readIdentifySpeakers(storage));
-  const [asking, setAsking] = useState(false);
+  const failed = (what: string, caught: unknown) => {
+    console.error(`[Recorder] Could not ${what}`, caught);
+    notify(
+      `Could not ${what}: ${caught instanceof Error ? caught.message : String(caught)}`,
+    );
+  };
 
-  // The scale shows the route the recorder will take. Private only counts once
-  // consent is given, as TranscriptionRouteControl treats an unconsented route
-  // as Off; until then the stored wish waits and the scale rests on the next
-  // available stop.
-  const wanted: ModeId = isAvailable(stored)
-    ? stored
-    : (stops.find((s) => s.available)?.stop.id ?? stored);
-  const needsConsent = wanted === "private" && offered && !consented;
-  const mode: ModeId = needsConsent
-    ? (stops.find((s) => s.available && s.stop.id !== "private")?.stop.id ??
-      "local")
-    : wanted;
+  const request = async (id: ModeId) => {
+    let result: SetTranscriberResult;
+    try {
+      result = await api.setTranscriber(TRANSCRIBER_FOR[id], {
+        scope: "recording",
+      });
+    } catch (caught) {
+      failed("change the transcription mode", caught);
+      return;
+    }
+    switch (result) {
+      case "ok":
+        return;
+      case "needs_consent":
+        setPending(id);
+        setAsking(true);
+        return;
+      case "locked_signed_out":
+        setLocked(true);
+        notify(SIGNED_OUT);
+        return;
+      case "unavailable":
+        console.error(
+          `[Recorder] The provider cannot use ${TRANSCRIBER_FOR[id]} right now`,
+        );
+        notify(PRIVATE_UNAVAILABLE);
+        return;
+    }
+  };
 
-  const commit = useCallback(
-    (id: ModeId) => {
-      writeMode(id, shell, storage, model);
-      setStored(id);
-    },
-    [shell, model, storage],
-  );
+  // Consent is given through the existing route; the request is repeated once the route reports it.
+  useEffect(() => {
+    if (retry === null || !consented) return;
+    setRetry(null);
+    void request(retry);
+  }, [retry, consented]);
 
-  /** Returns why a stop cannot be chosen, or null when the choice was taken (or is waiting on consent). */
+  /** Returns why a stop cannot be chosen, or null when the request was sent. */
   const select = (id: ModeId): string | null => {
     const stop = stops.find((s) => s.stop.id === id);
     if (!stop) throw new Error(`Unknown transcription mode: ${id}`);
     if (!stop.available) return stop.reason ?? "Not available";
-    if (id === "private") {
-      if (!consented) setAsking(true);
-      else if (mode !== "private") commit(id);
-      return null;
-    }
-    if (id === mode && stored === id) return null;
-    if (consented) transcription?.onTurnOff();
-    commit(id);
+    if (id !== mode) void request(id);
     return null;
   };
 
@@ -173,13 +199,22 @@ export function useTranscriptionChoice({
 
   const confirmConsent = () => {
     transcription?.onConsent();
-    commit("private");
     setAsking(false);
+    setRetry(pending);
+    setPending(null);
   };
 
-  const setIdentifySpeakers = (enabled: boolean) => {
-    writeIdentifySpeakers(enabled, storage);
-    setSpeakers(enabled);
+  const dismissConsent = () => {
+    setAsking(false);
+    setPending(null);
+  };
+
+  const setIdentifySpeakers = async (enabled: boolean) => {
+    try {
+      await api.setIdentifySpeakers(enabled, "recording");
+    } catch (caught) {
+      failed("change Identify speakers", caught);
+    }
   };
 
   return {
@@ -187,11 +222,10 @@ export function useTranscriptionChoice({
     stops,
     select,
     step,
-    identifySpeakers: speakers,
+    identifySpeakers: api.transcriber.identifySpeakers,
     setIdentifySpeakers,
     asking,
-    needsConsent,
-    dismissConsent: () => setAsking(false),
+    dismissConsent,
     confirmConsent,
     maxMinutes: Math.round((transcription?.maxSeconds ?? 0) / 60),
   };

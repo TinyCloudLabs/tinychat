@@ -21,7 +21,6 @@ const PRIVATE_ON: VoiceNoteTranscriptionProps = {
   onTurnOff: noop,
   onRecheck: noop,
 };
-const storage = { getItem: () => null, setItem: noop };
 
 const LIVE: Partial<RecorderValue> = {
   phase: "recording",
@@ -41,7 +40,7 @@ const render = (
     <MemoryRouter>
       <PlatformContext.Provider value="ios">
         <StaticRecorderProvider value={{ ...LIVE, ...patch }}>
-          <PhoneRecorder storage={storage} {...props} />
+          <PhoneRecorder {...props} />
         </StaticRecorderProvider>
       </PlatformContext.Provider>
     </MemoryRouter>,

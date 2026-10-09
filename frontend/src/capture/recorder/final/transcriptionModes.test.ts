@@ -2,31 +2,16 @@ import { describe, expect, test } from "bun:test";
 import type { OnDeviceSttStatus } from "@/lib/voiceNotes/onDeviceStt";
 import {
   availableStops,
-  defaultMode,
   identifySpeakersControl,
   MODE_STOPS,
   modeAvailability,
   modeShortLabel,
   moveMode,
-  readIdentifySpeakers,
-  readMode,
   scaleStops,
   SKIP_ENABLED,
-  writeIdentifySpeakers,
-  writeMode,
   type ModeFeatures,
   type ModeShell,
 } from "./transcriptionModes";
-
-function storage(initial: Record<string, string> = {}) {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (key: string) => data.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      data.set(key, value);
-    },
-  };
-}
 
 function model(
   state: OnDeviceSttStatus["models"][number]["state"],
@@ -294,39 +279,8 @@ describe("transcription modes availability", () => {
   });
 });
 
-describe("transcription mode defaults and storage", () => {
-  test("phone and web default to Private; desktop defaults depend on Whisper", () => {
-    expect(defaultMode("phone", model("ready"))).toBe("private");
-    expect(defaultMode("web")).toBe("private");
-    expect(defaultMode("desktop", null, true)).toBe("local");
-    expect(defaultMode("desktop", null, false)).toBe("private");
-    for (const shell of shells) {
-      expect(defaultMode(shell, model("ready"), true)).not.toBe("powerful");
-      expect(defaultMode(shell, model("ready"), true)).toBe(
-        shell === "desktop" ? "local" : "private",
-      );
-    }
-  });
-
-  test("sticky selections round-trip and unavailable stored modes fall back to the shell default", () => {
-    const selected = storage();
-    writeMode("local", "desktop", selected, null, true);
-    expect(readMode("desktop", null, selected, true)).toBe("local");
-    expect(readMode("desktop", null, selected, false)).toBe("private");
-
-    const privateChoice = storage();
-    writeMode("private", "phone", privateChoice, model("absent"));
-    expect(readMode("phone", model("absent"), privateChoice)).toBe("private");
-  });
-});
-
 describe("Identify speakers", () => {
-  test("is sticky, off by default, enabled only for selected Powerful, and changes its short label", () => {
-    const selected = storage();
-    expect(readIdentifySpeakers(selected)).toBe(false);
-    writeIdentifySpeakers(true, selected);
-    expect(readIdentifySpeakers(selected)).toBe(true);
-
+  test("is enabled only for selected Powerful, and changes its short label", () => {
     expect(identifySpeakersControl("private", true, true)).toMatchObject({
       checked: true,
       disabled: true,
