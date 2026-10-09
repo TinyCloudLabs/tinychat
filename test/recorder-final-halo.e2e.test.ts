@@ -99,88 +99,126 @@ test("recorder-final halo renders its centre pixel in WebKit", async () => {
   }
 }, 60_000);
 
-test("recorder-final halo rings stay painted after the main thread stalls", async () => {
-  for (const theme of ["light", "dark"] as const) {
-    const context = await browser!.newContext({
-      viewport: { width: 390, height: 4400 },
-      deviceScaleFactor: 2,
-      isMobile: true,
-      hasTouch: true,
-      colorScheme: theme,
-      reducedMotion: "reduce",
-    });
-    try {
-      const page = await context.newPage();
-      await page.goto(
-        `http://127.0.0.1:${server!.port}/?screen=recorder-final-halo&theme=${theme}&platform=web&freeze=1&haloStall=800`,
-      );
-      await page.waitForFunction(
-        () => window.haloStall?.done === true,
-        undefined,
-        { timeout: 20_000 },
-      );
-      await page.evaluate(
-        () =>
-          new Promise<void>((resolve) =>
-            requestAnimationFrame(() =>
-              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-            ),
-          ),
-      );
-      const { ready, canvases } = (await page.evaluate(inspectHaloPixels, {
-        diagnostics: true,
-      })) as { ready: boolean; canvases: unknown[] };
-      if (!ready) {
-        await page
-          .screenshot({ path: `${output}halo-${theme}-stall-failure.png` })
-          .catch(() => {});
-      }
-      expect(ready, JSON.stringify(canvases)).toBe(true);
-      await page.close();
-    } finally {
-      await context.close();
-    }
+const loads = Number(process.env.HALO_LOADS ?? 2);
+const stallMs = Number(process.env.HALO_STALL ?? 800);
+const reportOnly = process.env.HALO_REPORT === "1";
+
+interface BlankEpisode {
+  ring: number;
+  startFrame: number;
+  frames: number;
+  ms: number;
+}
+
+// Samples every ring's centre on each animation frame after the injected stall
+// (every ring has been drawn by then) and records each run of transparent
+// frames as an episode.
+async function blankEpisodesAfterStall(theme: "light" | "dark") {
+  const context = await browser!.newContext({
+    viewport: { width: 390, height: 4400 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+    colorScheme: theme,
+    reducedMotion: "reduce",
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto(
+      `http://127.0.0.1:${server!.port}/?screen=recorder-final-halo&theme=${theme}&platform=web&freeze=1&haloStall=${stallMs}`,
+    );
+    await page.waitForFunction(
+      () => window.haloStall?.done === true,
+      undefined,
+      { timeout: 60_000 },
+    );
+    return await page.evaluate(
+      () =>
+        new Promise<{ canvases: number; episodes: BlankEpisode[] }>(
+          (resolve) => {
+            const canvases = [
+              ...document.querySelectorAll<HTMLCanvasElement>(
+                ".halo-ring__canvas",
+              ),
+            ];
+            const open = new Map<number, BlankEpisode & { t0: number }>();
+            const episodes: BlankEpisode[] = [];
+            let frame = 0;
+            const close = (ring: number, now: number) => {
+              const episode = open.get(ring);
+              if (!episode) return;
+              open.delete(ring);
+              episodes.push({
+                ring,
+                startFrame: episode.startFrame,
+                frames: episode.frames,
+                ms: Math.round(now - episode.t0),
+              });
+            };
+            const sample = (now: number) => {
+              canvases.forEach((canvas, ring) => {
+                const context = canvas.getContext("2d");
+                const blank =
+                  !context ||
+                  canvas.width < 2 ||
+                  context.getImageData(
+                    canvas.width >> 1,
+                    canvas.height >> 1,
+                    1,
+                    1,
+                  ).data[3] === 0;
+                const episode = open.get(ring);
+                if (blank && episode) episode.frames++;
+                else if (blank)
+                  open.set(ring, {
+                    ring,
+                    startFrame: frame,
+                    frames: 1,
+                    ms: 0,
+                    t0: now,
+                  });
+                else close(ring, now);
+              });
+              if (++frame < 40) requestAnimationFrame(sample);
+              else {
+                for (const ring of [...open.keys()]) close(ring, now);
+                resolve({ canvases: canvases.length, episodes });
+              }
+            };
+            requestAnimationFrame(sample);
+          },
+        ),
+    );
+  } finally {
+    await context.close();
   }
-}, 90_000);
+}
 
-const loads = Number(process.env.HALO_LOADS ?? 0);
-
-test.skipIf(loads === 0)(
-  `recorder-final halo paints every ring across ${loads} fresh loads`,
+test(
+  "recorder-final halo rings stay painted after the main thread stalls",
   async () => {
+    const blank: string[] = [];
     for (let load = 0; load < loads; load++) {
       if (load > 0 && load % 10 === 0) {
         await browser?.close();
         browser = await webkit.launch({ headless: true });
       }
-      const theme = load % 2 === 0 ? "light" : "dark";
-      const context = await browser!.newContext({
-        viewport: { width: 390, height: 4400 },
-        deviceScaleFactor: 2,
-        isMobile: true,
-        hasTouch: true,
-        colorScheme: theme,
-        reducedMotion: "reduce",
-      });
-      try {
-        const page = await context.newPage();
-        await page.goto(
-          `http://127.0.0.1:${server!.port}/?screen=recorder-final-halo&theme=${theme}&platform=web&freeze=1`,
+      const { canvases, episodes } = await blankEpisodesAfterStall(
+        load % 2 === 0 ? "light" : "dark",
+      );
+      expect(canvases).toBe(8);
+      for (const episode of episodes) {
+        blank.push(
+          `load ${load}: ring ${episode.ring} blank from frame ${episode.startFrame} for ${episode.frames} frames / ${episode.ms} ms`,
         );
-        await page.waitForFunction(
-          () => window.exoUi?.ready === true,
-          undefined,
-          { timeout: 20_000 },
-        );
-        await page.waitForTimeout(500);
-        const { ready, canvases } = (await page.evaluate(inspectHaloPixels, {
-          diagnostics: true,
-        })) as { ready: boolean; canvases: unknown[] };
-        expect(ready, `load ${load}: ${JSON.stringify(canvases)}`).toBe(true);
-      } finally {
-        await context.close();
       }
     }
+    const blankLoads = new Set(blank.map((line) => line.split(":")[0])).size;
+    console.log(
+      `HALO_STALL_RESULT blankLoads=${blankLoads}/${loads} episodes=${blank.length} stall=${stallMs}ms`,
+    );
+    for (const line of blank) console.log(`HALO_STALL_EPISODE ${line}`);
+    if (!reportOnly) expect(blank).toEqual([]);
   },
-  loads * 20_000,
+  Math.max(1, loads) * 40_000,
 );
