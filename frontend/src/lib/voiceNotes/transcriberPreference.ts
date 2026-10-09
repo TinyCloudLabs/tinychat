@@ -44,7 +44,9 @@ export async function readDefaultTranscriber(): Promise<TranscriberId> {
 async function writePreference(pref: CaptureOptions): Promise<void> {
   const current = await VoiceNotes.getCaptureDefaults();
   const effective = effectiveCaptureOptions(pref, current.accountDid !== null);
-  await VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen });
+  // A preference write must not re-assign the previous DID during sign-out.
+  if (current.status !== "transitioning")
+    await VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen });
   memoryPreference = pref;
   try {
     storage()?.setItem(TRANSCRIBER_KEY, pref.transcriber);

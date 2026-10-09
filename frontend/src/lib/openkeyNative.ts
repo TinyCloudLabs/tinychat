@@ -368,12 +368,14 @@ export async function signInNative(
 export async function retireNativeSessionAtBoot(
   config: Pick<NativeSignInConfig, "tinycloudHost" | "env">,
   deps?: Pick<NativeSignInDeps, "createOpenKeyNative">,
+  beforeRetire?: () => Promise<void>,
 ): Promise<boolean> {
   const env = config.env ?? import.meta.env;
   const create = deps?.createOpenKeyNative ?? (await defaultDeps()).createOpenKeyNative;
   const openkey = nativeClient(nativeClientOptions(env, config.tinycloudHost), create);
   const current = await openkey.current();
   if (!current) return false;
+  await beforeRetire?.();
   await openkey.signOut();
   return true;
 }

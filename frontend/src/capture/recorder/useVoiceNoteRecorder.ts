@@ -6,7 +6,8 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { nativeVoiceNotesAvailable, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { pendingStore, type PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription";
 import type { RecorderState } from "./recorderReducer";
@@ -14,15 +15,17 @@ import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTran
 import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 export interface VoiceNoteRecorderOptions {
-  tcw: TinyCloudWeb;
+  tcw: TinyCloudWeb | null;
   /** False turns the recorder off until the session's native defaults are set. */
   enabled?: boolean;
   backendUrl?: string;
   sessionStore?: SessionStore;
   /** A recording landed in the space (by Stop, the limit, or a pending save). */
   onSaved?: (recording: VoiceNoteRecording) => void;
+  pipeline?: VoiceNotePipeline | null;
 }
 
 export interface VoiceNoteRecorder {
@@ -50,18 +53,18 @@ export interface VoiceNoteRecorder {
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
-export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
-  const available = enabled && nativeVoiceNotesAvailable();
+export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionStore, onSaved, pipeline }: VoiceNoteRecorderOptions): VoiceNoteRecorder {
+  const available = enabled && captureEngineAvailable();
 
   // Private cloud transcription for this account (null without one), shared across mounts.
   const transcriber = useMemo(
     () =>
-      available && backendUrl !== undefined && sessionStore !== undefined
+      available && tcw !== null && backendUrl !== undefined && sessionStore !== undefined
         ? voiceNoteTranscriberFor(tcw, backendUrl, sessionStore)
         : null,
     [available, backendUrl, sessionStore, tcw],
   );
-  const controller = useMemo(() => createVoiceNoteRecorderController({ tcw, available, transcriber }), [available, tcw, transcriber]);
+  const controller = useMemo(() => createVoiceNoteRecorderController({ tcw, available, transcriber, pipeline }), [available, tcw, transcriber, pipeline]);
   useEffect(() => controller.setOnSaved(onSaved), [controller, onSaved]);
   useEffect(() => controller.attach(), [controller]);
 

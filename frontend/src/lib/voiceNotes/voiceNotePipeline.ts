@@ -10,12 +10,15 @@ export interface VoiceNotePipeline {
   /** T19 calls setCaptureDefaults on ready before this association and upload pass. */
   reconcileAll(ctx: AccountContext): Promise<void>;
   cancelAll(): void;
+  resume(): void;
+  isAccepting(): boolean;
   quiescent(timeoutMs: number): Promise<boolean>;
 }
 
 /** T22 extends these lanes with transcription and cleanup, retaining this API. */
 export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
   let cancellation = 0;
+  let accepting = true;
   const active = new Set<Promise<void>>();
   const run = (job: () => Promise<void>): Promise<void> => {
     const promise = job();
@@ -25,6 +28,7 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
   };
   const checkFor = (ctx: AccountContext, epoch: number) => () => {
     assertCurrent(ctx);
+    if (!accepting) throw new Error("Voice-note save is suspended during account transition");
     if (epoch !== cancellation) throw new Error("Voice-note save was cancelled");
     if (tcw.did !== ctx.did || tcw.spaceId !== ctx.spaceId) throw new Error("Voice-note space changed");
   };
@@ -45,10 +49,12 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
   };
   return {
     process(ctx, id) {
+      if (!accepting) return Promise.reject(new Error("Voice-note save is suspended during account transition"));
       const epoch = cancellation;
       return run(() => processOne(ctx, id, epoch));
     },
     reconcileAll(ctx) {
+      if (!accepting) return Promise.reject(new Error("Voice-note save is suspended during account transition"));
       const epoch = cancellation;
       return run(async () => {
         const check = checkFor(ctx, epoch);
@@ -82,7 +88,9 @@ export function createVoiceNotePipeline(tcw: TinyCloudWeb): VoiceNotePipeline {
         if (discardError) throw discardError;
       });
     },
-    cancelAll() { cancellation++; },
+    cancelAll() { accepting = false; cancellation++; },
+    resume() { accepting = true; },
+    isAccepting() { return accepting; },
     async quiescent(timeoutMs) {
       if (active.size === 0) return true;
       const settled = Promise.allSettled([...active]).then(() => true);

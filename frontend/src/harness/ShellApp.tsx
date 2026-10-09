@@ -23,7 +23,7 @@ import { ConnectorsPage } from "@/chat/ConnectorsPage";
 import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
-import { OfflineVoiceNotes } from "@/chat/OfflineVoiceNotes";
+import { LocalCaptureHome } from "@/capture/local/LocalCaptureHome";
 import { SettingsPage } from "@/chat/SettingsPage";
 import { AboutPage } from "@/chat/AboutPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
@@ -210,13 +210,10 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
-          <main className="h-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
-            <BootSurface
-              state={state}
-              error={null}
-              onAction={() => {}}
-              voiceNotes={state === "offline" && voiceNotesInApp ? <OfflineVoiceNotes /> : null}
-            />
+          <main className="h-full overflow-y-auto pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
+            {state === "offline" && voiceNotesInApp
+              ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider>
+              : <BootSurface state={state} error={null} onAction={() => {}} />}
           </main>
         )}
       </div>
