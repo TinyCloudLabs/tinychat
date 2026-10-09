@@ -402,8 +402,8 @@ pub fn delete_audio_file(app: tauri::AppHandle, id: String) -> Result<(), String
 }
 
 fn delete_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
-    let path = audio_path(&root, &id)?;
-    let marker = sealed_path(&root, &id)?;
+    let path = audio_path(root, id)?;
+    let marker = sealed_path(root, id)?;
     match fs::remove_file(path) {
         Ok(()) => (),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -414,7 +414,7 @@ fn delete_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
         Err(e) => return Err(e.to_string()),
     }
-    for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -433,7 +433,7 @@ fn delete_at(root: &Path, sessions: &Path, id: &str) -> Result<(), String> {
             fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
         }
     }
-    File::open(&root)
+    File::open(root)
         .and_then(|d| d.sync_all())
         .map_err(|e| e.to_string())
 }

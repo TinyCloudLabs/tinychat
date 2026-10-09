@@ -29,7 +29,7 @@ pub struct ExtrasState {
     pub watching: Mutex<HashSet<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Preferences {
     #[serde(default)]
@@ -38,16 +38,6 @@ struct Preferences {
     system_audio: bool,
     #[serde(default)]
     auto_save_to_space: bool,
-}
-
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            selected_model: None,
-            system_audio: false,
-            auto_save_to_space: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]

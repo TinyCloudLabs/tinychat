@@ -875,10 +875,12 @@ mod tests {
     use super::*;
     #[test]
     fn elapsed_excludes_pause() {
-        let mut state = EngineState::default();
-        state.id = Some("note".into());
-        state.recorded_ms = 1_250;
-        state.pause_started = Some(Instant::now() - Duration::from_secs(2));
+        let state = EngineState {
+            id: Some("note".into()),
+            recorded_ms: 1_250,
+            pause_started: Some(Instant::now() - Duration::from_secs(2)),
+            ..Default::default()
+        };
         let status = state.status();
         assert_eq!(status.elapsed_ms, 1_250);
         assert!(status.paused_ms >= 2_000);

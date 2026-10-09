@@ -119,7 +119,7 @@ pub fn run() {
             app.manage(recorder::extras::ExtrasState::default());
             recorder::engine::install(app);
             recorder::extras::install(app);
-            tauri::async_runtime::block_on(recorder::extras::load_system_audio(&app.handle()))
+            tauri::async_runtime::block_on(recorder::extras::load_system_audio(app.handle()))
                 .map_err(std::io::Error::other)?;
             app.add_capability(include_str!(
                 "../capabilities-transcription/transcription.json"
