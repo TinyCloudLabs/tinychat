@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import xyz.tinycloud.exo.capture.core.SAMPLE_RATE
+import xyz.tinycloud.exo.capture.core.MicStateContract
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -87,7 +88,7 @@ class AudioCapture(
                 try { onPcm(pcm); firstPcm.countDown() } catch (e: Exception) {
                     writerFailure = e
                     firstPcm.countDown()
-                    onError("write_failed", e.message ?: e.javaClass.simpleName)
+                    onError(MicStateContract.WRITE_FAILED, e.message ?: e.javaClass.simpleName)
                     running.set(false); producerDone.set(true)
                     queue.clear()
                     break
@@ -102,7 +103,7 @@ class AudioCapture(
             while (running.get()) {
                 val n = record.read(scratch, 0, scratch.size, AudioRecord.READ_BLOCKING)
                 if (n < 0) {
-                    if (running.get() && !cutting.get()) onError("read_error",
+                    if (running.get() && !cutting.get()) onError(MicStateContract.READ_ERROR,
                         if (n == AudioRecord.ERROR_DEAD_OBJECT) "AudioRecord.ERROR_DEAD_OBJECT" else "AudioRecord.read returned $n")
                     break
                 }
@@ -117,7 +118,7 @@ class AudioCapture(
                     if (!accepted) tailLost = true
                 }
                 if (!accepted) {
-                    if (!stalled) { stalled = true; onError("writer_stalled", null) }
+                    if (!stalled) { stalled = true; onError(MicStateContract.WRITER_STALLED, null) }
                 } else if (stalled) { stalled = false; onError("writer_resumed", null) }
                 val now = System.currentTimeMillis()
                 if (now - lastLevel >= 50) {
@@ -135,7 +136,7 @@ class AudioCapture(
             while (running.get()) {
                 try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
                 if (running.get() && !cutting.get() && SystemClock.elapsedRealtime() - lastReadAt >= 3000) {
-                    onError("stalled", null)
+                    onError(MicStateContract.STALLED, null)
                     return@Thread
                 }
             }
