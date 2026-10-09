@@ -46,7 +46,7 @@ import {
   type PrivateCloudTranscript,
   type PtxPutResponse,
 } from "../privateCloud";
-import { nativeHttpFileUploadSupported, VoiceNotes } from "./nativeVoiceNotes";
+import { nativeHttpFileUploadSupported, VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 import { readTranscriptCommit } from "./voiceNoteCommits";
 import {
   MAX_ENCODED_BYTES_PER_SECOND,
@@ -828,6 +828,10 @@ export async function transcribeVoiceNote(args: {
     return note.data.transcript.status;
   }
   const nativeNote = (await VoiceNotes.listPending()).recordings.find((recording) => recording.id === sourceId);
+  // A manual Retry must obey the committed choice too. V1 notes have no options and retain
+  // their historical, consent-gated private-cloud behaviour.
+  if (nativeNote?.options && nativeNote.options.transcriber !== "private-cloud")
+    throw new PrivateCloudError("transcription_off", "This note was not recorded for private-cloud transcription");
   if (nativeNote?.owner && nativeNote.owner !== tcw.did)
     throw new PrivateCloudError("transcript_save_failed", "This voice note is not owned by the current account");
   const local = nativeNote ? (await VoiceNotes.getTranscript({ id: sourceId })).transcript : null;
@@ -923,8 +927,8 @@ export interface VoiceNoteTranscriber {
   turnOff(): Promise<void>;
   /** Transcribe / Retry for one note. Only while available and consented. */
   transcribe(sourceId: string, audio?: VoiceNoteAudio): void;
-  /** A recording was just saved: transcribed when on and within the limit. */
-  noteSaved(recording: { id: string; durationMs: number }, audio?: VoiceNoteAudio): void;
+  /** Use the committed native options; v1 notes without options keep their consent-gated behaviour. */
+  noteSaved(recording: Pick<VoiceNoteRecording, "id" | "durationMs" | "options">, audio?: VoiceNoteAudio): void;
 }
 
 export interface VoiceNoteTranscriberDeps {
@@ -1087,6 +1091,7 @@ export function createVoiceNoteTranscriber(deps: VoiceNoteTranscriberDeps): Voic
     },
 
     noteSaved(recording, audio) {
+      if (recording.options && recording.options.transcriber !== "private-cloud") return;
       if (!on()) return;
       if (recording.durationMs / 1000 > maxTranscriptionSeconds(state.capabilities)) return; // the card says why
       enqueue(recording.id, audio);
