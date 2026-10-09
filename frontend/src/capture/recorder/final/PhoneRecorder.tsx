@@ -35,6 +35,7 @@ import {
 } from "./transcriptionModes";
 import { useAudioInputs, type AudioInputsSource } from "./useAudioInputs";
 import { useSilencedSince } from "./useSilencedSince";
+import { MicDeniedAction } from "./shell/MicDeniedAction";
 import {
   useOnDeviceModel,
   useTranscriptionChoice,
@@ -404,25 +405,21 @@ export function PhoneRecorder({
         ))}
         {idleDenied ? (
           <div className="pr-controls">
-            <button
-              type="button"
-              className="pr-b primary"
-              onClick={openSettings}
-            >
-              Open Settings
-            </button>
+            <MicDeniedAction
+              idle={phase === "idle"}
+              onOpenSettings={openSettings}
+              onTryAgain={recorder.record}
+            />
           </div>
         ) : (
           <>
             {view.controls.openSettings && (
               <div className="pr-controls" style={{ paddingBottom: 0 }}>
-                <button
-                  type="button"
-                  className="pr-b primary"
-                  onClick={openSettings}
-                >
-                  Open Settings
-                </button>
+                <MicDeniedAction
+                  idle={phase === "idle"}
+                  onOpenSettings={openSettings}
+                  onTryAgain={recorder.record}
+                />
               </div>
             )}
             <div className="pr-controls">

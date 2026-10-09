@@ -39,7 +39,7 @@ const noop = () => {};
 
 // A steady moderate level, re-sent so the ring stays active (it goes quiet 450ms after the last sample).
 const STEADY_LEVEL = 0.15;
-const steadyLevel: RecorderValue["subscribeLevel"] = (listener) => {
+export const steadyLevel: RecorderValue["subscribeLevel"] = (listener) => {
   listener(STEADY_LEVEL);
   const timer = setInterval(() => listener(STEADY_LEVEL), 100);
   return () => clearInterval(timer);
@@ -58,7 +58,7 @@ const PRIVATE_CLOUD_ON: VoiceNoteTranscriptionProps = {
 
 const minutes = (m: number, s = 0) => (m * 60 + s) * 1000;
 
-const LIVE: Partial<RecorderValue> = {
+export const LIVE: Partial<RecorderValue> = {
   phase: "recording",
   mic: { state: "recording", reason: null },
   startedAt: FROZEN_NOW - minutes(12, 48),
@@ -83,7 +83,7 @@ const SNAPSHOT: AudioInputsSnapshot = {
   activeId: "mac",
 };
 
-const INPUTS: NonNullable<DesktopRecorderSeed["inputs"]> = {
+export const INPUTS: NonNullable<DesktopRecorderSeed["inputs"]> = {
   list: async () => SNAPSHOT,
   select: async () => {},
   subscribe: () => noop,
@@ -118,7 +118,7 @@ export const ON_DEVICE_STT: OnDeviceSttPlugin = {
   addListener: async () => ({ remove: async () => {} }),
 };
 
-function Frame({
+export function Frame({
   seed,
   recorder,
   start = false,

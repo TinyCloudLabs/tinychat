@@ -94,7 +94,8 @@ export default defineConfig(({ command }) => ({
         // offline launch never misses a chunk), the icons and the display font. /agents/* is
         // published docs, not the app.
         globPatterns: ["**/*.{html,js,css,wasm,png,svg,ico,webmanifest,woff2}"],
-        globIgnores: ["agents/**"],
+        // The desktop-only window API chunk (see build.rollupOptions): a web install can never reach it.
+        globIgnores: ["agents/**", "assets/tauri-window-*.js"],
         // The main chunk carries the TinyCloud SDK's inlined WASM (~7.4 MB today); Workbox skips
         // anything over its 2 MiB default, which would leave the shell unable to boot offline.
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
@@ -131,6 +132,21 @@ export default defineConfig(({ command }) => ({
   },
   optimizeDeps: {
     exclude: ["@tinycloud/web-sdk"],
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        // The Tauri window API is reached only from the desktop app's recording title (a lazy import).
+        // Naming its chunk lets the web PWA precache leave it out (globIgnores below). core and event
+        // are shared with code the web can load, so they get their own chunk rather than being pulled in.
+        manualChunks: (id) => {
+          const tauri = /node_modules\/@tauri-apps\/api\/(\w+)\.js$/.exec(id)?.[1];
+          if (tauri === "window" || tauri === "image" || tauri === "dpi") return "tauri-window";
+          if (tauri === "core" || tauri === "event") return "tauri-core";
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     port: 5186,
