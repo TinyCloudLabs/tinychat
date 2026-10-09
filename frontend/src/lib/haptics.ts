@@ -32,3 +32,13 @@ export function hapticWarning(): void {
 export function hapticSelection(): void {
   quietly(() => Haptics.selectionChanged());
 }
+
+/** A light tap: pause, resume, a mode change. */
+export function hapticLight(): void {
+  quietly(() => Haptics.impact({ style: ImpactStyle.Light }));
+}
+
+/** A firm tap: Done, discard. */
+export function hapticMedium(): void {
+  quietly(() => Haptics.impact({ style: ImpactStyle.Medium }));
+}

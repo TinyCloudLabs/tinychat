@@ -16,6 +16,8 @@ const ALLOWED = [
   "chat/OfflineVoiceNotes.tsx",
   "lib/voiceNotes/nativeVoiceNotes.ts",
   "lib/voiceNotes/legacyMigration.ts",
+  // Input routing only (inputs event, listInputs, selectInput); it never records.
+  "capture/recorder/final/useAudioInputs.ts",
 ];
 const PLUGIN_CALL = /VoiceNotes\.(addListener|start|stop|pause|resume|discard|deleteAudio)\(/;
 

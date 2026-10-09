@@ -132,6 +132,8 @@ beforeAll(async () => {
   });
   if (!built.success) throw new Error(built.logs.join("\n"));
   bundle = await built.outputs.find((output) => output.kind === "entry-point")!.text();
+  // Stylesheets that components import themselves (the Soft skin) come out of the build beside the script.
+  const componentCss = await Promise.all(built.outputs.filter((output) => output.path.endsWith(".css")).map((output) => output.text()));
 
   // The app's own stylesheet, compiled with its Tailwind config.
   const requireFromFrontend = createRequire(`${frontend}package.json`);
@@ -141,7 +143,7 @@ beforeAll(async () => {
   // The config's content globs are relative; anchor them at frontend/.
   const config = (await import(`${frontend}tailwind.config.js`)).default;
   config.content = [`${frontend}index.html`, `${frontend}src/**/*.{js,ts,jsx,tsx}`];
-  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css;
+  css = (await postcss([tailwindcss(config)]).process(source, { from: `${frontend}src/index.css` })).css + componentCss.join("\n");
 
   // The app's own index.html (metas, font preload, the pre-paint script), with the harness bundle.
   const index = await Bun.file(`${frontend}index.html`).text();
