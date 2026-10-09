@@ -13,6 +13,15 @@ const quietly = async <T>(fn: () => Promise<T>): Promise<T> => {
   try { return await fn(); } finally { console.error = error; console.warn = warn; }
 };
 
+/** Waits for a condition the engine reaches on a real timer (e.g. the stop-tail timeout), with a hard deadline. */
+async function until(condition: () => boolean, label: string, deadlineMs = 5_000): Promise<void> {
+  const end = Date.now() + deadlineMs;
+  while (!condition()) {
+    if (Date.now() > end) throw new Error(`Timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 let rig: Rig;
 let failAppend = false;
 
@@ -61,6 +70,8 @@ describe("a lost slice keeps its capture issue through the controller", () => {
       await rig.engine.plugin.pause();
       media.onerror?.(new Error("encoder died"));
       await rig.settle();
+      // The engine gives up on the tail after stopTailTimeoutMs of real time, then reports the loss.
+      await until(() => recorder.getState().captureIssues[id] !== undefined, "the lost-tail capture issue");
     });
     expect(await rig.store.audio.size(id)).toBe(3);
     expect(recorder.getState().captureIssues[id]).toEqual({ kind: "write_failed", detail: "pause_flush_timeout" });
