@@ -24,6 +24,7 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities } from "@/lib/voiceNotes/captureEngine";
 import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
+import { setQuarantineAccount } from "@/lib/voiceNotes/quarantine";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { effectiveCaptureOptions, readTranscriberPreference, setDefaultIdentifySpeakers,
   setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
@@ -571,6 +572,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     attach() {
       const key = scope();
       if (!available) return () => {};
+      setQuarantineAccount(tcw?.did ?? null);
       let attached = true;
       noteAttached = true;
       if (noteId && noteStatus === "error" && !cancelNoteRetry) scheduleNoteRetry(noteId, noteLoadVersion);
@@ -615,6 +617,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         // Register failures before recovered/committed: retained native events replay
         // in listener order after a WebView reload, then commit preserves audio loss.
         VoiceNotes.addListener("recoveryFailed", (event) => {
+          // The browser engine tells every attaching controller about every failed recording; only its owner sees it.
+          if (event.owner != null && event.owner !== tcw?.did) return;
           send({ type: "CAPTURE_ISSUE", id: event.id ?? null,
             issue: { kind: "recoveryFailed", detail: event.reason ?? event.error ?? "recovery_failed" } });
         }),

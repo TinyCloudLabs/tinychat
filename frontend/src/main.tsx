@@ -7,6 +7,7 @@ import { App } from "./App";
 import { CaptureEngineGate } from "./capture/recorder/CaptureEngineGate";
 import { PwaPrompts } from "./components/pwa-prompts";
 import { RootRoute } from "./landing/RootRoute";
+import { registerWebCaptureEngine } from "./lib/voiceNotes/web/registerWebEngine";
 import { appPlatform } from "./lib/platform";
 import { setupPwa } from "./lib/pwa";
 import { initSizeClass } from "./lib/sizeClass";
@@ -33,6 +34,8 @@ setupPwa({
   dev: import.meta.env.DEV,
   devEnabled: import.meta.env.VITE_PWA_DEV === "true",
 });
+
+registerWebCaptureEngine();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
