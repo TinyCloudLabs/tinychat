@@ -698,6 +698,18 @@ describe("platform routing (source)", () => {
     expect(app).toContain("signOutInFlightRef.current = true");
   });
 
+  test("terminal handoff failure keeps renewal stopped; manual sign-out failure resumes it", () => {
+    const signOut = app.slice(app.indexOf("const signOut = useCallback"), app.indexOf("const isReady"));
+    const stop = signOut.indexOf("nativeRenewalRef.current?.stop()");
+    const handoff = signOut.indexOf("if (!await captureHandoff())");
+    const failure = signOut.slice(handoff, signOut.indexOf("let openKeyWarning", handoff));
+    expect(stop).toBeGreaterThan(-1);
+    expect(stop).toBeLessThan(handoff);
+    expect(failure).toMatch(/if \(!options\.terminal\) void nativeRenewalRef\.current\?\.resume\(\);\s+return;/);
+    expect(failure).not.toMatch(/^\s*void nativeRenewalRef\.current\?\.resume\(\);/m);
+    expect(app).toContain("signOutRef.current?.({ terminal: message })");
+  });
+
   test("boot restores native grants before trying the legacy widget restore", () => {
     const boot = app.slice(app.indexOf("const restoreSession = useCallback"), app.indexOf("useEffect(() => {\n    if (restoredRef.current)"));
     expect(boot.indexOf("restoreNativeAtBoot(")).toBeLessThan(boot.indexOf("restorePersistedSession("));

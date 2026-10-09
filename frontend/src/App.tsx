@@ -848,7 +848,9 @@ export function App() {
     setError(null);
     try {
       if (!await captureHandoff()) {
-        void nativeRenewalRef.current?.resume();
+        // A terminal renewal has already exhausted its grant; restarting it
+        // would call onTerminal again and repeat this failed handoff.
+        if (!options.terminal) void nativeRenewalRef.current?.resume();
         return;
       }
       let openKeyWarning: string | null = options.terminal ?? null;
