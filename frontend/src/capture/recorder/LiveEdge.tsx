@@ -7,13 +7,21 @@
 import { useEffect, useRef } from "react";
 
 import { recorderFinalEnabled } from "./final/recorderFinalFlag";
-import { edgeLevel, liveCapture, useLiveCapture } from "./liveCapture";
+import {
+  edgeLevel,
+  liveCapture,
+  useLiveCapture,
+  type LiveCapture,
+} from "./liveCapture";
 
 export function LiveEdge({
   finalEnabled = recorderFinalEnabled(),
-}: { finalEnabled?: boolean } = {}) {
+  capture: captureOverride,
+}: { finalEnabled?: boolean; capture?: LiveCapture | null } = {}) {
   const recorderFinal = finalEnabled;
-  const capture = useLiveCapture();
+  const liveCaptureSnapshot = useLiveCapture();
+  const capture =
+    captureOverride === undefined ? liveCaptureSnapshot : captureOverride;
   const ref = useRef<HTMLDivElement>(null);
   const moving = capture !== null && !capture.warning && capture.source !== "desktop-local";
 
