@@ -31,14 +31,15 @@ public final class ModelStore {
             .appendingPathComponent("models", isDirectory: true)
     }
 
-    private func modelDir(_ id: String) -> URL { root.appendingPathComponent(id, isDirectory: true) }
+    public func modelDir(_ id: String) -> URL { root.appendingPathComponent(id, isDirectory: true) }
     public func fileURL(_ id: String, _ file: ModelFile) -> URL { modelDir(id).appendingPathComponent(file.name) }
 
     /// Re-derives each downloadable model's state from what is actually on disk (sha256-verified),
     /// so a relaunch never trusts stale in-memory state. Called at init and after every download.
     public func rescan() {
         queue.sync {
-            for (id, files) in ModelManifest.downloadable {
+            for id in ModelManifest.allIds {
+                guard let files = ModelManifest.filesFor(id) else { continue }
                 var done: Int64 = 0
                 var allPresent = true
                 for file in files {

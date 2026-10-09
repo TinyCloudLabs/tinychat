@@ -40,7 +40,8 @@ class ModelStore(val root: File) {
     /** Re-derives each downloadable model's state from what is actually on disk (sha256-verified),
      * so a relaunch never trusts stale in-memory state. */
     fun rescan() = lock.withLock {
-        for ((id, files) in ModelManifest.DOWNLOADABLE) {
+        for (id in ModelManifest.ALL_IDS) {
+            val files = ModelManifest.filesFor(id) ?: continue
             val allPresent = files.all { fileFor(id, it).let { f -> f.isFile && f.length() == it.bytes } }
             if (allPresent && files.all { verify(fileFor(id, it), it.sha256) }) {
                 states[id] = ModelState.READY
