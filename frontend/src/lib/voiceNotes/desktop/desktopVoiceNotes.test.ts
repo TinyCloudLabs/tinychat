@@ -8,6 +8,7 @@ import { openDesktopVoiceNotes, refreshDesktopWhisperCapability, type DesktopBri
 import type { DesktopWhisperBridge } from "./desktopWhisper";
 import type { TranscriptionEvent, TranscriptionParams } from "@/lib/anarlog/transcription.gen";
 import type { MissingAudioSpan } from "../nativeVoiceNotes";
+import { leaseWhisperServer } from "@/lib/whisperServerLease";
 
 type Callback = (payload: never) => void;
 
@@ -104,6 +105,7 @@ class FakeBridge implements DesktopBridge {
 }
 
 class FakeWhisper implements DesktopWhisperBridge {
+  serverScope?: object;
   calls: TranscriptionParams[] = [];
   stops: string[] = [];
   serverStops = 0;
@@ -237,6 +239,56 @@ describe("desktop recorder adapter", () => {
     whisper.onStopServer = null;
     await engine.plugin.discard();
     engine.dispose();
+  });
+
+  slow("a server failure during Record requeues the interrupted note", async () => {
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.pending = true;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const first = (await engine.plugin.start()).id;
+    bridge.files.set(first, Uint8Array.of(1));
+    await engine.plugin.stop();
+    await waitFor(() => whisper.calls.length === 1);
+    whisper.onStopServer = () => whisper.emit({ type: "failed", session_id: first,
+      code: "unknown", error: "connection refused" });
+
+    await engine.plugin.start();
+    await waitFor(() => engine.whisper?.snapshot().get(first)?.state === "queued");
+    expect(engine.whisper?.snapshot().get(first)?.error).toBeNull();
+    expect((await engine.plugin.listPending()).recordings.find((note) => note.id === first)?.stt?.state).toBe("queued");
+    whisper.onStopServer = null;
+    await engine.plugin.discard();
+    engine.dispose();
+  });
+
+  slow("a different-model lease released for Record requeues the waiting note", async () => {
+    const scope = {};
+    const meeting = leaseWhisperServer("QuantizedBase", async () => "http://meeting", async () => {}, scope);
+    await meeting.ready;
+    const bridge = new FakeBridge();
+    bridge.selectedModel = "QuantizedTinyEn";
+    bridge.downloadedModels.add("QuantizedTinyEn");
+    const whisper = new FakeWhisper();
+    whisper.serverScope = scope;
+    const engine = await openDesktopVoiceNotes({ bridge, whisper,
+      storeOptions: { env: newIdbEnv(), dbName: crypto.randomUUID(), locks: memoryLocks(), decodeCheck: null } });
+    const first = (await engine.plugin.start()).id;
+    bridge.files.set(first, Uint8Array.of(1));
+    await engine.plugin.stop();
+    await waitFor(() => bridge.calls.includes("recorder_whisper_stage_audio"));
+    await Bun.sleep(10);
+    expect(whisper.serverStarts).toBe(0);
+
+    await engine.plugin.start();
+    await waitFor(() => engine.whisper?.snapshot().get(first)?.state === "queued");
+    expect(engine.whisper?.snapshot().get(first)?.error).toBeNull();
+    expect((await engine.plugin.listPending()).recordings.find((note) => note.id === first)?.stt?.state).toBe("queued");
+    engine.dispose();
+    meeting.release();
   });
 
   slow("a 15 second model load never delays a new recording", async () => {

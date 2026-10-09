@@ -183,7 +183,7 @@ export function createDesktopWhisperQueue(args: {
       emitDone(id);
     } catch (error) {
       if (disposed) return;
-      if (String(error).includes("capture_has_priority")) await mark(id, "queued");
+      if (stopping || captureLive() || String(error).includes("capture_has_priority")) await mark(id, "queued");
       else await mark(id, "failed", error instanceof Error ? error.message : String(error));
     } finally {
       transcribing = false;
