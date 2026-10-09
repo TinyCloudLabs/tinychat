@@ -207,7 +207,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
   const saveStopped = async (recording: VoiceNoteRecording) => {
     send({ type: "LOCAL_COMMITTED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
     void pendingStore.refresh();
-    if (!tcw) {
+    if (!tcw || (pipeline && !pipeline.isAccepting())) {
       send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
       return;
     }
@@ -221,6 +221,11 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
         send({ type: "SAVED", id: recording.id, durationMs: recording.durationMs, at: Date.now() });
         landed(recording);
       } catch (caught) {
+        if (!pipeline.isAccepting()) {
+          send({ type: "LOCAL_UPLOAD_HELD", id: recording.id });
+          void pendingStore.refresh();
+          return;
+        }
         send({ type: "SAVE_FAILED", error: `Saved on this phone, but uploading to your space failed: ${messageOf(caught)}`,
           recording: { id: recording.id, durationMs: recording.durationMs } });
       }
@@ -271,7 +276,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
    * and is counted there.
    */
   const saveInBackground = async (recording: VoiceNoteRecording) => {
-    if (!tcw) { void pendingStore.refresh(); return; }
+    if (!tcw || (pipeline && !pipeline.isAccepting())) { void pendingStore.refresh(); return; }
     if (pipeline) {
       if (recording.owner === tcw.did && tcw.did && tcw.spaceId) {
         await pipeline.process({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }, recording.id);
@@ -622,7 +627,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber,
     },
     async retryPending() {
       if (!available) return;
-      if (pipeline && tcw?.did && tcw.spaceId) {
+      if (pipeline && pipeline.isAccepting() && tcw?.did && tcw.spaceId) {
         try { await pipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation: currentAccountGeneration() }); }
         catch (caught) { console.warn("[VoiceNotes] Saving notes left on this phone failed", caught); }
         await pendingStore.refresh();

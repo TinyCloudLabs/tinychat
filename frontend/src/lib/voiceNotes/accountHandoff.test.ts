@@ -13,6 +13,7 @@ async function setup() {
   const pipeline: VoiceNotePipeline = {
     process: async () => {}, reconcileAll: async () => {},
     cancelAll: () => { order.push("cancel"); },
+    resume: () => {}, isAccepting: () => true,
     quiescent: async () => { order.push("quiescent"); return true; },
   };
   return { fake, order, pipeline };

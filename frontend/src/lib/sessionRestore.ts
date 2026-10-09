@@ -136,7 +136,7 @@ export async function restorePersistedSession<M, T>(
   deps: RestoreDeps<M, T>,
 ): Promise<RestoreOutcome<T>> {
   if (!sessionStore.hasSession() || sessionStore.isExpired()) {
-    if (sessionStore.hasSession()) await deps.beforeClear?.();
+    await deps.beforeClear?.();
     return { kind: "signedOut" };
   }
   const address = sessionStore.getAddress();

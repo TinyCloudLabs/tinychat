@@ -428,6 +428,18 @@ describe("native boot", () => {
     expect(flow.order).toEqual(["signOut"]);
   });
 
+  test("terminal native boot runs capture handoff before revoke and aborts on failure", async () => {
+    const flow = makeFlow();
+    flow.openkey.current = async () => ({ tokens: { accessToken: "a", refreshToken: "r" }, delegation, sessionKey });
+    await expect(retireNativeSessionAtBoot(config, { createOpenKeyNative: () => flow.openkey },
+      async () => { flow.order.push("handoff"); throw new Error("disk failed"); }))
+      .rejects.toThrow("disk failed");
+    expect(flow.order).toEqual(["handoff"]);
+    await retireNativeSessionAtBoot(config, { createOpenKeyNative: () => flow.openkey },
+      async () => { flow.order.push("handoff"); });
+    expect(flow.order).toEqual(["handoff", "handoff", "signOut"]);
+  });
+
   test("constructs the client even without a current session so pending revokes retry", async () => {
     const flow = makeFlow();
     let constructed = 0;

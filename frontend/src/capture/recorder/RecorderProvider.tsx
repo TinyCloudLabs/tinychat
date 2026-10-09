@@ -122,14 +122,19 @@ export interface RecorderProviderProps {
   onSaved?: (recording: VoiceNoteRecording) => void;
   onAccountReady?: (tcw: TinyCloudWeb) => void;
   pipeline?: VoiceNotePipeline | null;
+  signedOut?: boolean;
+  onSignedOut?: () => Promise<boolean>;
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, children }: RecorderProviderProps) {
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, signedOut, onSignedOut, children }: RecorderProviderProps) {
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
   const defaultsReady = tcw === null || (configured?.tcw === tcw && configured.did === (tcw.did ?? null));
+  useEffect(() => {
+    if (enabled !== false && signedOut && captureEngineAvailable()) void onSignedOut?.();
+  }, [enabled, signedOut, onSignedOut]);
   useEffect(() => {
     if (enabled === false || !captureEngineAvailable() || tcw === null) return;
     let active = true;

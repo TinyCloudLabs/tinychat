@@ -79,6 +79,7 @@ export function PendingVoiceNotesSaver({
     const did = tcw.did;
     const spaceId = tcw.spaceId;
     if (!did || !spaceId) return;
+    pipeline.resume();
     void pipeline.reconcileAll({ did, spaceId, generation })
       .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
     return () => pipeline.cancelAll();

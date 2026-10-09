@@ -9,6 +9,7 @@ import { commitVoiceNoteTranscript, createVoiceNoteRow, ensureVoiceNoteIdentity,
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import { __setVoiceNotesForTests, VoiceNotes } from "./nativeVoiceNotes";
 import { createVoiceNotePipeline } from "./voiceNotePipeline";
+import { handoffBeforeCredentialClear } from "./accountHandoff";
 import { currentAccountGeneration } from "./accountContext";
 import { runOnSpaceLane } from "../spaceWriteLane";
 import { associateLegacyNotes, markLegacyOwnerUnknown } from "./legacyMigration";
@@ -310,6 +311,27 @@ test("cancelAll stops an upload at its next KV checkpoint and quiescent waits", 
   } finally {
     __setVoiceNotesForTests(original, { available: null });
   }
+});
+
+test("Stop during the OpenKey wait after handoff cannot upload to the old account", async () => {
+  const previous = VoiceNotes;
+  const { tcw, values } = space();
+  const fake = createFakeVoiceNotes();
+  __setVoiceNotesForTests(fake.plugin, { available: true });
+  try {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "private-cloud", identifySpeakers: false });
+    const live = await fake.plugin.start();
+    const pipeline = createVoiceNotePipeline(tcw);
+    expect((await handoffBeforeCredentialClear(tcw.did, pipeline)).ok).toBe(true);
+    const stopped = await fake.plugin.stop();
+    expect(stopped.id).toBe(live.id);
+    expect(stopped.owner).toBe(tcw.did);
+    expect(pipeline.isAccepting()).toBe(false);
+    await expect(pipeline.process({ did: tcw.did, spaceId: tcw.spaceId,
+      generation: currentAccountGeneration() }, stopped.id)).rejects.toThrow("suspended");
+    expect(values.size).toBe(0);
+  } finally { __setVoiceNotesForTests(previous, { available: null }); }
 });
 
 test("a user-choice claimed legacy note uploads once and keeps its owner", async () => {

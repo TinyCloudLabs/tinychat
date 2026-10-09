@@ -126,6 +126,7 @@ import type {
 } from "./chat/modelSelection";
 import { clearAgentSessionCache } from "./lib/agentDelegation";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
+import { registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
   nativeSessionWasActive, retireNativeSessionAtBoot, secretsAvailable,
@@ -161,6 +162,8 @@ export function App() {
   const sessionStoreRef = useRef(new SessionStore("xyz.tinycloud.tinychat:session"));
   const openkeyRef = useRef<OpenKey | null>(null);
   const signOutInFlightRef = useRef(false);
+  // E2 supplies this controller; it is absent while native renewal is disabled.
+  const nativeRenewalRef = useRef<{ stop: () => void; resume: () => Promise<void> } | null>(null);
   const restoredRef = useRef(false);
   const restoreInFlightRef = useRef(false);
   const selectionControllerRef = useRef<ModelSelectionController | null>(null);
@@ -182,6 +185,10 @@ export function App() {
     if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
     try {
       const native = await withCaptureDeadline(VoiceNotes.getCaptureDefaults());
+      if (native.status === "signed_out") {
+        if (voiceNotePipeline?.isAccepting()) { advanceAccountGeneration(); voiceNotePipeline.cancelAll(); }
+        return true;
+      }
       const storedAddress = sessionStoreRef.current.getAddress();
       const accountDid = did ?? native.accountDid ?? (native.status === "transitioning" && storedAddress
         ? `did:pkh:eip155:1:${storedAddress}` : null);
@@ -194,6 +201,14 @@ export function App() {
       if (!result.ok) {
         setError(result.message);
         setCaptureFailClosed(result.failClosed);
+        if (!result.failClosed && voiceNotePipeline && !voiceNotePipeline.isAccepting()) {
+          voiceNotePipeline.resume();
+          if (tcw?.did && tcw.spaceId) {
+            const generation = advanceAccountGeneration();
+            void voiceNotePipeline.reconcileAll({ did: tcw.did, spaceId: tcw.spaceId, generation })
+              .catch((caught: unknown) => console.warn("[VoiceNotes] Could not resume saving after failed sign-out", caught));
+          }
+        }
         return false;
       }
       setCaptureFailClosed(false);
@@ -202,7 +217,8 @@ export function App() {
       setError("Couldn't update this phone's recording settings. Try again.");
       return false;
     }
-  }, [did, voiceNotePipeline]);
+  }, [did, tcw, voiceNotePipeline]);
+  useEffect(() => registerSessionSignedOutHook(sessionStoreRef.current, captureHandoff), [captureHandoff]);
   const restoreCaptureAfterAuthAbort = useCallback(async () => {
     if (!did || !tcw || !captureEngineAvailable()) return;
     try {
@@ -211,6 +227,7 @@ export function App() {
       await withCaptureDeadline(VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
         accountDid: did, transitionGen }));
       if (voiceNotePipeline && tcw.spaceId) {
+        voiceNotePipeline.resume();
         const generation = advanceAccountGeneration();
         void voiceNotePipeline.reconcileAll({ did, spaceId: tcw.spaceId, generation })
           .catch((caught: unknown) => console.warn("[VoiceNotes] Could not resume saving after sign-out was cancelled", caught));
@@ -347,15 +364,18 @@ export function App() {
     try {
       if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
         const wasNative = nativeSessionWasActive();
-        // E1 may revoke an SDK session even before its JS marker is present.
-        if (!await captureHandoff()) { setState("recoverableError"); return; }
+        let handoffRejected = false;
         try {
           // Creating the SDK client retries any pending revocation. E1 retires
           // surviving native sessions at boot; E2 will restore and renew them.
+          // Only an actual terminal native session reaches the handoff.
           await retireNativeSessionAtBoot({
             tinycloudHost: TINYCLOUD_HOSTS?.[0] ?? "https://tee.node.tinycloud.xyz",
+          }, undefined, async () => {
+            if (!await captureHandoff()) { handoffRejected = true; throw new Error("Capture handoff failed"); }
           });
         } catch (caught) {
+          if (handoffRejected) { setState("recoverableError"); return; }
           logNativeOpenKeyError("boot revoke", caught);
           if (wasNative) {
             sessionStoreRef.current.clear();
@@ -415,6 +435,7 @@ export function App() {
           setState("offline");
           return;
         case "signedOut":
+          if (!await captureHandoff()) { setState("recoverableError"); return; }
           setState("unauthenticated");
           return;
         case "failed":
@@ -716,18 +737,22 @@ export function App() {
     }
   }, []);
 
-  const signOut = useCallback(async () => {
+  const signOut = useCallback(async (options: { terminal?: string } = {}) => {
     if (signOutInFlightRef.current) return;
     signOutInFlightRef.current = true;
+    nativeRenewalRef.current?.stop();
     setSigningOut(true);
     setError(null);
     try {
-      if (!await captureHandoff()) return;
+      if (!await captureHandoff()) {
+        void nativeRenewalRef.current?.resume();
+        return;
+      }
       // The next account must not reopen this one's Library or note addresses.
       resetNavigationMemory();
-      let openKeyWarning: string | null = null;
+      let openKeyWarning: string | null = options.terminal ?? null;
       const nativeSession = isNativeOpenKeySession();
-      if (nativeSession) {
+      if (nativeSession && !options.terminal) {
         // Native sign-out revokes the OpenKey delegation grant and clears the
         // secure-store session unless secure storage needs another attempt.
         try {
@@ -752,14 +777,17 @@ export function App() {
           }
           openKeyWarning = NATIVE_SIGN_OUT_WARNING;
         }
-      } else {
+      } else if (!nativeSession) {
         let openKeyOutcome: Awaited<ReturnType<typeof signOutOpenKeySession>>;
+        const openKeyClient = openkeyRef.current ?? new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST,
+          passkeysSupported: openkeyPasskeysSupported() });
         try {
-          openKeyOutcome = await withCaptureDeadline(signOutOpenKeySession(
-            openkeyRef.current,
-            () => new OpenKey({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
-          ));
+          const pendingSignOut = signOutOpenKeySession(openKeyClient, () => openKeyClient);
+          openKeyOutcome = captureEngineAvailable()
+            ? await withCaptureDeadline(pendingSignOut)
+            : await pendingSignOut;
         } catch {
+          openKeyClient.disconnect();
           openKeyOutcome = { status: "unverified", reason: "timed out" };
         }
         // OpenKey clears this client's local auth before showing its widget, even
@@ -780,7 +808,9 @@ export function App() {
 
       if (tcw && !nativeSession) {
         try {
-          await withCaptureDeadline(Promise.resolve(tcw.signOut?.()));
+          const cleanup = Promise.resolve(tcw.signOut?.());
+          if (captureEngineAvailable()) await withCaptureDeadline(cleanup);
+          else await cleanup;
         } catch (caught) {
           logNativeOpenKeyError("TinyCloud sign-out cleanup", caught);
         }
@@ -813,7 +843,7 @@ export function App() {
       setBillingStatus(null);
       setPricingOpen(false);
       setError(openKeyWarning);
-      setState(openKeyWarning ? "recoverableError" : "unauthenticated");
+      setState(options.terminal ? "unauthenticated" : openKeyWarning ? "recoverableError" : "unauthenticated");
     } finally {
       signOutInFlightRef.current = false;
       setSigningOut(false);
@@ -859,7 +889,7 @@ export function App() {
     else if (state !== "booting") setOfflineCapture(false);
   }, [state]);
   const offlineRecorder = voiceNotesInApp && !LOCAL_VALIDATION && offlineCapture;
-  const signedOutLocalHome = voiceNotesInApp && !LOCAL_VALIDATION && state === "unauthenticated"
+  const signedOutLocalHome = voiceNotesInApp && !LOCAL_VALIDATION && state === "unauthenticated" && error === null
     && globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1";
 
   // The pending-count badge follows the drain record's store directly — no
@@ -956,6 +986,8 @@ export function App() {
       onSaved={() => captureEvents.emit("library-changed")}
       onAccountReady={setCaptureReadyTcw}
       pipeline={voiceNotePipeline}
+      signedOut={state === "unauthenticated" && !sessionStoreRef.current.hasSession()}
+      onSignedOut={captureHandoff}
     >
     <div
       className="flex flex-col bg-background text-foreground"
