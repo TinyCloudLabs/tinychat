@@ -27,6 +27,7 @@ const LIVE: Partial<RecorderValue> = {
   phase: "recording",
   mic: { state: "recording", reason: null },
   startedAt: 1,
+  recordingId: "rec-1",
   audioMs: 768_000,
   elapsedMs: 768_000,
   transcription: PRIVATE_ON,
@@ -123,6 +124,7 @@ describe("PhoneRecorder", () => {
       mic: { state: "idle", reason: null },
       permissionDenied: true,
       startedAt: null,
+      recordingId: null,
       audioMs: 0,
       elapsedMs: 0,
     });
@@ -183,7 +185,7 @@ describe("PhoneRecorder", () => {
     noteStatus: "ready",
     note: md === null ? null : { md, moments: [] },
   });
-  const KEY = String(LIVE.startedAt);
+  const KEY = LIVE.recordingId as string;
 
   beforeEach(clearNotesUi);
   afterEach(clearNotesUi);
@@ -355,10 +357,10 @@ describe("PhoneRecorder", () => {
 
     test("another recording starts clean", () => {
       updateNotesUi(KEY, () => ({ open: true, view: "write", draft: "old" }));
-      const html = render({ ...withNote(null), startedAt: 2 });
+      const html = render({ ...withNote(null), recordingId: "rec-2" });
       expect(html).not.toContain("View notes");
       expect(html).not.toContain('aria-modal="true"');
-      expect(readNotesUi("2")).toBeNull();
+      expect(readNotesUi("rec-2")).toBeNull();
     });
   });
 });

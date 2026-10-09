@@ -49,6 +49,7 @@ const LIVE: Partial<RecorderValue> = {
   phase: "recording",
   mic: { state: "recording", reason: null },
   startedAt: FROZEN_NOW - minutes(12, 48),
+  recordingId: "rec-harness",
   audioMs: minutes(12, 48),
   elapsedMs: minutes(12, 48),
   transcription: PRIVATE_CLOUD_ON,
@@ -159,6 +160,7 @@ function screen(
 // The notes surfaces (TC-881): 42 s in, with the moments the reference shows.
 const NOTED: Partial<RecorderValue> = {
   startedAt: FROZEN_NOW - 42_000,
+  recordingId: "rec-harness",
   audioMs: 42_000,
   elapsedMs: 42_000,
 };
@@ -289,6 +291,7 @@ export const recorderFinalPhoneScreens: HarnessScreen[] = [
       mic: { state: "idle", reason: null },
       permissionDenied: true,
       startedAt: null,
+      recordingId: null,
       audioMs: 0,
       elapsedMs: 0,
     },

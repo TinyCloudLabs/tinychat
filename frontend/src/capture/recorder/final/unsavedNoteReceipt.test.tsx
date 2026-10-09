@@ -35,7 +35,7 @@ afterEach(() => {
 function receipt(patch: Record<string, unknown> = {}) {
   return renderToStaticMarkup(
     <StaticRecorderProvider
-      value={{ phase: "idle", outcome: "saved", startedAt: null, ...patch }}
+      value={{ phase: "idle", outcome: "saved", recordingId: null, ...patch }}
     >
       <ReceiptNoteNotice />
     </StaticRecorderProvider>,
@@ -44,7 +44,7 @@ function receipt(patch: Record<string, unknown> = {}) {
 
 // A recording at 1000 whose note writes are rejected, as PhoneRecorder wires them: the real saver, notes state and Done.
 function recordingWithFailingNote() {
-  const key = recordingKey({ startedAt: 1000 }) as string;
+  const key = recordingKey({ recordingId: "rec-1000" }) as string;
   updateNotesUi(key, () => ({ draft: "- **0:08** TTL idea" }));
   const saver = createNoteSaver({
     commit: async () => {
@@ -77,8 +77,8 @@ describe("a recording that ends with its note unsaved", () => {
     expect(stops).toEqual(["stop"]);
     expect(readUnsavedNote()).toEqual({ key, md: "- **0:08** TTL idea" });
 
-    // The recording is over: startedAt goes null, the lifecycle clears the recording's own notes state, the receipt is up.
-    clearNotesUiExcept(recordingKey({ startedAt: null }));
+    // The recording is over: recordingId goes null, the lifecycle clears the recording's own notes state, the receipt is up.
+    clearNotesUiExcept(recordingKey({ recordingId: null }));
     expect(readNotesUi(key)).toBeNull();
 
     const html = receipt();
@@ -147,7 +147,7 @@ describe("a recording that ends with its note unsaved", () => {
 function shell(layout: "tabbar" | "beside", patch: Record<string, unknown> = {}) {
   return renderToStaticMarkup(
     <StaticRecorderProvider
-      value={{ phase: "idle", outcome: null, sheetOpen: false, startedAt: null, ...patch }}
+      value={{ phase: "idle", outcome: null, sheetOpen: false, recordingId: null, ...patch }}
     >
       <ShellNoteNotice layout={layout} />
     </StaticRecorderProvider>,

@@ -150,7 +150,7 @@ describe("useNotesLifecycle", () => {
     useNotesLifecycle();
     return null;
   }
-  const live = (startedAt: number | null): Partial<RecorderValue> => ({ phase: "recording", startedAt });
+  const live = (recordingId: string | null): Partial<RecorderValue> => ({ phase: "recording", recordingId });
   const mount = (patch: Partial<RecorderValue>) => (
     <StaticRecorderProvider value={patch}>
       <Shell />
@@ -159,35 +159,35 @@ describe("useNotesLifecycle", () => {
 
   test("keeps the state while the same recording is going", async () => {
     updateNotesUi("5", () => ({ draft: "x" }));
-    await show(mount(live(5)));
-    await show(mount({ ...live(5), audioMs: 1000 }));
+    await show(mount(live("5")));
+    await show(mount({ ...live("5"), audioMs: 1000 }));
     expect(readNotesUi("5")?.draft).toBe("x");
   });
 
   test("clears it when the recording ends, with no view mounted", async () => {
     updateNotesUi("5", () => ({ draft: "x", open: true }));
-    await show(mount(live(5)));
-    await show(mount({ phase: "idle", startedAt: null }));
+    await show(mount(live("5")));
+    await show(mount({ phase: "idle", recordingId: null }));
     expect(readNotesUi("5")).toBeNull();
   });
 
   test("clears the old recording's state when another one starts", async () => {
     updateNotesUi("5", () => ({ draft: "x" }));
-    await show(mount(live(5)));
-    await show(mount(live(6)));
+    await show(mount(live("5")));
+    await show(mount(live("6")));
     expect(readNotesUi("5")).toBeNull();
   });
 
   test("unmounting once the recording is no longer live (Done, discard) clears it", async () => {
     updateNotesUi("5", () => ({ draft: "x" }));
-    await show(mount({ phase: "saving", startedAt: 5 }));
+    await show(mount({ phase: "saving", recordingId: "5" }));
     await unmount();
     expect(readNotesUi("5")).toBeNull();
   });
 
   test("unmounting while still recording (minimised, layout switch) keeps it", async () => {
     updateNotesUi("5", () => ({ draft: "x" }));
-    await show(mount(live(5)));
+    await show(mount(live("5")));
     await unmount();
     expect(readNotesUi("5")?.draft).toBe("x");
   });
@@ -210,29 +210,29 @@ describe("useNotesLifecycle", () => {
 
     test("minimise, then stop while minimised: the state is cleared", async () => {
       updateNotesUi("5", () => ({ draft: "x", open: true }));
-      await show(tree(live(5), true));
-      await show(tree(live(5), false));
+      await show(tree(live("5"), true));
+      await show(tree(live("5"), false));
       expect(readNotesUi("5")?.open).toBe(true);
-      await show(tree({ phase: "idle", startedAt: null, outcome: "saved" }, false));
+      await show(tree({ phase: "idle", recordingId: null, outcome: "saved" }, false));
       expect(readNotesUi("5")).toBeNull();
     });
 
     test("minimise, then discard while minimised: the state is cleared", async () => {
       updateNotesUi("5", () => ({ draft: "x" }));
-      await show(tree(live(5), true));
-      await show(tree(live(5), false));
-      await show(tree({ phase: "idle", startedAt: null, outcome: null }, false));
+      await show(tree(live("5"), true));
+      await show(tree(live("5"), false));
+      await show(tree({ phase: "idle", recordingId: null, outcome: null }, false));
       expect(readNotesUi("5")).toBeNull();
     });
 
     test("a note lost at Done outlives that clear, until the next recording starts", async () => {
       updateNotesUi("5", () => ({ draft: "x" }));
       retainUnsavedNote("5", "x");
-      await show(tree(live(5), true));
-      await show(tree({ phase: "idle", startedAt: null, outcome: "saved" }, false));
+      await show(tree(live("5"), true));
+      await show(tree({ phase: "idle", recordingId: null, outcome: "saved" }, false));
       expect(readNotesUi("5")).toBeNull();
       expect(readUnsavedNote()).toEqual({ key: "5", md: "x" });
-      await show(tree(live(6), false));
+      await show(tree(live("6"), false));
       expect(readUnsavedNote()).toBeNull();
     });
   });

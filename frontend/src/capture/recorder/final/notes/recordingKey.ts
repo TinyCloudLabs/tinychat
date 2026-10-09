@@ -1,12 +1,8 @@
 import type { RecorderValue } from "../../RecorderProvider";
 
-/**
- * Which recording the notes UI state belongs to; null when none is in progress.
- * TODO(#204): key by `recorder.recordingId` once #204 exposes it. The start time is the best this value has today,
- * and two recordings starting in the same millisecond would share state.
- */
+/** Which recording the notes UI state belongs to; null when none is in progress. */
 export function recordingKey(
-  recorder: Pick<RecorderValue, "startedAt">,
+  recorder: Pick<RecorderValue, "recordingId">,
 ): string | null {
-  return recorder.startedAt === null ? null : String(recorder.startedAt);
+  return recorder.recordingId;
 }

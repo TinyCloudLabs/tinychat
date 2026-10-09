@@ -135,10 +135,19 @@ describe("notesUiState", () => {
 });
 
 describe("recordingKey", () => {
-  test("is the start of the recording, and null when none is in progress", () => {
-    expect(recordingKey({ startedAt: 1_700_000_000_123 })).toBe(
-      "1700000000123",
-    );
-    expect(recordingKey({ startedAt: null })).toBeNull();
+  test("is the recording's id, and null when none is in progress", () => {
+    expect(recordingKey({ recordingId: "rec-1" })).toBe("rec-1");
+    expect(recordingKey({ recordingId: null })).toBeNull();
+  });
+
+  test("two recordings that start in the same millisecond do not share notes state", () => {
+    const first = recordingKey({ recordingId: "rec-a" }) as string;
+    const second = recordingKey({ recordingId: "rec-b" }) as string;
+    expect(first).not.toBe(second);
+    updateNotesUi(first, () => ({ draft: "first", open: true }));
+    expect(readNotesUi(second)).toBeNull();
+    updateNotesUi(second, (fields) => ({ draft: fields.draft ?? "second" }));
+    expect(readNotesUi(second)?.draft).toBe("second");
+    expect(readNotesUi(first)).toBeNull();
   });
 });
