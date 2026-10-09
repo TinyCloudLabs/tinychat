@@ -137,8 +137,14 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       output: {
         // The Tauri window API is reached only from the desktop app's recording title (a lazy import).
-        // Naming its chunk lets the web PWA precache leave it out (globIgnores below).
-        manualChunks: (id) => (/node_modules\/@tauri-apps\/api\/(window|image|dpi)\.js$/.test(id) ? "tauri-window" : undefined),
+        // Naming its chunk lets the web PWA precache leave it out (globIgnores below). core and event
+        // are shared with code the web can load, so they get their own chunk rather than being pulled in.
+        manualChunks: (id) => {
+          const tauri = /node_modules\/@tauri-apps\/api\/(\w+)\.js$/.exec(id)?.[1];
+          if (tauri === "window" || tauri === "image" || tauri === "dpi") return "tauri-window";
+          if (tauri === "core" || tauri === "event") return "tauri-core";
+          return undefined;
+        },
       },
     },
   },
