@@ -3,33 +3,43 @@ import {
   OnDeviceStt,
   type OnDeviceSttStatus,
 } from "@/lib/voiceNotes/onDeviceStt";
-import { nativeVoiceNotesAvailable } from "@/lib/voiceNotes/nativeVoiceNotes";
+import {
+  nativeVoiceNotesAvailable,
+  type TranscriberId,
+} from "@/lib/voiceNotes/nativeVoiceNotes";
 import type { VoiceNoteTranscriptionProps } from "../transcriptionProps";
 import {
+  MODE_STOPS,
   scaleStops,
   type ModeId,
   type ModeShell,
   type ModeStop,
 } from "./transcriptionModes";
-import type {
-  RecorderTranscriberId,
-  SetTranscriberResult,
-  TranscriberApi,
-} from "./transcriberApiStub";
+import type { RecorderValue } from "../RecorderProvider";
+import type { SetTranscriberResult } from "../voiceNoteRecorderController";
 
+export type TranscriberApi = Pick<
+  RecorderValue,
+  "transcriber" | "setTranscriber" | "setIdentifySpeakers"
+>;
 export const PRIVATE_UNAVAILABLE = "Not available right now";
 export const SIGNED_OUT = "Sign in to choose another mode";
+export const unavailableNow = (what: string) =>
+  `${what} isn't available right now`;
 export const SPEAKERS_NEEDS_CONSENT = "Turn on private transcription first";
 
-export const TRANSCRIBER_FOR: Record<ModeId, RecorderTranscriberId> = {
+export const TRANSCRIBER_FOR: Record<ModeId, TranscriberId> = {
   skip: "off",
   local: "on-device",
   private: "private-cloud",
   powerful: "assemblyai",
 };
+const MODE_NAME = Object.fromEntries(
+  MODE_STOPS.map((stop) => [stop.id, stop.shortName]),
+) as Record<ModeId, string>;
 const MODE_FOR = Object.fromEntries(
   Object.entries(TRANSCRIBER_FOR).map(([mode, id]) => [id, mode]),
-) as Record<RecorderTranscriberId, ModeId>;
+) as Record<TranscriberId, ModeId>;
 
 export interface ScaleStop {
   stop: ModeStop;
@@ -92,6 +102,8 @@ export interface TranscriptionChoiceOptions {
   transcription: VoiceNoteTranscriptionProps | undefined;
   model: OnDeviceSttStatus | null;
   transcriber: TranscriberApi;
+  /** The account's current state: signed out, the provider is locked to Local. */
+  signedIn: boolean;
   /** Tells the user something that did not work. */
   notify: (message: string) => void;
 }
@@ -107,22 +119,22 @@ export function useTranscriptionChoice({
   transcription,
   model,
   transcriber: api,
+  signedIn,
   notify,
 }: TranscriptionChoiceOptions) {
   const offered = transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
   const mode = MODE_FOR[api.transcriber.id];
 
-  const [locked, setLocked] = useState(false);
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<ModeId | null>(null);
   const [retry, setRetry] = useState<ModeId | null>(null);
 
   const stops: ScaleStop[] = scaleStops(shell, model).map(
     ({ availability, ...stop }) => {
-      if (locked && stop.id !== "local")
+      if (!signedIn && stop.id !== "local")
         return { stop, available: false, reason: SIGNED_OUT };
-      if (locked) return { stop, available: true };
+      if (!signedIn) return { stop, available: true };
       if (stop.id === "private" && !offered)
         return { stop, available: false, reason: PRIVATE_UNAVAILABLE };
       return availability.available
@@ -156,14 +168,13 @@ export function useTranscriptionChoice({
         setAsking(true);
         return;
       case "locked_signed_out":
-        setLocked(true);
         notify(SIGNED_OUT);
         return;
       case "unavailable":
         console.error(
           `[Recorder] The provider cannot use ${TRANSCRIBER_FOR[id]} right now`,
         );
-        notify(PRIVATE_UNAVAILABLE);
+        notify(unavailableNow(MODE_NAME[id]));
         return;
     }
   };
@@ -221,13 +232,12 @@ export function useTranscriptionChoice({
     if (result === "ok") return;
     // The switch shows the provider's value, so a refusal leaves it where it was.
     console.error(`[Recorder] Identify speakers was refused: ${result}`);
-    if (result === "locked_signed_out") setLocked(true);
     notify(
       result === "needs_consent"
         ? SPEAKERS_NEEDS_CONSENT
         : result === "locked_signed_out"
           ? SIGNED_OUT
-          : PRIVATE_UNAVAILABLE,
+          : unavailableNow("Identify speakers"),
     );
   };
 

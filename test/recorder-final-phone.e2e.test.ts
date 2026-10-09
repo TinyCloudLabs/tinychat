@@ -193,21 +193,21 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.mouse.down();
     await page.mouse.move(box.x + 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Skip");
+    await modeIs(page, "Audio only");
     expect(await calls()).toEqual(["transcriber:off:recording"]);
 
     await page.mouse.move(box.x + 12, y);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 12, y, { steps: 6 });
     await page.mouse.up();
-    await modeIs(page, "Skip");
+    await modeIs(page, "Audio only");
     await shown(page.getByText("Coming with the next update").first());
     await page.context().close();
   });
 
   test("first run: the scale shows the provider's mode; Private waits on consent, then asks again", async () => {
     const { page, calls, activeName } = await open("first-run");
-    await modeIs(page, "Skip");
+    await modeIs(page, "Audio only");
     await shown(page.getByText("Just the recording, kept on this phone."));
 
     await slider(page).focus();
@@ -270,7 +270,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     const { page, calls } = await open("consented");
     await modeIs(page, "Private");
     for (const [id, label] of [
-      ["off", "Skip"],
+      ["off", "Audio only"],
       ["on-device", "Local"],
       ["private-cloud", "Private"],
     ] as const) {
@@ -295,7 +295,7 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     });
     await slider(page).focus();
     await page.keyboard.press("ArrowLeft");
-    await shown(page.getByText("Not available right now").first());
+    await shown(page.getByText("Local isn't available right now").first());
     await modeIs(page, "Private");
     expect(errors.some((text) => text.includes("cannot use on-device"))).toBe(
       true,
@@ -303,7 +303,38 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     await page.context().close();
   });
 
-  test("signed out: the provider forces on-device, Local is shown and the other stops say why they are off", async () => {
+  test("signed out: Local is selected and the other stops say why they are off, from the account's state alone", async () => {
+    const { page } = await open("consented");
+    const stops = () =>
+      page
+        .locator("[data-available]")
+        .evaluateAll((all) =>
+          all.map((stop) => stop.getAttribute("data-available")),
+        );
+    await page.evaluate(() => {
+      const recorder = (window as unknown as Harness).exoRecorder;
+      recorder.patchTranscriber({ id: "on-device" });
+      recorder.patch({ signedIn: false });
+    });
+    await modeIs(page, "Local");
+    expect(await stops()).toEqual(["false", "true", "false", "false"]);
+    await page
+      .getByRole("button", { name: "Transcription modes: compare and choose" })
+      .click();
+    await shown(page.getByText("Sign in to choose another mode").first());
+    await page.keyboard.press("Escape");
+    await page.evaluate(() =>
+      (window as unknown as Harness).exoRecorder.patch({ signedIn: true }),
+    );
+    await until(
+      "the stops to open after sign-in",
+      async () =>
+        (await stops()).join() === ["true", "true", "true", "false"].join(),
+    );
+    await page.context().close();
+  });
+
+  test("a locked_signed_out answer is feedback only: a toast, and the stops follow the account", async () => {
     const { page } = await open("consented");
     await page.evaluate(() => {
       (window as unknown as Harness).exoRecorder.transcriberResult =
@@ -311,14 +342,13 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
     });
     await slider(page).focus();
     await page.keyboard.press("ArrowLeft");
-    await modeIs(page, "Local");
     await shown(page.getByText("Sign in to choose another mode").first());
     const available = await page
       .locator("[data-available]")
       .evaluateAll((stops) =>
         stops.map((stop) => stop.getAttribute("data-available")),
       );
-    expect(available).toEqual(["false", "true", "false", "false"]);
+    expect(available).toEqual(["true", "true", "true", "false"]);
     await page.context().close();
   });
 
@@ -676,5 +706,78 @@ describe.serial(`phone recorder interactions (${engineName})`, () => {
       ]);
       await page.context().close();
     });
+  });
+});
+
+type RouteHarness = {
+  exoRoute: {
+    calls: string[];
+    rejectSetter: boolean;
+    rejectConsent: boolean;
+  };
+};
+
+describe.serial(`default recorder route control (${engineName})`, () => {
+  async function openRoute() {
+    const page = await (
+      await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        reducedMotion: "reduce",
+      })
+    ).newPage();
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      if (
+        message.type() === "error" &&
+        !message.text().startsWith("Failed to load resource")
+      )
+        errors.push(message.text());
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.port}/?screen=recorder-final-phone-interactive-route-control&theme=light&platform=ios`,
+    );
+    await page.waitForSelector("[data-testid=transcription-route]");
+    const selected = () =>
+      page.getByRole("radio", { checked: true }).first().textContent();
+    return { page, errors, selected };
+  }
+
+  test("a rejected setter shows an alert naming the mode, logs it, and leaves the selection with the provider", async () => {
+    const { page, errors, selected } = await openRoute();
+    await page.evaluate(() => {
+      (window as unknown as RouteHarness).exoRoute.rejectSetter = true;
+    });
+    await page.getByRole("radio", { name: "Off" }).click();
+    const alert = page.getByRole("alert");
+    await shown(alert);
+    expect(await alert.textContent()).toBe(
+      "Could not change the transcription to Off: Plugin is down",
+    );
+    expect(await selected()).toBe("On this phone");
+    expect(errors.some((text) => text.includes("Could not change"))).toBe(true);
+    await page.context().close();
+  });
+
+  test("through the consent question the selection stays the provider's, and a rejected consent shows the alert", async () => {
+    const { page, selected } = await openRoute();
+    await page.getByRole("radio", { name: "Private cloud" }).click();
+    await shown(page.getByTestId("voice-note-transcription-consent"));
+    expect(await selected()).toBe("On this phone");
+    await page.evaluate(() => {
+      (window as unknown as RouteHarness).exoRoute.rejectConsent = true;
+    });
+    await page.getByTestId("voice-note-transcription-enable").click();
+    const alert = page.getByRole("alert");
+    await shown(alert);
+    expect(await alert.textContent()).toBe(
+      "Could not change the transcription to Private cloud: Consent was not saved",
+    );
+    expect(await selected()).toBe("On this phone");
+    expect(
+      await page.evaluate(
+        () => (window as unknown as RouteHarness).exoRoute.calls,
+      ),
+    ).toEqual(["consent"]);
+    await page.context().close();
   });
 });

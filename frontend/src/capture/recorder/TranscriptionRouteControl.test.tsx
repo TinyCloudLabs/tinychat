@@ -1,7 +1,7 @@
 // The route control: what it offers in each private cloud state, and that the
 // longer explanation is one link away (How it works), never a paragraph here.
 // On this phone is offered unconditionally (TC-836): it needs no account or network check.
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,7 +11,8 @@ import { aboutHref } from "@/lib/about";
 import { __setVoiceNotesForTests, type CaptureStatus, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
 import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
-import { TranscriptionRouteControl, useLiveRouteOverride } from "./TranscriptionRouteControl";
+import { requestRecordingRoute, routeUnavailable, SIGNED_OUT_ROUTE, TranscriptionRouteControl, useLiveRouteOverride } from "./TranscriptionRouteControl";
+import type { SetTranscriberResult } from "./voiceNoteRecorderController";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
 const noop = () => {};
@@ -116,6 +117,77 @@ describe("TranscriptionRouteControl", () => {
 // `status().options.transcriber` must win over the stored default — which this very recording
 // may have been overridden away from. There is no DOM in this workspace, so the hook (no host
 // elements) is mounted directly, as SavedReceipt.test.tsx does for useOnDeviceReceipt.
+describe("a live recorder's selection is always the provider's", () => {
+  const checked = (html: string) =>
+    [...html.matchAll(/<button[^>]*role="radio"[^>]*aria-checked="true"[^>]*>(.*?)<\/button>/g)].map((m) => m[1]!.replace(/<[^>]*>/g, ""));
+  const renderWith = (id: "off" | "on-device" | "private-cloud", value: VoiceNoteTranscriptionProps, asking: boolean) => {
+    __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
+    return renderToStaticMarkup(
+      <MemoryRouter>
+        <TranscriptionRouteControl
+          transcription={value}
+          signedIn
+          defaultAsking={asking}
+          recorder={{ transcriber: { id, identifySpeakers: false, source: "recording" }, setTranscriber: async () => "ok" }}
+        />
+      </MemoryRouter>,
+    );
+  };
+
+  test("while the consent question is open, the selected route is still the provider's", () => {
+    for (const id of ["off", "on-device"] as const) {
+      const html = renderWith(id, transcription({ consented: false }), true);
+      expect(html).toContain('data-testid="voice-note-transcription-consent"');
+      expect(html).toContain(`data-route="${id}"`);
+      expect(checked(html)).toEqual([id === "off" ? "Off" : "On this phone"]);
+    }
+  });
+
+  test("with consent given the selection is the provider's too", () => {
+    expect(checked(renderWith("private-cloud", transcription(), false))).toEqual(["Private cloud"]);
+    expect(checked(renderWith("on-device", transcription(), false))).toEqual(["On this phone"]);
+  });
+});
+
+describe("requestRecordingRoute: the provider's answer is shown, logged, and never overridden", () => {
+  async function run(request: () => Promise<SetTranscriberResult>, next: "off" | "on-device" | "private-cloud" = "private-cloud") {
+    const events: string[] = [];
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    await requestRecordingRoute(next, request, {
+      needsConsent: () => events.push("consent"),
+      settled: () => events.push("settled"),
+      notify: (message) => events.push(`notify:${message}`),
+    });
+    const errors = logged.mock.calls.length;
+    logged.mockRestore();
+    return { events, errors };
+  }
+
+  test("ok settles quietly", async () => {
+    expect(await run(async () => "ok")).toEqual({ events: ["settled"], errors: 0 });
+  });
+
+  test("needs_consent asks for consent and says nothing", async () => {
+    expect(await run(async () => "needs_consent")).toEqual({ events: ["consent"], errors: 0 });
+  });
+
+  test("unavailable names the mode that was picked, and is logged", async () => {
+    expect(await run(async () => "unavailable")).toEqual({ events: [`notify:${routeUnavailable("private-cloud")}`], errors: 1 });
+    expect(routeUnavailable("private-cloud")).toBe("Private cloud isn't available right now");
+    expect(routeUnavailable("on-device")).toBe("On this phone isn't available right now");
+  });
+
+  test("locked_signed_out says to sign in, and is logged", async () => {
+    expect(await run(async () => "locked_signed_out", "off")).toEqual({ events: [`notify:${SIGNED_OUT_ROUTE}`], errors: 1 });
+  });
+
+  test("a rejected change says why, and is logged", async () => {
+    const { events, errors } = await run(async () => { throw new Error("plugin down"); });
+    expect(events).toEqual(["notify:Could not change the transcription to Private cloud: plugin down"]);
+    expect(errors).toBe(1);
+  });
+});
+
 describe("useLiveRouteOverride, mounted", () => {
   const domSaved = { window: (globalThis as { window?: unknown }).window, act: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
   beforeAll(() => {
