@@ -1,5 +1,11 @@
 # @tinychat/backend
 
+## 0.4.2-beta.0
+
+### Patch Changes
+
+- 3952464: Issue fresh SIWE-verified backend bearers for up to 30 days, capped by the signed SIWE expiration time. Existing bearers keep their original expiry.
+
 ## 0.4.1
 
 ### Patch Changes
