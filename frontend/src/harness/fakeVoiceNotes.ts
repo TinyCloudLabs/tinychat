@@ -44,6 +44,9 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   let maxDurationMs = 10_800_000;
   let defaults: CaptureDefaults = { accountDid: null, transitionGen: 0, transcriber: "on-device", identifySpeakers: false };
   const deleted: string[] = [];
+  /** Committed recordings, for `listPending` — a real note's own transcriber and durable on-device
+   * state (e.g. TranscriptionRouteControl's live-session read, SavedReceipt's seed). */
+  const committed: VoiceNoteRecording[] = [];
   const unsupported = async (): Promise<never> => {
     throw Object.assign(new Error("This action is not implemented in the browser harness"), { code: "not_implemented_in_harness" });
   };
@@ -81,6 +84,8 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       };
       current = null;
       state = "idle";
+      committed.push({ ...recording, stt: recording.options?.transcriber === "on-device"
+        ? { state: "waiting_for_model", pack: null, engine: null, segmentsDone: 0, windowsDone: 0, error: null } : undefined });
       return recording;
     },
     async status(): Promise<CaptureStatus> {
@@ -111,7 +116,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       deleted.push(id);
     },
     async listPending() {
-      return { recordings: [] };
+      return { recordings: committed };
     },
     pause: unsupported,
     resume: unsupported,
@@ -140,9 +145,10 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     recordRemoteResult: unsupported,
     claim: unsupported,
     updateLedger: unsupported,
-    localAudioUrl: unsupported,
+    // A tiny silent WAV data URL: real enough for MeetingAudioPlayer to mount and show Play.
+    async localAudioUrl() { return { url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=" }; },
     putTranscript: unsupported,
-    getTranscript: unsupported,
+    async getTranscript() { return { transcript: null }; },
     listInputs: unsupported,
     selectInput: unsupported,
     listQuarantine: unsupported,

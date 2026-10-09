@@ -32,20 +32,24 @@ afterAll(() => {
  * so a test can fire both together, the way the real plugin does. */
 function fakeVoiceNotesWithSidecar(id: string, stt: NoteSttState | null, transcript: LocalTranscript | null = null) {
   let currentStt = stt;
+  let listPendingCalls = 0;
   const plugin = {
     getTranscript: async () => ({ transcript }),
-    listPending: async () => ({
-      recordings: currentStt
-        ? [{ id, startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, stt: currentStt } satisfies VoiceNoteRecording]
-        : [],
-    }),
+    listPending: async () => {
+      listPendingCalls += 1;
+      return {
+        recordings: currentStt
+          ? [{ id, startedAt: 0, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 4, silencedMs: 0, silencedEvents: 0, noSignalMs: 0, stt: currentStt } satisfies VoiceNoteRecording]
+          : [],
+      };
+    },
   } as unknown as VoiceNotesPlugin;
   __setVoiceNotesForTests(plugin, { available: true });
-  return { plugin, setStt: (next: NoteSttState | null) => { currentStt = next; } };
+  return { plugin, setStt: (next: NoteSttState | null) => { currentStt = next; }, listPendingCalls: () => listPendingCalls };
 }
 
-function Probe(props: { id: string; onDevice: boolean; seen: ReturnType<typeof useOnDeviceReceipt>[] }) {
-  props.seen.push(useOnDeviceReceipt(props.id, props.onDevice));
+function Probe(props: { id: string; onDevice: boolean; sttHint?: NoteSttState | null; seen: ReturnType<typeof useOnDeviceReceipt>[] }) {
+  props.seen.push(useOnDeviceReceipt(props.id, props.onDevice, props.sttHint));
   return null;
 }
 const container = { nodeType: 1, nodeName: "DIV", tagName: "DIV", ownerDocument: null, textContent: "", addEventListener() {}, removeEventListener() {} } as unknown as HTMLElement;
@@ -54,9 +58,11 @@ afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = null;
 });
-async function render(id: string, seen: ReturnType<typeof useOnDeviceReceipt>[]) {
+/** `sttHint` mirrors what RecordingView's own `listPending()` read already has by the time
+ * SavedReceipt mounts in production — the hook no longer repeats that native call itself. */
+async function render(id: string, seen: ReturnType<typeof useOnDeviceReceipt>[], sttHint: NoteSttState | null = null) {
   root = createRoot(container);
-  await act(async () => root!.render(<Probe id={id} onDevice seen={seen} />));
+  await act(async () => root!.render(<Probe id={id} onDevice sttHint={sttHint} seen={seen} />));
   await act(async () => {});
 }
 
@@ -64,10 +70,11 @@ describe("useOnDeviceReceipt, mounted", () => {
   test("a fresh mount with a persisted failed note shows failed, with no transcribed/failed event ever fired", async () => {
     const fake = createFakeOnDeviceStt();
     __setOnDeviceSttForTests(fake.plugin); // the queue has already dropped this note (it is no longer pending), as a real crash-looped note would be
-    fakeVoiceNotesWithSidecar("note-1", { state: "failed", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: "too_many_attempts" });
+    const failedStt: NoteSttState = { state: "failed", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: "too_many_attempts" };
+    fakeVoiceNotesWithSidecar("note-1", failedStt);
 
     const seen: ReturnType<typeof useOnDeviceReceipt>[] = [];
-    await render("note-1", seen);
+    await render("note-1", seen, failedStt); // the caller's own listPending() already knows this
 
     expect(seen.at(-1)!.kind).toBe("failed");
   });
@@ -75,7 +82,8 @@ describe("useOnDeviceReceipt, mounted", () => {
   test("Retry clears the failed display the instant it starts, before any new terminal event", async () => {
     const fake = createFakeOnDeviceStt();
     __setOnDeviceSttForTests(fake.plugin);
-    const sidecar = fakeVoiceNotesWithSidecar("note-1", { state: "failed", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: "too_many_attempts" });
+    const failedStt: NoteSttState = { state: "failed", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: "too_many_attempts" };
+    const sidecar = fakeVoiceNotesWithSidecar("note-1", failedStt);
     // Native's real `enqueue()` writes the sidecar to `queued` as part of the same call
     // (TranscriptionQueue.enqueue): model that coupling so the fakes agree with each other.
     const realEnqueue = fake.plugin.enqueue;
@@ -85,12 +93,30 @@ describe("useOnDeviceReceipt, mounted", () => {
     };
 
     const seen: ReturnType<typeof useOnDeviceReceipt>[] = [];
-    await render("note-1", seen);
+    await render("note-1", seen, failedStt);
     expect(seen.at(-1)!.kind).toBe("failed");
 
     await act(async () => seen.at(-1)!.retry());
     expect(seen.at(-1)!.kind).not.toBe("failed");
     expect(seen.at(-1)!.kind).toBe("pending");
+  });
+
+  test("TC-781 regression: an initial mount seeded with sttHint never calls listPending itself", async () => {
+    // RecordingView's own listPending() read already knows this note's durable state (sttHint) by
+    // the time SavedReceipt mounts; a second listPending() call here used to run native's full
+    // recovery scan a second time on every Stop, serialized behind the first one's lock, and on a
+    // phone with many notes that reliably outran the saved receipt's fixed display window ("Stop
+    // loses the local playback receipt").
+    const fake = createFakeOnDeviceStt();
+    __setOnDeviceSttForTests(fake.plugin);
+    const queuedStt: NoteSttState = { state: "queued", pack: "full", engine: "parakeet", segmentsDone: 0, windowsDone: 0, error: null };
+    const sidecar = fakeVoiceNotesWithSidecar("note-1", queuedStt);
+
+    const seen: ReturnType<typeof useOnDeviceReceipt>[] = [];
+    await render("note-1", seen, queuedStt);
+
+    expect(seen.at(-1)!.kind).toBe("pending");
+    expect(sidecar.listPendingCalls()).toBe(0);
   });
 
   test("a failed event triggers a fresh read that picks up the now-failed persisted state", async () => {

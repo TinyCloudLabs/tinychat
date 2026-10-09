@@ -224,6 +224,26 @@ describe.serial(`shell invariants (${name})`, () => {
     await page.close();
   }, 60_000);
 
+  test("full-page Stop shows the saved receipt, not an immediate close to Capture home", async () => {
+    // TC-781, "Stop loses the local playback receipt": the full-page recorder (unlike the
+    // island, covered above) was never actually checked end to end for Stop -> receipt.
+    const { page, errors } = await open("/chat/capture");
+
+    await page.getByTestId("voice-note-record").click();
+    await page.waitForFunction(() => window.shellHarness!.voiceNotes().recording);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-testid="voice-note-stop"]')?.disabled);
+
+    await page.getByTestId("voice-note-stop").click();
+    await page.waitForFunction(() => !window.shellHarness!.voiceNotes().recording);
+    // The full-page recorder stays open and shows the receipt, with its Play control, for the
+    // RECEIPT_MS window — not an immediate close to Capture home.
+    await page.getByTestId("voice-note-receipt").waitFor({ timeout: 1_000 });
+    await page.getByTestId("note-audio-play").waitFor({ timeout: 2_000 });
+    expect(await page.getByTestId("recording-overlay").count()).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }, 60_000);
+
   test("discard: the question takes focus to Keep and turns back after 5 s; confirmed, the recording is deleted and the recorder closes", async () => {
     const { page, errors } = await open("/chat/capture");
     const stats = () => page.evaluate(() => window.shellHarness!.voiceNotes());

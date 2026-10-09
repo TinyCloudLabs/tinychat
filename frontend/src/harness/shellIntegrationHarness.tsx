@@ -11,6 +11,8 @@ import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import type { AppState } from "@/lib/appState";
 import { initSizeClass } from "@/lib/sizeClass";
 import { __setVoiceNotesForTests } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { __setOnDeviceSttForTests } from "@/lib/voiceNotes/onDeviceStt";
+import { createFakeOnDeviceStt } from "@/lib/voiceNotes/fakeOnDeviceStt";
 import { screenFor } from "@/shell/routes";
 import { useBack } from "@/shell/useAndroidBack";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
@@ -37,6 +39,7 @@ declare global {
 initSizeClass();
 const fake = createFakeVoiceNotes();
 __setVoiceNotesForTests(fake.plugin, { available: true });
+__setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
 const shim = createRuntimeShim();
 // Capture reads a space with captures in it, so a note can be opened.
 const captureTcw = libraryTcw();
