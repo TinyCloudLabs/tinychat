@@ -4,14 +4,14 @@
 // out and offline, so its text (or "Couldn't transcribe on this phone" plus
 // Retry) comes from the native STT queue directly, not from the space's
 // transcript, which may still be unsaved or unsynced here.
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Capacitor } from "@capacitor/core";
 import { CheckIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { MeetingAudioPlayer } from "@/chat/MeetingAudioPlayer";
 import { cn } from "@/lib/utils";
-import { VoiceNotes, type LocalTranscript, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes, type LocalTranscript, type NoteSttState, type TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
 import { receiptMetaText } from "./recorderCopy";
@@ -37,42 +37,60 @@ export interface SavedReceiptProps {
   className?: string;
 }
 
-/** On-device transcription's state for this note: the native queue while it runs (it drops out of
- * the queue once finished, win or lose), the terminal `transcribed`/`failed` event, and the
- * transcript itself once read. Works signed out and offline — never touches the space. */
-function useOnDeviceReceipt(id: string | undefined, onDevice: boolean) {
+/** On-device transcription's state for this note: the sidecar's durable `stt.state` is the source
+ * of truth (round-2 finding 1) — a missed `transcribed`/`failed` event (fired before this
+ * component mounted, or before a previous mount's listeners were attached) never strands the UI,
+ * because `VoiceNotes.listPending()` is read fresh on every mount and after every retry, not just
+ * accumulated from retained events. The live native queue (`onDeviceSttStore`) still drives the
+ * "Transcribing…" progress line while a job runs. Works signed out and offline — never touches the
+ * space. */
+export function useOnDeviceReceipt(id: string | undefined, onDevice: boolean) {
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const [transcript, setTranscript] = useState<LocalTranscript | null>(null);
-  const [terminal, setTerminal] = useState<{ kind: "transcribed" | "failed" } | null>(null);
+  const [durable, setDurable] = useState<NoteSttState | null>(null);
+  const active = useRef(false);
+
+  const read = () => {
+    void VoiceNotes.getTranscript({ id: id! }).then(
+      ({ transcript: found }) => { if (active.current) setTranscript(found); },
+      () => { /* Best-effort: the durable/queue state below still renders. */ },
+    );
+    void VoiceNotes.listPending().then(
+      ({ recordings }) => {
+        if (!active.current) return;
+        const stt = recordings.find((recording) => recording.id === id)?.stt;
+        if (stt) setDurable(stt);
+      },
+      () => { /* Best-effort: the queue state below still renders. */ },
+    );
+  };
 
   useEffect(() => {
     setTranscript(null);
-    setTerminal(null);
+    setDurable(null);
     if (!id || !onDevice) return;
-    let active = true;
-    const read = () => {
-      void VoiceNotes.getTranscript({ id }).then(
-        ({ transcript: found }) => { if (active) setTranscript(found); },
-        () => { /* Best-effort: the queue/terminal-event state below still renders. */ },
-      );
-    };
+    active.current = true;
     read();
     const subs = [
-      OnDeviceStt.addListener("transcribed", (event) => { if (active && event.id === id) { setTerminal({ kind: "transcribed" }); read(); } }),
-      OnDeviceStt.addListener("failed", (event) => { if (active && event.id === id) setTerminal({ kind: "failed" }); }),
+      OnDeviceStt.addListener("transcribed", (event) => { if (active.current && event.id === id) read(); }),
+      OnDeviceStt.addListener("failed", (event) => { if (active.current && event.id === id) read(); }),
     ];
     return () => {
-      active = false;
+      active.current = false;
       for (const sub of subs) void sub.then((handle) => handle.remove());
     };
   }, [id, onDevice]);
 
-  if (!id || !onDevice) return { kind: "none" as const };
-  if (transcript) return { kind: "transcribed" as const, transcript };
-  if (terminal?.kind === "failed") return { kind: "failed" as const };
+  if (!id || !onDevice) return { kind: "none" as const, retry: () => {} };
+  const retry = () => {
+    setDurable((previous) => previous && { ...previous, state: "queued", error: null }); // clears the failure display the instant Retry starts
+    void OnDeviceStt.enqueue({ id }).then(read);
+  };
+  if (transcript) return { kind: "transcribed" as const, transcript, retry };
+  if (durable?.state === "failed") return { kind: "failed" as const, retry };
   const queued = sttStatus.queue.find((job) => job.id === id);
-  if (queued) return { kind: "pending" as const, state: queued.state };
-  return { kind: "pending" as const, state: "queued" as const };
+  if (queued) return { kind: "pending" as const, state: queued.state, retry };
+  return { kind: "pending" as const, state: durable?.state ?? "queued", retry };
 }
 
 export function SavedReceipt(props: SavedReceiptProps) {
@@ -142,7 +160,7 @@ export function SavedReceipt(props: SavedReceiptProps) {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="voice-note-on-device-failed">
           <p role="alert" className="min-w-0 flex-1 text-callout text-destructive">Couldn&apos;t transcribe on this phone.</p>
           {props.saved && (
-            <Button type="button" variant="outline" onClick={() => void OnDeviceStt.enqueue({ id: props.saved!.id })} data-testid="voice-note-on-device-retry">
+            <Button type="button" variant="outline" onClick={onDevice.retry} data-testid="voice-note-on-device-retry">
               <RefreshCwIcon aria-hidden /> Retry
             </Button>
           )}
