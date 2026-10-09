@@ -31,6 +31,10 @@ export const importDesktopRecorder: DesktopRecorderLoader = () =>
 
 type LazyRecorder = LazyExoticComponent<ComponentType<DesktopRecorderProps>>;
 const components = new WeakMap<DesktopRecorderLoader, LazyRecorder>();
+const loaded = new WeakSet<DesktopRecorderLoader>();
+
+export const isDesktopRecorderLoaded = (load: DesktopRecorderLoader) =>
+  loaded.has(load);
 
 /** One lazy component per loader, so reopening the sheet doesn't suspend again; a failed load is dropped so the next render tries it afresh. */
 export function desktopRecorderFor(load: DesktopRecorderLoader): LazyRecorder {
@@ -38,7 +42,10 @@ export function desktopRecorderFor(load: DesktopRecorderLoader): LazyRecorder {
   if (existing) return existing;
   const component: LazyRecorder = lazy(() =>
     load().then(
-      (module) => ({ default: module.DesktopRecorder }),
+      (module) => {
+        loaded.add(load);
+        return { default: module.DesktopRecorder };
+      },
       (error: unknown) => {
         if (components.get(load) === component) components.delete(load);
         throw error;
@@ -128,13 +135,26 @@ export function isChunkLoadError(error: unknown): boolean {
   );
 }
 
-/** Vite fires this on window when a lazy chunk's preload fails; returns the unsubscribe. */
+/** Vite fires this on window when any lazy chunk's preload fails; returns the unsubscribe. */
 export function listenForPreloadError(
   target: Pick<Window, "addEventListener" | "removeEventListener">,
-  onError: () => void,
+  onError: (event: Event) => void,
 ): () => void {
   target.addEventListener("vite:preloadError", onError);
   return () => target.removeEventListener("vite:preloadError", onError);
+}
+
+/** True when a `vite:preloadError` is this recorder's own load failing: it hasn't loaded yet, and the event's payload (an Error) doesn't name only other chunks. */
+export function isDesktopRecorderPreloadError(
+  load: DesktopRecorderLoader,
+  event: Event,
+): boolean {
+  if (isDesktopRecorderLoaded(load)) return false;
+  const payload = (event as Event & { payload?: unknown }).payload;
+  const text =
+    payload instanceof Error ? payload.message : String(payload ?? "");
+  const urls = text.match(/[^\s"'()]+\.(?:js|css)\b/g);
+  return !urls || urls.some((url) => /DesktopRecorder/.test(url));
 }
 
 export const reloadExo = () => window.location.reload();
@@ -289,8 +309,11 @@ export function LazyDesktopRecorder({
   const [attempt, setAttempt] = useState(0);
   const [preloadFailed, setPreloadFailed] = useState(false);
   useEffect(
-    () => listenForPreloadError(window, () => setPreloadFailed(true)),
-    [],
+    () =>
+      listenForPreloadError(window, (event) => {
+        if (isDesktopRecorderPreloadError(load, event)) setPreloadFailed(true);
+      }),
+    [load],
   );
   const Recorder = desktopRecorderFor(load);
   if (preloadFailed)

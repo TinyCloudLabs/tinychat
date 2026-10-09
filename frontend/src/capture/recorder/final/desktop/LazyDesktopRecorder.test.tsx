@@ -11,6 +11,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import {
   desktopRecorderFor,
   isChunkLoadError,
+  isDesktopRecorderPreloadError,
   LazyDesktopRecorder,
   listenForPreloadError,
   LoadBoundary,
@@ -300,9 +301,62 @@ describe("vite:preloadError", () => {
       target as unknown as Window,
       () => (failures += 1),
     );
-    listeners.get("vite:preloadError")?.();
+    (listeners.get("vite:preloadError") as () => void)();
     expect(failures).toBe(1);
     stop();
     expect(listeners.size).toBe(0);
+  });
+
+  const preloadEvent = (message?: string) =>
+    Object.assign(new Event("vite:preloadError", { cancelable: true }), {
+      payload: message === undefined ? undefined : new Error(message),
+    });
+
+  test("before the recorder has loaded, its own failure shows the failed surface", () => {
+    const load = loads(new Promise(() => {}));
+    within(<LazyDesktopRecorder layout="desktop" load={load} />);
+    expect(isDesktopRecorderPreloadError(load, preloadEvent())).toBe(true);
+    expect(
+      isDesktopRecorderPreloadError(
+        load,
+        preloadEvent(
+          "Unable to preload CSS for /assets/DesktopRecorder-1a2b.css",
+        ),
+      ),
+    ).toBe(true);
+    const html = within(
+      <LoadFailed layout="desktop" onRetry={() => {}} needsReload />,
+    );
+    expect(html).toContain("Couldn&#x27;t open the recorder.");
+    expect(html).toContain("Reload Exo");
+  });
+
+  test("before it has loaded, another chunk's failure is not the recorder's", () => {
+    const load = loads(new Promise(() => {}));
+    const event = preloadEvent(
+      "Unable to preload CSS for /assets/NotesRenderer-9f9f.css",
+    );
+    expect(isDesktopRecorderPreloadError(load, event)).toBe(false);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  test("once the recorder has loaded, a later preload failure leaves it in place", async () => {
+    const load = loads(Promise.resolve());
+    const node = <LazyDesktopRecorder layout="desktop" load={load} />;
+    within(node);
+    await settle();
+    expect(within(node)).toContain("loaded-recorder");
+    const event = preloadEvent();
+    expect(isDesktopRecorderPreloadError(load, event)).toBe(false);
+    expect(
+      isDesktopRecorderPreloadError(
+        load,
+        preloadEvent(
+          "Unable to preload CSS for /assets/DesktopRecorder-1a2b.css",
+        ),
+      ),
+    ).toBe(false);
+    expect(event.defaultPrevented).toBe(false);
+    expect(within(node)).toContain("loaded-recorder");
   });
 });
