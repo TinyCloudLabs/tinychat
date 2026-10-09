@@ -148,7 +148,7 @@ function gmeetRowProgress(p: GmeetSyncProgress): SyncProgress {
   };
 }
 
-async function runFirefliesSyncNow(opts: {
+export async function runFirefliesSyncNow(opts: {
   tcw: TinyCloudWeb;
   apiKey: string;
   signal: AbortSignal;
@@ -178,7 +178,7 @@ async function runFirefliesSyncNow(opts: {
  * session-start lane, so a button press while that run is in flight JOINS it
  * rather than racing it over the same upserts.
  */
-async function runGmeetSyncNow(opts: {
+export async function runGmeetSyncNow(opts: {
   tcw: TinyCloudWeb;
   backendUrl: string;
   sessionStore: SessionStore;
