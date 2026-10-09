@@ -54,6 +54,7 @@ function earlier(): VoiceNoteRecording {
 let deleteFailures: number;
 let deleteCalls: number;
 let nativeDiscards: number;
+let settingsOpens: number;
 
 function controller() {
   return createVoiceNoteRecorderController({
@@ -81,8 +82,10 @@ beforeEach(() => {
   deleteFailures = 0;
   deleteCalls = 0;
   nativeDiscards = 0;
+  settingsOpens = 0;
   plugin = {
     ...fake.plugin,
+    async openSettings() { settingsOpens++; },
     async start(options) {
       const started = await fake.plugin.start(options);
       currentId = `note-${++serial}`;
@@ -232,6 +235,22 @@ describe("voice-note recorder controller", () => {
     emit("presentRecorder", { id: "stale" });
     await tick();
     expect(presented).toBe(1);
+  });
+
+  test("shortcut denial opens the recorder without a recording and grant clears it", async () => {
+    const { recorder } = await attached();
+    let presented = 0;
+    recorder.setOnPresent(() => presented++);
+    const emit = fake.emit as unknown as (event: string, payload: { id: null; reason: string }) => void;
+    emit("presentRecorder", { id: null, reason: "permission_denied" });
+    expect(recorder.getState()).toMatchObject({ phase: "idle", recordingId: null, permissionDenied: true });
+    expect(presented).toBe(1);
+    await recorder.openSettings();
+    expect(settingsOpens).toBe(1);
+    emit("presentRecorder", { id: null, reason: "permission_granted" });
+    expect(recorder.getState().permissionDenied).toBe(false);
+    await recorder.record();
+    expect(recorder.getState().phase).toBe("recording");
   });
 
   test("Stop racing the limit's auto-stop saves exactly once, whichever arrives first", async () => {

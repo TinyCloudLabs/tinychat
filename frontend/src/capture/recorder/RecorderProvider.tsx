@@ -29,6 +29,7 @@ export interface RecorderValue {
   /** The recorder has heard status() and its retained events; Record waits until then. */
   ready: boolean;
   phase: RecorderPhase;
+  permissionDenied: boolean;
   mic: RecorderMic;
   /** Wall-clock start; views tick from native audioMs for recorded time. */
   startedAt: number | null;
@@ -52,6 +53,7 @@ export interface RecorderValue {
   /** Stop the live recording and delete it; the sheet closes once it is gone. */
   discard(): void;
   retryPending(): void;
+  openSettings(): Promise<void>;
   /** The receipt was read (Done, Open): it goes, and the sheet closes. */
   dismissOutcome(): void;
   openSheet(): void;
@@ -193,6 +195,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       available: recorder.available,
       ready: state.ready,
       phase: state.phase,
+      permissionDenied: state.permissionDenied,
       mic: state.mic,
       startedAt: state.startedAt,
       audioMs: state.audioMs,
@@ -213,6 +216,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       resume: recorder.resume,
       discard: recorder.discard,
       retryPending: recorder.retryPending,
+      openSettings: recorder.openSettings,
       dismissOutcome: dismiss,
       openSheet,
       minimiseSheet,
@@ -228,6 +232,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       recorder.discard,
       recorder.pending,
       recorder.retryPending,
+      recorder.openSettings,
       recorder.stop,
       recorder.pause,
       recorder.resume,
@@ -267,6 +272,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       available: true,
       ready: true,
       phase: "idle",
+      permissionDenied: false,
       mic: { state: "idle", reason: null },
       startedAt: null,
       audioMs: 0,
@@ -287,6 +293,7 @@ export function StaticRecorderProvider(props: { value?: Partial<RecorderValue>; 
       resume: noop,
       discard: noop,
       retryPending: noop,
+      openSettings: async () => {},
       dismissOutcome: noop,
       openSheet: noop,
       minimiseSheet: noop,

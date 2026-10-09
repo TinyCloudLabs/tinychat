@@ -8,12 +8,12 @@ import type { RecorderValue } from "./RecorderProvider";
 
 const noop = () => {};
 const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
-  available: true, ready: true, phase: "recording", mic: { state: "recording", reason: null },
+  available: true, ready: true, phase: "recording", permissionDenied: false, mic: { state: "recording", reason: null },
   startedAt: Date.now() - 42_000, audioMs: 42_000, maxDurationMs: 3 * 60 * 60_000,
   limitNotice: null, savePercent: null, error: null, outcome: null, lastSaved: null,
   pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
   transcription: undefined, sheetOpen: true,
-  record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop,
+  record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
   dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
   subscribeLevel: () => noop, ...patch,
 });
@@ -30,6 +30,13 @@ describe("RecordingView", () => {
     expect(html).toContain('data-testid="voice-note-stop"');
     expect(html).toContain('data-testid="voice-note-pause"');
     expect(html).toContain('data-testid="recorder-discard"');
+  });
+
+  test("denied shortcut shows the full-page recovery action without recording controls", () => {
+    const html = render({ phase: "idle", permissionDenied: true, startedAt: null });
+    expect(html).toContain("Microphone access is off");
+    expect(html).toContain('data-testid="voice-note-open-settings"');
+    expect(html).not.toContain('data-testid="voice-note-stop"');
   });
 
   test("paused freezes the trace and offers Resume; interrupted makes Resume prominent", () => {

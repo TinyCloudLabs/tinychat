@@ -55,6 +55,7 @@ export interface VoiceNoteRecorderController {
   /** Stop the live recording and delete it from the phone; nothing is saved. */
   discard(): Promise<void>;
   retryPending(): Promise<void>;
+  openSettings(): Promise<void>;
   /** The receipt was read. */
   dismissOutcome(): void;
   /** Input levels (0..1), fanned out without React state. */
@@ -227,6 +228,17 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         // Retained by the shell until heard, so a reload mid-recording still saves the note.
         VoiceNotes.addListener("autoStopped", onAutoStopped),
         VoiceNotes.addListener("presentRecorder", async (event) => {
+          if (event.reason === "permission_denied" && event.id === null) {
+            if (attached) {
+              send({ type: "PERMISSION_DENIED" });
+              onPresent?.();
+            }
+            return;
+          }
+          if (event.reason === "permission_granted" && event.id === null) {
+            if (attached) send({ type: "PERMISSION_GRANTED" });
+            return;
+          }
           try {
             const status = await VoiceNotes.status();
             if (!attached || status.state === "idle" || status.id !== event.id) return;
@@ -276,6 +288,9 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       } catch (caught) {
         send({ type: "START_FAILED", error: messageOf(caught) });
       }
+    },
+    async openSettings() {
+      await VoiceNotes.openSettings();
     },
     async stop() {
       // Stop waits for STARTED: the plugin cannot cancel a start in flight.

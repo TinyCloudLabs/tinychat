@@ -49,6 +49,7 @@ export interface RecorderState {
    * from before a reload must never land on a new recording).
    */
   ready: boolean;
+  permissionDenied: boolean;
 }
 
 export type RecorderEvent =
@@ -82,6 +83,8 @@ export type RecorderEvent =
   | { type: "AUTO_STOPPED"; id: string | null; notice: string; captured: boolean; error?: string | null }
   /** status() and the retained events have been heard: Record may start. */
   | { type: "RECONCILED" }
+  | { type: "PERMISSION_DENIED" }
+  | { type: "PERMISSION_GRANTED" }
   /** Back to idle without an outcome (the recording is being saved elsewhere). */
   | { type: "RESET" }
   /** The receipt was read: Done, Open, or its time ran out. */
@@ -112,6 +115,7 @@ export const initialRecorderState: RecorderState = {
   failedRecording: null,
   autoSaving: false,
   ready: false,
+  permissionDenied: false,
 };
 
 /** Idle again, keeping what the user still has to read (the error, the limit notice, the outcome). */
@@ -155,7 +159,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
   switch (event.type) {
     case "START_REQUESTED":
       if (state.phase !== "idle") return state;
-      return { ...state, phase: "starting", error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null };
+      return { ...state, phase: "starting", permissionDenied: false, error: null, limitNotice: null, outcome: null, localUpload: null, failedRecording: null, savePercent: null };
     case "STARTED":
       if (state.phase !== "starting") return state;
       return {
@@ -175,6 +179,7 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
       return {
         ...state,
         phase: "recording",
+        permissionDenied: false,
         recordingId: event.id,
         startedAt: event.startedAt,
         audioMs: event.audioMs,
@@ -186,6 +191,11 @@ export function recorderReducer(state: RecorderState, event: RecorderEvent): Rec
     case "MIC_STATE":
       if (state.phase !== "recording") return state;
       return { ...state, mic: event.mic, audioMs: event.audioMs ?? state.audioMs };
+    case "PERMISSION_DENIED":
+      if (state.phase !== "idle" || state.outcome !== null) return state;
+      return { ...state, permissionDenied: true, error: null };
+    case "PERMISSION_GRANTED":
+      return state.permissionDenied ? { ...state, permissionDenied: false } : state;
     case "PAUSE_REQUESTED":
       if (state.phase !== "recording" || state.controlPending || (state.mic.state !== "recording" && state.mic.state !== "silenced")) return state;
       // The native engine confirms release via MIC_STATE. Keep showing a live mic until then.

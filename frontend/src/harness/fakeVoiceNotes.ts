@@ -40,6 +40,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   };
 
   const plugin: VoiceNotesPlugin = {
+    openSettings: unsupported,
     async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
       if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
       counter += 1;

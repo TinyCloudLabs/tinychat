@@ -1,9 +1,12 @@
 package xyz.tinycloud.exo.capture
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Base64
 import com.getcapacitor.JSObject
 import com.getcapacitor.PermissionState
@@ -92,6 +95,16 @@ class VoiceNotesPlugin : Plugin(), CaptureEngine.Listener {
         JSONObject().put("id", id ?: JSONObject.NULL)
     }
     @PluginMethod fun status(call: PluginCall) { call.resolve(JSObject.fromJSONObject(engine.status())) }
+    @PluginMethod fun openSettings(call: PluginCall) {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            call.resolve()
+        } catch (error: Exception) {
+            call.reject(error.message ?: "Could not open Settings", "settings_unavailable", error)
+        }
+    }
     @PluginMethod fun listPending(call: PluginCall) = async(call) {
         engine.recover()
         JSONObject().put("recordings", JSONArray(engine.library.list()))

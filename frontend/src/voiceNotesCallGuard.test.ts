@@ -1,6 +1,7 @@
 // One recorder controller: only these files may drive the native VoiceNotes
-// plugin (listen, start, stop, delete audio). A second caller would mean a
-// second recorder racing the first for the microphone and its saves. The
+// plugin (listen, start, stop, delete audio). MicDeniedRecovery only listens
+// for the shortcut result while the signed-in controller is absent. A second
+// recording caller would race the first for the microphone and its saves. The
 // redesign's recorder (TC-761) moved the controller to
 // voiceNoteRecorderController (wrapped by useVoiceNoteRecorder) and the saves
 // to recorderSaves.
@@ -11,6 +12,7 @@ import { join, relative } from "node:path";
 const SRC = new URL(".", import.meta.url).pathname;
 const ALLOWED = [
   "capture/recorder/voiceNoteRecorderController.ts",
+  "capture/recorder/MicDeniedRecovery.tsx",
   "lib/voiceNotes/recorderSaves.ts",
   "chat/OfflineVoiceNotes.tsx",
   "lib/voiceNotes/nativeVoiceNotes.ts",

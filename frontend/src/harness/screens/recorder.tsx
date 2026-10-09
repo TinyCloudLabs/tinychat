@@ -151,6 +151,7 @@ function NavStandIn(props: { kind: "rail" | "sidebar" }) {
 const SAVED = { id: "rec-1", durationMs: 42_000, at: FROZEN_NOW };
 
 export const recorderScreens: HarnessScreen[] = [
+  { ...sheet("mic-denied", { phase: "idle", permissionDenied: true, startedAt: null, transcription: undefined }, { levels: QUIET }), platform: "android" },
   sheet("starting", { phase: "starting", startedAt: null, transcription: PRIVATE_CLOUD_ON }, { levels: QUIET }),
   sheet("live", LIVE, { live: true }),
   sheet("silenced", { ...LIVE, mic: { state: "silenced", reason: "os_silenced" } }, { levels: QUIET, live: true, warning: true }),

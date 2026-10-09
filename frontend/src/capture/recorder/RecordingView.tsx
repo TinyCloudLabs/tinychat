@@ -3,6 +3,7 @@ import { CheckIcon, ChevronDownIcon, MicOffIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { LevelTrace } from "./LevelTrace";
+import { MicrophoneAccessOff } from "./MicrophoneAccessOff";
 import { micWarning, micWarningSentence, recorderMetaText, recorderStatusText } from "./recorderCopy";
 import { RecorderControls } from "./RecorderControls";
 import type { RecorderValue } from "./RecorderProvider";
@@ -27,6 +28,8 @@ export function RecordingView({ recorder, onOpenNote, consentAsking, discardAski
   const transcribing = outcome === "saved" && recorder.transcription?.availability === "available" &&
     recorder.transcription.consented && !!lastSaved && lastSaved.durationMs <= recorder.transcription.maxSeconds * 1000;
   const paused = mic.state === "paused" || mic.state === "interrupted" || mic.state === "needs_user";
+
+  if (recorder.permissionDenied) return <MicrophoneAccessOff onMinimise={recorder.minimiseSheet} onOpenSettings={recorder.openSettings} />;
 
   return (
     <div data-testid="voice-note-recorder" data-phase={phase} className="flex h-full min-h-0 flex-col bg-background text-foreground">

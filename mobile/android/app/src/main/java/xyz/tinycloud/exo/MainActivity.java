@@ -25,6 +25,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     private LaunchCommandStore commands;
     private String consumedCommandId;
     private boolean askingPermission;
+    private boolean deniedPresented;
+    private boolean redeliverDenied;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ActivityResultLauncher<String> requestNotifications = registerForActivityResult(
         new ActivityResultContracts.RequestPermission(), granted -> main.post(this::handlePending));
@@ -36,6 +38,8 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
                 LaunchCommandStore.Command command = commands.pending();
                 if (command != null) commands.clear(command.getId());
                 consumedCommandId = null;
+                getSharedPreferences("exo.capture", MODE_PRIVATE).edit().putBoolean("micDeniedPresentation", true).apply();
+                deniedPresented = true;
                 CaptureEngine.get(this).presentRecorder(null, "permission_denied");
             }
         });
@@ -67,7 +71,25 @@ public class MainActivity extends BridgeActivity implements CaptureEngine.Listen
     @Override public void onResume() {
         super.onResume();
         // Lifecycle reaches RESUMED after onResume returns.
-        main.post(this::handlePending);
+        main.post(() -> {
+            if (getSharedPreferences("exo.capture", MODE_PRIVATE).getBoolean("micDeniedPresentation", false) && commands.pending() == null) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    getSharedPreferences("exo.capture", MODE_PRIVATE).edit().putBoolean("micDeniedPresentation", false).apply();
+                    deniedPresented = false;
+                    redeliverDenied = false;
+                    CaptureEngine.get(this).presentRecorder(null, "permission_granted");
+                } else if (!deniedPresented || redeliverDenied) {
+                    deniedPresented = true;
+                    redeliverDenied = false;
+                    CaptureEngine.get(this).presentRecorder(null, "permission_denied");
+                }
+            }
+            handlePending();
+        });
+    }
+    @Override public void onPause() {
+        if (deniedPresented) redeliverDenied = true;
+        super.onPause();
     }
     private void handlePending() {
         if (!getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;
