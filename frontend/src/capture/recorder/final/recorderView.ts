@@ -5,6 +5,7 @@ import type {
 import { formatDuration } from "../recorderCopy";
 import type { RecorderState } from "../recorderReducer";
 import { FINAL_COPY } from "./finalCopy";
+import { deniedLine, revokedLine } from "./shell/micDeniedCopy";
 
 export interface RecorderViewInput {
   nowMs: number;
@@ -236,7 +237,7 @@ function needsUserPresentation(
         ring: "still",
         flat: false,
         pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
-        statusLine: FINAL_COPY.permissionRevoked,
+        statusLine: revokedLine(),
         openSettings: true,
       };
     case "write_failed":
@@ -310,7 +311,7 @@ function idlePresentation(
         ring: "idle",
         flat: false,
         pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
-        statusLine: FINAL_COPY.permissionRevoked,
+        statusLine: revokedLine(),
         openSettings: true,
       };
     case "os_silenced":
@@ -465,7 +466,7 @@ export function selectRecorderView(
         presentation = {
           ...presentation,
           pill: { label: FINAL_COPY.microphoneOff, dot: "hollow" },
-          statusLine: FINAL_COPY.denied,
+          statusLine: deniedLine(),
           openSettings: true,
         };
       }

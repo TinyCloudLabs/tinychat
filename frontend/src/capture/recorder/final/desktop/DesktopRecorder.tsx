@@ -23,6 +23,7 @@ import {
 import { modeShortLabel } from "../transcriptionModes";
 import type { AudioInputsSource } from "../useAudioInputs";
 import { useFinalRecorderControls } from "../useFinalRecorderControls";
+import { MicDeniedAction } from "../shell/MicDeniedAction";
 import type { TranscriberApi } from "../useTranscriptionChoice";
 import { ViaMenu } from "../ViaMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -329,13 +330,11 @@ export function DesktopRecorder({ layout, onOpenNotes }: DesktopRecorderProps) {
         ))}
         {denied ? (
           <div className="pr-controls">
-            <button
-              type="button"
-              className="pr-b primary"
-              onClick={openSettings}
-            >
-              Open Settings
-            </button>
+            <MicDeniedAction
+              idle={idleDenied}
+              onOpenSettings={openSettings}
+              onTryAgain={recorder.record}
+            />
           </div>
         ) : (
           <div className="pr-controls">
