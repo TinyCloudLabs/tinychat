@@ -13,7 +13,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { Button } from "@/components/ui/button";
 import { hapticRecordStarted, hapticSaved, hapticWarning } from "@/lib/haptics";
-import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, nativeVoiceNotesAvailable, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VOICE_NOTE_MAX_DURATION_MS, VoiceNotes, type VoiceNoteRecording } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { effectiveCaptureOptions, readTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import type { PendingSnapshot } from "@/lib/voiceNotes/recorderSaves";
 import { liveCapture } from "./liveCapture";
@@ -22,6 +23,7 @@ import type { RecorderCaptureIssue, RecorderMic, RecorderPhase, RecorderState } 
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
 import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
+import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { useVoiceNoteRecorder } from "./useVoiceNoteRecorder";
 
 /** How long a saved receipt stays, once its content is actually visible, before the sheet closes
@@ -111,23 +113,25 @@ export function islandShown(value: Pick<RecorderValue, "phase" | "outcome" | "sh
 }
 
 export interface RecorderProviderProps {
-  tcw: TinyCloudWeb;
+  tcw: TinyCloudWeb | null;
   /** False turns the recorder off for this session (local validation). */
   enabled?: boolean;
   backendUrl?: string;
   sessionStore?: SessionStore;
   /** A recording landed in the space. */
   onSaved?: (recording: VoiceNoteRecording) => void;
+  onAccountReady?: (tcw: TinyCloudWeb) => void;
+  pipeline?: VoiceNotePipeline | null;
   children: ReactNode;
 }
 
-export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, children }: RecorderProviderProps) {
+export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSaved, onAccountReady, pipeline, children }: RecorderProviderProps) {
   const [configured, setConfigured] = useState<{ tcw: TinyCloudWeb; did: string | null } | null>(null);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const [defaultsAttempt, setDefaultsAttempt] = useState(0);
-  const defaultsReady = configured?.tcw === tcw && configured.did === (tcw.did ?? null);
+  const defaultsReady = tcw === null || (configured?.tcw === tcw && configured.did === (tcw.did ?? null));
   useEffect(() => {
-    if (enabled === false || !nativeVoiceNotesAvailable()) return;
+    if (enabled === false || !captureEngineAvailable() || tcw === null) return;
     let active = true;
     setConfigured(null);
     void (async () => {
@@ -137,20 +141,20 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
         const key = "exo.capture.transitionGen";
         const local = Number(globalThis.localStorage?.getItem(key) ?? 0) || 0;
         // A preference sync is not an account transition. Only an owner change advances the generation.
-        const transitionGen = native.accountDid === (tcw.did ?? null)
+        const transitionGen = native.accountDid === (tcw.did ?? null) && native.status === "signed_in"
           ? native.transitionGen : Math.max(native.transitionGen, local) + 1;
         await VoiceNotes.setCaptureDefaults({ ...native,
           ...effectiveCaptureOptions(readTranscriberPreference(), tcw.did != null),
           accountDid: tcw.did ?? null, transitionGen });
         globalThis.localStorage?.setItem(key, String(transitionGen));
-        if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); }
+        if (active) { setDefaultsError(null); setConfigured({ tcw, did: tcw.did ?? null }); if (tcw.did) onAccountReady?.(tcw); }
       } catch (caught) {
         if (active) setDefaultsError(`Could not set this phone's recording account: ${caught instanceof Error ? caught.message : String(caught)}`);
       }
     })();
     return () => { active = false; };
-  }, [enabled, tcw, defaultsAttempt]);
-  const recorder = useVoiceNoteRecorder({ tcw, enabled: enabled !== false && defaultsReady, backendUrl, sessionStore, onSaved });
+  }, [enabled, tcw, defaultsAttempt, onAccountReady]);
+  const recorder = useVoiceNoteRecorder({ tcw, enabled: enabled !== false && defaultsReady, backendUrl, sessionStore, onSaved, pipeline });
   const { state, dismissOutcome, subscribeLevel, record: startRecording } = recorder;
   const [sheetOpen, setSheetOpen] = useState(false);
   const [receiptPlaying, setReceiptPlaying] = useState(false);
@@ -276,7 +280,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       transcriber: recorder.transcriber,
       setTranscriber: recorder.setTranscriber,
       setIdentifySpeakers: recorder.setIdentifySpeakers,
-      signedIn: tcw.did != null,
+      signedIn: tcw?.did != null,
       sheetOpen,
       record,
       stop: recorder.stop,
@@ -314,7 +318,7 @@ export function RecorderProvider({ tcw, enabled, backendUrl, sessionStore, onSav
       sheetOpen,
       state,
       subscribeLevel,
-      tcw.did,
+      tcw?.did,
     ],
   );
 

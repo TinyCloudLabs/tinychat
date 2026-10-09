@@ -35,6 +35,8 @@ export interface RestoreAttempt<T> {
 }
 
 export interface RestoreDeps<M, T> {
+  /** Durable capture handoff before an auth verdict clears the local token. */
+  beforeClear?: () => Promise<void>;
   /**
    * Load the app manifest. ANY rejection counts as unreachable: the manifest is
    * public app config, so failing to get it — network, 5xx, a backend that is
@@ -134,11 +136,13 @@ export async function restorePersistedSession<M, T>(
   deps: RestoreDeps<M, T>,
 ): Promise<RestoreOutcome<T>> {
   if (!sessionStore.hasSession() || sessionStore.isExpired()) {
+    if (sessionStore.hasSession()) await deps.beforeClear?.();
     return { kind: "signedOut" };
   }
   const address = sessionStore.getAddress();
   const token = sessionStore.getToken();
   if (!address || !token) {
+    await deps.beforeClear?.();
     sessionStore.clear();
     return { kind: "signedOut" };
   }
@@ -163,6 +167,7 @@ export async function restorePersistedSession<M, T>(
     if (classifyRestoreFailure({ status: "restore-failed", error: caught }, deps.isOffline()) === "transient") {
       return unavailable();
     }
+    await deps.beforeClear?.();
     sessionStore.clear();
     return { kind: "failed", message: caught instanceof Error ? caught.message : "Unexpected error" };
   }
@@ -173,6 +178,7 @@ export async function restorePersistedSession<M, T>(
   if (classifyRestoreFailure(restored, deps.isOffline()) === "transient") {
     return unavailable();
   }
+  await deps.beforeClear?.();
   sessionStore.clear();
   return { kind: "signedOut" };
 }

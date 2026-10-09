@@ -5,7 +5,7 @@ import { VoiceNotes, type VoiceNoteRecording } from "./nativeVoiceNotes";
 export const LEGACY_DISCARD_KEY = "exo.voiceNotes.discarded";
 
 /** The old marker is cleared only when every native tombstone has landed. */
-export async function migrateLegacyDiscardLedger(storage: Pick<Storage, "getItem" | "removeItem"> | null =
+export async function migrateLegacyDiscardLedger(storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null =
   typeof localStorage === "undefined" ? null : localStorage, checkpoint: () => void = () => undefined): Promise<void> {
   const raw = storage?.getItem(LEGACY_DISCARD_KEY);
   if (!raw) return;
@@ -18,9 +18,27 @@ export async function migrateLegacyDiscardLedger(storage: Pick<Storage, "getItem
   for (const id of new Set(parsed as string[])) if (present.has(id)) {
     checkpoint();
     await VoiceNotes.deleteAudio({ id });
+    // Keep markers written by a concurrent discard. Only remove the id whose
+    // native tombstone was acknowledged.
+    const current = storage?.getItem(LEGACY_DISCARD_KEY);
+    const ids: unknown = current ? JSON.parse(current) : [];
+    if (Array.isArray(ids)) {
+      const remaining = ids.filter((entry) => entry !== id);
+      if (remaining.length) storage?.setItem(LEGACY_DISCARD_KEY, JSON.stringify(remaining));
+      else storage?.removeItem(LEGACY_DISCARD_KEY);
+    }
   }
+  // IDs already absent on the phone were handled by an earlier run. Retire only
+  // this run's snapshot; a discard added while migration ran keeps its marker.
   checkpoint();
-  storage?.removeItem(LEGACY_DISCARD_KEY);
+  const current = storage?.getItem(LEGACY_DISCARD_KEY);
+  const ids: unknown = current ? JSON.parse(current) : [];
+  if (Array.isArray(ids)) {
+    const handled = new Set(parsed as string[]);
+    const remaining = ids.filter((entry) => !handled.has(entry));
+    if (remaining.length) storage?.setItem(LEGACY_DISCARD_KEY, JSON.stringify(remaining));
+    else storage?.removeItem(LEGACY_DISCARD_KEY);
+  }
 }
 
 /** A legacy format needs owner evidence only until native claim records an owner. */

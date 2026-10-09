@@ -13,11 +13,14 @@ import { useEffect } from "react";
 import type { SessionStore } from "@tinyboilerplate/client";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { nativeVoiceNotesAvailable, VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { voiceNoteTranscriberFor, type VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
-import { savePendingRecordings, type PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import type { VoiceNoteTranscriber } from "@/lib/voiceNotes/voiceNoteTranscription";
+import type { PendingRun } from "@/lib/voiceNotes/recorderSaves";
+import { advanceAccountGeneration } from "@/lib/voiceNotes/accountContext";
+import type { VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 
 /**
  * An on-device transcription that finishes after its note is already saved (the common case: the
@@ -58,28 +61,27 @@ export async function savePendingVoiceNotes(deps: {
 
 export function PendingVoiceNotesSaver({
   tcw,
-  backendUrl,
-  sessionStore,
+  pipeline,
 }: {
   tcw: TinyCloudWeb;
+  pipeline: VoiceNotePipeline;
   backendUrl: string;
   sessionStore: SessionStore;
 }) {
   useEffect(() => {
-    if (!nativeVoiceNotesAvailable()) return;
+    if (!captureEngineAvailable()) return;
     return installOnDeviceTranscriptSync(tcw);
   }, [tcw]);
 
   useEffect(() => {
-    if (!nativeVoiceNotesAvailable()) return;
-    void savePendingVoiceNotes({
-      save: () => savePendingRecordings(tcw),
-      transcriber: voiceNoteTranscriberFor(tcw, backendUrl, sessionStore),
-    })
-      .then((run) => {
-        if (run.lastError) console.warn("[VoiceNotes] Some notes are still on this phone:", run.lastError);
-      })
+    if (!captureEngineAvailable()) return;
+    const generation = advanceAccountGeneration();
+    const did = tcw.did;
+    const spaceId = tcw.spaceId;
+    if (!did || !spaceId) return;
+    void pipeline.reconcileAll({ did, spaceId, generation })
       .catch((error: unknown) => console.warn("[VoiceNotes] Saving notes left on this phone failed", error));
-  }, [backendUrl, sessionStore, tcw]);
+    return () => pipeline.cancelAll();
+  }, [pipeline, tcw]);
   return null;
 }

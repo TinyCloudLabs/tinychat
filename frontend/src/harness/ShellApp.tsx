@@ -23,7 +23,7 @@ import { ConnectorsPage } from "@/chat/ConnectorsPage";
 import { MeetingsSection } from "@/chat/MeetingsSection";
 import { ModelPicker, type ModelOption } from "@/chat/ModelPicker";
 import type { ModelSelectionController, SelectionView } from "@/chat/modelSelection";
-import { OfflineVoiceNotes } from "@/chat/OfflineVoiceNotes";
+import { LocalCaptureHome } from "@/capture/local/LocalCaptureHome";
 import { SettingsPage } from "@/chat/SettingsPage";
 import { AboutPage } from "@/chat/AboutPage";
 import { AgentAccessProvider } from "@/chat/useAgentEnablement";
@@ -215,7 +215,7 @@ export function ShellApp({ platform, shim, state, probe = (_id, node) => node, c
               state={state}
               error={null}
               onAction={() => {}}
-              voiceNotes={state === "offline" && voiceNotesInApp ? <OfflineVoiceNotes /> : null}
+              voiceNotes={state === "offline" && voiceNotesInApp ? <StaticRecorderProvider value={recorder}><LocalCaptureHome offline /></StaticRecorderProvider> : null}
             />
           </main>
         )}

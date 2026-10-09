@@ -109,9 +109,16 @@ import {
   subscribeBackgroundDrainRecord,
 } from "./chat/useBackgroundDrain";
 import { TranscriberLibrarySyncProvider } from "./chat/useTranscriberLibrarySync";
-import { OfflineVoiceNotes } from "./chat/OfflineVoiceNotes";
+import { LocalCaptureHome } from "./capture/local/LocalCaptureHome";
 import { PendingVoiceNotesSaver } from "./chat/PendingVoiceNotesSaver";
-import { nativeVoiceNotesAvailable } from "./lib/voiceNotes/nativeVoiceNotes";
+import { VoiceNotes } from "./lib/voiceNotes/nativeVoiceNotes";
+import { captureEngineAvailable } from "./lib/voiceNotes/captureEngine";
+import { RecordingOverlay } from "./capture/recorder/RecordingOverlay";
+import { handoffBeforeCredentialClear } from "./lib/voiceNotes/accountHandoff";
+import { createVoiceNotePipeline } from "./lib/voiceNotes/voiceNotePipeline";
+import { nextTransitionGen } from "./lib/voiceNotes/accountHandoff";
+import { effectiveCaptureOptions, readTranscriberPreference } from "./lib/voiceNotes/transcriberPreference";
+import { advanceAccountGeneration } from "./lib/voiceNotes/accountContext";
 import { GmeetSessionSync } from "./chat/useGmeetSessionSync";
 import type {
   ModelSelectionController,
@@ -168,6 +175,51 @@ export function App() {
   const [did, setDid] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [tcw, setTcw] = useState<TinyCloudWeb | null>(null);
+  const [captureFailClosed, setCaptureFailClosed] = useState(false);
+  const [captureReadyTcw, setCaptureReadyTcw] = useState<TinyCloudWeb | null>(null);
+  const voiceNotePipeline = useMemo(() => tcw ? createVoiceNotePipeline(tcw) : null, [tcw]);
+  const captureHandoff = useCallback(async () => {
+    if (!captureEngineAvailable() || LOCAL_VALIDATION) return true;
+    try {
+      const native = await VoiceNotes.getCaptureDefaults();
+      const storedAddress = sessionStoreRef.current.getAddress();
+      const accountDid = did ?? native.accountDid ?? (native.status === "transitioning" && storedAddress
+        ? `did:pkh:eip155:1:${storedAddress}` : null);
+      if (!accountDid && native.status === "transitioning") {
+        await VoiceNotes.setAccountState({ status: "signed_out", accountDid: null,
+          transitionGen: nextTransitionGen(native.transitionGen) });
+        return true;
+      }
+      const result = await handoffBeforeCredentialClear(accountDid, voiceNotePipeline);
+      if (!result.ok) {
+        setError(result.message);
+        setCaptureFailClosed(result.failClosed);
+        return false;
+      }
+      setCaptureFailClosed(false);
+      return true;
+    } catch {
+      setError("Couldn't update this phone's recording settings. Try again.");
+      return false;
+    }
+  }, [did, voiceNotePipeline]);
+  const restoreCaptureAfterAuthAbort = useCallback(async () => {
+    if (!did || !tcw || !captureEngineAvailable()) return;
+    try {
+      const current = await VoiceNotes.getCaptureDefaults();
+      const transitionGen = nextTransitionGen(current.transitionGen);
+      await VoiceNotes.setCaptureDefaults({ ...current, ...effectiveCaptureOptions(readTranscriberPreference(), true),
+        accountDid: did, transitionGen });
+      if (voiceNotePipeline && tcw.spaceId) {
+        const generation = advanceAccountGeneration();
+        void voiceNotePipeline.reconcileAll({ did, spaceId: tcw.spaceId, generation })
+          .catch((caught: unknown) => console.warn("[VoiceNotes] Could not resume saving after sign-out was cancelled", caught));
+      }
+      setCaptureFailClosed(false);
+    } catch {
+      setCaptureFailClosed(true);
+    }
+  }, [did, tcw, voiceNotePipeline]);
   const [models, setModels] = useState<ModelOption[]>(() =>
     OFFERED_CHAT_MODELS.map(({ id, contextTokens }) => ({ id, contextLength: contextTokens })),
   );
@@ -295,6 +347,8 @@ export function App() {
     try {
       if (isNativeOpenKeySignIn() || nativeSessionWasActive()) {
         const wasNative = nativeSessionWasActive();
+        // E1 may revoke an SDK session even before its JS marker is present.
+        if (!await captureHandoff()) { setState("recoverableError"); return; }
         try {
           // Creating the SDK client retries any pending revocation. E1 retires
           // surviving native sessions at boot; E2 will restore and renew them.
@@ -320,6 +374,9 @@ export function App() {
         }
       }
       const restored = await restorePersistedSession(sessionStoreRef.current, {
+        beforeClear: async () => {
+          if (!await captureHandoff()) throw new Error("Couldn't update this phone's recording settings. Try again.");
+        },
         isOffline: browserIsOffline,
         loadManifest: async () => {
           // The manifest must ride along here, not just on the fresh sign-in
@@ -365,10 +422,13 @@ export function App() {
           setState("recoverableError");
           return;
       }
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setState("recoverableError");
     } finally {
       restoreInFlightRef.current = false;
     }
-  }, []);
+  }, [captureHandoff]);
 
   useEffect(() => {
     if (restoredRef.current) return;
@@ -661,9 +721,10 @@ export function App() {
     signOutInFlightRef.current = true;
     setSigningOut(true);
     setError(null);
-    // The next account must not reopen this one's Library or note addresses.
-    resetNavigationMemory();
     try {
+      if (!await captureHandoff()) return;
+      // The next account must not reopen this one's Library or note addresses.
+      resetNavigationMemory();
       let openKeyWarning: string | null = null;
       const nativeSession = isNativeOpenKeySession();
       if (nativeSession) {
@@ -677,6 +738,7 @@ export function App() {
             // The SDK may still have the session and grant in secure storage.
             // Keep the native marker and current session for another attempt.
             setError(NATIVE_SIGN_OUT_STORAGE_WARNING);
+            await restoreCaptureAfterAuthAbort();
             setState("ready");
             return;
           }
@@ -684,6 +746,7 @@ export function App() {
             // Keep the SDK record and key available for revocation once the
             // native client is configured again.
             setError(caught.message);
+            await restoreCaptureAfterAuthAbort();
             setState("ready");
             return;
           }
@@ -750,7 +813,7 @@ export function App() {
       signOutInFlightRef.current = false;
       setSigningOut(false);
     }
-  }, [address, tcw]);
+  }, [address, tcw, captureHandoff, restoreCaptureAfterAuthAbort]);
 
   const isReady = state === "ready" && tcw !== null;
   // The offline state still HOLDS a session, so its "Try again" re-runs the
@@ -779,7 +842,7 @@ export function App() {
   // Voice notes exist inside the Exo mobile app only. Once ready, the one
   // recorder (RecorderProvider, below) serves every view of it; a recording
   // still running from the offline screen is picked up there, never restarted.
-  const voiceNotesInApp = useMemo(() => nativeVoiceNotesAvailable(), []);
+  const voiceNotesInApp = useMemo(() => captureEngineAvailable(), []);
 
   // TC-515: with the session held but out of reach (`offline`), the app can
   // still record a voice note; it stays on the phone until the session is back.
@@ -878,6 +941,15 @@ export function App() {
   ) : null;
 
   return (
+    <RecorderProvider
+      tcw={isReady ? tcw : null}
+      backendUrl={BACKEND_URL}
+      sessionStore={sessionStoreRef.current}
+      enabled={voiceNotesInApp && !LOCAL_VALIDATION}
+      onSaved={() => captureEvents.emit("library-changed")}
+      onAccountReady={setCaptureReadyTcw}
+      pipeline={voiceNotePipeline}
+    >
     <div
       className="flex flex-col bg-background text-foreground"
       style={{ height: "var(--tc-app-height, 100dvh)" }}
@@ -906,15 +978,6 @@ export function App() {
           <AgentAccessProvider tcw={tcw} sessionStore={sessionStoreRef.current} backendUrl={BACKEND_URL}
             appName={APP_NAME} openkeyHost={OPENKEY_HOST} tinycloudHosts={tcw.hosts}>
             <TranscriberLibrarySyncProvider enabled={!LOCAL_VALIDATION} tcw={tcw} backendUrl={BACKEND_URL} sessionStore={sessionStoreRef.current}>
-            {/* The one voice-note recorder (phone app): every view of it reads
-                this provider; its saves tell the Library something landed. */}
-            <RecorderProvider
-              tcw={tcw}
-              backendUrl={BACKEND_URL}
-              sessionStore={sessionStoreRef.current}
-              enabled={voiceNotesInApp && !LOCAL_VALIDATION}
-              onSaved={() => captureEvents.emit("library-changed")}
-            >
             {/* The shell keeps ChatWorkspace mounted while another surface is
                 shown — a visibility toggle (not a <Routes> swap) preserves the
                 assistant runtime, the active thread, and composer state across
@@ -934,11 +997,12 @@ export function App() {
                   selectionView={selectionView}
                   memoryRef={memoryRef}
                   onSelectionView={setSelectionView}
-                  onSelectionAuthFailure={() => {
+                  onSelectionAuthFailure={() => { void (async () => {
+                    if (!await captureHandoff()) return;
                     sessionStoreRef.current.clear();
                     setError("Your session expired. Sign in again to continue.");
                     setState("recoverableError");
-                  }}
+                  })(); }}
                   onMemoryUpdated={onMemoryUpdated}
                   contextTokensFor={contextTokensFor}
                   composerToolbar={composerToolbar}
@@ -994,7 +1058,6 @@ export function App() {
               />}
               about={<AboutPage onBack={onBack} />}
             />
-            </RecorderProvider>
             </TranscriberLibrarySyncProvider>
           </AgentAccessProvider>
         ) : (
@@ -1003,15 +1066,19 @@ export function App() {
               state={state}
               error={error}
               onAction={authAction}
-              voiceNotes={
-                offlineRecorder ? (
-                  <OfflineVoiceNotes />
-                ) : null
-              }
+              voiceNotes={offlineRecorder ? <LocalCaptureHome did={did} offline onRetry={authAction} /> : null}
             />
+            {voiceNotesInApp && !LOCAL_VALIDATION && state === "unauthenticated" &&
+              globalThis.localStorage?.getItem("exo.signIn.bypassed") === "1" &&
+              <LocalCaptureHome onSignIn={authAction} />}
           </main>
         )}
       </div>
+      {voiceNotesInApp && !isReady && <RecordingOverlay />}
+      {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
+        Recordings are being kept unassigned until Exo can update this phone.
+        <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
+      </div>}
       <MicDeniedRecovery enabled={platform === "android" && voiceNotesInApp && !LOCAL_VALIDATION && (authSettledSignedOut || state === "offline")} onContinue={authAction} />
       {storageReadOnly && (
         <div role="region" aria-label="Storage full: read-only" aria-live="polite" className="border-t border-border bg-muted px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-sm">
@@ -1055,9 +1122,10 @@ export function App() {
       {/* TC-515: voice notes left on the phone (recorded offline, or a save that
           failed) are saved once the session is ready, without opening
           Capture. The Voice notes card's own single-flight retry. */}
-      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && (
+      {voiceNotesInApp && !LOCAL_VALIDATION && state === "ready" && tcw && captureReadyTcw === tcw && voiceNotePipeline && (
         <PendingVoiceNotesSaver
           tcw={tcw}
+          pipeline={voiceNotePipeline}
           backendUrl={BACKEND_URL}
           sessionStore={sessionStoreRef.current}
         />
@@ -1117,6 +1185,7 @@ export function App() {
       {/* The Live Edge: a rim while a microphone is live in Exo (never on the web). */}
       <LiveEdge />
     </div>
+    </RecorderProvider>
   );
 }
 

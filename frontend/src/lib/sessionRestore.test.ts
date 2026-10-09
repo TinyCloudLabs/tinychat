@@ -51,6 +51,31 @@ const MANIFEST = { app_id: "xyz.tinycloud.tinychat" };
 const TCW = { did: `did:pkh:eip155:1:${ADDRESS}`, spaceId: "tinycloud:space" };
 type Tcw = typeof TCW;
 
+test("a definitive restore verdict waits for capture handoff before clearing credentials", async () => {
+  const store = new FakeSessionStore({ token: "token", address: ADDRESS });
+  const order: string[] = [];
+  const originalClear = store.clear.bind(store);
+  store.clear = () => { order.push("clear"); originalClear(); };
+  await restorePersistedSession(store, {
+    isOffline: () => false,
+    loadManifest: async () => MANIFEST,
+    restore: async () => ({ status: "expired", tcw: null }),
+    beforeClear: async () => { order.push("handoff"); },
+  });
+  expect(order).toEqual(["handoff", "clear"]);
+});
+
+test("a failed capture handoff preserves the persisted session", async () => {
+  const store = new FakeSessionStore({ token: "token", address: ADDRESS });
+  await expect(restorePersistedSession(store, {
+    isOffline: () => false,
+    loadManifest: async () => MANIFEST,
+    restore: async () => ({ status: "expired", tcw: null }),
+    beforeClear: async () => { throw new Error("disk failed"); },
+  })).rejects.toThrow("disk failed");
+  expect(store.cleared).toBe(0);
+});
+
 function deps(over: Partial<RestoreDeps<typeof MANIFEST, Tcw>> = {}) {
   const calls = { manifest: 0, restore: [] as string[] };
   const d: RestoreDeps<typeof MANIFEST, Tcw> = {

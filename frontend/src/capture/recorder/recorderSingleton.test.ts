@@ -1,6 +1,5 @@
 // One recorder controller (plan §4.2, §8.3): source guards for what a second
-// copy would break. App.tsx's own wiring (RecorderProvider once, in the ready
-// branch) is asserted when the provider is mounted there.
+// copy would break. App.tsx's provider remains mounted above the auth gate.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -37,20 +36,20 @@ test("the save singletons are defined only in recorderSaves.ts", () => {
   }
 });
 
-test("App mounts RecorderProvider exactly once, in the ready branch, and no handoff state", () => {
+test("App mounts RecorderProvider exactly once above the auth gate", () => {
   const app = readFileSync(join(SRC, "App.tsx"), "utf8");
   expect(app.match(/<RecorderProvider\b/g)).toHaveLength(1);
   const ready = app.slice(app.indexOf(") : isReady && tcw ? ("), app.indexOf("<BootSurface"));
-  expect(ready).toContain("<RecorderProvider");
+  expect(app.indexOf("<RecorderProvider")).toBeLessThan(app.indexOf(") : isReady && tcw ? ("));
   expect(ready).toContain("<RecorderShell");
+  expect(app).toContain("!isReady && <RecordingOverlay />");
   expect(app).not.toContain("voiceNoteOpen");
   expect(app).not.toContain("QuickVoiceNote");
   expect(app.match(/<LiveEdge \/>/g)).toHaveLength(1);
 });
 
-test("the offline recorder is only ever in the BootSurface slot, never beside the provider", () => {
+test("offline local home consumes the same recorder above BootSurface", () => {
   const app = readFileSync(join(SRC, "App.tsx"), "utf8");
-  expect(app.match(/<OfflineVoiceNotes\b/g)).toHaveLength(1);
-  const boot = app.slice(app.indexOf("<BootSurface"), app.indexOf("/>", app.indexOf("<OfflineVoiceNotes")) + 2);
-  expect(boot).toContain("<OfflineVoiceNotes />");
+  expect(app).not.toContain("<OfflineVoiceNotes");
+  expect(app).toContain("<LocalCaptureHome did={did} offline");
 });
