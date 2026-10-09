@@ -10,6 +10,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.tinycloud.exo.capture.core.*
+import xyz.tinycloud.exo.stt.TranscriptionQueue
 import java.io.File
 import java.util.UUID
 import java.util.Locale
@@ -18,6 +19,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+
+/** Capture-priority handoff bound (plan §2.5): how long capture-start waits for STT to release its
+ * native engine before opening the mic regardless. Short enough that a user never notices Record
+ * feeling slow; long enough to usually dodge a wasteful few hundred ms of model-unload contention. */
+private const val CAPTURE_START_RELEASE_WAIT_MS = 300L
 
 /** Process singleton. Neither the capture nor recovery depends on a WebView being alive. */
 class CaptureEngine private constructor(private val context: Context) {
@@ -286,6 +292,12 @@ class CaptureEngine private constructor(private val context: Context) {
         noSignalAt = 0; lastPeakAt = System.currentTimeMillis()
         source = startSource; transitions.start(); setMicState("idle", null)
         spans = JSONArray(); openSpan = null
+        // Capture priority (plan §2.5): `transitions.start()` just flipped intent to recording, so
+        // the STT queue's next check of `isCapturing()` will abandon its current attempt. Wait
+        // briefly for it to actually release its native engine before the mic opens, but never
+        // block the recording start on it — a single VAD segment's recognize() call can't be
+        // interrupted mid-call.
+        TranscriptionQueue.get(context).awaitReleaseForCapture(CAPTURE_START_RELEASE_WAIT_MS)
         try { acquire(releaseLockDuringStart = false, beforeStart = {
             sequence!!.firstInput(gen)
         }) } catch (e: Exception) {
