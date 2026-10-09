@@ -4,8 +4,10 @@
 // link to How it works for the rest. Choosing Private cloud the first time
 // asks once ("Use private cloud"); the full disclosure is on How it works.
 // On this phone never needs a sign-in or a network check: native capture defaults to it
-// already, and the only extra state to show is the model's download progress.
-import { useId, useState, useSyncExternalStore } from "react";
+// already, and the only extra state to show is the model's download progress. Signed out, native
+// (CaptureEngine) forces on-device regardless of what's requested, so this control must too: only
+// "On this phone" is ever offered or shown selected — never "Off".
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { HowItWorksLink } from "@/components/ui/how-it-works-link";
@@ -14,14 +16,15 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { hapticSelection } from "@/lib/haptics";
 import { cn } from "@/lib/utils";
 import { onDeviceSttStore, onDeviceModelLine } from "@/lib/voiceNotes/onDeviceSttStore";
-import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
-import { setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
+import { isOnDeviceReady, OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
+import { readDefaultTranscriber, setRecordingTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 import { RouteLine, voiceNoteRoute } from "./RouteLine";
 import type { VoiceNoteTranscriptionProps } from "./transcriptionProps";
 
 type Route = "off" | "on-device" | "private-cloud";
 
-function routeOptions(offered: boolean): { value: Route; label: string }[] {
+function routeOptions(signedIn: boolean, offered: boolean): { value: Route; label: string }[] {
+  if (!signedIn) return [{ value: "on-device", label: "On this phone" }];
   return offered
     ? [
         { value: "off", label: "Off" },
@@ -41,22 +44,36 @@ function minutes(seconds: number): number {
 export function TranscriptionRouteControl(props: {
   /** Absent in a build without private cloud transcription. */
   transcription: VoiceNoteTranscriptionProps | undefined;
+  /** Native forces on-device while signed out, no matter what's selected (CaptureEngine). */
+  signedIn: boolean;
   /** Start on the one-time question, as if Private cloud had just been chosen (the harness). */
   defaultAsking?: boolean;
   className?: string;
 }) {
-  const { transcription } = props;
+  const { transcription, signedIn } = props;
   const headingId = useId();
-  const offered = transcription?.availability === "available";
+  const offered = signedIn && transcription?.availability === "available";
   const consented = transcription?.consented ?? false;
   const [asking, setAsking] = useState(props.defaultAsking ?? false);
-  const [onDevicePicked, setOnDevicePicked] = useState(false);
+  // Native's own default is on-device (CaptureEngine's defaultOptions()) unless an account has
+  // set something else; seed from that instead of defaulting to Off until the native read
+  // resolves, then correct from the real stored default once it lands. Already-consented private
+  // cloud is a stronger, synchronously-known signal of intent than that still-loading default.
+  const [onDevicePicked, setOnDevicePicked] = useState(!consented);
+  useEffect(() => {
+    if (!signedIn) return; // forced on-device; nothing to read
+    let active = true;
+    readDefaultTranscriber().then((transcriber) => { if (active) setOnDevicePicked(transcriber === "on-device"); }, () => {});
+    return () => { active = false; };
+  }, [signedIn]);
   const sttStatus = useSyncExternalStore(onDeviceSttStore.subscribe, onDeviceSttStore.snapshot, onDeviceSttStore.snapshot);
   const askingNow = offered && !consented && asking;
-  const route: Route = onDevicePicked && !askingNow ? "on-device" : offered && (consented || askingNow) ? "private-cloud" : "off";
+  const route: Route = !signedIn ? "on-device"
+    : onDevicePicked && !askingNow ? "on-device"
+    : offered && (consented || askingNow) ? "private-cloud" : "off";
 
   const choose = (next: Route) => {
-    if (next === route) return;
+    if (next === route || !signedIn) return;
     hapticSelection();
     if (next === "off") {
       setAsking(false);
@@ -79,7 +96,7 @@ export function TranscriptionRouteControl(props: {
 
   let line: string;
   if (askingNow) line = "";
-  else if (route === "on-device") line = modelLine.text === "Ready" ? "Transcribed on this phone." : `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
+  else if (route === "on-device") line = isOnDeviceReady(sttStatus) ? "Transcribed on this phone." : `Transcribed on this phone, once the model finishes downloading. ${modelLine.text}`;
   else if (offered && consented) line = `Private cloud transcribes notes up to ${minutes(transcription!.maxSeconds)} minutes.`;
   else if (transcription?.availability === "checking" && consented) line = "Checking private cloud…";
   else if (transcription?.availability === "failed" && consented) line = "Private cloud is unavailable right now.";
@@ -93,7 +110,7 @@ export function TranscriptionRouteControl(props: {
         </h3>
         <InfoTip label="About transcription">Your choice applies to this note and new ones.</InfoTip>
       </div>
-      <SegmentedControl<Route> aria-label="Transcription" value={route} onValueChange={choose} options={routeOptions(offered)} />
+      <SegmentedControl<Route> aria-label="Transcription" value={route} onValueChange={choose} options={routeOptions(signedIn, offered)} />
       <RouteLine nodes={voiceNoteRoute(route)} />
       {askingNow ? (
         <div className="flex flex-col gap-3" data-testid="voice-note-transcription-consent">

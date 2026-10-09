@@ -127,9 +127,9 @@ describe("a voice note's transcription", () => {
     expect(render()).toContain("No transcript.");
   });
 
-  test("available but not chosen: the route control with Off, and How it works; no Transcribe", () => {
+  test("available but not chosen: the route control with On this phone (native's own default), and How it works; no Transcribe", () => {
     const html = render({ transcription: transcription({ consented: false }) });
-    expect(html).toContain('data-route="off"');
+    expect(html).toContain('data-route="on-device"');
     expect(html).toContain(`href="${aboutHref("transcription")}"`);
     expect(html).not.toContain('data-testid="voice-note-transcribe"');
   });

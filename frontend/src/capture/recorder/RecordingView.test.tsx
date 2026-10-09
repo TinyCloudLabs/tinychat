@@ -12,7 +12,7 @@ const recorder = (patch: Partial<RecorderValue> = {}): RecorderValue => ({
   startedAt: Date.now() - 42_000, audioMs: 42_000, maxDurationMs: 3 * 60 * 60_000,
   limitNotice: null, savePercent: null, error: null, outcome: null, lastSaved: null,
   pending: { listing: { state: "ok", count: 0 }, running: false, lastError: null },
-  transcription: undefined, sheetOpen: true,
+  transcription: undefined, signedIn: true, sheetOpen: true,
   record: noop, stop: noop, pause: noop, resume: noop, discard: noop, retryPending: noop, openSettings: async () => {},
   dismissOutcome: noop, openSheet: noop, minimiseSheet: noop, setReceiptPlaying: noop,
   subscribeLevel: () => noop, ...patch,

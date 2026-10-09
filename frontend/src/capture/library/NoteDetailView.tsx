@@ -131,7 +131,9 @@ export function VoiceNoteTranscriptionStatus(props: {
   }
   // Private cloud is available but not chosen (or chosen and unreachable): the recorder's route control.
   const choosable = transcription.availability === "available" || (transcription.availability === "failed" && transcription.consented);
-  if (!offered) return choosable ? <TranscriptionRouteControl transcription={transcription} /> : null;
+  // Reached only when private cloud is "available"/"failed", which requires a signed-in account
+  // (voiceNoteTranscriberFor) — transcription itself would be absent otherwise.
+  if (!offered) return choosable ? <TranscriptionRouteControl transcription={transcription} signedIn /> : null;
   if (item.durationSecs !== null && item.durationSecs > transcription.maxSeconds) {
     return (
       <p data-testid="voice-note-too-long" className="text-callout text-muted-foreground">
