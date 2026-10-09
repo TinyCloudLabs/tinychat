@@ -23,6 +23,18 @@ export type Availability =
   | { available: true }
   | { available: false; reason: string };
 
+function isOnDeviceReadyInterim(
+  status: OnDeviceSttStatus | null | undefined,
+): boolean {
+  // TODO(TC-836): replace with isOnDeviceReady from lib/voiceNotes/onDeviceStt once TC-836 exports it; this interim check is not native's predicate.
+  return Boolean(
+    status?.models.some(
+      (entry) => entry.id.startsWith("parakeet") && entry.state === "ready",
+    ) ||
+    (status?.engine === "apple-speech" && status.appleSpeech === "ready"),
+  );
+}
+
 export interface ModeStop {
   id: ModeId;
   transcriber: TranscriberId | null;
@@ -148,14 +160,7 @@ export function modeAvailability(
       : { available: false, reason: FINAL_COPY.whisperUnavailable };
   }
 
-  // TODO(TC-836): confirm whether readiness must also require engine and Silero VAD state; native status currently reports a stub.
-  const ready = Boolean(
-    model?.models.some(
-      (entry) => entry.id.startsWith("parakeet") && entry.state === "ready",
-    ) ||
-    (model?.engine === "apple-speech" && model.appleSpeech === "ready"),
-  );
-  return ready
+  return isOnDeviceReadyInterim(model)
     ? { available: true }
     : { available: false, reason: FINAL_COPY.modelUnavailable };
 }
