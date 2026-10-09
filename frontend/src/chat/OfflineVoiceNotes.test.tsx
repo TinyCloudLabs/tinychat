@@ -110,6 +110,21 @@ describe("OfflineVoiceNotes", () => {
 });
 
 describe("savePendingVoiceNotes", () => {
+  test("passes committed options through for the transcriber's route gate, including Off and legacy", async () => {
+    const notes = [
+      { ...recording("off"), options: { transcriber: "off" as const, identifySpeakers: false } },
+      { ...recording("local"), options: { transcriber: "on-device" as const, identifySpeakers: true } },
+      { ...recording("cloud"), options: { transcriber: "private-cloud" as const, identifySpeakers: false } },
+      recording("legacy"),
+    ];
+    const handed: VoiceNoteRecording[] = [];
+    await savePendingVoiceNotes({
+      save: async () => ({ total: notes.length, saved: notes, left: [], lastError: null }),
+      transcriber: { check: async () => {}, noteSaved: (note) => handed.push(note as VoiceNoteRecording) },
+    });
+    expect(handed).toEqual(notes);
+  });
+
   test("saves through the given single-flight and hands each saved note to transcription after its check", async () => {
     const order: string[] = [];
     let releaseCheck = () => {};

@@ -12,6 +12,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { createFakeVoiceNotes, type FakeVoiceNotes } from "@/harness/fakeVoiceNotes";
 import { fakeVoiceNoteStore } from "@/harness/fakeVoiceNoteStore";
 import { __setVoiceNotesForTests, type VoiceNoteRecording, type VoiceNotesPlugin } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { setDefaultTranscriber } from "@/lib/voiceNotes/transcriberPreference";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -60,11 +61,15 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller() {
+function controller(options: { tcw?: TinyCloudWeb; consented?: boolean; onDeviceReady?: boolean; appleInterim?: boolean } = {}) {
   return createVoiceNoteRecorderController({
-    tcw,
+    tcw: options.tcw ?? tcw,
     available: true,
-    transcriber: { noteSaved: (recording) => noted.push(recording.id) },
+    transcriber: { noteSaved: (recording) => noted.push(recording.id),
+      snapshot: () => ({ availability: "available", consented: options.consented ?? false,
+        capabilities: null, jobs: new Map() }) },
+    onDeviceReady: () => options.onDeviceReady ?? true,
+    appleInterim: () => options.appleInterim ?? false,
   });
 }
 
@@ -146,6 +151,110 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("native options own a live recording across a mid-recording change and WebView reload", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const first = controller({ consented: true });
+    const detach = first.attach();
+    await tick();
+    await first.record();
+    expect(first.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: false, source: "recording" });
+    expect(await first.setIdentifySpeakers(true, "recording")).toBe("ok");
+    expect(first.getTranscriber().identifySpeakers).toBe(true);
+    expect(await first.setTranscriber("private-cloud", { scope: "recording" })).toBe("ok");
+    expect(first.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "recording" });
+    expect(await first.setIdentifySpeakers(true, "recording")).toBe("unavailable");
+    expect((await fake.plugin.getCaptureDefaults()).transcriber).toBe("on-device");
+    detach();
+
+    const second = controller({ consented: true });
+    const remove = second.attach();
+    await tick();
+    expect(second.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "recording" });
+    remove();
+  });
+
+  test("signed-out capture locks other modes and Off does not revoke private-cloud consent", async () => {
+    const signedOut = controller({ tcw: {} as TinyCloudWeb, consented: true });
+    const detach = signedOut.attach();
+    await tick();
+    await signedOut.record();
+    expect(signedOut.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: false, source: "recording" });
+    expect(await signedOut.setTranscriber("off", { scope: "recording" })).toBe("locked_signed_out");
+    expect(await signedOut.setTranscriber("private-cloud", { scope: "default" })).toBe("locked_signed_out");
+    detach();
+
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const signedIn = controller({ consented: true });
+    const remove = signedIn.attach();
+    await tick();
+    expect(await signedIn.setTranscriber("off", { scope: "recording" })).toBe("ok");
+    expect(signedIn.getTranscriber().id).toBe("off");
+    expect((await fake.plugin.status()).options?.transcriber).toBe("off");
+    remove();
+  });
+
+  test("private cloud needs consent; unavailable model and AssemblyAI report unavailable", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 1,
+      transcriber: "on-device", identifySpeakers: false });
+    const recorder = controller({ onDeviceReady: false });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect(await recorder.setTranscriber("private-cloud", { scope: "recording" })).toBe("needs_consent");
+    expect(await recorder.setTranscriber("on-device", { scope: "recording" })).toBe("unavailable");
+    expect(await recorder.setTranscriber("on-device", { scope: "recording", waitForModel: true })).toBe("ok");
+    expect(await recorder.setTranscriber("assemblyai", { scope: "recording" })).toBe("unavailable");
+    detach();
+  });
+
+  test("Apple interim refuses speaker identification without changing the saved preference", async () => {
+    await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 3,
+      transcriber: "on-device", identifySpeakers: false });
+    const recorder = controller({ appleInterim: true });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    expect(await recorder.setIdentifySpeakers(true, "recording")).toBe("unavailable");
+    expect(await recorder.setIdentifySpeakers(true, "default")).toBe("unavailable");
+    expect((await fake.plugin.status()).options?.identifySpeakers).toBe(false);
+    expect((await fake.plugin.getCaptureDefaults()).identifySpeakers).toBe(false);
+    detach();
+  });
+
+  test("default changes keep the transition generation and speaker preference across a disabled mode", async () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    } });
+    try {
+      await fake.plugin.setCaptureDefaults({ accountDid: tcw.did, transitionGen: 7,
+        transcriber: "on-device", identifySpeakers: false });
+      const recorder = controller({ consented: true });
+      const detach = recorder.attach();
+      await tick();
+      expect(await recorder.setIdentifySpeakers(true, "default")).toBe("ok");
+      expect(await recorder.setTranscriber("private-cloud", { scope: "default" })).toBe("ok");
+      expect(recorder.getTranscriber()).toEqual({ id: "private-cloud", identifySpeakers: false, source: "default" });
+      expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ transitionGen: 7,
+        transcriber: "private-cloud", identifySpeakers: false });
+      expect(values.get("exo.voiceNotes.identifySpeakers")).toBe("1");
+      expect(await recorder.setTranscriber("on-device", { scope: "default" })).toBe("ok");
+      expect(recorder.getTranscriber()).toEqual({ id: "on-device", identifySpeakers: true, source: "default" });
+      expect(await fake.plugin.getCaptureDefaults()).toMatchObject({ transitionGen: 7,
+        transcriber: "on-device", identifySpeakers: true });
+      await setDefaultTranscriber("off"); // Settings uses the same preference store.
+      expect(recorder.getTranscriber()).toEqual({ id: "off", identifySpeakers: false, source: "default" });
+      detach();
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+  });
+
   test("listeners: eight while attached, none after teardown", async () => {
     const { detach } = await attached();
     expect(fake.stats().active).toBe(8);

@@ -1,23 +1,67 @@
-// The default transcription choice (plan §2.7), read/written through the native capture
-// defaults (`VoiceNotes.getCaptureDefaults`/`setCaptureDefaults`), which already locks signed-out
-// capture to "on-device" (CaptureDefaults.options in CaptureModels.swift/.kt). Settings calls
-// `setDefaultTranscriber`; the recording view's per-recording override calls
-// `setRecordingTranscriber` instead, which never changes this default.
-import { VoiceNotes, type TranscriberId } from "./nativeVoiceNotes";
+// JS owns the user's default. Native owns a live session's journaled options.
+import { VoiceNotes, type CaptureOptions, type TranscriberId } from "./nativeVoiceNotes";
+
+const TRANSCRIBER_KEY = "exo.voiceNotes.transcriber";
+const SPEAKERS_KEY = "exo.voiceNotes.identifySpeakers";
+const listeners = new Set<() => void>();
+let memoryPreference: CaptureOptions = { transcriber: "on-device", identifySpeakers: false };
+
+export function subscribeTranscriberPreference(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function storage(): Storage | undefined {
+  try { return globalThis.localStorage; } catch { return undefined; }
+}
+
+export function readTranscriberPreference(): CaptureOptions {
+  const store = storage();
+  if (!store) return memoryPreference;
+  try {
+    const saved = store.getItem(TRANSCRIBER_KEY);
+    const transcriber: TranscriberId = saved === "off" || saved === "on-device" || saved === "private-cloud" || saved === "assemblyai"
+      ? saved : "on-device";
+    return { transcriber, identifySpeakers: store.getItem(SPEAKERS_KEY) === "1" };
+  } catch { return memoryPreference; }
+}
+
+export function effectiveTranscriber(pref: TranscriberId, signedIn: boolean): TranscriberId {
+  return signedIn ? pref : "on-device";
+}
+
+/** Disabled speaker modes keep the preference but send false to native capture. */
+export function effectiveCaptureOptions(pref: CaptureOptions, signedIn: boolean): CaptureOptions {
+  const transcriber = effectiveTranscriber(pref.transcriber, signedIn);
+  return { transcriber, identifySpeakers: transcriber === "on-device" || transcriber === "assemblyai" ? pref.identifySpeakers : false };
+}
 
 export async function readDefaultTranscriber(): Promise<TranscriberId> {
-  const defaults = await VoiceNotes.getCaptureDefaults();
-  return defaults.transcriber as TranscriberId;
+  return readTranscriberPreference().transcriber;
+}
+
+/** Uses native's current generation; a preference change is never an account transition. */
+async function writePreference(pref: CaptureOptions): Promise<void> {
+  const current = await VoiceNotes.getCaptureDefaults();
+  const effective = effectiveCaptureOptions(pref, current.accountDid !== null);
+  await VoiceNotes.setCaptureDefaults({ ...current, ...effective, transitionGen: current.transitionGen });
+  memoryPreference = pref;
+  try {
+    storage()?.setItem(TRANSCRIBER_KEY, pref.transcriber);
+    storage()?.setItem(SPEAKERS_KEY, pref.identifySpeakers ? "1" : "0");
+  } catch { /* Keep the choice for this session when storage is unavailable. */ }
+  for (const listener of listeners) listener();
 }
 
 export async function setDefaultTranscriber(transcriber: TranscriberId): Promise<void> {
-  const current = await VoiceNotes.getCaptureDefaults();
-  await VoiceNotes.setCaptureDefaults({ ...current, transcriber });
+  await writePreference({ ...readTranscriberPreference(), transcriber });
 }
 
-/** Per-recording override for the note in progress (or about to start); never persisted as the
- * default. A rejection (e.g. no recording in progress yet) is swallowed: Settings' default still
- * applies to the next recording. */
+export async function setDefaultIdentifySpeakers(identifySpeakers: boolean): Promise<void> {
+  await writePreference({ ...readTranscriberPreference(), identifySpeakers });
+}
+
+/** Legacy view helper; the controller API surfaces errors and is the new owner of choices. */
 export async function setRecordingTranscriber(transcriber: TranscriberId): Promise<void> {
   try {
     await VoiceNotes.setRecordingOptions({ transcriber });

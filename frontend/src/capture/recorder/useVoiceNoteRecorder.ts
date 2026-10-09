@@ -12,6 +12,8 @@ import { voiceNoteTranscriberFor } from "@/lib/voiceNotes/voiceNoteTranscription
 import type { RecorderState } from "./recorderReducer";
 import { HIDDEN_SNAPSHOT, noSubscription, transcriptionProps, type VoiceNoteTranscriptionProps } from "./transcriptionProps";
 import { createVoiceNoteRecorderController } from "./voiceNoteRecorderController";
+import type { RecorderTranscriberChoice, TranscriberChoiceResult, TranscriberChoiceScope } from "./voiceNoteRecorderController";
+import type { TranscriberId } from "@/lib/voiceNotes/nativeVoiceNotes";
 
 export interface VoiceNoteRecorderOptions {
   tcw: TinyCloudWeb;
@@ -27,6 +29,9 @@ export interface VoiceNoteRecorder {
   /** The Exo mobile app with its VoiceNotes plugin; nothing else records. */
   available: boolean;
   state: RecorderState;
+  transcriber: RecorderTranscriberChoice;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   pending: PendingSnapshot;
   transcription: VoiceNoteTranscriptionProps | undefined;
   record(): void;
@@ -61,6 +66,7 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
   useEffect(() => controller.attach(), [controller]);
 
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
+  const transcriberChoice = useSyncExternalStore(controller.subscribe, controller.getTranscriber);
   const snapshot = useSyncExternalStore(
     transcriber ? transcriber.subscribe : noSubscription,
     () => transcriber?.snapshot() ?? HIDDEN_SNAPSHOT,
@@ -71,6 +77,9 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
     () => ({
       available,
       state,
+      transcriber: transcriberChoice,
+      setTranscriber: controller.setTranscriber,
+      setIdentifySpeakers: controller.setIdentifySpeakers,
       pending,
       transcription: transcriptionProps(transcriber, snapshot),
       record: () => void controller.record(),
@@ -85,6 +94,6 @@ export function useVoiceNoteRecorder({ tcw, enabled = true, backendUrl, sessionS
       setOnPresent: controller.setOnPresent,
       subscribeLevel: controller.subscribeLevel,
     }),
-    [available, controller, pending, snapshot, state, transcriber],
+    [available, controller, pending, snapshot, state, transcriber, transcriberChoice],
   );
 }

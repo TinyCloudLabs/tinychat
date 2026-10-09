@@ -19,7 +19,13 @@ import {
   type VoiceNoteRecording,
   type CaptureStatus,
   type MicStateEvent,
+  type CaptureOptions,
+  type TranscriberId,
 } from "@/lib/voiceNotes/nativeVoiceNotes";
+import { isOnDeviceReady } from "@/lib/voiceNotes/onDeviceStt";
+import { onDeviceSttStore } from "@/lib/voiceNotes/onDeviceSttStore";
+import { effectiveCaptureOptions, readTranscriberPreference, setDefaultIdentifySpeakers,
+  setDefaultTranscriber, subscribeTranscriberPreference } from "@/lib/voiceNotes/transcriberPreference";
 import {
   clearDiscarded,
   deleteDiscarded,
@@ -42,11 +48,25 @@ export interface VoiceNoteRecorderControllerOptions {
   /** The Exo mobile app with its VoiceNotes plugin; nothing else records. */
   available: boolean;
   /** Private cloud transcription for this account; null without one. */
-  transcriber: Pick<VoiceNoteTranscriber, "noteSaved"> | null;
+  transcriber: Pick<VoiceNoteTranscriber, "noteSaved"> & Partial<Pick<VoiceNoteTranscriber, "snapshot">> | null;
+  /** Test seam for model readiness; production reads the shared native STT snapshot. */
+  onDeviceReady?: () => boolean;
+  appleInterim?: () => boolean;
+}
+
+export type TranscriberChoiceResult = "ok" | "needs_consent" | "locked_signed_out" | "unavailable";
+export type TranscriberChoiceScope = "recording" | "default";
+export interface RecorderTranscriberChoice {
+  id: TranscriberId;
+  identifySpeakers: boolean;
+  source: TranscriberChoiceScope;
 }
 
 export interface VoiceNoteRecorderController {
   getState(): RecorderState;
+  getTranscriber(): RecorderTranscriberChoice;
+  setTranscriber(id: TranscriberId, options: { scope: TranscriberChoiceScope; waitForModel?: boolean }): Promise<TranscriberChoiceResult>;
+  setIdentifySpeakers(on: boolean, scope: "recording" | "default"): Promise<"ok" | "needs_consent" | "locked_signed_out" | "unavailable">;
   subscribe(listener: () => void): () => void;
   setOnPresent(onPresent: (() => void) | undefined): void;
   /** A recording landed in the space (by Stop, the limit, or Save now). */
@@ -68,12 +88,37 @@ export interface VoiceNoteRecorderController {
   subscribeLevel(listener: (level: number) => void): () => void;
 }
 
-export function createVoiceNoteRecorderController({ tcw, available, transcriber }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
+export function createVoiceNoteRecorderController({ tcw, available, transcriber, onDeviceReady,
+  appleInterim }: VoiceNoteRecorderControllerOptions): VoiceNoteRecorderController {
   let state = initialRecorderState;
+  let preference = readTranscriberPreference();
+  let nativeOptions: CaptureOptions | null = null;
+  const signedIn = tcw.did != null;
+  const defaultChoice = (): RecorderTranscriberChoice => {
+    const options = effectiveCaptureOptions(preference, signedIn);
+    return { id: options.transcriber, identifySpeakers: options.identifySpeakers, source: "default" };
+  };
+  let choice = defaultChoice();
   let onSaved: ((recording: VoiceNoteRecording) => void) | undefined;
   let onPresent: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const levelListeners = new Set<(level: number) => void>();
+
+  const notify = () => { for (const listener of [...listeners]) listener(); };
+  const refreshChoice = () => {
+    const live = state.phase === "recording" && state.recordingId !== null && nativeOptions !== null;
+    const next: RecorderTranscriberChoice = live
+      ? { id: nativeOptions!.transcriber, identifySpeakers: nativeOptions!.identifySpeakers, source: "recording" }
+      : defaultChoice();
+    if (choice.id === next.id && choice.identifySpeakers === next.identifySpeakers && choice.source === next.source) return false;
+    choice = next;
+    return true;
+  };
+  const acceptNativeOptions = (status: CaptureStatus | MicStateEvent) => {
+    if (!status.options || (status.id && state.recordingId && status.id !== state.recordingId)) return;
+    nativeOptions = status.options;
+    if (refreshChoice()) notify();
+  };
 
   // The reducer runs synchronously, so a second tap sees the phase the first one
   // set (Stop must never call stop() twice).
@@ -81,7 +126,8 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     const next = recorderReducer(state, event);
     if (next === state) return;
     state = next;
-    for (const listener of [...listeners]) listener();
+    refreshChoice();
+    notify();
   };
 
   const activePickup = (status: Awaited<ReturnType<typeof VoiceNotes.status>>): Extract<RecorderEvent, { type: "PICKED_UP" }> => {
@@ -99,10 +145,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         send({ type: "STOP_FAILED", status: "idle", error });
         void pendingStore.refresh();
       } else if (status.id === state.recordingId) {
+        acceptNativeOptions(status);
         send({ type: "STOP_FAILED", status: "active", error,
           mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } else {
         send({ type: "STOP_FAILED", status: "idle", error: error ?? "Another recording is active on this phone." });
+        acceptNativeOptions(status);
         send(activePickup(status));
       }
     } catch (caught) {
@@ -119,10 +167,12 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
           error: `${error} The recording ended; its audio remains on this phone.` });
         void pendingStore.refresh();
       } else if (status.id === shown) {
+        acceptNativeOptions(status);
         send({ type: "DISCARD_FAILED", id: shown, error });
         send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } else {
         send({ type: "DISCARD_FAILED", id: shown, committed: true, error });
+        acceptNativeOptions(status);
         send(activePickup(status));
       }
     } catch (caught) {
@@ -212,6 +262,47 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
 
   return {
     getState: () => state,
+    getTranscriber: () => choice,
+    async setTranscriber(id, { scope, waitForModel = false }) {
+      if (!available || id === "assemblyai") return "unavailable";
+      if (!signedIn && id !== "on-device") return "locked_signed_out";
+      if (id === "on-device" && !waitForModel && !(onDeviceReady?.() ?? isOnDeviceReady(onDeviceSttStore.snapshot())))
+        return "unavailable";
+      if (id === "private-cloud") {
+        const snapshot = transcriber?.snapshot?.();
+        if (!snapshot?.consented) return "needs_consent";
+        if (snapshot.availability !== "available") return "unavailable";
+      }
+      if (scope === "recording") {
+        if (state.phase !== "recording" || !state.recordingId) return "unavailable";
+        const identifySpeakers = id === "on-device" && !(appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")
+          ? preference.identifySpeakers : false;
+        await VoiceNotes.setRecordingOptions({ transcriber: id, identifySpeakers });
+        acceptNativeOptions(await VoiceNotes.status());
+      } else {
+        await setDefaultTranscriber(id);
+        preference = readTranscriberPreference();
+        if (refreshChoice()) notify();
+      }
+      return "ok";
+    },
+    async setIdentifySpeakers(on, scope) {
+      if (!available) return "unavailable";
+      const id = scope === "recording" ? choice.id : effectiveCaptureOptions(preference, signedIn).transcriber;
+      if (scope === "recording" && (state.phase !== "recording" || choice.source !== "recording")) return "unavailable";
+      if (id !== "on-device" && id !== "assemblyai") return "unavailable";
+      if (id === "assemblyai" || (id === "on-device" && (appleInterim?.() ?? onDeviceSttStore.snapshot().engine === "apple-speech")))
+        return "unavailable";
+      if (scope === "recording") {
+        await VoiceNotes.setRecordingOptions({ identifySpeakers: on });
+        acceptNativeOptions(await VoiceNotes.status());
+      } else {
+        await setDefaultIdentifySpeakers(on);
+        preference = readTranscriberPreference();
+        if (refreshChoice()) notify();
+      }
+      return "ok";
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -227,9 +318,14 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
     attach() {
       if (!available) return () => {};
       let attached = true;
+      const unsubscribePreference = subscribeTranscriberPreference(() => {
+        preference = readTranscriberPreference();
+        if (refreshChoice()) notify();
+      });
       const handles = [
         VoiceNotes.addListener("micState", (event) => {
           if (event.id && state.recordingId && event.id !== state.recordingId) return;
+          acceptNativeOptions(event);
           send({ type: "MIC_STATE", mic: micFromStatus(event), audioMs: event.audioMs, elapsedMs: event.elapsedMs });
         }),
         VoiceNotes.addListener("level", (event) => {
@@ -306,6 +402,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
                 console.warn("[VoiceNotes] Could not consume the shortcut Record offer", caught));
             }
             if (status.state === "idle") return;
+            acceptNativeOptions(status);
             send(activePickup(status));
             if (status.source === "app_shortcut" || status.source === "notification") onPresent?.();
           },
@@ -317,6 +414,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
         });
       return () => {
         attached = false;
+        unsubscribePreference();
         for (const handle of handles) void handle.then((h) => h.remove());
       };
     },
@@ -327,6 +425,13 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       const requested = voiceNoteMaxDurationMs();
       try {
         const started = await VoiceNotes.start({ maxDurationMs: requested });
+        nativeOptions = null;
+        try {
+          const status = await VoiceNotes.status();
+          if (status.id === started.id) acceptNativeOptions(status);
+        } catch (caught) {
+          console.warn("[VoiceNotes] Started, but recording options could not be read", caught);
+        }
         send({
           type: "STARTED",
           id: started.id,
@@ -387,6 +492,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       }
       try {
         const status = await VoiceNotes.status();
+        acceptNativeOptions(status);
         send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } catch (caught) {
         console.warn("[VoiceNotes] Pause succeeded, but status could not be read", caught);
@@ -405,6 +511,7 @@ export function createVoiceNoteRecorderController({ tcw, available, transcriber 
       }
       try {
         const status = await VoiceNotes.status();
+        acceptNativeOptions(status);
         send({ type: "MIC_STATE", mic: micFromStatus(status), audioMs: status.audioMs, elapsedMs: status.elapsedMs });
       } catch (caught) {
         console.warn("[VoiceNotes] Resume succeeded, but status could not be read", caught);

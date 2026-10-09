@@ -6,6 +6,7 @@
 // recordings deleted from the "phone".
 import type {
   CaptureDefaults,
+  CaptureOptions,
   CaptureStatus,
   MicState,
   MicStateEvent,
@@ -37,7 +38,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
   let retainedPresent: { id: string | null; reason?: string } | null = null;
   let adds = 0;
   let active = 0;
-  let current: { id: string; startedAt: number } | null = null;
+  let current: { id: string; startedAt: number; options: CaptureOptions } | null = null;
   let state: MicState = "idle";
   let counter = 0;
   let maxDurationMs = 10_800_000;
@@ -54,7 +55,10 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
     async start(options?: Parameters<VoiceNotesPlugin["start"]>[0]) {
       if (current) throw Object.assign(new Error("Already recording"), { code: "already_recording" });
       counter += 1;
-      current = { id: `fake-${counter}`, startedAt: Date.now() };
+      current = { id: `fake-${counter}`, startedAt: Date.now(), options: {
+        transcriber: defaults.accountDid ? (options?.transcriber ?? defaults.transcriber) : "on-device",
+        identifySpeakers: options?.identifySpeakers ?? defaults.identifySpeakers,
+      } };
       maxDurationMs = options?.maxDurationMs ?? 10_800_000;
       state = "recording";
       return { ...current, maxDurationMs };
@@ -73,6 +77,7 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         version: 2,
         owner: defaults.accountDid,
         rev: 1,
+        options: current.options,
       };
       current = null;
       state = "idle";
@@ -93,7 +98,8 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
         maxDurationMs,
         spans: [],
         openSpan: null,
-        transitionGen: 0,
+        options: current?.options,
+        transitionGen: defaults.transitionGen,
       };
     },
     async readAudioChunk({ id, offset, length }: Parameters<VoiceNotesPlugin["readAudioChunk"]>[0]) {
@@ -118,7 +124,11 @@ export function createFakeVoiceNotes(): FakeVoiceNotes {
       }
       return { id };
     },
-    setRecordingOptions: unsupported,
+    async setRecordingOptions(changed) {
+      if (!current) throw Object.assign(new Error("Not recording"), { code: "not_recording" });
+      current.options = { ...current.options, ...changed,
+        transcriber: defaults.accountDid ? (changed.transcriber ?? current.options.transcriber) : "on-device" };
+    },
     async getCaptureDefaults() { return { ...defaults, status: defaults.accountDid ? "signed_in" as const : "signed_out" as const }; },
     async setCaptureDefaults(next) {
       if (next.transitionGen < defaults.transitionGen) throw Object.assign(new Error("Stale transition"), { code: "stale_transition" });
