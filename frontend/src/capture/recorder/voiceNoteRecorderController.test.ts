@@ -17,6 +17,7 @@ import { createVoiceNoteTranscriber, type VoiceNoteTranscriber } from "@/lib/voi
 import { VoiceNoteSaveDeferred, type VoiceNotePipeline } from "@/lib/voiceNotes/voiceNotePipeline";
 import { consentToRecordingPrivateCloud, setRecordingRoute } from "./TranscriptionRouteControl";
 import { loadNote } from "@/lib/voiceNotes/recordingNotes";
+import { reportRecordingNoteSyncError } from "@/lib/voiceNotes/voiceNoteStore";
 
 const realStore = { ...(await import("@/lib/voiceNotes/voiceNoteStore")) };
 mock.module("@/lib/voiceNotes/voiceNoteStore", () => ({
@@ -65,10 +66,11 @@ let micDenied: boolean;
 let shortcutPending: boolean;
 let microphoneGranted: boolean;
 
-function controller(options: { tcw?: TinyCloudWeb; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
-  appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote } = {}) {
+function controller(options: { tcw?: TinyCloudWeb | null; pipeline?: VoiceNotePipeline; consented?: boolean | (() => boolean); onDeviceReady?: boolean;
+  appleInterim?: boolean; transcriber?: VoiceNoteTranscriber; noteLoader?: typeof loadNote;
+  noteRetryScheduler?: (delayMs: number, retry: () => void) => () => void } = {}) {
   return createVoiceNoteRecorderController({
-    tcw: options.tcw ?? tcw,
+    tcw: options.tcw === undefined ? tcw : options.tcw,
     pipeline: options.pipeline,
     available: true,
     transcriber: options.transcriber ?? { noteSaved: (recording) => noted.push(recording.id),
@@ -77,6 +79,7 @@ function controller(options: { tcw?: TinyCloudWeb; pipeline?: VoiceNotePipeline;
     onDeviceReady: () => options.onDeviceReady ?? true,
     appleInterim: () => options.appleInterim ?? false,
     noteLoader: options.noteLoader,
+    noteRetryScheduler: options.noteRetryScheduler,
   });
 }
 
@@ -158,6 +161,22 @@ async function attached() {
 }
 
 describe("voice-note recorder controller", () => {
+  test("a signed-out recording keeps its Markdown local without starting a space sync", async () => {
+    const recorder = controller({ tcw: null });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const id = currentId!;
+    await tick();
+    await recorder.setNoteText("Signed-out draft");
+    await recorder.stop();
+    await tick();
+    expect((await loadNote(id))?.md).toBe("Signed-out draft");
+    expect(saves).toEqual([]);
+    expect(recorder.getNoteSyncError()).toBeNull();
+    detach();
+  });
+
   test("note autosave survives a controller reload during native capture", async () => {
     const first = controller();
     const detach = first.attach();
@@ -204,7 +223,7 @@ describe("voice-note recorder controller", () => {
     remove();
   });
 
-  test("a failed note read blocks edits and a retry preserves the draft", async () => {
+  test("note-load errors stay visible and retry at 1, 2, 4 … 30 seconds without mic-event retries", async () => {
     const first = controller();
     const detach = first.attach();
     await tick();
@@ -215,20 +234,83 @@ describe("voice-note recorder controller", () => {
     detach();
 
     let available = false;
+    let reads = 0;
+    const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
     const readFailure = new Error("IndexedDB open failed");
-    const reopened = controller({ noteLoader: (noteId) => available ? loadNote(noteId) : Promise.reject(readFailure) });
+    const reopened = controller({
+      noteLoader: (noteId) => { reads++; return available ? loadNote(noteId) : Promise.reject(readFailure); },
+      noteRetryScheduler: (ms, run) => {
+        const timer = { ms, run, cancelled: false };
+        timers.push(timer);
+        return () => { timer.cancelled = true; };
+      },
+    });
     const remove = reopened.attach();
     await tick();
     expect(reopened.getNoteStatus()).toBe("error");
     await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
     expect((await loadNote(id))?.md).toBe("Do not overwrite");
-    available = true;
+    expect(timers.map((timer) => timer.ms)).toEqual([1_000]);
+    fake.emit("micState", { id, state: "recording", reason: null, elapsedMs: 2_000 });
     await tick();
-    await expect(reopened.setNoteText("x")).rejects.toBe(readFailure);
+    expect(reads).toBe(1);
+    expect(timers).toHaveLength(1);
+    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      timers.at(-1)!.run();
+      await tick();
+      expect(reopened.getNoteStatus()).toBe("error");
+      expect(timers.at(-1)!.ms).toBe(delay);
+    }
+    available = true;
+    timers.at(-1)!.run();
     await tick();
     expect(reopened.getNoteStatus()).toBe("ready");
     expect(reopened.getNote()?.md).toBe("Do not overwrite");
+    expect((await loadNote(id))?.md).toBe("Do not overwrite");
     remove();
+  });
+
+  test("a recording change cancels the old note retry and starts the next at one second", async () => {
+    const timers: { ms: number; run: () => void; cancelled: boolean }[] = [];
+    const recorder = controller({ noteLoader: () => Promise.reject(new Error("offline local storage")),
+      noteRetryScheduler: (ms, run) => {
+        const timer = { ms, run, cancelled: false };
+        timers.push(timer);
+        return () => { timer.cancelled = true; };
+      } });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    await tick();
+    expect(recorder.getNoteStatus()).toBe("error");
+    expect(timers.at(-1)?.ms).toBe(1_000);
+    const old = timers.at(-1)!;
+    await recorder.discard();
+    expect(old.cancelled).toBe(true);
+    await recorder.record();
+    await tick();
+    expect(recorder.getNoteStatus()).toBe("error");
+    expect(timers.at(-1)?.ms).toBe(1_000);
+    detach();
+  });
+
+  test("a Markdown sync failure has a short separate status that a successful sync clears", async () => {
+    const account = { did: tcw.did, spaceId: "space:note-status" } as TinyCloudWeb;
+    fakeVoiceNoteStore.save = async () => ({ ok: true, data: { id: "row", inserted: true,
+      createdAt: new Date().toISOString(), noteSyncError: "sync_failed" } }) as never;
+    const recorder = controller({ tcw: account });
+    const detach = recorder.attach();
+    await tick();
+    await recorder.record();
+    const id = currentId!;
+    await recorder.stop();
+    await tick();
+    expect(recorder.getState().outcome).toBe("saved");
+    expect(recorder.getNoteSyncError()).toBe("sync_failed");
+    expect(recorder.getState().error).toBeNull();
+    reportRecordingNoteSyncError(account, id, null);
+    expect(recorder.getNoteSyncError()).toBeNull();
+    detach();
   });
 
   test("discard deletes the local note with its native recording", async () => {

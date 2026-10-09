@@ -22,7 +22,7 @@ import {
 } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { bytesToBase64, VOICE_NOTE_TRANSCRIPTION_MAX_SECONDS } from "@/lib/voiceNotes/voiceNoteAudio";
 import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
-import { saveVoiceNote, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
+import { saveVoiceNote, type NoteSyncErrorCode, type VoiceNoteAudio, type VoiceNoteAudioSource } from "@/lib/voiceNotes/voiceNoteStore";
 import { assertCurrent, type AccountContext } from "@/lib/voiceNotes/accountContext";
 import { isLegacyNote } from "@/lib/voiceNotes/legacyMigration";
 import { deleteNote } from "@/lib/voiceNotes/recordingNotes";
@@ -195,7 +195,7 @@ async function deleteDiscardedOnce(id: string): Promise<string | null> {
  *  - `failed`: not in the space; it stays on the phone.
  */
 export type SaveOutcome =
-  | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null }
+  | { kind: "saved"; audio: VoiceNoteAudio | null; cleanupError: string | null; noteSyncError?: NoteSyncErrorCode }
   | { kind: "already-saved"; cleanupError: string | null }
   | { kind: "discarded"; cleanupError: string | null }
   | { kind: "held"; reason: "legacy" | "unowned" | "other-account" }
@@ -288,6 +288,7 @@ export async function saveRecording(
       kind: "saved",
       audio: whole ? { mimeType: recording.mimeType, base64: bytesToBase64(concatBytes(kept)) } : null,
       cleanupError,
+      noteSyncError: saved.data.noteSyncError,
     };
   } catch (caught) {
     return isDiscarded(recording.id)
@@ -330,13 +331,14 @@ export async function saveNoteForAccount(tcw: TinyCloudWeb, ctx: AccountContext,
       check();
       try {
         await VoiceNotes.updateLedger({ id: recording.id, did: ctx.did, rev: fresh.rev ?? 0, patch });
-        return { kind: "saved", audio: null, cleanupError: null };
+        return { kind: "saved", audio: null, cleanupError: null, noteSyncError: saved.data.noteSyncError };
       } catch (caught) {
         if (errorCode(caught) !== "rev_conflict") throw caught;
         check();
         const current = (await VoiceNotes.listPending()).recordings.find((note) => note.id === recording.id);
         if (!current || current.owner !== ctx.did || isLegacyNote(current)) throw caught;
-        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null };
+        if (current.ledger?.audio.state === "saved") return { kind: "saved", audio: null, cleanupError: null,
+          noteSyncError: saved.data.noteSyncError };
         fresh = current;
       }
     }
