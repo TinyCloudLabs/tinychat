@@ -17,11 +17,11 @@ function transcription(patch: Partial<VoiceNoteTranscriptionProps> = {}): VoiceN
   return { availability: "available", consented: true, maxSeconds: 600, jobs: new Map(), onTranscribe: noop, onConsent: noop, onTurnOff: noop, onRecheck: noop, ...patch };
 }
 
-function render(value: VoiceNoteTranscriptionProps | undefined, defaultAsking?: boolean): string {
+function render(value: VoiceNoteTranscriptionProps | undefined, defaultAsking?: boolean, signedIn = true): string {
   __setOnDeviceSttForTests(createFakeOnDeviceStt().plugin);
   return renderToStaticMarkup(
     <MemoryRouter>
-      <TranscriptionRouteControl transcription={value} defaultAsking={defaultAsking} />
+      <TranscriptionRouteControl transcription={value} signedIn={signedIn} defaultAsking={defaultAsking} />
     </MemoryRouter>,
   );
 }
@@ -33,14 +33,14 @@ afterEach(() => {
 const segments = (html: string) => (html.match(/role="radio"/g) ?? []).length;
 
 describe("TranscriptionRouteControl", () => {
-  test("hidden (no private cloud for this build or account): Off and On this phone only, audio only by default", () => {
+  test("hidden (no private cloud for this build or account): Off and On this phone only, On this phone by default (native's own default)", () => {
     for (const value of [undefined, transcription({ availability: "hidden", consented: false })]) {
       const html = render(value);
       expect(html).toContain(">Transcription</h3>");
       expect(segments(html)).toBe(2);
       expect(html).not.toContain(">Private cloud</span>");
-      expect(html).toContain("Audio only.");
-      expect(html).toContain('data-route="off"');
+      expect(html).toContain("Transcribed on this phone");
+      expect(html).toContain('data-route="on-device"');
     }
   });
 
@@ -66,9 +66,9 @@ describe("TranscriptionRouteControl", () => {
     expect(html).not.toContain("voice-note-transcription-consent");
   });
 
-  test("available without consent: Off is chosen; choosing Private cloud asks once, in one sentence", () => {
+  test("available without consent: On this phone is chosen (native's own default, not Off); choosing Private cloud asks once, in one sentence", () => {
     const off = render(transcription({ consented: false }));
-    expect(off).toContain('data-route="off"');
+    expect(off).toContain('data-route="on-device"');
     expect(off).not.toContain("voice-note-transcription-enable");
     const asking = render(transcription({ consented: false }), true);
     expect(asking).toContain('data-testid="voice-note-transcription-consent"');
@@ -83,7 +83,7 @@ describe("TranscriptionRouteControl", () => {
     __setOnDeviceSttForTests(fake.plugin);
     const html = renderToStaticMarkup(
       <MemoryRouter>
-        <TranscriptionRouteControl transcription={transcription({ consented: false })} />
+        <TranscriptionRouteControl transcription={transcription({ consented: false })} signedIn />
       </MemoryRouter>,
     );
     expect(html).toContain(">On this phone</span>");
@@ -93,6 +93,17 @@ describe("TranscriptionRouteControl", () => {
   test("the explanation is a link to How it works → Where your audio goes", () => {
     for (const html of [render(undefined), render(transcription()), render(transcription({ consented: false }), true)]) {
       expect(html).toContain(`href="${aboutHref("transcription")}"`);
+    }
+  });
+
+  test("signed out: only On this phone is offered, selected and enforced — never Off, even with private cloud otherwise available", () => {
+    for (const value of [undefined, transcription({ consented: true }), transcription({ consented: false })]) {
+      const html = render(value, false, false);
+      expect(segments(html)).toBe(1);
+      expect(html).toContain('data-route="on-device"');
+      expect(html).toContain(">On this phone</span>");
+      expect(html).not.toContain(">Off</span>");
+      expect(html).not.toContain(">Private cloud</span>");
     }
   });
 });
